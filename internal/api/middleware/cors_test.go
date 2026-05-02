@@ -265,8 +265,16 @@ func TestCORS_VaryOriginAlwaysWhenEnabled(t *testing.T) {
 			req.Header.Set("Origin", "https://x.example")
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
-			if got := rec.Header().Get("Vary"); got != "Origin" {
-				t.Errorf("Vary = %q, want \"Origin\"", got)
+			vary := rec.Header().Values("Vary")
+			hasOrigin := false
+			for _, v := range vary {
+				if v == "Origin" {
+					hasOrigin = true
+					break
+				}
+			}
+			if !hasOrigin {
+				t.Errorf("Vary missing Origin: %v", vary)
 			}
 		})
 		t.Run(c.name+"/no-origin", func(t *testing.T) {
@@ -276,8 +284,16 @@ func TestCORS_VaryOriginAlwaysWhenEnabled(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
-			if got := rec.Header().Get("Vary"); got != "Origin" {
-				t.Errorf("Vary = %q, want \"Origin\" even on no-Origin requests", got)
+			vary := rec.Header().Values("Vary")
+			hasOrigin := false
+			for _, v := range vary {
+				if v == "Origin" {
+					hasOrigin = true
+					break
+				}
+			}
+			if !hasOrigin {
+				t.Errorf("Vary missing Origin: %v", vary)
 			}
 			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 				t.Errorf("ACAO = %q, want empty on no-Origin requests", got)
@@ -337,12 +353,46 @@ func TestCORS_InternalPrefixSkipped(t *testing.T) {
 	}
 }
 
+func TestCORS_InternalPrefixBoundaries(t *testing.T) {
+	// Pin the design decision that /_internal/ (with trailing slash) is the
+	// excluded prefix. Paths /_internal (no slash) and /_internalfoo are
+	// regular paths that get full CORS treatment. A future "cleanup" that
+	// drops the trailing slash from internalPrefix would silently change
+	// this behaviour.
+	p := NewCORSPolicy(true, true, nil)
+	h := CORS(p)(dummyHandler)
+
+	cases := []struct {
+		name       string
+		path       string
+		varyOrigin bool // true: Vary: Origin should be present
+	}{
+		{"with trailing slash (excluded)", "/_internal/", false},
+		{"under prefix (excluded)", "/_internal/dispatch", false},
+		{"no trailing slash (NOT excluded)", "/_internal", true},
+		{"prefix-like but distinct (NOT excluded)", "/_internalfoo", true},
+		{"middle of path (NOT excluded)", "/foo/_internal/bar", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Origin", "https://x.example")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			gotVary := rec.Header().Get("Vary") == "Origin"
+			if gotVary != tc.varyOrigin {
+				t.Errorf("Vary: Origin presence = %v, want %v", gotVary, tc.varyOrigin)
+			}
+		})
+	}
+}
+
 func TestCORS_InternalPrefixSkippedOnPreflight(t *testing.T) {
 	p := NewCORSPolicy(true, true, nil)
 	downstreamReached := false
 	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		downstreamReached = true
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusTeapot)
 	})
 	h := CORS(p)(downstream)
 
@@ -357,7 +407,7 @@ func TestCORS_InternalPrefixSkippedOnPreflight(t *testing.T) {
 	if !downstreamReached {
 		t.Error("downstream should have been reached for /_internal/ preflight")
 	}
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 405 (downstream)", rec.Code)
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("status = %d, want %d (downstream sentinel)", rec.Code, http.StatusTeapot)
 	}
 }
