@@ -291,8 +291,11 @@ func splitCSV(s string) []string {
 // parseCORSAllowedOrigins parses the CYODA_CORS_ALLOWED_ORIGINS env var.
 // Returns wildcard=true iff the value is exactly "*". Otherwise returns the
 // comma-separated list with whitespace trimmed; semantic validation is in
-// ValidateCORS. An empty raw value yields wildcard=false, origins=nil
-// (loopback mode).
+// ValidateCORS — empty-after-trim entries are deliberately preserved so
+// that ValidateCORS can reject them with a clear error per the spec
+// ("Reject empty entries — leading/trailing commas, double commas,
+// whitespace-only entries error out").
+// An empty raw value yields wildcard=false, origins=nil (loopback mode).
 func parseCORSAllowedOrigins(raw string) (wildcard bool, origins []string) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -304,9 +307,7 @@ func parseCORSAllowedOrigins(raw string) (wildcard bool, origins []string) {
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
-			out = append(out, trimmed)
-		}
+		out = append(out, strings.TrimSpace(p))
 	}
 	return false, out
 }

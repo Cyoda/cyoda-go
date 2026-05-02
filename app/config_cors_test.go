@@ -81,3 +81,50 @@ func TestValidateCORS_RejectsWildcardMixedWithExplicit(t *testing.T) {
 		t.Errorf("error message should mention wildcard: %v", err)
 	}
 }
+
+func TestParseCORSAllowedOrigins_PreservesEmptyEntries(t *testing.T) {
+	// Spec requires empty-after-trim entries to reach ValidateCORS so it
+	// can reject them with a clear startup error. The parser must not
+	// silently filter them out.
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"double comma", "https://a.com,,https://b.com", []string{"https://a.com", "", "https://b.com"}},
+		{"trailing comma", "https://a.com,", []string{"https://a.com", ""}},
+		{"leading comma", ",https://a.com", []string{"", "https://a.com"}},
+		{"whitespace-only entry", "https://a.com,   ,https://b.com", []string{"https://a.com", "", "https://b.com"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wildcard, got := parseCORSAllowedOrigins(tt.raw)
+			if wildcard {
+				t.Fatal("wildcard should be false")
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d entries (%v), want %d (%v)", len(got), got, len(tt.want), tt.want)
+			}
+			for i, g := range got {
+				if g != tt.want[i] {
+					t.Errorf("entry[%d] = %q, want %q", i, g, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseCORSAllowedOrigins_ThenValidateCORS_RejectsEmptyEntries(t *testing.T) {
+	// End-to-end env-path: the parser preserves empties, the validator
+	// rejects them. This catches the regression where a deployer typos
+	// "https://a.com,,https://b.com" and silently gets a 2-element
+	// allowlist.
+	wildcard, origins := parseCORSAllowedOrigins("https://a.com,,https://b.com")
+	if wildcard {
+		t.Fatal("wildcard should be false")
+	}
+	cfg := CORSConfig{Enabled: true, AllowedOrigins: origins}
+	if err := ValidateCORS(cfg); err == nil {
+		t.Error("expected ValidateCORS to reject empty entry, got nil")
+	}
+}
