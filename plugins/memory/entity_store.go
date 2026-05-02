@@ -284,16 +284,22 @@ func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 }
 
 func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
-	s.factory.entityMu.RLock()
-	defer s.factory.entityMu.RUnlock()
-
-	// Historical query: always reads committed data. Track in read set if in tx.
+	// Take tx.OpMu BEFORE factory.entityMu to preserve the lock order
+	// established by Save/CompareAndSave and txmanager.Commit. Historical
+	// queries always read committed data, but the in-tx tx.RolledBack
+	// read and tx.ReadSet write must be serialised against Commit/Rollback
+	// (which take tx.OpMu.Lock).
 	if tx := spi.GetTransaction(ctx); tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
 		tx.ReadSet[entityID] = true
 	}
+
+	s.factory.entityMu.RLock()
+	defer s.factory.entityMu.RUnlock()
 
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -205,6 +206,128 @@ func TestCount_VsRollback_NoRace(t *testing.T) {
 		func(txCtx context.Context, store spi.EntityStore) error {
 			_, err := store.Count(txCtx, raceModelRef)
 			return err
+		},
+	)
+}
+
+// TestGetAsAt_VsRollback_NoRace flags the missing tx.OpMu.RLock in
+// GetAsAt's tx-path. Surfaced by code review on PR #198 as the same
+// race-shape defect issue #176 fixes for the six core ops: GetAsAt
+// reads tx.RolledBack and writes tx.ReadSet inside an entityMu.RLock
+// region without tx.OpMu.RLock, AND has an inverted lock order
+// (entityMu before tx.OpMu). The fix takes tx.OpMu.RLock first when a
+// tx is present, then entityMu.RLock — matching every other tx-path
+// method.
+func TestGetAsAt_VsRollback_NoRace(t *testing.T) {
+	runOpVsRollback(t, "GetAsAt",
+		func(t *testing.T, ctx context.Context, store spi.EntityStore) {
+			raceSeedOne(t, ctx, store, "e-asat")
+		},
+		func(txCtx context.Context, store spi.EntityStore) error {
+			_, err := store.GetAsAt(txCtx, "e-asat", time.Now())
+			return err
+		},
+	)
+}
+
+// runOpVsCommit is the Commit-as-contender variant of runOpVsRollback.
+// Commit iterates tx.Buffer (txmanager.go flush) and tx.Deletes under
+// tx.OpMu.Lock; an in-flight op that mutates those maps without
+// tx.OpMu.RLock races against the iteration. This contender exposes
+// races that runOpVsRollback (which only writes tx.RolledBack/Closed)
+// does not.
+func runOpVsCommit(
+	t *testing.T,
+	name string,
+	setup func(t *testing.T, ctx context.Context, store spi.EntityStore),
+	op func(txCtx context.Context, store spi.EntityStore) error,
+) {
+	t.Helper()
+	for iter := 0; iter < inReadOpsRaceIterations; iter++ {
+		func() {
+			factory := memory.NewStoreFactory()
+			defer factory.Close()
+			uuids := newTestUUIDGenerator()
+			txMgr := factory.NewTransactionManager(uuids)
+
+			ctx := ctxWithTenant("tenant-A")
+			store, err := factory.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("%s: EntityStore failed: %v", name, err)
+			}
+
+			if setup != nil {
+				setup(t, ctx, store)
+			}
+
+			txID, txCtx, err := txMgr.Begin(ctx)
+			if err != nil {
+				t.Fatalf("%s: Begin failed: %v", name, err)
+			}
+
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if oerr := op(txCtx, store); oerr != nil {
+					if errors.Is(oerr, spi.ErrConflict) || errors.Is(oerr, spi.ErrNotFound) {
+						return
+					}
+					msg := oerr.Error()
+					if strings.Contains(msg, "rolled back") ||
+						strings.Contains(msg, "already completed") ||
+						strings.Contains(msg, "not found") ||
+						strings.Contains(msg, "already being committed") {
+						return
+					}
+					t.Errorf("%s: op failed: %v", name, oerr)
+				}
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = txMgr.Commit(ctx, txID)
+			}()
+
+			close(start)
+			wg.Wait()
+		}()
+	}
+}
+
+// TestDelete_VsCommit_NoRace pairs Delete against Commit. Commit's
+// flush iterates tx.Buffer and tx.Deletes under tx.OpMu.Lock; Delete
+// writes both maps. Without tx.OpMu.RLock on Delete, the writes race
+// against Commit's iteration. The Rollback-paired test catches the
+// tx.RolledBack-flag race only; this test catches the map-mutation
+// race directly.
+func TestDelete_VsCommit_NoRace(t *testing.T) {
+	runOpVsCommit(t, "Delete",
+		func(t *testing.T, ctx context.Context, store spi.EntityStore) {
+			raceSeedOne(t, ctx, store, "e-del-vs-commit")
+		},
+		func(txCtx context.Context, store spi.EntityStore) error {
+			return store.Delete(txCtx, "e-del-vs-commit")
+		},
+	)
+}
+
+// TestDeleteAll_VsCommit_NoRace pairs DeleteAll against Commit for
+// the same reason as TestDelete_VsCommit_NoRace: DeleteAll iterates
+// AND writes tx.Buffer / tx.Deletes / tx.WriteSet, all of which Commit
+// also touches under tx.OpMu.Lock during flush.
+func TestDeleteAll_VsCommit_NoRace(t *testing.T) {
+	runOpVsCommit(t, "DeleteAll",
+		func(t *testing.T, ctx context.Context, store spi.EntityStore) {
+			raceSeedOne(t, ctx, store, "e-delall-vs-commit")
+		},
+		func(txCtx context.Context, store spi.EntityStore) error {
+			return store.DeleteAll(txCtx, raceModelRef)
 		},
 	)
 }
