@@ -144,7 +144,7 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 // request. It rewrites the URL onto the target node and strips any
 // CORS-related request headers — those are the responsibility of the
 // outermost CORS middleware on the receiving node, not the destination
-// peer. See spec §"Cluster proxy interaction".
+// peer. See docs/superpowers/specs/2026-05-01-issue-196-cors-design.md §"Cluster proxy interaction".
 func makeProxyDirector(target *url.URL) func(*http.Request) {
 	return func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
