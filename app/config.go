@@ -341,8 +341,6 @@ func (c CORSConfig) Mode() string {
 //     query, fragment, or trailing slash; lowercase scheme and host;
 //     no non-ASCII characters in host (use punycode); not the literal
 //     string "null"; not the literal "*" (use Wildcard mode).
-//
-// Task 3 covers the rejection rules; Task 2 only the happy paths.
 func ValidateCORS(c CORSConfig) error {
 	if !c.Enabled {
 		return nil
@@ -414,6 +412,10 @@ func validateCORSOrigin(o string) error {
 	if port := u.Port(); port != "" {
 		if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
 			return fmt.Errorf("origin %q: default port (:%s) must be omitted", o, port)
+		}
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("origin %q: port %q is not a valid TCP port (1-65535)", o, port)
 		}
 	}
 	return nil

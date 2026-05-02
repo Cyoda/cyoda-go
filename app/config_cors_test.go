@@ -153,6 +153,10 @@ func TestValidateCORS_RejectionRules(t *testing.T) {
 		{"glob pattern", "https://*.x.com", "wildcard"},
 		{"unparseable", "://garbage", "parse"},
 		{"whitespace only after trim", "   ", "empty"},
+		{"port zero", "https://x.com:0", "1-65535"},
+		{"port too large", "https://x.com:65536", "1-65535"},
+		{"port way too large", "https://x.com:99999", "1-65535"},
+		{"uppercase non-http scheme", "FTP://x.com", "lowercase"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
