@@ -6,9 +6,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/app"
-
-	// Register stock storage plugins so spi.GetPlugin("memory") resolves.
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // newCORSTestServer builds a minimal app and wraps it in an httptest.Server.
@@ -55,6 +52,7 @@ var representativeRoutes = []struct {
 	{"admin-post", http.MethodPost, "/api/admin/log-level"},
 	{"help-get", http.MethodGet, "/api/help"},
 	{"health-get", http.MethodGet, "/api/health"},
+	{"discovery-get", http.MethodGet, "/api/openapi.json"},
 }
 
 func TestCORS_E2E_PreflightAcrossGroups_LoopbackMode(t *testing.T) {
@@ -80,6 +78,12 @@ func TestCORS_E2E_PreflightAcrossGroups_LoopbackMode(t *testing.T) {
 			}
 			if got := resp.Header.Get("Access-Control-Allow-Methods"); got == "" {
 				t.Error("missing Access-Control-Allow-Methods")
+			}
+			if got := resp.Header.Get("Access-Control-Allow-Headers"); got == "" {
+				t.Error("missing Access-Control-Allow-Headers")
+			}
+			if got := resp.Header.Get("Access-Control-Max-Age"); got == "" {
+				t.Error("missing Access-Control-Max-Age")
 			}
 			if got := resp.Header.Get("Vary"); got != "Origin" {
 				t.Errorf("Vary = %q, want \"Origin\"", got)
