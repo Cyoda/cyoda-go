@@ -120,11 +120,7 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	// Caching was considered but rejected: an unbounded cache leaks memory as
 	// nodes join/leave during rolling updates.
 	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-		},
+		Director:  makeProxyDirector(target),
 		Transport: transport,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			slog.Error("proxy request failed",
@@ -141,4 +137,23 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	}
 
 	rp.ServeHTTP(w, r)
+}
+
+// makeProxyDirector returns the Director that the per-request
+// httputil.ReverseProxy uses to rewrite an outbound peer-to-peer
+// request. It rewrites the URL onto the target node and strips any
+// CORS-related request headers — those are the responsibility of the
+// outermost CORS middleware on the receiving node, not the destination
+// peer. See spec §"Cluster proxy interaction".
+func makeProxyDirector(target *url.URL) func(*http.Request) {
+	return func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.Host = target.Host
+		// Strip CORS request headers — see spec §"Cluster proxy
+		// interaction". Owned by the outermost CORS middleware.
+		req.Header.Del("Origin")
+		req.Header.Del("Access-Control-Request-Method")
+		req.Header.Del("Access-Control-Request-Headers")
+	}
 }
