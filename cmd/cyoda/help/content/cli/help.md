@@ -44,14 +44,12 @@ The same topic tree is served over HTTP on the running server. No authentication
 
 - `GET {CYODA_CONTEXT_PATH}/help` — returns the full topic tree as a `HelpPayload` JSON document.
 - `GET {CYODA_CONTEXT_PATH}/help/{topic}` — returns a single `TopicDescriptor` JSON document for the addressed topic.
-- `OPTIONS {CYODA_CONTEXT_PATH}/help` — CORS preflight; returns `204 No Content`.
-- `OPTIONS {CYODA_CONTEXT_PATH}/help/{topic}` — CORS preflight; returns `204 No Content`.
 
 `CYODA_CONTEXT_PATH` defaults to `/api`. Both mount points are relative to the configured context path.
 
 ### Methods
 
-Only `GET` and `OPTIONS` are accepted. Any other method (`POST`, `PUT`, `DELETE`, `PATCH`) returns `405 Method Not Allowed` with header `Allow: GET, OPTIONS` and a `BAD_REQUEST` error body (`application/problem+json`).
+Only `GET` is accepted by the help handler. CORS preflights (`OPTIONS`) are handled by the unified middleware before reaching this handler. Any other method (`POST`, `PUT`, `DELETE`, `PATCH`) returns `405 Method Not Allowed` with header `Allow: GET` and a `BAD_REQUEST` error body (`application/problem+json`).
 
 ### Topic path syntax
 
@@ -137,22 +135,11 @@ Note: consecutive slashes (e.g. `cli//help`) are cleaned to a single slash by Go
 - `actions` (array of strings) — names of machine-readable actions the topic supports; empty array when none.
 - `children` (array of strings, omitted when empty) — dotted paths of direct child topics.
 
-### CORS
-
-All `GET` responses carry `Access-Control-Allow-Origin: *`.
-
-`OPTIONS` preflight responses carry:
-
-- `Access-Control-Allow-Origin: *`
-- `Access-Control-Allow-Methods: GET, OPTIONS`
-- `Access-Control-Allow-Headers: Content-Type, Authorization`
-- `Access-Control-Max-Age: 86400`
-
 ### Errors
 
 Errors use RFC 9457 Problem Details (`application/problem+json`). See `errors` topic for the full envelope shape.
 
-- `400 BAD_REQUEST` — the `{topic}` path segment contains disallowed characters (fails `^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$`), or contains an empty segment (leading/trailing separator, double separator). Also returned for any method other than `GET` or `OPTIONS` (with `Allow: GET, OPTIONS` response header).
+- `400 BAD_REQUEST` — the `{topic}` path segment contains disallowed characters (fails `^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$`), or contains an empty segment (leading/trailing separator, double separator). Also returned for any method other than `GET` (with `Allow: GET` response header).
 - `404 HELP_TOPIC_NOT_FOUND` — the `{topic}` is well-formed but does not resolve to any topic in the tree.
 
 ### Examples
@@ -178,10 +165,11 @@ curl -s -w "\nHTTP %{http_code}\n" http://localhost:8080/api/help/no.such.topic
 
 # Send a disallowed method and confirm 405 with Allow header
 curl -si -X POST http://localhost:8080/api/help | grep -E "^HTTP|^Allow:"
-
-# CORS preflight — confirm 204 and preflight headers
-curl -si -X OPTIONS http://localhost:8080/api/help | grep -E "^HTTP|^Access-Control"
 ```
+
+### CORS
+
+CORS is configured globally — see `config.cors` for the full env-var reference and deployment guidance.
 
 ## STABILITY
 
