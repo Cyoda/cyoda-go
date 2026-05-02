@@ -3,6 +3,7 @@ package app_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -22,7 +23,10 @@ func TestApp_CORSWiredUp_Preflight(t *testing.T) {
 	cfg.Cluster.Enabled = false
 
 	a := app.New(cfg)
-	defer a.Close()
+	t.Cleanup(func() {
+		a.Shutdown()
+		_ = a.Close()
+	})
 
 	// Synthetic preflight against an arbitrary path. CORS middleware
 	// short-circuits before any router can 404/405 — so we should see
@@ -40,6 +44,9 @@ func TestApp_CORSWiredUp_Preflight(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Methods"); got == "" {
 		t.Error("Access-Control-Allow-Methods missing — CORS middleware not installed?")
 	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got == "" {
+		t.Error("Access-Control-Allow-Origin missing on preflight (CORS middleware not installed?)")
+	}
 }
 
 // TestApp_CORSWiredUp_DisabledNoHeaders verifies that with
@@ -53,7 +60,10 @@ func TestApp_CORSWiredUp_DisabledNoHeaders(t *testing.T) {
 	cfg.Cluster.Enabled = false
 
 	a := app.New(cfg)
-	defer a.Close()
+	t.Cleanup(func() {
+		a.Shutdown()
+		_ = a.Close()
+	})
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/entity/00000000-0000-0000-0000-000000000000", nil)
 	req.Header.Set("Origin", "https://x.example")
@@ -69,7 +79,7 @@ func TestApp_CORSWiredUp_DisabledNoHeaders(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want empty when disabled", got)
 	}
-	if got := rec.Header().Get("Vary"); got == "Origin" {
-		t.Errorf("Vary: Origin emitted while CORS is disabled")
+	if got := rec.Header().Get("Vary"); strings.Contains(got, "Origin") {
+		t.Errorf("Vary: Origin appears in disabled mode (Vary=%q)", got)
 	}
 }
