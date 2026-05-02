@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ type Config struct {
 	GRPC               GRPCConfig
 	Admin              AdminConfig
 	Bootstrap          BootstrapConfig
+	CORS               CORSConfig
 	StorageBackend     string
 	StartupTimeout     time.Duration
 	Cluster            cluster.Config
@@ -76,6 +78,25 @@ type IAMConfig struct {
 	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 }
 
+// CORSConfig controls cross-origin resource sharing for the public HTTP
+// surface. See cmd/cyoda/help/content/config/cors.md for full operator-facing
+// documentation.
+//
+// Modes (mutually exclusive):
+//   - Disabled: Enabled=false. Middleware is not installed; deployers
+//     handle CORS at an upstream ingress. OPTIONS returns chi default 405.
+//   - Wildcard: Wildcard=true (CYODA_CORS_ALLOWED_ORIGINS=*). The literal
+//     "*" is emitted in Access-Control-Allow-Origin.
+//   - Allowlist: AllowedOrigins is non-empty. Exact-match only.
+//   - Loopback: Enabled=true and AllowedOrigins is empty and Wildcard is
+//     false. Default mode. Allows http(s)://localhost, 127.0.0.1, [::1] on
+//     any port.
+type CORSConfig struct {
+	Enabled        bool     // CYODA_CORS_ENABLED, default true
+	Wildcard       bool     // derived: true iff CYODA_CORS_ALLOWED_ORIGINS=="*"
+	AllowedOrigins []string // populated only in allowlist mode (Wildcard==false, len > 0)
+}
+
 type BootstrapConfig struct {
 	ClientID     string // CYODA_BOOTSTRAP_CLIENT_ID
 	ClientSecret string // CYODA_BOOTSTRAP_CLIENT_SECRET (optional, generated if empty)
@@ -112,6 +133,14 @@ func DefaultConfig() Config {
 			UserID:       envString("CYODA_BOOTSTRAP_USER_ID", "admin"),
 			Roles:        envString("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M"),
 		},
+		CORS: func() CORSConfig {
+			wildcard, origins := parseCORSAllowedOrigins(envString("CYODA_CORS_ALLOWED_ORIGINS", ""))
+			return CORSConfig{
+				Enabled:        envBool("CYODA_CORS_ENABLED", true),
+				Wildcard:       wildcard,
+				AllowedOrigins: origins,
+			}
+		}(),
 		SearchSnapshotTTL:  envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
 		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
 		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
@@ -258,6 +287,150 @@ func splitCSV(s string) []string {
 		}
 	}
 	return result
+}
+
+// parseCORSAllowedOrigins parses the CYODA_CORS_ALLOWED_ORIGINS env var.
+// Returns wildcard=true iff the value is exactly "*". Otherwise returns the
+// comma-separated list with whitespace trimmed; semantic validation is in
+// ValidateCORS — empty-after-trim entries are deliberately preserved so
+// that ValidateCORS can reject them with a clear error per the spec
+// ("Reject empty entries — leading/trailing commas, double commas,
+// whitespace-only entries error out").
+// An empty raw value yields wildcard=false, origins=nil (loopback mode).
+func parseCORSAllowedOrigins(raw string) (wildcard bool, origins []string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false, nil
+	}
+	if raw == "*" {
+		return true, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return false, out
+}
+
+// Mode returns a human-readable label describing the CORS mode this config
+// resolves to. Values: "disabled", "loopback", "wildcard", "allowlist".
+func (c CORSConfig) Mode() string {
+	switch {
+	case !c.Enabled:
+		return "disabled"
+	case c.Wildcard:
+		return "wildcard"
+	case len(c.AllowedOrigins) == 0:
+		return "loopback"
+	default:
+		return "allowlist"
+	}
+}
+
+// ValidateCORS verifies the CORS configuration. It is called once at startup
+// (from cmd/cyoda/main.go after slog initialisation) and returns an error
+// for any invalid origin or mode combination. A non-nil return causes the
+// binary to slog the error and os.Exit(1).
+//
+// Validation rules (full set):
+//   - Wildcard==true and AllowedOrigins non-empty is a programming error
+//     (parser rejects this earlier; defensive check here).
+//   - Each origin in AllowedOrigins must be a valid RFC 6454 origin:
+//     scheme + host + optional non-default port; no userinfo, path,
+//     query, fragment, or trailing slash; lowercase scheme and host;
+//     no non-ASCII characters in host (use punycode); not the literal
+//     string "null"; not the literal "*" (use Wildcard mode).
+func ValidateCORS(c CORSConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Wildcard && len(c.AllowedOrigins) > 0 {
+		return fmt.Errorf("CYODA_CORS_ALLOWED_ORIGINS: wildcard \"*\" cannot be combined with explicit origins")
+	}
+	for _, o := range c.AllowedOrigins {
+		if err := validateCORSOrigin(o); err != nil {
+			return fmt.Errorf("CYODA_CORS_ALLOWED_ORIGINS: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateCORSOrigin returns nil iff o is a well-formed origin acceptable
+// in the allowlist. Rejection rules per spec §"Allowlist normalization
+// and validation". Run once at startup, never on the hot path.
+func validateCORSOrigin(o string) error {
+	if strings.TrimSpace(o) == "" {
+		return fmt.Errorf("origin %q: empty entry not allowed", o)
+	}
+	if o == "null" {
+		return fmt.Errorf("origin %q: literal \"null\" is not a valid allowlist entry", o)
+	}
+	if o == "*" || strings.Contains(o, "*") {
+		return fmt.Errorf("origin %q: wildcard/glob is not supported; use CYODA_CORS_ALLOWED_ORIGINS=* for unrestricted mode", o)
+	}
+	// url.Parse normalises the scheme to lowercase, so we must check the
+	// raw string before parsing to catch uppercase schemes.
+	if idx := strings.Index(o, "://"); idx > 0 {
+		rawScheme := o[:idx]
+		if rawScheme != strings.ToLower(rawScheme) {
+			return fmt.Errorf("origin %q: scheme must be lowercase", o)
+		}
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return fmt.Errorf("origin %q: failed to parse: %w", o, err)
+	}
+	if u.Scheme == "" {
+		return fmt.Errorf("origin %q: missing scheme (must be http or https)", o)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("origin %q: invalid scheme %q (must be http or https)", o, u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("origin %q: missing host", o)
+	}
+	if host != strings.ToLower(host) {
+		return fmt.Errorf("origin %q: host must be lowercase", o)
+	}
+	if strings.HasPrefix(host, "0x") || strings.HasPrefix(host, "0X") {
+		return fmt.Errorf("origin %q: hex-encoded IPv4 host (%q) is not a canonical origin form", o, host)
+	}
+	if !isASCII(host) {
+		return fmt.Errorf("origin %q: has non-ASCII host; convert to punycode (e.g. xn--…) before configuring", o)
+	}
+	if u.User != nil {
+		return fmt.Errorf("origin %q: userinfo is not allowed", o)
+	}
+	if u.Path != "" {
+		return fmt.Errorf("origin %q: path component (including trailing slash) is not allowed", o)
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("origin %q: query component is not allowed", o)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("origin %q: fragment is not allowed", o)
+	}
+	if port := u.Port(); port != "" {
+		if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+			return fmt.Errorf("origin %q: default port (:%s) must be omitted", o, port)
+		}
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("origin %q: port %q is not a valid TCP port (1-65535)", o, port)
+		}
+	}
+	return nil
+}
+
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 0x7F {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary

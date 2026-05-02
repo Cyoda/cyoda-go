@@ -101,18 +101,6 @@ func TestMalformedTopicPath_400(t *testing.T) {
 	}
 }
 
-func TestCORSHeadersPresent(t *testing.T) {
-	srv := helpTestServer(t, "/api")
-	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/api/help")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.Header.Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("CORS header missing: %q", resp.Header.Get("Access-Control-Allow-Origin"))
-	}
-}
 
 func TestMalformedTopicPath_400_LeadingDot(t *testing.T) {
 	srv := helpTestServer(t, "/api")
@@ -158,24 +146,6 @@ func TestMalformedTopicPath_BareDot_RedirectsToCanonical(t *testing.T) {
 	}
 }
 
-func TestCORSPreflight_204(t *testing.T) {
-	srv := helpTestServer(t, "/api")
-	defer srv.Close()
-	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/api/help", nil)
-	req.Header.Set("Origin", "https://example.com")
-	req.Header.Set("Access-Control-Request-Method", "GET")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Errorf("status = %d, want 204", resp.StatusCode)
-	}
-	if resp.Header.Get("Access-Control-Allow-Methods") == "" {
-		t.Error("missing Access-Control-Allow-Methods")
-	}
-}
 
 func TestNonGET_Returns405(t *testing.T) {
 	srv := helpTestServer(t, "/api")
@@ -191,8 +161,8 @@ func TestNonGET_Returns405(t *testing.T) {
 			if resp.StatusCode != http.StatusMethodNotAllowed {
 				t.Errorf("%s / : status = %d, want 405", method, resp.StatusCode)
 			}
-			if got := resp.Header.Get("Allow"); got != "GET, OPTIONS" {
-				t.Errorf("%s / : Allow = %q, want \"GET, OPTIONS\"", method, got)
+			if got := resp.Header.Get("Allow"); got != "GET" {
+				t.Errorf("%s / : Allow = %q, want \"GET\"", method, got)
 			}
 		})
 	}

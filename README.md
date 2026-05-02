@@ -333,6 +333,8 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `CYODA_SUPPRESS_BANNER` | `false` | Set to `true` to silence the startup banner and any mock-auth warnings. Intended for CI/test harnesses; never set in production so operators see security-relevant warnings. |
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | Error detail: `sanitized` (production) or `verbose` (development) |
+| `CYODA_CORS_ENABLED` | `true` | Master switch for CORS. Set to `false` to disable and handle CORS at an ingress/proxy. |
+| `CYODA_CORS_ALLOWED_ORIGINS` | *(unset)* | Comma-separated allowlist or `*` for wildcard. Unset = loopback mode (only `localhost`/`127.0.0.1`/`[::1]` permitted). See `cyoda help config cors`. |
 
 ### Authentication
 

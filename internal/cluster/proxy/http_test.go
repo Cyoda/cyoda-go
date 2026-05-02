@@ -196,3 +196,60 @@ func TestHTTPProxy_ExpiredToken_Returns400(t *testing.T) {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
+
+// TestHTTPProxy_RoundTrip_SingleACAO verifies that when a request with an
+// Origin header is proxied from node A to a peer (node B) that itself emits
+// Access-Control-Allow-Origin, the final response contains exactly one
+// Access-Control-Allow-Origin value. The proxy's director strips Origin from
+// the outbound request so the peer never fires its own CORS logic, meaning
+// the ACAO seen by the browser is exactly the one set by node A's outermost
+// CORS middleware — not a double-valued header that browsers reject.
+//
+// Placed in http_test.go (black-box package proxy_test) rather than
+// director_test.go because it exercises the full HTTPRouting middleware
+// surface including the httputil.ReverseProxy round-trip, not just the
+// director helper in isolation. The scaffolding (fakeRegistry, mustNewSigner,
+// httptest.NewServer) already exists here and maps cleanly onto the scenario.
+func TestHTTPProxy_RoundTrip_SingleACAO(t *testing.T) {
+	// Fake peer (node B) that emits ACAO as if it ran its own CORS middleware.
+	// In production this would never fire because the director strips Origin,
+	// but a misbehaving or misconfigured peer might still emit this header.
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://emitted-by-peer.example")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "peer-body")
+	}))
+	defer peer.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: peer.URL, Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-acao-roundtrip", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	handler := mw(localHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	req.Header.Set("Origin", "https://browser.example")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Browsers reject responses with more than one Access-Control-Allow-Origin
+	// value. The proxy must not create a double-header by letting node B's ACAO
+	// pass through alongside any ACAO set by node A's middleware.
+	vals := rec.Header().Values("Access-Control-Allow-Origin")
+	if len(vals) > 1 {
+		t.Errorf("got %d Access-Control-Allow-Origin values %v, want at most 1 (browsers reject multi-valued ACAO)", len(vals), vals)
+	}
+}

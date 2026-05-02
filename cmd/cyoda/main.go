@@ -87,6 +87,11 @@ func main() {
 		slog.Error("IAM validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateCORS(cfg.CORS); err != nil {
+		slog.Error("CORS validation failed", "error", err)
+		os.Exit(1)
+	}
+	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)
 	printMockAuthWarningTo(os.Stdout, cfg)
@@ -162,6 +167,29 @@ func main() {
 		// runServers has already triggered a.Shutdown / a.Close before
 		// returning; surface the failure as a non-zero exit code.
 		os.Exit(1)
+	}
+}
+
+// logCORSMode emits a single startup line describing the resolved CORS
+// mode. The allowlist values themselves are logged only at DEBUG —
+// origins are operationally sensitive (internal hostnames, customer
+// subdomains in multi-tenant SaaS).
+func logCORSMode(c app.CORSConfig) {
+	switch c.Mode() {
+	case "disabled":
+		slog.Info("cors: disabled — no Access-Control-* headers will be emitted; configure CORS at your ingress/proxy layer", "pkg", "cors")
+	case "wildcard":
+		slog.Warn("cors: wildcard mode active (Access-Control-Allow-Origin: *)", "pkg", "cors")
+	case "loopback":
+		slog.Info("cors: loopback mode active — only http(s)://localhost, 127.0.0.1, [::1] are allowed; set CYODA_CORS_ALLOWED_ORIGINS to permit additional origins", "pkg", "cors")
+	case "allowlist":
+		// Two calls: count at INFO (always visible), contents at DEBUG (opt-in).
+		// Origins are operationally sensitive (internal hostnames, customer
+		// subdomains in multi-tenant SaaS) — never log them at INFO.
+		slog.Info("cors: allowlist mode active", "pkg", "cors", "origin_count", len(c.AllowedOrigins))
+		slog.Debug("cors: allowlist contents", "pkg", "cors", "origins", c.AllowedOrigins)
+	default:
+		slog.Warn("cors: unknown mode — this is a bug; please report", "pkg", "cors", "mode", c.Mode())
 	}
 }
 

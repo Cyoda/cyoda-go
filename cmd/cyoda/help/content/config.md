@@ -6,6 +6,7 @@ see_also:
   - cli
   - run
   - config.auth
+  - config.cors
   - config.database
   - config.grpc
   - config.schema
@@ -21,8 +22,9 @@ config — environment-driven configuration for cyoda.
 
 All configuration is environment variables prefixed with `CYODA_`. Topics group related variables:
 
-- `config.database` — storage backend selection, per-backend connection settings
 - `config.auth` — IAM mode, JWT issuer, admin controls
+- `config.cors` — CORS middleware mode and allowed origins
+- `config.database` — storage backend selection, per-backend connection settings
 - `config.grpc` — gRPC listener and compute-node credentials
 - `config.schema` — schema-extension log tuning
 
