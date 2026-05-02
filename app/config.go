@@ -311,6 +311,61 @@ func parseCORSAllowedOrigins(raw string) (wildcard bool, origins []string) {
 	return false, out
 }
 
+// Mode returns a human-readable label describing the CORS mode this config
+// resolves to. Values: "disabled", "loopback", "wildcard", "allowlist".
+func (c CORSConfig) Mode() string {
+	switch {
+	case !c.Enabled:
+		return "disabled"
+	case c.Wildcard:
+		return "wildcard"
+	case len(c.AllowedOrigins) == 0:
+		return "loopback"
+	default:
+		return "allowlist"
+	}
+}
+
+// ValidateCORS verifies the CORS configuration. It is called once at startup
+// (from cmd/cyoda/main.go after slog initialisation) and returns an error
+// for any invalid origin or mode combination. A non-nil return causes the
+// binary to slog the error and os.Exit(1).
+//
+// Validation rules (full set):
+//   - Wildcard==true and AllowedOrigins non-empty is a programming error
+//     (parser rejects this earlier; defensive check here).
+//   - Each origin in AllowedOrigins must be a valid RFC 6454 origin:
+//     scheme + host + optional non-default port; no userinfo, path,
+//     query, fragment, or trailing slash; lowercase scheme and host;
+//     no non-ASCII characters in host (use punycode); not the literal
+//     string "null"; not the literal "*" (use Wildcard mode).
+//
+// Task 3 covers the rejection rules; Task 2 only the happy paths.
+func ValidateCORS(c CORSConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Wildcard && len(c.AllowedOrigins) > 0 {
+		return fmt.Errorf("CYODA_CORS_ALLOWED_ORIGINS: wildcard \"*\" cannot be combined with explicit origins")
+	}
+	for _, o := range c.AllowedOrigins {
+		if err := validateCORSOrigin(o); err != nil {
+			return fmt.Errorf("CYODA_CORS_ALLOWED_ORIGINS: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateCORSOrigin returns nil iff o is a well-formed origin acceptable
+// in the allowlist. See ValidateCORS godoc for the rule set. Stub for
+// now — Task 3 fills in the real rules.
+func validateCORSOrigin(o string) error {
+	if o == "" {
+		return fmt.Errorf("origin %q: empty entry not allowed", o)
+	}
+	return nil
+}
+
 // ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary
 // refuses to run with mock auth or a missing signing key. Intended for
 // production provisioning (Helm) where silent mock-auth fallback would be
