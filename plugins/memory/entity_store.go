@@ -243,6 +243,12 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the tx-state reads and
+		// the ReadSet write so Commit/Rollback (which take tx.OpMu.Lock)
+		// cannot race with us. Lock order matches txmanager.Commit:
+		// tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
@@ -278,16 +284,22 @@ func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 }
 
 func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
-	s.factory.entityMu.RLock()
-	defer s.factory.entityMu.RUnlock()
-
-	// Historical query: always reads committed data. Track in read set if in tx.
+	// Take tx.OpMu BEFORE factory.entityMu to preserve the lock order
+	// established by Save/CompareAndSave and txmanager.Commit. Historical
+	// queries always read committed data, but the in-tx tx.RolledBack
+	// read and tx.ReadSet write must be serialised against Commit/Rollback
+	// (which take tx.OpMu.Lock).
 	if tx := spi.GetTransaction(ctx); tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
 		tx.ReadSet[entityID] = true
 	}
+
+	s.factory.entityMu.RLock()
+	defer s.factory.entityMu.RUnlock()
 
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
@@ -326,13 +338,25 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the tx-state reads and
+		// the ReadSet writes so Commit/Rollback (which take tx.OpMu.Lock)
+		// cannot race with our iteration of tx.Buffer / tx.Deletes.
+		// Lock order: tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
-		// Combine: snapshot of main store + buffer - deletes.
-		s.factory.entityMu.RLock()
-		mainEntities := s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
-		s.factory.entityMu.RUnlock()
+		// Combine: snapshot of main store + buffer - deletes. Wrap the
+		// entityMu hold in an IIFE so the unlock runs via defer (per
+		// .claude/rules/go-mutex-discipline.md — bare Unlock is not the
+		// right answer).
+		var mainEntities []*spi.Entity
+		func() {
+			s.factory.entityMu.RLock()
+			defer s.factory.entityMu.RUnlock()
+			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+		}()
 
 		result := make(map[string]*spi.Entity)
 		for _, e := range mainEntities {
@@ -416,14 +440,24 @@ func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asA
 func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the existence check and
+		// the tx.Deletes / tx.Buffer / tx.WriteSet mutations so Commit/
+		// Rollback (which take tx.OpMu.Lock) cannot race with us. Lock
+		// order: tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
 		}
-		// Check existence: buffer first, then committed store.
+		// Check existence: buffer first, then committed store. Wrap the
+		// entityMu hold in an IIFE so the unlock runs via defer.
 		if _, inBuffer := tx.Buffer[entityID]; !inBuffer {
-			s.factory.entityMu.RLock()
-			versions := s.factory.entityData[s.tenant][entityID]
-			s.factory.entityMu.RUnlock()
+			var versions []entityVersion
+			func() {
+				s.factory.entityMu.RLock()
+				defer s.factory.entityMu.RUnlock()
+				versions = s.factory.entityData[s.tenant][entityID]
+			}()
 			if len(versions) == 0 {
 				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 			}
@@ -469,13 +503,24 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) error {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the snapshot read and
+		// the iteration/mutation of tx.Buffer / tx.Deletes / tx.WriteSet
+		// so Commit/Rollback (which take tx.OpMu.Lock) cannot race with
+		// us. Lock order: tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
 		}
-		// Get all entities for the model (snapshot), mark each as deleted in tx.
-		s.factory.entityMu.RLock()
-		mainEntities := s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
-		s.factory.entityMu.RUnlock()
+		// Get all entities for the model (snapshot), mark each as deleted
+		// in tx. Wrap the entityMu hold in an IIFE so the unlock runs via
+		// defer.
+		var mainEntities []*spi.Entity
+		func() {
+			s.factory.entityMu.RLock()
+			defer s.factory.entityMu.RUnlock()
+			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+		}()
 
 		for _, e := range mainEntities {
 			tx.Deletes[e.Meta.ID] = true
@@ -534,6 +579,11 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the tx-state reads so
+		// Commit/Rollback (which take tx.OpMu.Lock) cannot race with us.
+		// Lock order: tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return false, fmt.Errorf("transaction has been rolled back")
 		}
