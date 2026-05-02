@@ -347,10 +347,16 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
-		// Combine: snapshot of main store + buffer - deletes.
-		s.factory.entityMu.RLock()
-		mainEntities := s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
-		s.factory.entityMu.RUnlock()
+		// Combine: snapshot of main store + buffer - deletes. Wrap the
+		// entityMu hold in an IIFE so the unlock runs via defer (per
+		// .claude/rules/go-mutex-discipline.md — bare Unlock is not the
+		// right answer).
+		var mainEntities []*spi.Entity
+		func() {
+			s.factory.entityMu.RLock()
+			defer s.factory.entityMu.RUnlock()
+			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+		}()
 
 		result := make(map[string]*spi.Entity)
 		for _, e := range mainEntities {
@@ -443,11 +449,15 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
 		}
-		// Check existence: buffer first, then committed store.
+		// Check existence: buffer first, then committed store. Wrap the
+		// entityMu hold in an IIFE so the unlock runs via defer.
 		if _, inBuffer := tx.Buffer[entityID]; !inBuffer {
-			s.factory.entityMu.RLock()
-			versions := s.factory.entityData[s.tenant][entityID]
-			s.factory.entityMu.RUnlock()
+			var versions []entityVersion
+			func() {
+				s.factory.entityMu.RLock()
+				defer s.factory.entityMu.RUnlock()
+				versions = s.factory.entityData[s.tenant][entityID]
+			}()
 			if len(versions) == 0 {
 				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 			}
@@ -502,10 +512,15 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
 		}
-		// Get all entities for the model (snapshot), mark each as deleted in tx.
-		s.factory.entityMu.RLock()
-		mainEntities := s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
-		s.factory.entityMu.RUnlock()
+		// Get all entities for the model (snapshot), mark each as deleted
+		// in tx. Wrap the entityMu hold in an IIFE so the unlock runs via
+		// defer.
+		var mainEntities []*spi.Entity
+		func() {
+			s.factory.entityMu.RLock()
+			defer s.factory.entityMu.RUnlock()
+			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+		}()
 
 		for _, e := range mainEntities {
 			tx.Deletes[e.Meta.ID] = true
