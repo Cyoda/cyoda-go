@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -85,8 +86,9 @@ func TestCORS_E2E_PreflightAcrossGroups_LoopbackMode(t *testing.T) {
 			if got := resp.Header.Get("Access-Control-Max-Age"); got == "" {
 				t.Error("missing Access-Control-Max-Age")
 			}
-			if got := resp.Header.Get("Vary"); got != "Origin" {
-				t.Errorf("Vary = %q, want \"Origin\"", got)
+			vary := resp.Header.Values("Vary")
+			if !slices.Contains(vary, "Origin") {
+				t.Errorf("Vary missing Origin: %v", vary)
 			}
 		})
 	}
@@ -109,8 +111,9 @@ func TestCORS_E2E_LoopbackRejectsRemoteOrigin(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("ACAO = %q, want empty (remote origin rejected in loopback mode)", got)
 	}
-	if got := resp.Header.Get("Vary"); got != "Origin" {
-		t.Errorf("Vary = %q, want \"Origin\"", got)
+	vary := resp.Header.Values("Vary")
+	if !slices.Contains(vary, "Origin") {
+		t.Errorf("Vary missing Origin: %v", vary)
 	}
 }
 

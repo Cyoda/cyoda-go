@@ -394,6 +394,9 @@ func validateCORSOrigin(o string) error {
 	if host != strings.ToLower(host) {
 		return fmt.Errorf("origin %q: host must be lowercase", o)
 	}
+	if strings.HasPrefix(host, "0x") || strings.HasPrefix(host, "0X") {
+		return fmt.Errorf("origin %q: hex-encoded IPv4 host (%q) is not a canonical origin form", o, host)
+	}
 	if !isASCII(host) {
 		return fmt.Errorf("origin %q: has non-ASCII host; convert to punycode (e.g. xn--…) before configuring", o)
 	}

@@ -105,6 +105,7 @@ func TestCORS_LoopbackRejects(t *testing.T) {
 		"ftp://localhost",                     // wrong scheme
 		"http://localhost/admin",              // path component
 		"http://Localhost:3000",               // case (must be lowercase)
+		"HTTP://localhost:3000",               // uppercase scheme
 	}
 	p := newCORSPolicy(t, true, false)
 	h := CORS(p)(dummyHandler)
@@ -261,6 +262,9 @@ func TestCORS_PreflightUnmatchedOriginInAllowlist(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Max-Age"); got == "" {
 		t.Error("Access-Control-Max-Age missing on rejected-origin preflight")
 	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want \"Origin\" (must be present even for rejected origins)", got)
+	}
 }
 
 func TestCORS_VaryOriginAlwaysWhenEnabled(t *testing.T) {
@@ -351,28 +355,28 @@ func TestCORS_VaryAppendedNotOverwritten(t *testing.T) {
 func TestCORS_InternalPrefixSkipped(t *testing.T) {
 	p := NewCORSPolicy(true, true, nil) // wildcard — would otherwise emit *
 	h := CORS(p)(dummyHandler)
-	req := httptest.NewRequest(http.MethodGet, "/_internal/dispatch", nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/dispatch/processor", nil)
 	req.Header.Set("Origin", "https://anything.example")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("ACAO = %q, want empty on /_internal/", got)
+		t.Errorf("ACAO = %q, want empty on /internal/dispatch/", got)
 	}
 	if got := rec.Header().Get("Vary"); got != "" {
-		t.Errorf("Vary = %q, want empty on /_internal/", got)
+		t.Errorf("Vary = %q, want empty on /internal/dispatch/", got)
 	}
 	if rec.Code != http.StatusOK {
-		t.Errorf("downstream not reached on /_internal/")
+		t.Errorf("downstream not reached on /internal/dispatch/")
 	}
 }
 
 func TestCORS_InternalPrefixBoundaries(t *testing.T) {
-	// Pin the design decision that /_internal/ (with trailing slash) is the
-	// excluded prefix. Paths /_internal (no slash) and /_internalfoo are
-	// regular paths that get full CORS treatment. A future "cleanup" that
-	// drops the trailing slash from internalPrefix would silently change
-	// this behaviour.
+	// Pin the design decision that /internal/dispatch/ (with trailing slash)
+	// is the excluded prefix. Paths /internal/dispatch (no slash) and
+	// /internal/dispatchfoo are regular paths that get full CORS treatment.
+	// A future "cleanup" that drops the trailing slash from internalPrefix
+	// would silently change this behaviour.
 	p := NewCORSPolicy(true, true, nil)
 	h := CORS(p)(dummyHandler)
 
@@ -381,11 +385,11 @@ func TestCORS_InternalPrefixBoundaries(t *testing.T) {
 		path       string
 		varyOrigin bool // true: Vary: Origin should be present
 	}{
-		{"with trailing slash (excluded)", "/_internal/", false},
-		{"under prefix (excluded)", "/_internal/dispatch", false},
-		{"no trailing slash (NOT excluded)", "/_internal", true},
-		{"prefix-like but distinct (NOT excluded)", "/_internalfoo", true},
-		{"middle of path (NOT excluded)", "/foo/_internal/bar", true},
+		{"with trailing slash (excluded)", "/internal/dispatch/", false},
+		{"under prefix (excluded)", "/internal/dispatch/processor", false},
+		{"no trailing slash (NOT excluded)", "/internal/dispatch", true},
+		{"prefix-like but distinct (NOT excluded)", "/internal/dispatchfoo", true},
+		{"middle of path (NOT excluded)", "/foo/internal/dispatch/bar", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -410,9 +414,9 @@ func TestCORS_InternalPrefixSkippedOnPreflight(t *testing.T) {
 	})
 	h := CORS(p)(downstream)
 
-	// A preflight-shaped request to /_internal/ must NOT short-circuit;
+	// A preflight-shaped request to /internal/dispatch/ must NOT short-circuit;
 	// it must reach downstream so peer-side AEAD-auth can reject it.
-	req := httptest.NewRequest(http.MethodOptions, "/_internal/dispatch", nil)
+	req := httptest.NewRequest(http.MethodOptions, "/internal/dispatch/processor", nil)
 	req.Header.Set("Origin", "https://anything.example")
 	req.Header.Set("Access-Control-Request-Method", "POST")
 	rec := httptest.NewRecorder()

@@ -43,7 +43,7 @@ The middleware covers:
 - Health routes (`RegisterHealthRoutes`)
 - Help routes (`/help`, `/help/{topic}`)
 
-The internal `/_internal/*` cluster-dispatch surface is **explicitly excluded** from CORS by a path-prefix check at the top of the middleware: regardless of `Origin` presence, no `Access-Control-*` headers are emitted on requests whose path begins with `/_internal/`. This is defence-in-depth alongside the cluster proxy stripping `Origin` on outbound peer hops; either control alone would suffice, but together they prevent a forged peer-side request from eliciting a CORS response.
+The internal `/internal/dispatch/*` cluster-dispatch surface is **explicitly excluded** from CORS by a path-prefix check at the top of the middleware: regardless of `Origin` presence, no `Access-Control-*` headers are emitted on requests whose path begins with `/internal/dispatch/`. This is defence-in-depth alongside the cluster proxy stripping `Origin` on outbound peer hops; either control alone would suffice, but together they prevent a forged peer-side request from eliciting a CORS response.
 
 ### Tenant isolation
 
@@ -56,7 +56,7 @@ CORS → cluster-routing → outerMux
                          ├── /<contextPath>/* → mux → otelhttp → Recovery → Auth → genapi
                          ├── /help, /help/{topic}        (no Recovery/Auth/otelhttp today)
                          ├── /<discovery routes>          (no Recovery/Auth/otelhttp today)
-                         └── /_internal/*                (AEAD-auth, peer-only; CORS no-op)
+                         └── /internal/dispatch/*        (AEAD-auth, peer-only; CORS no-op)
 ```
 
 The middleware writes CORS headers to `w.Header()` **before** calling `next.ServeHTTP`. It does not wrap the `ResponseWriter`, does not observe the downstream status code, and does not buffer the response — preserving `Flush`/`Hijack`/`CloseNotify` interfaces and avoiding any hidden interaction with `otelhttp` or chi.
@@ -183,7 +183,7 @@ In loopback or allowlist mode, when the request `Origin` does not match: the mid
 
 The middleware adds `Vary: Origin` to the response (for the cache-poisoning reason given above) but emits no `Access-Control-*` headers. The request continues unmodified through the rest of the chain. This is what makes server-to-server `curl` and the cluster proxy's outbound calls invisible to CORS in terms of policy, while still leaving the cache-key signalling intact for any intermediary that might later receive an `Origin`-bearing request for the same URL.
 
-`/_internal/*` is the sole exception: no headers at all (not even `Vary: Origin`) are emitted on requests whose path begins with `/_internal/`, regardless of `Origin` presence. This is consistent with the path-prefix exclusion rule in §"Architecture" — the internal dispatch surface is peer-only, never browser-visible, and the spec deliberately keeps it free of any CORS-related response state.
+`/internal/dispatch/*` is the sole exception: no headers at all (not even `Vary: Origin`) are emitted on requests whose path begins with `/internal/dispatch/`, regardless of `Origin` presence. This is consistent with the path-prefix exclusion rule in §"Architecture" — the internal dispatch surface is peer-only, never browser-visible, and the spec deliberately keeps it free of any CORS-related response state.
 
 ## Cluster proxy interaction
 
@@ -241,7 +241,7 @@ After unification, `/help` in wildcard mode has the same externally-observable C
   - `GET` with `Origin` → handled as actual request, not preflight.
 - No `Origin` header on any method: `Vary: Origin` is emitted; no `Access-Control-*` headers are emitted; downstream handler runs normally.
 - `Vary: Origin` is **appended** via `w.Header().Add`, not overwritten — when a downstream handler also sets `Vary: Accept`, both values are preserved.
-- `/_internal/*` path: **no** headers emitted (not even `Vary: Origin`) regardless of `Origin` presence.
+- `/internal/dispatch/*` path: **no** headers emitted (not even `Vary: Origin`) regardless of `Origin` presence.
 - `CYODA_CORS_ENABLED=false`: middleware is not installed (constructor returns identity wrapper); no `Access-Control-*` and no `Vary: Origin` are emitted.
 - **Wired-up assertion test:** with `CYODA_CORS_ENABLED=true` and the full `app.Handler()` constructed, a synthetic preflight against an arbitrary registered route returns `204` with the preflight header set. This proves the middleware is actually installed in the chain (not merely that the middleware code is reachable in isolation). A future refactor that drops the install site would fail this test loud.
 - Wildcard mode + `Origin: null`: response carries `Access-Control-Allow-Origin: *`.
@@ -299,14 +299,14 @@ Per the documentation-hygiene gate, update together:
 - [ ] Preflight is processed before auth middleware.
 - [ ] CORS applies through the cluster proxy layer with no duplicate headers.
 - [ ] Cluster proxy `Director` strips `Origin`, `Access-Control-Request-Method`, `Access-Control-Request-Headers` on outbound peer requests, with a unit test on the helper.
-- [ ] `/_internal/*` requests never carry CORS response headers regardless of `Origin`.
+- [ ] `/internal/dispatch/*` requests never carry CORS response headers regardless of `Origin`.
 - [ ] `CYODA_CORS_ENABLED=false` disables CORS everywhere, including `/help`.
 - [ ] Loopback mode is the default; wildcard mode requires explicit `=*` and emits a startup WARN.
 - [ ] Loopback mode matches `localhost`/`127.0.0.1`/`::1` exactly per the matching contract; rejects `localhost.evil.example`, non-canonical IPv4/IPv6 forms, userinfo-bearing origins, and IDN homographs.
 - [ ] Wired-up assertion: `CYODA_CORS_ENABLED=true` actually installs the middleware in `app.Handler()`, verified by a test that issues a synthetic preflight against the assembled handler.
 - [ ] Allowlist normalization rejects uppercase, default ports, path/query/fragment/trailing-slash, userinfo, non-ASCII, empty entries, literal `null`, `*` mixed with other values.
 - [ ] Wildcard mode emits literal `*`, never reflective of `Origin`.
-- [ ] `Vary: Origin` is appended (not overwritten) and present on every response that passes through the installed CORS middleware, including no-`Origin` pass-throughs. Sole exception: `/_internal/*` paths.
+- [ ] `Vary: Origin` is appended (not overwritten) and present on every response that passes through the installed CORS middleware, including no-`Origin` pass-throughs. Sole exception: `/internal/dispatch/*` paths.
 - [ ] Startup logs report mode at INFO/WARN and never log allowlist values above DEBUG.
 - [ ] Unit + E2E + cluster proxy tests cover all of the above.
 - [ ] `cmd/cyoda/help/content/config/cors.md`, `README.md`, `app/config.go` godoc, and `DefaultConfig()` updated together.

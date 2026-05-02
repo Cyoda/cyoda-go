@@ -11,7 +11,7 @@ const (
 	corsAllowMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 	corsAllowHeaders = "Authorization, Content-Type, traceparent, tracestate"
 	corsMaxAge       = "86400"
-	internalPrefix   = "/_internal/"
+	internalPrefix   = "/internal/dispatch/"
 )
 
 // loopbackHosts is the set of host strings (post-Hostname()-extraction,
@@ -58,8 +58,8 @@ func CORS(p *CORSPolicy) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// /_internal/* is excluded from CORS entirely — no headers, not
-			// even Vary: Origin. Defence-in-depth alongside the cluster
+			// /internal/dispatch/* is excluded from CORS entirely — no headers,
+			// not even Vary: Origin. Defence-in-depth alongside the cluster
 			// proxy stripping Origin on outbound peer-to-peer requests.
 			if strings.HasPrefix(r.URL.Path, internalPrefix) {
 				next.ServeHTTP(w, r)
@@ -125,15 +125,23 @@ func (p *CORSPolicy) match(origin string) string {
 // the three loopback names, scheme http or https, no userinfo/path/
 // query/fragment, any port permitted.
 func matchLoopback(origin string) bool {
+	// Pre-parse scheme-case check: url.Parse lowercases scheme before
+	// returning, so the only way to enforce raw-string lowercase is to
+	// inspect the bytes before Parse. Mirrors validateCORSOrigin's
+	// approach in app/config.go.
+	idx := strings.Index(origin, "://")
+	if idx <= 0 {
+		return false
+	}
+	rawScheme := origin[:idx]
+	if rawScheme != strings.ToLower(rawScheme) {
+		return false
+	}
 	u, err := url.Parse(origin)
 	if err != nil {
 		return false
 	}
-	scheme := u.Scheme
-	if scheme != strings.ToLower(scheme) {
-		return false
-	}
-	if scheme != "http" && scheme != "https" {
+	if u.Scheme != "http" && u.Scheme != "https" {
 		return false
 	}
 	host := u.Hostname()
