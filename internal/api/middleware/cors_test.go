@@ -98,7 +98,7 @@ func TestCORS_LoopbackRejects(t *testing.T) {
 		"https://evil.example",
 		"http://localhost.evil.example",       // suffix attack
 		"https://xn--lcalhost-ksb.example",    // IDN homograph
-		"http://localhost@evil.example",       // userinfo
+		"http://localhost@evil.example",       // hostname injection via userinfo syntax — host is evil.example, not localhost
 		"http://127.000.000.001:3000",         // non-canonical IPv4
 		"http://[0:0:0:0:0:0:0:1]",            // non-canonical IPv6
 		"null",                                // file://
@@ -246,5 +246,118 @@ func TestCORS_PreflightUnmatchedOriginInAllowlist(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("ACAO = %q, want empty (origin not allowed)", got)
+	}
+}
+
+func TestCORS_VaryOriginAlwaysWhenEnabled(t *testing.T) {
+	cases := []struct {
+		name string
+		p    *CORSPolicy
+	}{
+		{"wildcard", NewCORSPolicy(true, true, nil)},
+		{"loopback (default)", NewCORSPolicy(true, false, nil)},
+		{"allowlist", NewCORSPolicy(true, false, []string{"https://x.example"})},
+	}
+	for _, c := range cases {
+		t.Run(c.name+"/with-origin", func(t *testing.T) {
+			h := CORS(c.p)(dummyHandler)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Origin", "https://x.example")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Vary"); got != "Origin" {
+				t.Errorf("Vary = %q, want \"Origin\"", got)
+			}
+		})
+		t.Run(c.name+"/no-origin", func(t *testing.T) {
+			// Vary: Origin must be present even when Origin is absent
+			// (cache-poisoning protection on mode-flip).
+			h := CORS(c.p)(dummyHandler)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Vary"); got != "Origin" {
+				t.Errorf("Vary = %q, want \"Origin\" even on no-Origin requests", got)
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("ACAO = %q, want empty on no-Origin requests", got)
+			}
+		})
+	}
+}
+
+func TestCORS_VaryAppendedNotOverwritten(t *testing.T) {
+	// A downstream handler that also sets Vary: Accept must coexist with
+	// Vary: Origin — both values present, neither overwritten.
+	p := NewCORSPolicy(true, true, nil)
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Vary", "Accept")
+		w.WriteHeader(http.StatusOK)
+	})
+	h := CORS(p)(downstream)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://x.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	vary := rec.Header().Values("Vary")
+	hasOrigin, hasAccept := false, false
+	for _, v := range vary {
+		if v == "Origin" {
+			hasOrigin = true
+		}
+		if v == "Accept" {
+			hasAccept = true
+		}
+	}
+	if !hasOrigin {
+		t.Errorf("Vary missing Origin: %v", vary)
+	}
+	if !hasAccept {
+		t.Errorf("Vary missing Accept: %v", vary)
+	}
+}
+
+func TestCORS_InternalPrefixSkipped(t *testing.T) {
+	p := NewCORSPolicy(true, true, nil) // wildcard — would otherwise emit *
+	h := CORS(p)(dummyHandler)
+	req := httptest.NewRequest(http.MethodGet, "/_internal/dispatch", nil)
+	req.Header.Set("Origin", "https://anything.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("ACAO = %q, want empty on /_internal/", got)
+	}
+	if got := rec.Header().Get("Vary"); got != "" {
+		t.Errorf("Vary = %q, want empty on /_internal/", got)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("downstream not reached on /_internal/")
+	}
+}
+
+func TestCORS_InternalPrefixSkippedOnPreflight(t *testing.T) {
+	p := NewCORSPolicy(true, true, nil)
+	downstreamReached := false
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downstreamReached = true
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
+	h := CORS(p)(downstream)
+
+	// A preflight-shaped request to /_internal/ must NOT short-circuit;
+	// it must reach downstream so peer-side AEAD-auth can reject it.
+	req := httptest.NewRequest(http.MethodOptions, "/_internal/dispatch", nil)
+	req.Header.Set("Origin", "https://anything.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !downstreamReached {
+		t.Error("downstream should have been reached for /_internal/ preflight")
+	}
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405 (downstream)", rec.Code)
 	}
 }

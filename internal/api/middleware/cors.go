@@ -58,6 +58,20 @@ func CORS(p *CORSPolicy) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// /_internal/* is excluded from CORS entirely — no headers, not
+			// even Vary: Origin. Defence-in-depth alongside the cluster
+			// proxy stripping Origin on outbound peer-to-peer requests.
+			if strings.HasPrefix(r.URL.Path, internalPrefix) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Vary: Origin always — even on no-Origin pass-through and
+			// even in wildcard mode. Closes the cache-poisoning vector
+			// where a CDN serves a no-Origin response (without Vary) to
+			// a later Origin-bearing request whose policy has changed.
+			w.Header().Add("Vary", "Origin")
+
 			origin := r.Header.Get("Origin")
 			allowed := p.match(origin)
 
