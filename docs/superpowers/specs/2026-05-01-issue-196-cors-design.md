@@ -1,9 +1,9 @@
 # Issue #196 — API-wide CORS support
 
-**Status:** Design v2 (post-review)
+**Status:** Design v2.1 (post-second-review)
 **Issue:** [#196](https://github.com/Cyoda-platform/cyoda-go/issues/196)
 **Branch:** `issue-196-cors`
-**Date:** 2026-05-02 (v2); 2026-05-01 (v1)
+**Date:** 2026-05-02 (v2, v2.1); 2026-05-01 (v1)
 
 ## Problem
 
@@ -45,6 +45,10 @@ The middleware covers:
 
 The internal `/_internal/*` cluster-dispatch surface is **explicitly excluded** from CORS by a path-prefix check at the top of the middleware: regardless of `Origin` presence, no `Access-Control-*` headers are emitted on requests whose path begins with `/_internal/`. This is defence-in-depth alongside the cluster proxy stripping `Origin` on outbound peer hops; either control alone would suffice, but together they prevent a forged peer-side request from eliciting a CORS response.
 
+### Tenant isolation
+
+CORS is a browser-side defence against unauthorized cross-origin reads; it is **not** a tenant-isolation control. All tenant boundaries are enforced by JWT claims and per-request authorization checks in the data path. An allowlisted SPA serving multiple tenants relies entirely on the auth layer, not CORS, to prevent cross-tenant access. This is load-bearing for Gate 3 and is repeated in the help topic, but is asserted here as a design principle: no CORS rule, however restrictive, is permitted to substitute for or displace JWT-based authz.
+
 Final handler order, outermost to innermost:
 
 ```
@@ -65,7 +69,7 @@ Two env vars, both `CYODA_CORS_*`:
 
 | Var | Default | Effect |
 |---|---|---|
-| `CYODA_CORS_ENABLED` | `true` | Master switch. When `false`, middleware is not installed; service emits no `Access-Control-*` headers and `OPTIONS` returns the chi default `405`. For deployments that handle CORS at an ingress/proxy layer. **Deployers must ensure their ingress handles `OPTIONS` preflights before requests reach cyoda-go in this mode.** |
+| `CYODA_CORS_ENABLED` | `true` | Master switch. When `false`, middleware is not installed; service emits no `Access-Control-*` headers (including `Vary: Origin`) and `OPTIONS` returns the chi default `405`. For deployments that handle CORS at an ingress/proxy layer. **Deployers must ensure their ingress handles `OPTIONS` preflights before requests reach cyoda-go in this mode.** **Toggling `CYODA_CORS_ENABLED` between `true` and `false` requires a downstream-cache flush** — responses cached during the disabled period lack `Vary: Origin` and could be served to origins for which the post-toggle policy disagrees. |
 | `CYODA_CORS_ALLOWED_ORIGINS` | unset (= **loopback mode**) | Comma-separated exact-match allowlist per RFC 6454 origin (scheme + host + port). When unset, only loopback origins are allowed (see "Loopback mode" below). The literal value `*` opts into wildcard mode. |
 
 `CYODA_CORS_ALLOW_CREDENTIALS` is **not part of v1** — see non-goals.
@@ -86,6 +90,24 @@ Any port (or no port) is accepted. The matched origin is echoed in `Access-Contr
 This gives zero-config dev ergonomics (vite/webpack/local docker SPAs all work) while remaining secure by default — a remote attacker hosting `evil.example.com` cannot read responses without explicit allowlist configuration. DNS rebinding does not bypass loopback mode: CORS keys on the `Origin` header (the attacker's actual domain), not the resolved destination IP.
 
 `file://` is not auto-allowed because `Origin: null` is also emitted by sandboxed iframes and certain redirect chains, materially widening the attack surface. Deployers explicitly needing `file://` access add `null` to the allowlist (the documentation calls this out as a footgun).
+
+#### Loopback matching contract
+
+The incoming `Origin` header is matched as follows:
+
+1. Parse with `net/url`. Reject (treat as no match) if `url.Parse` returns an error.
+2. Lowercase `u.Scheme` and `u.Hostname()`. Browsers already emit lowercase scheme and host; this normalization is a defensive belt-and-braces step.
+3. Reject (no match) unless **all** of the following hold:
+   - `u.Scheme` is exactly `http` or `https`.
+   - `u.Hostname()` is exactly one of the strings `localhost`, `127.0.0.1`, `::1` — string compare, not IP-equivalence. Non-canonical IPv4 (`127.0.0.0.1`, `127.000.000.001`, `127.1`, `0x7f000001`) does **not** match. Non-canonical IPv6 (`0:0:0:0:0:0:0:1`, `[0::1]`) does **not** match. The implementation uses `u.Hostname()` (which strips IPv6 brackets) — so the configured `[::1]` strings produce a hostname of `::1`, and incoming `Origin: http://[::1]:8080` parses to a hostname of `::1` — these compare equal.
+   - `u.User` is `nil` (no userinfo).
+   - `u.Path` is empty.
+   - `u.RawQuery` is empty.
+   - `u.Fragment` is empty.
+   - `u.Port()` may be empty or any decimal port number; both are accepted.
+4. If all checks pass, the matched origin is echoed in `Access-Control-Allow-Origin` exactly as received (so that `http://Localhost:3000` is echoed as `http://Localhost:3000`, not the lowercased form — this matches what the browser will be checking against).
+
+Concrete attacker examples this rejects: `http://localhost.evil.example` (hostname mismatch), `http://localhost@evil.example` (userinfo present), `http://127.0.0.0.1:3000` (host string mismatch), `http://xn--lcalhost-...` (host string mismatch — IDN homograph defeated by exact-string compare), `null` (`url.Parse` returns an empty scheme — fails check 3).
 
 ### Wildcard mode
 
@@ -110,7 +132,7 @@ Each origin in the comma-separated list is parsed with `net/url`, then normalize
 - **Reject literal `null`** — the `null` origin is never a valid allowlist entry. (Wildcard mode does not echo `null` either; in wildcard mode only the literal `*` is emitted.)
 - **`*` is mutually exclusive** — `CYODA_CORS_ALLOWED_ORIGINS=*` opts into wildcard mode. Any other value containing `*` is rejected (no glob semantics in v1).
 
-`r.Header.Get("Origin")` is used to read the incoming origin (canonical key). Comparison is byte-equal against the post-normalization allowlist, stored as `map[string]struct{}` built once in the constructor for O(1) lookup.
+`r.Header.Get("Origin")` is used to read the incoming origin (canonical key). **Incoming `Origin` is compared byte-equal verbatim** against the post-normalization allowlist, stored as `map[string]struct{}` built once in the constructor for O(1) lookup. No per-request URL parsing or normalization of the incoming `Origin` is performed in allowlist mode — browsers reliably emit lowercase scheme/host with non-default ports, so verbatim compare avoids a hot-path parse step. (Loopback mode requires URL parsing because the rules are structural, not string-equality; this only fires when no allowlist is configured.)
 
 ## Behaviour
 
@@ -122,7 +144,7 @@ A request is a CORS preflight iff:
 - Request carries an `Origin` header, AND
 - Request carries an `Access-Control-Request-Method` header.
 
-`OPTIONS` requests not meeting all three conditions are passed through unchanged. Today, chi will 405 them per-route; if a future chi version adds auto-`OPTIONS` behaviour, the middleware's pass-through still does the right thing. The middleware does not validate `Access-Control-Request-Method` or `Access-Control-Request-Headers` — preflight is a static yes/no based on `Origin` only. The actual request is method-checked by chi as today.
+`OPTIONS` requests not meeting all three conditions are passed through unchanged. Today, chi will 405 them per-route; if a future chi version adds auto-`OPTIONS` behaviour, the middleware's pass-through still does the right thing. Specifically, an `OPTIONS` request that carries `Origin` but no `Access-Control-Request-Method` (which browsers send only rarely, e.g. for non-CORS purposes) falls through to chi and 405s as today — this is intentional. The middleware does not validate `Access-Control-Request-Method` or `Access-Control-Request-Headers` — preflight is a static yes/no based on `Origin` only. The actual request is method-checked by chi as today.
 
 ### Preflight response
 
@@ -138,7 +160,9 @@ Short-circuits at the receiving node, never reaches Auth or any handler. Headers
 
 Status: `204 No Content`. Empty body.
 
-`Vary: Origin` is emitted on every CORS-middleware response — preflight and actual — regardless of mode. The middleware inspects `Origin` to make every decision; intermediate caches must therefore key by `Origin` per RFC 7234 §4.1. This is required even in wildcard mode (where the response value is constant) so that mode-flip during a deployment cannot cause a CDN to serve a stale `Origin`-specific response to a different origin.
+`Vary: Origin` is emitted on **every response** that passes through an installed CORS middleware — preflight, actual request, and even pass-throughs where `Origin` is absent. The middleware's *decision* depends on `Origin`; intermediate caches must therefore key by `Origin` per RFC 7234 §4.1. Always emitting (rather than only-when-`Origin`-is-present) prevents the inverse cache-poisoning vector: a CDN caching a no-`Origin` response without `Vary: Origin` and later serving it to an `Origin`-bearing request whose policy has changed. This is required even in wildcard mode (constant response value) so that a mode-flip during a deployment cannot cause a CDN to serve a stale `Origin`-specific response to a different origin.
+
+In wildcard mode, an `Origin: null` request also receives `Access-Control-Allow-Origin: *` — wildcard means literal `*` for every origin including `null`. This is consistent and correct: browsers do not honour `*` for credentialed reads, and credentials are off in v1.
 
 ### Actual request (non-preflight)
 
@@ -157,7 +181,9 @@ In loopback or allowlist mode, when the request `Origin` does not match: the mid
 
 ### Request without `Origin` header
 
-Middleware short-circuits — no CORS headers added (not even `Vary: Origin`), request continues unmodified. This is what makes server-to-server `curl` and the cluster proxy's outbound calls invisible to CORS, and what makes the `/_internal/*` peer-to-peer surface a no-op even before its path-prefix exclusion fires.
+The middleware adds `Vary: Origin` to the response (for the cache-poisoning reason given above) but emits no `Access-Control-*` headers. The request continues unmodified through the rest of the chain. This is what makes server-to-server `curl` and the cluster proxy's outbound calls invisible to CORS in terms of policy, while still leaving the cache-key signalling intact for any intermediary that might later receive an `Origin`-bearing request for the same URL.
+
+`/_internal/*` is the sole exception: no headers at all (not even `Vary: Origin`) are emitted on requests whose path begins with `/_internal/`, regardless of `Origin` presence. This is consistent with the path-prefix exclusion rule in §"Architecture" — the internal dispatch surface is peer-only, never browser-visible, and the spec deliberately keeps it free of any CORS-related response state.
 
 ## Cluster proxy interaction
 
@@ -180,7 +206,7 @@ A unit test on the proxy's outbound-headers helper asserts all three headers are
 
 `ValidateCORS(cfg.CORS) error` called from `cmd/cyoda/main.go` **after** slog initialization (so log-level config is honoured for any WARN/INFO emitted):
 
-- Any normalization rule violation (uppercase, default port, path/query/fragment/trailing-slash, userinfo, non-ASCII, empty entry, literal `null` in allowlist, `*` mixed with other values) → returned error; binary slogs and `os.Exit(1)`s. Error message names the offending value.
+- Any normalization rule violation (uppercase, default port, path/query/fragment/trailing-slash, userinfo, non-ASCII, empty entry, literal `null` in allowlist, `*` mixed with other values) → returned error; binary slogs and `os.Exit(1)`s. Error message names the offending value. The non-ASCII case binds a discoverable wording specifically: `cors: origin %q has non-ASCII host; convert to punycode (e.g. xn--…) before configuring`.
 - If `CYODA_CORS_ENABLED=true` and `CYODA_CORS_ALLOWED_ORIGINS=*` → log WARN once: `cors: wildcard mode active (Access-Control-Allow-Origin: *)`. `pkg=cors`.
 - If `CYODA_CORS_ENABLED=true` and an explicit allowlist is configured → log INFO once: `cors: allowlist mode active (N origins)` (count only, never the values; values logged only at DEBUG via `pkg=cors`).
 - If `CYODA_CORS_ENABLED=true` and no allowlist (loopback mode) → log INFO once: `cors: loopback mode active — only http(s)://localhost, 127.0.0.1, [::1] are allowed; set CYODA_CORS_ALLOWED_ORIGINS to permit additional origins`. `pkg=cors`.
@@ -213,10 +239,12 @@ After unification, `/help` in wildcard mode has the same externally-observable C
   - `OPTIONS` with `Origin` but no `Access-Control-Request-Method` → falls through.
   - `OPTIONS` without `Origin` → falls through.
   - `GET` with `Origin` → handled as actual request, not preflight.
-- No `Origin` header on any method: passes through untouched. Specifically, `Vary: Origin` is **not** emitted in this case (no header inspection occurred).
+- No `Origin` header on any method: `Vary: Origin` is emitted; no `Access-Control-*` headers are emitted; downstream handler runs normally.
 - `Vary: Origin` is **appended** via `w.Header().Add`, not overwritten — when a downstream handler also sets `Vary: Accept`, both values are preserved.
-- `/_internal/*` path: no CORS headers emitted regardless of `Origin` presence.
-- `CYODA_CORS_ENABLED=false`: middleware is not installed (constructor returns identity wrapper).
+- `/_internal/*` path: **no** headers emitted (not even `Vary: Origin`) regardless of `Origin` presence.
+- `CYODA_CORS_ENABLED=false`: middleware is not installed (constructor returns identity wrapper); no `Access-Control-*` and no `Vary: Origin` are emitted.
+- **Wired-up assertion test:** with `CYODA_CORS_ENABLED=true` and the full `app.Handler()` constructed, a synthetic preflight against an arbitrary registered route returns `204` with the preflight header set. This proves the middleware is actually installed in the chain (not merely that the middleware code is reachable in isolation). A future refactor that drops the install site would fail this test loud.
+- Wildcard mode + `Origin: null`: response carries `Access-Control-Allow-Origin: *`.
 - Config validation (table-driven):
   - Reject: uppercase character, default port (`:443`, `:80`), trailing slash, path, query, fragment, userinfo, non-ASCII host, empty entry, literal `null`, `*` mixed with other values, malformed URL.
   - Accept: `https://x.com`, `http://x.com:8080`, `https://[::1]:8443`, `https://xn--e1afmkfd.example`.
@@ -274,9 +302,11 @@ Per the documentation-hygiene gate, update together:
 - [ ] `/_internal/*` requests never carry CORS response headers regardless of `Origin`.
 - [ ] `CYODA_CORS_ENABLED=false` disables CORS everywhere, including `/help`.
 - [ ] Loopback mode is the default; wildcard mode requires explicit `=*` and emits a startup WARN.
+- [ ] Loopback mode matches `localhost`/`127.0.0.1`/`::1` exactly per the matching contract; rejects `localhost.evil.example`, non-canonical IPv4/IPv6 forms, userinfo-bearing origins, and IDN homographs.
+- [ ] Wired-up assertion: `CYODA_CORS_ENABLED=true` actually installs the middleware in `app.Handler()`, verified by a test that issues a synthetic preflight against the assembled handler.
 - [ ] Allowlist normalization rejects uppercase, default ports, path/query/fragment/trailing-slash, userinfo, non-ASCII, empty entries, literal `null`, `*` mixed with other values.
 - [ ] Wildcard mode emits literal `*`, never reflective of `Origin`.
-- [ ] `Vary: Origin` is appended (not overwritten) and present on every CORS-middleware response except no-`Origin` pass-throughs.
+- [ ] `Vary: Origin` is appended (not overwritten) and present on every response that passes through the installed CORS middleware, including no-`Origin` pass-throughs. Sole exception: `/_internal/*` paths.
 - [ ] Startup logs report mode at INFO/WARN and never log allowlist values above DEBUG.
 - [ ] Unit + E2E + cluster proxy tests cover all of the above.
 - [ ] `cmd/cyoda/help/content/config/cors.md`, `README.md`, `app/config.go` godoc, and `DefaultConfig()` updated together.
