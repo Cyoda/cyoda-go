@@ -530,6 +530,14 @@ func New(cfg Config) *App {
 		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout)(a.handler)
 	}
 
+	// CORS middleware — outermost wrapper. Sits outside cluster-routing
+	// so preflights short-circuit at the receiving node and never get
+	// proxied. Sits outside outerMux so /help, discovery, and the API
+	// surface are all covered by a single CORS policy. See spec
+	// docs/superpowers/specs/2026-05-01-issue-196-cors-design.md.
+	corsPolicy := middleware.NewCORSPolicy(cfg.CORS.Enabled, cfg.CORS.Wildcard, cfg.CORS.AllowedOrigins)
+	a.handler = middleware.CORS(corsPolicy)(a.handler)
+
 	// gRPC server — uses inner handler (without context path prefix)
 	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, cfg.OTelEnabled)
 
