@@ -247,6 +247,20 @@ func TestCORS_PreflightUnmatchedOriginInAllowlist(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("ACAO = %q, want empty (origin not allowed)", got)
 	}
+
+	// Static preflight headers must be emitted regardless of origin match.
+	// Only Access-Control-Allow-Origin is conditionally omitted. Pinning
+	// this prevents a regression where a future refactor moves the static
+	// header writes inside the "if allowed != \"\"" gate.
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got == "" {
+		t.Error("Access-Control-Allow-Methods missing on rejected-origin preflight")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got == "" {
+		t.Error("Access-Control-Allow-Headers missing on rejected-origin preflight")
+	}
+	if got := rec.Header().Get("Access-Control-Max-Age"); got == "" {
+		t.Error("Access-Control-Max-Age missing on rejected-origin preflight")
+	}
 }
 
 func TestCORS_VaryOriginAlwaysWhenEnabled(t *testing.T) {
