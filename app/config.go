@@ -27,6 +27,7 @@ type Config struct {
 	GRPC               GRPCConfig
 	Admin              AdminConfig
 	Bootstrap          BootstrapConfig
+	CORS               CORSConfig
 	StorageBackend     string
 	StartupTimeout     time.Duration
 	Cluster            cluster.Config
@@ -76,6 +77,25 @@ type IAMConfig struct {
 	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 }
 
+// CORSConfig controls cross-origin resource sharing for the public HTTP
+// surface. See cmd/cyoda/help/content/config/cors.md for full operator-facing
+// documentation.
+//
+// Modes (mutually exclusive):
+//   - Disabled: Enabled=false. Middleware is not installed; deployers
+//     handle CORS at an upstream ingress. OPTIONS returns chi default 405.
+//   - Wildcard: Wildcard=true (CYODA_CORS_ALLOWED_ORIGINS=*). The literal
+//     "*" is emitted in Access-Control-Allow-Origin.
+//   - Allowlist: AllowedOrigins is non-empty. Exact-match only.
+//   - Loopback: Enabled=true and AllowedOrigins is empty and Wildcard is
+//     false. Default mode. Allows http(s)://localhost, 127.0.0.1, [::1] on
+//     any port.
+type CORSConfig struct {
+	Enabled        bool     // CYODA_CORS_ENABLED, default true
+	Wildcard       bool     // derived: true iff CYODA_CORS_ALLOWED_ORIGINS=="*"
+	AllowedOrigins []string // populated only in allowlist mode (Wildcard==false, len > 0)
+}
+
 type BootstrapConfig struct {
 	ClientID     string // CYODA_BOOTSTRAP_CLIENT_ID
 	ClientSecret string // CYODA_BOOTSTRAP_CLIENT_SECRET (optional, generated if empty)
@@ -112,6 +132,14 @@ func DefaultConfig() Config {
 			UserID:       envString("CYODA_BOOTSTRAP_USER_ID", "admin"),
 			Roles:        envString("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M"),
 		},
+		CORS: func() CORSConfig {
+			wildcard, origins := parseCORSAllowedOrigins(envString("CYODA_CORS_ALLOWED_ORIGINS", ""))
+			return CORSConfig{
+				Enabled:        envBool("CYODA_CORS_ENABLED", true),
+				Wildcard:       wildcard,
+				AllowedOrigins: origins,
+			}
+		}(),
 		SearchSnapshotTTL:  envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
 		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
 		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
@@ -258,6 +286,29 @@ func splitCSV(s string) []string {
 		}
 	}
 	return result
+}
+
+// parseCORSAllowedOrigins parses the CYODA_CORS_ALLOWED_ORIGINS env var.
+// Returns wildcard=true iff the value is exactly "*". Otherwise returns the
+// comma-separated list with whitespace trimmed; semantic validation is in
+// ValidateCORS. An empty raw value yields wildcard=false, origins=nil
+// (loopback mode).
+func parseCORSAllowedOrigins(raw string) (wildcard bool, origins []string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false, nil
+	}
+	if raw == "*" {
+		return true, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return false, out
 }
 
 // ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary
