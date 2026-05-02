@@ -63,7 +63,7 @@ host; paths and query strings are not permitted.
 The following headers are emitted by the CORS middleware when it is installed
 (`CYODA_CORS_ENABLED=true`):
 
-**On every response (preflight and actual request):**
+**On every response from the installed middleware (preflight, CORS request, or no-`Origin` pass-through):**
 
 - `Vary: Origin` — always appended (never overwrites an existing `Vary` value).
   This instructs intermediate caches to key by `Origin` so that a mode change
@@ -83,6 +83,11 @@ The following headers are emitted by the CORS middleware when it is installed
 - `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS` (static)
 - `Access-Control-Allow-Headers: Authorization, Content-Type, traceparent, tracestate` (static)
 - `Access-Control-Max-Age: 86400` (static)
+
+These three headers are emitted on every preflight regardless of whether
+the origin matched the policy. Only `Access-Control-Allow-Origin` is
+omitted when the origin is rejected — a deployer debugging an allowlist
+miss will see the static three present alongside the absent ACAO.
 
 **`Access-Control-Allow-Credentials` is NOT emitted in v1.** Authentication is
 bearer-in-`Authorization`; cookies and HTTP-auth are not used. Credentials mode
