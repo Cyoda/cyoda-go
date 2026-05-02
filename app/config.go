@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -358,13 +359,73 @@ func ValidateCORS(c CORSConfig) error {
 }
 
 // validateCORSOrigin returns nil iff o is a well-formed origin acceptable
-// in the allowlist. See ValidateCORS godoc for the rule set. Stub for
-// now — Task 3 fills in the real rules.
+// in the allowlist. Rejection rules per spec §"Allowlist normalization
+// and validation". Run once at startup, never on the hot path.
 func validateCORSOrigin(o string) error {
-	if o == "" {
+	if strings.TrimSpace(o) == "" {
 		return fmt.Errorf("origin %q: empty entry not allowed", o)
 	}
+	if o == "null" {
+		return fmt.Errorf("origin %q: literal \"null\" is not a valid allowlist entry", o)
+	}
+	if o == "*" || strings.Contains(o, "*") {
+		return fmt.Errorf("origin %q: wildcard/glob is not supported; use CYODA_CORS_ALLOWED_ORIGINS=* for unrestricted mode", o)
+	}
+	// url.Parse normalises the scheme to lowercase, so we must check the
+	// raw string before parsing to catch uppercase schemes.
+	if idx := strings.Index(o, "://"); idx > 0 {
+		rawScheme := o[:idx]
+		if rawScheme != strings.ToLower(rawScheme) {
+			return fmt.Errorf("origin %q: scheme must be lowercase", o)
+		}
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return fmt.Errorf("origin %q: failed to parse: %w", o, err)
+	}
+	if u.Scheme == "" {
+		return fmt.Errorf("origin %q: missing scheme (must be http or https)", o)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("origin %q: invalid scheme %q (must be http or https)", o, u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("origin %q: missing host", o)
+	}
+	if host != strings.ToLower(host) {
+		return fmt.Errorf("origin %q: host must be lowercase", o)
+	}
+	if !isASCII(host) {
+		return fmt.Errorf("origin %q: has non-ASCII host; convert to punycode (e.g. xn--…) before configuring", o)
+	}
+	if u.User != nil {
+		return fmt.Errorf("origin %q: userinfo is not allowed", o)
+	}
+	if u.Path != "" {
+		return fmt.Errorf("origin %q: path component (including trailing slash) is not allowed", o)
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("origin %q: query component is not allowed", o)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("origin %q: fragment is not allowed", o)
+	}
+	if port := u.Port(); port != "" {
+		if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+			return fmt.Errorf("origin %q: default port (:%s) must be omitted", o, port)
+		}
+	}
 	return nil
+}
+
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 0x7F {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary

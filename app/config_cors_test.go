@@ -128,3 +128,55 @@ func TestParseCORSAllowedOrigins_ThenValidateCORS_RejectsEmptyEntries(t *testing
 		t.Error("expected ValidateCORS to reject empty entry, got nil")
 	}
 }
+
+func TestValidateCORS_RejectionRules(t *testing.T) {
+	tests := []struct {
+		name      string
+		origin    string
+		wantInErr string // substring expected in error message
+	}{
+		{"empty entry", "", "empty"},
+		{"uppercase scheme", "HTTPS://x.com", "lowercase"},
+		{"uppercase host", "https://X.com", "lowercase"},
+		{"non-https/http scheme", "ftp://x.com", "scheme"},
+		{"missing scheme", "//x.com", "scheme"},
+		{"default port https", "https://x.com:443", "default port"},
+		{"default port http", "http://x.com:80", "default port"},
+		{"trailing slash", "https://x.com/", "path"},
+		{"path component", "https://x.com/admin", "path"},
+		{"query component", "https://x.com?q=1", "query"},
+		{"fragment", "https://x.com#frag", "fragment"},
+		{"userinfo", "https://user@x.com", "userinfo"},
+		{"non-ascii host", "https://пример.example", "punycode"},
+		{"literal null", "null", "null"},
+		{"literal wildcard mixed", "*", "wildcard"},
+		{"glob pattern", "https://*.x.com", "wildcard"},
+		{"unparseable", "://garbage", "parse"},
+		{"whitespace only after trim", "   ", "empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := CORSConfig{Enabled: true, AllowedOrigins: []string{tt.origin}}
+			err := ValidateCORS(cfg)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tt.origin)
+			}
+			if !strings.Contains(err.Error(), tt.wantInErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantInErr)
+			}
+		})
+	}
+}
+
+func TestValidateCORS_PunycodeMessage(t *testing.T) {
+	cfg := CORSConfig{Enabled: true, AllowedOrigins: []string{"https://пример.example"}}
+	err := ValidateCORS(cfg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	// The spec binds this exact wording for discoverability.
+	want := "convert to punycode"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q must contain %q to be discoverable", err.Error(), want)
+	}
+}
