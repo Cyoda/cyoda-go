@@ -183,8 +183,13 @@ func logCORSMode(c app.CORSConfig) {
 	case "loopback":
 		slog.Info("cors: loopback mode active — only http(s)://localhost, 127.0.0.1, [::1] are allowed; set CYODA_CORS_ALLOWED_ORIGINS to permit additional origins", "pkg", "cors")
 	case "allowlist":
+		// Two calls: count at INFO (always visible), contents at DEBUG (opt-in).
+		// Origins are operationally sensitive (internal hostnames, customer
+		// subdomains in multi-tenant SaaS) — never log them at INFO.
 		slog.Info("cors: allowlist mode active", "pkg", "cors", "origin_count", len(c.AllowedOrigins))
 		slog.Debug("cors: allowlist contents", "pkg", "cors", "origins", c.AllowedOrigins)
+	default:
+		slog.Warn("cors: unknown mode — this is a bug; please report", "pkg", "cors", "mode", c.Mode())
 	}
 }
 
