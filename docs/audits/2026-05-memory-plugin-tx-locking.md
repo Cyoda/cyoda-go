@@ -110,6 +110,19 @@ against `tx.TenantID`. A caller authenticated as tenant A who learned a
 tenant B txID could record/rollback/release savepoints on tenant B's
 tx-state. `Commit` and `Rollback` already had this protection.
 
+**Pre-fix severity (security-auditor assessment):** the most severe path
+was `RollbackToSavepoint(ctxA, txBID, spID)` from tenant A —
+**destructive integrity loss on tenant B's tx-state**, replacing tenant
+B's `Buffer`/`ReadSet`/`WriteSet`/`Deletes` with a snapshot tenant A
+controlled. `Savepoint` from the wrong tenant produced a savepointID for
+tenant B's state (information disclosure on tenant B's tx-namespace
+keying); `ReleaseSavepoint` was an availability-impact path (clearing
+tenant B's snapshot). Mitigated in practice by 128-bit txID entropy
+(infeasible to enumerate), but a tenant A caller who *learned* a tenant B
+txID by any means (logs, support channels, side channels) could exploit
+this without authentication bypass. Pre-fix this gap was a high-severity
+tenant-isolation flaw on the savepoint surface.
+
 **Fixed by PR-A (#199 review I-1):** all three methods now resolve the
 caller's `UserContext` and reject mismatched-tenant calls with a
 `"tenant mismatch"` error. Regression tests at
