@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -538,4 +539,83 @@ func TestSavepoint_WrongTxIDRejected(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected tx1 to rollback to its own savepoint, got: %v", err)
 	}
+}
+
+// TestSavepoint_RejectsCrossTenant verifies that Savepoint refuses to operate
+// on a transaction belonging to a different tenant. Surfaced by the issue
+// #199 audit / PR-A code review (Item I-1): pre-fix, the three savepoint
+// methods discarded the caller's tenant context entirely (took _ context.Context),
+// allowing tenant A to manipulate tenant B's tx-state if the txID was known.
+// Mirrors Commit/Rollback's existing tenant-mismatch protection.
+func TestSavepoint_RejectsCrossTenant(t *testing.T) {
+	_, tm := newTxManager(t)
+	ctxA := ctxWithTenant("tenant-A")
+	ctxB := ctxWithTenant("tenant-B")
+
+	txAID, _, err := tm.Begin(ctxA)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	if _, err := tm.Savepoint(ctxB, txAID); err == nil {
+		t.Fatal("expected error when tenant B takes savepoint on tenant A's tx")
+	} else if !strings.Contains(err.Error(), "tenant mismatch") {
+		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	}
+
+	_ = tm.Rollback(ctxA, txAID)
+}
+
+// TestRollbackToSavepoint_RejectsCrossTenant verifies that RollbackToSavepoint
+// refuses to operate on another tenant's transaction. Critical because
+// RollbackToSavepoint is destructive on tx-state — without tenant verification,
+// an authenticated tenant A caller could roll back tenant B's tx-state.
+func TestRollbackToSavepoint_RejectsCrossTenant(t *testing.T) {
+	_, tm := newTxManager(t)
+	ctxA := ctxWithTenant("tenant-A")
+	ctxB := ctxWithTenant("tenant-B")
+
+	txAID, _, err := tm.Begin(ctxA)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	spID, err := tm.Savepoint(ctxA, txAID)
+	if err != nil {
+		t.Fatalf("Savepoint failed: %v", err)
+	}
+
+	if err := tm.RollbackToSavepoint(ctxB, txAID, spID); err == nil {
+		t.Fatal("expected error when tenant B rolls back tenant A's savepoint")
+	} else if !strings.Contains(err.Error(), "tenant mismatch") {
+		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	}
+
+	_ = tm.Rollback(ctxA, txAID)
+}
+
+// TestReleaseSavepoint_RejectsCrossTenant verifies that ReleaseSavepoint
+// refuses to operate on another tenant's transaction. Less destructive than
+// RollbackToSavepoint (only removes the snapshot record from m.savepoints)
+// but still tenant-scoped state — enforces the consistent isolation contract.
+func TestReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
+	_, tm := newTxManager(t)
+	ctxA := ctxWithTenant("tenant-A")
+	ctxB := ctxWithTenant("tenant-B")
+
+	txAID, _, err := tm.Begin(ctxA)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	spID, err := tm.Savepoint(ctxA, txAID)
+	if err != nil {
+		t.Fatalf("Savepoint failed: %v", err)
+	}
+
+	if err := tm.ReleaseSavepoint(ctxB, txAID, spID); err == nil {
+		t.Fatal("expected error when tenant B releases tenant A's savepoint")
+	} else if !strings.Contains(err.Error(), "tenant mismatch") {
+		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	}
+
+	_ = tm.Rollback(ctxA, txAID)
 }
