@@ -106,6 +106,12 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 // transaction. This allows multiple goroutines to participate in the same
 // transaction. Callers must coordinate access to the transaction's Buffer,
 // ReadSet, WriteSet, and Deletes maps.
+//
+// Locking discipline (issue #199 audit): Rollback writes tx.RolledBack
+// inside m.mu only; Commit and Rollback both write tx.Closed in their
+// defer under tx.OpMu.Lock only. Reading those fields requires
+// tx.OpMu.RLock to be synchronised against the Closed-write — m.mu alone
+// is not sufficient because Commit's defer runs outside the m.mu region.
 func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
 	m.mu.Lock()
 	tx, ok := m.active[txID]
@@ -114,7 +120,13 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 	if !ok {
 		return nil, fmt.Errorf("transaction not found: %s", txID)
 	}
-	if tx.RolledBack || tx.Closed {
+
+	closed := func() bool {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		return tx.RolledBack || tx.Closed
+	}()
+	if closed {
 		return nil, fmt.Errorf("transaction already closed: %s", txID)
 	}
 
@@ -340,18 +352,39 @@ func (m *TransactionManager) CommittedLogLen() int {
 
 // Savepoint creates a named savepoint within the given transaction by
 // deep-copying the transaction's buffer maps.
+//
+// Locking discipline (issue #199): Savepoint reads tx.Buffer / tx.ReadSet /
+// tx.WriteSet / tx.Deletes — the same fields Commit's flush phase iterates
+// under tx.OpMu.Lock and that other tx-path ops (Save, Get, Delete, ...)
+// mutate under tx.OpMu.RLock. Savepoint must therefore hold tx.OpMu.RLock
+// across those reads. The lock interleaving with m.mu follows Commit's
+// pattern: drop m.mu before taking tx.OpMu, re-take m.mu briefly for the
+// m.savepoints update.
 func (m *TransactionManager) Savepoint(_ context.Context, txID string) (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	tx, ok := m.active[txID]
+	m.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
 	}
 
+	tx.OpMu.RLock()
+	defer tx.OpMu.RUnlock()
+
+	// Commit and Rollback set tx.Closed/RolledBack inside their tx.OpMu.Lock
+	// region; once we hold tx.OpMu.RLock those flags are stable and reading
+	// them tells us whether the tx was closed during our OpMu acquisition.
+	if tx.RolledBack || tx.Closed {
+		return "", fmt.Errorf("Savepoint: transaction %s already closed", txID)
+	}
+
 	spID := uuid.UUID(m.uuids.NewTimeUUID()).String()
 
-	// Deep-copy the buffer maps.
+	// Deep-copy the buffer maps under tx.OpMu.RLock so we are serialised
+	// against Commit/Rollback (Lock). Per the Join() godoc the application
+	// is responsible for serialising its own concurrent ops on a single tx,
+	// so concurrent Save+Savepoint is an application contract violation,
+	// not a plugin defect — RLock here intentionally allows other readers.
 	bufCopy := make(map[string]*spi.Entity, len(tx.Buffer))
 	for k, v := range tx.Buffer {
 		bufCopy[k] = copyEntity(v)
@@ -369,6 +402,8 @@ func (m *TransactionManager) Savepoint(_ context.Context, txID string) (string, 
 		delCopy[k] = v
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.savepoints[txID] == nil {
 		m.savepoints[txID] = make(map[string]savepointSnapshot)
 	}
@@ -383,14 +418,28 @@ func (m *TransactionManager) Savepoint(_ context.Context, txID string) (string, 
 
 // RollbackToSavepoint restores the transaction's buffer maps from the snapshot
 // captured when the savepoint was created, then removes the snapshot.
+//
+// Locking discipline (issue #199): RollbackToSavepoint replaces tx.Buffer /
+// tx.ReadSet / tx.WriteSet / tx.Deletes — exclusive against every other
+// tx-path op. Holds tx.OpMu.Lock (write) for the duration of the field
+// replacement. Lock interleaving with m.mu follows Commit's pattern.
 func (m *TransactionManager) RollbackToSavepoint(_ context.Context, txID string, savepointID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	tx, ok := m.active[txID]
+	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
 	}
+
+	tx.OpMu.Lock()
+	defer tx.OpMu.Unlock()
+
+	if tx.RolledBack || tx.Closed {
+		return fmt.Errorf("RollbackToSavepoint: transaction %s already closed", txID)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	txSavepoints, ok := m.savepoints[txID]
 	if !ok {
@@ -412,6 +461,11 @@ func (m *TransactionManager) RollbackToSavepoint(_ context.Context, txID string,
 
 // ReleaseSavepoint releases a savepoint. The work done since the savepoint is
 // already in the parent transaction's buffer, so this just removes the snapshot.
+//
+// Locking discipline (issue #199): ReleaseSavepoint does not read or write
+// tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes — it only mutates
+// m.savepoints. Holds m.mu only; tx.OpMu is not required because there is
+// no tx-state field to coordinate against Commit/Rollback.
 func (m *TransactionManager) ReleaseSavepoint(_ context.Context, txID string, savepointID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
