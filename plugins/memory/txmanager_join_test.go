@@ -204,3 +204,31 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 	wg.Wait()
 	<-operationDone
 }
+
+// TestJoinRejectsNilUserContext verifies that Join rejects callers with no
+// UserContext (#199 PR-C2 review L-3). Memory's Join was permissive on
+// nil UC pre-fix: it accepted any caller as long as no tenant mismatch
+// could be detected. That's a tenant-isolation gap because a caller that
+// somehow bypassed authentication middleware (or an internal helper that
+// forgot to thread the request context) could Join into any active tx.
+//
+// Post-fix Join is uniformly strict, matching Commit/Rollback's existing
+// pattern (uc == nil OR mismatch -> reject).
+func TestJoinRejectsNilUserContext(t *testing.T) {
+	_, tm := newTxManager(t)
+	ctx := ctxWithTenant("tenant-A")
+
+	txID, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	// Pass a context with NO UserContext — Join must reject.
+	if _, err := tm.Join(spi.WithTransaction(t.Context(), nil), txID); err == nil {
+		t.Fatal("expected error when joining without UserContext")
+	} else if !strings.Contains(err.Error(), "tenant mismatch") {
+		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	}
+
+	_ = tm.Rollback(ctx, txID)
+}
