@@ -415,6 +415,13 @@ See [docs/CONSISTENCY.md](CONSISTENCY.md) for the full contract,
 worked scenarios, the operational rule with three robust
 alternatives, and the isolation-level taxonomy.
 
+For the in-process **concurrency model** — what locks gate access to
+per-tx state, what's per-node-process vs durable, what cluster routing
+covers and what it does not — see
+[docs/CONCURRENCY.md](CONCURRENCY.md). It complements CONSISTENCY.md
+(which covers the cross-plugin isolation contract) with the
+in-process and per-node mechanics.
+
 ---
 
 ## 4. Multi-Node Routing Architecture
