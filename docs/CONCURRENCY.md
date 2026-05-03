@@ -85,19 +85,35 @@ the manager mutex across `tx.OpMu` acquisition is a deadlock-bug.
 - SQLite: see `docs/audits/2026-05-sqlite-plugin-tx-locking.md`
 - Postgres: see `docs/audits/2026-05-postgres-plugin-tx-locking.md`
 
+**Postgres-plugin internal locks** (postgres uses a different shape — the
+SPI's OpMu contract is satisfied trivially, so equivalent bookkeeping
+lives in plugin-internal mutexes):
+- `plugins/postgres/transaction_manager.go:30` — `mu` (Mutex) on `submitTimes` and `tenants`.
+- `plugins/postgres/transaction_manager.go:38` — `txStatesMu` (RWMutex) on the `txStates` map keying internal txState by txID.
+- `plugins/postgres/txstate.go:30` — per-tx `mu` (Mutex) on the internal `txState` (`readSet`, `writeSet`, `savepoints`).
+- `plugins/postgres/tx_registry.go:12` — `mu` (RWMutex) on the `txID → pgx.Tx` registry.
+
+**Memory-plugin per-store mutexes** (separate from `factory.entityMu`;
+each non-entity store has its own RWMutex):
+- `plugins/memory/store_factory.go:46-51` — `entityMu`, `modelMu`, `kvMu`, `msgMu`, `wfMu`, `smAuditMu` (RWMutex each).
+
 **Non-tx-state locks** (separate from the SPI contract; documented here
 for completeness):
 - `internal/cluster/modelcache/cache.go` — RWMutex on cache entries; Lock for invalidation, RLock for Get.
-- `internal/cluster/registry/gossip.go` — Mutex on node meta; RWMutex on gossip subscriptions.
+- `internal/cluster/registry/gossip.go` — multiple mutexes: `mu` on node meta, `subsMu` on subscription map, plus the gossipDelegate's broadcast queue.
 - `internal/cluster/lifecycle/manager.go` — RWMutex on `active`/`outcomes` maps; TTL-evicted.
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
 - `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.
 - `internal/grpc/members.go` — multiple mutexes governing gRPC member streams.
-- `internal/testing/localproc/localproc.go` — RWMutex on processor registrations (test-only).
 
 These locks are local to their owning component and do not interact
 with the tx-state lock order. They each have brief, bounded critical
 sections; none is held across slow operations.
+
+Test infrastructure (`internal/testing/...`, `internal/e2e/...`,
+`internal/common/diagnostics.go`) and per-package caches in `internal/auth/`
+are excluded from the inventory — they are local to JWT/JWKS caching or
+test setup and do not interact with the tx-state surface.
 
 ## 4. The SPI tx-state locking contract
 
@@ -118,11 +134,12 @@ cyoda-go-spi repository). Summary:
 
 Postgres satisfies the OpMu contract trivially because its
 `*spi.TransactionState` carries only `ID` and `TenantID` — the
-OpMu-protected fields are unused. Per-tx FCW bookkeeping lives in an
-internal `txState` struct independent of the SPI surface.
+OpMu-protected fields on the SPI struct are unused. Equivalent per-tx
+FCW bookkeeping lives in an internal `txState` struct (with its own
+per-tx `mu`) independent of the SPI surface.
 
-[spi-godoc]: https://github.com/Cyoda-platform/cyoda-go-spi/blob/main/txcontext.go
-[spi-rule]: https://github.com/Cyoda-platform/cyoda-go-spi/blob/main/.claude/rules/tx-state-locking.md
+[spi-godoc]: https://github.com/Cyoda-platform/cyoda-go-spi/blob/v0.6.1/txcontext.go
+[spi-rule]: https://github.com/Cyoda-platform/cyoda-go-spi/blob/v0.6.1/.claude/rules/tx-state-locking.md
 
 ## 5. Per-plugin pointer
 
@@ -146,7 +163,11 @@ This section enumerates only what cluster mode promises and what it does not.
 **Covered (cluster mode promises):**
 - Every transaction is pinned to its home node via HMAC-signed token
   (`{NodeID, TxRef, ExpiresAt}`). Subsequent requests for the same tx
-  are reverse-proxied to the home node.
+  are routed to the home node — both the **HTTP reverse proxy**
+  (`internal/cluster/proxy/http.go`, transparent re-proxying) and the
+  **gRPC routing helper** (`internal/cluster/proxy/grpc.go`,
+  resolve-target + redirect-error pattern) follow the same pinning
+  semantics, just with different transports.
 - Gossip registry tracks node liveness and broadcasts lifecycle events
   (model invalidation, member tags).
 - AEAD-encrypted inter-node forwarding with nonce-replay protection.
@@ -175,8 +196,12 @@ This section enumerates only what cluster mode promises and what it does not.
   "transaction already completed".
 - **Cross-node failure of the cluster proxy itself.** Nodes that lose
   gossip connectivity stop receiving forwarded requests, but their
-  local transactions continue. Full cluster split-brain is bounded
-  by the gossip stability window (default 2s) before recovery.
+  local transactions continue. Partition detection is governed by
+  hashicorp/memberlist's probe interval, suspicion multiplier, and
+  dead-node timers — not by the startup-time `StabilityWindow` (which
+  is only consulted during `Register()` to wait for join convergence
+  before opening the gRPC server). Recovery time depends on memberlist
+  configuration; gossip propagates eventually.
 
 cluster routing is **independent of the storage backend.** It applies
 only to the postgres plugin (multi-node-capable) and the commercial
@@ -198,20 +223,23 @@ concurrent access on a single transaction:
 The third class is the application's responsibility:
 
 3. **Multiple concurrent in-flight ops on the same tx from different
-   goroutines.** OpMu.RLock allows multiple readers. Two concurrent
-   `Save` calls from different goroutines on the same tx will
-   trigger Go's "concurrent map writes" runtime fatal on
-   `tx.Buffer`/`tx.WriteSet`/`tx.Deletes`. The plugin does NOT
-   detect or recover from this. The application must serialise its
-   own per-tx ops externally.
+   goroutines.** `OpMu.RLock` permits multiple holders concurrently —
+   it does not mutually exclude RLock holders from each other.
+   In-flight ops mutate `tx.Buffer` / `tx.WriteSet` / `tx.Deletes`
+   while holding RLock; two concurrent `Save` calls from different
+   goroutines on the same tx will trigger Go's "concurrent map writes"
+   runtime fatal regardless of key overlap. The plugin does NOT detect
+   or recover from this. The application must serialise its own per-tx
+   ops externally.
 
 In practice cyoda's domain layer ensures this naturally: HTTP/gRPC
 handlers process requests sequentially per request; the workflow
-engine executes processors sequentially within a single transition;
-the only `Join` consumers are tracing decorators and tests. Any future
-feature that does fan out work across multiple goroutines on a single
-tx must either add its own per-tx mutex or split work across
-transactions.
+engine executes processors sequentially within a single transition.
+At the time of writing no production callsite outside the
+`internal/observability/tx_tracing.go` pass-through decorator invokes
+`TransactionManager.Join`. Any future feature that fans out work across
+multiple goroutines on a single tx must either add its own per-tx
+mutex or split work across transactions, AND must update this section.
 
 ## 8. Further reading
 
