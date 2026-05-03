@@ -101,3 +101,29 @@ func TestSqliteReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	_ = tm.Rollback(ctxA, txAID)
 }
+
+// TestSqliteJoin_RejectsNilUserContext mirrors the memory plugin's
+// TestJoinRejectsNilUserContext (#199 PR-C2 review L-3). Sqlite's Join
+// was permissive on nil UC pre-fix, allowing any caller without a
+// UserContext to Join an arbitrary active tx. Post-fix Join is uniformly
+// strict, matching Commit/Rollback.
+func TestSqliteJoin_RejectsNilUserContext(t *testing.T) {
+	factory, ctxA := newTxMgrForTenantTest(t)
+	tm, err := factory.TransactionManager(ctxA)
+	if err != nil {
+		t.Fatalf("TransactionManager failed: %v", err)
+	}
+
+	txAID, _, err := tm.Begin(ctxA)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	if _, err := tm.Join(context.Background(), txAID); err == nil {
+		t.Fatal("expected error when joining without UserContext")
+	} else if !strings.Contains(err.Error(), "tenant mismatch") {
+		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	}
+
+	_ = tm.Rollback(ctxA, txAID)
+}

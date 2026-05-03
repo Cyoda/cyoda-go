@@ -130,9 +130,12 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 		return nil, fmt.Errorf("transaction already closed: %s", txID)
 	}
 
-	// Verify tenant matches if UserContext is available.
+	// Verify tenant matches. Strict — rejects nil UserContext to match
+	// Commit/Rollback's gate (#199 PR-C2 review L-3). Pre-PR-C2 this was
+	// permissive on nil UC, allowing any caller without a UserContext to
+	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
-	if uc != nil && tx.TenantID != "" && uc.Tenant.ID != tx.TenantID {
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
 		return nil, fmt.Errorf("tenant mismatch on transaction join")
 	}
 

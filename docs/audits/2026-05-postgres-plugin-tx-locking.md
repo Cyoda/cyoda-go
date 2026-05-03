@@ -217,3 +217,24 @@ returns "tenant mismatch" (because `context.Background()` has no
 UserContext); the test now passes the test's own `ctx` (which has
 UserContext set up at the top), making it consistent with the contract
 that memory and sqlite have always enforced on Commit/Rollback.
+
+## Cross-plugin Join parity (review L-3)
+
+The PR-C2 code review surfaced an asymmetry: postgres' new `verifyTenant`
+is uniformly strict (rejects `uc == nil`), while memory and sqlite's
+`Join` was permissive on nil UC (`if uc != nil && tx.TenantID != "" &&
+uc.Tenant.ID != tx.TenantID`). Memory/sqlite Commit/Rollback have always
+been strict; only Join was the outlier.
+
+PR-C2 folds in the parity fix: memory and sqlite `Join` now use the
+strict pattern (`uc == nil || uc.Tenant.ID != tx.TenantID`), matching
+the rest of the SPI surface. Pre-fix, a caller that bypassed the auth
+middleware (or an internal helper that forgot to thread the request
+context) could Join an arbitrary active tx without any tenant check.
+Post-fix the gate is uniform across all three plugins.
+
+Regression tests:
+- `plugins/memory/txmanager_join_test.go::TestJoinRejectsNilUserContext`
+- `plugins/sqlite/savepoint_tenant_test.go::TestSqliteJoin_RejectsNilUserContext`
+
+Both FAIL pre-fix, PASS post-fix.
