@@ -104,6 +104,14 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 // Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001)
 // or when the application-layer first-committer-wins validation detects a
 // stale read or write set.
+//
+// Tenant isolation (issue #199 PR-C2): rejects callers whose UserContext
+// tenant does not match the transaction's tenant. RLS protects data-path
+// access (every DML is row-level filtered) but does not extend to
+// transaction-lifecycle commands (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/etc.) —
+// those operate on connections and don't trigger any policy. So the
+// application-layer tenant gate is the only protection against a caller
+// authenticated as tenant A committing tenant B's in-flight work.
 func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -112,6 +120,9 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
 		return fmt.Errorf("Commit: tx state for %s not found", txID)
+	}
+	if err := verifyTenant(ctx, state.tenantID, "Commit", txID); err != nil {
+		return err
 	}
 
 	// --- First-committer-wins validation (read-set) ---
@@ -195,10 +206,21 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 }
 
 // Rollback aborts the transaction.
+//
+// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// See Commit's godoc for the design rationale.
 func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("Rollback: transaction %s not found", txID)
+	}
+
+	tenantID, ok := tm.lookupTenant(txID)
+	if !ok {
+		return fmt.Errorf("Rollback: transaction %s not found", txID)
+	}
+	if err := verifyTenant(ctx, tenantID, "Rollback", txID); err != nil {
+		return err
 	}
 
 	err := pgxTx.Rollback(ctx)
@@ -212,18 +234,23 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 
 // Join attaches to an existing transaction, returning a context carrying its
 // TransactionState.
+//
+// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Returning a context for another tenant's tx would let the joining caller
+// drive arbitrary lifecycle operations on that tx — see Commit's godoc.
 func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
 	_, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return nil, fmt.Errorf("Join: transaction %s not found", txID)
 	}
 
-	var tenantID spi.TenantID
-	func() {
-		tm.mu.Lock()
-		defer tm.mu.Unlock()
-		tenantID = tm.tenants[txID]
-	}()
+	tenantID, ok := tm.lookupTenant(txID)
+	if !ok {
+		return nil, fmt.Errorf("Join: transaction %s not found", txID)
+	}
+	if err := verifyTenant(ctx, tenantID, "Join", txID); err != nil {
+		return nil, err
+	}
 
 	txState := &spi.TransactionState{
 		ID:       txID,
@@ -283,6 +310,8 @@ func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
 
 // Savepoint creates a named savepoint within the given PostgreSQL transaction
 // and pushes a snapshot of the current readSet/writeSet onto the txState stack.
+//
+// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
 func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -291,6 +320,9 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
 		return "", fmt.Errorf("Savepoint: tx state for %s not found", txID)
+	}
+	if err := verifyTenant(ctx, state.tenantID, "Savepoint", txID); err != nil {
+		return "", err
 	}
 	spID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 	spName := "sp_" + spID
@@ -303,6 +335,9 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 
 // RollbackToSavepoint rolls back all work done since the named savepoint and
 // restores the txState readSet/writeSet to the snapshot captured at that savepoint.
+//
+// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers —
+// destructive on tx-state.
 func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -311,6 +346,9 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: tx state for %s not found", txID)
+	}
+	if err := verifyTenant(ctx, state.tenantID, "RollbackToSavepoint", txID); err != nil {
+		return err
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
@@ -324,6 +362,8 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 
 // ReleaseSavepoint releases a savepoint, merging its work into the parent transaction.
 // The txState snapshot for this savepoint is dropped; work done after the push is kept.
+//
+// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
 func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -333,12 +373,45 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 	if !ok {
 		return fmt.Errorf("ReleaseSavepoint: tx state for %s not found", txID)
 	}
+	if err := verifyTenant(ctx, state.tenantID, "ReleaseSavepoint", txID); err != nil {
+		return err
+	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return fmt.Errorf("ReleaseSavepoint: %w", err)
 	}
 	if err := state.ReleaseSavepoint(savepointID); err != nil {
 		return fmt.Errorf("ReleaseSavepoint: %w", err)
+	}
+	return nil
+}
+
+// lookupTenant returns the tenant recorded for a transaction, or false if
+// the txID is not active. Used by Rollback / Join where a txState lookup
+// is not otherwise needed.
+func (tm *TransactionManager) lookupTenant(txID string) (spi.TenantID, bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tenantID, ok := tm.tenants[txID]
+	return tenantID, ok
+}
+
+// verifyTenant compares the caller's UserContext tenant against the
+// transaction's tenant. Returns a "tenant mismatch" error on mismatch
+// or when no UserContext is present. Mirrors the pattern used by the
+// memory and sqlite plugins for application-layer tenant gating on
+// TM lifecycle methods.
+//
+// RLS (PostgreSQL row-level security) protects data-path access but does
+// NOT extend to transaction-lifecycle commands (BEGIN/COMMIT/ROLLBACK/
+// SAVEPOINT/etc.) — those operate on connections and don't trigger any
+// policy. The application-layer check is the only enforcement against a
+// caller authenticated as tenant A driving lifecycle operations on
+// tenant B's in-flight transaction.
+func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID string) error {
+	uc := spi.GetUserContext(ctx)
+	if uc == nil || uc.Tenant.ID != txTenantID {
+		return fmt.Errorf("%s: tenant mismatch on transaction %s", op, txID)
 	}
 	return nil
 }
