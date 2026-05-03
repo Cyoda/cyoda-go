@@ -360,12 +360,22 @@ func (m *TransactionManager) CommittedLogLen() int {
 // across those reads. The lock interleaving with m.mu follows Commit's
 // pattern: drop m.mu before taking tx.OpMu, re-take m.mu briefly for the
 // m.savepoints update.
-func (m *TransactionManager) Savepoint(_ context.Context, txID string) (string, error) {
+//
+// Tenant isolation (issue #199 PR-A review I-1): rejects callers whose
+// UserContext tenant does not match the transaction's tenant, mirroring
+// Commit/Rollback. Without this guard a caller authenticated as tenant A
+// who learned a tenant B txID could record a snapshot against tenant B's
+// tx-state.
+func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	tx, ok := m.active[txID]
 	m.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return "", fmt.Errorf("Savepoint: tenant mismatch on transaction %s", txID)
 	}
 
 	tx.OpMu.RLock()
@@ -423,12 +433,19 @@ func (m *TransactionManager) Savepoint(_ context.Context, txID string) (string, 
 // tx.ReadSet / tx.WriteSet / tx.Deletes — exclusive against every other
 // tx-path op. Holds tx.OpMu.Lock (write) for the duration of the field
 // replacement. Lock interleaving with m.mu follows Commit's pattern.
-func (m *TransactionManager) RollbackToSavepoint(_ context.Context, txID string, savepointID string) error {
+//
+// Tenant isolation (issue #199 PR-A review I-1): rejects cross-tenant
+// callers — RollbackToSavepoint is destructive on tx-state.
+func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	tx, ok := m.active[txID]
 	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return fmt.Errorf("RollbackToSavepoint: tenant mismatch on transaction %s", txID)
 	}
 
 	tx.OpMu.Lock()
@@ -466,12 +483,20 @@ func (m *TransactionManager) RollbackToSavepoint(_ context.Context, txID string,
 // tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes — it only mutates
 // m.savepoints. Holds m.mu only; tx.OpMu is not required because there is
 // no tx-state field to coordinate against Commit/Rollback.
-func (m *TransactionManager) ReleaseSavepoint(_ context.Context, txID string, savepointID string) error {
+//
+// Tenant isolation (issue #199 PR-A review I-1): rejects cross-tenant
+// callers — m.savepoints is tenant-scoped state.
+func (m *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.active[txID]; !ok {
+	tx, ok := m.active[txID]
+	if !ok {
 		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return fmt.Errorf("ReleaseSavepoint: tenant mismatch on transaction %s", txID)
 	}
 
 	txSavepoints, ok := m.savepoints[txID]

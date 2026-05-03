@@ -10,23 +10,46 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// Locking-discipline race tests for Savepoint and RollbackToSavepoint in
-// plugins/memory/txmanager.go. Issue #199 surfaces that both methods mutate
-// tx-state under m.mu only, never tx.OpMu — so they race against in-flight
-// tx-path ops (Save/Get/Delete) and against Commit's flush phase, which
-// iterates tx.Buffer / tx.Deletes outside m.mu but under tx.OpMu.Lock.
+// Locking-discipline race tests for Savepoint, RollbackToSavepoint, and
+// Join in plugins/memory/txmanager.go. Issue #199 surfaces that Savepoint
+// and RollbackToSavepoint mutate tx-state under m.mu only, never tx.OpMu —
+// so they race against Commit's flush phase, which iterates tx.Buffer /
+// tx.Deletes outside m.mu but under tx.OpMu.Lock. The PR-A audit also
+// surfaced an unsynchronised flag-read in Join.
 //
-// The race shape:
+// Two classes of tests in this file:
+//
+//  1. **Race reproducers** — fail under -race against pre-fix code, pass
+//     after. The race detector's success/failure is the test signal:
+//       - TestRollbackToSavepoint_VsCommit_NoRace
+//       - TestRollbackToSavepoint_VsSave_NoRace
+//       - TestJoin_VsRollback_NoRace
+//
+//  2. **Contract-pin sentinels** — pass under -race both before AND after
+//     the fix because Savepoint=RLock and Commit/Rollback=Lock are
+//     mutually exclusive (no race shape exists for the detector to flag,
+//     regardless of whether the lock is correct or not). Their value is
+//     regression discipline: any future contributor who removes the OpMu
+//     pairing OR adds a new tx-state mutation in Savepoint/Commit gets
+//     caught:
+//       - TestSavepoint_VsCommit_NoRace
+//       - TestSavepoint_VsRollback_NoRace
+//
+// The race shape for the reproducers:
 //   - Savepoint reads tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes.
 //     Required posture: tx.OpMu.RLock — serialises against Commit/Rollback
 //     (Lock) without blocking other readers (Save/Get also take RLock).
 //   - RollbackToSavepoint replaces tx.Buffer / tx.ReadSet / tx.WriteSet /
 //     tx.Deletes. Required posture: tx.OpMu.Lock — exclusive against every
 //     other tx-path op.
+//   - Join reads tx.RolledBack / tx.Closed. Required posture: tx.OpMu.RLock
+//     (in an IIFE) — Commit and Rollback both write tx.Closed in their defer
+//     under tx.OpMu.Lock only, never under m.mu.
 //
-// Tolerated errors mirror the existing concurrency tests: a tx that closed
-// mid-op is a legitimate outcome, not a defect. Sentinel errors land via
-// #200; until then we match by substring.
+// TODO(#200): replace substring matches on tolerated errors ("not found",
+// "rolled back", "already closed", "already completed", "already being
+// committed") with errors.Is against sentinel error types once they land.
+// Until then a closed-mid-op tx is a legitimate outcome, not a defect.
 //
 // These tests are intended to be run with `go test -race`. Without `-race`
 // they still verify the tolerated-error contract.
