@@ -144,17 +144,11 @@ func RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation(t *testing.T, fixture pa
 
 // RunExternalAPI_12_05_GetEntityWithBogusTransactionID — dictionary 12/neg/05.
 // Dictionary expects HTTP 404 + EntityNotFoundException for a bogus
-// transactionId.
-//
-// worse: cyoda-go's GetOneEntity handler currently does not honor the
-// transactionId query param — server returns the current entity (HTTP
-// 200) regardless of the transactionId supplied. Server-side wiring
-// tracked by #150; the parity-client surface (delivered via #132) is
-// in place. Test body below is ready for when #150 lands; remove the
-// t.Skip then.
+// transactionId. equiv_or_better: cyoda-go's GetOneEntity scans the
+// version history for the supplied transactionId and returns
+// ENTITY_NOT_FOUND@404 on miss, matching the dictionary expectation.
 func RunExternalAPI_12_05_GetEntityWithBogusTransactionID(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #150 (worse): GetOneEntity ignores transactionId query param. Parity-client surface delivered via #132; close this skip when #150 lands.")
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("neg5", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create: %v", err)
