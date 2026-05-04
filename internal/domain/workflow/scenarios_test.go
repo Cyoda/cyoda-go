@@ -566,3 +566,79 @@ func newTestHTTPRequest(t *testing.T, method, target, body string, ctx context.C
 func newTestHTTPResponse() *httptest.ResponseRecorder {
 	return httptest.NewRecorder()
 }
+
+// --- Test: validateProcessorFlags — startNewTxOnDispatch is COMMIT_BEFORE_DISPATCH-only ---
+
+func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(t *testing.T) {
+	// startNewTxOnDispatch:true on a SYNC processor must be rejected at registration.
+	tt := true
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: "EXTERNAL", Name: "p", ExecutionMode: "SYNC",
+						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "startNewTxOnDispatch") {
+		t.Fatalf("error message must mention startNewTxOnDispatch, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "COMMIT_BEFORE_DISPATCH") {
+		t.Fatalf("error message must mention COMMIT_BEFORE_DISPATCH, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SYNC") {
+		t.Fatalf("error message must mention the offending mode (SYNC), got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test-wf") || !strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), `"p"`) {
+		t.Fatalf("error message must mention workflow, transition, and processor names, got: %v", err)
+	}
+}
+
+func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *testing.T) {
+	tt := true
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: "EXTERNAL", Name: "p", ExecutionMode: "COMMIT_BEFORE_DISPATCH",
+						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
+	// Default (nil) must not be rejected. Explicit false must not be rejected.
+	ff := false
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: "EXTERNAL", Name: "p1", ExecutionMode: "SYNC",
+						Config: spi.ProcessorConfig{}},
+					{Type: "EXTERNAL", Name: "p2", ExecutionMode: "SYNC",
+						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &ff}},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Fatalf("expected no error for nil/false flag, got: %v", err)
+	}
+}

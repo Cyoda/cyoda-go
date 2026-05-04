@@ -17,6 +17,32 @@ func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 		if err := validateWorkflowLoops(wf); err != nil {
 			return fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}
+		if err := validateProcessorFlags(wf); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProcessorFlags rejects misuse of processor-level flags whose
+// semantics are tied to a specific ExecutionMode. Currently enforces:
+//   - StartNewTxOnDispatch=true is only valid with ExecutionMode=COMMIT_BEFORE_DISPATCH.
+//
+// The check is asymmetric: COMMIT_BEFORE_DISPATCH processors with the flag
+// nil/false are equally valid (the flag just defaults to false). We never
+// inspect the flag for COMMIT_BEFORE_DISPATCH processors.
+func validateProcessorFlags(wf spi.WorkflowDefinition) error {
+	for _, st := range wf.States {
+		for _, tr := range st.Transitions {
+			for _, p := range tr.Processors {
+				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
+					p.ExecutionMode != "COMMIT_BEFORE_DISPATCH" {
+					return fmt.Errorf(
+						"workflow %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
+						wf.Name, tr.Name, p.Name, p.ExecutionMode)
+				}
+			}
+		}
 	}
 	return nil
 }
