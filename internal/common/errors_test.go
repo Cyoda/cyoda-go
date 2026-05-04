@@ -294,38 +294,53 @@ func TestErrCodeSearchResultLimit(t *testing.T) {
 	}
 }
 
-// TestConflict_NotRetryableByDefault pins the behavior change for #126:
-// a plain Conflict represents a permanent business-logic conflict (e.g.
-// "model already locked", ETag mismatch on If-Match). The parity HTTP
-// client retries on properties.retryable=true; if Conflict were retryable
-// every permanent conflict would burn 5 attempts × 30+ms backoff before
-// surfacing to the caller.
-func TestConflict_NotRetryableByDefault(t *testing.T) {
-	err := common.Conflict("model already locked")
+// TestOperational_NotRetryableByDefault pins that 4xx errors from the
+// primitive Operational constructor are non-retryable by default —
+// retryable is opt-in via AsRetryable(). A permanent business-logic
+// conflict ("model already locked", ETag mismatch on If-Match) must
+// not advertise retryable; the parity HTTP client retries on
+// properties.retryable=true and would burn 5 attempts × 30+ms backoff
+// per permanent conflict otherwise.
+func TestOperational_NotRetryableByDefault(t *testing.T) {
+	err := common.Operational(http.StatusConflict, common.ErrCodeModelAlreadyLocked, "model already locked")
 	if err.Status != http.StatusConflict {
 		t.Errorf("status = %d, want 409", err.Status)
 	}
 	if err.Retryable {
-		t.Error("Conflict() must default to retryable=false (permanent business conflict)")
+		t.Error("Operational() must default to retryable=false")
 	}
 	if err.Level != common.LevelOperational {
 		t.Errorf("level = %v, want Operational", err.Level)
 	}
 }
 
-// TestRetryableConflict_RetryableTrue pins the new constructor's contract:
-// transient transaction-abort style conflicts must opt in via this helper
-// so the parity client retry loop can engage.
-func TestRetryableConflict_RetryableTrue(t *testing.T) {
-	err := common.RetryableConflict("transaction conflict — retry")
+// TestOperational_AsRetryable_FlipsRetryableBit pins #140's contract:
+// the three axes (status, code, retryable) are independent and any
+// 4xx with any code can be flagged retryable via the fluent
+// AsRetryable() opt-in. A retryable conflict with a specific
+// dictionary code (e.g. retryable TX_CONFLICT — distinct from the
+// generic CONFLICT) was previously unreachable without bare-field
+// mutation; AsRetryable() closes that gap.
+func TestOperational_AsRetryable_FlipsRetryableBit(t *testing.T) {
+	err := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 	if err.Status != http.StatusConflict {
 		t.Errorf("status = %d, want 409", err.Status)
 	}
 	if !err.Retryable {
-		t.Error("RetryableConflict() must set retryable=true")
+		t.Error("AsRetryable() must set retryable=true")
 	}
 	if err.Code != common.ErrCodeConflict {
 		t.Errorf("code = %q, want %q", err.Code, common.ErrCodeConflict)
+	}
+}
+
+// TestOperational_AsRetryable_ReturnsSameInstance pins that the
+// fluent helper returns the receiver — chains compose without
+// allocating, and the returned pointer equals the input.
+func TestOperational_AsRetryable_ReturnsSameInstance(t *testing.T) {
+	err := common.Operational(http.StatusConflict, common.ErrCodeConflict, "x")
+	if got := err.AsRetryable(); got != err {
+		t.Errorf("AsRetryable() returned %p, want receiver %p", got, err)
 	}
 }
 
@@ -338,7 +353,7 @@ func TestWriteError_PermanentConflict_NoRetryableProperty(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/test", nil)
 
-	common.WriteError(w, r, common.Conflict("model already locked"))
+	common.WriteError(w, r, common.Operational(http.StatusConflict, common.ErrCodeModelAlreadyLocked, "model already locked"))
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", w.Code)
@@ -364,7 +379,7 @@ func TestWriteError_RetryableConflict_AdvertisesRetryable(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/test", nil)
 
-	common.WriteError(w, r, common.RetryableConflict("transaction conflict — retry"))
+	common.WriteError(w, r, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable())
 
 	var pd map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
