@@ -72,9 +72,13 @@ Let `TX_pre` be the parent transaction the cascade was running in when it reache
    either the next COMMIT_BEFORE_DISPATCH segment boundary or final commit.
 ```
 
+After step 9, the cascade either reaches another `COMMIT_BEFORE_DISPATCH` boundary (loop back to step 2 with `TX_pre := TX_post`, `T_pre := T_post`) or reaches its terminal state. The terminal-segment flush is the engine's `EntityStore.Save(entity)` followed by `TxMgr.Commit` — Save (not chained CAS) because no segment boundary has run between the prior CAS and this terminal write; the SERIALIZABLE / plugin-equivalent isolation captures any racing committer at commit time. (For a single-segment cascade with no `COMMIT_BEFORE_DISPATCH` processors, the entire cascade is "the terminal segment": engine does one `Save` + one `Commit`, observably identical to today's handler-driven behaviour.)
+
 If the processor itself returns an error E (not a CAS conflict), the engine surfaces it the same way it surfaces a `SYNC` processor failure today: cascade aborts, `TX_post` rolls back. There is no automatic compensation routing — the workflow author's options are the same as for any processor failure (criteria-based branching on subsequent transitions, or letting the caller retry the original API call which restarts the cascade from the beginning).
 
-The CAS argument source is `T_pre`, the txID stamped on the entity at the prior segment's commit. In the `false` branch this is the strongest possible CAS — no transaction is open between commit and re-acquire, so any external committer that won the race surfaces here. In the `true` branch the CAS is **structurally weaker against in-flight intra-`TX_post` writes**: if the processor writes the cascade-anchor entity itself via the `TX_post` token, those writes are buffered in `TX_post` and invisible to a CAS that reads the committed store. This is the same property a client-driven manual loopback transition has when its processor writes the entity and the engine also applies a returned mutation. Workflow author responsibility — see §10.
+The CAS argument source is `T_pre`, the txID stamped on the row's `_meta.transaction_id` at the prior segment's commit (verified against `plugins/postgres/entity_store.go:46,151`). **The CAS check has identical strength in both `startNewTxOnDispatch` branches** — both compare against the committed-store's stamped txID. The branches differ on a separate axis: in the `=true` branch, if the processor writes the cascade-anchor entity itself via the `TX_post` token, those writes are buffered in `TX_post` and the engine's later apply-result `CompareAndSave` overwrites them (last-writer-wins inside the TX buffer). This intra-`TX_post`-buffer collision is **not** a CAS-strength issue; it is a separate ordering hazard governed by the existing best-practice "a processor must not save the entity it is processing for" (see §10.3). The `=false` branch cannot exhibit this hazard because no transaction is open while the processor runs.
+
+(In postgres, "PG connection released" between segments is the operationally significant property. Memory, sqlite, and cassandra plugins manage their own connection / session model; the connection-pool-relief framing is postgres-specific. Cross-plugin, the segment boundary releases whatever transactional resource the plugin holds open during a TX.)
 
 ## 4. Engine TX ownership inversion
 
@@ -83,8 +87,10 @@ Today, `service.UpdateEntity` (`internal/domain/entity/service.go:867-995`) open
 With `COMMIT_BEFORE_DISPATCH`, the engine must own three things the handler used to own:
 
 1. **TX boundaries** — `Begin` and `Commit` around each cascade segment. Cascades with no `COMMIT_BEFORE_DISPATCH` processors run as a single segment; observable behavior is identical to today. Cascades with one or more `COMMIT_BEFORE_DISPATCH` processors are segmented at each such processor.
-2. **Per-segment SPI writes** — `EntityStore.Save(entity)` (or `CompareAndSave` for the `If-Match` first-segment case, see below) is called by the engine before each segment commit, flushing the in-memory cascade state into the TX's buffer so the commit persists it. The handler's single end-of-cascade `Save` is removed; what was a single write per cascade becomes one write per segment. (For single-segment cascades, that's still a single write — degenerate case.)
+2. **Per-segment SPI writes** — `EntityStore.Save(entity)` (or `CompareAndSave` for the `If-Match` first-segment case, see below) is called by the engine before each segment commit, flushing the in-memory cascade state into the TX's buffer so the commit persists it. The engine uses **per-entity `Save` calls**, not `SaveAll`, so partial-save semantics of `SaveAll` do not apply. The handler's single end-of-cascade `Save` is removed; what was a single write per cascade becomes one write per segment. (For single-segment cascades, that's still a single write — degenerate case.)
 3. **Audit event placement** — events tied to a transition are recorded inside the TX whose commit they should be durable with. See §8.
+
+This applies uniformly to **all three engine cascade entry-points**: `engine.Execute()` (creation cascade triggered by `CreateEntity`), `engine.ManualTransition()` (manual transition triggered by `UpdateEntity` with a transition name), and `engine.Loopback()` (engine.go:228, the loopback cascade). The segmentation logic lives in the cascade driver below the entry-points (`cascadeAutomated` and the per-processor `executeProcessors` switch), not above, so all three entry-points get segmenting for free. Implementers must not edit only `Execute` / `ManualTransition` and miss `Loopback`.
 
 ### 4.1 `If-Match` propagation across segments
 
@@ -177,11 +183,12 @@ There is **no `202 Accepted` / async-poll variant in this scope**. Synchronous c
 
 Each segment of a `COMMIT_BEFORE_DISPATCH` cascade commits its own audit events at TX commit time. Operators get durable audit for completed segments; today a cascade failure rolls back all audit events for that cascade, leaving operators blind.
 
-The cascade engine's audit emission must be split at segment boundaries. Specifically, for a `COMMIT_BEFORE_DISPATCH` processor:
+The cascade engine's audit emission must be split at segment boundaries. The taxonomy:
 
-- A `SMEventDispatchInitiated` (or equivalent — to be named in the plan) is recorded into `TX_pre` at the same point the engine flushes the pre-callout entity state. This event is durable as soon as `TX_pre.Commit` returns, so an engine crash between commit and dispatch leaves the audit trail showing exactly the boundary it stopped at.
-- A `SMEventDispatchCompleted` (or `SMEventDispatchFailed`) is recorded into `TX_post` at the point the engine applies the returned result (or routes a failure). Durable on `TX_post.Commit`.
-- Other audit events (state-machine transitions, criterion evaluations) follow the existing convention and land in whichever TX the engine is currently operating in.
+- **Existing event preserved.** `SMEventStateProcessResult` (currently emitted at `engine.go:574` after every processor dispatch with `success/mode/error` data) **continues to fire** for `COMMIT_BEFORE_DISPATCH` processors, recorded into `TX_post` after the result is applied. No semantic change for this event; readers who consume it today see the same shape.
+- **New event in `TX_pre`.** A `SMEventDispatchInitiated` (final name per plan) is recorded into `TX_pre` at the same point the engine flushes the pre-callout entity state. Durable as soon as `TX_pre.Commit` returns, so an engine crash between commit and dispatch leaves the audit trail showing exactly the boundary it stopped at.
+- **New event in `TX_post`.** A `SMEventDispatchCompleted` (or `SMEventDispatchFailed` on processor error) is recorded into `TX_post` at the point the engine begins the apply-result phase. Durable on `TX_post.Commit`. Strictly precedes the existing `SMEventStateProcessResult` for the same processor; the bracketing event tells operators "the engine has reacquired the cascade after dispatch."
+- **Other audit events** (state-machine transitions, criterion evaluations) follow the existing convention and land in whichever TX the engine is currently operating in — no behavioural change.
 
 A reader scanning audit history can detect a stranded segment programmatically: `SMEventDispatchInitiated` exists, `SMEventDispatchCompleted` / `SMEventDispatchFailed` does not, and `last_modified_date` is older than some operator-chosen threshold. This is an observability improvement, not a recovery mechanism — recovery remains out of scope (§12).
 
@@ -316,6 +323,7 @@ The following cases must have tests in the implementation plan. E2E tests live i
 12. **Validator rejects `startNewTxOnDispatch: true` outside `COMMIT_BEFORE_DISPATCH`** (unit): registration fails with a clear error message.
 13. **Audit-event placement** (unit): assert `SMEventDispatchInitiated` lands in `TX_pre`'s audit, `SMEventDispatchCompleted` in `TX_post`'s, no audit event spans both TXs.
 14. **Cluster mode: `TX_post` opens on the same node that committed `TX_pre`** (unit / integration): assert via the cluster TX-token registry that the same node owns both segments' TX state.
+15. **`engine.Loopback()` cascade containing a `COMMIT_BEFORE_DISPATCH` processor** (E2E): assert segmentation applies uniformly across the third cascade entry-point, not just `Execute` and `ManualTransition`.
 
 These cases are also the verification gate before merging — every one must be green.
 
