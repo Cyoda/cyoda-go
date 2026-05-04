@@ -171,3 +171,7 @@ release:
   extra_files:
     - glob: ./.release-extras/cyoda_help_*.tar.gz
     - glob: ./.release-extras/cyoda_help_*.json
+    # Publish install.sh as a release asset so the canonical install URL
+    # is `/releases/latest/download/install.sh` — pinned per-release rather
+    # than tracking `main` (issue #49).
+    - glob: ./scripts/install.sh
