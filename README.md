@@ -92,7 +92,7 @@ without an on-disk config. Homebrew does not auto-init because its
 ### Any Unix via curl
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/scripts/install.sh | sh
+curl -fsSL https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
 Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Override the

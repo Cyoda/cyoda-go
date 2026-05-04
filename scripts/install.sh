@@ -4,7 +4,7 @@
 # and runs 'cyoda init' to enable sqlite persistence.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/scripts/install.sh | sh
+#   curl -fsSL https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh | sh
 #
 # Pin a version:
 #   CYODA_VERSION=v0.2.0 curl -fsSL ... | sh
