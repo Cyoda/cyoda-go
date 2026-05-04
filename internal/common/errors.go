@@ -58,6 +58,11 @@ func (e *AppError) Unwrap() error { return e.Err }
 // retryable — calling those retryable causes pointless backoff and
 // 5x request amplification on the parity client side.
 //
+// AsRetryable mutates the receiver. The intended call shape is
+// Operational(...).AsRetryable() on a freshly-constructed *AppError
+// — do NOT call on an aliased or shared *AppError, since the flip
+// is observable from every other reference to the same instance.
+//
 // Issue #140 — separates the (status, code, retryable) axes that
 // were previously bundled into specialized helpers (Conflict /
 // RetryableConflict, removed). Retryable is now opt-in on top of
