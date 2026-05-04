@@ -39,6 +39,15 @@ type CachingModelStore struct {
 	jitterRand *rand.Rand // guarded by mu
 
 	flight singleflight.Group
+
+	// localSubMu guards localSubs. Issue #174 — downstream caches
+	// (e.g. the path-validation negative cache) register here to
+	// receive an in-process notification on every invalidation,
+	// regardless of whether a cluster broadcaster is wired up. On
+	// single-node deployments this is the only invalidation channel
+	// available; on multi-node it fires alongside the gossip path.
+	localSubMu sync.RWMutex
+	localSubs  []func(tenant string, ref spi.ModelRef)
 }
 
 type cacheKey struct {
@@ -224,6 +233,7 @@ func (c *CachingModelStore) evict(key cacheKey) {
 func (c *CachingModelStore) invalidate(ctx context.Context, ref spi.ModelRef) {
 	key := cacheKey{tenant: tenantOf(ctx), ref: ref}
 	c.evict(key)
+	c.notifyLocalSubscribers(key.tenant, ref)
 	if c.broadcaster != nil {
 		payload, err := EncodeInvalidation(key.tenant, ref)
 		if err == nil {
@@ -238,6 +248,33 @@ func (c *CachingModelStore) handleInvalidation(payload []byte) {
 		return
 	}
 	c.evict(cacheKey{tenant: tenant, ref: ref})
+	c.notifyLocalSubscribers(tenant, ref)
+}
+
+// SubscribeLocal registers an in-process invalidation handler. The
+// handler fires for every invalidation seen by this store —
+// originating from a local mutation (Save/Lock/Unlock/SetChangeLevel/
+// Delete/ExtendSchema) AND from gossip events received from peer
+// nodes. Downstream caches keyed off the same (tenant, ref) tuple
+// (e.g. the path-validation negative cache) use this to stay in lock
+// step with the descriptor cache regardless of cluster topology.
+//
+// Issue #174 — pre-fix the path-validation cache subscribed to the
+// gossip broadcaster directly, so single-node deployments (where the
+// broadcaster is nil) never received any invalidation events.
+func (c *CachingModelStore) SubscribeLocal(h func(tenant string, ref spi.ModelRef)) {
+	c.localSubMu.Lock()
+	defer c.localSubMu.Unlock()
+	c.localSubs = append(c.localSubs, h)
+}
+
+func (c *CachingModelStore) notifyLocalSubscribers(tenant string, ref spi.ModelRef) {
+	c.localSubMu.RLock()
+	subs := append([]func(string, spi.ModelRef){}, c.localSubs...)
+	c.localSubMu.RUnlock()
+	for _, h := range subs {
+		h(tenant, ref)
+	}
 }
 
 // jitteredLeaseLocked returns lease ± 10 %. MUST be called with c.mu
