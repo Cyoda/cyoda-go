@@ -534,12 +534,16 @@ const gossipSettleDelay = 1 * time.Second
 
 // LaunchCyodaClusterAndCompute builds the stock cyoda + compute
 // binaries and launches n cyoda-go subprocesses sharing the supplied
-// backing storage (carried in extraEnv). Cluster bootstrap envs
-// (CYODA_CLUSTER_ENABLED, CYODA_NODE_ID, CYODA_NODE_ADDR,
-// CYODA_GOSSIP_ADDR, CYODA_SEED_NODES, CYODA_HMAC_SECRET) are added
-// per node by this function — callers MUST NOT supply them. extraEnv
-// is for backend wiring only (e.g. CYODA_STORAGE_BACKEND=postgres,
-// CYODA_POSTGRES_URL=...).
+// backing storage (carried in extraEnv). Use this from in-tree parity
+// tests. For out-of-tree consumers (e.g. cyoda-go-cassandra's full
+// binary) that need to inject their own pre-built cyoda binary, use
+// LaunchCyodaClusterAndComputeWithBinaries.
+//
+// Cluster bootstrap envs (CYODA_CLUSTER_ENABLED, CYODA_NODE_ID,
+// CYODA_NODE_ADDR, CYODA_GOSSIP_ADDR, CYODA_SEED_NODES,
+// CYODA_HMAC_SECRET) are added per node by this function — callers
+// MUST NOT supply them. extraEnv is for backend wiring only (e.g.
+// CYODA_STORAGE_BACKEND=postgres, CYODA_POSTGRES_URL=...).
 //
 // Allocates n × 4 free ports (HTTP, gRPC, gossip, admin) for per-node
 // isolation.
@@ -548,10 +552,6 @@ const gossipSettleDelay = 1 * time.Second
 // cleanup function kills all subprocesses; the caller is responsible
 // for any external resource (e.g. the postgres testcontainer).
 func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts ...LaunchOpts) (*ClusterLaunchResult, func(), error) {
-	if n < 1 {
-		return nil, nil, fmt.Errorf("LaunchCyodaClusterAndCompute: n must be >= 1, got %d", n)
-	}
-
 	cyodaBin, err := BuildCyodaBinary()
 	if err != nil {
 		return nil, nil, err
@@ -560,7 +560,26 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 	if err != nil {
 		return nil, nil, err
 	}
+	return LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin, ks, n, extraEnv, opts...)
+}
 
+// LaunchCyodaClusterAndComputeWithBinaries is the binary-path-explicit
+// variant of LaunchCyodaClusterAndCompute. Out-of-tree consumers
+// maintaining their own backend plugin (e.g. cyoda-go-cassandra) build
+// a cmd/cyoda-go binary that blank-imports their plugin, then drive the
+// shared parity scenario suite against that binary by passing its path
+// here. Issue #157 — symmetric to LaunchCyodaAndComputeWithBinaries.
+//
+// cyodaBin and computeBin must be absolute paths to already-built
+// executables. All cluster-bootstrap logic (port allocation, gossip
+// seed CSV, HMAC derivation, health probing, compute-client wiring to
+// node 0) is plugin-agnostic and lives here.
+func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySet, n int, extraEnv []string, opts ...LaunchOpts) (*ClusterLaunchResult, func(), error) {
+	if n < 1 {
+		return nil, nil, fmt.Errorf("LaunchCyodaClusterAndComputeWithBinaries: n must be >= 1, got %d", n)
+	}
+
+	var err error
 	var opt LaunchOpts
 	if len(opts) > 0 {
 		opt = opts[0]
