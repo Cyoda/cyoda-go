@@ -371,7 +371,55 @@ These cases are also the verification gate before merging — every one must be 
 
 Pool pressure under 10 concurrent such cascades: ~10 × 150ms = 1.5 connection-seconds, vs today's 10 × 10s = 100 connection-seconds. ~67× improvement on connection-pool pressure for this workload.
 
-## Appendix B: References
+## Appendix B: Application-builder semantics
+
+This appendix answers integrator-level questions surfaced during design review. None of these introduce new mechanisms — they pin down the engine's observable contract for the questions an integrator will ask in practice.
+
+### C.1 TX_post conflict-retry policy
+
+When `CompareAndSave` in TX_post fails because a concurrent transaction modified the anchor entity (e.g. a manual cancel transition fired while a `COMMIT_BEFORE_DISPATCH` processor was mid-flight):
+
+- **The engine fails TX_post once and surfaces `ErrConflict` → `409 retryable`.** Cascade halts. Entity remains durable in the pre-callout committed state. **No engine-side retry. No engine-side compensation transition.** The caller decides what to do — retry the original API call (which restarts the cascade from the beginning), give up, or route via application-layer logic.
+- **No automatic compensation transition** is fired. The workflow's existing transition / criteria mechanisms are evaluated only when a transition explicitly fires; CAS conflict is not an event the workflow can subscribe to.
+- **External side effects produced by the dispatched processor are not rolled back.** If the processor created a TeamCity build (or any external resource) before the conflict, the build persists while the entity has reverted to pre-callout. This is a workflow-author concern: either dispatch-then-CAS-fail-recovery is designed at the application layer, or the processor's external effect must be detect-and-cleanup-friendly.
+
+Engine retry was rejected because it duplicates external dispatch cost (cf. §11 cost amplification) and changes the existing 409-retryable client contract. Engine-side compensation was rejected because evaluating a "criterion against the conflict outcome" requires a mechanism the workflow model does not have, and adding one would broaden the change beyond this issue's scope.
+
+### C.2 Re-dispatch identity on transient processor failures
+
+When the processor fails to respond (DISPATCH_TIMEOUT, member crash, network partition between dispatch and response):
+
+- **The engine does not retry the dispatch.** There is no reaper, no automatic re-dispatch mechanism for in-flight processors. The engine surfaces the failure; TX_post is not opened; entity remains in pre-callout state; cascade halts.
+- **Each client-driven retry is a fresh dispatch with a new dispatch ID.** The dispatch ID is not stable across retries; it is generated per-call. Processors that need deduplication must do it on **application-meaningful keys** the workflow author embeds in the entity payload (e.g. an idempotency key, a stable resource identifier, a deterministic external-resource name derived from entity ID + a stable timestamp) — not on the dispatch ID.
+- **Max-redispatch count is zero engine-side.** The client's retry policy is the only bound. Q1's CAS-conflict retries and Q2's transient-failure retries share no engine-side budget because both are zero engine-side; the client-side budget covers both.
+
+For external-side-effect processors (creating builds, sending notifications, charging payments): the workflow author must design idempotency on application-meaningful keys — typically by setting a deterministic external identifier on the entity *before* the dispatch fires, and having the processor check the external system for that identifier before triggering a new side effect.
+
+### C.3 Behaviour on `success=false`
+
+When a `COMMIT_BEFORE_DISPATCH` processor returns `success=false` (or times out, or the dispatch fails):
+
+- **Same as `SYNC` mode today** (`cmd/cyoda/help/content/workflows.md:143`): returns `WORKFLOW_FAILED` (`400`); entity remains in the pre-callout state (the source state of the failing transition); cascade halts; no automatic compensation.
+- **No criterion-based compensation routing.** The workflow model does not provide a mechanism to read processor return data and route to a compensation transition. If you need this pattern, model it at the application layer: the application explicitly fires a follow-up transition based on its own logic, and that transition's criteria can read the entity's data.
+
+### C.4 Idempotency-skip return shape
+
+When a processor decides to no-op (e.g. detects that the external resource already exists):
+
+- **Recommended return: `success=true, payload.data=null`.** TX_post still opens and commits — the cascade still needs to advance the entity from S_pre to S_post (the transition's target state). `payload.data=null` means the engine does **not** overwrite the entity's `data` field; it does still write the new `state` and the row receives a new `transaction_id`. So:
+  - The version bumps (the row is rewritten with the new state + new txID).
+  - The data field is preserved.
+  - CAS still applies (`expected=T_pre`); a concurrent committer is still detected.
+- **No "skip TX_post" mode exists.** The engine always opens TX_post and commits the state advance when the processor returns success. There is no way to return success and have the cascade stay in pre-callout state.
+- **For true no-op (no version bump, no state change), use a transition criterion instead of a processor-side check.** A criterion on the transition that returns false aborts the transition before dispatch; the entity stays in the prior state, no processor runs, no version bumps. This is the right pattern for "if external resource already exists, do nothing" — the criterion reads the entity's payload (which holds the resource identifier) and short-circuits.
+
+### C.5 Config attribute confirmations
+
+- **`executionMode: COMMIT_BEFORE_DISPATCH`** is a per-processor field on `ExternalizedProcessorDefinitionDto` (the existing schema location for `executionMode`), sibling to the existing `SYNC` / `ASYNC_SAME_TX` / `ASYNC_NEW_TX` values. Per §6.
+- **`startNewTxOnDispatch: bool`** is a sibling field on the same processor object, default `false`, valid only when `executionMode == "COMMIT_BEFORE_DISPATCH"`. Validator rejects `true` for any other mode (§6.1).
+- **`responseTimeoutMs`** semantics unchanged — same per-processor wall-clock budget for the dispatched call. For `COMMIT_BEFORE_DISPATCH`, this is the timeout window between `TX_pre.Commit` and `TX_post.Begin` (the external compute interval). The connection-pool relief benefit of the `false` branch applies during this window.
+
+## Appendix C: References
 
 - Issue #27 (this document's subject)
 - `/Users/paul/go-projects/cyoda-light/cyoda-light-go/docs/design/fault-analysis.md` (predecessor's design analysis — fault line 3 §4, fault line 4 §5, commit-on-callout option §11)
