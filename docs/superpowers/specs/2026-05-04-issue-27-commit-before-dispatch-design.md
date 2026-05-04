@@ -33,7 +33,7 @@ An optional `startNewTxOnDispatch: bool` flag (default `false`) selects between 
 
 For a transition `T: S_pre → S_post` whose processor `P` has `executionMode: "COMMIT_BEFORE_DISPATCH"`:
 
-Let `TX_pre` be the parent transaction the cascade was running in when it reached `T`. Let `T_pre` be the txID of `TX_pre` (assigned at `Begin` and stamped onto every entity row written within that TX at `Commit` time). Let `TX_post` be the transaction in which the result is applied and the cascade continues; let `T_post` be its txID.
+Let `TX_pre` be the parent transaction the cascade was running in when it reached `T`. Let `T_pre` be the txID of `TX_pre` (assigned at `Begin` and stamped onto each entity row at `Save` time inside `TX_pre`, becoming durable on `TX_pre.Commit` — verified at `plugins/postgres/entity_store.go:46-48`). Let `TX_post` be the transaction in which the result is applied and the cascade continues; let `T_post` be its txID.
 
 ```
 1. Cascade in TX_pre reaches transition T, processor P
@@ -72,7 +72,7 @@ Let `TX_pre` be the parent transaction the cascade was running in when it reache
    either the next COMMIT_BEFORE_DISPATCH segment boundary or final commit.
 ```
 
-After step 9, the cascade either reaches another `COMMIT_BEFORE_DISPATCH` boundary (loop back to step 2 with `TX_pre := TX_post`, `T_pre := T_post`) or reaches its terminal state. The terminal-segment flush is the engine's `EntityStore.Save(entity)` followed by `TxMgr.Commit` — Save (not chained CAS) because no segment boundary has run between the prior CAS and this terminal write; the SERIALIZABLE / plugin-equivalent isolation captures any racing committer at commit time. (For a single-segment cascade with no `COMMIT_BEFORE_DISPATCH` processors, the entire cascade is "the terminal segment": engine does one `Save` + one `Commit`, observably identical to today's handler-driven behaviour.)
+After step 9, the cascade either reaches another `COMMIT_BEFORE_DISPATCH` boundary (loop back to step 2 with `TX_pre := TX_post`, `T_pre := T_post`) or reaches its terminal state. The terminal-segment flush is the engine's `EntityStore.Save(entity)` followed by `TxMgr.Commit` — Save (not chained CAS) because no segment boundary has run between the prior CAS and this terminal write; the existing **first-committer-wins** mechanism (postgres uses `RepeatableRead` isolation at `plugins/postgres/transaction_manager.go:68` plus application-layer read-set re-validation in `Commit` at `transaction_manager.go:128-153`; other plugins implement equivalent FCW protection) captures any racing committer at commit time. (For a single-segment cascade with no `COMMIT_BEFORE_DISPATCH` processors, the entire cascade is "the terminal segment": engine does one `Save` + one `Commit`, observably identical to today's handler-driven behaviour.)
 
 If the processor itself returns an error E (not a CAS conflict), the engine surfaces it the same way it surfaces a `SYNC` processor failure today: cascade aborts, `TX_post` rolls back. There is no automatic compensation routing — the workflow author's options are the same as for any processor failure (criteria-based branching on subsequent transitions, or letting the caller retry the original API call which restarts the cascade from the beginning).
 
@@ -94,9 +94,9 @@ This applies uniformly to **all three engine cascade entry-points**: `engine.Exe
 
 ### 4.1 `If-Match` propagation across segments
 
-The HTTP `If-Match` header (and `input.IfMatch` field at `service.go:978-992`) supplies the caller's expected txID. Today this is enforced once at the handler's single `CompareAndSave`. With segmenting, it must move to the **first segment's** entity-flush:
+The HTTP `If-Match` header (and `input.IfMatch` field at `service.go:978-992`) supplies the caller's expected txID. Today this is enforced once at the handler's single `CompareAndSave` at end-of-cascade. With segmenting, it moves to the **first segment's** entity-flush:
 
-- The first segment's entity-flush is `CompareAndSave(entity, expectedTxID = input.IfMatch)` instead of `Save`. Stale `If-Match` aborts before any segment commits or any external dispatch fires — the same property as today.
+- The first segment's entity-flush is `CompareAndSave(entity, expectedTxID = input.IfMatch)` instead of `Save`. For cascades **containing a `COMMIT_BEFORE_DISPATCH` processor**, this is strictly *earlier* enforcement than today — a stale `If-Match` aborts before any segment commits or any external dispatch fires. For cascades **without** a `COMMIT_BEFORE_DISPATCH` processor (single-segment), the first segment is the whole cascade and observable timing is identical to today.
 - Subsequent segments use chained CAS: each segment's CAS-on-continuation expects the prior segment's commit-time txID (`T_pre` of that segment), as described in §3.
 
 This keeps `If-Match` as a single-shot client-supplied check at cascade entry, while internal segmentation uses engine-managed CAS.
@@ -116,7 +116,9 @@ The cascade is driven server-side by the same goroutine that holds the client's 
 
 ### 4.4 SaveAll and multi-entity cascades
 
-Cascades may mutate multiple entities (cross-entity CRUD via processors). When a `COMMIT_BEFORE_DISPATCH` segment touches multiple entities, the segment's `Commit` flushes all of them as one atomic unit; the segment's CAS-on-continuation guards **only the cascade-anchor entity** (the entity the cascade was started on). Other entities mutated during the segment have no per-entity CAS guard at segment continuation; their FCW protection comes from `TX_post` re-reading and re-writing them under SERIALIZABLE isolation (postgres) or its plugin equivalent.
+Cascades may mutate multiple entities (cross-entity CRUD via processors). When a `COMMIT_BEFORE_DISPATCH` segment touches multiple entities, the segment's `Commit` flushes all of them as one atomic unit; the segment's CAS-on-continuation guards **only the cascade-anchor entity** (the entity the cascade was started on).
+
+Other entities mutated during the segment get FCW protection from the **read-set captured during `TX_post`'s execution** (`plugins/postgres/transaction_manager.go:128-153` re-validates each read entity's `transaction_id` at commit). The implication for workflow authors using `COMMIT_BEFORE_DISPATCH`: a secondary entity that is **written without first being read** inside `TX_post` has *no* FCW guard against external mutation between the secondary entity's last read (in `TX_pre` or earlier) and `TX_post.Commit`. Write-without-read on a secondary entity inside a `COMMIT_BEFORE_DISPATCH` segment is the same hazard as write-without-read in any other transaction; it is not introduced by this design. Workflow authors should ensure cross-entity work follows read-then-write order if they need FCW protection across segments.
 
 This is the same per-entity-CAS scope as the client-driven manual loopback: `If-Match` covers the anchor entity only.
 
@@ -186,6 +188,8 @@ Each segment of a `COMMIT_BEFORE_DISPATCH` cascade commits its own audit events 
 The cascade engine's audit emission must be split at segment boundaries. The taxonomy:
 
 - **Existing event preserved.** `SMEventStateProcessResult` (currently emitted at `engine.go:574` after every processor dispatch with `success/mode/error` data) **continues to fire** for `COMMIT_BEFORE_DISPATCH` processors, recorded into `TX_post` after the result is applied. No semantic change for this event; readers who consume it today see the same shape.
+
+**Audit-event txID labelling decision.** Today every cascade event passed to the audit store carries the cascade-entry `txID` as its `transaction_id` (`engine.go:543, 479, 471`). After segmentation, the engine continues to use the **cascade-entry txID as the audit `transaction_id` label across all events of one cascade**, even when the events are physically durable in different segment transactions. Rationale: the `transaction_id` field on audit events identifies a logical cascade for client-facing correlation (used by `GET /api/audit/entity/{id}/workflow/{transactionId}`), not a physical transaction boundary. Audit consumers who need physical-segment information can use the entity's `_meta.transaction_id` snapshot at each event time plus the segment-bracketing `SMEventDispatchInitiated` / `SMEventDispatchCompleted` markers. This preserves the existing `transactionId`-keyed audit-query API.
 - **New event in `TX_pre`.** A `SMEventDispatchInitiated` (final name per plan) is recorded into `TX_pre` at the same point the engine flushes the pre-callout entity state. Durable as soon as `TX_pre.Commit` returns, so an engine crash between commit and dispatch leaves the audit trail showing exactly the boundary it stopped at.
 - **New event in `TX_post`.** A `SMEventDispatchCompleted` (or `SMEventDispatchFailed` on processor error) is recorded into `TX_post` at the point the engine begins the apply-result phase. Durable on `TX_post.Commit`. Strictly precedes the existing `SMEventStateProcessResult` for the same processor; the bracketing event tells operators "the engine has reacquired the cascade after dispatch."
 - **Other audit events** (state-machine transitions, criterion evaluations) follow the existing convention and land in whichever TX the engine is currently operating in — no behavioural change.
@@ -195,6 +199,15 @@ A reader scanning audit history can detect a stranded segment programmatically: 
 ## 9. Out-of-scope finding: cassandra-vs-postgres `ASYNC_NEW_TX` divergence
 
 Verified during review: cassandra plugin's `Savepoint` commits the parent transaction and starts a fresh child (`cyoda-go-cassandra/internal/integration/tx_manager_test.go:192-218`, `TestTxManager_Savepoint_CommitsParent`). Postgres `Savepoint` issues a PG `SAVEPOINT` nested in the parent. These give materially different durability properties for `ASYNC_NEW_TX`-mode side-effect work. **Out of scope here**; to be filed separately. No changes to `ASYNC_NEW_TX` are made by this design.
+
+### 9.1 Mixed `ASYNC_NEW_TX` + `COMMIT_BEFORE_DISPATCH` in one transition's processor list
+
+A transition may declare a processor list mixing modes. The interaction between `ASYNC_NEW_TX` (savepoint on postgres, child TX on cassandra per §9) and `COMMIT_BEFORE_DISPATCH` (segment commit) within the same transition is well-defined:
+
+- **`[ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH]`:** the `ASYNC_NEW_TX` processor runs first inside `TX_pre` (savepoint released or committed-then-resumed depending on plugin per §9). Whatever durable state results from `ASYNC_NEW_TX` is part of `TX_pre`'s commit at the segment boundary. Then `COMMIT_BEFORE_DISPATCH` runs as described in §3.
+- **`[COMMIT_BEFORE_DISPATCH, ASYNC_NEW_TX]`:** the `COMMIT_BEFORE_DISPATCH` processor runs first; its segment commits as `TX_pre`. The cascade re-enters in `TX_post`. The `ASYNC_NEW_TX` processor then runs *inside `TX_post`* (savepoint there). The `ASYNC_NEW_TX` plugin-divergence (§9) applies to whichever plugin is in use; this design does not paper over it.
+
+Workflow authors should not assume `ASYNC_NEW_TX` work is atomic with `COMMIT_BEFORE_DISPATCH` work in the same processor list — segmentation cuts the atomic scope at the `COMMIT_BEFORE_DISPATCH` boundary. The §9 cross-plugin divergence on `ASYNC_NEW_TX` durability under parent rollback inherits unchanged into mixed pipelines.
 
 ## 10. Workflow author requirements
 
@@ -224,7 +237,7 @@ If existing best-practice docs do not state this rule explicitly, the plan adds 
 
 ### 10.4 Multi-entity cascades
 
-When a `COMMIT_BEFORE_DISPATCH` segment mutates multiple entities, only the cascade-anchor entity is CAS-guarded at segment continuation (§4.4). Workflow authors who care about cross-entity FCW within a segment should rely on the existing SERIALIZABLE / plugin-equivalent isolation, not on per-segment CAS.
+When a `COMMIT_BEFORE_DISPATCH` segment mutates multiple entities, only the cascade-anchor entity is CAS-guarded at segment continuation (§4.4). Secondary entities get FCW protection only if they are **read inside the same segment** (entering the segment's read-set, which is re-validated at commit by application-layer FCW — postgres `RepeatableRead` + read-set check, not SSI). Write-without-read inside a segment leaves the secondary entity unprotected against external mutation; workflow authors must read-then-write if they need cross-entity FCW within a segment.
 
 ## 11. Risks
 
@@ -234,7 +247,7 @@ When a `COMMIT_BEFORE_DISPATCH` segment mutates multiple entities, only the casc
 
 **Observable intermediate states** are a behavior change for readers depending on cascade atomicity for visibility (§10.2). Mitigation: documented as a property of the new mode; workflow authors who need invisibility model that explicitly through state-machine design.
 
-**Hot-entity livelock** is a new attractor under load. Multiple concurrent cascades operating on the same entity all expect `T_pre` from the prior segment's commit; whichever cascade commits its segment first invalidates every other in-flight cascade's CAS expectation. Under sustained high concurrency on a small set of hot entities, all but one cascade per round abort with `409 retryable` and restart from the beginning, re-dispatching processors. Mitigation: this is the same retry pattern as today's serialization-storm scenario (`docs/CONSISTENCY.md` Appendix A discusses the precedent for the regular `ErrConflict` retry path); operators tune client retry backoff. Test coverage in §16 case 8.
+**Hot-entity livelock with cost amplification** is a new attractor under load. Multiple concurrent cascades operating on the same entity all expect `T_pre` from the prior segment's commit; whichever cascade commits its segment first invalidates every other in-flight cascade's CAS expectation. Under sustained high concurrency on a small set of hot entities, all but one cascade per round abort with `409 retryable` and restart from the beginning. Unlike today's serialization-conflict retry pattern (where retry costs are bounded by re-running local logic against postgres), every retry under `COMMIT_BEFORE_DISPATCH` **re-dispatches every prior `COMMIT_BEFORE_DISPATCH` processor in the cascade**, re-incurring external compute cost — ML inference billing, third-party API quotas, latency to external services. The cost amplification scales with cascade depth × external dispatch cost × livelock round count. Mitigations: (a) operators serialize hot-entity workloads via per-anchor concurrency limits or queue-front-end throttling — out-of-engine; (b) clients implement jittered exponential backoff on `409 retryable` (already a documented expectation in `docs/CONSISTENCY.md` §10); (c) workflow authors avoid placing `COMMIT_BEFORE_DISPATCH` processors on transitions that fan into a single hot-entity write target. Test coverage in §16 case 8.
 
 ## 12. Out of scope for this issue
 
