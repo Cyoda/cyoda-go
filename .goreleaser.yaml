@@ -162,6 +162,37 @@ docker_signs:
       - "--yes"
       - "${artifact}"
 
+signs:
+  # Issue #47 — keyless cosign signatures on archive and checksum
+  # artifacts. Uses Sigstore + GitHub Actions OIDC; release.yml already
+  # sets `id-token: write` and installs cosign. Produces sibling .sig
+  # and .pem files alongside each archive and SHA256SUMS so consumers
+  # can run `cosign verify-blob --certificate=...pem --signature=...sig`
+  # without trusting any long-lived key. install.sh auto-verifies when
+  # cosign is on PATH.
+  - id: archives
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - "sign-blob"
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: archive
+  - id: checksum
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - "sign-blob"
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
 sboms:
   - artifacts: archive
 
