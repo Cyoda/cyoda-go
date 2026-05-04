@@ -47,7 +47,30 @@ func (e *AppError) Error() string { return e.Message }
 
 func (e *AppError) Unwrap() error { return e.Err }
 
+// AsRetryable flips the retryable bit on a 4xx error and returns the
+// receiver for fluent chaining. Use for the rare case a 4xx is
+// retry-eligible — typically SERIALIZABLE transaction aborts
+// (40001/40P01) or optimistic-lock failures triggered by concurrent
+// writers, where naive retry without a state change can succeed.
+//
+// Permanent business-logic conflicts (locked-state mismatches, ETag
+// mismatches, cardinality precondition failures) MUST NOT be flagged
+// retryable — calling those retryable causes pointless backoff and
+// 5x request amplification on the parity client side.
+//
+// Issue #140 — separates the (status, code, retryable) axes that
+// were previously bundled into specialized helpers (Conflict /
+// RetryableConflict, removed). Retryable is now opt-in on top of
+// any (status, code) pair via Operational(...).AsRetryable().
+func (e *AppError) AsRetryable() *AppError {
+	e.Retryable = true
+	return e
+}
+
 // Operational creates a client error (4xx). No internal detail is captured.
+//
+// Default is non-retryable; for the rare retry-eligible 4xx (e.g. a
+// SERIALIZABLE transaction abort), chain .AsRetryable().
 func Operational(status int, code string, message string) *AppError {
 	return &AppError{
 		Level:   LevelOperational,
@@ -57,52 +80,15 @@ func Operational(status int, code string, message string) *AppError {
 	}
 }
 
-// Conflict creates a 409 Conflict error for a permanent, non-retryable
-// business-logic conflict (e.g. "model already locked", ETag mismatch on
-// If-Match, "cannot delete: entities exist"). Retrying the same request
-// without a state change will never succeed, so retryable defaults to false.
-//
-// For transient conflicts that ARE expected to succeed on retry (e.g.
-// SERIALIZABLE 40001/40P01 transaction aborts) use RetryableConflict.
-func Conflict(message string) *AppError {
-	return &AppError{
-		Level:     LevelOperational,
-		Status:    http.StatusConflict,
-		Code:      ErrCodeConflict,
-		Message:   fmt.Sprintf("%s: %s", ErrCodeConflict, message),
-		Retryable: false,
-	}
-}
-
-// RetryableConflict creates a 409 Conflict error that the parity HTTP client
-// (e2e/parity/client/http.go isRetryableConflict) is allowed to retry. Use it
-// only for transient conflicts that depend on concurrent state and may
-// succeed on a fresh attempt — typically SERIALIZABLE transaction aborts and
-// optimistic-lock failures triggered by concurrent writers.
-//
-// Permanent business conflicts (locked-state mismatches, ETag mismatches,
-// cardinality precondition failures) MUST use Conflict — calling those
-// retryable causes pointless backoff and 5x request amplification on the
-// client side.
-func RetryableConflict(message string) *AppError {
-	return &AppError{
-		Level:     LevelOperational,
-		Status:    http.StatusConflict,
-		Code:      ErrCodeConflict,
-		Message:   fmt.Sprintf("%s: %s", ErrCodeConflict, message),
-		Retryable: true,
-	}
-}
-
 // Internal creates a 500 error with internal detail from the wrapped error.
 //
 // If the wrapped error is (or wraps) spi.ErrConflict, the result is routed to
-// RetryableConflict instead — a serialization abort (40001/40P01) that fully
+// a retryable 409 instead — a serialization abort (40001/40P01) that fully
 // rolled back is retryable, not a server error. This keeps every call site
 // honest without forcing each to reason about pgx error codes.
 func Internal(message string, err error) *AppError {
 	if err != nil && errors.Is(err, spi.ErrConflict) {
-		return RetryableConflict("transaction conflict — retry")
+		return Operational(http.StatusConflict, ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 	}
 	detail := ""
 	if err != nil {
