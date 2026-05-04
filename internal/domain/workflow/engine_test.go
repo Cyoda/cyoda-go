@@ -1873,12 +1873,12 @@ func TestAsyncNewTx_ParentRollbackDiscardsWork(t *testing.T) {
 	}
 }
 
-// TestEngine_CommitAndReopenSegment_FlushesAndReopens drives the
+// TestEngine_CommitAndBeginNextSegment_FlushesAndReopens drives the
 // COMMIT_BEFORE_DISPATCH segment-boundary primitive. The helper must:
 //   - Flush the in-memory entity to TX_pre's buffer.
 //   - Commit TX_pre, making the entity durable across the boundary.
 //   - Begin a fresh TX_post and return its txID + ctx.
-func TestEngine_CommitAndReopenSegment_FlushesAndReopens(t *testing.T) {
+func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -1903,9 +1903,9 @@ func TestEngine_CommitAndReopenSegment_FlushesAndReopens(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	newTxID, newCtx, err := engine.commitAndReopenSegment(txCtx, entity, txID)
+	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID)
 	if err != nil {
-		t.Fatalf("commitAndReopenSegment: %v", err)
+		t.Fatalf("commitAndBeginNextSegment: %v", err)
 	}
 	if newTxID == "" {
 		t.Fatalf("expected non-empty newTxID")

@@ -637,7 +637,7 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 	return nil
 }
 
-// commitAndReopenSegment is the COMMIT_BEFORE_DISPATCH segment-boundary
+// commitAndBeginNextSegment is the COMMIT_BEFORE_DISPATCH segment-boundary
 // primitive. It flushes the in-memory entity to txID's buffer, commits
 // txID (TX_pre), and begins a fresh TX (TX_post). The caller continues
 // the cascade in (newCtx, newTxID).
@@ -646,7 +646,7 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // (durable) — the caller cannot rollback prior work. Errors flow back as
 // they do for any other engine failure: the cascade aborts and surfaces
 // the error to its caller.
-func (e *Engine) commitAndReopenSegment(ctx context.Context, entity *spi.Entity, txID string) (newTxID string, newCtx context.Context, err error) {
+func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID string) (newTxID string, newCtx context.Context, err error) {
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("commit-before-dispatch: get entity store: %w", err)
