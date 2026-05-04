@@ -71,11 +71,20 @@ func NewPathValidationCache() *PathValidationCache {
 // current negative-cache entry — i.e. the path was previously
 // confirmed absent from the model's FieldsMap and no schema-change
 // invalidation has fired for that model since.
+//
+// The lookup AND the otter GetIfPresent call run under c.mu so a
+// concurrent InvalidateRef cannot drop the bucket between the two
+// steps (review #211 — TOCTOU concern). otter.Cache is internally
+// thread-safe; the mutex is about preserving the "operate on the
+// bucket I just resolved from c.buckets" invariant, not about
+// otter's own concurrency.
 func (c *PathValidationCache) IsAbsent(tenant string, ref spi.ModelRef, path string) bool {
 	if c == nil {
 		return false
 	}
-	bucket := c.bucketFor(modelRefKey{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bucket := c.bucketLocked(modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
@@ -91,11 +100,17 @@ func (c *PathValidationCache) IsAbsent(tenant string, ref spi.ModelRef, path str
 // absent. Subsequent IsAbsent calls return true until either the
 // path's bucket is invalidated via InvalidateRef or otter's S3-FIFO
 // eviction reaps the entry under bucket-internal pressure.
+//
+// Lock held across both bucket allocation and Set so a concurrent
+// InvalidateRef can't drop the bucket out from under us — without
+// the lock the Set would land in an orphaned bucket (review #211).
 func (c *PathValidationCache) MarkAbsent(tenant string, ref spi.ModelRef, path string) {
 	if c == nil {
 		return
 	}
-	bucket := c.bucketFor(modelRefKey{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bucket := c.bucketLocked(modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
@@ -112,7 +127,9 @@ func (c *PathValidationCache) MarkPresent(tenant string, ref spi.ModelRef, path 
 	if c == nil {
 		return
 	}
-	bucket := c.bucketFor(modelRefKey{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bucket := c.bucketLocked(modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
@@ -143,9 +160,11 @@ func (c *PathValidationCache) InvalidateRef(tenant string, ref spi.ModelRef) {
 	})
 }
 
-func (c *PathValidationCache) bucketFor(k modelRefKey, createIfMissing bool) *otter.Cache[string, struct{}] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// bucketLocked returns the bucket for k. Caller MUST hold c.mu — the
+// returned otter.Cache pointer is only safe to operate on while c.mu
+// is held, since InvalidateRef may delete the map entry concurrently
+// otherwise (review #211).
+func (c *PathValidationCache) bucketLocked(k modelRefKey, createIfMissing bool) *otter.Cache[string, struct{}] {
 	b, ok := c.buckets[k]
 	if ok {
 		return b

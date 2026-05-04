@@ -26,11 +26,12 @@ set -eu
 REPO="cyoda-platform/cyoda-go"
 INSTALL_DIR="${CYODA_INSTALL_DIR:-$HOME/.local/bin}"
 # Cosign keyless verification expects the signing identity to come from
-# this OIDC issuer (GitHub Actions) and the cert subject to match a
-# workflow path under our org+repo. The release.yml workflow runs with
-# `id-token: write` and is the only ref that can mint a matching cert.
+# this OIDC issuer (GitHub Actions) and the cert subject to match the
+# release.yml workflow path under our org+repo. release.yml is the only
+# workflow with `id-token: write`, so any future workflow added to the
+# repo cannot mint a cert that satisfies this regex.
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
-COSIGN_IDENTITY_REGEX="^https://github.com/cyoda-platform/cyoda-go/"
+COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda-platform/cyoda-go/\.github/workflows/release\.yml@"
 
 err() { printf 'install.sh: error: %s\n' "$*" >&2; }
 warn() { printf 'install.sh: warning: %s\n' "$*" >&2; }
@@ -90,12 +91,26 @@ resolve_version() {
         | head -n1
 }
 
+# cosign_fetch downloads a release asset and prints its HTTP status to
+# stdout (so callers can distinguish 200, 404, and other failures).
+# Unlike curl -fsSL, a 404 here does NOT terminate the script.
+cosign_fetch() {
+    cf_url=$1
+    cf_dest=$2
+    curl -sS -o "$cf_dest" -w "%{http_code}" "$cf_url" 2>/dev/null || printf '000'
+}
+
 # cosign_verify runs keyless Sigstore verification of the archive and
 # SHA256SUMS using sibling .sig + .pem assets published by GoReleaser
 # (issue #47). Default behaviour:
-#   - cosign on PATH AND CYODA_COSIGN_VERIFY != "false" → verify; abort on failure.
-#   - cosign missing AND CYODA_COSIGN_VERIFY = "required" → abort.
-#   - otherwise → skip with a hint about how to enable.
+#   - cosign on PATH AND CYODA_COSIGN_VERIFY != "false" → verify; abort on
+#     verification failure or transient infrastructure errors. A 404 on
+#     the sibling .sig (release predates cosign signing in v0.7.0) is a
+#     soft fall-back to SHA256-only with a warning.
+#   - CYODA_COSIGN_VERIFY = "required" → cosign must be on PATH AND every
+#     sibling artifact must be present. A 404 on the .sig is a hard error.
+#   - cosign missing in auto mode → SHA256-only with a hint about cosign.
+#   - CYODA_COSIGN_VERIFY = "false" → skip entirely.
 cosign_verify() {
     cv_tmp=$1
     cv_archive=$2
@@ -119,14 +134,27 @@ cosign_verify() {
     for cv_target in "$cv_archive" SHA256SUMS; do
         cv_sig_url="https://github.com/$REPO/releases/download/$cv_version/${cv_target}.sig"
         cv_pem_url="https://github.com/$REPO/releases/download/$cv_version/${cv_target}.pem"
-        if ! curl -fsSL -o "$cv_tmp/${cv_target}.sig" "$cv_sig_url"; then
-            err "could not download signature: $cv_sig_url"
+
+        cv_sig_status=$(cosign_fetch "$cv_sig_url" "$cv_tmp/${cv_target}.sig")
+        if [ "$cv_sig_status" = "404" ]; then
+            if [ "$cv_mode" = "required" ]; then
+                err "CYODA_COSIGN_VERIFY=required but ${cv_target}.sig is not on this release ($cv_version). Cosign signing was added in v0.7.0; older releases are unsigned."
+                exit 1
+            fi
+            warn "release $cv_version predates cosign signing (added in v0.7.0); falling back to SHA256-only verification"
+            return 0
+        fi
+        if [ "$cv_sig_status" != "200" ]; then
+            err "could not download signature ($cv_sig_status): $cv_sig_url"
             exit 1
         fi
-        if ! curl -fsSL -o "$cv_tmp/${cv_target}.pem" "$cv_pem_url"; then
-            err "could not download certificate: $cv_pem_url"
+
+        cv_pem_status=$(cosign_fetch "$cv_pem_url" "$cv_tmp/${cv_target}.pem")
+        if [ "$cv_pem_status" != "200" ]; then
+            err "could not download certificate ($cv_pem_status): $cv_pem_url"
             exit 1
         fi
+
         if ! cosign verify-blob \
             --certificate="$cv_tmp/${cv_target}.pem" \
             --signature="$cv_tmp/${cv_target}.sig" \
