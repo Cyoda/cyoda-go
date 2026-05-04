@@ -549,7 +549,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		var procErr error
 
 		switch proc.ExecutionMode {
-		case "ASYNC_NEW_TX":
+		case ExecutionModeAsyncNewTx:
 			procErr = e.executeAsyncNewTx(ctx, entity, proc, workflow, transition, txID)
 			success = procErr == nil
 
@@ -576,7 +576,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			fmt.Sprintf("Processor %q completed", proc.Name), auditData)
 
 		// For SYNC/ASYNC_SAME_TX, failure kills the pipeline.
-		if procErr != nil && proc.ExecutionMode != "ASYNC_NEW_TX" {
+		if procErr != nil && proc.ExecutionMode != ExecutionModeAsyncNewTx {
 			return fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
 		}
 	}

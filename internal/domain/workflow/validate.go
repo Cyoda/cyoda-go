@@ -7,6 +7,19 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// Processor execution-mode tokens. Sourced from the OpenAPI enum in
+// api/openapi.yaml (mirrored in api/generated.go's
+// ExternalizedProcessorDefinitionDtoExecutionMode constants). Centralised
+// here as untyped strings so engine logic, validator rules, and tests can
+// compare against a single source — the SPI's ExecutionMode field is itself
+// a plain string, so an enum type would not buy compile-time safety.
+const (
+	ExecutionModeSync                 = "SYNC"
+	ExecutionModeAsyncSameTx          = "ASYNC_SAME_TX"
+	ExecutionModeAsyncNewTx           = "ASYNC_NEW_TX"
+	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"
+)
+
 // validateWorkflows checks workflow definitions for definite infinite loops.
 // A definite infinite loop exists when there is a cycle of automated transitions
 // (manual=false) with NO criteria guards (nil/empty criterion = always fires).
@@ -36,7 +49,7 @@ func validateProcessorFlags(wf spi.WorkflowDefinition) error {
 		for _, tr := range st.Transitions {
 			for _, p := range tr.Processors {
 				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
-					p.ExecutionMode != "COMMIT_BEFORE_DISPATCH" {
+					p.ExecutionMode != ExecutionModeCommitBeforeDispatch {
 					return fmt.Errorf(
 						"workflow %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
 						wf.Name, tr.Name, p.Name, p.ExecutionMode)
