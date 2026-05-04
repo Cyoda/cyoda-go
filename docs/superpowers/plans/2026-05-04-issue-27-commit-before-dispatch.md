@@ -4,7 +4,7 @@
 
 **Goal:** Ship a fourth processor `executionMode` value `COMMIT_BEFORE_DISPATCH` that commits the cascade transaction before dispatching the processor, opens a fresh transaction on return, and applies the result via `CompareAndSave`. Optional `startNewTxOnDispatch` flag opens TX_post before dispatch.
 
-**Architecture:** The engine takes over per-segment TX boundaries and per-segment SPI writes (today the handler does both). `service.Handler` hands `txMgr` to the engine and lets it own commit/begin around segment boundaries. The new mode is implementable entirely with existing SPI primitives (`Begin`, `Commit`, `Save`, `CompareAndSave`); existing audit events `SMEventProcessingPaused` and `SMEventStateProcessResult` bracket the segment naturally without introducing new event types.
+**Architecture:** The engine takes over per-segment TX boundaries and per-segment SPI writes (today the handler does both). `service.Handler` hands `txMgr` to the engine and lets it own commit/begin around segment boundaries. Apart from one additive SPI struct field for the new `startNewTxOnDispatch` flag (SPI v0.7.0 bump), the mode is implementable with existing SPI primitives. Existing audit events `SMEventProcessingPaused` and `SMEventStateProcessResult` bracket the segment naturally without introducing new event types.
 
 **Tech Stack:** Go 1.26, `log/slog`, postgres `RepeatableRead` + application FCW, sqlite, in-memory plugin, cassandra plugin (no parity work). OpenAPI YAML source at `api/openapi.yaml` regenerated to `api/generated.go` via `go:generate` in `api/generate.go`.
 
@@ -36,38 +36,122 @@
 
 ---
 
-## Phase 1 — Schema additions and validation
+## Phase 1 — SPI bump, schema additions, and validation
 
-Smallest, most isolated piece. Adds the configuration surface so subsequent phases have something to dispatch on.
+The Phase-1 spike (already done by the controller before plan execution started) confirmed: SPI `ProcessorConfig` (`spi/types.go:148-154`) is a strongly-typed struct with no flexible map. Carrying `startNewTxOnDispatch` requires an additive field on `ProcessorConfig`. Path chosen: **SPI v0.7.0 bump** with one optional pointer field, additive, backward-compatible.
 
-### Task 1: Spike — verify SPI workflow types accept the new field shape
+### Task 1: SPI v0.7.0 — add `StartNewTxOnDispatch` to `ProcessorConfig`
 
-The OpenAPI-generated `ExternalizedProcessorDefinitionDto` is one shape; the SPI-side `spi.ProcessorDefinition` (used by the engine) is another. Confirm whether the SPI struct has a flexible `Config` map / extension point or whether it would need a new explicit field. This is read-only investigation — no code changes.
+This task lives in the **separate `cyoda-go-spi` repo**. The cyoda-go worktree picks up the bump via `go.mod`. Coordination with the Cassandra plugin is automatic at JSON layer (plugins persist workflow definitions as JSON; the new field flows through with no plugin code changes — only a routine SPI dependency bump in those plugins' next release).
 
-- [ ] **Step 1: Read SPI `ProcessorDefinition` definition**
+**Files:**
+- Modify (in `cyoda-go-spi` repo at `~/go-projects/cyoda-light/cyoda-go-spi` or wherever the local checkout lives): `types.go` near line 148
+- Tag a new SPI release v0.7.0
+- Update (in cyoda-go worktree): `go.mod` to depend on `cyoda-go-spi v0.7.0`
 
-Run: `grep -n "type ProcessorDefinition" ~/go/pkg/mod/github.com/cyoda-platform/cyoda-go-spi@v0.6.1/types.go`
+- [ ] **Step 1: Locate the SPI repo checkout**
 
-Read the struct. Note whether it has a `Config map[string]any` field or similar that can carry `startNewTxOnDispatch` without an SPI bump.
+Run: `find ~/go-projects -maxdepth 3 -name "cyoda-go-spi" -type d 2>/dev/null`
 
-- [ ] **Step 2: Decide field-carrying strategy**
+If no checkout exists, clone it: `git clone https://github.com/Cyoda-platform/cyoda-go-spi ~/go-projects/cyoda-go-spi`
 
-Two acceptable outcomes:
+- [ ] **Step 2: In the SPI repo, write the failing test**
 
-- (a) SPI `ProcessorDefinition.Config` (or equivalent flexible map) can carry `startNewTxOnDispatch` — the engine reads `proc.Config["startNewTxOnDispatch"]`. **No SPI bump.** Plan continues as-is.
-- (b) SPI does not have a flexible carrier — the engine must read the flag from a non-SPI mirror struct in `internal/domain/workflow/`. The OpenAPI DTO has the field; the engine must consult the workflow definition through whatever path already plumbs ProcessorDefinition. **No SPI bump.** Plan continues as-is.
-
-- [ ] **Step 3: Document the chosen strategy in a one-line comment in `internal/domain/workflow/engine.go` near the `executeProcessors` function**
+Add (or extend) `types_test.go`:
 
 ```go
-// commit-before-dispatch flag source: <(a) or (b) per Task 1>
+func TestProcessorConfig_StartNewTxOnDispatch_RoundTrips(t *testing.T) {
+	tt := true
+	cfg := ProcessorConfig{StartNewTxOnDispatch: &tt}
+	bs, err := json.Marshal(cfg)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(string(bs), `"startNewTxOnDispatch":true`) {
+		t.Errorf("missing field in marshalled JSON: %s", bs)
+	}
+	var back ProcessorConfig
+	if err := json.Unmarshal(bs, &back); err != nil { t.Fatal(err) }
+	if back.StartNewTxOnDispatch == nil || !*back.StartNewTxOnDispatch {
+		t.Errorf("round-trip dropped the field: %+v", back)
+	}
+
+	// Default (nil) does NOT marshal because of omitempty.
+	defaultCfg := ProcessorConfig{}
+	bs2, _ := json.Marshal(defaultCfg)
+	if strings.Contains(string(bs2), "startNewTxOnDispatch") {
+		t.Errorf("nil pointer should be omitted, got %s", bs2)
+	}
+}
 ```
 
-- [ ] **Step 4: Commit the comment-only change**
+- [ ] **Step 3: Run test, verify it fails**
+
+Run: `go test -run TestProcessorConfig_StartNewTxOnDispatch -v`
+
+Expected: FAIL — field undefined.
+
+- [ ] **Step 4: Add the field**
+
+In `cyoda-go-spi/types.go`:
+
+```go
+type ProcessorConfig struct {
+	AttachEntity         bool   `json:"attachEntity,omitempty"`
+	CalculationNodesTags string `json:"calculationNodesTags,omitempty"`
+	ResponseTimeoutMs    int64  `json:"responseTimeoutMs,omitempty"`
+	RetryPolicy          string `json:"retryPolicy,omitempty"`
+	Context              string `json:"context,omitempty"`
+	// StartNewTxOnDispatch, when true and ExecutionMode is COMMIT_BEFORE_DISPATCH,
+	// causes the cascade engine to open a fresh transaction before dispatching
+	// the processor (so the processor may perform transactional work via that
+	// tx's token). When false (default) the processor runs with no transaction
+	// context and the connection is released entirely during dispatch.
+	// Ignored for any other ExecutionMode.
+	StartNewTxOnDispatch *bool `json:"startNewTxOnDispatch,omitempty"`
+}
+```
+
+- [ ] **Step 5: Run test, verify pass**
+
+Run: `go test ./... -v`
+
+Expected: PASS for the new test, no regressions in existing SPI tests.
+
+- [ ] **Step 6: Commit and tag v0.7.0 in the SPI repo**
 
 ```bash
-git add internal/domain/workflow/engine.go
-git commit -m "chore(workflow): document commit-before-dispatch flag carrier (#27)"
+cd ~/go-projects/cyoda-go-spi
+git add types.go types_test.go
+git commit -m "feat(types): add ProcessorConfig.StartNewTxOnDispatch (v0.7.0)"
+git tag v0.7.0
+git push origin main --tags
+```
+
+(If the `feedback_go_module_tags_immutable.md` rule is in effect — never force-move tags — verify v0.7.0 doesn't already exist before tagging. If it does for any reason, choose v0.7.1 and update step 7 accordingly.)
+
+- [ ] **Step 7: In the cyoda-go worktree, bump the dependency**
+
+```bash
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/issue-27-commit-on-callout
+go get github.com/cyoda-platform/cyoda-go-spi@v0.7.0
+go mod tidy
+```
+
+Expected: `go.mod` shows `github.com/cyoda-platform/cyoda-go-spi v0.7.0`; `go.sum` updated.
+
+- [ ] **Step 8: Verify the worktree builds and existing tests pass**
+
+```bash
+go build ./...
+go test -short ./... -v
+```
+
+Expected: PASS. Both should be unaffected — `StartNewTxOnDispatch` is an optional pointer field with `omitempty`, no consumer cares yet.
+
+- [ ] **Step 9: Commit the dependency bump**
+
+```bash
+git add go.mod go.sum
+git commit -m "chore(deps): bump cyoda-go-spi to v0.7.0 for StartNewTxOnDispatch (#27)"
 ```
 
 ### Task 2: Add `COMMIT_BEFORE_DISPATCH` to the OpenAPI enum

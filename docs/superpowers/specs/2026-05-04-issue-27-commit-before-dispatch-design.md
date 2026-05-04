@@ -124,9 +124,11 @@ This is the same per-entity-CAS scope as the client-driven manual loopback: `If-
 
 ## 5. SPI changes
 
-**None.**
+**One additive field.** `spi.ProcessorConfig` (`spi/types.go:148-154`) gains `StartNewTxOnDispatch *bool` (omitempty). No other SPI surface changes. Bumps SPI from v0.6.1 to v0.7.0 — additive, backward-compatible (`nil` == default == false).
 
-The mode is implementable entirely with existing SPI primitives:
+Why the bump is needed: the workflow JSON arriving via the OpenAPI layer carries `startNewTxOnDispatch`; the handler converts the DTO into `spi.WorkflowDefinition` before persisting via `WorkflowStore.Save`. Today's `spi.ProcessorConfig` has no field for this flag, so a JSON unmarshal drops it on round-trip. Adding the field preserves it through storage. No flexible `map[string]any` exists on `spi.ProcessorConfig` to carry it as a side-channel; even if it did, ad-hoc maps are not the right shape for a typed semantic flag.
+
+The new mode is implementable entirely with existing SPI primitives apart from this one struct field:
 
 - `TransactionManager.Begin(ctx) → (txID, ctx, error)` — starts new TX (`spi/transaction.go:23`)
 - `TransactionManager.Commit(ctx, txID) error` — commits TX (`spi/transaction.go:25`); the txID is the input, the row stamping happens at commit time, no return value
@@ -134,7 +136,7 @@ The mode is implementable entirely with existing SPI primitives:
 - `EntityStore.CompareAndSave(ctx, entity, expectedTxID) (int64, error)` — CAS write (`spi/persistence.go:27`)
 - `spi.WithTransaction(ctx, state)` / `spi.GetTransaction(ctx)` — TX context propagation (`spi/txcontext.go:101-106`)
 
-Postgres, sqlite, memory, and cassandra plugins all support these calls today. **The cassandra plugin needs no parity work for this feature.** No SPI version bump.
+Postgres, sqlite, memory, and cassandra plugins persist `WorkflowDefinition` as JSON; once they bump their SPI dependency to v0.7.0 the new field flows through their JSON marshalling with no plugin code changes. **The cassandra plugin needs no per-feature code work — only a routine SPI dependency bump.**
 
 ## 6. Workflow definition schema
 
@@ -285,6 +287,7 @@ The following alternatives were considered and rejected during brainstorming and
 - **`commitOnCallout: bool` flag on existing `executionMode` values.** Rejected in favor of a new enum value (better OpenAPI compatibility, named declaratively).
 - **Renaming `ASYNC_NEW_TX` → savepoint mode and reusing the name for the new semantic.** Rejected: too much migration tax against minimal naming-honesty gain; also flips Cloud-parity config-token meaning.
 - **SPI bump for new `EntityMeta.Pending` field, `ErrEntityPending` sentinel, `WithPendingAccess` context scope.** Rejected as a knock-on of dropping the `pending` flag; not needed.
+- **Side-channel storage for `startNewTxOnDispatch` (e.g. KV table) to avoid SPI bump.** Rejected: ad-hoc storage doesn't match how other workflow-config knobs persist, requires migration, and the SPI bump for one additive struct field is backward-compatible. Path A (SPI v0.7.0 bump) chosen.
 - **Dropping `startNewTxOnDispatch` from v1 over LWW concerns.** Rejected after design review: the LWW between processor's intra-TX writes and the engine's apply-result is the same hazard that already exists in `SYNC` and any client-driven manual loopback whose processor does TX-callback writes. It is governed by an existing best-practice ("a processor must not save the entity it is processing for"), not by a new engine-level guarantee. Documenting the caveat (§10.3) is sufficient.
 
 ## 14. Changes by file (high-level)
