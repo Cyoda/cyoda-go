@@ -99,6 +99,13 @@ Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Override the
 install directory with `CYODA_INSTALL_DIR=~/bin curl ... | sh`. Pin a
 specific version with `CYODA_VERSION=v0.2.0 curl ... | sh`.
 
+The installer SHA256-verifies the archive against `SHA256SUMS` from the
+release, and — if [`cosign`](https://docs.sigstore.dev/cosign/installation/)
+is on `PATH` — additionally verifies a Sigstore keyless signature
+issued by our GitHub Actions release workflow. Force-fail when cosign
+is missing with `CYODA_COSIGN_VERIFY=required`; opt out with
+`CYODA_COSIGN_VERIFY=false` (not recommended).
+
 ### Debian or Ubuntu
 
 ```bash
