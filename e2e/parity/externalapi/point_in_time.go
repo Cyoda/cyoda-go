@@ -76,13 +76,10 @@ func RunExternalAPI_07_01_GetEntityAtPointInTime(t *testing.T, fixture parity.Ba
 // RunExternalAPI_07_02_GetEntityByTransactionID — dictionary 07/02.
 // Dictionary expects GET /entity/{id}?transactionId=<tx> to return the
 // entity envelope as it stood at that transaction.
-//
-// Status: parity-client surface (GetEntityByTransactionID) is in place
-// per #132. The underlying GetOneEntity handler currently ignores the
-// transactionId query parameter (server-side gap tracked by #150) and
-// returns the latest entity instead of the at-tx snapshot. The body
-// below probes for that gap and skips with a #150 reference until the
-// server-side wiring lands.
+// equiv_or_better: cyoda-go's GetOneEntity routes the transactionId
+// param into the service, which scans the entity's version history
+// and returns the matching version's envelope (or ENTITY_NOT_FOUND@404
+// on a miss — exercised by 12/neg/05).
 func RunExternalAPI_07_02_GetEntityByTransactionID(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -118,14 +115,8 @@ func RunExternalAPI_07_02_GetEntityByTransactionID(t *testing.T, fixture parity.
 	if err != nil {
 		t.Fatalf("GetEntityByTransactionID: %v", err)
 	}
-	// worse: cyoda-go's GetOneEntity handler does not yet honor the
-	// transactionId query param (it parses pointInTime only). The server
-	// returns the latest entity instead of the at-transaction snapshot.
-	// Until the handler routes transactionId, this assertion documents
-	// the divergence: the dictionary expects k=1 (the createTxID
-	// snapshot), but cyoda-go currently returns the latest k=3.
 	if v, _ := got.Data["k"].(float64); v != float64(1) {
-		t.Skipf("pending #150 (worse): GET ?transactionId=<createTxID> returned k=%v want 1; transactionId silently dropped by GetOneEntity handler. Parity-client surface delivered via #132; close this skip when #150 lands.", got.Data["k"])
+		t.Errorf("data.k: got %v, want 1 (the createTxID snapshot, before subsequent updates)", got.Data["k"])
 	}
 	if got.Meta.TransactionID != createTxID {
 		t.Errorf("meta.transactionId: got %q want %q", got.Meta.TransactionID, createTxID)
