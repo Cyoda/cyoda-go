@@ -18,6 +18,17 @@ incompatible with Go 1.26, the snapshot is manually re-encoded after each spec e
 The embedded spec now reflects all Task 6.1 changes: Envelope schema, entityIds→string[], corrected
 content-types, new error status declarations.
 
+**Note (post-#21 parity gap documentation):** `ProcessorDefinitionDto.asyncResult` and
+`ProcessorDefinitionDto.crossoverToAsyncMs` are declared in the spec for Cyoda Cloud parity but
+silently ignored at runtime by the open-source storage engine plugins (memory, sqlite, postgres).
+Implementing crossover semantics requires durable suspend state + cluster-wide work-stealing
+recovery + a distributed timer — primitives that live in the closed-source Cassandra plugin.
+The OpenAPI descriptions on both fields carry a generic
+"storage-engine-plugin dependent" caveat (no internal-tracker references in the wire-format
+spec, since it ships embedded into every binary); the divergence is tracked in #223 and
+catalogued in `docs/cyoda/cloud-divergences.md`. Disposition: documented divergence, no server
+change.
+
 **Inputs:**
 - Spec: `api/openapi.yaml`
 - Validator's record-mode output: `internal/e2e/_openapi-conformance-report.md` (gitignored — regenerate via `go test ./internal/e2e/... -count=1`)

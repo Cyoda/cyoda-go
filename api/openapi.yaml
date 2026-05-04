@@ -8431,13 +8431,18 @@ components:
           description: Additional context for the function
         asyncResult:
           type: boolean
-          description: Whether to await the result asynchronously, outside of the
-            transaction
+          description: |
+            Whether to await the result asynchronously, outside of the
+            transaction. Behavior is storage-engine-plugin dependent — not
+            every plugin implements crossover semantics; consult the runtime
+            plugin's documentation for the supported behavior.
         crossoverToAsyncMs:
           type: integer
           format: int64
-          description: Crossover delay to switch to asynchronous processing (ms),
-            effective only when asyncResult is true
+          description: |
+            Crossover delay to switch to asynchronous processing (ms),
+            effective only when asyncResult is true. Behavior is
+            storage-engine-plugin dependent — see asyncResult.
     ExternalizedProcessorDefinitionDto:
       allOf:
         - $ref: "#/components/schemas/ProcessorDefinitionDto"
