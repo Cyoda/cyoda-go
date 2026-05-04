@@ -1,6 +1,7 @@
 package search
 
 import (
+	"container/list"
 	"sync"
 
 	"github.com/maypok86/otter/v2"
@@ -24,6 +25,25 @@ import (
 // thousands. Tune up if observability shows benign workloads hitting
 // the cap.
 const pathValidationBucketCapacity = 100
+
+// pathValidationBucketMapCap bounds the number of distinct
+// (tenant, ref) buckets the cache retains. Issue #218 — pre-cap the
+// map grew without bound; an adversarial tenant with model-creation
+// privilege at scale could accumulate ~unbounded buckets even though
+// each bucket itself was capped at pathValidationBucketCapacity.
+//
+// 10000 matches the pre-#211 single-cache global entry budget so the
+// worst-case memory footprint is roughly equivalent to the old
+// design (10k buckets × 100 entries each = 1M entries — vs. the
+// pre-#211 10k flat entries — at the cost of more buckets, each
+// holding tenant-scoped data). Per-bucket isolation (#175) is
+// preserved.
+//
+// LRU is the eviction policy: the bucket whose last access (read OR
+// write) is oldest gets dropped when MarkAbsent on a fresh key would
+// exceed the cap. InvalidateRef removes a bucket but does NOT touch
+// LRU — invalidate is destructive, not a recency signal.
+const pathValidationBucketMapCap = 10000
 
 // modelRefKey is the (tenant, modelRef) bucket key. One otter cache
 // per bucket; entire-bucket eviction handled by InvalidateRef.
@@ -50,12 +70,28 @@ type modelRefKey struct {
 //
 // Each (tenant, ref) lives in its own bounded otter cache (issue #175
 // — per-bucket capacity isolates cross-tenant eviction). InvalidateRef
-// drops the bucket entirely.
+// drops the bucket entirely. The bucket map itself is also capped
+// with LRU eviction (issue #218) so an adversarial tenant cannot
+// grow the map indefinitely.
 //
 // The zero value is not safe — use NewPathValidationCache.
 type PathValidationCache struct {
 	mu      sync.Mutex
-	buckets map[modelRefKey]*otter.Cache[string, struct{}]
+	buckets map[modelRefKey]*bucketEntry
+	// lruOrder is a doubly-linked list of *bucketEntry ordered by
+	// recency: front = most recently used, back = least recently used.
+	// MarkAbsent and IsAbsent move the touched bucket to the front;
+	// InvalidateRef removes the entry from both the map and the list
+	// without touching recency on anything else.
+	lruOrder *list.List
+}
+
+// bucketEntry pairs the per-bucket otter cache with its LRU-list
+// element so eviction can find the back-of-list key in O(1).
+type bucketEntry struct {
+	key   modelRefKey
+	cache *otter.Cache[string, struct{}]
+	elem  *list.Element // points back to the *bucketEntry in lruOrder
 }
 
 // NewPathValidationCache constructs an empty PathValidationCache.
@@ -63,7 +99,8 @@ type PathValidationCache struct {
 // modelcache.CachingStoreFactory.SubscribeLocal.
 func NewPathValidationCache() *PathValidationCache {
 	return &PathValidationCache{
-		buckets: make(map[modelRefKey]*otter.Cache[string, struct{}]),
+		buckets:  make(map[modelRefKey]*bucketEntry),
+		lruOrder: list.New(),
 	}
 }
 
@@ -141,8 +178,11 @@ func (c *PathValidationCache) MarkPresent(tenant string, ref spi.ModelRef, path 
 }
 
 // InvalidateRef drops every cached negative entry for (tenant, ref).
-// The whole bucket is removed from the map; the next MarkAbsent for
-// that bucket allocates a fresh otter cache.
+// The whole bucket is removed from the map and the LRU list; the next
+// MarkAbsent for that bucket allocates a fresh otter cache.
+//
+// Invalidate is destructive, not a recency signal — it doesn't touch
+// LRU recency on any other bucket (issue #218 design choice).
 //
 // This is the public hook wired up by app.go to
 // modelcache.CachingStoreFactory.SubscribeLocal so the cache reacts
@@ -153,28 +193,51 @@ func (c *PathValidationCache) InvalidateRef(tenant string, ref spi.ModelRef) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.buckets, modelRefKey{
+	k := modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
-	})
+	}
+	if e, ok := c.buckets[k]; ok {
+		c.lruOrder.Remove(e.elem)
+		delete(c.buckets, k)
+	}
 }
 
 // bucketLocked returns the bucket for k. Caller MUST hold c.mu — the
 // returned otter.Cache pointer is only safe to operate on while c.mu
 // is held, since InvalidateRef may delete the map entry concurrently
 // otherwise (review #211).
+//
+// Side effect: every successful return path (existing OR newly
+// allocated) promotes the bucket to MRU on the LRU list. When
+// createIfMissing=true and the map is at the size cap, the LRU
+// (back-of-list) bucket is evicted before the new one is allocated
+// (issue #218).
 func (c *PathValidationCache) bucketLocked(k modelRefKey, createIfMissing bool) *otter.Cache[string, struct{}] {
-	b, ok := c.buckets[k]
-	if ok {
-		return b
+	if e, ok := c.buckets[k]; ok {
+		c.lruOrder.MoveToFront(e.elem)
+		return e.cache
 	}
 	if !createIfMissing {
 		return nil
 	}
-	b = otter.Must(&otter.Options[string, struct{}]{
+	if len(c.buckets) >= pathValidationBucketMapCap {
+		// Evict the LRU bucket. lruOrder.Back() is the least
+		// recently used entry; the back element's Value is the
+		// *bucketEntry, which carries its own key for map deletion.
+		back := c.lruOrder.Back()
+		if back != nil {
+			victim := back.Value.(*bucketEntry)
+			c.lruOrder.Remove(back)
+			delete(c.buckets, victim.key)
+		}
+	}
+	cache := otter.Must(&otter.Options[string, struct{}]{
 		MaximumSize: pathValidationBucketCapacity,
 	})
-	c.buckets[k] = b
-	return b
+	entry := &bucketEntry{key: k, cache: cache}
+	entry.elem = c.lruOrder.PushFront(entry)
+	c.buckets[k] = entry
+	return cache
 }
