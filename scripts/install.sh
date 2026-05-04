@@ -16,10 +16,21 @@
 # Cosign verification (issue #47):
 #   - Auto-on when `cosign` is on PATH. Verifies the archive and
 #     SHA256SUMS against keyless Sigstore signatures issued by the
-#     cyoda-platform/cyoda-go release workflow.
+#     cyoda-platform/cyoda-go release.yml workflow on a tag push.
 #   - Disable explicitly: CYODA_COSIGN_VERIFY=false curl ... | sh
 #   - Force-fail-without-cosign: CYODA_COSIGN_VERIFY=required curl ... | sh
 #     (Aborts if cosign is missing rather than falling back to SHA256-only.)
+#
+# Auto-mode trade-off (security note): cosign signing was added in
+# v0.7.0; older releases have no .sig files. To preserve backward
+# compat with the curl-pipe-to-sh UX for users without cosign, auto
+# mode treats a 404 on the .sig as "release predates cosign signing"
+# and falls back to SHA256-only. This means an attacker who controls
+# the GitHub release page on a v0.7.0+ release can bypass cosign by
+# deleting the .sig along with their archive swap — SHA256 against
+# their own SHA256SUMS would still pass. For hardened/production
+# deployments, set CYODA_COSIGN_VERIFY=required: missing .sig is
+# then a hard error, not a fallback.
 
 set -eu
 
@@ -27,11 +38,21 @@ REPO="cyoda-platform/cyoda-go"
 INSTALL_DIR="${CYODA_INSTALL_DIR:-$HOME/.local/bin}"
 # Cosign keyless verification expects the signing identity to come from
 # this OIDC issuer (GitHub Actions) and the cert subject to match the
-# release.yml workflow path under our org+repo. release.yml is the only
-# workflow with `id-token: write`, so any future workflow added to the
-# repo cannot mint a cert that satisfies this regex.
+# release.yml workflow path under our org+repo, fired from a tag push
+# (not workflow_dispatch from an arbitrary branch). release.yml is the
+# only workflow with `id-token: write`, and we additionally pin to the
+# `refs/tags/v*` ref-suffix so a future branch-based dispatch (even
+# from main with proper protection) can't mint a cert that this
+# verifier accepts.
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
-COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda-platform/cyoda-go/\.github/workflows/release\.yml@"
+COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda-platform/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
+# Bind to push-triggered runs from a tag ref. release.yml's `on:`
+# allows both `push: tags` and `workflow_dispatch`; only the former
+# can produce signed release artifacts that consumers should trust,
+# since workflow_dispatch can be triggered from any branch by anyone
+# with write access.
+COSIGN_GH_WORKFLOW_TRIGGER="push"
+COSIGN_GH_WORKFLOW_REF_REGEX="^refs/tags/v"
 
 err() { printf 'install.sh: error: %s\n' "$*" >&2; }
 warn() { printf 'install.sh: warning: %s\n' "$*" >&2; }
@@ -155,13 +176,18 @@ cosign_verify() {
             exit 1
         fi
 
+        cv_log="$cv_tmp/cosign-${cv_target}.log"
         if ! cosign verify-blob \
             --certificate="$cv_tmp/${cv_target}.pem" \
             --signature="$cv_tmp/${cv_target}.sig" \
             --certificate-identity-regexp="$COSIGN_IDENTITY_REGEX" \
             --certificate-oidc-issuer="$COSIGN_OIDC_ISSUER" \
-            "$cv_tmp/$cv_target" >/dev/null 2>&1; then
+            --certificate-github-workflow-trigger="$COSIGN_GH_WORKFLOW_TRIGGER" \
+            --certificate-github-workflow-ref-regexp="$COSIGN_GH_WORKFLOW_REF_REGEX" \
+            "$cv_tmp/$cv_target" >"$cv_log" 2>&1; then
             err "cosign verification FAILED for $cv_target — refusing to install."
+            err "cosign output (last 5 lines):"
+            tail -n 5 "$cv_log" >&2 || :
             err "Re-run with CYODA_COSIGN_VERIFY=false to skip (not recommended)."
             exit 1
         fi
