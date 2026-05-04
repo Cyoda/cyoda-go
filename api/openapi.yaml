@@ -8454,6 +8454,24 @@ components:
                 - SYNC
                 - ASYNC_SAME_TX
                 - ASYNC_NEW_TX
+                - COMMIT_BEFORE_DISPATCH
+              description: |
+                Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
+                run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
+                the cascade transaction before dispatch and opens a new one on
+                return; the processor's result is applied via CompareAndSave
+                using the prior commit's transaction ID as the expected version.
+            startNewTxOnDispatch:
+              type: boolean
+              default: false
+              description: |
+                Only meaningful when executionMode is COMMIT_BEFORE_DISPATCH. If
+                true, a new transaction is opened before dispatching the
+                processor so the processor can perform transactional work
+                during its execution. Connection is held in that new
+                transaction during dispatch. If false (default), the processor
+                runs with no transaction context; the connection is released
+                entirely during processor execution.
             config:
               $ref: "#/components/schemas/ExternalizedProcessorConfigDto"
       required:
