@@ -46,7 +46,11 @@ type CachingModelStore struct {
 	// regardless of whether a cluster broadcaster is wired up. On
 	// single-node deployments this is the only invalidation channel
 	// available; on multi-node it fires alongside the gossip path.
-	localSubMu sync.RWMutex
+	//
+	// Plain Mutex (not RWMutex) — the snapshot taken on the read
+	// path is brief and there's no read-heavy contention pattern
+	// here that benefits from RW semantics.
+	localSubMu sync.Mutex
 	localSubs  []func(tenant string, ref spi.ModelRef)
 }
 
@@ -269,9 +273,9 @@ func (c *CachingModelStore) SubscribeLocal(h func(tenant string, ref spi.ModelRe
 }
 
 func (c *CachingModelStore) notifyLocalSubscribers(tenant string, ref spi.ModelRef) {
-	c.localSubMu.RLock()
+	c.localSubMu.Lock()
 	subs := append([]func(string, spi.ModelRef){}, c.localSubs...)
-	c.localSubMu.RUnlock()
+	c.localSubMu.Unlock()
 	for _, h := range subs {
 		h(tenant, ref)
 	}
