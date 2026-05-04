@@ -160,12 +160,13 @@ func New(cfg Config) *App {
 	if gossipReg != nil {
 		cacheBroadcaster = gossipReg
 	}
-	a.storeFactory = modelcache.NewCachingStoreFactory(
+	cachingStoreFactory := modelcache.NewCachingStoreFactory(
 		factory,
 		cacheBroadcaster,
 		nil, // wall clock
 		cfg.ModelCacheLease,
 	)
+	a.storeFactory = cachingStoreFactory
 
 	// Startable plugins (cassandra, etc.) must complete Start BEFORE the
 	// factory can serve TransactionManager: the initial takeover / shard-
@@ -302,11 +303,17 @@ func New(cfg Config) *App {
 			"error", err.Error())
 		os.Exit(1)
 	}
-	// Negative cache for pre-execution field-path validation. Shares
-	// the model.invalidate gossip topic with the descriptor cache so a
-	// single schema-change event drops both layers in lock step. The
-	// cache is bounded; otter's S3-FIFO eviction handles overflow.
-	pathValidationCache := search.NewPathValidationCache(cacheBroadcaster)
+	// Negative cache for pre-execution field-path validation. Wired
+	// to the descriptor cache via SubscribeLocal: every model
+	// invalidation (local mutation OR gossip-received event) drops
+	// the corresponding negative-cache bucket. This works on
+	// single-node and multi-node alike (issue #174 — pre-fix the
+	// cache subscribed to the broadcaster directly, so single-node
+	// deployments where the broadcaster is nil never received any
+	// invalidations). Per-(tenant, ref) bucketed otter caches isolate
+	// cross-tenant eviction (issue #175).
+	pathValidationCache := search.NewPathValidationCache()
+	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
 		WithPathValidationCache(pathValidationCache)
