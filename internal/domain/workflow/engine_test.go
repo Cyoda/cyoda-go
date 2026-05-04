@@ -1872,3 +1872,79 @@ func TestAsyncNewTx_ParentRollbackDiscardsWork(t *testing.T) {
 		t.Error("entity from savepoint should NOT be visible after parent rollback")
 	}
 }
+
+// TestEngine_CommitAndReopenSegment_FlushesAndReopens drives the
+// COMMIT_BEFORE_DISPATCH segment-boundary primitive. The helper must:
+//   - Flush the in-memory entity to TX_pre's buffer.
+//   - Commit TX_pre, making the entity durable across the boundary.
+//   - Begin a fresh TX_post and return its txID + ctx.
+func TestEngine_CommitAndReopenSegment_FlushesAndReopens(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "SegmentModel", ModelVersion: "1.0"}
+
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:       "seg-e1",
+			TenantID: testTenant,
+			ModelRef: modelRef,
+			State:    "S_pre",
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	newTxID, newCtx, err := engine.commitAndReopenSegment(txCtx, entity, txID)
+	if err != nil {
+		t.Fatalf("commitAndReopenSegment: %v", err)
+	}
+	if newTxID == "" {
+		t.Fatalf("expected non-empty newTxID")
+	}
+	if newTxID == txID {
+		t.Fatalf("expected new txID, got same as old: %s", newTxID)
+	}
+	if newCtx == nil {
+		t.Fatalf("expected non-nil newCtx")
+	}
+	if state := spi.GetTransaction(newCtx); state == nil || state.ID != newTxID {
+		t.Fatalf("newCtx must carry newTxID, got %v", state)
+	}
+
+	// Entity is durable: readable from a fresh, independent TX.
+	readTxID, readCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (read): %v", err)
+	}
+	defer func() {
+		if rbErr := txMgr.Rollback(readCtx, readTxID); rbErr != nil {
+			t.Errorf("Rollback (read): %v", rbErr)
+		}
+	}()
+
+	es, err := factory.EntityStore(readCtx)
+	if err != nil {
+		t.Fatalf("EntityStore (read): %v", err)
+	}
+	got, err := es.Get(readCtx, "seg-e1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Meta.State != "S_pre" {
+		t.Fatalf("entity state = %q, want %q", got.Meta.State, "S_pre")
+	}
+
+	// Cleanup: commit the new tx the helper opened.
+	if err := txMgr.Commit(newCtx, newTxID); err != nil {
+		t.Fatalf("Commit (cleanup): %v", err)
+	}
+}
