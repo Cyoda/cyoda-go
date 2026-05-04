@@ -331,6 +331,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserAccountInfoResponseDto"
+        "401":
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /account/subscriptions:
@@ -348,6 +354,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SubscriptionsResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /audit/entity/{entityId}:
@@ -515,7 +523,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StateMachineFinishedDto"
+                $ref: "#/components/schemas/StateMachineAuditEventDto"
         "400":
           description: Invalid request - UUID is not time-based
           content:
@@ -595,6 +603,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -658,6 +668,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -725,6 +737,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -792,6 +806,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /entity/stats:
@@ -818,7 +834,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/ModelStatsDto"
+                items:
+                  $ref: "#/components/schemas/ModelStatsDto"
               example:
                 - modelName: nobel-prize
                   modelVersion: 1
@@ -826,6 +843,12 @@ paths:
                 - modelName: flight-ticket
                   modelVersion: 1
                   count: 3458659339
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats/states:
     get:
       tags:
@@ -862,7 +885,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/ModelStateStatsDto"
+                items:
+                  $ref: "#/components/schemas/ModelStateStatsDto"
               example:
                 - modelName: nobel-prize
                   modelVersion: 1
@@ -900,6 +924,18 @@ paths:
                   modelVersion: 1
                   state: CANCELLED
                   count: 23452345
+        "400":
+          description: Bad request — states filter exceeds maximum cardinality
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats/states/{entityName}/{modelVersion}:
     get:
       tags:
@@ -952,7 +988,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/ModelStateStatsDto"
+                items:
+                  $ref: "#/components/schemas/ModelStateStatsDto"
               example:
                 - modelName: nobel-prize
                   modelVersion: 1
@@ -973,7 +1010,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -988,6 +1025,18 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "400":
+          description: Bad request — states filter exceeds maximum cardinality
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats/{entityName}/{modelVersion}:
     get:
       tags:
@@ -1035,7 +1084,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -1050,6 +1099,12 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}:
     get:
       tags:
@@ -1091,31 +1146,36 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/Envelope"
               examples:
                 Nobel Prize Example:
                   description: Nobel Prize Example
                   value:
-                    category: physics
-                    laureates:
-                      - firstname: John
-                        surname: Hopfield
-                        id: "1037"
-                        motivation: '"for foundational discoveries and inventions that enable machine
-                          learning with artificial neural networks"'
-                        share: "2"
-                      - firstname: Geoffrey
-                        surname: Hinton
-                        id: "1038"
-                        motivation: '"for foundational discoveries and inventions that enable machine
-                          learning with artificial neural networks"'
-                        share: "2"
-                    year: "2024"
+                    type: ENTITY
+                    data:
+                      category: physics
+                      laureates:
+                        - firstname: John
+                          surname: Hopfield
+                          id: "1037"
+                          motivation: '"for foundational discoveries and inventions that enable machine
+                            learning with artificial neural networks"'
+                          share: "2"
+                        - firstname: Geoffrey
+                          surname: Hinton
+                          id: "1038"
+                          motivation: '"for foundational discoveries and inventions that enable machine
+                            learning with artificial neural networks"'
+                          share: "2"
+                      year: "2024"
+                    meta:
+                      id: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+                      state: VALIDATED
         "400":
           description: Conflicting request paramters (both pointInTime and transactionId
             provided)
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -1131,7 +1191,7 @@ paths:
         "404":
           description: Entity not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -1142,6 +1202,12 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     delete:
       tags:
         - Entity Management
@@ -1176,7 +1242,7 @@ paths:
         "400":
           description: Invalid UUID format
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -1191,7 +1257,7 @@ paths:
         "404":
           description: Entity not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -1202,6 +1268,12 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}/changes:
     get:
       tags:
@@ -1272,7 +1344,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityChangeMeta"
+                items:
+                  $ref: "#/components/schemas/EntityChangeMeta"
               examples:
                 Entity Change History:
                   description: Entity Change History
@@ -1280,22 +1353,22 @@ paths:
                     - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-15T10:30:00Z
                       user: admin@cyoda.com
-                      changeType: CREATE
+                      changeType: CREATED
                       fieldsChangedCount: 5
                     - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-16T14:22:30Z
                       user: editor@cyoda.com
-                      changeType: UPDATE
+                      changeType: UPDATED
                       fieldsChangedCount: 2
                     - transactionId: 9c5d3ca0-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-17T09:15:45Z
                       user: admin@cyoda.com
-                      changeType: UPDATE
+                      changeType: UPDATED
                       fieldsChangedCount: 1
         "400":
           description: Invalid UUID format
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -1310,7 +1383,7 @@ paths:
         "404":
           description: Entity not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -1321,6 +1394,95 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+  /entity/{entityId}/transitions:
+    get:
+      tags:
+        - Entity Management
+      summary: Get available transitions for an entity
+      description: >
+        Returns the names of workflow transitions available from the entity's
+        current state at the given point in time.
+
+
+        Exactly one of `pointInTime` or `transactionId` may be supplied;
+        both together is an error. When neither is provided the current
+        consistency time is used.
+
+
+        The transitions list is derived from the workflow definition that
+        matches the entity's model. If no workflow matches, the default
+        workflow is used.
+      operationId: getEntityTransitions
+      parameters:
+        - name: entityId
+          in: path
+          description: The unique identifier (UUID) of the entity
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+        - name: pointInTime
+          in: query
+          description: Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339).
+            Mutually exclusive with transactionId.
+          required: false
+          schema:
+            type: string
+            format: date-time
+          example: 2035-01-01T12:00:00Z
+        - name: transactionId
+          in: query
+          description: Evaluate available transitions as of the submit time of this
+            transaction. Mutually exclusive with pointInTime.
+          required: false
+          schema:
+            type: string
+            format: uuid
+          example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+      responses:
+        "200":
+          description: Successfully retrieved available transitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransitionNameList"
+              example:
+                - APPROVE
+                - REJECT
+        "400":
+          description: Bad request — invalid entityId, mutually exclusive parameters
+            supplied, or invalid format
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "pointInTime and transactionId are mutually exclusive"
+                instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
+                instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityName}/{modelVersion}:
     get:
       tags:
@@ -1402,10 +1564,11 @@ paths:
         "200":
           description: Successfully retrieved entities
           content:
-            application/x-ndjson:
+            application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/JsonNode"
+                items:
+                  $ref: "#/components/schemas/Envelope"
               examples:
                 Nobel Prize Winners:
                   description: Nobel Prize Winners
@@ -1460,7 +1623,7 @@ paths:
         "400":
           description: Invalid request parameters
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -1479,7 +1642,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -1494,6 +1657,12 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     delete:
       tags:
         - Entity Management
@@ -1614,7 +1783,7 @@ paths:
         "400":
           description: Invalid model name
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -1629,7 +1798,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -1644,6 +1813,12 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}:
     put:
       tags:
@@ -1757,13 +1932,38 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               example:
-                transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
-                entityIds:
-                  - 74807f00-ed0d-11ee-a357-ae468cd3ed16
-                  - 72428380-0704-11ef-a357-ae468cd3ed16
-                  - 459ac800-2032-11ef-a357-ae468cd3ed16
+                - transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
+                  entityIds:
+                    - 74807f00-ed0d-11ee-a357-ae468cd3ed16
+                    - 72428380-0704-11ef-a357-ae468cd3ed16
+                    - 459ac800-2032-11ef-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload, collection too large, or unsupported format
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: One or more entities not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — serialization failure (retryable)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     post:
       tags:
         - Entity Management
@@ -1890,13 +2090,32 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               example:
-                transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
-                entityIds:
-                  - 74807f00-ed0d-11ee-a357-ae468cd3ed16
-                  - 72428380-0704-11ef-a357-ae468cd3ed16
-                  - 459ac800-2032-11ef-a357-ae468cd3ed16
+                - transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
+                  entityIds:
+                    - 74807f00-ed0d-11ee-a357-ae468cd3ed16
+                    - 72428380-0704-11ef-a357-ae468cd3ed16
+                    - 459ac800-2032-11ef-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid JSON array or payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: One or more entity models not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}:
     put:
       tags:
@@ -2032,6 +2251,36 @@ paths:
                 transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload or validation failure
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — serialization failure (retryable)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
     put:
       tags:
@@ -2179,6 +2428,36 @@ paths:
                 transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload, validation failure, or invalid transition
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — serialization failure (retryable)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityName}/{modelVersion}:
     post:
       tags:
@@ -2324,11 +2603,42 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               example:
-                transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
-                entityIds:
-                  - cdcff600-bab1-11ee-a357-ae468cd3ed16
+                - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
+                  entityIds:
+                    - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload, validation failure, or change level violation
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "validation failed: field x is required"
+                instance: /api/entity/JSON/nobel-prize/1
+        "404":
+          description: Entity model not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: cannot find model entityName=nobel-prize, version=1
+                instance: /api/entity/JSON/nobel-prize/1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /message:
     delete:
       tags:
@@ -2368,20 +2678,21 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: array
+                items:
+                  $ref: "#/components/schemas/MessageDeleteBatchResponse"
               examples:
                 Delete Collection Response:
                   description: Delete Collection Response
                   value:
-                    - transactionId: 8824c480-c166-11ee-9cc7-ae468cd3ed16
-                      entityIds:
+                    - entityIds:
                         - 8824c480-c166-11ee-9cc7-ae468cd3ed16
                         - 31134900-d9cb-11ee-9cc7-ae468cd3ed16
                       success: true
         "400":
           description: Invalid UUID format or not a time-based UUID
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2396,6 +2707,12 @@ paths:
                     instance: /api/message/123e4567-e89b-12d3-a456-426614174000
                     properties:
                       uuid: 123e4567-e89b-12d3-a456-426614174000
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /message/new/{subject}:
     post:
       tags:
@@ -2553,18 +2870,20 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: array
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               examples:
                 Transaction Response:
                   description: Transaction Response
                   value:
                     - entityIds:
                         - 8824c480-c166-11ee-bf9f-ae468cd3ed16
-                      success: true
+                      transactionId: 9f3a0000-c166-11ee-bf9f-ae468cd3ed16
         "400":
           description: Invalid message format or parsing error
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2581,7 +2900,7 @@ paths:
         "413":
           description: Payload too large
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2593,6 +2912,12 @@ paths:
                     status: 413
                     detail: Request payload size exceeds maximum allowed limit of 10MB
                     instance: /api/message/new/nobel.prize.events
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /message/{messageId}:
     get:
       tags:
@@ -2635,34 +2960,29 @@ paths:
                     metaData:
                       values: {}
                       indexedValues: {}
-                    content: >-
-                      {
-                        "eventType" : "nobel.prize.announced",
-                        "timestamp" : "2024-10-09T12:00:00Z",
-                        "data" : {
-                          "category" : "physics",
-                          "year" : "2024",
-                          "laureates" : [ {
-                            "firstname" : "John",
-                            "surname" : "Hopfield",
-                            "id" : "1037",
-                            "motivation" : "for foundational discoveries and inventions that enable machine learning with artificial neural networks",
-                            "share" : "2"
-                          }, {
-                            "firstname" : "Geoffrey",
-                            "surname" : "Hinton",
-                            "id" : "1038",
-                            "motivation" : "for foundational discoveries and inventions that enable machine learning with artificial neural networks",
-                            "share" : "2"
-                          } ]
-                        }
-                      }
+                    content:
+                      eventType: nobel.prize.announced
+                      timestamp: "2024-10-09T12:00:00Z"
+                      data:
+                        category: physics
+                        year: "2024"
+                        laureates:
+                          - firstname: John
+                            surname: Hopfield
+                            id: "1037"
+                            motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
+                            share: "2"
+                          - firstname: Geoffrey
+                            surname: Hinton
+                            id: "1038"
+                            motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
+                            share: "2"
         "400":
           description: Invalid UUID format or not a time-based UUID
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ProblemDetail"
               examples:
                 Not a Time UUID:
                   description: Not a Time UUID
@@ -2678,9 +2998,9 @@ paths:
         "404":
           description: Message not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ProblemDetail"
               examples:
                 Message Not Found:
                   description: Message Not Found
@@ -2692,6 +3012,12 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     delete:
       tags:
         - Edge message
@@ -2715,19 +3041,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                $ref: "#/components/schemas/MessageDeleteResponse"
               examples:
                 Delete Response:
                   description: Delete Response
                   value:
-                    transactionId: 8824c480-c166-11ee-9cc7-ae468cd3ed16
                     entityIds:
                       - 8824c480-c166-11ee-9cc7-ae468cd3ed16
-                    success: true
         "400":
           description: Invalid UUID format or not a time-based UUID
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2745,7 +3069,7 @@ paths:
         "404":
           description: Message not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2759,6 +3083,12 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/:
     get:
       tags:
@@ -2778,6 +3108,8 @@ paths:
 
         \        "
       operationId: getAvailableEntityModels
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of available entity models
@@ -2785,7 +3117,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityModelDto"
+                items:
+                  $ref: "#/components/schemas/EntityModelDto"
               examples:
                 models:
                   description: models
@@ -2800,6 +3133,12 @@ paths:
                       modelVersion: 3
                       currentState: UNLOCKED
                       modelUpdateDate: 2025-08-12T13:31:48.141103-07:00
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/export/{converter}/{entityName}/{modelVersion}:
     get:
       tags:
@@ -2827,6 +3166,8 @@ paths:
 
         \        "
       operationId: exportMetadata
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -2859,7 +3200,11 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: object
+                additionalProperties: true
+                description: >
+                  Exported model metadata in the converter's output format.
+                  Shape depends on the converter argument (JSON_SCHEMA or SIMPLE_VIEW).
               examples:
                 Simple View:
                   summary: SIMPLE_VIEW export example
@@ -2905,7 +3250,7 @@ paths:
         "400":
           description: Invalid converter specified
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -2920,7 +3265,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -2932,6 +3277,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}:
     post:
       tags:
@@ -2958,6 +3309,8 @@ paths:
 
         \        "
       operationId: importEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3033,7 +3386,7 @@ paths:
         "400":
           description: Invalid converter specified
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -3045,6 +3398,12 @@ paths:
                 properties:
                   parameter: converter
                   invalidValue: WRONG
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/validate/{entityName}/{modelVersion}:
     post:
       tags:
@@ -3081,12 +3440,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EntityModelActionResultDto"
+        "400":
+          description: Failed to read or parse request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /model/{entityName}/{modelVersion}:
@@ -3108,6 +3479,8 @@ paths:
 
         Returns a confirmation message upon successful deletion.
       operationId: deleteEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3144,7 +3517,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -3156,6 +3529,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/changeLevel/{changeLevel}:
     post:
       tags:
@@ -3193,6 +3572,8 @@ paths:
 
         \        "
       operationId: setEntityModelChangeLevel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3249,7 +3630,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -3261,6 +3642,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/lock:
     put:
       tags:
@@ -3285,6 +3672,8 @@ paths:
 
         \        "
       operationId: lockEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3321,7 +3710,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -3333,6 +3722,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/unlock:
     put:
       tags:
@@ -3362,6 +3757,8 @@ paths:
 
         \        "
       operationId: unlockEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3398,7 +3795,7 @@ paths:
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -3410,6 +3807,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/workflow/export:
     get:
       tags:
@@ -3446,30 +3849,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowExportResponseDto"
-        "401":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "403":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
         "404":
-          description: Error response
+          description: No workflows found for this model
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "500":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /model/{entityName}/{modelVersion}/workflow/import:
@@ -3515,37 +3906,28 @@ paths:
       responses:
         "200":
           description: Workflows imported successfully
-          content: {}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: Error response
+          description: Invalid request body or unknown importMode
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "401":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "403":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: Target entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "500":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /oauth/keys/keypair:
@@ -3596,6 +3978,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -3653,6 +4037,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -3701,6 +4087,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -3756,6 +4144,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -3809,6 +4199,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -3853,6 +4245,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -3944,6 +4338,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -3992,6 +4388,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -4048,6 +4446,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -4110,6 +4510,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers:
@@ -4155,6 +4557,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -4211,6 +4615,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -4264,6 +4670,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -4313,6 +4721,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     patch:
@@ -4385,6 +4795,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -4437,6 +4849,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -4497,6 +4911,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/token:
@@ -4998,6 +5414,72 @@ paths:
             application/hal+json:
               schema:
                 type: string
+  /platform-api/entity/fetch/transitions:
+    get:
+      tags:
+        - Entity Management
+      summary: Fetch available transitions (platform-library format)
+      description: >
+        Returns the names of workflow transitions available for an entity,
+        using the platform-library query format (`entityClass=Name.Version`).
+
+
+        This endpoint mirrors `GET /entity/{entityId}/transitions` but accepts
+        the entity class in `Name.Version` dot-notation instead of a path
+        parameter, matching the Cyoda Cloud platform-library convention.
+      operationId: fetchEntityTransitions
+      parameters:
+        - name: entityClass
+          in: query
+          description: Entity class in `Name.Version` format (e.g. `Offer.1`)
+          required: true
+          schema:
+            type: string
+          example: Offer.1
+        - name: entityId
+          in: query
+          description: The unique identifier (UUID) of the entity
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+      responses:
+        "200":
+          description: Successfully retrieved available transitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransitionNameList"
+              example:
+                - APPROVE
+                - REJECT
+        "400":
+          description: Bad request — missing or malformed required parameters
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "entityClass must be in format Name.Version (e.g., Offer.1)"
+                instance: /api/platform-api/entity/fetch/transitions
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
+                instance: /api/platform-api/entity/fetch/transitions
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /search/async/{entityName}/{modelVersion}:
     post:
       tags:
@@ -5148,12 +5630,24 @@ paths:
               schema:
                 type: string
                 format: uuid
+        "400":
+          description: Invalid search criteria (malformed condition, type mismatch, unknown field path)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/async/{jobId}:
@@ -5220,15 +5714,21 @@ paths:
           description: Invalid parameters (malformed point-in-time or invalid page
             parameters)
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Search job not found or expired
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/async/{jobId}/cancel:
@@ -5260,15 +5760,21 @@ paths:
         "400":
           description: Search job is not in RUNNING state
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Search job not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/async/{jobId}/status:
@@ -5316,9 +5822,15 @@ paths:
         "404":
           description: Search job not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/direct/{entityName}/{modelVersion}:
@@ -5433,7 +5945,7 @@ paths:
             application/x-ndjson:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "404":
@@ -5442,7 +5954,7 @@ paths:
             application/x-ndjson:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "408":
@@ -5451,9 +5963,15 @@ paths:
             application/x-ndjson:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /sql/schema/:
@@ -5760,7 +6278,7 @@ paths:
         "400":
           description: Invalid schema configuration
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -6229,7 +6747,7 @@ paths:
         "400":
           description: Invalid schema name
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               example:
@@ -6701,6 +7219,45 @@ paths:
                   schemaId: 8824c480-c166-11ee-822a-ae468cd3ed16
 components:
   schemas:
+    Envelope:
+      type: object
+      description: |
+        Wire envelope returned by GET /entity/{entityId} and each element of
+        GET /entity/{entityName}/{modelVersion}. The server reconstructs this
+        envelope from internal storage — the shape is the source of truth.
+      required:
+        - type
+        - data
+        - meta
+      properties:
+        type:
+          type: string
+          description: Entity type discriminator (e.g. "ENTITY").
+          example: ENTITY
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            Polymorphic entity payload as supplied at create/update time.
+            Exact fields depend on the entity model.
+        meta:
+          type: object
+          additionalProperties: true
+          description: |
+            System-managed metadata: id, state, creationDate, previousTransition, etc.
+    TransitionNameList:
+      type: array
+      description: >
+        An ordered list of workflow transition names available from the
+        entity's current state. Each entry is the name of a configured
+        transition (e.g. "APPROVE", "REJECT") or a virtual loopback
+        transition name. An empty array means no transitions are available
+        from the current state.
+      items:
+        type: string
+      example:
+        - APPROVE
+        - REJECT
     FieldConfigDto:
       type: object
       properties:
@@ -6785,8 +7342,10 @@ components:
           format: uri
         properties:
           type: object
-          additionalProperties:
-            type: object
+          additionalProperties: true
+          description: |
+            Additional diagnostic properties. Values may be any JSON type
+            (string, number, boolean, object, array).
     CancelAsyncSearchDto:
       type: object
       properties:
@@ -6803,7 +7362,7 @@ components:
             - NOT_FOUND
         cancelled:
           type: boolean
-          writeOnly: true
+          description: Alias for isCancelled — both fields are present in the response for compatibility
       required:
         - currentSearchJobStatus
         - isCancelled
@@ -6833,9 +7392,10 @@ components:
             problem
         properties:
           type: object
-          additionalProperties:
-            type: object
-          description: Additional properties specific to the problem type
+          additionalProperties: true
+          description: |
+            Additional diagnostic properties. Values may be any JSON type
+            (string, number, boolean, object, array).
     AbstractCondition:
       type: object
       properties:
@@ -6955,6 +7515,11 @@ components:
         - version
     EntityTransactionResponse:
       type: object
+      description: |
+        Response returned by entity create/update operations. Contains the
+        transaction ID and the list of entity IDs affected by the operation.
+        entityIds contains UUID strings (server is source of truth — the
+        server emits []string, not []object).
       properties:
         transactionId:
           type: string
@@ -6962,7 +7527,8 @@ components:
         entityIds:
           type: array
           items:
-            type: object
+            type: string
+            format: uuid
       required:
         - entityIds
     LaureateDto:
@@ -7079,6 +7645,9 @@ components:
         - error_description
     EntityMetadataDto:
       type: object
+      description: |
+        System-managed metadata returned for each entity in search results.
+        The server reconstructs this from internal storage — the shape is the source of truth.
       properties:
         id:
           type: string
@@ -7091,11 +7660,22 @@ components:
           type: string
           format: date-time
           description: When the entity was created
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: When the entity was last modified
+        transactionId:
+          type: string
+          description: The transaction ID associated with the latest save (omitted if none)
         transitionForLatestSave:
           type: string
-          description: The transition that triggered the latest save
+          description: The transition that triggered the latest save (omitted if none)
     EntityResultDto:
       type: object
+      description: |
+        Wire envelope returned by search endpoints. Each result contains the
+        entity payload and system-managed metadata. Shape matches the Envelope
+        schema used by GET /entity/{entityId}.
       properties:
         type:
           type: string
@@ -7103,9 +7683,10 @@ components:
           example: ENTITY
         data:
           type: object
-          additionalProperties:
-            type: object
-          description: The entity data as a JSON object
+          additionalProperties: true
+          description: |
+            Polymorphic entity payload as supplied at create/update time.
+            Field values may be any JSON type (string, number, boolean, object, array).
         meta:
           $ref: "#/components/schemas/EntityMetadataDto"
     ArrayConditionDto:
@@ -8168,6 +8749,16 @@ components:
         - entityName
         - modelVersion
         - workflows
+    WorkflowImportSuccessDto:
+      type: object
+      description: Confirmation returned when a workflow import completes successfully.
+      properties:
+        success:
+          type: boolean
+          description: Always true on a successful import.
+          example: true
+      required:
+        - success
     EntityModelDto:
       type: object
       properties:
@@ -8197,7 +8788,7 @@ components:
         metaData:
           $ref: "#/components/schemas/EdgeMessageMetaData"
         content:
-          type: string
+          $ref: "#/components/schemas/EdgeMessagePayload"
       required:
         - header
         - metaData
@@ -8208,6 +8799,7 @@ components:
           type: string
         contentType:
           type: string
+          description: "Informational only; see EdgeMessagePayload note. See #193 for proper handling."
         contentLength:
           type: integer
           format: int64
@@ -8238,6 +8830,45 @@ components:
       required:
         - indexedValues
         - values
+    EdgeMessagePayload:
+      description: |
+        Polymorphic by intent — accepts any JSON value. The contentType field
+        in the message header is informational; it does not affect storage or
+        retrieval format. Clients needing to store non-JSON content should
+        stringify it (e.g. base64 for binary, plain string with escape for
+        non-JSON text). See https://github.com/Cyoda-platform/cyoda-go/issues/193
+        for proper content-type support as a future feature.
+      additionalProperties: true
+    MessageDeleteResponse:
+      type: object
+      description: |
+        Response returned by deleteMessage. Contains the IDs of deleted entities.
+        No transactionId is present — delete operations in the messaging path are
+        not transactional in the same way as entity create/update.
+      properties:
+        entityIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+      required:
+        - entityIds
+    MessageDeleteBatchResponse:
+      type: object
+      description: |
+        One element of the array returned by deleteMessages (batch delete).
+        Contains the IDs of deleted entities and a success flag.
+      properties:
+        entityIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        success:
+          type: boolean
+      required:
+        - entityIds
+        - success
     LocalTime:
       type: object
       properties:
@@ -8460,9 +9091,9 @@ components:
         changeType:
           type: string
           enum:
-            - CREATE
-            - UPDATE
-            - DELETE
+            - CREATED
+            - UPDATED
+            - DELETED
         fieldsChangedCount:
           type: integer
           format: int32
@@ -8643,6 +9274,12 @@ components:
               - $ref: "#/components/schemas/EntityChangeAuditEventDto"
               - $ref: "#/components/schemas/StateMachineAuditEventDto"
               - $ref: "#/components/schemas/SystemAuditEventDto"
+            discriminator:
+              propertyName: auditEventType
+              mapping:
+                EntityChange: "#/components/schemas/EntityChangeAuditEventDto"
+                StateMachine: "#/components/schemas/StateMachineAuditEventDto"
+                System: "#/components/schemas/SystemAuditEventDto"
       required:
         - pagination
     EntityChangeAuditEventDto:
@@ -8703,39 +9340,32 @@ components:
               type: string
               description: Type of the state machine event
               enum:
-                - STARTED
-                - FINISHED
-                - CANCELLED
-                - FORCED_SUCCESS
+                - STATE_MACHINE_START
+                - STATE_MACHINE_FINISH
+                - CANCEL
+                - FORCE_SUCCESS
                 - WORKFLOW_FOUND
                 - WORKFLOW_NOT_FOUND
-                - WORKFLOW_SKIPPED
-                - TRANSITION_MADE
+                - WORKFLOW_SKIP
+                - TRANSITION_MAKE
                 - TRANSITION_NOT_FOUND
-                - TRANSITION_CRITERION_NOT_MATCHED
-                - PROCESS_CRITERION_NOT_MATCHED
-                - PROCESSING_PAUSED
+                - TRANSITION_NOT_MATCH_CRITERION
+                - PROCESS_NOT_MATCH_CRITERION
+                - PAUSE_FOR_PROCESSING
                 - STATE_PROCESS_RESULT
             data:
-              oneOf:
-                - $ref: "#/components/schemas/StateMachineCancelledDto"
-                - $ref: "#/components/schemas/StateMachineFinishedDto"
-                - $ref: "#/components/schemas/StateMachineForcedSuccessDto"
-                - $ref: "#/components/schemas/StateMachineProcessCriterionNotMatchedDto"
-                - $ref: "#/components/schemas/StateMachineProcessingPausedDto"
-                - $ref: "#/components/schemas/StateMachineStartedDto"
-                - $ref: "#/components/schemas/StateMachineStateProcessResultDto"
-                - $ref: "#/components/schemas/StateMachineTransitionCriterionNotMatchedDto"
-                - $ref: "#/components/schemas/StateMachineTransitionMadeDto"
-                - $ref: "#/components/schemas/StateMachineTransitionNotFoundDto"
-                - $ref: "#/components/schemas/StateMachineWorkflowFoundDto"
-                - $ref: "#/components/schemas/StateMachineWorkflowNotFoundDto"
-                - $ref: "#/components/schemas/StateMachineWorkflowSkippedDto"
+              type: object
+              nullable: true
+              description: >
+                Optional event-specific payload. Present for some event types
+                (e.g. STATE_MACHINE_FINISH includes {"success": true},
+                STATE_PROCESS_RESULT includes {"success": false}).
+                Null for most event types.
+              additionalProperties: true
       required:
         - eventType
         - microsTime
         - severity
-        - state
         - utcTime
     StateMachineCancelledDto:
       allOf:
@@ -9116,7 +9746,6 @@ components:
           type: string
           description: Role description
       required:
-        - desc
         - id
     SubscriptionsResponseDto:
       type: object
@@ -9194,7 +9823,41 @@ components:
       required:
         - clientId
         - message
+  responses:
+    Unauthorized:
+      description: Unauthorized — missing or invalid bearer token
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Forbidden:
+      description: Forbidden — caller does not have permission for this resource
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    InternalServerError:
+      description: |
+        Internal Server Error — generic message with ticketId for correlation.
+        Per CLAUDE.md's 5xx convention; the underlying error is logged
+        server-side at ERROR level with the same ticketId.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    NotImplemented:
+      description: |
+        Not yet implemented — see https://github.com/Cyoda-platform/cyoda-go/issues/194.
+        The handler exists as a placeholder but returns 501 Not Implemented;
+        real implementation is tracked separately.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
   securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
     bearerAuth:
       type: http
       name: bearerAuth

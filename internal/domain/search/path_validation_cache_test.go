@@ -8,7 +8,6 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -72,7 +71,7 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
-	cache := search.NewPathValidationCache(nil)
+	cache := search.NewPathValidationCache()
 	svc := search.NewSearchService(factory, uuids, searchStore).
 		WithPathValidationCache(cache)
 
@@ -99,13 +98,20 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 	}
 }
 
-// TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast asserts that
-// after a schema-change invalidation event for the (tenant, ref) is
-// broadcast, the previously-cached negative entry is dropped: the next
-// validation re-consults the inner store. Required to preserve the issue
-// #77 "fresh-after-extend" contract — a peer extending the model must not
-// be hidden behind a stale negative cache.
-func TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast(t *testing.T) {
+// TestSearch_NegativeCache_InvalidatedOnSchemaChange asserts that after
+// InvalidateRef fires for a (tenant, ref), the previously-cached
+// negative entry is dropped: the next validation re-consults the inner
+// store. Required to preserve the issue #77 "fresh-after-extend"
+// contract — a peer extending the model must not be hidden behind a
+// stale negative cache.
+//
+// Issue #174 — pre-fix the cache subscribed to a gossip broadcaster
+// directly, so this contract did not hold on single-node deployments.
+// After the redesign, app.go wires modelcache.SubscribeLocal to
+// pathValidationCache.InvalidateRef so every invalidation (local OR
+// gossip) reaches the cache regardless of cluster topology. Tests
+// drive InvalidateRef directly, decoupled from the wiring layer.
+func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	desc := buildSearchDescriptor(t, ref, "a")
 	ms := &countingModelStore{descriptor: desc}
@@ -117,8 +123,7 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
-	bc := newFakePathBroadcaster()
-	cache := search.NewPathValidationCache(bc)
+	cache := search.NewPathValidationCache()
 	svc := search.NewSearchService(factory, uuids, searchStore).
 		WithPathValidationCache(cache)
 
@@ -145,14 +150,9 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast(t *testing.T) {
 			ms.getCount.Load()-getsBefore, ms.refreshCount.Load()-refreshesBefore)
 	}
 
-	// Broadcast schema-change invalidation — peer's ExtendSchema would
-	// look like this from this node's view. The negative cache must
-	// drop the entry so the next request goes back to the inner store.
-	payload, err := modelcache.EncodeInvalidation("tenant-1", ref)
-	if err != nil {
-		t.Fatalf("EncodeInvalidation: %v", err)
-	}
-	bc.Broadcast("model.invalidate", payload)
+	// Invalidate the (tenant, ref) — the negative cache must drop the
+	// entry so the next request goes back to the inner store.
+	cache.InvalidateRef("tenant-1", ref)
 
 	// Third request: cache invalidated, inner Get must fire again.
 	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
@@ -164,9 +164,9 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast(t *testing.T) {
 }
 
 // TestSearch_NegativeCache_ConcurrentMissAndInvalidation drives 100
-// concurrent validation requests interleaved with a single broadcast
-// invalidation. The contract: no panics, no races, all requests return
-// the expected 4xx error. Run with -race once before PR.
+// concurrent validation requests interleaved with a single InvalidateRef.
+// The contract: no panics, no races, all requests return the expected
+// 4xx error. Run with -race once before PR.
 func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	desc := buildSearchDescriptor(t, ref, "a")
@@ -179,8 +179,7 @@ func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
-	bc := newFakePathBroadcaster()
-	cache := search.NewPathValidationCache(bc)
+	cache := search.NewPathValidationCache()
 	svc := search.NewSearchService(factory, uuids, searchStore).
 		WithPathValidationCache(cache)
 
@@ -199,8 +198,7 @@ func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			if i == concurrency/2 {
-				payload, _ := modelcache.EncodeInvalidation("tenant-1", ref)
-				bc.Broadcast("model.invalidate", payload)
+				cache.InvalidateRef("tenant-1", ref)
 			}
 			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
 			errs <- err
@@ -215,32 +213,3 @@ func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 		}
 	}
 }
-
-// fakePathBroadcaster mirrors fakeBroadcaster but lives in the search
-// package's test scope. Synchronous delivery to every subscriber so
-// invalidation events take effect before the next request.
-type fakePathBroadcaster struct {
-	mu       sync.Mutex
-	handlers map[string][]func([]byte)
-}
-
-func newFakePathBroadcaster() *fakePathBroadcaster {
-	return &fakePathBroadcaster{handlers: make(map[string][]func([]byte))}
-}
-
-func (b *fakePathBroadcaster) Broadcast(topic string, payload []byte) {
-	b.mu.Lock()
-	hs := append([]func([]byte){}, b.handlers[topic]...)
-	b.mu.Unlock()
-	for _, h := range hs {
-		h(payload)
-	}
-}
-
-func (b *fakePathBroadcaster) Subscribe(topic string, h func([]byte)) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.handlers[topic] = append(b.handlers[topic], h)
-}
-
-var _ spi.ClusterBroadcaster = (*fakePathBroadcaster)(nil)

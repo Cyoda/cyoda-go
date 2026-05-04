@@ -76,6 +76,15 @@ func (f *CachingStoreFactory) TransactionManager(ctx context.Context) (spi.Trans
 }
 func (f *CachingStoreFactory) Close() error { return f.inner.Close() }
 
+// SubscribeLocal registers an in-process invalidation handler on the
+// shared CachingModelStore. The handler receives (tenant, ref) for
+// every model invalidation — local mutations and gossip-received
+// events alike. Downstream caches use this to stay in lock step
+// regardless of cluster topology (issue #174).
+func (f *CachingStoreFactory) SubscribeLocal(h func(tenant string, ref spi.ModelRef)) {
+	f.cache.SubscribeLocal(h)
+}
+
 // requestScopedStore is returned by CachingStoreFactory.ModelStore.
 // It delegates reads through the shared cache and writes directly to
 // the per-request inner store. The tenant is implicit in inner — the

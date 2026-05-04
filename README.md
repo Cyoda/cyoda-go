@@ -60,6 +60,14 @@ A running server exposes the same tree over HTTP at `{ContextPath}/help` (defaul
 - **Docker** (optional, for PostgreSQL backend and container builds)
 - **PostgreSQL 17+** (required for PostgreSQL mode)
 
+## Versioning
+
+Cyoda-Go is **pre-1.0**: minor version bumps (e.g. `0.6.x` → `0.7.0`) may include breaking changes to the wire format, configuration, or operational surface. Patch bumps (`0.x.y` → `0.x.y+1`) are non-breaking.
+
+Each release lists breaking changes in [`CHANGELOG.md`](./CHANGELOG.md). Active release line: see the latest tag at [Releases](https://github.com/Cyoda-platform/cyoda-go/releases).
+
+**Older release lines (e.g. `v0.6.x`) are not maintained.** No back-port branches exist. If a real consumer needs a fix on an older line, branch from the relevant tag (e.g. `git checkout -b release/v0.6.x v0.6.3`) and open an issue describing the constraint — we'll consider creating an official maintenance branch if the need is concrete.
+
 ## Install
 
 ### macOS or Linux via Homebrew
@@ -84,12 +92,19 @@ without an on-disk config. Homebrew does not auto-init because its
 ### Any Unix via curl
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/scripts/install.sh | sh
+curl -fsSL https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
 Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Override the
 install directory with `CYODA_INSTALL_DIR=~/bin curl ... | sh`. Pin a
 specific version with `CYODA_VERSION=v0.2.0 curl ... | sh`.
+
+The installer SHA256-verifies the archive against `SHA256SUMS` from the
+release, and — if [`cosign`](https://docs.sigstore.dev/cosign/installation/)
+is on `PATH` — additionally verifies a Sigstore keyless signature
+issued by our GitHub Actions release workflow. Force-fail when cosign
+is missing with `CYODA_COSIGN_VERIFY=required`; opt out with
+`CYODA_COSIGN_VERIFY=false` (not recommended).
 
 ### Debian or Ubuntu
 
@@ -325,6 +340,8 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `CYODA_SUPPRESS_BANNER` | `false` | Set to `true` to silence the startup banner and any mock-auth warnings. Intended for CI/test harnesses; never set in production so operators see security-relevant warnings. |
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | Error detail: `sanitized` (production) or `verbose` (development) |
+| `CYODA_CORS_ENABLED` | `true` | Master switch for CORS. Set to `false` to disable and handle CORS at an ingress/proxy. |
+| `CYODA_CORS_ALLOWED_ORIGINS` | *(unset)* | Comma-separated allowlist or `*` for wildcard. Unset = loopback mode (only `localhost`/`127.0.0.1`/`[::1]` permitted). See `cyoda help config cors`. |
 
 ### Authentication
 

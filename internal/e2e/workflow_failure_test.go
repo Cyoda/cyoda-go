@@ -222,7 +222,11 @@ func TestWorkflowFailure_ProcessorPanic(t *testing.T) {
 	readBody(t, resp)
 
 	// The key assertion: server is still alive after the panic.
-	healthResp, err := http.Get(serverURL + "/api/health")
+	req, err := e2eNewRequest(t, "GET", serverURL+"/api/health", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	healthResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("server not reachable after processor panic: %v", err)
 	}

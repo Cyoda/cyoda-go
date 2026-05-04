@@ -10,7 +10,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
+
+// e2eNewRequest creates an http.Request with the test name attached to the
+// request context via openapivalidator.WithTestT. The validator middleware
+// uses the captured *testing.T to call t.Errorf in -run-filtered enforce
+// mode (see openapivalidator/doc.go).
+func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.Request, error) {
+	t.Helper()
+	req, err := http.NewRequest(method, urlStr, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(openapivalidator.WithTestT(req.Context(), t))
+	return req, nil
+}
 
 // getToken obtains a JWT token via client_credentials grant.
 // The token endpoint uses HTTP Basic Auth for client authentication.
@@ -19,7 +35,7 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 	data := url.Values{
 		"grant_type": {"client_credentials"},
 	}
-	req, err := http.NewRequest("POST", serverURL+"/api/oauth/token", strings.NewReader(data.Encode()))
+	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/token", strings.NewReader(data.Encode()))
 	if err != nil {
 		t.Fatalf("failed to create token request: %v", err)
 	}
@@ -49,7 +65,7 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 func authRequest(t *testing.T, method, path string, body io.Reader) *http.Request {
 	t.Helper()
 	token := getToken(t, "test-client", "test-secret")
-	req, err := http.NewRequest(method, serverURL+path, body)
+	req, err := e2eNewRequest(t, method, serverURL+path, body)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}

@@ -84,7 +84,7 @@ Response: `200 OK`, `application/json` — same shape as a single element of the
 
 ## SPEC SHAPE
 
-The spec covers 67 paths across these tag groups:
+The spec declares 83 paths across these tag groups:
 
 - **Entity Management** — create, update, delete, transition, and stats endpoints under `/entity/`
 - **Entity Model** — model import, export, lock, unlock, delete, changeLevel, and workflow under `/model/`
@@ -94,14 +94,28 @@ The spec covers 67 paths across these tag groups:
 - **Entity, Audit** — audit log retrieval under `/audit/`
 - **Messaging** — message CRUD under `/message/`
 - **IAM** — OAuth token, key management, OIDC providers under `/oauth/`
-- **SQL Schema** — SQL schema generation and management under `/sql/schema/`
-- **Platform API** — stream-data operations under `/platform-api/stream-data/`
+- **SQL Schema** — SQL schema generation and management under `/sql/schema/` (excluded from cyoda-go — see below)
+- **Platform API** — stream-data operations under `/platform-api/stream-data/` (excluded from cyoda-go — see below)
+
+The **Stream Data** and **SQL-Schema** tag groups (22 operations) are excluded from the cyoda-go
+shipped API via `api/config.yaml`'s `exclude-tags` list. These operations are not served by
+cyoda-go and are filtered from the generated `ServerInterface` and from E2E coverage tracking.
+
+Named schemas added or refined since the initial spec import (see #21):
+
+- `Envelope` — entity get/list response wrapper `{type, data, meta}`
+- `EdgeMessagePayload` — polymorphic message content schema
+- `MessageDeleteResponse` — single-message delete response `{entityIds: []string}`
+- `MessageDeleteBatchResponse` — batch message delete response `{entityIds, success}`
+- `TransitionNameList` — transitions query response (array of strings)
+- `WorkflowImportSuccessDto` — workflow import 200 response `{success: bool}`
+- `AuditEvent` discriminator union — `EntityChangeAuditEvent` / `StateMachineAuditEvent`
 
 All paths in the spec are relative to the `servers[0].url`, which is set at runtime to `{scheme}://{host}{CYODA_CONTEXT_PATH}`. The default context path is `/api`, so `GET /entity/{entityId}` is served at `http://localhost:8080/api/entity/{entityId}`.
 
 ## AUTHENTICATION
 
-The spec declares one security scheme:
+The spec declares two security schemes:
 
 ```yaml
 components:
@@ -111,11 +125,37 @@ components:
       scheme: bearer
       description: >-
         Authorization header: `Bearer <access_token>`
+    basicAuth:
+      type: http
+      scheme: basic
 ```
 
-Global security is applied to all operations: `security: [{bearerAuth: []}]`. Discovery endpoints (`/openapi.json`, `/docs`) and help endpoints are not part of the spec and carry no security requirement.
+Global security is applied to all operations: `security: [{bearerAuth: []}]`. The `basicAuth` scheme is declared for spec validity — it is referenced by Platform API (Stream Data) operations that are out of scope for the cyoda-go server. Discovery endpoints (`/openapi.json`, `/docs`) and help endpoints are not part of the spec and carry no security requirement.
 
 When `CYODA_IAM_MODE=mock`, the server accepts requests without a token. When `CYODA_IAM_MODE=jwt`, a valid JWT Bearer token is required on all protected endpoints.
+
+## CONFORMANCE VALIDATOR
+
+The E2E test suite (`internal/e2e/`) includes an OpenAPI conformance validator
+(`internal/e2e/openapivalidator/`) that runs in the background during every E2E
+test run. For each HTTP response the in-process test server produces, the
+middleware captures the status code and body and validates them against the
+spec's declared schema for that operation.
+
+The validator operates in two modes:
+
+- **Record mode** (default): mismatches are collected and written to
+  `internal/e2e/_openapi-conformance-report.md` after the suite completes.
+  No tests fail due to spec drift.
+- **Enforce mode**: any mismatch immediately fails the test that triggered it,
+  and the suite-level conformance report test also fails if any mismatches
+  remain at the end.
+
+The conformance layer also tracks which operationIds are exercised across the
+E2E suite. Operations that appear in the spec but have no E2E coverage are
+reported as "uncovered" (in enforce mode, this fails the suite unless the
+operation is listed in `knownUncoveredOps`). See ADR 0001 in
+`docs/superpowers/specs/` for the design rationale.
 
 ## CONTEXT PATH
 

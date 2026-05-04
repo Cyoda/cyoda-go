@@ -70,7 +70,9 @@ func TestListOpenAPITags(t *testing.T) {
 			t.Errorf("tags not sorted by slug: %q >= %q", tags[i-1].Slug, tags[i].Slug)
 		}
 	}
-	// The 11 v0.6.2 canonical names must all appear.
+	// The 11 canonical names defined in the spec's tags section must all appear.
+	// Note: CQL Execution Statistics is excluded — it was never in the spec's
+	// top-level tags declaration (only referenced as an exclude-tag in api/config.yaml).
 	want := []string{
 		"Entity Management",
 		"OAuth, OIDC Providers",
@@ -83,7 +85,6 @@ func TestListOpenAPITags(t *testing.T) {
 		"Stream Data",
 		"User, Account",
 		"SQL-Schema",
-		"CQL Execution Statistics",
 	}
 	present := map[string]bool{}
 	for _, tg := range tags {

@@ -72,10 +72,8 @@ func RunAuditEntityHistory(t *testing.T, fixture BackendFixture) {
 				t.Errorf("AsStateMachine on event %d: %v", i, err)
 				continue
 			}
-			// cyoda-go emits STATE_MACHINE_START and STATE_MACHINE_FINISH
-			// (see internal/common/types.go SMEventStarted/SMEventFinished).
-			// NOTE: canonical openapi-audit.yml uses "STARTED"/"FINISHED" —
-			// this is a known drift in cyoda-go.
+			// SPI canonical values match the openapi spec eventType enum:
+			// STATE_MACHINE_START and STATE_MACHINE_FINISH (spi.SMEventStarted/SMEventFinished).
 			switch sm.EventType {
 			case "STATE_MACHINE_START":
 				hasStart = true

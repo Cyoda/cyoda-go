@@ -165,17 +165,13 @@ func TestNewMessageAndGet(t *testing.T) {
 		t.Errorf("expected contentEncoding=UTF-8, got %v", got)
 	}
 
-	// Verify content contains the payload
-	content, ok := msg["content"].(string)
+	// Verify content is an embedded JSON object (not a string — see #21 JSON-in-string defect).
+	content, ok := msg["content"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected content string, got %v", msg["content"])
+		t.Fatalf("expected content to be a JSON object, got %T: %v", msg["content"], msg["content"])
 	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		t.Fatalf("content is not valid JSON: %v", err)
-	}
-	if payload["name"] != "Alice" {
-		t.Errorf("expected payload.name=Alice, got %v", payload["name"])
+	if content["name"] != "Alice" {
+		t.Errorf("expected content.name=Alice, got %v", content["name"])
 	}
 }
 
@@ -297,17 +293,13 @@ func TestNewMessageWithoutMetadata(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	// Content should be the payload JSON
-	content, ok := msg["content"].(string)
+	// Content should be an embedded JSON object (not a string — see #21 JSON-in-string defect).
+	content, ok := msg["content"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected content string, got %v", msg["content"])
+		t.Fatalf("expected content to be a JSON object, got %T: %v", msg["content"], msg["content"])
 	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		t.Fatalf("content is not valid JSON: %v", err)
-	}
-	if payload["key"] != "value" {
-		t.Errorf("expected payload.key=value, got %v", payload["key"])
+	if content["key"] != "value" {
+		t.Errorf("expected content.key=value, got %v", content["key"])
 	}
 }
 
@@ -492,7 +484,7 @@ func TestResponseShape(t *testing.T) {
 
 	msgID := entityIds[0].(string)
 
-	// Verify get response shape: {"header": {...}, "metaData": {...}, "content": "..."}
+	// Verify get response shape: {"header": {...}, "metaData": {...}, "content": <json>}
 	resp = getMessage(t, srv.URL, msgID)
 	expectStatus(t, resp, http.StatusOK)
 	data = readBody(t, resp)
@@ -502,14 +494,15 @@ func TestResponseShape(t *testing.T) {
 		t.Fatalf("get response is not JSON object: %v", err)
 	}
 
-	// Must have header, metaData, content
+	// Must have header, metaData, and content as an embedded JSON object
+	// (not a string — see #21 JSON-in-string defect).
 	if _, ok := getResult["header"].(map[string]any); !ok {
 		t.Error("expected header object in get response")
 	}
 	if _, ok := getResult["metaData"].(map[string]any); !ok {
 		t.Error("expected metaData object in get response")
 	}
-	if _, ok := getResult["content"].(string); !ok {
-		t.Error("expected content string in get response")
+	if _, ok := getResult["content"].(map[string]any); !ok {
+		t.Errorf("expected content to be a JSON object in get response, got %T: %v", getResult["content"], getResult["content"])
 	}
 }

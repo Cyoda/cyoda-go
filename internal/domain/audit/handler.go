@@ -250,6 +250,7 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 				"eventType":      string(smEvent.EventType),
 				"severity":       "INFO",
 				"utcTime":        smEvent.Timestamp.UTC().Format(time.RFC3339Nano),
+				"microsTime":     smEvent.Timestamp.UnixMicro(),
 				"entityId":       smEvent.EntityID,
 				"details":        smEvent.Details,
 				"data":           smEvent.Data,

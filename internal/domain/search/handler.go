@@ -344,14 +344,13 @@ func (h *Handler) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobI
 
 	if !result.Cancelled {
 		// Job was already completed (SUCCESSFUL/FAILED) — Cloud returns 400.
-		resp := map[string]any{
-			"detail":     fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobId.String(), result.CurrentStatus),
-			"properties": map[string]any{"currentStatus": result.CurrentStatus, "snapshotId": jobId.String()},
-			"status":     400,
-			"title":      "Bad Request",
-			"type":       "about:blank",
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeSearchJobAlreadyTerminal,
+			fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobId.String(), result.CurrentStatus))
+		appErr.Props = map[string]any{
+			"currentStatus": result.CurrentStatus,
+			"snapshotId":    jobId.String(),
 		}
-		common.WriteJSON(w, http.StatusBadRequest, resp)
+		common.WriteError(w, r, appErr)
 		return
 	}
 

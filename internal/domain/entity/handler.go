@@ -492,14 +492,15 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 		return
 	}
 
-	resp := []map[string]any{
-		{
-			"deleteResult": map[string]any{
-				"idToError":                map[string]any{},
-				"numberOfEntitites":        result.TotalCount,
-				"numberOfEntititesRemoved": result.TotalCount,
-			},
-			"entityModelClassId": result.EntityModelID,
+	// Spec declares StreamDeleteResult as a single object (not an array).
+	// The object has: entityModelClassId (uuid), deleteResult (nested object),
+	// and optional ids ([]uuid). Server is source of truth per design §3.
+	resp := map[string]any{
+		"entityModelClassId": result.EntityModelID,
+		"deleteResult": map[string]any{
+			"idToError":                map[string]any{},
+			"numberOfEntitites":        result.TotalCount,
+			"numberOfEntititesRemoved": result.TotalCount,
 		},
 	}
 	common.WriteJSON(w, http.StatusOK, resp)

@@ -1,6 +1,7 @@
 package parity
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -41,13 +42,13 @@ func RunMessageCreateAndGet(t *testing.T, fixture BackendFixture) {
 		t.Errorf("header.subject = %q, want %q", gotSubject, subject)
 	}
 
-	// 4. Verify content contains payload data.
-	content, ok := got["content"].(string)
+	// 4. Verify content is an embedded JSON object (not a string — see #21 JSON-in-string defect).
+	content, ok := got["content"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected 'content' string in response, got: %T", got["content"])
+		t.Fatalf("expected 'content' to be a JSON object in response, got: %T", got["content"])
 	}
-	if !strings.Contains(content, `"event"`) || !strings.Contains(content, `"test"`) {
-		t.Errorf("content does not contain expected payload data: %s", content)
+	if event, _ := content["event"].(string); !strings.Contains(event, "test") {
+		t.Errorf("content.event = %q, want \"test\"", event)
 	}
 }
 
@@ -97,8 +98,15 @@ func RunMessageLargePayload(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("GetMessage: %v", err)
 	}
 
-	content, _ := got["content"].(string)
-	if len(content) < 200*1024 {
-		t.Errorf("content length %d, expected >= %d", len(content), 200*1024)
+	// content is an embedded JSON value — for a JSON string payload it becomes
+	// a Go string after json.Unmarshal (json.RawMessage → any → string).
+	// Re-encode content to measure roundtripped size (eliminates any escaping delta).
+	contentBytes, err := json.Marshal(got["content"])
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	// The re-encoded content includes the outer JSON quotes, so subtract 2 for the delimiters.
+	if len(contentBytes)-2 < 200*1024 {
+		t.Errorf("content payload length %d (encoded: %d), expected >= %d bytes", len(contentBytes)-2, len(contentBytes), 200*1024)
 	}
 }

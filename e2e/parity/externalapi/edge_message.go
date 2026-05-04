@@ -53,26 +53,23 @@ func RunExternalAPI_11_01_SaveSingle(t *testing.T, fixture parity.BackendFixture
 		t.Fatalf("GetMessage: %v", err)
 	}
 
-	// Response shape: {header: {...}, metaData: {...}, content: "<json string>"}
+	// Response shape: {header: {...}, metaData: {...}, content: <json-value>}
+	// Per #21 fix: "content" is now an embedded JSON value (not a JSON-in-string).
 	// Verify the "content" key is present and the payload round-trips.
 	rawContent, ok := got["content"]
 	if !ok {
 		t.Fatalf("GetMessage response missing 'content' key; got keys: %v", mapKeys(got))
 	}
-	contentStr, ok := rawContent.(string)
-	if !ok {
-		t.Fatalf("GetMessage 'content' is not a string; got %T: %v", rawContent, rawContent)
-	}
 
-	// Decode both sides and compare structurally so whitespace differences don't matter.
-	var gotBody, wantBody any
-	if err := json.Unmarshal([]byte(contentStr), &gotBody); err != nil {
-		t.Fatalf("content is not valid JSON: %v; raw: %q", err, contentStr)
+	// Re-encode content to JSON for structural comparison (handles any JSON type).
+	gotJSON, err := json.Marshal(rawContent)
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
 	}
+	var wantBody any
 	if err := json.Unmarshal([]byte(edgeMessagePayload), &wantBody); err != nil {
 		t.Fatalf("edgeMessagePayload is not valid JSON (test bug): %v", err)
 	}
-	gotJSON, _ := json.Marshal(gotBody)
 	wantJSON, _ := json.Marshal(wantBody)
 	if string(gotJSON) != string(wantJSON) {
 		t.Errorf("content round-trip mismatch: got %q, want %q", string(gotJSON), string(wantJSON))

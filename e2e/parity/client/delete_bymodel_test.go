@@ -19,7 +19,7 @@ func TestDeleteEntitiesByModel_DELETE_NoBody(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"deleteResult":{"numberOfEntitites":0,"numberOfEntititesRemoved":0,"idToError":{}},"entityModelClassId":"abc"}]`))
+		_, _ = w.Write([]byte(`{"deleteResult":{"numberOfEntitites":0,"numberOfEntititesRemoved":0,"idToError":{}},"entityModelClassId":"abc"}`))
 	}))
 	defer srv.Close()
 
@@ -45,7 +45,7 @@ func TestDeleteEntitiesByModelAt_DELETE_PointInTimeQuery(t *testing.T) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"deleteResult":{"numberOfEntitites":0,"numberOfEntititesRemoved":0,"idToError":{}},"entityModelClassId":"abc"}]`))
+		_, _ = w.Write([]byte(`{"deleteResult":{"numberOfEntitites":0,"numberOfEntititesRemoved":0,"idToError":{}},"entityModelClassId":"abc"}`))
 	}))
 	defer srv.Close()
 

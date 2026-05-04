@@ -21,7 +21,7 @@ func New(authSvc contract.AuthenticationService, authzSvc contract.Authorization
 }
 
 func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
-	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeBadRequest, "not yet implemented"))
+	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplemented, "not yet implemented"))
 }
 
 func (h *Handler) AccountGet(w http.ResponseWriter, r *http.Request) {

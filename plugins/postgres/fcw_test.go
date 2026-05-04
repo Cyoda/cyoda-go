@@ -12,7 +12,6 @@ package postgres_test
 //   - Write-write: caught by postgres native tuple-level DML locks (SQLSTATE 40001).
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -541,7 +540,10 @@ func TestFCW_PureReadSetConflict_NoWriteOverlap(t *testing.T) {
 		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B update prs-x: %v", err)
 	}
-	if err := tm.Commit(context.Background(), txB); err != nil {
+	// Use ctx (which carries the test tenant) so the post-#199 PR-C2 tenant
+	// gate accepts this commit. context.Background() has no UserContext and
+	// would be rejected with a "tenant mismatch" error.
+	if err := tm.Commit(ctx, txB); err != nil {
 		t.Fatalf("Tx B Commit: %v", err)
 	}
 

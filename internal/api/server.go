@@ -97,6 +97,22 @@ func (s *Server) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Request
 	s.Unimplemented.GetEntityChangesMetadata(w, r, entityId, params)
 }
 
+// GetEntityTransitions and FetchEntityTransitions are routed directly in app/app.go
+// before the generated API mux — these delegation methods satisfy ServerInterface
+// but are never reached in production.
+// TODO(#21-future-cleanup, see ADR 0001 / Task 5.1): consolidate the
+// transitions handler with the generated ServerInterface dispatch.
+// Currently the real handlers are mounted directly via app.go's outer mux
+// (which routes BEFORE the generated dispatch fires); these stubs are
+// unreachable in production.
+func (s *Server) GetEntityTransitions(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityTransitionsParams) {
+	s.Unimplemented.GetEntityTransitions(w, r, entityId, params)
+}
+
+func (s *Server) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params genapi.FetchEntityTransitionsParams) {
+	s.Unimplemented.FetchEntityTransitions(w, r, params)
+}
+
 func (s *Server) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
 	if s.Entity != nil {
 		s.Entity.DeleteEntities(w, r, entityName, modelVersion, params)

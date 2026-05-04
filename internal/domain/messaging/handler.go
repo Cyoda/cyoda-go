@@ -57,11 +57,13 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 	}
 
 	// Compact the payload JSON to normalize whitespace (matches Cyoda Cloud behavior).
+	// json.Unmarshal above already validated envelope.Payload as a JSON value, so
+	// json.Compact must succeed. If it fails, that is an invariant violation caused
+	// by a future code path constructing Payload by hand instead of via Unmarshal.
 	var compacted bytes.Buffer
 	if err := json.Compact(&compacted, envelope.Payload); err != nil {
-		// Not valid JSON — store as-is (payload is opaque).
-		compacted.Reset()
-		compacted.Write(envelope.Payload)
+		common.WriteError(w, r, common.Internal("payload validation invariant broken", err))
+		return
 	}
 	payloadString := compacted.String()
 
@@ -180,7 +182,9 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId s
 			"values":        valuesMap,
 			"indexedValues": indexedMap,
 		},
-		"content": string(payloadBytes),
+		// json.RawMessage embeds the payload as-is in the JSON output instead of
+		// wrapping the bytes in a JSON string. This fixes the #21 JSON-in-string defect.
+		"content": json.RawMessage(payloadBytes),
 	}
 
 	common.WriteJSON(w, http.StatusOK, resp)

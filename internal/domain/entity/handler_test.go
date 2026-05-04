@@ -1261,20 +1261,26 @@ func TestDeleteEntitiesVerbose(t *testing.T) {
 	}
 	expectStatus(t, resp, http.StatusOK)
 	body := readBody(t, resp)
-	var result []map[string]any
-	json.Unmarshal(body, &result)
-	if len(result) != 1 {
-		t.Fatalf("expected array of length 1, got %d", len(result))
+
+	// Response is a single StreamDeleteResult object (not an array).
+	// Spec: deleteEntities → 200 → $ref StreamDeleteResult
+	// {entityModelClassId, deleteResult: {numberOfEntitites, numberOfEntititesRemoved, idToError}}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("expected JSON object, got error: %v\nbody: %s", err, body)
 	}
-	dr, ok := result[0]["deleteResult"].(map[string]any)
+	dr, ok := result["deleteResult"].(map[string]any)
 	if !ok {
-		t.Fatal("expected deleteResult object")
+		t.Fatal("expected deleteResult object in response")
 	}
 	if dr["numberOfEntitites"] != float64(2) {
 		t.Errorf("expected numberOfEntitites=2, got %v", dr["numberOfEntitites"])
 	}
 	if dr["numberOfEntititesRemoved"] != float64(2) {
 		t.Errorf("expected numberOfEntititesRemoved=2, got %v", dr["numberOfEntititesRemoved"])
+	}
+	if _, ok := result["entityModelClassId"]; !ok {
+		t.Errorf("expected entityModelClassId in response")
 	}
 }
 

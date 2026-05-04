@@ -1,42 +1,52 @@
 package search
 
 import (
+	"container/list"
 	"sync"
 
 	"github.com/maypok86/otter/v2"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 )
 
-// pathValidationCacheTopic is the gossip topic the path-validation
-// negative cache subscribes to. It is the same topic used by the
-// model-descriptor cache (internal/cluster/modelcache) so a single
-// schema-change event drops both the descriptor and the negative
-// path entries derived from it.
-const pathValidationCacheTopic = "model.invalidate"
+// pathValidationBucketCapacity bounds the number of distinct
+// negative-cache entries the cache holds for any single (tenant, ref)
+// model. Otter's S3-FIFO eviction handles overflow within the bucket.
+//
+// Issue #175 — pre-fix the cache used a single global otter cache
+// with MaximumSize=10000; an adversarial tenant could fill it with
+// 10001 distinct random fieldPaths under their own (tenant, ref) and
+// S3-FIFO-evict every other tenant's legitimate entries. Per-bucket
+// capacity isolates eviction within a single (tenant, ref): a
+// flooding tenant only evicts their own data.
+//
+// 100 entries per bucket is conservative — most production workloads
+// see a small set of repeatedly-queried unknown paths per model, not
+// thousands. Tune up if observability shows benign workloads hitting
+// the cap.
+const pathValidationBucketCapacity = 100
 
-// pathValidationCacheCapacity bounds the negative cache size. Otter's
-// S3-FIFO eviction handles overflow automatically — this bound is the
-// memory ceiling, not a TTL: a hot unknown path stays cached as long as
-// it keeps being queried (or until an invalidation event fires for its
-// model).
-const pathValidationCacheCapacity = 10000
+// pathValidationBucketMapCap bounds the number of distinct
+// (tenant, ref) buckets the cache retains. Issue #218 — pre-cap the
+// map grew without bound; an adversarial tenant with model-creation
+// privilege at scale could accumulate ~unbounded buckets even though
+// each bucket itself was capped at pathValidationBucketCapacity.
+//
+// 10000 matches the pre-#211 single-cache global entry budget so the
+// worst-case memory footprint is roughly equivalent to the old
+// design (10k buckets × 100 entries each = 1M entries — vs. the
+// pre-#211 10k flat entries — at the cost of more buckets, each
+// holding tenant-scoped data). Per-bucket isolation (#175) is
+// preserved.
+//
+// LRU is the eviction policy: the bucket whose last access (read OR
+// write) is oldest gets dropped when MarkAbsent on a fresh key would
+// exceed the cap. InvalidateRef removes a bucket but does NOT touch
+// LRU — invalidate is destructive, not a recency signal.
+const pathValidationBucketMapCap = 10000
 
-// pathCacheKey identifies a single (tenant, modelRef, fieldPath) tuple
-// in the negative cache. Otter requires comparable keys; the struct is
-// comparable by value so it works directly without a hash function.
-type pathCacheKey struct {
-	tenant       string
-	entityName   string
-	modelVersion string
-	fieldPath    string
-}
-
-// modelRefKey is the (tenant, modelRef) generation-bucket key. A single
-// schema-change event for one model bumps its generation, which causes
-// every cached path under that model to be treated as stale on the next
-// lookup. Otter's S3-FIFO eviction reaps the stale entries naturally.
+// modelRefKey is the (tenant, modelRef) bucket key. One otter cache
+// per bucket; entire-bucket eviction handled by InvalidateRef.
 type modelRefKey struct {
 	tenant       string
 	entityName   string
@@ -46,93 +56,103 @@ type modelRefKey struct {
 // PathValidationCache is a loading-cache-style negative cache for the
 // search-service's pre-execution field-path validation. It records
 // "this path was confirmed absent from this (tenant, modelRef)'s
-// schema FieldsMap as of generation N". A serial flood of validation
-// requests for the same unknown path collapses into a single inner-
-// store Get + RefreshAndGet pair instead of one pair per request.
+// schema FieldsMap". A serial flood of validation requests for the
+// same unknown path collapses into a single inner-store Get +
+// RefreshAndGet pair instead of one pair per request.
 //
-// Invalidation is event-driven: the cache subscribes to the cluster
-// broadcaster's "model.invalidate" topic. When an event arrives for
-// (tenant, modelRef), the generation for that bucket is bumped so
-// subsequent lookups treat any prior negative entry as stale. This
-// preserves the issue #77 contract — a peer extending the schema
-// must not be hidden behind a stale negative entry.
+// Invalidation is driven externally — call InvalidateRef(tenant, ref)
+// when a schema change for that model lands. The cache holds no
+// reference to the descriptor cache or the cluster broadcaster
+// directly: app wiring connects it to either or both via
+// modelcache.CachingStoreFactory.SubscribeLocal (issue #174 — local
+// mutations AND gossip events both reach this cache, on every
+// cluster topology).
 //
-// The cache is bounded (10000 entries by default); otter's S3-FIFO
-// policy evicts cold entries automatically, so unbounded memory growth
-// is impossible even under adversarial traffic.
+// Each (tenant, ref) lives in its own bounded otter cache (issue #175
+// — per-bucket capacity isolates cross-tenant eviction). InvalidateRef
+// drops the bucket entirely. The bucket map itself is also capped
+// with LRU eviction (issue #218) so an adversarial tenant cannot
+// grow the map indefinitely.
 //
 // The zero value is not safe — use NewPathValidationCache.
 type PathValidationCache struct {
-	cache *otter.Cache[pathCacheKey, uint64]
-
-	mu          sync.RWMutex
-	generations map[modelRefKey]uint64
+	mu      sync.Mutex
+	buckets map[modelRefKey]*bucketEntry
+	// lruOrder is a doubly-linked list of *bucketEntry ordered by
+	// recency: front = most recently used, back = least recently used.
+	// MarkAbsent and IsAbsent move the touched bucket to the front;
+	// InvalidateRef removes the entry from both the map and the list
+	// without touching recency on anything else.
+	lruOrder *list.List
 }
 
-// NewPathValidationCache constructs a PathValidationCache. broadcaster
-// may be nil for single-node deployments; when non-nil the cache
-// subscribes to the cluster invalidation topic and drops affected
-// entries on every received event.
-func NewPathValidationCache(broadcaster spi.ClusterBroadcaster) *PathValidationCache {
-	c := otter.Must(&otter.Options[pathCacheKey, uint64]{
-		MaximumSize: pathValidationCacheCapacity,
-	})
-	pvc := &PathValidationCache{
-		cache:       c,
-		generations: make(map[modelRefKey]uint64),
-	}
-	if broadcaster != nil {
-		broadcaster.Subscribe(pathValidationCacheTopic, pvc.handleInvalidation)
-	}
-	return pvc
+// bucketEntry pairs the per-bucket otter cache with its LRU-list
+// element so eviction can find the back-of-list key in O(1).
+type bucketEntry struct {
+	key   modelRefKey
+	cache *otter.Cache[string, struct{}]
+	elem  *list.Element // points back to the *bucketEntry in lruOrder
 }
 
-// IsAbsent reports whether the (tenant, ref, path) tuple has a current
-// negative-cache entry — i.e. the path was previously confirmed absent
-// from the model's FieldsMap and no schema-change event has fired for
-// that model since. A cached entry whose generation is below the
-// current bucket generation is treated as a miss (and will be reaped
-// by S3-FIFO eviction in time).
+// NewPathValidationCache constructs an empty PathValidationCache.
+// Callers wire invalidation externally via
+// modelcache.CachingStoreFactory.SubscribeLocal.
+func NewPathValidationCache() *PathValidationCache {
+	return &PathValidationCache{
+		buckets:  make(map[modelRefKey]*bucketEntry),
+		lruOrder: list.New(),
+	}
+}
+
+// IsAbsent reports whether the (tenant, ref, path) tuple has a
+// current negative-cache entry — i.e. the path was previously
+// confirmed absent from the model's FieldsMap and no schema-change
+// invalidation has fired for that model since.
+//
+// The lookup AND the otter GetIfPresent call run under c.mu so a
+// concurrent InvalidateRef cannot drop the bucket between the two
+// steps (review #211 — TOCTOU concern). otter.Cache is internally
+// thread-safe; the mutex is about preserving the "operate on the
+// bucket I just resolved from c.buckets" invariant, not about
+// otter's own concurrency.
 func (c *PathValidationCache) IsAbsent(tenant string, ref spi.ModelRef, path string) bool {
 	if c == nil {
 		return false
 	}
-	key := pathCacheKey{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bucket := c.bucketLocked(modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
-		fieldPath:    path,
-	}
-	cached, ok := c.cache.GetIfPresent(key)
-	if !ok {
+	}, false /* createIfMissing */)
+	if bucket == nil {
 		return false
 	}
-	current := c.currentGeneration(modelRefKey{
-		tenant:       tenant,
-		entityName:   ref.EntityName,
-		modelVersion: ref.ModelVersion,
-	})
-	return cached == current
+	_, ok := bucket.GetIfPresent(path)
+	return ok
 }
 
-// MarkAbsent records the (tenant, ref, path) tuple as confirmed absent
-// at the current generation. Subsequent IsAbsent calls return true
-// until the next invalidation event for that (tenant, ref).
+// MarkAbsent records the (tenant, ref, path) tuple as confirmed
+// absent. Subsequent IsAbsent calls return true until either the
+// path's bucket is invalidated via InvalidateRef or otter's S3-FIFO
+// eviction reaps the entry under bucket-internal pressure.
+//
+// Lock held across both bucket allocation and Set so a concurrent
+// InvalidateRef can't drop the bucket out from under us — without
+// the lock the Set would land in an orphaned bucket (review #211).
 func (c *PathValidationCache) MarkAbsent(tenant string, ref spi.ModelRef, path string) {
 	if c == nil {
 		return
 	}
-	gen := c.currentGeneration(modelRefKey{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bucket := c.bucketLocked(modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
-	})
-	c.cache.Set(pathCacheKey{
-		tenant:       tenant,
-		entityName:   ref.EntityName,
-		modelVersion: ref.ModelVersion,
-		fieldPath:    path,
-	}, gen)
+	}, true /* createIfMissing */)
+	bucket.Set(path, struct{}{})
 }
 
 // MarkPresent removes any negative cache entry for the (tenant, ref,
@@ -144,48 +164,80 @@ func (c *PathValidationCache) MarkPresent(tenant string, ref spi.ModelRef, path 
 	if c == nil {
 		return
 	}
-	c.cache.Invalidate(pathCacheKey{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bucket := c.bucketLocked(modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
-		fieldPath:    path,
-	})
+	}, false)
+	if bucket == nil {
+		return
+	}
+	bucket.Invalidate(path)
 }
 
-// InvalidateRef bumps the generation for (tenant, ref) so every
-// previously-cached negative entry under that model is treated as
-// stale. The entries themselves are not eagerly removed; otter's S3-
-// FIFO eviction handles cold reaping as new traffic arrives. This
-// design avoids holding a per-bucket index of paths solely for the
-// invalidation path, at the cost of a small amount of dead-but-stale
-// space in the cache between events.
+// InvalidateRef drops every cached negative entry for (tenant, ref).
+// The whole bucket is removed from the map and the LRU list; the next
+// MarkAbsent for that bucket allocates a fresh otter cache.
+//
+// Invalidate is destructive, not a recency signal — it doesn't touch
+// LRU recency on any other bucket (issue #218 design choice).
+//
+// This is the public hook wired up by app.go to
+// modelcache.CachingStoreFactory.SubscribeLocal so the cache reacts
+// to local mutations AND remote gossip events alike.
 func (c *PathValidationCache) InvalidateRef(tenant string, ref spi.ModelRef) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.generations[modelRefKey{
+	k := modelRefKey{
 		tenant:       tenant,
 		entityName:   ref.EntityName,
 		modelVersion: ref.ModelVersion,
-	}]++
-}
-
-func (c *PathValidationCache) currentGeneration(k modelRefKey) uint64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.generations[k]
-}
-
-// handleInvalidation is the gossip-topic subscriber. Decoded payloads
-// reuse the modelcache encoding so the descriptor cache and the
-// negative cache react to the same schema-change broadcasts in lock
-// step.
-func (c *PathValidationCache) handleInvalidation(payload []byte) {
-	tenant, ref, ok := modelcache.DecodeInvalidation(payload)
-	if !ok {
-		return
 	}
-	c.InvalidateRef(tenant, ref)
+	if e, ok := c.buckets[k]; ok {
+		c.lruOrder.Remove(e.elem)
+		delete(c.buckets, k)
+	}
+}
+
+// bucketLocked returns the bucket for k. Caller MUST hold c.mu — the
+// returned otter.Cache pointer is only safe to operate on while c.mu
+// is held, since InvalidateRef may delete the map entry concurrently
+// otherwise (review #211).
+//
+// Side effect: every successful return path (existing OR newly
+// allocated) promotes the bucket to MRU on the LRU list. When
+// createIfMissing=true and the map is at the size cap, the LRU
+// (back-of-list) bucket is evicted before the new one is allocated
+// (issue #218).
+func (c *PathValidationCache) bucketLocked(k modelRefKey, createIfMissing bool) *otter.Cache[string, struct{}] {
+	if e, ok := c.buckets[k]; ok {
+		c.lruOrder.MoveToFront(e.elem)
+		return e.cache
+	}
+	if !createIfMissing {
+		return nil
+	}
+	if len(c.buckets) >= pathValidationBucketMapCap {
+		// Evict the LRU bucket. lruOrder.Back() is the least
+		// recently used entry; the back element's Value is the
+		// *bucketEntry, which carries its own key for map deletion.
+		back := c.lruOrder.Back()
+		if back != nil {
+			victim := back.Value.(*bucketEntry)
+			c.lruOrder.Remove(back)
+			delete(c.buckets, victim.key)
+		}
+	}
+	cache := otter.Must(&otter.Options[string, struct{}]{
+		MaximumSize: pathValidationBucketCapacity,
+	})
+	entry := &bucketEntry{key: k, cache: cache}
+	entry.elem = c.lruOrder.PushFront(entry)
+	c.buckets[k] = entry
+	return cache
 }

@@ -14,10 +14,13 @@ import (
 	"os"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
@@ -26,9 +29,10 @@ import (
 )
 
 var (
-	serverURL string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
-	dbPool    *pgxpool.Pool                     // direct DB access for verification queries
-	procSvc   *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
+	serverURL      string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
+	dbPool         *pgxpool.Pool                     // direct DB access for verification queries
+	procSvc        *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
+	allOperationIds []string
 )
 
 func TestMain(m *testing.M) {
@@ -127,13 +131,66 @@ func TestMain(m *testing.M) {
 	cfg.HTTPPort = srvPort
 
 	a := app.New(cfg)
-	srv.Config.Handler = a.Handler()
+
+	// Build the conformance validator from the embedded spec. Wraps the
+	// production handler; failures collected end-to-end and reported by
+	// TestOpenAPIConformanceReport (zzz_openapi_conformance_test.go).
+	swagger, err := api.GetSwagger()
+	if err != nil {
+		log.Fatalf("get swagger: %v", err)
+	}
+	// Replace declared server URLs with a single relative-base entry that
+	// reflects the test server's mount point. The test server hosts the app
+	// under cfg.ContextPath ("/api"); the spec's paths are relative to the
+	// server URL. Without this, the kin-openapi router matches /entity/{id}
+	// from the spec against the test server's /api/entity/{id} requests and
+	// reports every operation as "no spec route matches".
+	swagger.Servers = openapi3.Servers{{URL: cfg.ContextPath}}
+	validator, err := openapivalidator.NewValidator(swagger)
+	if err != nil {
+		log.Fatalf("build validator: %v", err)
+	}
+	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(a.Handler())
+
+	// Capture the full operationId set so the conformance test can compute
+	// the uncovered list at end-of-suite.
+	//
+	// Build the exclude-tags set (mirrors api/config.yaml). Excluded ops aren't
+	// in cyoda-go's shipped API and shouldn't count toward coverage.
+	excludeTags := map[string]bool{
+		"Stream Data":              true,
+		"CQL Execution Statistics": true,
+		"SQL-Schema":               true,
+	}
+	for _, item := range swagger.Paths.Map() {
+		for _, op := range item.Operations() {
+			if op.OperationID == "" {
+				continue
+			}
+			// Skip ops whose tags are in the exclude list.
+			skip := false
+			for _, tag := range op.Tags {
+				if excludeTags[tag] {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+			allOperationIds = append(allOperationIds, op.OperationID)
+		}
+	}
 
 	os.Exit(m.Run())
 }
 
 func TestHealth(t *testing.T) {
-	resp, err := http.Get(serverURL + "/api/health")
+	req, err := e2eNewRequest(t, "GET", serverURL+"/api/health", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}

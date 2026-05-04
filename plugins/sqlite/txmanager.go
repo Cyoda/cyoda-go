@@ -130,9 +130,12 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 		return nil, fmt.Errorf("transaction already closed: %s", txID)
 	}
 
-	// Verify tenant matches if UserContext is available.
+	// Verify tenant matches. Strict — rejects nil UserContext to match
+	// Commit/Rollback's gate (#199 PR-C2 review L-3). Pre-PR-C2 this was
+	// permissive on nil UC, allowing any caller without a UserContext to
+	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
-	if uc != nil && tx.TenantID != "" && uc.Tenant.ID != tx.TenantID {
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
 		return nil, fmt.Errorf("tenant mismatch on transaction join")
 	}
 
@@ -483,18 +486,40 @@ func (m *transactionManager) CommittedLogLen() int {
 
 // Savepoint creates a named savepoint within the given transaction by
 // deep-copying the transaction's buffer maps.
-func (m *transactionManager) Savepoint(_ context.Context, txID string) (string, error) {
+//
+// Locking discipline (issue #199 PR-C1, mirrors memory plugin PR-A):
+// Savepoint reads tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes — the
+// same fields Commit's flush phase iterates under tx.OpMu.Lock and that
+// other tx-path ops mutate under tx.OpMu.RLock. Savepoint must therefore
+// hold tx.OpMu.RLock across those reads. Lock interleaving with m.mu
+// follows Commit's pattern: drop m.mu before taking tx.OpMu, re-take m.mu
+// briefly for the m.savepoints update.
+//
+// Tenant isolation: rejects callers whose UserContext tenant does not
+// match the transaction's tenant.
+func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	tx, ok := m.active[txID]
+	m.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return "", fmt.Errorf("Savepoint: tenant mismatch on transaction %s", txID)
+	}
+
+	tx.OpMu.RLock()
+	defer tx.OpMu.RUnlock()
+
+	if tx.RolledBack || tx.Closed {
+		return "", fmt.Errorf("Savepoint: transaction %s already closed", txID)
 	}
 
 	spID := uuid.UUID(m.uuids.NewTimeUUID()).String()
 
-	// Deep-copy the buffer maps.
+	// Deep-copy the buffer maps under tx.OpMu.RLock so we are serialised
+	// against Commit/Rollback (Lock).
 	bufCopy := make(map[string]*spi.Entity, len(tx.Buffer))
 	for k, v := range tx.Buffer {
 		bufCopy[k] = copyEntity(v)
@@ -512,6 +537,8 @@ func (m *transactionManager) Savepoint(_ context.Context, txID string) (string, 
 		delCopy[k] = v
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.savepoints[txID] == nil {
 		m.savepoints[txID] = make(map[string]savepointSnapshot)
 	}
@@ -526,14 +553,34 @@ func (m *transactionManager) Savepoint(_ context.Context, txID string) (string, 
 
 // RollbackToSavepoint restores the transaction's buffer maps from the snapshot
 // captured when the savepoint was created, then removes the snapshot.
-func (m *transactionManager) RollbackToSavepoint(_ context.Context, txID string, savepointID string) error {
+//
+// Locking discipline (issue #199 PR-C1): replaces tx.Buffer / tx.ReadSet /
+// tx.WriteSet / tx.Deletes — exclusive against every other tx-path op.
+// Holds tx.OpMu.Lock (write) for the duration of the field replacement.
+//
+// Tenant isolation: rejects mismatched-tenant callers — RollbackToSavepoint
+// is destructive on tx-state.
+func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	tx, ok := m.active[txID]
+	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
 	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return fmt.Errorf("RollbackToSavepoint: tenant mismatch on transaction %s", txID)
+	}
+
+	tx.OpMu.Lock()
+	defer tx.OpMu.Unlock()
+
+	if tx.RolledBack || tx.Closed {
+		return fmt.Errorf("RollbackToSavepoint: transaction %s already closed", txID)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	txSavepoints, ok := m.savepoints[txID]
 	if !ok {
@@ -555,12 +602,24 @@ func (m *transactionManager) RollbackToSavepoint(_ context.Context, txID string,
 
 // ReleaseSavepoint releases a savepoint. The work done since the savepoint is
 // already in the parent transaction's buffer, so this just removes the snapshot.
-func (m *transactionManager) ReleaseSavepoint(_ context.Context, txID string, savepointID string) error {
+//
+// Locking discipline (issue #199 PR-C1): does not touch any field of
+// TransactionState — only mutates m.savepoints. Holds m.mu only;
+// tx.OpMu is not required.
+//
+// Tenant isolation: rejects mismatched-tenant callers — m.savepoints is
+// tenant-scoped state.
+func (m *transactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.active[txID]; !ok {
+	tx, ok := m.active[txID]
+	if !ok {
 		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return fmt.Errorf("ReleaseSavepoint: tenant mismatch on transaction %s", txID)
 	}
 
 	txSavepoints, ok := m.savepoints[txID]

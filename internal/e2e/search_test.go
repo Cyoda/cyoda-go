@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
@@ -168,4 +169,158 @@ func TestSearch_AsyncSubmit_UnknownFieldPath_Returns400_InvalidFieldPath(t *test
 		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
 	}
 	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
+}
+
+// --- Async search lifecycle ---
+
+// submitAsyncSearch submits an async search job and returns the job ID string.
+func submitAsyncSearch(t *testing.T, entityName string, modelVersion int, condition string) string {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", entityName, modelVersion)
+	resp := doAuth(t, http.MethodPost, path, condition)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("submitAsyncSearch %s/%d: expected 200, got %d: %s", entityName, modelVersion, resp.StatusCode, body)
+	}
+	// Response is a bare UUID string (possibly quoted JSON string).
+	jobID := strings.Trim(strings.TrimSpace(body), `"`)
+	if jobID == "" {
+		t.Fatalf("submitAsyncSearch: got empty job ID")
+	}
+	return jobID
+}
+
+// waitForAsyncSearch polls getAsyncSearchStatus until the job is no longer
+// RUNNING or the timeout elapses. Returns the final status string.
+func waitForAsyncSearch(t *testing.T, jobID string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		path := fmt.Sprintf("/api/search/async/%s/status", jobID)
+		resp := doAuth(t, http.MethodGet, path, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("getAsyncSearchStatus: expected 200, got %d: %s", resp.StatusCode, body)
+		}
+		var status map[string]any
+		if err := json.Unmarshal([]byte(body), &status); err != nil {
+			t.Fatalf("getAsyncSearchStatus: parse response: %v; body: %s", err, body)
+		}
+		s, _ := status["searchJobStatus"].(string)
+		if s != "RUNNING" {
+			return s
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("waitForAsyncSearch: job %s did not complete within %v", jobID, timeout)
+	return ""
+}
+
+// TestAsyncSearch_SubmitAndGetResults exercises submitAsyncSearchJob,
+// getAsyncSearchStatus, and getAsyncSearchResults in a single lifecycle.
+func TestAsyncSearch_SubmitAndGetResults(t *testing.T) {
+	const model = "e2e-async-search-lifecycle"
+	setupSearchModel(t, model)
+
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+	createEntityE2E(t, model, 1, `{"name":"Bob","amount":50,"status":"active"}`)
+
+	// Submit: match-all group condition (empty body is not valid JSON; use
+	// an always-true group with no sub-conditions instead).
+	jobID := submitAsyncSearch(t, model, 1, `{"type":"group","operator":"AND","conditions":[]}`)
+
+	// Poll status until done.
+	finalStatus := waitForAsyncSearch(t, jobID, 10*time.Second)
+	if finalStatus != "SUCCESSFUL" {
+		t.Fatalf("expected SUCCESSFUL, got %q", finalStatus)
+	}
+
+	// Retrieve first page of results.
+	path := fmt.Sprintf("/api/search/async/%s", jobID)
+	resp := doAuth(t, http.MethodGet, path+"?pageSize=10&pageNumber=0", "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("getAsyncSearchResults: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var page map[string]any
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatalf("getAsyncSearchResults: parse response: %v; body: %s", err, body)
+	}
+	content, ok := page["content"].([]any)
+	if !ok {
+		t.Fatalf("getAsyncSearchResults: expected 'content' array in response; body: %s", body)
+	}
+	if len(content) != 2 {
+		t.Errorf("expected 2 results, got %d", len(content))
+	}
+	pageInfo, ok := page["page"].(map[string]any)
+	if !ok {
+		t.Fatalf("getAsyncSearchResults: expected 'page' object in response; body: %s", body)
+	}
+	if pageInfo["totalElements"] == nil {
+		t.Errorf("expected 'page.totalElements' in response; page: %v", pageInfo)
+	}
+}
+
+// TestAsyncSearch_GetStatus_NotFound verifies that requesting status for a
+// non-existent job returns 404.
+func TestAsyncSearch_GetStatus_NotFound(t *testing.T) {
+	const fakeJobID = "00000000-0000-0000-0000-000000000001"
+	path := fmt.Sprintf("/api/search/async/%s/status", fakeJobID)
+	resp := doAuth(t, http.MethodGet, path, "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-existent job, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestAsyncSearch_GetResults_NotFound verifies that requesting results for a
+// non-existent job returns 404.
+func TestAsyncSearch_GetResults_NotFound(t *testing.T) {
+	const fakeJobID = "00000000-0000-0000-0000-000000000002"
+	path := fmt.Sprintf("/api/search/async/%s?pageSize=10&pageNumber=0", fakeJobID)
+	resp := doAuth(t, http.MethodGet, path, "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-existent job, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestAsyncSearch_Cancel_AlreadyCompleted verifies that cancelling an already-
+// completed job returns 400 with a structured body describing the current status.
+func TestAsyncSearch_Cancel_AlreadyCompleted(t *testing.T) {
+	const model = "e2e-async-search-cancel"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Charlie","amount":77,"status":"active"}`)
+
+	// Submit and wait for completion.
+	jobID := submitAsyncSearch(t, model, 1, `{"type":"group","operator":"AND","conditions":[]}`)
+	finalStatus := waitForAsyncSearch(t, jobID, 10*time.Second)
+	if finalStatus != "SUCCESSFUL" {
+		t.Fatalf("expected job to complete SUCCESSFULLY before cancel test, got %q", finalStatus)
+	}
+
+	// Attempt to cancel the completed job — must get 400.
+	path := fmt.Sprintf("/api/search/async/%s/cancel", jobID)
+	resp := doAuth(t, http.MethodPut, path, "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("cancelAsyncSearch on completed job: expected 400, got %d: %s", resp.StatusCode, body)
+	}
+	// Response must mention the current status.
+	if !strings.Contains(body, "SUCCESSFUL") {
+		t.Errorf("expected 400 body to contain current status 'SUCCESSFUL'; body: %s", body)
+	}
+}
+
+// TestAsyncSearch_Cancel_NotFound verifies that cancelling a non-existent job
+// returns 404.
+func TestAsyncSearch_Cancel_NotFound(t *testing.T) {
+	const fakeJobID = "00000000-0000-0000-0000-000000000003"
+	path := fmt.Sprintf("/api/search/async/%s/cancel", fakeJobID)
+	resp := doAuth(t, http.MethodPut, path, "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cancelAsyncSearch non-existent: expected 404, got %d: %s", resp.StatusCode, body)
+	}
 }

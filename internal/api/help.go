@@ -19,33 +19,18 @@ import (
 // before the handler runs, so double-slash cannot be detected at this layer.
 var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$`)
 
-// handleHelpPreflight writes a CORS preflight response and returns true if the
-// request was an OPTIONS preflight. The caller should return immediately when
-// this function returns true.
-func handleHelpPreflight(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodOptions {
-		return false
-	}
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	w.Header().Set("Access-Control-Max-Age", "86400")
-	w.WriteHeader(http.StatusNoContent)
-	return true
-}
-
 // RegisterHelpRoutes mounts GET {contextPath}/help and
 // GET {contextPath}/help/{topic} on the given mux. contextPath must NOT
 // have a trailing slash. An empty contextPath mounts at "/help".
-// version is closed over by the handlers and reported in the full-tree payload.
+// version is closed over by the handlers and reported in the full-tree
+// payload. CORS for /help is handled by the unified middleware in
+// internal/api/middleware/cors.go — these handlers no longer manage CORS
+// themselves.
 func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, version string) {
 	prefix := strings.TrimRight(contextPath, "/") + "/help"
 	mux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
-		if handleHelpPreflight(w, r) {
-			return
-		}
 		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET, OPTIONS")
+			w.Header().Set("Allow", "GET")
 			common.WriteError(w, r, common.Operational(
 				http.StatusMethodNotAllowed,
 				common.ErrCodeBadRequest,
@@ -53,7 +38,6 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 			))
 			return
 		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.URL.Path != prefix {
 			common.WriteError(w, r, common.Operational(
 				http.StatusNotFound,
@@ -73,11 +57,8 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 		}
 	})
 	mux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
-		if handleHelpPreflight(w, r) {
-			return
-		}
 		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET, OPTIONS")
+			w.Header().Set("Allow", "GET")
 			common.WriteError(w, r, common.Operational(
 				http.StatusMethodNotAllowed,
 				common.ErrCodeBadRequest,
@@ -85,7 +66,6 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 			))
 			return
 		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		topic := strings.TrimPrefix(r.URL.Path, prefix+"/")
 		if !topicPathPattern.MatchString(topic) {
 			common.WriteError(w, r, common.Operational(
