@@ -893,21 +893,26 @@ func TestWorkflowProc_UpdateWithoutCBD_RegressionBound(t *testing.T) {
 	}
 }
 
-// --- Spec §16 case F (cluster-mode TX_post pinning) — skipped, see reason ---
+// --- Spec §16 case F (cluster-mode TX_post pinning) — moved to multi-node harness ---
 
-// TestWorkflowProc_UpdateWithCBD_TxPostPinnedToHomeNode covers spec §4.3:
-// in cluster mode both segments' TXs are owned by the same node — TX_post
-// is pinned to TX_pre's home node so the dispatch and the apply-result
-// CAS run against the same backend.
+// TestWorkflowProc_UpdateWithCBD_TxPostPinnedToHomeNode is a placeholder
+// kept so anyone searching for spec §4.3 coverage in internal/e2e finds
+// the cross-reference. The actual cluster-mode pinning test lives in the
+// multi-node parity harness:
 //
-// Skipped because internal/e2e has no multi-node test harness. The current
-// TestMain spins up a single in-process httptest.Server. Building a
-// cross-node fixture is a separate infrastructure concern.
+//	e2e/parity/multinode/cbd_tx_pinning.go
+//	  func RunWorkflowProc_CBD_TxPostPinnedToHomeNode
 //
-// TODO(issue-27, Task 21): build a multi-node E2E harness or relocate this
-// test to internal/cluster/dispatch where node-aware fixtures live.
+// driven by the postgres-backed multi-node entry-point:
+//
+//	e2e/parity/postgres/multinode_test.go::TestMultiNode
+//
+// The single-node internal/e2e harness cannot exercise cluster routing —
+// it spins one in-process httptest.Server. The multi-node harness spawns
+// 3 cyoda-go subprocesses against a shared postgres testcontainer, which
+// is the right shape for asserting cluster-level invariants.
 func TestWorkflowProc_UpdateWithCBD_TxPostPinnedToHomeNode(t *testing.T) {
-	t.Skip("requires multi-node test harness — single-node test environment cannot exercise cross-node TX_post routing; see issue #27 Task 21 TODO")
+	t.Skip("cluster-mode coverage moved to e2e/parity/multinode/cbd_tx_pinning.go — see TestMultiNode/WorkflowProc_CBD_TxPostPinnedToHomeNode")
 }
 
 // --- Spec §16 case G (Loopback entry-point coverage) ---
