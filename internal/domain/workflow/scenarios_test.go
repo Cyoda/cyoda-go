@@ -642,3 +642,75 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
 		t.Fatalf("expected no error for nil/false flag, got: %v", err)
 	}
 }
+
+// TestScenarioStartNewTxOnDispatchRejectionViaImport asserts that the
+// validator's startNewTxOnDispatch=true-on-non-COMMIT_BEFORE_DISPATCH
+// rejection surfaces through the public workflow-import HTTP path with a
+// 400 Bad Request and a meaningful error message — i.e. that registration
+// callers (not just the package-internal helper) see the rejection. Mirrors
+// TestScenarioStaticLoopDetectionViaImport for parity with the other
+// validateWorkflows guard.
+func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr2 := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr2)
+	handler := New(factory, engine)
+
+	ctx := ctxWithTenant(testTenant)
+
+	// Register the target model so the import handler reaches static
+	// validation (otherwise it returns 404 MODEL_NOT_FOUND first, per #131).
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{
+		Ref:   spi.ModelRef{EntityName: "snttd", ModelVersion: "1"},
+		State: spi.ModelLocked,
+	}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
+
+	// Workflow with a SYNC processor declaring startNewTxOnDispatch=true —
+	// invalid combination per spec; validateProcessorFlags must reject.
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1",
+			"name": "snttd-wf",
+			"initialState": "S1",
+			"active": true,
+			"states": {
+				"S1": {"transitions": [{
+					"name": "t",
+					"next": "S2",
+					"manual": true,
+					"processors": [{
+						"type": "EXTERNAL",
+						"name": "p",
+						"executionMode": "SYNC",
+						"config": {"startNewTxOnDispatch": true}
+					}]
+				}]},
+				"S2": {"transitions": []}
+			}
+		}]
+	}`
+
+	req := newTestHTTPRequest(t, "POST", "/model/snttd/1/workflow/import", body, ctx)
+	rr := newTestHTTPResponse()
+
+	handler.ImportEntityModelWorkflow(rr, req, "snttd", 1)
+
+	if rr.Code != 400 {
+		t.Fatalf("expected status 400 for startNewTxOnDispatch misuse, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "startNewTxOnDispatch") {
+		t.Fatalf("expected 'startNewTxOnDispatch' in response, got: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "VALIDATION_FAILED") {
+		t.Fatalf("expected VALIDATION_FAILED error code in response, got: %s", rr.Body.String())
+	}
+}
