@@ -606,10 +606,16 @@ func resolveTransactionWindow(window *int32) (int, *common.AppError) {
 // chunk-wide failures surface as an error element marking chunkIndex.
 // Issue #227, extended by #228.
 type collectionChunkResult struct {
-	TransactionID string                       `json:"transactionId,omitempty"`
-	EntityIDs     []string                     `json:"entityIds,omitempty"`
-	Error         *collectionChunkError        `json:"error,omitempty"`
-	Failed        []collectionChunkItemFailure `json:"failed,omitempty"`
+	TransactionID string `json:"transactionId,omitempty"`
+	// EntityIDs is intentionally NOT omitempty so the wire shape stays
+	// stable across "fully successful" and "all-stale per-item-isolated"
+	// chunks (issue #228). Construction sites must initialise this non-nil
+	// (e.g. `make([]string, 0)`) so json.Marshal emits `entityIds: []`
+	// rather than `null` for a chunk with zero successful items. This
+	// matches the documented contract in OpenAPI / cmd/cyoda/help/content/crud.md.
+	EntityIDs []string                     `json:"entityIds"`
+	Error     *collectionChunkError        `json:"error,omitempty"`
+	Failed    []collectionChunkItemFailure `json:"failed,omitempty"`
 }
 
 // collectionChunkError carries the per-chunk failure shape. ChunkIndex is
@@ -672,6 +678,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 				return nil, appErr
 			}
 			results = append(results, collectionChunkResult{
+				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
 					Message:    appErr.Message,
@@ -822,6 +829,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 				return
 			}
 			results = append(results, collectionChunkResult{
+				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
 					Message:    appErr.Message,

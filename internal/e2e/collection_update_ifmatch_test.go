@@ -361,7 +361,18 @@ func TestUpdateCollection_IfMatch_AllStale(t *testing.T) {
 	if tx, _ := arr[0]["transactionId"].(string); tx == "" {
 		t.Errorf("expected transactionId on all-stale chunk (zero-write commit); body: %s", body)
 	}
-	ids, _ := arr[0]["entityIds"].([]any)
+	// Issue #228 I2: entityIds MUST be present (key exists) and an empty
+	// JSON array on an all-stale zero-write chunk. Doc/wire parity:
+	// `json:"entityIds"` (no omitempty) plus non-nil construction means
+	// zero-success chunks emit `entityIds: []`, not omit it.
+	rawIDs, idsPresent := arr[0]["entityIds"]
+	if !idsPresent {
+		t.Errorf("entityIds key missing from all-stale chunk; doc says it must be present as []; body: %s", body)
+	}
+	ids, idsTyped := rawIDs.([]any)
+	if !idsTyped {
+		t.Errorf("entityIds is not a JSON array on all-stale chunk; got %T (%v); body: %s", rawIDs, rawIDs, body)
+	}
 	if len(ids) != 0 {
 		t.Errorf("expected empty entityIds on all-failed chunk, got %d; body: %s", len(ids), body)
 	}
