@@ -1,6 +1,9 @@
 package workflow
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // ifMatchSlot is the mutable cell that ManualTransitionWithIfMatch attaches
 // to its context so that the first COMMIT_BEFORE_DISPATCH segment-flush can
@@ -12,8 +15,12 @@ import "context"
 // (CompareAndSave against TX_pre's commit-stamped txID, already the default).
 //
 // We use a pointer-to-struct so the engine writes through the context value
-// without re-binding ctx (consume-and-clear semantics).
+// without re-binding ctx (consume-and-clear semantics). The mutex makes the
+// read-and-clear atomic; today's cascade is single-goroutine and safe without
+// it, but defense-in-depth is cheap before any future fan-out makes the slot
+// concurrently accessible.
 type ifMatchSlot struct {
+	mu       sync.Mutex
 	expected string
 }
 
@@ -21,6 +28,9 @@ type ifMatchKey struct{}
 
 // withIfMatch returns a child context carrying expected as a single-shot
 // If-Match expected-txID. If expected is empty, ctx is returned unchanged.
+//
+// No locking on construction: the slot is freshly allocated and not yet
+// shared with any reader.
 func withIfMatch(ctx context.Context, expected string) context.Context {
 	if expected == "" {
 		return ctx
@@ -33,11 +43,16 @@ func withIfMatch(ctx context.Context, expected string) context.Context {
 // been consumed; otherwise returns the expected value once and clears the slot
 // so subsequent calls return ("", false).
 func consumeIfMatch(ctx context.Context) (string, bool) {
-	v, _ := ctx.Value(ifMatchKey{}).(*ifMatchSlot)
-	if v == nil || v.expected == "" {
+	s, _ := ctx.Value(ifMatchKey{}).(*ifMatchSlot)
+	if s == nil {
 		return "", false
 	}
-	out := v.expected
-	v.expected = ""
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.expected == "" {
+		return "", false
+	}
+	out := s.expected
+	s.expected = ""
 	return out, true
 }
