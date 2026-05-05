@@ -353,6 +353,82 @@ func createEntityE2EWithTxID(t *testing.T, entityName string, modelVersion int, 
 	return entityID, txID
 }
 
+// --- Test: PUT /entity/{id}/{transition} with COMMIT_BEFORE_DISPATCH durably commits TX_post (issue #27, Task 13) ---
+
+// TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState verifies
+// that an UpdateEntity-driven cascade containing a COMMIT_BEFORE_DISPATCH
+// processor durably commits its post-cascade state. Before Task 13 the
+// engine left TX_post open and the handler committed the now-closed TX_pre,
+// so the apply-result was never durable. After Task 13 the handler consumes
+// EngineResult.FinalCtx/FinalTxID and commits TX_post.
+//
+// Test contract: a PUT update transitions the entity via a CBD processor
+// that mutates Data. After the PUT returns, a fresh GET must observe both
+// the post-cascade state AND the processor-applied data — durably.
+func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T) {
+	const model = "e2e-wfproc-cbd-update"
+
+	procSvc.RegisterProcessor("cbd-enrich", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
+		var data map[string]any
+		json.Unmarshal(entity.Data, &data)
+		data["enriched"] = true
+		data["enrichedAmount"] = 999.0
+		updated, _ := json.Marshal(data)
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
+	})
+	defer procSvc.Reset()
+
+	// Workflow: NONE -init-> PENDING -approve-> APPROVED, with the approve
+	// transition's processor in COMMIT_BEFORE_DISPATCH mode. The init
+	// transition is automated; approve is manual (driven by PUT).
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "cbd-update-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
+				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
+					"processors": [{"type": "calculator", "name": "cbd-enrich",
+						"executionMode": "COMMIT_BEFORE_DISPATCH",
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
+				}]},
+				"APPROVED": {}
+			}
+		}]
+	}`
+	setupModelWithWorkflow(t, model, wf)
+
+	// Create — lands in PENDING via the automated init.
+	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
+	if state := getEntityState(t, entityID); state != "PENDING" {
+		t.Fatalf("post-create state = %q; want PENDING", state)
+	}
+
+	// PUT with named transition "approve" — fires the CBD processor and
+	// transitions to APPROVED.
+	path := fmt.Sprintf("/api/entity/JSON/%s/approve", entityID)
+	resp := doAuth(t, http.MethodPut, path, `{"name":"Test","amount":100,"status":"approved"}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT approve: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	// Fresh GET — durability check. State must be APPROVED AND the CBD
+	// processor's enrichment must be persisted (proves TX_post committed).
+	state := getEntityState(t, entityID)
+	if state != "APPROVED" {
+		t.Errorf("post-cascade state = %q; want APPROVED (TX_post commit leak?)", state)
+	}
+
+	data := getEntityData(t, entityID, "")
+	if data["enriched"] != true {
+		t.Errorf("expected enriched=true in durable data, got %v (TX_post commit leak?)", data["enriched"])
+	}
+	if v, _ := data["enrichedAmount"].(float64); v != 999.0 {
+		t.Errorf("expected enrichedAmount=999, got %v", data["enrichedAmount"])
+	}
+}
+
 // --- Test: POST /entity txId works with /audit/entity/{id}/workflow/{txId}/finished (issue #20) ---
 
 func TestWorkflowProc_PostTxIdMatchesAuditEndpoint(t *testing.T) {

@@ -175,6 +175,24 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	}, nil
 }
 
+// ManualTransitionWithIfMatch is the variant of ManualTransition used by
+// callers that supply an If-Match expected-txID (cross-request optimistic
+// concurrency). Per spec §4.1, the expected-txID is applied at the FIRST
+// segment-flush of the cascade — the engine's first EntityStore write inside
+// the cascade — so a stale If-Match aborts before any segment commits or any
+// external dispatch fires.
+//
+// For non-segmenting cascades (no COMMIT_BEFORE_DISPATCH processors) the
+// engine never performs a first-segment flush; ifMatch is left untouched on
+// the context for the handler to apply post-engine via its own CompareAndSave
+// path. The handler distinguishes the two cases by comparing
+// EngineResult.FinalTxID against the cascade-entry txID.
+//
+// If ifMatch is empty this method is identical to ManualTransition.
+func (e *Engine) ManualTransitionWithIfMatch(ctx context.Context, entity *spi.Entity, transitionName, ifMatch string) (*EngineResult, error) {
+	return e.ManualTransition(withIfMatch(ctx, ifMatch), entity, transitionName)
+}
+
 // ManualTransition fires a named transition on an existing entity and cascades
 // any automated transitions from the resulting state.
 func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
@@ -240,6 +258,20 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
 	}, nil
+}
+
+// LoopbackWithIfMatch is the variant of Loopback used by callers that supply
+// an If-Match expected-txID. The engine consumes ifMatch on the FIRST
+// segment-flush of any COMMIT_BEFORE_DISPATCH cascade encountered during the
+// loopback (spec §4.1), so a stale If-Match aborts before any external
+// dispatch fires. For loopback runs that produce no engine-side flush
+// (the common case — no CBD processors), ifMatch is left untouched on the
+// context for the handler to apply post-engine. Callers distinguish via
+// EngineResult.FinalTxID.
+//
+// If ifMatch is empty this method is identical to Loopback.
+func (e *Engine) LoopbackWithIfMatch(ctx context.Context, entity *spi.Entity, ifMatch string) (*EngineResult, error) {
+	return e.Loopback(withIfMatch(ctx, ifMatch), entity)
 }
 
 // Loopback re-evaluates automated transitions from the entity's current state
@@ -732,10 +764,18 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	// Read the flag. Nil pointer == default == false.
 	startNewTx := proc.Config.StartNewTxOnDispatch != nil && *proc.Config.StartNewTxOnDispatch
 
+	// Per spec §4.1: a caller-supplied If-Match expected-txID (single-shot,
+	// stashed via ManualTransitionWithIfMatch) is applied to the FIRST
+	// segment-flush of the cascade — i.e. this exact call's pre-dispatch
+	// flush. Consume here so subsequent CBD segments in the same cascade fall
+	// back to the chained-CAS path against the prior segment's commit-stamped
+	// txID.
+	expectedFirstFlushTxID, ifMatchConsumed := consumeIfMatch(ctx)
+
 	if startNewTx {
 		// =true: commit TX_pre, begin TX_post, dispatch with TX_post token,
 		// apply result in TX_post.
-		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID)
+		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed)
 		if err != nil {
 			return nil, "", err
 		}
@@ -762,8 +802,19 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if esErr != nil {
 			return nil, "", fmt.Errorf("commit-before-dispatch: get entity store: %w", esErr)
 		}
-		if _, sErr := es.Save(ctx, entity); sErr != nil {
-			return nil, "", fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", sErr)
+		if ifMatchConsumed {
+			// Spec §4.1: first-segment flush applies the caller's If-Match.
+			// CompareAndSave failures (incl. ErrConflict) bubble unwrapped so
+			// the handler maps them to 412 Precondition Failed before any
+			// dispatch fires — TX_pre is intact and rolled back by the
+			// caller's existing handler-rollback path.
+			if _, sErr := es.CompareAndSave(ctx, entity, expectedFirstFlushTxID); sErr != nil {
+				return nil, "", sErr
+			}
+		} else {
+			if _, sErr := es.Save(ctx, entity); sErr != nil {
+				return nil, "", fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", sErr)
+			}
 		}
 		if cErr := e.txMgr.Commit(ctx, txID); cErr != nil {
 			return nil, "", fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", cErr)
@@ -811,17 +862,30 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 // txID (TX_pre), and begins a fresh TX (TX_post). The caller continues
 // the cascade in (newCtx, newTxID).
 //
-// On any failure the original transaction may already have been committed
-// (durable) — the caller cannot rollback prior work. Errors flow back as
-// they do for any other engine failure: the cascade aborts and surfaces
-// the error to its caller.
-func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID string) (newTxID string, newCtx context.Context, err error) {
+// When applyIfMatch is true the flush uses CompareAndSave with
+// expectedTxID — applying the caller's If-Match precondition (spec §4.1)
+// before TX_pre commits and before any external dispatch fires. CAS failure
+// (incl. spi.ErrConflict) bubbles up unwrapped so the handler can map it to
+// 412 Precondition Failed. Otherwise (the common case) the flush is a plain
+// Save.
+//
+// On any failure after TX_pre commits, the segment may already be durable —
+// the caller cannot rollback prior work. Errors flow back as they do for any
+// other engine failure: the cascade aborts and surfaces the error to its
+// caller.
+func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) (newTxID string, newCtx context.Context, err error) {
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("commit-before-dispatch: get entity store: %w", err)
 	}
-	if _, err := es.Save(ctx, entity); err != nil {
-		return "", nil, fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", err)
+	if applyIfMatch {
+		if _, err := es.CompareAndSave(ctx, entity, expectedTxID); err != nil {
+			return "", nil, err
+		}
+	} else {
+		if _, err := es.Save(ctx, entity); err != nil {
+			return "", nil, fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", err)
+		}
 	}
 	if err := e.txMgr.Commit(ctx, txID); err != nil {
 		return "", nil, fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", err)
