@@ -60,12 +60,13 @@ Body size limit on all write endpoints: 10 MiB.
 - `format` (path): `JSON` or `XML`
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — applies only when the request body is a JSON array. Maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Array bodies exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is then an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 - `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
-If the request body is a JSON array, the handler delegates to the collection-create path: each element is treated as a separate entity of the same model.
+If the request body is a JSON array, each element is treated as a separate entity of the same model and the collection-create chunking contract applies (see `transactionWindow` above and the `POST /api/entity/{format}` partial-success shape below).
 
-Response: `200 OK`, `application/json`:
+Response: `200 OK`, `application/json`. Single-object body returns a one-element array; an array body returns one element per committed chunk in commit order:
 
 ```json
 [{
