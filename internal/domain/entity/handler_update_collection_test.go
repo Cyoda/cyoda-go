@@ -159,31 +159,207 @@ func TestUpdateCollection_EmptyArray(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_BatchExceedsTransactionWindow — a batch larger
-// than `transactionWindow` (default 100) must be rejected with 400 before
-// any work starts. Protects against unbounded batch sizes that would hold
-// locks on many rows in one transaction.
-func TestUpdateCollection_BatchExceedsTransactionWindow(t *testing.T) {
+// TestUpdateCollection_TransactionWindowValidation — transactionWindow must
+// be in (0, 1000]. 0, negatives, and values > 1000 are rejected before any
+// work starts. Bounds the per-transaction lock pressure regardless of how
+// the batch will be split.
+func TestUpdateCollection_TransactionWindowValidation(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "UpdBatchWin", 1, `{"name":"x"}`)
+	importAndLockModel(t, srv.URL, "UpdBatchWinVal", 1, `{"name":"x"}`)
 
-	// Build a 101-item body (one over the default window of 100). The IDs
-	// don't need to exist — the window check fires before any lookup.
-	items := make([]string, 101)
-	for i := range items {
-		items[i] = fmt.Sprintf(`{"id":"00000000-0000-0000-0000-%012d","payload":"{\"name\":\"x\"}"}`, i)
+	// IDs do not need to exist — validation fires before any lookup.
+	body := `[{"id":"00000000-0000-0000-0000-000000000001","payload":"{\"name\":\"x\"}"}]`
+
+	for _, tc := range []struct {
+		name   string
+		window string
+	}{
+		{"zero", "0"},
+		{"negative", "-1"},
+		{"over-max", "1001"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url := srv.URL + "/entity/JSON?transactionWindow=" + tc.window
+			req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+			rbody := readBody(t, resp)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("window=%s: status = %d, want 400; body: %s", tc.window, resp.StatusCode, rbody)
+			}
+			if !strings.Contains(string(rbody), "transactionWindow") {
+				t.Errorf("body does not reference transactionWindow: %s", rbody)
+			}
+		})
 	}
-	body := "[" + strings.Join(items, ",") + "]"
+}
 
-	resp := doUpdateCollection(t, srv.URL, "JSON", body)
+// TestUpdateCollection_BatchChunksAtWindowBoundary — a batch of 2*window
+// items is split into exactly two transactional chunks per the documented
+// contract: "Collections exceeding `transactionWindow` size are
+// automatically split into multiple transactional batches". Both chunks
+// must commit. Response is the EntityTransactionResponse array with one
+// element per chunk in commit order. Issue #227.
+func TestUpdateCollection_BatchChunksAtWindowBoundary(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdBatchChunk", 1, `{"name":"x","v":0}`)
+
+	// Use a small client-supplied window so the test stays fast.
+	const window = 3
+	const total = 2 * window
+
+	// Seed `total` entities — one per item we'll subsequently update.
+	ids := make([]string, total)
+	for i := 0; i < total; i++ {
+		ids[i] = doCreateAndGetID(t, srv.URL, "UpdBatchChunk", 1, fmt.Sprintf(`{"name":"orig-%d","v":%d}`, i, i))
+	}
+
+	parts := make([]string, total)
+	for i := 0; i < total; i++ {
+		parts[i] = fmt.Sprintf(`{"id":"%s","payload":"{\"name\":\"upd-%d\",\"v\":%d}"}`, ids[i], i, i*10)
+	}
+	body := "[" + strings.Join(parts, ",") + "]"
+
+	url := srv.URL + "/entity/JSON?transactionWindow=" + fmt.Sprintf("%d", window)
+	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	rbody := readBody(t, resp)
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for oversize batch; body: %s", resp.StatusCode, rbody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, rbody)
 	}
-	if !strings.Contains(string(rbody), "transactionWindow") {
-		t.Errorf("body does not reference transactionWindow: %s", rbody)
+
+	var arr []map[string]any
+	if err := json.Unmarshal(rbody, &arr); err != nil {
+		t.Fatalf("parse response: %v; body: %s", err, rbody)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("expected 2 chunk results, got %d; body: %s", len(arr), rbody)
+	}
+
+	// Each chunk's result carries `window` entityIds and a distinct transactionId.
+	tx1, _ := arr[0]["transactionId"].(string)
+	tx2, _ := arr[1]["transactionId"].(string)
+	if tx1 == "" || tx2 == "" || tx1 == tx2 {
+		t.Errorf("expected two distinct non-empty transactionIds, got %q vs %q", tx1, tx2)
+	}
+	for ci, chunk := range arr {
+		eids, _ := chunk["entityIds"].([]any)
+		if len(eids) != window {
+			t.Errorf("chunk %d: got %d entityIds, want %d", ci, len(eids), window)
+		}
+	}
+
+	// All entities reflect the update.
+	for i, id := range ids {
+		getResp := doGetEntity(t, srv.URL, id)
+		gb := readBody(t, getResp)
+		want := fmt.Sprintf(`upd-%d`, i)
+		if !strings.Contains(string(gb), want) {
+			t.Errorf("entity %d: body does not contain %q: %s", i, want, gb)
+		}
+	}
+}
+
+// TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable — when a
+// later chunk fails (here: chunk 2 contains a missing-entity id), earlier
+// chunks remain committed. The response is HTTP 200 carrying the durable
+// chunks plus an error element marking the failed chunk's index. Issue #227.
+func TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdChunkFail", 1, `{"name":"x","v":0}`)
+
+	const window = 2
+
+	// Chunk 0 + chunk 1: 2 well-formed entities each, all updates land.
+	// Chunk 2: 1 well-formed + 1 bogus id → entire chunk rolls back, but
+	// chunks 0 and 1 stay durable.
+	good := make([]string, 5)
+	for i := 0; i < 5; i++ {
+		good[i] = doCreateAndGetID(t, srv.URL, "UpdChunkFail", 1, fmt.Sprintf(`{"name":"orig-%d","v":%d}`, i, i))
+	}
+	bogus := "00000000-0000-0000-0000-000000000099"
+
+	parts := make([]string, 0, 6)
+	for i := 0; i < 5; i++ {
+		parts = append(parts, fmt.Sprintf(`{"id":"%s","payload":"{\"name\":\"upd-%d\",\"v\":%d}"}`, good[i], i, i*10))
+	}
+	parts = append(parts, fmt.Sprintf(`{"id":"%s","payload":"{\"name\":\"never\",\"v\":0}"}`, bogus))
+	body := "[" + strings.Join(parts, ",") + "]"
+
+	url := srv.URL + "/entity/JSON?transactionWindow=" + fmt.Sprintf("%d", window)
+	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	rbody := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with partial-success body; body: %s", resp.StatusCode, rbody)
+	}
+
+	var arr []map[string]any
+	if err := json.Unmarshal(rbody, &arr); err != nil {
+		t.Fatalf("parse: %v; body: %s", err, rbody)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("expected 3 chunk-result elements (2 success + 1 error), got %d; body: %s", len(arr), rbody)
+	}
+	// First two are successful chunks.
+	for ci := 0; ci < 2; ci++ {
+		if _, hasErr := arr[ci]["error"]; hasErr {
+			t.Errorf("chunk %d: did not expect error element; got %v", ci, arr[ci])
+		}
+		if tx, _ := arr[ci]["transactionId"].(string); tx == "" {
+			t.Errorf("chunk %d: missing transactionId; got %v", ci, arr[ci])
+		}
+	}
+	// Third element carries the failure with chunkIndex=2.
+	errObj, ok := arr[2]["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object on element 2; got %v", arr[2])
+	}
+	if code, _ := errObj["code"].(string); code == "" {
+		t.Errorf("error.code missing on failed chunk: %v", errObj)
+	}
+	if idx, _ := errObj["chunkIndex"].(float64); int(idx) != 2 {
+		t.Errorf("error.chunkIndex: got %v, want 2", errObj["chunkIndex"])
+	}
+
+	// Entities in chunks 0 and 1 (indices 0..3) reflect the update.
+	for i := 0; i < 4; i++ {
+		gb := readBody(t, doGetEntity(t, srv.URL, good[i]))
+		want := fmt.Sprintf(`upd-%d`, i)
+		if !strings.Contains(string(gb), want) {
+			t.Errorf("durable chunk: entity %d missing update %q; body: %s", i, want, gb)
+		}
+	}
+	// Entity in chunk 2 (index 4) must be unchanged — its chunk rolled back.
+	gb := readBody(t, doGetEntity(t, srv.URL, good[4]))
+	if !strings.Contains(string(gb), `orig-4`) {
+		t.Errorf("rolled-back chunk: entity 4 should still carry orig-4 payload; body: %s", gb)
+	}
+	if strings.Contains(string(gb), `upd-4`) {
+		t.Errorf("rolled-back chunk: entity 4 leaked an update payload; body: %s", gb)
 	}
 }
 
