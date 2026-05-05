@@ -814,7 +814,10 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes})
 	}
 
-	// Begin transaction -- all entities in one transaction.
+	// Begin transaction -- all entities in one transaction, all-or-nothing.
+	// Per-item failure rolls the whole batch back, matching the contract of
+	// UpdateEntityCollection (issue #92) and preserving the existing
+	// {transactionId, entityIds} response shape.
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to begin transaction", err)
@@ -828,39 +831,60 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 	now := time.Now()
 
-	// Pre-generate entity IDs so the iterator has no side effects.
-	// This decouples ID generation from SaveAll's consumption pattern,
-	// making it safe even if a future SaveAll consumes from multiple goroutines.
+	// Pre-generate entity IDs so they are stable across the per-item engine
+	// execution and Save. The IDs are also written into the audit trail by
+	// the engine via entity.Meta.ID, so they must be assigned before
+	// engine.Execute runs.
 	entityIDs := make([]string, len(parsed))
 	for i := range parsed {
 		entityIDs[i] = uuid.UUID(h.uuids.NewTimeUUID()).String()
 	}
 
-	entities := func(yield func(*spi.Entity) bool) {
-		for i, item := range parsed {
-			entity := &spi.Entity{
-				Meta: spi.EntityMeta{
-					ID:               entityIDs[i],
-					TenantID:         uc.Tenant.ID,
-					ModelRef:         item.ref,
-					State:            "CREATED",
-					CreationDate:     now,
-					LastModifiedDate: now,
-					TransactionID:    txID,
-					ChangeType:       "CREATED",
-					ChangeUser:       uc.UserID,
-				},
-				Data: item.payloadBytes,
-			}
-			if !yield(entity) {
-				return
-			}
+	for i, item := range parsed {
+		entity := &spi.Entity{
+			Meta: spi.EntityMeta{
+				ID:                      entityIDs[i],
+				TenantID:                uc.Tenant.ID,
+				ModelRef:                item.ref,
+				State:                   "",
+				CreationDate:            now,
+				LastModifiedDate:        now,
+				TransactionID:           txID,
+				TransitionForLatestSave: "",
+				ChangeType:              "CREATED",
+				ChangeUser:              uc.UserID,
+			},
+			Data: item.payloadBytes,
 		}
-	}
 
-	if _, err := entityStore.SaveAll(txCtx, entities); err != nil {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Internal("failed to save entities", err)
+		// Run workflow engine within the batch transaction context.
+		// Mirrors single CreateEntity's flow so initial-state derivation,
+		// automated cascade and state-machine audit events all apply per
+		// item. Issue #227.
+		result, err := h.engine.Execute(txCtx, entity, "")
+		if err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
+			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
+		}
+
+		// If no workflow was found, engine returns forced success and
+		// entity state stays empty — fall back to "CREATED" to match
+		// single CreateEntity.
+		if entity.Meta.State == "" {
+			entity.Meta.State = "CREATED"
+		}
+
+		// CREATE path runs without an explicit transition; canonical
+		// marker is "loopback" (issue #94), matching single CreateEntity.
+		if result != nil && result.StopReason == "" {
+			entity.Meta.TransitionForLatestSave = "loopback"
+		}
+
+		if _, err := entityStore.Save(txCtx, entity); err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
+		}
 	}
 
 	// Commit transaction.
