@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -2099,5 +2100,154 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 		t.Errorf("durable state from independent TX = %q, want S_pre (TX_pre commit); "+
 			"S_post will become durable once Task 12/13 commits TX_post",
 			got.Meta.State)
+	}
+}
+
+// segCounter records Begin/Commit/Rollback calls observed by
+// countingTxManager. Lives at package level so the wrapper can carry it
+// via pointer and the test can read fields after Engine.Execute returns.
+type segCounter struct {
+	begins, commits, rollbacks int
+}
+
+// countingTxManager wraps a spi.TransactionManager and counts every
+// Begin/Commit/Rollback invocation. All other methods delegate to the
+// wrapped manager unchanged. Used by single-segment regression tests to
+// assert the engine's contribution to the commit count.
+type countingTxManager struct {
+	inner spi.TransactionManager
+	c     *segCounter
+}
+
+func (m *countingTxManager) Begin(ctx context.Context) (string, context.Context, error) {
+	m.c.begins++
+	return m.inner.Begin(ctx)
+}
+
+func (m *countingTxManager) Commit(ctx context.Context, txID string) error {
+	m.c.commits++
+	return m.inner.Commit(ctx, txID)
+}
+
+func (m *countingTxManager) Rollback(ctx context.Context, txID string) error {
+	m.c.rollbacks++
+	return m.inner.Rollback(ctx, txID)
+}
+
+func (m *countingTxManager) Join(ctx context.Context, txID string) (context.Context, error) {
+	return m.inner.Join(ctx, txID)
+}
+
+func (m *countingTxManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
+	return m.inner.GetSubmitTime(ctx, txID)
+}
+
+func (m *countingTxManager) Savepoint(ctx context.Context, txID string) (string, error) {
+	return m.inner.Savepoint(ctx, txID)
+}
+
+func (m *countingTxManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
+	return m.inner.RollbackToSavepoint(ctx, txID, savepointID)
+}
+
+func (m *countingTxManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
+	return m.inner.ReleaseSavepoint(ctx, txID, savepointID)
+}
+
+// TestEngine_SingleSegment_NoEngineCommit is a regression bound: a cascade
+// with NO COMMIT_BEFORE_DISPATCH processors must NOT trigger any engine-
+// side Begin/Commit. The handler-driven single-Begin/single-Commit
+// pattern (Begin → engine → Save → Commit) is unchanged.
+//
+// If a future change causes the engine to start mid-cascade-committing on
+// non-CBD cascades, this test catches it.
+func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	rawTxMgr := factory.NewTransactionManager(uuids)
+
+	cnt := &segCounter{}
+	txMgr := &countingTxManager{inner: rawTxMgr, c: cnt}
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			// SYNC processor: no entity mutation needed; the test cares
+			// about whether the engine calls Begin/Commit, not about
+			// entity-data shape.
+			return e, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "single-seg", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "SingleSegWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t1", Next: "S2", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: "EXTERNAL", Name: "p1", ExecutionMode: ExecutionModeSync},
+					}},
+			}},
+			"S2": {Transitions: []spi.TransitionDefinition{
+				{Name: "t2", Next: "S3", Manual: false},
+			}},
+			"S3": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	// Handler-style: begin a tx, run engine, save, commit.
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "single-seg-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: txID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	// Snapshot the counter at the cascade boundary: only the test's own
+	// Begin should have been counted so far. The deltas after Execute
+	// represent the engine's own Begin/Commit contribution.
+	beginsBefore := cnt.begins
+	commitsBefore := cnt.commits
+
+	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if engineBegins := cnt.begins - beginsBefore; engineBegins != 0 {
+		t.Errorf("engine performed %d Begin call(s) for a cascade with no COMMIT_BEFORE_DISPATCH; want 0", engineBegins)
+	}
+	if engineCommits := cnt.commits - commitsBefore; engineCommits != 0 {
+		t.Errorf("engine performed %d Commit call(s) for a cascade with no COMMIT_BEFORE_DISPATCH; want 0", engineCommits)
+	}
+
+	if entity.Meta.State != "S3" {
+		t.Errorf("final state = %q, want S3", entity.Meta.State)
+	}
+
+	// Handler-side cleanup: save and commit. This validates the
+	// single-Begin/single-Commit pattern is intact end-to-end.
+	es, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Save(txCtx, entity); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := txMgr.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
 	}
 }
