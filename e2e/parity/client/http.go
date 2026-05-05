@@ -586,33 +586,25 @@ type CollectionItem struct {
 // from the response array's entityIds field).
 func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) ([]uuid.UUID, error) {
 	t.Helper()
-	type modelRef struct {
-		Name    string `json:"name"`
-		Version int    `json:"version"`
-	}
-	type rawItem struct {
-		Model   modelRef `json:"model"`
-		Payload string   `json:"payload"`
-	}
-	raw := make([]rawItem, 0, len(items))
-	for _, it := range items {
-		raw = append(raw, rawItem{
-			Model:   modelRef{Name: it.ModelName, Version: it.ModelVersion},
-			Payload: it.Payload,
-		})
-	}
-	body, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("marshal CreateEntitiesCollection items: %w", err)
-	}
-	resp, err := c.doRaw(t, http.MethodPost, "/api/entity/JSON", string(body))
+	return c.CreateEntitiesCollectionWithWindow(t, items, 0)
+}
+
+// CreateEntitiesCollectionWithWindow issues POST /api/entity/JSON with the
+// given heterogeneous batch and an optional `transactionWindow` query
+// parameter. window <= 0 omits the query parameter (server applies its
+// default). Returns the list of created entity IDs concatenated across
+// all chunk elements in commit order. Used by parity scenarios that pin
+// the chunking contract from issue #227.
+func (c *Client) CreateEntitiesCollectionWithWindow(t *testing.T, items []CollectionItem, window int) ([]uuid.UUID, error) {
+	t.Helper()
+	raw, err := c.CreateEntitiesCollectionRawWithWindow(t, items, window)
 	if err != nil {
 		return nil, err
 	}
 	// Response shape: [{"transactionId":"...","entityIds":["<uuid>", ...]}]
 	var parsed []EntityTransactionInfo
-	if err := json.Unmarshal(resp, &parsed); err != nil {
-		return nil, fmt.Errorf("decode CreateEntitiesCollection response: %w (body=%s)", err, string(resp))
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("decode CreateEntitiesCollection response: %w (body=%s)", err, string(raw))
 	}
 	var out []uuid.UUID
 	for _, tx := range parsed {
@@ -627,13 +619,49 @@ func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) 
 	return out, nil
 }
 
+// CreateEntitiesCollectionRawWithWindow issues POST /api/entity/JSON with
+// the given items and an optional `transactionWindow` query parameter,
+// returning the raw response body. Used by chunking-contract parity
+// scenarios that need to inspect the per-chunk response array directly.
+func (c *Client) CreateEntitiesCollectionRawWithWindow(t *testing.T, items []CollectionItem, window int) ([]byte, error) {
+	t.Helper()
+	type modelRef struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+	}
+	type rawItem struct {
+		Model   modelRef `json:"model"`
+		Payload string   `json:"payload"`
+	}
+	rawItems := make([]rawItem, 0, len(items))
+	for _, it := range items {
+		rawItems = append(rawItems, rawItem{
+			Model:   modelRef{Name: it.ModelName, Version: it.ModelVersion},
+			Payload: it.Payload,
+		})
+	}
+	body, err := json.Marshal(rawItems)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CreateEntitiesCollection items: %w", err)
+	}
+	path := "/api/entity/JSON"
+	if window > 0 {
+		path = fmt.Sprintf("%s?transactionWindow=%d", path, window)
+	}
+	return c.doRaw(t, http.MethodPost, path, string(body))
+}
+
 // UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
 // Payload is a JSON-encoded string (not a nested object) per the collection
-// update wire contract.
+// update wire contract. IfMatch is the optional per-item optimistic-
+// concurrency precondition added by issue #228; when populated, the server
+// rejects the item with ENTITY_MODIFIED if the entity's current
+// transactionId no longer matches.
 type UpdateCollectionItem struct {
 	ID         uuid.UUID
 	Payload    string
 	Transition string // optional; "" = loopback
+	IfMatch    string // optional per-item ifMatch (issue #228)
 }
 
 // UpdateCollection issues PUT /api/entity/JSON with a batch of
@@ -643,20 +671,119 @@ type UpdateCollectionItem struct {
 // Canonical: docs/cyoda/openapi.yml (collection update).
 func (c *Client) UpdateCollection(t *testing.T, items []UpdateCollectionItem) ([]byte, error) {
 	t.Helper()
+	return c.UpdateCollectionWithWindow(t, items, 0)
+}
+
+// UpdateCollectionWithWindow issues PUT /api/entity/JSON with the given
+// batch and an optional `transactionWindow` query parameter. window <= 0
+// omits the query parameter (server applies its default). Returns the
+// raw response body on success or an error wrapping the body on non-2xx.
+func (c *Client) UpdateCollectionWithWindow(t *testing.T, items []UpdateCollectionItem, window int) ([]byte, error) {
+	t.Helper()
+	body, err := marshalUpdateCollectionItems(items)
+	if err != nil {
+		return nil, err
+	}
+	path := "/api/entity/JSON"
+	if window > 0 {
+		path = fmt.Sprintf("%s?transactionWindow=%d", path, window)
+	}
+	return c.doRaw(t, http.MethodPut, path, string(body))
+}
+
+// UpdateCollectionRawWithWindow is the negative-path companion to
+// UpdateCollectionWithWindow: it returns (status, body, transport-err)
+// without raising on non-2xx. Used by parity scenarios that assert the
+// chunk-rollback contract (e.g. invalid transition rejecting at chunk 0
+// with a 4xx error envelope).
+func (c *Client) UpdateCollectionRawWithWindow(t *testing.T, items []UpdateCollectionItem, window int) (int, []byte, error) {
+	t.Helper()
+	body, err := marshalUpdateCollectionItems(items)
+	if err != nil {
+		return 0, nil, err
+	}
+	path := "/api/entity/JSON"
+	if window > 0 {
+		path = fmt.Sprintf("%s?transactionWindow=%d", path, window)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// marshalUpdateCollectionItems renders the per-item update wire shape.
+// IfMatch is emitted with `omitempty` so existing scenarios that do not
+// supply it produce identical bytes to the pre-#228 wire format.
+func marshalUpdateCollectionItems(items []UpdateCollectionItem) ([]byte, error) {
 	type rawItem struct {
 		ID         string `json:"id"`
 		Payload    string `json:"payload"`
 		Transition string `json:"transition,omitempty"`
+		IfMatch    string `json:"ifMatch,omitempty"`
 	}
 	raw := make([]rawItem, 0, len(items))
 	for _, it := range items {
-		raw = append(raw, rawItem{ID: it.ID.String(), Payload: it.Payload, Transition: it.Transition})
+		raw = append(raw, rawItem{
+			ID:         it.ID.String(),
+			Payload:    it.Payload,
+			Transition: it.Transition,
+			IfMatch:    it.IfMatch,
+		})
 	}
 	body, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("marshal UpdateCollection items: %w", err)
 	}
-	return c.doRaw(t, http.MethodPut, "/api/entity/JSON", string(body))
+	return body, nil
+}
+
+// CollectionChunkResult mirrors the per-chunk response shape from
+// PUT/POST /api/entity/{format}. Used by parity scenarios that need to
+// assert per-chunk fields (transactionId, entityIds, failed[]) without
+// repeating the map[string]any decode dance. EntityIDs is decoded as a
+// concrete slice — the server emits `[]` (not `null`) on a chunk where
+// every item failed via per-item isolation (issue #228 I2).
+type CollectionChunkResult struct {
+	TransactionID string                       `json:"transactionId,omitempty"`
+	EntityIDs     []string                     `json:"entityIds"`
+	Error         *CollectionChunkError        `json:"error,omitempty"`
+	Failed        []CollectionChunkItemFailure `json:"failed,omitempty"`
+}
+
+// CollectionChunkError carries the per-chunk failure shape (chunk-wide
+// rollback path). ChunkIndex is the zero-based position of the failing
+// chunk in commit order.
+type CollectionChunkError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	ChunkIndex int    `json:"chunkIndex"`
+}
+
+// CollectionChunkItemFailure documents a single per-item failure that did
+// NOT roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
+// carrying an IfMatch precondition (issue #228).
+type CollectionChunkItemFailure struct {
+	EntityID string                  `json:"entityId"`
+	Error    CollectionChunkItemErr  `json:"error"`
+}
+
+// CollectionChunkItemErr is the per-item failure inner object.
+type CollectionChunkItemErr struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	ItemIndex int    `json:"itemIndex"`
 }
 
 // GetEntityRaw issues GET /api/entity/{entityId} and returns the HTTP
@@ -1209,6 +1336,34 @@ func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body st
 		return 0, nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// UpdateEntityDataWithIfMatchRaw issues PUT /api/entity/JSON/{entityId}
+// (loopback — no transition path segment) with an `If-Match` HTTP
+// header carrying the supplied ifMatch token. Returns status + body
+// for negative-path assertions. ifMatch must be non-empty; pass "" via
+// UpdateEntityData for the no-precondition path.
+func (c *Client) UpdateEntityDataWithIfMatchRaw(t *testing.T, id uuid.UUID, body, ifMatch string) (int, []byte, error) {
+	t.Helper()
+	path := "/api/entity/JSON/" + id.String()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}

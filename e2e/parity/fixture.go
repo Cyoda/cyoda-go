@@ -47,6 +47,50 @@ type BackendFixture interface {
 	ComputeTenant(t *testing.T) Tenant
 }
 
+// TxBoundAuditFixture is an OPTIONAL capability interface that
+// BackendFixture implementations may also satisfy to advertise whether
+// their audit store rolls back together with a failing entity-update
+// transaction. Scenarios that pin the TRANSITION_ABORTED audit-event
+// shape (issue #228) consult this via type-assertion to switch between
+// "audit log empty after rollback" (TX-bound) and "paired
+// STATE_MACHINE_START + TRANSITION_ABORTED preserved" (non-TX-bound)
+// assertions.
+//
+// Default semantics: a fixture that does NOT implement this interface
+// is treated as non-TX-bound (the conservative assumption — both START
+// and ABORTED are preserved post-rollback). The optional-interface
+// pattern keeps BackendFixture itself non-breaking, so out-of-tree
+// plugins (e.g. cyoda-go-cassandra) that bump their cyoda-go dependency
+// without yet adding the method continue to compile and run; they can
+// opt-in when convenient.
+//
+// Backends in this repo:
+//   - memory, sqlite — non-TX-bound (don't implement the interface, or
+//     return false): a failed-CAS rollback discards row writes but leaves
+//     the audit events emitted via the in-process bus durable.
+//   - postgres — TX-bound: audit writes share the same SQL transaction
+//     as entity writes, so rollback discards both.
+//   - cassandra (out-of-tree) — TX-bound (audit table writes are part of
+//     the same logged batch as the entity writes); it should opt-in by
+//     implementing the interface returning true.
+type TxBoundAuditFixture interface {
+	// IsTxBoundAuditStore reports whether a rolled-back entity-update
+	// transaction also discards the audit events written within it.
+	IsTxBoundAuditStore() bool
+}
+
+// IsTxBoundAuditStore is a convenience helper that resolves a fixture's
+// TX-bound-audit capability via type-assertion against the optional
+// TxBoundAuditFixture interface. Returns false (the conservative
+// assumption — audit events are preserved across rollback) when the
+// fixture does not implement the interface.
+func IsTxBoundAuditStore(fixture BackendFixture) bool {
+	if a, ok := fixture.(TxBoundAuditFixture); ok {
+		return a.IsTxBoundAuditStore()
+	}
+	return false
+}
+
 // Tenant identifies a fresh tenant scope for a single test, plus the JWT
 // the test uses to authenticate API calls within that scope.
 type Tenant struct {

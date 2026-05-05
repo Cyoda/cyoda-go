@@ -1885,7 +1885,45 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              type: array
+              description: |
+                Array of update items. Each item carries the entity's UUID,
+                a JSON-encoded `payload` string, an optional named
+                `transition`, and an optional `ifMatch` cross-request
+                precondition (the entity's last-known `meta.transactionId`
+                from the caller's read). Items with a stale `ifMatch`
+                surface as ENTITY_MODIFIED entries in the per-chunk
+                `failed` array without rolling the chunk back.
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    description: Entity UUID to update
+                  payload:
+                    type: string
+                    description: |
+                      JSON-encoded entity body (a STRING, not a nested
+                      object). Same contract as collection-create.
+                  transition:
+                    type: string
+                    description: |
+                      Optional named transition. Empty/absent means
+                      loopback update.
+                  ifMatch:
+                    type: string
+                    description: |
+                      Optional cross-request optimistic-concurrency
+                      precondition — supply the entity's last-known
+                      `meta.transactionId` from a prior read. If the
+                      entity has been modified since, the item surfaces
+                      in the per-chunk `failed` array with
+                      `code=ENTITY_MODIFIED`; the chunk still commits
+                      its remaining successful items. Issue #228.
+                required:
+                  - id
+                  - payload
             examples:
               Mixed Entity Updates:
                 summary: Example of updating multiple entities of different types
@@ -1914,6 +1952,7 @@ paths:
                         } ]
                       }
                     transition: UPDATE
+                    ifMatch: 733e7180-c055-11ef-a357-ae468cd3ed16
                   - id: 31134900-d9cb-11ee-9e63-ae468cd3ed16
                     payload: >-
                       {
@@ -7598,6 +7637,22 @@ components:
         chunk's zero-based position) instead of `transactionId` and
         `entityIds`. Earlier chunks remain durable.
 
+        For UpdateCollection (PUT /entity/{format}) only, items carrying
+        an `ifMatch` precondition can fail individually with
+        ENTITY_MODIFIED without rolling their chunk back. Such per-item
+        failures surface in an optional `failed` array; the chunk still
+        commits and reports `transactionId` plus `entityIds` for the
+        successful items. When every item in such a chunk fails, the
+        chunk commits as a zero-write transaction — `entityIds` is
+        empty, `failed` lists every item, and `transactionId` remains
+        meaningful for audit correlation. Issue #228.
+
+        Per-item ENTITY_MODIFIED conflicts surface inside the `200`
+        response body via the `failed[]` array, not as a `4xx` envelope.
+        Inspect `failed[]` to detect them. The `4xx` envelope is reserved
+        for chunk-wide infrastructure failures (malformed JSON, missing
+        entity, validation failure, non-conflict engine error).
+
         `entityIds` contains UUID strings (server is source of truth — the
         server emits []string, not []object).
       properties:
@@ -7629,6 +7684,46 @@ components:
             - code
             - message
             - chunkIndex
+        failed:
+          type: array
+          description: |
+            Present only on UpdateCollection chunks that experienced one or
+            more per-item ENTITY_MODIFIED conflicts (issue #228). Each
+            entry names the conflicted entity and carries an `error` object
+            with the failure code, an operator-facing message, and the
+            item's per-chunk-relative index. Absent on chunks with no
+            per-item failures.
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+                format: uuid
+                description: UUID of the entity whose update was rejected.
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    description: |
+                      AppError code; today always `ENTITY_MODIFIED` for
+                      per-item isolation.
+                  message:
+                    type: string
+                    description: Operator-facing failure message; safe for client display.
+                  itemIndex:
+                    type: integer
+                    format: int32
+                    description: |
+                      Zero-based position of the failing item within its
+                      chunk's request slice (per-chunk relative).
+                required:
+                  - code
+                  - message
+                  - itemIndex
+            required:
+              - entityId
+              - error
     LaureateDto:
       type: object
       properties:
@@ -9459,7 +9554,15 @@ components:
                 machine
             eventType:
               type: string
-              description: Type of the state machine event
+              description: |
+                Type of the state machine event. `TRANSITION_ABORTED` is
+                a cyoda-go extension (#228 reviewer S1) emitted as a
+                compensating event when an in-flight transition is
+                rejected by a stale `ifMatch` precondition; its `data`
+                payload carries `{reason: "ENTITY_MODIFIED",
+                transitionName, expectedTxId, actualTxId}` so consumers
+                can pair the entry-side `STATE_MACHINE_START` with a
+                terminal abort event in the audit log.
               enum:
                 - STATE_MACHINE_START
                 - STATE_MACHINE_FINISH
@@ -9471,6 +9574,7 @@ components:
                 - TRANSITION_MAKE
                 - TRANSITION_NOT_FOUND
                 - TRANSITION_NOT_MATCH_CRITERION
+                - TRANSITION_ABORTED
                 - PROCESS_NOT_MATCH_CRITERION
                 - PAUSE_FOR_PROCESSING
                 - STATE_PROCESS_RESULT

@@ -363,6 +363,163 @@ func TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable(t *testing.T) {
 	}
 }
 
+// --- Issue #228: per-item ifMatch + per-chunk failed[] ---
+
+// doGetEntityTxID issues GET /entity/{id} and returns meta.transactionId.
+// Used by ifMatch tests to seed a fresh precondition token.
+func doGetEntityTxID(t *testing.T, base, entityID string) string {
+	t.Helper()
+	resp := doGetEntity(t, base, entityID)
+	defer resp.Body.Close()
+	expectStatus(t, resp, http.StatusOK)
+	rb := readBody(t, resp)
+	var env map[string]any
+	if err := json.Unmarshal(rb, &env); err != nil {
+		t.Fatalf("parse get-entity: %v; body: %s", err, rb)
+	}
+	meta, _ := env["meta"].(map[string]any)
+	tx, _ := meta["transactionId"].(string)
+	if tx == "" {
+		t.Fatalf("entity %s: missing meta.transactionId; body: %s", entityID, rb)
+	}
+	return tx
+}
+
+// TestUpdateCollection_IfMatch_PerItemFailedShape — pin the per-chunk
+// response shape for a chunk where one item's ifMatch is stale: the response
+// must carry transactionId, entityIds (only successful items), and a
+// failed[] array with the conflict's entityId, code=ENTITY_MODIFIED, and a
+// per-chunk-relative itemIndex.
+func TestUpdateCollection_IfMatch_PerItemFailedShape(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdIfMatchShape", 1, `{"name":"x","v":0}`)
+
+	id1 := doCreateAndGetID(t, srv.URL, "UpdIfMatchShape", 1, `{"name":"A","v":1}`)
+	id2 := doCreateAndGetID(t, srv.URL, "UpdIfMatchShape", 1, `{"name":"B","v":2}`)
+	tx2 := doGetEntityTxID(t, srv.URL, id2)
+	const stale = "00000000-0000-0000-0000-000000000000"
+
+	body := fmt.Sprintf(`[
+		{"id":"%s","payload":"{\"name\":\"A_STALE\",\"v\":99}","ifMatch":"%s"},
+		{"id":"%s","payload":"{\"name\":\"B2\",\"v\":22}","ifMatch":"%s"}
+	]`, id1, stale, id2, tx2)
+
+	resp := doUpdateCollection(t, srv.URL, "JSON", body)
+	defer resp.Body.Close()
+	rb := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, rb)
+	}
+
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(rb), &arr); err != nil {
+		t.Fatalf("parse: %v; body: %s", err, rb)
+	}
+	if len(arr) != 1 {
+		t.Fatalf("expected 1 chunk, got %d; body: %s", len(arr), rb)
+	}
+	chunk := arr[0]
+	if tx, _ := chunk["transactionId"].(string); tx == "" {
+		t.Errorf("missing transactionId; body: %s", rb)
+	}
+	ids, _ := chunk["entityIds"].([]any)
+	if len(ids) != 1 || ids[0].(string) != id2 {
+		t.Errorf("entityIds: expected [%s], got %v", id2, ids)
+	}
+	failed, _ := chunk["failed"].([]any)
+	if len(failed) != 1 {
+		t.Fatalf("failed: expected 1 entry, got %d; body: %s", len(failed), rb)
+	}
+	f := failed[0].(map[string]any)
+	if got, _ := f["entityId"].(string); got != id1 {
+		t.Errorf("failed[0].entityId: got %q, want %q", got, id1)
+	}
+	errObj, _ := f["error"].(map[string]any)
+	if code, _ := errObj["code"].(string); code != "ENTITY_MODIFIED" {
+		t.Errorf("failed[0].error.code: got %q, want ENTITY_MODIFIED", code)
+	}
+	if msg, _ := errObj["message"].(string); msg == "" {
+		t.Errorf("failed[0].error.message: empty; body: %s", rb)
+	}
+	if idx, _ := errObj["itemIndex"].(float64); int(idx) != 0 {
+		t.Errorf("failed[0].error.itemIndex: got %v, want 0", errObj["itemIndex"])
+	}
+}
+
+// TestUpdateCollection_IfMatch_NoFailedFieldOnSuccess — pin the absence of
+// `failed` in the response when no per-item conflicts occurred. JSON
+// `omitempty` semantics: the field must not appear in the marshaled body.
+func TestUpdateCollection_IfMatch_NoFailedFieldOnSuccess(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdIfMatchNoFailed", 1, `{"name":"x","v":0}`)
+
+	id1 := doCreateAndGetID(t, srv.URL, "UpdIfMatchNoFailed", 1, `{"name":"A","v":1}`)
+	tx1 := doGetEntityTxID(t, srv.URL, id1)
+
+	body := fmt.Sprintf(`[
+		{"id":"%s","payload":"{\"name\":\"A2\",\"v\":11}","ifMatch":"%s"}
+	]`, id1, tx1)
+
+	resp := doUpdateCollection(t, srv.URL, "JSON", body)
+	defer resp.Body.Close()
+	rb := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, rb)
+	}
+	// String-level check: `failed` substring must not appear in a fully
+	// successful chunk's wire body. The marshaled key is exactly "failed".
+	if strings.Contains(string(rb), `"failed"`) {
+		t.Errorf("successful chunk leaked `failed` field; body: %s", rb)
+	}
+}
+
+// TestUpdateCollection_IfMatch_AllStaleZeroWriteCommit — pin that a chunk in
+// which every item's ifMatch is stale still emits a transactionId (the
+// underlying tx commits as a zero-write read-only tx). entityIds is empty,
+// failed[] holds every item, no chunk-wide error.
+func TestUpdateCollection_IfMatch_AllStaleZeroWriteCommit(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdIfMatchAllStale", 1, `{"name":"x","v":0}`)
+
+	id1 := doCreateAndGetID(t, srv.URL, "UpdIfMatchAllStale", 1, `{"name":"A","v":1}`)
+	id2 := doCreateAndGetID(t, srv.URL, "UpdIfMatchAllStale", 1, `{"name":"B","v":2}`)
+	const stale = "00000000-0000-0000-0000-000000000000"
+
+	body := fmt.Sprintf(`[
+		{"id":"%s","payload":"{\"name\":\"A_STALE\",\"v\":99}","ifMatch":"%s"},
+		{"id":"%s","payload":"{\"name\":\"B_STALE\",\"v\":99}","ifMatch":"%s"}
+	]`, id1, stale, id2, stale)
+
+	resp := doUpdateCollection(t, srv.URL, "JSON", body)
+	defer resp.Body.Close()
+	rb := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, rb)
+	}
+
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(rb), &arr); err != nil {
+		t.Fatalf("parse: %v; body: %s", err, rb)
+	}
+	if len(arr) != 1 {
+		t.Fatalf("expected 1 chunk, got %d; body: %s", len(arr), rb)
+	}
+	if tx, _ := arr[0]["transactionId"].(string); tx == "" {
+		t.Errorf("expected non-empty transactionId on zero-write commit; body: %s", rb)
+	}
+	if _, has := arr[0]["error"]; has {
+		t.Errorf("did not expect chunk-wide `error`; body: %s", rb)
+	}
+	ids, _ := arr[0]["entityIds"].([]any)
+	if len(ids) != 0 {
+		t.Errorf("expected empty entityIds, got %d", len(ids))
+	}
+	failed, _ := arr[0]["failed"].([]any)
+	if len(failed) != 2 {
+		t.Errorf("expected 2 failed entries, got %d; body: %s", len(failed), rb)
+	}
+}
+
 // doCreateAndGetID is a small helper used by the UpdateCollection tests:
 // create one entity in a 1-element batch and return its UUID.
 func doCreateAndGetID(t *testing.T, base, entityName string, version int, payload string) string {

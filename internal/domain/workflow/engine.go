@@ -171,6 +171,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
+		Segmented: currentTxID != txID,
 	}, nil
 }
 
@@ -184,8 +185,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 // For non-segmenting cascades (no COMMIT_BEFORE_DISPATCH processors) the
 // engine never performs a first-segment flush; ifMatch is left untouched on
 // the context for the handler to apply post-engine via its own CompareAndSave
-// path. The handler distinguishes the two cases by comparing
-// EngineResult.FinalTxID against the cascade-entry txID.
+// path. The handler distinguishes the two cases via EngineResult.Segmented.
 //
 // If ifMatch is empty this method is identical to ManualTransition.
 func (e *Engine) ManualTransitionWithIfMatch(ctx context.Context, entity *spi.Entity, transitionName, ifMatch string) (*EngineResult, error) {
@@ -256,6 +256,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
+		Segmented: currentTxID != txID,
 	}, nil
 }
 
@@ -266,7 +267,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 // dispatch fires. For loopback runs that produce no engine-side flush
 // (the common case — no CBD processors), ifMatch is left untouched on the
 // context for the handler to apply post-engine. Callers distinguish via
-// EngineResult.FinalTxID.
+// EngineResult.Segmented.
 //
 // If ifMatch is empty this method is identical to Loopback.
 func (e *Engine) LoopbackWithIfMatch(ctx context.Context, entity *spi.Entity, ifMatch string) (*EngineResult, error) {
@@ -327,6 +328,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 			},
 			FinalCtx:  ctx,
 			FinalTxID: txID,
+			Segmented: false,
 		}, nil
 	}
 
@@ -345,6 +347,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
+		Segmented: currentTxID != txID,
 	}, nil
 }
 

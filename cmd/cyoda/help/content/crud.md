@@ -195,6 +195,8 @@ The `payload` field in each update item must be a string containing the JSON-enc
 Correct: `"payload": "{\"category\":\"physics\"}"`
 Wrong:   `"payload": {"category":"physics"}`   (will be rejected with `errors.BAD_REQUEST`)
 
+Each item may also carry an optional `ifMatch` field (issue #228) — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item.
+
 Request body: JSON array of update items:
 
 ```json
@@ -202,23 +204,41 @@ Request body: JSON array of update items:
   {
     "id": "8824c480-c166-11ee-9e63-ae468cd3ed16",
     "payload": "{\"category\":\"physics\",\"year\":\"2024\"}",
-    "transition": "UPDATE"
+    "transition": "UPDATE",
+    "ifMatch": "733e7180-c055-11ef-a357-ae468cd3ed16"
   }
 ]
 ```
 
-Within a single chunk the update is all-or-nothing: if any entity in the chunk is not found, the entire chunk rolls back and earlier chunks remain durable. If the very first chunk fails (no durable progress), the response is the standard `application/problem+json` 4xx error envelope; otherwise the response is HTTP 200 with the per-chunk array (see partial-success shape under collection-create).
+Failure handling within a chunk:
 
-Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — one element per committed chunk in commit order:
+- **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide infrastructure failures.
+- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-#228 contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
+
+Each per-item `ENTITY_MODIFIED` is also reflected in the entity's state-machine audit log: the engine emits a paired `STATE_MACHINE_START` plus `TRANSITION_ABORTED` event (with `data.reason = "ENTITY_MODIFIED"`, `data.expectedTxId`, and `data.actualTxId`) so consumers can correlate the failure cleanly without orphaned start events.
+
+Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — one element per committed chunk in commit order. The optional `failed` array is omitted on chunks with no per-item `ENTITY_MODIFIED` failures:
 
 ```json
 [
   {
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16",
-    "entityIds": ["8824c480-c166-11ee-9e63-ae468cd3ed16"]
+    "entityIds": ["8824c480-c166-11ee-9e63-ae468cd3ed16"],
+    "failed": [
+      {
+        "entityId": "31134900-d9cb-11ee-9e63-ae468cd3ed16",
+        "error": {
+          "code": "ENTITY_MODIFIED",
+          "message": "entity has been modified since last read",
+          "itemIndex": 1
+        }
+      }
+    ]
   }
 ]
 ```
+
+`itemIndex` is the failing item's zero-based position within its chunk's request slice (per-chunk relative). When every item in a chunk fails its `ifMatch` precondition, the chunk still commits as a zero-write transaction — `entityIds` is empty, `failed[]` lists every item, and `transactionId` remains meaningful for audit correlation.
 
 **DELETE /api/entity/{entityId}** — Delete a single entity by UUID
 

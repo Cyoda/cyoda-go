@@ -595,16 +595,27 @@ func resolveTransactionWindow(window *int32) (int, *common.AppError) {
 
 // collectionChunkResult is one element of the collection-endpoint response
 // array. Successful chunks carry transactionId + entityIds. Failed chunks
-// carry the Error field with code/message and the chunk's index.
+// carry the Error field with code/message and the chunk's index. Chunks with
+// per-item ENTITY_MODIFIED isolation (issue #228) carry transactionId +
+// entityIds for the successful items plus a Failed slice for the conflicted
+// items.
 //
 // Wire contract per the docs: a collection request committed in transactional
 // batches of at most `transactionWindow` items returns one element per chunk
 // in commit order; chunks committed before any failure remain durable, and
-// the failure surfaces as an error element marking chunkIndex. Issue #227.
+// chunk-wide failures surface as an error element marking chunkIndex.
+// Issue #227, extended by #228.
 type collectionChunkResult struct {
-	TransactionID string                 `json:"transactionId,omitempty"`
-	EntityIDs     []string               `json:"entityIds,omitempty"`
-	Error         *collectionChunkError  `json:"error,omitempty"`
+	TransactionID string `json:"transactionId,omitempty"`
+	// EntityIDs is intentionally NOT omitempty so the wire shape stays
+	// stable across "fully successful" and "all-stale per-item-isolated"
+	// chunks (issue #228). Construction sites must initialise this non-nil
+	// (e.g. `make([]string, 0)`) so json.Marshal emits `entityIds: []`
+	// rather than `null` for a chunk with zero successful items. This
+	// matches the documented contract in OpenAPI / cmd/cyoda/help/content/crud.md.
+	EntityIDs []string                     `json:"entityIds"`
+	Error     *collectionChunkError        `json:"error,omitempty"`
+	Failed    []collectionChunkItemFailure `json:"failed,omitempty"`
 }
 
 // collectionChunkError carries the per-chunk failure shape. ChunkIndex is
@@ -614,6 +625,23 @@ type collectionChunkError struct {
 	Code       string `json:"code"`
 	Message    string `json:"message"`
 	ChunkIndex int    `json:"chunkIndex"`
+}
+
+// collectionChunkItemFailure documents a single per-item failure that did NOT
+// roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
+// carrying an IfMatch precondition (issue #228). ItemIndex is the failing
+// item's zero-based position within its chunk's request slice.
+type collectionChunkItemFailure struct {
+	EntityID string                  `json:"entityId"`
+	Error    collectionChunkItemErr  `json:"error"`
+}
+
+// collectionChunkItemErr is the per-item failure inner object — code, message,
+// and per-chunk-relative item index.
+type collectionChunkItemErr struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	ItemIndex int    `json:"itemIndex"`
 }
 
 // runChunkedCreate splits items into chunks of size `window` and dispatches
@@ -650,6 +678,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 				return nil, appErr
 			}
 			results = append(results, collectionChunkResult{
+				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
 					Message:    appErr.Message,
@@ -749,11 +778,13 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 	}
 
 	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
-	// Match CreateCollection's wire contract exactly.
+	// Match CreateCollection's wire contract exactly. Optional per-item
+	// `ifMatch` carries the cross-request precondition (issue #228).
 	var rawItems []struct {
 		ID         string `json:"id"`
 		Payload    string `json:"payload"`
 		Transition string `json:"transition"`
+		IfMatch    string `json:"ifMatch"`
 	}
 	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array (payload must be a JSON-encoded string)"))
@@ -766,6 +797,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 			EntityID:   raw.ID,
 			Payload:    json.RawMessage(raw.Payload),
 			Transition: raw.Transition,
+			IfMatch:    raw.IfMatch,
 		})
 	}
 
@@ -797,6 +829,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 				return
 			}
 			results = append(results, collectionChunkResult{
+				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
 					Message:    appErr.Message,
@@ -806,10 +839,24 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 			common.WriteJSON(w, http.StatusOK, results)
 			return
 		}
-		results = append(results, collectionChunkResult{
+		entry := collectionChunkResult{
 			TransactionID: result.TransactionID,
 			EntityIDs:     result.EntityIDs,
-		})
+		}
+		if len(result.Failed) > 0 {
+			entry.Failed = make([]collectionChunkItemFailure, 0, len(result.Failed))
+			for _, f := range result.Failed {
+				entry.Failed = append(entry.Failed, collectionChunkItemFailure{
+					EntityID: f.EntityID,
+					Error: collectionChunkItemErr{
+						Code:      f.Code,
+						Message:   f.Message,
+						ItemIndex: f.ItemIndex,
+					},
+				})
+			}
+		}
+		results = append(results, entry)
 	}
 	common.WriteJSON(w, http.StatusOK, results)
 }

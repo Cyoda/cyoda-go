@@ -1712,7 +1712,31 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              type: array
+              description: |
+                Array of update items. Each item carries the entity's UUID,
+                a JSON-encoded `payload` string, an optional named
+                `transition`, and an optional `ifMatch` cross-request
+                precondition (cyoda-go extension #228; not yet in Cloud).
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  payload:
+                    type: string
+                  transition:
+                    type: string
+                  ifMatch:
+                    type: string
+                    description: |
+                      Optional cross-request optimistic-concurrency
+                      precondition; cyoda-go extension #228 (not yet in
+                      Cloud).
+                required:
+                  - id
+                  - payload
             examples:
               Mixed Entity Updates:
                 summary: Example of updating multiple entities of different types
@@ -7131,6 +7155,14 @@ components:
         carrying the `error` object (with `chunkIndex` set to the failing
         chunk's zero-based position) instead of `transactionId` and
         `entityIds`. Earlier chunks remain durable.
+
+        cyoda-go extension #228 (not yet in Cloud): per-item
+        ENTITY_MODIFIED conflicts on UpdateCollection items carrying
+        `ifMatch` surface inside the `200` response body via the
+        `failed[]` array, not as a `4xx` envelope. Inspect `failed[]` to
+        detect them. The `4xx` envelope is reserved for chunk-wide
+        infrastructure failures (malformed JSON, missing entity,
+        validation failure, non-conflict engine error).
       properties:
         transactionId:
           type: string
@@ -7159,6 +7191,38 @@ components:
             - code
             - message
             - chunkIndex
+        failed:
+          type: array
+          description: |
+            cyoda-go extension #228 (not yet in Cloud). Present only on
+            UpdateCollection chunks where one or more items carrying an
+            `ifMatch` precondition failed with ENTITY_MODIFIED. The chunk
+            still commits its successful siblings; the conflicted items
+            surface here without rolling the chunk back.
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+                format: uuid
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                  itemIndex:
+                    type: integer
+                    format: int32
+                    description: Per-chunk-relative item index.
+                required:
+                  - code
+                  - message
+                  - itemIndex
+            required:
+              - entityId
+              - error
     LaureateDto:
       type: object
       properties:
