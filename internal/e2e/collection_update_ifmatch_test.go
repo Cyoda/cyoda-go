@@ -159,12 +159,20 @@ func TestUpdateCollection_IfMatch_HappyPath(t *testing.T) {
 // Item 1 carries a stale ifMatch; item 2 carries a fresh one. The chunk
 // commits item 2's update; item 1 surfaces in `failed` with code
 // ENTITY_MODIFIED and item 1's data on disk is unchanged.
+//
+// Audit-trail consistency (issue #228 reviewer S1): the failed item's audit
+// log must contain BOTH an entry event (STATE_MACHINE_START) AND a
+// compensating TRANSITION_ABORTED event with reason=ENTITY_MODIFIED so the
+// audit trail is self-consistent — no orphaned start without a matching
+// finish/abort. The abort event references the supplied (stale) txID as
+// expectedTxId and the entity's actual current txID as actualTxId.
 func TestUpdateCollection_IfMatch_PerItemStaleIsolated(t *testing.T) {
 	const model = "e2e-upd-ifmatch-stale-iso"
 	setupModelWithWorkflow(t, model, trivialModelWF())
 
 	id1, id2 := seedTwo(t, model)
 	const stale = "00000000-0000-0000-0000-000000000000"
+	tx1Actual := getEntityTxID(t, id1) // captured for the abort event's actualTxId assertion below
 	tx2 := getEntityTxID(t, id2)
 
 	items := []string{
@@ -221,6 +229,50 @@ func TestUpdateCollection_IfMatch_PerItemStaleIsolated(t *testing.T) {
 	}
 	if data := getEntityData(t, id2, ""); data["name"] != "B2" {
 		t.Errorf("fresh-ifMatch item 2 update did not land: %v", data)
+	}
+
+	// Audit-trail self-consistency: failed item must have STATE_MACHINE_START
+	// paired with a TRANSITION_ABORTED carrying reason=ENTITY_MODIFIED.
+	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
+}
+
+// assertTransitionAbortedPaired verifies that the entity's audit log contains
+// both a STATE_MACHINE_START event and a matching TRANSITION_ABORTED event
+// emitted by the engine or handler when a stale ifMatch precondition aborted
+// the in-flight transition. The abort event's data must reference
+// reason=ENTITY_MODIFIED, the supplied stale txID as expectedTxId, and the
+// entity's actual row txID as actualTxId.
+func assertTransitionAbortedPaired(t *testing.T, entityID, expectedStaleTx, actualEntityTx string) {
+	t.Helper()
+	events := getSMAuditEvents(t, entityID)
+	var sawStart bool
+	var abort map[string]any
+	for _, ev := range events {
+		switch ev["eventType"] {
+		case "STATE_MACHINE_START":
+			sawStart = true
+		case "TRANSITION_ABORTED":
+			abort = ev
+		}
+	}
+	if !sawStart {
+		t.Errorf("entity %s: missing STATE_MACHINE_START before abort; got events: %v", entityID, events)
+	}
+	if abort == nil {
+		t.Fatalf("entity %s: missing TRANSITION_ABORTED event; got events: %v", entityID, events)
+	}
+	data, _ := abort["data"].(map[string]any)
+	if data == nil {
+		t.Fatalf("entity %s: TRANSITION_ABORTED has no data payload; ev=%v", entityID, abort)
+	}
+	if reason, _ := data["reason"].(string); reason != "ENTITY_MODIFIED" {
+		t.Errorf("entity %s: abort reason = %q; want ENTITY_MODIFIED", entityID, reason)
+	}
+	if got, _ := data["expectedTxId"].(string); got != expectedStaleTx {
+		t.Errorf("entity %s: abort expectedTxId = %q; want %q", entityID, got, expectedStaleTx)
+	}
+	if got, _ := data["actualTxId"].(string); got != actualEntityTx {
+		t.Errorf("entity %s: abort actualTxId = %q; want %q", entityID, got, actualEntityTx)
 	}
 }
 
@@ -289,6 +341,8 @@ func TestUpdateCollection_IfMatch_AllStale(t *testing.T) {
 
 	id1, id2 := seedTwo(t, model)
 	const stale = "00000000-0000-0000-0000-000000000000"
+	tx1Actual := getEntityTxID(t, id1)
+	tx2Actual := getEntityTxID(t, id2)
 
 	items := []string{
 		updateCollectionItem(id1, `{"name":"A_STALE","amount":99,"status":"upd"}`, stale),
@@ -336,6 +390,11 @@ func TestUpdateCollection_IfMatch_AllStale(t *testing.T) {
 	if data := getEntityData(t, id2, ""); data["name"] != "B" {
 		t.Errorf("stale-ifMatch chunk leaked an update on item 2: %v", data)
 	}
+
+	// Audit-trail self-consistency: every failed item must have a paired
+	// STATE_MACHINE_START + TRANSITION_ABORTED sequence (issue #228 S1).
+	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
+	assertTransitionAbortedPaired(t, id2, stale, tx2Actual)
 }
 
 // --- Test 5: CBD interaction with stale ifMatch ---
@@ -377,6 +436,7 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 		t.Fatalf("post-create state = %q; want PENDING", state)
 	}
 	const stale = "00000000-0000-0000-0000-000000000000"
+	tx1Actual := getEntityTxID(t, id1)
 
 	body := fmt.Sprintf(
 		`[{"id":"%s","payload":"{\"name\":\"X_STALE\",\"amount\":99,\"status\":\"upd\"}","transition":"approve","ifMatch":"%s"}]`,
@@ -415,6 +475,12 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 	if data := getEntityData(t, id1, ""); data["name"] == "X_STALE" {
 		t.Errorf("stale-ifMatch item leaked update: %v", data)
 	}
+
+	// Audit-trail self-consistency: the engine-side abort happens at the CBD
+	// segment-flush BEFORE the external dispatch. The TRANSITION_ABORTED event
+	// must precede any dispatch attempt and pair with the entry-side
+	// STATE_MACHINE_START (issue #228 S1).
+	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
 }
 
 // --- Test 6: non-conflict per-item failure still rolls the chunk back ---
