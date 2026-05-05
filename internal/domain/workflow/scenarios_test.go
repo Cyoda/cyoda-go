@@ -707,7 +707,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	if rr.Code != 400 {
 		t.Fatalf("expected status 400 for startNewTxOnDispatch misuse, got %d; body: %s", rr.Code, rr.Body.String())
 	}
-	body := rr.Body.String()
+	respBody := rr.Body.String()
 	// Pin the full error format reaches the HTTP caller intact: error code,
 	// flag name, plus all four context fields the validator includes
 	// (workflow / transition / processor / offending mode). A future handler
@@ -722,8 +722,8 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 		`processor \"p\"`,
 		`got \"SYNC\"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("expected response body to contain %q; got: %s", want, body)
+		if !strings.Contains(respBody, want) {
+			t.Errorf("expected response body to contain %q; got: %s", want, respBody)
 		}
 	}
 }
