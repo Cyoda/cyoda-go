@@ -65,6 +65,7 @@ scopes. The scope determines what protects it.
 | **HTTP `pgxpool.Pool`** (postgres only) | Per-node | Vendored pool internals |
 | **`UserContext`, `txCtx`** | Per-request | `context.Context` (immutable values) |
 | **HMAC tx-routing token** | Per-request (issued at Begin, expires) | Cryptographic — caller cannot forge without `CYODA_HMAC_SECRET` |
+| **Per-cascade segment state** (`COMMIT_BEFORE_DISPATCH` only — pre-callout txID, dispatched-processor metadata, segment-pinning info) | Per-request, per-cascade | Engine-owned in the workflow engine's per-invocation state; lifetime spans `TX_pre.Commit` → dispatch → `TX_post.Commit`. Lost on home-node crash mid-cascade — no persistence, no engine-side reaper (see §6). |
 
 ## 3. In-process lock inventory and order
 
@@ -168,6 +169,12 @@ This section enumerates only what cluster mode promises and what it does not.
   **gRPC routing helper** (`internal/cluster/proxy/grpc.go`,
   resolve-target + redirect-error pattern) follow the same pinning
   semantics, just with different transports.
+- **`COMMIT_BEFORE_DISPATCH` segment pinning.** All segments of a
+  segmented cascade pin to the same home node. `TX_post` is required
+  to begin on the node that committed `TX_pre` — the cluster's
+  TX-token registry enforces this. Cross-node continuation of a
+  cascade is out of scope; if the home node dies between segments,
+  the cascade is not resumed elsewhere.
 - Gossip registry tracks node liveness and broadcasts lifecycle events
   (model invalidation, member tags).
 - AEAD-encrypted inter-node forwarding with nonce-replay protection.
@@ -181,6 +188,19 @@ This section enumerates only what cluster mode promises and what it does not.
   requests with the original token receive `503 TRANSACTION_NODE_UNAVAILABLE`.
   The client must restart with a fresh `Begin()` on a surviving node.
   No automatic transaction recovery.
+- **Home-node crash mid-cascade with `COMMIT_BEFORE_DISPATCH`.** A new
+  failure mode: the home node crashes after `TX_pre.Commit` (the
+  entity is durable in the pre-callout state) but before `TX_post`
+  commits. The in-flight orchestration (segment-pinning, dispatch
+  wait, processor result) is lost; `TX_post` is never opened by any
+  node. Subsequent requests with the original token receive
+  `503 TRANSACTION_NODE_UNAVAILABLE`. The client must restart with a
+  fresh `Begin()` on a surviving node, which re-fires the cascade
+  from the beginning and re-dispatches the processor. **There is no
+  engine-side reaper for stranded cascades.** Recovery is the
+  application's concern; the dispatched processor must be idempotent
+  (see §7 class 4 below; see also `docs/CONSISTENCY.md` §10 and
+  `cmd/cyoda/help/content/workflows.md`).
 - **Network partition.** If the home node becomes unreachable but
   remains alive, the proxy returns `503` until gossip declares it
   dead or the partition heals. In-flight transactions on the home
@@ -240,6 +260,25 @@ At the time of writing no production callsite outside the
 `TransactionManager.Join`. Any future feature that fans out work across
 multiple goroutines on a single tx must either add its own per-tx
 mutex or split work across transactions, AND must update this section.
+
+A fourth class is the workflow author's responsibility:
+
+4. **Processor idempotency under `COMMIT_BEFORE_DISPATCH`.** Workflow
+   authors using `COMMIT_BEFORE_DISPATCH` must implement processor
+   idempotency themselves; the engine cannot deduplicate replays.
+   Replays can fire from CAS conflict during continuation (caller's
+   retry restarts the cascade and re-dispatches the processor) or
+   from an engine crash between segments (entity is durable in the
+   pre-callout state, in-flight orchestration is gone, caller retries,
+   the cascade re-fires from the beginning — see §6). The engine
+   has no per-cascade replay log, no dispatch-ID stability across
+   retries, and no automatic compensation transition. Idempotency
+   must be designed at the processor level on application-meaningful
+   keys (a write-once external resource ID, a deterministic external
+   resource name derived from entity ID + a stable timestamp, etc.).
+   See `docs/CONSISTENCY.md` §10 for the full author-facing contract
+   and `cmd/cyoda/help/content/workflows.md` for the per-processor
+   field reference.
 
 ## 8. Further reading
 

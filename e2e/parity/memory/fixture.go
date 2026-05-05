@@ -36,6 +36,13 @@ func (f *memoryFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The memory
+// backend writes audit events via the in-process bus before any
+// entity-update rollback runs, so a rolled-back entity write still
+// leaves its paired STATE_MACHINE_START + TRANSITION_ABORTED events
+// durable in the audit log.
+func (f *memoryFixture) IsTxBoundAuditStore() bool { return false }
+
 // setup builds binaries, launches subprocesses, and waits for readiness.
 // It returns a teardown function that kills the subprocesses.
 func setup() (*memoryFixture, func(), error) {

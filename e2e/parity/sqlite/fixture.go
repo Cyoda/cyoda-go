@@ -42,6 +42,13 @@ func (f *sqliteFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The sqlite
+// backend writes audit events outside the entity-write transaction (via
+// the same in-process bus as the memory backend), so a rolled-back
+// entity write still leaves its paired STATE_MACHINE_START +
+// TRANSITION_ABORTED events durable.
+func (f *sqliteFixture) IsTxBoundAuditStore() bool { return false }
+
 // setup creates a temp directory for the SQLite database, builds
 // binaries, launches subprocesses, and waits for readiness. It returns
 // a teardown function that kills subprocesses and removes the temp dir.

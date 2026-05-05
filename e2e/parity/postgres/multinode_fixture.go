@@ -41,6 +41,14 @@ func (f *pgMultiNode) NewTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintTenantJWT(t, f.keySet)
 }
 
+// ComputeTenant implements multinode.MultiNodeFixture — mints a JWT
+// scoped to the compute-test-client's tenant so processor/criteria
+// dispatch can find the registered gRPC member.
+func (f *pgMultiNode) ComputeTenant(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
+}
+
 // MustSetupMultiNode boots a Postgres testcontainer plus n cyoda-go
 // subprocesses sharing it (with cluster bootstrap) and returns a
 // MultiNodeFixture plus a cleanup function. Caller MUST defer cleanup

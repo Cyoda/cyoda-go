@@ -92,7 +92,7 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `state.to` — workflow state after a transition
 - `cascade.depth` — current depth in the automated-transition cascade loop
 - `processor.name` — name of the processor being dispatched
-- `processor.execution_mode` — execution mode of the processor (`SYNC` or `ASYNC`)
+- `processor.execution_mode` — execution mode of the processor (`SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, or `COMMIT_BEFORE_DISPATCH`)
 - `processor.tags` — comma-separated `calculationNodesTags` used for member routing
 - `criterion.target` — criteria target type (`TRANSITION`, `WORKFLOW`)
 - `criteria.matches` — boolean result of a criteria evaluation

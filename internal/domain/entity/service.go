@@ -108,10 +108,39 @@ type CollectionItem struct {
 
 // UpdateCollectionItem holds a parsed item for batch update
 // (PUT /api/entity/{format}). Transition is empty for a loopback update.
+// IfMatch is the optional cross-request optimistic-concurrency precondition
+// (the entity's meta.transactionId from the caller's last read). When
+// supplied, a per-item ENTITY_MODIFIED conflict is isolated within its chunk
+// rather than rolling the whole chunk back. Issue #228.
 type UpdateCollectionItem struct {
 	EntityID   string
 	Payload    json.RawMessage
 	Transition string
+	IfMatch    string
+}
+
+// UpdateCollectionItemFailure documents a single per-item failure that did
+// NOT cause its chunk to roll back. Today this is reserved for ENTITY_MODIFIED
+// conflicts on items carrying an IfMatch precondition; other per-item failures
+// (missing entity, validation, non-conflict engine errors) still roll the
+// entire chunk back. ItemIndex is the failing item's zero-based position
+// within its chunk's request slice.
+type UpdateCollectionItemFailure struct {
+	EntityID  string
+	Code      string
+	Message   string
+	ItemIndex int
+}
+
+// UpdateCollectionResult holds the result of a batch update. EntityIDs lists
+// items that committed successfully within the chunk; Failed lists items that
+// were isolated by per-item conflict handling. TransactionID is the
+// cascade-entry txID (matches CreateEntityCollection's choice for
+// segmenting-cascade audit correlation).
+type UpdateCollectionResult struct {
+	TransactionID string
+	EntityIDs     []string
+	Failed        []UpdateCollectionItemFailure
 }
 
 // --- Service methods ---
@@ -199,7 +228,11 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		Data: bodyBytes,
 	}
 
-	// Run workflow engine within transaction context.
+	// Run workflow engine within transaction context. The engine returns
+	// FinalCtx/FinalTxID — for cascades that segment via COMMIT_BEFORE_DISPATCH
+	// this is TX_post (a fresh TX opened by the engine after committing
+	// TX_pre); for non-segmenting cascades it equals the handler's input
+	// txID. CreateEntity has no prior version, so no IfMatch is involved.
 	result, err := h.engine.Execute(txCtx, entity, "")
 	if err != nil {
 		h.txMgr.Rollback(txCtx, txID)
@@ -221,25 +254,34 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		entity.Meta.TransitionForLatestSave = "loopback"
 	}
 
-	// Save entity within transaction (goes to buffer).
-	entityStore, err := h.factory.EntityStore(txCtx)
+	finalCtx, finalTxID := result.FinalCtx, result.FinalTxID
+
+	// Save entity within the engine's final-segment transaction (goes to
+	// buffer). For non-segmenting cascades finalCtx/finalTxID equal the
+	// handler's input; for segmenting cascades the engine has already
+	// committed TX_pre and finalCtx/finalTxID address TX_post.
+	entityStore, err := h.factory.EntityStore(finalCtx)
 	if err != nil {
-		h.txMgr.Rollback(txCtx, txID)
+		_ = h.txMgr.Rollback(finalCtx, finalTxID)
 		return nil, common.Internal("failed to access entity store", err)
 	}
-	if _, err := entityStore.Save(txCtx, entity); err != nil {
-		h.txMgr.Rollback(txCtx, txID)
+	if _, err := entityStore.Save(finalCtx, entity); err != nil {
+		_ = h.txMgr.Rollback(finalCtx, finalTxID)
 		return nil, common.Internal("failed to save entity", err)
 	}
 
-	// Commit transaction.
-	if err := h.txMgr.Commit(txCtx, txID); err != nil {
+	// Commit FinalTxID — the still-open TX after the cascade.
+	if err := h.txMgr.Commit(finalCtx, finalTxID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
 
+	// Surface the cascade-entry txID for client correlation (spec §8) — even
+	// when the engine segmented and TX_post carried the durable apply-result,
+	// audit lookups via /audit/entity/{id}/workflow/{txId}/finished use the
+	// entry txID.
 	return &EntityTransactionResult{
 		TransactionID: txID,
 		EntityIDs:     []string{entityID.String()},
@@ -801,63 +843,113 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes})
 	}
 
-	// Begin transaction -- all entities in one transaction.
+	// Begin transaction -- all entities in one transaction, all-or-nothing
+	// in the common (non-segmenting) case. The "current" TX is threaded
+	// through the loop because each item's engine call may segment via
+	// COMMIT_BEFORE_DISPATCH, in which case the engine commits TX_pre and
+	// returns a fresh TX_post on FinalCtx/FinalTxID — subsequent items must
+	// continue saving against that new TX rather than the now-closed
+	// initial one. Mirrors UpdateEntityCollection's segment-aware loop.
+	//
+	// Atomicity caveat for segmenting cascades: once the engine has
+	// committed TX_pre durably, the handler can no longer roll back that
+	// item's pre-callout state. A failure on item N+M will still rollback
+	// the still-open final TX, but earlier segments' TX_pre commits remain
+	// durable. This is a fundamental consequence of CBD and applies
+	// uniformly anywhere the engine segments; non-CBD batches retain the
+	// original all-or-nothing semantic.
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 
-	entityStore, err := h.factory.EntityStore(txCtx)
-	if err != nil {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Internal("failed to access entity store", err)
-	}
-
 	now := time.Now()
 
-	// Pre-generate entity IDs so the iterator has no side effects.
-	// This decouples ID generation from SaveAll's consumption pattern,
-	// making it safe even if a future SaveAll consumes from multiple goroutines.
+	// Pre-generate entity IDs so they are stable across the per-item engine
+	// execution and Save. The IDs are also written into the audit trail by
+	// the engine via entity.Meta.ID, so they must be assigned before
+	// engine.Execute runs.
 	entityIDs := make([]string, len(parsed))
 	for i := range parsed {
 		entityIDs[i] = uuid.UUID(h.uuids.NewTimeUUID()).String()
 	}
 
-	entities := func(yield func(*spi.Entity) bool) {
-		for i, item := range parsed {
-			entity := &spi.Entity{
-				Meta: spi.EntityMeta{
-					ID:               entityIDs[i],
-					TenantID:         uc.Tenant.ID,
-					ModelRef:         item.ref,
-					State:            "CREATED",
-					CreationDate:     now,
-					LastModifiedDate: now,
-					TransactionID:    txID,
-					ChangeType:       "CREATED",
-					ChangeUser:       uc.UserID,
-				},
-				Data: item.payloadBytes,
-			}
-			if !yield(entity) {
-				return
-			}
+	currentCtx, currentTxID := txCtx, txID
+
+	for i, item := range parsed {
+		entity := &spi.Entity{
+			Meta: spi.EntityMeta{
+				ID:                      entityIDs[i],
+				TenantID:                uc.Tenant.ID,
+				ModelRef:                item.ref,
+				State:                   "",
+				CreationDate:            now,
+				LastModifiedDate:        now,
+				TransactionID:           currentTxID,
+				TransitionForLatestSave: "",
+				ChangeType:              "CREATED",
+				ChangeUser:              uc.UserID,
+			},
+			Data: item.payloadBytes,
+		}
+
+		// Run workflow engine within the current segment's transaction
+		// context. Mirrors single CreateEntity's flow so initial-state
+		// derivation, automated cascade and state-machine audit events all
+		// apply per item. Issue #227.
+		result, err := h.engine.Execute(currentCtx, entity, "")
+		if err != nil {
+			h.txMgr.Rollback(currentCtx, currentTxID)
+			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
+			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
+		}
+
+		// If no workflow was found, engine returns forced success and
+		// entity state stays empty — fall back to "CREATED" to match
+		// single CreateEntity.
+		if entity.Meta.State == "" {
+			entity.Meta.State = "CREATED"
+		}
+
+		// CREATE path runs without an explicit transition; canonical
+		// marker is "loopback" (issue #94), matching single CreateEntity.
+		if result != nil && result.StopReason == "" {
+			entity.Meta.TransitionForLatestSave = "loopback"
+		}
+
+		// Advance the loop's TX to whichever segment is now open. For
+		// non-segmenting cascades these are unchanged; for segmenting
+		// cascades the engine committed TX_pre and opened TX_post on
+		// FinalCtx — subsequent items must save against that new TX.
+		if result != nil {
+			currentCtx, currentTxID = result.FinalCtx, result.FinalTxID
+		}
+
+		// Re-resolve the entity store on the now-current segment context;
+		// the per-segment factory may bind storage handles to ctx.
+		finalEntityStore, err := h.factory.EntityStore(currentCtx)
+		if err != nil {
+			h.txMgr.Rollback(currentCtx, currentTxID)
+			return nil, common.Internal("failed to access entity store", err)
+		}
+		if _, err := finalEntityStore.Save(currentCtx, entity); err != nil {
+			h.txMgr.Rollback(currentCtx, currentTxID)
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
 		}
 	}
 
-	if _, err := entityStore.SaveAll(txCtx, entities); err != nil {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Internal("failed to save entities", err)
-	}
-
-	// Commit transaction.
-	if err := h.txMgr.Commit(txCtx, txID); err != nil {
+	// Commit the final still-open TX. Equals the entry txID for
+	// non-segmenting batches; for batches with at least one segmenting
+	// cascade this is the post-segment TX (earlier segments already
+	// committed their TX_pre durably).
+	if err := h.txMgr.Commit(currentCtx, currentTxID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
 
+	// Surface the cascade-entry txID for audit correlation (spec §8).
 	return &EntityTransactionResult{
 		TransactionID: txID,
 		EntityIDs:     entityIDs,
@@ -950,61 +1042,121 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		Data: bodyBytes,
 	}
 
-	// Execute workflow: loopback or named manual transition.
+	// Execute workflow: loopback or named manual transition. Each variant
+	// returns FinalCtx/FinalTxID — for cascades that segment via
+	// COMMIT_BEFORE_DISPATCH this is TX_post (a fresh TX opened by the engine
+	// after committing TX_pre); for non-segmenting cascades it equals the
+	// handler's input txID.
+	//
+	// We hand input.IfMatch to the engine via the *WithIfMatch entry-points so
+	// that, when a COMMIT_BEFORE_DISPATCH segment exists, the precondition is
+	// applied at the first-segment flush — strictly BEFORE any external
+	// dispatch fires (spec §4.1). The engine consumes IfMatch only on
+	// segmenting cascades; for non-segmenting cascades the handler still
+	// applies CompareAndSave-with-IfMatch post-engine below.
+	var engineResult *wfengine.EngineResult
 	if input.Transition == "" {
-		// Loopback
-		if _, err := h.engine.Loopback(txCtx, updated); err != nil {
+		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
+		if lbErr != nil {
 			h.txMgr.Rollback(txCtx, txID)
-			slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
-			return nil, classifyWorkflowError(err)
-		}
-		updated.Meta.TransitionForLatestSave = "loopback"
-	} else {
-		// Named manual transition
-		if _, err := h.engine.ManualTransition(txCtx, updated, input.Transition); err != nil {
-			h.txMgr.Rollback(txCtx, txID)
-			slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			return nil, classifyWorkflowError(err)
-		}
-		updated.Meta.TransitionForLatestSave = input.Transition
-	}
-
-	// Optimistic-concurrency check on the cross-request precondition: if
-	// If-Match was provided, CompareAndSave fails fast at write-time when
-	// the supplied transactionId no longer matches the entity's current
-	// version. The transaction-level SI+FCW guard at Commit() protects
-	// against concurrent committers within this request's transaction
-	// window regardless of which branch we take.
-	if input.IfMatch != "" {
-		if _, err := entityStore.CompareAndSave(txCtx, updated, input.IfMatch); err != nil {
-			h.txMgr.Rollback(txCtx, txID)
-			if errors.Is(err, spi.ErrConflict) {
+			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
+			if errors.Is(lbErr, spi.ErrConflict) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
 					"entity has been modified since last read")
-				appErr.Props = map[string]any{
-					"entityId": input.EntityID,
-				}
+				appErr.Props = map[string]any{"entityId": input.EntityID}
 				return nil, appErr
 			}
+			return nil, classifyWorkflowError(lbErr)
+		}
+		updated.Meta.TransitionForLatestSave = "loopback"
+		engineResult = res
+	} else {
+		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
+		if mtErr != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
+			if errors.Is(mtErr, spi.ErrConflict) {
+				appErr := common.Operational(
+					http.StatusPreconditionFailed,
+					common.ErrCodeEntityModified,
+					"entity has been modified since last read")
+				appErr.Props = map[string]any{"entityId": input.EntityID}
+				return nil, appErr
+			}
+			return nil, classifyWorkflowError(mtErr)
+		}
+		updated.Meta.TransitionForLatestSave = input.Transition
+		engineResult = res
+	}
+
+	finalCtx, finalTxID := engineResult.FinalCtx, engineResult.FinalTxID
+	finalEntityStore, err := h.factory.EntityStore(finalCtx)
+	if err != nil {
+		_ = h.txMgr.Rollback(finalCtx, finalTxID)
+		return nil, common.Internal("failed to access entity store", err)
+	}
+
+	// Distinguish: did the engine segment (and therefore consume IfMatch)?
+	// Segmented is true iff at least one COMMIT_BEFORE_DISPATCH segment
+	// committed; the engine's first-segment flush already applied the
+	// caller's IfMatch. For non-segmenting cascades the handler still owns
+	// the IfMatch precondition.
+	segmented := engineResult.Segmented
+
+	if input.IfMatch != "" && !segmented {
+		if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
+			if errors.Is(err, spi.ErrConflict) {
+				// Reviewer S1 (#228): emit the compensating
+				// TRANSITION_ABORTED into the same TX buffer as the
+				// entry-side audit events BEFORE rolling back, so on
+				// stores where audit is TX-bound the abort event rolls
+				// back together with the entry events (audit log
+				// remains empty, consistent), and on stores where audit
+				// is not TX-bound the abort event is preserved as a
+				// pair with the entry events.
+				h.emitTransitionAborted(finalCtx, updated, txID, input.Transition, input.IfMatch)
+				_ = h.txMgr.Rollback(finalCtx, finalTxID)
+				appErr := common.Operational(
+					http.StatusPreconditionFailed,
+					common.ErrCodeEntityModified,
+					"entity has been modified since last read")
+				appErr.Props = map[string]any{"entityId": input.EntityID}
+				return nil, appErr
+			}
+			_ = h.txMgr.Rollback(finalCtx, finalTxID)
 			return nil, common.Internal("failed to save entity", err)
 		}
 	} else {
-		if _, err := entityStore.Save(txCtx, updated); err != nil {
-			h.txMgr.Rollback(txCtx, txID)
+		// Plain Save: either no IfMatch was provided, or the engine already
+		// consumed it at first-segment flush (segmented == true). In the
+		// segmented case the row's current TransactionID has advanced through
+		// TX_pre's commit, so a handler-side CAS against input.IfMatch would
+		// fail spuriously — Save lands the post-cascade state in TX_post's
+		// buffer and the segment's own intra-TX guards handle concurrency.
+		if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
+			_ = h.txMgr.Rollback(finalCtx, finalTxID)
 			return nil, common.Internal("failed to save entity", err)
 		}
 	}
 
-	// Commit transaction.
-	if err := h.txMgr.Commit(txCtx, txID); err != nil {
+	// Commit FinalTxID — the still-open TX after the cascade. For
+	// non-segmenting cascades this is the handler's original txID; for
+	// segmenting cascades this is TX_post (TX_pre was committed by the
+	// engine before the external callout).
+	if err := h.txMgr.Commit(finalCtx, finalTxID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
 
+	// Surface the cascade-entry txID to the caller for client correlation
+	// (spec §8): even when the engine segmented and TX_post is what carried
+	// the durable apply-result, the response advertises the original entry
+	// txID so audit lookups via /audit/entity/{id}/workflow/{txId}/finished
+	// continue to work.
 	return &EntityTransactionResult{
 		TransactionID: txID,
 		EntityIDs:     []string{input.EntityID},
@@ -1012,12 +1164,30 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 }
 
 // UpdateEntityCollection updates multiple entities in a single transaction
-// (PUT /api/entity/{format}). Per the documented contract: if any entity
-// in the collection is missing (or any step fails), the entire batch is
-// rolled back and no entity is modified. Loopback updates (empty
-// Transition) and named-transition updates may be mixed within the same
-// batch. Issue #92.
-func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateCollectionItem) (*EntityTransactionResult, error) {
+// (PUT /api/entity/{format}). Loopback updates (empty Transition) and
+// named-transition updates may be mixed within the same batch. Issue #92.
+//
+// Per-item failure handling:
+//
+//   - Items WITHOUT IfMatch retain the documented all-or-nothing semantic:
+//     any failure (missing entity, validation, engine error) rolls the
+//     entire chunk back. Issue #92.
+//   - Items WITH IfMatch isolate ENTITY_MODIFIED conflicts (spi.ErrConflict)
+//     to a per-chunk Failed slice; the chunk still commits its remaining
+//     successful items. Other per-item failures still roll the chunk back.
+//     Issue #228.
+//
+// Returning from this function:
+//
+//   - (*UpdateCollectionResult, nil) on chunk-success — even when every
+//     item failed via per-item ENTITY_MODIFIED isolation (zero-write commit).
+//   - (nil, *common.AppError) when a non-isolated failure aborts the chunk.
+//
+// The TransactionID returned is the cascade-entry txID; for batches with at
+// least one COMMIT_BEFORE_DISPATCH cascade, this still names the original
+// entry tx (earlier segments already committed their TX_pre durably) — same
+// convention as CreateEntityCollection.
+func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateCollectionItem) (*UpdateCollectionResult, error) {
 	if len(items) == 0 {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "collection is empty")
 	}
@@ -1033,6 +1203,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	type parsedItem struct {
 		id         string
 		transition string
+		ifMatch    string
 		bodyBytes  []byte
 		parsedData any
 	}
@@ -1050,21 +1221,29 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		parsed = append(parsed, parsedItem{
 			id:         item.EntityID,
 			transition: item.Transition,
+			ifMatch:    item.IfMatch,
 			bodyBytes:  []byte(item.Payload),
 			parsedData: data,
 		})
 	}
 
-	// Begin transaction — all items in one transaction, all-or-nothing.
+	// Begin transaction — all items share one TX in the common
+	// (non-segmenting) case, preserving the documented all-or-nothing
+	// semantic. The "current" TX is threaded through the loop because each
+	// item's engine call may segment via COMMIT_BEFORE_DISPATCH, in which
+	// case the engine commits TX_pre and returns a fresh TX_post on
+	// FinalCtx — subsequent items continue on that new TX.
+	//
+	// Atomicity caveat for segmenting cascades: once the engine has
+	// committed TX_pre durably, the handler can no longer roll back that
+	// item's pre-callout state. A failure on item N+M will still rollback
+	// the still-open final TX, but earlier segments' TX_pre commits remain
+	// durable. This is a fundamental consequence of CBD and applies
+	// uniformly anywhere the engine segments; non-CBD batches retain the
+	// original all-or-nothing semantic.
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to begin transaction", err)
-	}
-
-	entityStore, err := h.factory.EntityStore(txCtx)
-	if err != nil {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Internal("failed to access entity store", err)
 	}
 
 	now := time.Now()
@@ -1075,23 +1254,32 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	}
 
 	entityIDs := make([]string, 0, len(parsed))
+	failed := make([]UpdateCollectionItemFailure, 0)
+
+	currentCtx, currentTxID := txCtx, txID
 
 	for i, item := range parsed {
-		existing, err := entityStore.Get(txCtx, item.id)
+		entityStore, err := h.factory.EntityStore(currentCtx)
 		if err != nil {
-			h.txMgr.Rollback(txCtx, txID)
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
+			return nil, common.Internal("failed to access entity store", err)
+		}
+
+		existing, err := entityStore.Get(currentCtx, item.id)
+		if err != nil {
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 				fmt.Sprintf("item %d: entity %s not found", i, item.id))
 		}
 
-		desc, err := modelStore.Get(txCtx, existing.Meta.ModelRef)
+		desc, err := modelStore.Get(currentCtx, existing.Meta.ModelRef)
 		if err != nil {
-			h.txMgr.Rollback(txCtx, txID)
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
 
-		if err := h.validateOrExtend(txCtx, modelStore, desc, item.parsedData); err != nil {
-			h.txMgr.Rollback(txCtx, txID)
+		if err := h.validateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
@@ -1104,48 +1292,141 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				Version:          existing.Meta.Version,
 				CreationDate:     existing.Meta.CreationDate,
 				LastModifiedDate: now,
-				TransactionID:    txID,
+				TransactionID:    currentTxID,
 				ChangeType:       "UPDATED",
 				ChangeUser:       changeUser,
 			},
 			Data: item.bodyBytes,
 		}
 
+		// Run the engine on the current TX. When the item supplies an
+		// IfMatch precondition we route to the *WithIfMatch entry-points so
+		// that, for COMMIT_BEFORE_DISPATCH cascades, the precondition is
+		// applied at the first-segment flush — strictly BEFORE any external
+		// dispatch fires (spec §4.1). For non-segmenting cascades the
+		// engine leaves IfMatch untouched and the handler's CompareAndSave
+		// below applies it post-engine. Mirrors single UpdateEntity's
+		// routing (issue #27 / #228).
+		var engineResult *wfengine.EngineResult
+		var engineErr error
 		if item.transition == "" {
-			if _, err := h.engine.Loopback(txCtx, updated); err != nil {
-				h.txMgr.Rollback(txCtx, txID)
-				slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
-				return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
+			engineResult, engineErr = h.engine.LoopbackWithIfMatch(currentCtx, updated, item.ifMatch)
+		} else {
+			engineResult, engineErr = h.engine.ManualTransitionWithIfMatch(currentCtx, updated, item.transition, item.ifMatch)
+		}
+		if engineErr != nil {
+			// Per-item ENTITY_MODIFIED isolation: the engine's CBD
+			// first-segment flush rejected the IfMatch precondition before
+			// committing TX_pre or firing any external dispatch. The engine
+			// has already emitted a compensating TRANSITION_ABORTED audit
+			// event before returning ErrConflict (#228 reviewer S1) so the
+			// audit trail for this item is paired (entry + abort) and lands
+			// alongside successful siblings on commit.
+			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) {
+				slog.Info("collection update item precondition failed",
+					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
+				failed = append(failed, UpdateCollectionItemFailure{
+					EntityID:  updated.Meta.ID,
+					Code:      common.ErrCodeEntityModified,
+					Message:   "entity has been modified since last read",
+					ItemIndex: i,
+				})
+				continue
 			}
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
+			slog.Error("workflow execution failed", "error", engineErr.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
+			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, engineErr))
+		}
+		if item.transition == "" {
 			updated.Meta.TransitionForLatestSave = "loopback"
 		} else {
-			if _, err := h.engine.ManualTransition(txCtx, updated, item.transition); err != nil {
-				h.txMgr.Rollback(txCtx, txID)
-				slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
-				return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
-			}
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
 
-		if _, err := entityStore.Save(txCtx, updated); err != nil {
-			h.txMgr.Rollback(txCtx, txID)
-			return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
+		// Distinguish: did the engine segment (and therefore consume IfMatch)?
+		// Segmented is true iff at least one CBD segment committed; in that
+		// case the engine's first-segment flush already applied this item's
+		// IfMatch. For non-segmenting cascades the handler still owns the
+		// precondition — apply it via CompareAndSave below. Mirrors the
+		// single-UpdateEntity routing post-#27.
+		segmented := engineResult.Segmented
+
+		// Advance the loop's TX to whichever segment is now open. For
+		// non-segmenting cascades these are unchanged; for segmenting
+		// cascades the engine committed TX_pre and opened TX_post.
+		currentCtx, currentTxID = engineResult.FinalCtx, engineResult.FinalTxID
+
+		// Save the updated entity into the now-current segment's buffer.
+		finalEntityStore, err := h.factory.EntityStore(currentCtx)
+		if err != nil {
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
+			return nil, common.Internal("failed to access entity store", err)
+		}
+
+		// IfMatch routing for the post-engine save:
+		//   - With IfMatch AND non-segmenting cascade: handler owns the
+		//     precondition → CompareAndSave. ErrConflict → isolate to
+		//     `failed` (no chunk rollback).
+		//   - With IfMatch AND segmenting cascade: engine consumed IfMatch
+		//     at first-segment flush; row's transactionId has advanced
+		//     through TX_pre's commit. CompareAndSave against item.IfMatch
+		//     would now fail spuriously — fall back to plain Save.
+		//   - Without IfMatch: plain Save (existing behavior).
+		applyHandlerCAS := item.ifMatch != "" && !segmented
+		var saveErr error
+		if applyHandlerCAS {
+			_, saveErr = finalEntityStore.CompareAndSave(currentCtx, updated, item.ifMatch)
+		} else {
+			_, saveErr = finalEntityStore.Save(currentCtx, updated)
+		}
+		if saveErr != nil {
+			if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
+				slog.Info("collection update item precondition failed",
+					"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
+				// Reviewer S1 (#228): emit a compensating TRANSITION_ABORTED
+				// audit event so the entry-side audit events recorded by the
+				// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
+				// / TRANSITION_MAKE) have a paired terminal event in the
+				// audit log. Best-effort; routed through the engine's
+				// audit-store handle so it lands in the same TX buffer as
+				// the entry events on stores where audit is TX-bound.
+				h.emitTransitionAborted(currentCtx, updated, currentTxID, item.transition, item.ifMatch)
+				failed = append(failed, UpdateCollectionItemFailure{
+					EntityID:  updated.Meta.ID,
+					Code:      common.ErrCodeEntityModified,
+					Message:   "entity has been modified since last read",
+					ItemIndex: i,
+				})
+				continue
+			}
+			_ = h.txMgr.Rollback(currentCtx, currentTxID)
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), saveErr)
 		}
 		entityIDs = append(entityIDs, updated.Meta.ID)
 	}
 
-	if err := h.txMgr.Commit(txCtx, txID); err != nil {
+	// Commit the final still-open TX. Equals the entry txID for
+	// non-segmenting batches; for batches with at least one segmenting
+	// cascade this is the post-segment TX (earlier segments already
+	// committed their TX_pre durably). When every item failed via per-item
+	// isolation, the commit is a zero-write commit but still validates the
+	// read-set and stamps a database timestamp; the txID it commits remains
+	// meaningful for audit correlation.
+	if err := h.txMgr.Commit(currentCtx, currentTxID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
 
-	return &EntityTransactionResult{
+	// Surface the cascade-entry txID for audit correlation (spec §8).
+	return &UpdateCollectionResult{
 		TransactionID: txID,
 		EntityIDs:     entityIDs,
+		Failed:        failed,
 	}, nil
 }
+
 
 // classifyError converts an error to an *common.AppError if it isn't already one.
 func classifyError(err error) *common.AppError {
@@ -1157,12 +1438,54 @@ func classifyError(err error) *common.AppError {
 }
 
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
-// error code. The transition-not-found case (ErrTransitionNotFound sentinel)
-// receives the specific TRANSITION_NOT_FOUND code; all other engine errors
-// fall back to the generic WORKFLOW_FAILED code.
+// error code:
+//
+//   - ErrCommitBeforeDispatchInfra (Begin/Commit/Save plugin failure inside
+//     the engine's segment-boundary code) → sanitized 5xx via common.Internal,
+//     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
+//   - ErrTransitionNotFound → 400 TRANSITION_NOT_FOUND (client-attributable).
+//   - Everything else (processor-domain failures, criterion mismatches, CAS
+//     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
+		return common.Internal("workflow segment boundary failed", err)
+	}
 	if errors.Is(err, wfengine.ErrTransitionNotFound) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+}
+
+// emitTransitionAborted writes a TRANSITION_ABORTED audit event for a
+// post-engine CompareAndSave conflict on the supplied entity. Routes
+// through the same audit-store handle the engine uses so the abort lands
+// in the same TX buffer as the entry-side audit events emitted earlier in
+// the cascade.
+//
+// transitionName may be "" for loopback updates — kept verbatim in the
+// event payload so downstream consumers can distinguish loopback aborts
+// from named-transition aborts. Best-effort: any failure to load the
+// audit store is logged at DEBUG and swallowed (an audit-emission failure
+// must not break the per-item-isolated commit path).
+func (h *Handler) emitTransitionAborted(
+	ctx context.Context,
+	entity *spi.Entity,
+	cascadeEntryTxID string,
+	transitionName string,
+	expectedTxID string,
+) {
+	auditStore, err := h.factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		slog.Debug("transition-aborted: audit store unavailable",
+			"pkg", "entity", "entityId", entity.Meta.ID, "error", err)
+		return
+	}
+	transitionForAudit := transitionName
+	if transitionForAudit == "" {
+		transitionForAudit = "loopback"
+	}
+	actualTxID := wfengine.LookupActualTxID(ctx, h.factory, entity.Meta.ID)
+	wfengine.EmitTransitionAborted(ctx, auditStore, h.uuids,
+		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
+		transitionForAudit, expectedTxID, actualTxID)
 }

@@ -75,8 +75,8 @@ github.com/cpuguy83/dockercfg v0.3.2 h1:DlJTyZGBDlXqUZ2Dk2Q3xHs/FtnooJJVaad2S9GK
 github.com/cpuguy83/dockercfg v0.3.2/go.mod h1:sugsbF4//dDlL/i+S+rtpIWp+5h0BHJHfjj5/jFyUJc=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
-github.com/cyoda-platform/cyoda-go-spi v0.6.1 h1:4rbecqHg8Q22tGcKAXdNgclBHTbiljpcOOufGV/xqjg=
-github.com/cyoda-platform/cyoda-go-spi v0.6.1/go.mod h1:zyjI4jQb4Jz3p52FXGqImxGZ3b81Nuxe+cfsIStK3EQ=
+github.com/cyoda-platform/cyoda-go-spi v0.7.0 h1:1N9j48ZXSX5x9V8th0V3knRZ+4Pt4e95B+nMnp+Pml8=
+github.com/cyoda-platform/cyoda-go-spi v0.7.0/go.mod h1:zyjI4jQb4Jz3p52FXGqImxGZ3b81Nuxe+cfsIStK3EQ=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=

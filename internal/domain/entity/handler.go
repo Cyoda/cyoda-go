@@ -266,6 +266,15 @@ func classifyValidateOrExtendErr(err error) *common.AppError {
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
+	// Resolve transactionWindow up-front so an out-of-range value rejects
+	// before we burn any I/O. Mirrors CreateCollection — see the array-body
+	// branch below for where the window is actually applied.
+	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+
 	// Read request body (with size limit)
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -274,7 +283,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 		return
 	}
 
-	// Detect JSON array body — delegate to collection create, one entity per element.
+	// Detect JSON array body — chunk via the same transactionWindow contract
+	// as POST /api/entity/{format} (CreateCollection). Issue #227 pass 3.
 	if string(format) == "JSON" && len(bodyBytes) > 0 && bodyBytes[0] == '[' {
 		var rawItems []json.RawMessage
 		if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
@@ -291,17 +301,27 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 			})
 		}
 
-		result, err := h.CreateEntityCollection(r.Context(), items)
-		if err != nil {
-			common.WriteError(w, r, classifyError(err))
+		// Empty array preserves the historical single-empty-call shape so the
+		// service-layer empty-collection contract is exercised (no chunks).
+		if len(items) == 0 {
+			result, err := h.CreateEntityCollection(r.Context(), items)
+			if err != nil {
+				common.WriteError(w, r, classifyError(err))
+				return
+			}
+			common.WriteJSON(w, http.StatusOK, []collectionChunkResult{{
+				TransactionID: result.TransactionID,
+				EntityIDs:     result.EntityIDs,
+			}})
 			return
 		}
 
-		resp := map[string]any{
-			"transactionId": result.TransactionID,
-			"entityIds":     result.EntityIDs,
+		results, firstChunkErr := h.runChunkedCreate(r.Context(), items, window)
+		if firstChunkErr != nil {
+			common.WriteError(w, r, firstChunkErr)
+			return
 		}
-		common.WriteJSON(w, http.StatusOK, []any{resp})
+		common.WriteJSON(w, http.StatusOK, results)
 		return
 	}
 
@@ -549,7 +569,139 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	common.WriteJSON(w, http.StatusOK, result)
 }
 
+// collectionDefaultWindow is the default batch cap applied when a client
+// does not pass `transactionWindow`. Matches what the docs have always
+// advertised (100). collectionMaxWindow is the hard upper bound the server
+// will accept from a client — larger values are rejected with 400 rather
+// than silently clamped, so misuse is visible.
+const (
+	collectionDefaultWindow = 100
+	collectionMaxWindow     = 1000
+)
+
+// resolveTransactionWindow returns the effective window for a collection
+// request. Returns 400 BAD_REQUEST when the client supplies a value
+// outside (0, collectionMaxWindow].
+func resolveTransactionWindow(window *int32) (int, *common.AppError) {
+	if window == nil {
+		return collectionDefaultWindow, nil
+	}
+	if *window <= 0 || *window > collectionMaxWindow {
+		return 0, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("transactionWindow must be in (0, %d]", collectionMaxWindow))
+	}
+	return int(*window), nil
+}
+
+// collectionChunkResult is one element of the collection-endpoint response
+// array. Successful chunks carry transactionId + entityIds. Failed chunks
+// carry the Error field with code/message and the chunk's index. Chunks with
+// per-item ENTITY_MODIFIED isolation (issue #228) carry transactionId +
+// entityIds for the successful items plus a Failed slice for the conflicted
+// items.
+//
+// Wire contract per the docs: a collection request committed in transactional
+// batches of at most `transactionWindow` items returns one element per chunk
+// in commit order; chunks committed before any failure remain durable, and
+// chunk-wide failures surface as an error element marking chunkIndex.
+// Issue #227, extended by #228.
+type collectionChunkResult struct {
+	TransactionID string `json:"transactionId,omitempty"`
+	// EntityIDs is intentionally NOT omitempty so the wire shape stays
+	// stable across "fully successful" and "all-stale per-item-isolated"
+	// chunks (issue #228). Construction sites must initialise this non-nil
+	// (e.g. `make([]string, 0)`) so json.Marshal emits `entityIds: []`
+	// rather than `null` for a chunk with zero successful items. This
+	// matches the documented contract in OpenAPI / cmd/cyoda/help/content/crud.md.
+	EntityIDs []string                     `json:"entityIds"`
+	Error     *collectionChunkError        `json:"error,omitempty"`
+	Failed    []collectionChunkItemFailure `json:"failed,omitempty"`
+}
+
+// collectionChunkError carries the per-chunk failure shape. ChunkIndex is
+// the zero-based position of the failing chunk in commit order so a client
+// can pinpoint where partial progress stopped.
+type collectionChunkError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	ChunkIndex int    `json:"chunkIndex"`
+}
+
+// collectionChunkItemFailure documents a single per-item failure that did NOT
+// roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
+// carrying an IfMatch precondition (issue #228). ItemIndex is the failing
+// item's zero-based position within its chunk's request slice.
+type collectionChunkItemFailure struct {
+	EntityID string                  `json:"entityId"`
+	Error    collectionChunkItemErr  `json:"error"`
+}
+
+// collectionChunkItemErr is the per-item failure inner object — code, message,
+// and per-chunk-relative item index.
+type collectionChunkItemErr struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	ItemIndex int    `json:"itemIndex"`
+}
+
+// runChunkedCreate splits items into chunks of size `window` and dispatches
+// each through CreateEntityCollection in commit order, collecting one
+// collectionChunkResult per chunk. Returns:
+//
+//   - (results, nil) — the full per-chunk result array. May contain an
+//     error element on a later-chunk failure (committed chunks before it
+//     are durable; subsequent chunks are NOT attempted).
+//   - (nil, appErr)  — the FIRST chunk failed, no durable progress was
+//     made; the caller writes the conventional 4xx error envelope.
+//
+// Caller must have already resolved `window` via resolveTransactionWindow.
+// Callers in this file guard `len(items) == 0` before invoking; the helper
+// itself does no empty-items handling (the loop emits zero elements when
+// items is empty, which would produce an empty success array — usually not
+// what the empty-batch contract intends; see CreateCollection). The helper
+// is internal-only and the empty-items guard is by convention.
+//
+// Single chunking primitive shared by CreateCollection (POST /entity/{format})
+// and Create (POST /entity/{format}/{entityName}/{modelVersion} array body).
+// Issue #227.
+func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, window int) ([]collectionChunkResult, *common.AppError) {
+	results := make([]collectionChunkResult, 0)
+	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
+		end := start + window
+		if end > len(items) {
+			end = len(items)
+		}
+		result, err := h.CreateEntityCollection(ctx, items[start:end])
+		if err != nil {
+			appErr := classifyError(err)
+			if chunkIdx == 0 {
+				return nil, appErr
+			}
+			results = append(results, collectionChunkResult{
+				EntityIDs: make([]string, 0),
+				Error: &collectionChunkError{
+					Code:       appErr.Code,
+					Message:    appErr.Message,
+					ChunkIndex: chunkIdx,
+				},
+			})
+			return results, nil
+		}
+		results = append(results, collectionChunkResult{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		})
+	}
+	return results, nil
+}
+
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, format genapi.CreateCollectionParamsFormat, params genapi.CreateCollectionParams) {
+	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+
 	// Read raw body and parse as JSON array (with size limit).
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -579,28 +731,28 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		})
 	}
 
-	result, err := h.CreateEntityCollection(r.Context(), items)
-	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+	// Empty body keeps the existing single-empty-call shape so we exercise
+	// any service-layer empty-collection contract (no chunks emitted).
+	if len(items) == 0 {
+		result, err := h.CreateEntityCollection(r.Context(), items)
+		if err != nil {
+			common.WriteError(w, r, classifyError(err))
+			return
+		}
+		common.WriteJSON(w, http.StatusOK, []collectionChunkResult{{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		}})
 		return
 	}
 
-	resp := map[string]any{
-		"transactionId": result.TransactionID,
-		"entityIds":     result.EntityIDs,
+	results, firstChunkErr := h.runChunkedCreate(r.Context(), items, window)
+	if firstChunkErr != nil {
+		common.WriteError(w, r, firstChunkErr)
+		return
 	}
-	common.WriteJSON(w, http.StatusOK, []any{resp})
+	common.WriteJSON(w, http.StatusOK, results)
 }
-
-// updateCollectionDefaultWindow is the default batch cap applied when a
-// client does not pass `transactionWindow`. Matches what the docs have
-// historically advertised (100). updateCollectionMaxWindow is the hard
-// upper bound the server will accept from a client — larger values are
-// rejected with 400 rather than silently clamped, so misuse is visible.
-const (
-	updateCollectionDefaultWindow = 100
-	updateCollectionMaxWindow     = 1000
-)
 
 func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, format genapi.UpdateCollectionParamsFormat, params genapi.UpdateCollectionParams) {
 	// Only JSON is wired up today — parity with CreateCollection, which
@@ -612,15 +764,10 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	// Resolve transactionWindow: honor the client value when specified,
-	// otherwise use the documented default. Reject clearly-bad values.
-	window := int32(updateCollectionDefaultWindow)
-	if params.TransactionWindow != nil {
-		if *params.TransactionWindow <= 0 || *params.TransactionWindow > updateCollectionMaxWindow {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("transactionWindow must be in (0, %d]", updateCollectionMaxWindow)))
-			return
-		}
-		window = *params.TransactionWindow
+	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
@@ -631,19 +778,16 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 	}
 
 	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
-	// Match CreateCollection's wire contract exactly.
+	// Match CreateCollection's wire contract exactly. Optional per-item
+	// `ifMatch` carries the cross-request precondition (issue #228).
 	var rawItems []struct {
 		ID         string `json:"id"`
 		Payload    string `json:"payload"`
 		Transition string `json:"transition"`
+		IfMatch    string `json:"ifMatch"`
 	}
 	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array (payload must be a JSON-encoded string)"))
-		return
-	}
-
-	if int32(len(rawItems)) > window {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("collection size %d exceeds transactionWindow %d", len(rawItems), window)))
 		return
 	}
 
@@ -653,20 +797,68 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 			EntityID:   raw.ID,
 			Payload:    json.RawMessage(raw.Payload),
 			Transition: raw.Transition,
+			IfMatch:    raw.IfMatch,
 		})
 	}
 
-	result, err := h.UpdateEntityCollection(r.Context(), items)
-	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+	// Empty body: defer to the service layer's empty-batch contract
+	// (it returns 400 BAD_REQUEST, see UpdateEntityCollection).
+	if len(items) == 0 {
+		_, err := h.UpdateEntityCollection(r.Context(), items)
+		if err != nil {
+			common.WriteError(w, r, classifyError(err))
+			return
+		}
+		// Service-layer contract precludes nil-error empty result, but be
+		// defensive — emit empty array rather than nil.
+		common.WriteJSON(w, http.StatusOK, []collectionChunkResult{})
 		return
 	}
 
-	resp := map[string]any{
-		"transactionId": result.TransactionID,
-		"entityIds":     result.EntityIDs,
+	results := make([]collectionChunkResult, 0)
+	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
+		end := start + window
+		if end > len(items) {
+			end = len(items)
+		}
+		result, err := h.UpdateEntityCollection(r.Context(), items[start:end])
+		if err != nil {
+			appErr := classifyError(err)
+			if chunkIdx == 0 {
+				common.WriteError(w, r, appErr)
+				return
+			}
+			results = append(results, collectionChunkResult{
+				EntityIDs: make([]string, 0),
+				Error: &collectionChunkError{
+					Code:       appErr.Code,
+					Message:    appErr.Message,
+					ChunkIndex: chunkIdx,
+				},
+			})
+			common.WriteJSON(w, http.StatusOK, results)
+			return
+		}
+		entry := collectionChunkResult{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		}
+		if len(result.Failed) > 0 {
+			entry.Failed = make([]collectionChunkItemFailure, 0, len(result.Failed))
+			for _, f := range result.Failed {
+				entry.Failed = append(entry.Failed, collectionChunkItemFailure{
+					EntityID: f.EntityID,
+					Error: collectionChunkItemErr{
+						Code:      f.Code,
+						Message:   f.Message,
+						ItemIndex: f.ItemIndex,
+					},
+				})
+			}
+		}
+		results = append(results, entry)
 	}
-	common.WriteJSON(w, http.StatusOK, []any{resp})
+	common.WriteJSON(w, http.StatusOK, results)
 }
 
 func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.UpdateSingleWithLoopbackParams) {

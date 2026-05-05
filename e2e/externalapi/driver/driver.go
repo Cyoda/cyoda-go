@@ -118,25 +118,76 @@ func (d *Driver) CreateEntityRaw(name string, version int, body string) (int, []
 // CreateEntitiesCollection issues POST /api/entity/JSON with a
 // heterogeneous body.
 func (d *Driver) CreateEntitiesCollection(items []CollectionItem) ([]uuid.UUID, error) {
+	return d.CreateEntitiesCollectionWithWindow(items, 0)
+}
+
+// CreateEntitiesCollectionWithWindow issues POST /api/entity/JSON with the
+// given items and an optional `transactionWindow` query parameter.
+// window <= 0 omits the parameter (server uses its default). Used by
+// parity scenarios that exercise the chunking contract from issue #227.
+func (d *Driver) CreateEntitiesCollectionWithWindow(items []CollectionItem, window int) ([]uuid.UUID, error) {
 	converted := make([]parityclient.CollectionItem, 0, len(items))
 	for _, it := range items {
 		converted = append(converted, parityclient.CollectionItem{
 			ModelName: it.ModelName, ModelVersion: it.ModelVersion, Payload: it.Payload,
 		})
 	}
-	return d.client.CreateEntitiesCollection(d.t, converted)
+	return d.client.CreateEntitiesCollectionWithWindow(d.t, converted, window)
+}
+
+// CreateEntitiesCollectionRawWithWindow issues POST /api/entity/JSON with
+// the given items and optional `transactionWindow` query parameter,
+// returning the raw response body. Used by chunking parity scenarios
+// that need to inspect the per-chunk array (transactionId, entityIds).
+func (d *Driver) CreateEntitiesCollectionRawWithWindow(items []CollectionItem, window int) ([]byte, error) {
+	converted := make([]parityclient.CollectionItem, 0, len(items))
+	for _, it := range items {
+		converted = append(converted, parityclient.CollectionItem{
+			ModelName: it.ModelName, ModelVersion: it.ModelVersion, Payload: it.Payload,
+		})
+	}
+	return d.client.CreateEntitiesCollectionRawWithWindow(d.t, converted, window)
 }
 
 // UpdateEntitiesCollection issues PUT /api/entity/JSON with a
 // {id, payload, transition} batch. Returns the raw response body.
 func (d *Driver) UpdateEntitiesCollection(items []UpdateCollectionItem) ([]byte, error) {
+	return d.UpdateEntitiesCollectionWithWindow(items, 0)
+}
+
+// UpdateEntitiesCollectionWithWindow issues PUT /api/entity/JSON with the
+// given items and an optional `transactionWindow` query parameter,
+// returning the raw response body. Items may carry per-item IfMatch
+// preconditions (issue #228). window <= 0 omits the query parameter.
+func (d *Driver) UpdateEntitiesCollectionWithWindow(items []UpdateCollectionItem, window int) ([]byte, error) {
+	converted := convertUpdateCollectionItems(items)
+	return d.client.UpdateCollectionWithWindow(d.t, converted, window)
+}
+
+// UpdateEntitiesCollectionRawWithWindow is the negative-path companion to
+// UpdateEntitiesCollectionWithWindow: it returns (status, body, error)
+// without raising on non-2xx. Used by parity scenarios that pin the
+// chunk-rollback contract (e.g. an invalid transition aborts chunk 0
+// with a 4xx error envelope).
+func (d *Driver) UpdateEntitiesCollectionRawWithWindow(items []UpdateCollectionItem, window int) (int, []byte, error) {
+	converted := convertUpdateCollectionItems(items)
+	return d.client.UpdateCollectionRawWithWindow(d.t, converted, window)
+}
+
+// convertUpdateCollectionItems is a private helper that converts driver
+// UpdateCollectionItem to the parity-client form, threading IfMatch
+// through.
+func convertUpdateCollectionItems(items []UpdateCollectionItem) []parityclient.UpdateCollectionItem {
 	converted := make([]parityclient.UpdateCollectionItem, 0, len(items))
 	for _, it := range items {
 		converted = append(converted, parityclient.UpdateCollectionItem{
-			ID: it.ID, Payload: it.Payload, Transition: it.Transition,
+			ID:         it.ID,
+			Payload:    it.Payload,
+			Transition: it.Transition,
+			IfMatch:    it.IfMatch,
 		})
 	}
-	return d.client.UpdateCollection(d.t, converted)
+	return converted
 }
 
 // DeleteEntity issues DELETE /api/entity/{id}.
@@ -243,6 +294,15 @@ func (d *Driver) UpdateEntityData(id uuid.UUID, body string) error {
 	return d.client.UpdateEntityData(d.t, id, body)
 }
 
+// UpdateEntityDataWithIfMatchRaw issues PUT /api/entity/JSON/{entityId}
+// (loopback) with an If-Match HTTP header carrying the supplied
+// ifMatch token. Returns (status, body, transport-err) without
+// raising on non-2xx — used by parity scenarios that pin the
+// stale-ifMatch single-PUT contract from issue #228.
+func (d *Driver) UpdateEntityDataWithIfMatchRaw(id uuid.UUID, body, ifMatch string) (int, []byte, error) {
+	return d.client.UpdateEntityDataWithIfMatchRaw(d.t, id, body, ifMatch)
+}
+
 // GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<ISO8601>.
 // YAML action: get_entity (with pointInTime).
 func (d *Driver) GetEntityAt(id uuid.UUID, pointInTime time.Time) (parityclient.EntityResult, error) {
@@ -273,6 +333,14 @@ func (d *Driver) GetEntityByTransactionIDRaw(id uuid.UUID, txID string) (int, []
 // YAML action: get_entity_changes.
 func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta, error) {
 	return d.client.GetEntityChanges(d.t, id)
+}
+
+// GetAuditEvents issues GET /api/audit/entity/{entityId} and returns
+// the parsed audit-event response. Used by parity scenarios that pin
+// the audit-trail shape (e.g. TRANSITION_ABORTED pairing for issue
+// #228).
+func (d *Driver) GetAuditEvents(id uuid.UUID) (parityclient.EntityAuditEventsResponse, error) {
+	return d.client.GetAuditEvents(d.t, id)
 }
 
 // GetEntityChangesAt issues GET /api/entity/{entityId}/changes?pointInTime=<ISO8601>.
@@ -392,9 +460,11 @@ type CollectionItem struct {
 }
 
 // UpdateCollectionItem mirrors parityclient.UpdateCollectionItem for the
-// same reason.
+// same reason. IfMatch is the optional per-item optimistic-concurrency
+// precondition from issue #228; an empty string omits the precondition.
 type UpdateCollectionItem struct {
 	ID         uuid.UUID
 	Payload    string
 	Transition string
+	IfMatch    string
 }
