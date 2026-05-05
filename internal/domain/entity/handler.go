@@ -549,7 +549,60 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	common.WriteJSON(w, http.StatusOK, result)
 }
 
+// collectionDefaultWindow is the default batch cap applied when a client
+// does not pass `transactionWindow`. Matches what the docs have always
+// advertised (100). collectionMaxWindow is the hard upper bound the server
+// will accept from a client — larger values are rejected with 400 rather
+// than silently clamped, so misuse is visible.
+const (
+	collectionDefaultWindow = 100
+	collectionMaxWindow     = 1000
+)
+
+// resolveTransactionWindow returns the effective window for a collection
+// request. Returns 400 BAD_REQUEST when the client supplies a value
+// outside (0, collectionMaxWindow].
+func resolveTransactionWindow(window *int32) (int, *common.AppError) {
+	if window == nil {
+		return collectionDefaultWindow, nil
+	}
+	if *window <= 0 || *window > collectionMaxWindow {
+		return 0, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("transactionWindow must be in (0, %d]", collectionMaxWindow))
+	}
+	return int(*window), nil
+}
+
+// collectionChunkResult is one element of the collection-endpoint response
+// array. Successful chunks carry transactionId + entityIds. Failed chunks
+// carry the Error field with code/message and the chunk's index.
+//
+// Wire contract per the docs: a collection request committed in transactional
+// batches of at most `transactionWindow` items returns one element per chunk
+// in commit order; chunks committed before any failure remain durable, and
+// the failure surfaces as an error element marking chunkIndex. Issue #227.
+type collectionChunkResult struct {
+	TransactionID string                 `json:"transactionId,omitempty"`
+	EntityIDs     []string               `json:"entityIds,omitempty"`
+	Error         *collectionChunkError  `json:"error,omitempty"`
+}
+
+// collectionChunkError carries the per-chunk failure shape. ChunkIndex is
+// the zero-based position of the failing chunk in commit order so a client
+// can pinpoint where partial progress stopped.
+type collectionChunkError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	ChunkIndex int    `json:"chunkIndex"`
+}
+
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, format genapi.CreateCollectionParamsFormat, params genapi.CreateCollectionParams) {
+	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+
 	// Read raw body and parse as JSON array (with size limit).
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -579,28 +632,58 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		})
 	}
 
-	result, err := h.CreateEntityCollection(r.Context(), items)
-	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+	// Empty body keeps the existing single-empty-call shape so we exercise
+	// any service-layer empty-collection contract (no chunks emitted).
+	if len(items) == 0 {
+		result, err := h.CreateEntityCollection(r.Context(), items)
+		if err != nil {
+			common.WriteError(w, r, classifyError(err))
+			return
+		}
+		common.WriteJSON(w, http.StatusOK, []collectionChunkResult{{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		}})
 		return
 	}
 
-	resp := map[string]any{
-		"transactionId": result.TransactionID,
-		"entityIds":     result.EntityIDs,
+	results := make([]collectionChunkResult, 0)
+	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
+		end := start + window
+		if end > len(items) {
+			end = len(items)
+		}
+		result, err := h.CreateEntityCollection(r.Context(), items[start:end])
+		if err != nil {
+			appErr := classifyError(err)
+			// First chunk failed → no durable progress; preserve historical
+			// 4xx error envelope so existing clients keep getting structured
+			// errors when they pass an entirely-bad batch.
+			if chunkIdx == 0 {
+				common.WriteError(w, r, appErr)
+				return
+			}
+			// Later chunk failed → earlier chunks are committed and durable.
+			// Emit the per-chunk array with an error element marking the
+			// failed chunk's index. Stop iterating; later chunks are not
+			// attempted.
+			results = append(results, collectionChunkResult{
+				Error: &collectionChunkError{
+					Code:       appErr.Code,
+					Message:    appErr.Message,
+					ChunkIndex: chunkIdx,
+				},
+			})
+			common.WriteJSON(w, http.StatusOK, results)
+			return
+		}
+		results = append(results, collectionChunkResult{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		})
 	}
-	common.WriteJSON(w, http.StatusOK, []any{resp})
+	common.WriteJSON(w, http.StatusOK, results)
 }
-
-// updateCollectionDefaultWindow is the default batch cap applied when a
-// client does not pass `transactionWindow`. Matches what the docs have
-// historically advertised (100). updateCollectionMaxWindow is the hard
-// upper bound the server will accept from a client — larger values are
-// rejected with 400 rather than silently clamped, so misuse is visible.
-const (
-	updateCollectionDefaultWindow = 100
-	updateCollectionMaxWindow     = 1000
-)
 
 func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, format genapi.UpdateCollectionParamsFormat, params genapi.UpdateCollectionParams) {
 	// Only JSON is wired up today — parity with CreateCollection, which
@@ -612,15 +695,10 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	// Resolve transactionWindow: honor the client value when specified,
-	// otherwise use the documented default. Reject clearly-bad values.
-	window := int32(updateCollectionDefaultWindow)
-	if params.TransactionWindow != nil {
-		if *params.TransactionWindow <= 0 || *params.TransactionWindow > updateCollectionMaxWindow {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("transactionWindow must be in (0, %d]", updateCollectionMaxWindow)))
-			return
-		}
-		window = *params.TransactionWindow
+	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
@@ -642,11 +720,6 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	if int32(len(rawItems)) > window {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("collection size %d exceeds transactionWindow %d", len(rawItems), window)))
-		return
-	}
-
 	items := make([]UpdateCollectionItem, 0, len(rawItems))
 	for _, raw := range rawItems {
 		items = append(items, UpdateCollectionItem{
@@ -656,17 +729,49 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		})
 	}
 
-	result, err := h.UpdateEntityCollection(r.Context(), items)
-	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+	// Empty body: defer to the service layer's empty-batch contract
+	// (it returns 400 BAD_REQUEST, see UpdateEntityCollection).
+	if len(items) == 0 {
+		_, err := h.UpdateEntityCollection(r.Context(), items)
+		if err != nil {
+			common.WriteError(w, r, classifyError(err))
+			return
+		}
+		// Service-layer contract precludes nil-error empty result, but be
+		// defensive — emit empty array rather than nil.
+		common.WriteJSON(w, http.StatusOK, []collectionChunkResult{})
 		return
 	}
 
-	resp := map[string]any{
-		"transactionId": result.TransactionID,
-		"entityIds":     result.EntityIDs,
+	results := make([]collectionChunkResult, 0)
+	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
+		end := start + window
+		if end > len(items) {
+			end = len(items)
+		}
+		result, err := h.UpdateEntityCollection(r.Context(), items[start:end])
+		if err != nil {
+			appErr := classifyError(err)
+			if chunkIdx == 0 {
+				common.WriteError(w, r, appErr)
+				return
+			}
+			results = append(results, collectionChunkResult{
+				Error: &collectionChunkError{
+					Code:       appErr.Code,
+					Message:    appErr.Message,
+					ChunkIndex: chunkIdx,
+				},
+			})
+			common.WriteJSON(w, http.StatusOK, results)
+			return
+		}
+		results = append(results, collectionChunkResult{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		})
 	}
-	common.WriteJSON(w, http.StatusOK, []any{resp})
+	common.WriteJSON(w, http.StatusOK, results)
 }
 
 func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.UpdateSingleWithLoopbackParams) {
