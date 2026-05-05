@@ -7647,6 +7647,12 @@ components:
         empty, `failed` lists every item, and `transactionId` remains
         meaningful for audit correlation. Issue #228.
 
+        Per-item ENTITY_MODIFIED conflicts surface inside the `200`
+        response body via the `failed[]` array, not as a `4xx` envelope.
+        Inspect `failed[]` to detect them. The `4xx` envelope is reserved
+        for chunk-wide infrastructure failures (malformed JSON, missing
+        entity, validation failure, non-conflict engine error).
+
         `entityIds` contains UUID strings (server is source of truth — the
         server emits []string, not []object).
       properties:
@@ -9548,7 +9554,15 @@ components:
                 machine
             eventType:
               type: string
-              description: Type of the state machine event
+              description: |
+                Type of the state machine event. `TRANSITION_ABORTED` is
+                a cyoda-go extension (#228 reviewer S1) emitted as a
+                compensating event when an in-flight transition is
+                rejected by a stale `ifMatch` precondition; its `data`
+                payload carries `{reason: "ENTITY_MODIFIED",
+                transitionName, expectedTxId, actualTxId}` so consumers
+                can pair the entry-side `STATE_MACHINE_START` with a
+                terminal abort event in the audit log.
               enum:
                 - STATE_MACHINE_START
                 - STATE_MACHINE_FINISH
@@ -9560,6 +9574,7 @@ components:
                 - TRANSITION_MAKE
                 - TRANSITION_NOT_FOUND
                 - TRANSITION_NOT_MATCH_CRITERION
+                - TRANSITION_ABORTED
                 - PROCESS_NOT_MATCH_CRITERION
                 - PAUSE_FOR_PROCESSING
                 - STATE_PROCESS_RESULT

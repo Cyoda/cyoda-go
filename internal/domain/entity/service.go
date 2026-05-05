@@ -1103,6 +1103,11 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	// committed; the engine's first-segment flush already applied the
 	// caller's IfMatch. For non-segmenting cascades (FinalTxID == txID) the
 	// handler still owns the IfMatch precondition.
+	//
+	// TODO(#228 N1): a future engine-surface improvement should expose
+	// engineResult.Segmented bool so this comparison-vs-entry-txID
+	// convention is centralised at the engine surface, not duplicated
+	// across handlers (mirrored in UpdateEntityCollection's per-item loop).
 	segmented := finalTxID != txID
 
 	if input.IfMatch != "" && !segmented {
@@ -1350,6 +1355,11 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// the precondition — apply it via CompareAndSave below. Mirrors the
 		// single-UpdateEntity routing post-#27. Capture BEFORE advancing
 		// currentCtx/currentTxID below.
+		//
+		// TODO(#228 N1): a future engine-surface improvement should expose
+		// engineResult.Segmented bool so this comparison-vs-entry-txID
+		// convention is centralised at the engine surface, not duplicated
+		// across handlers (mirrored in single UpdateEntity above).
 		segmented := engineResult.FinalTxID != currentTxID
 
 		// Advance the loop's TX to whichever segment is now open. For
