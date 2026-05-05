@@ -2251,3 +2251,130 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 }
+
+// TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict drives the
+// COMMIT_BEFORE_DISPATCH execution branch (startNewTxOnDispatch=false) and
+// simulates a concurrent writer that commits a competing modification to the
+// cascade-anchor entity between the cascade's TX_pre.Commit and the engine's
+// CompareAndSave (in TX_post). The engine's CAS — which expects the durable
+// entity's TransactionID to still match TX_pre — must fail and surface
+// spi.ErrConflict unwrapped (errors.Is matches). The interloper's write must
+// be the durable state because TX_post is rolled back.
+func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-cas-conflict", ModelVersion: "1.0"}
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(_ context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			// Competing transaction from a fresh root context (no tx token in
+			// ctx). This commits a write between TX_pre.Commit and TX_post's
+			// CAS, which advances the durable entity's TransactionID off TX_pre
+			// and forces CompareAndSave(expected=TX_pre) to fail.
+			interloperCtx := ctxWithTenant(testTenant)
+			itxID, ictx, err := txMgr.Begin(interloperCtx)
+			if err != nil {
+				return nil, fmt.Errorf("interloper Begin: %w", err)
+			}
+			ies, err := factory.EntityStore(ictx)
+			if err != nil {
+				return nil, fmt.Errorf("interloper EntityStore: %w", err)
+			}
+			cur, err := ies.Get(ictx, entity.Meta.ID)
+			if err != nil {
+				_ = txMgr.Rollback(ictx, itxID)
+				return nil, fmt.Errorf("interloper Get: %w", err)
+			}
+			cur.Data = []byte(`{"interloper":true}`)
+			if _, err := ies.Save(ictx, cur); err != nil {
+				_ = txMgr.Rollback(ictx, itxID)
+				return nil, fmt.Errorf("interloper Save: %w", err)
+			}
+			if err := txMgr.Commit(ictx, itxID); err != nil {
+				return nil, fmt.Errorf("interloper Commit: %w", err)
+			}
+
+			// Cascade's intended result. The engine will attempt to apply this
+			// via CompareAndSave against TX_pre, which will now fail.
+			modified, _ := json.Marshal(map[string]any{"cascade": true})
+			return &spi.Entity{Data: modified}, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdCASConflictWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{
+				{Name: "CALLOUT", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	// Cascade-entry transaction (TX_pre). The engine commits this during the
+	// CBD branch and opens its own TX_post for the apply-result CAS.
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-cas-conflict-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: txID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	_, err = engine.Execute(txCtx, entity, "")
+	if err == nil {
+		t.Fatalf("expected ErrConflict from CompareAndSave, got nil")
+	}
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("expected errors.Is(err, spi.ErrConflict), got: %v", err)
+	}
+
+	// TX_pre was already committed by the engine before dispatch; TX_post was
+	// rolled back by executeCommitBeforeDispatch on CAS failure. A best-effort
+	// rollback of the test's original token is a no-op (no such tx).
+	_ = txMgr.Rollback(txCtx, txID)
+
+	// Independent reader: durable state must be the interloper's write — the
+	// cascade's CAS failed and TX_post rolled back, so {"cascade":true} never
+	// became durable.
+	rTxID, rCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (final read): %v", err)
+	}
+	defer func() { _ = txMgr.Rollback(rCtx, rTxID) }()
+	es, err := factory.EntityStore(rCtx)
+	if err != nil {
+		t.Fatalf("EntityStore (final read): %v", err)
+	}
+	got, err := es.Get(rCtx, "cbd-cas-conflict-1")
+	if err != nil {
+		t.Fatalf("final Get: %v", err)
+	}
+	var finalData map[string]any
+	if jErr := json.Unmarshal(got.Data, &finalData); jErr != nil {
+		t.Fatalf("unmarshal final data: %v", jErr)
+	}
+	if finalData["interloper"] != true {
+		t.Errorf("durable data = %s, want interloper's write {\"interloper\":true}", got.Data)
+	}
+	if finalData["cascade"] == true {
+		t.Errorf("durable data unexpectedly contains cascade's intended mutation: %s", got.Data)
+	}
+}
