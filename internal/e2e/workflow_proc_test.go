@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -426,6 +428,100 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 	}
 	if v, _ := data["enrichedAmount"].(float64); v != 999.0 {
 		t.Errorf("expected enrichedAmount=999, got %v", data["enrichedAmount"])
+	}
+}
+
+// --- Test: PUT /entity/{id}/{transition} with stale If-Match aborts CBD cascade BEFORE dispatch (issue #27, Task 15) ---
+
+// TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch is the e2e
+// counterpart to engine_ifmatch_test.go's
+// TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch.
+//
+// Spec §4.1 "strictly-earlier-enforcement": when an UpdateEntity carries an
+// If-Match precondition and the cascade contains a COMMIT_BEFORE_DISPATCH
+// processor, a stale If-Match must abort the cascade BEFORE any external
+// dispatch fires — i.e. the precondition is enforced at the first segment's
+// flush, strictly earlier than the dispatch boundary.
+//
+// Test contract: a PUT update carrying a deliberately stale If-Match header
+// must (a) return 412 PreconditionFailed with ENTITY_MODIFIED, (b) leave the
+// CBD processor's external dispatch counter at zero, and (c) leave the
+// entity's state unchanged on a fresh GET (no commit of TX_pre, no advance
+// to APPROVED).
+func TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch(t *testing.T) {
+	const model = "e2e-wfproc-cbd-ifmatch-stale"
+
+	var dispatchCount atomic.Int32
+	procSvc.RegisterProcessor("cbd-enrich-counted", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
+		dispatchCount.Add(1)
+		var data map[string]any
+		json.Unmarshal(entity.Data, &data)
+		data["enriched"] = true
+		updated, _ := json.Marshal(data)
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
+	})
+	defer procSvc.Reset()
+
+	// Workflow mirrors the Task-13 happy-path test: NONE -init-> PENDING
+	// -approve-> APPROVED, with the manual approve transition's processor in
+	// COMMIT_BEFORE_DISPATCH mode.
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "cbd-ifmatch-stale-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
+				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
+					"processors": [{"type": "calculator", "name": "cbd-enrich-counted",
+						"executionMode": "COMMIT_BEFORE_DISPATCH",
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
+				}]},
+				"APPROVED": {}
+			}
+		}]
+	}`
+	setupModelWithWorkflow(t, model, wf)
+
+	// Create — lands in PENDING via the automated init.
+	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
+	if state := getEntityState(t, entityID); state != "PENDING" {
+		t.Fatalf("post-create state = %q; want PENDING", state)
+	}
+
+	// PUT approve with deliberately stale If-Match — must surface 412 and
+	// must NOT trigger the CBD external dispatch.
+	const staleIfMatch = "00000000-0000-0000-0000-000000000000"
+	path := fmt.Sprintf("/api/entity/JSON/%s/approve", entityID)
+	req := authRequest(t, http.MethodPut, path, strings.NewReader(`{"name":"Test","amount":100,"status":"approved"}`))
+	req.Header.Set("If-Match", staleIfMatch)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT approve with stale If-Match failed: %v", err)
+	}
+	body := readBody(t, resp)
+
+	// (a) 412 PreconditionFailed with ENTITY_MODIFIED.
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want %d (PreconditionFailed); body=%s",
+			resp.StatusCode, http.StatusPreconditionFailed, body)
+	}
+	if !strings.Contains(body, "ENTITY_MODIFIED") {
+		t.Errorf("body missing ENTITY_MODIFIED error code: %s", body)
+	}
+
+	// (b) Strictly-earlier-enforcement: the dispatch must NOT have fired.
+	if c := dispatchCount.Load(); c != 0 {
+		t.Errorf("CBD dispatch fired %d time(s) despite stale If-Match — spec §4.1 strictly-earlier-enforcement violated", c)
+	}
+
+	// (c) The entity must be unchanged: still PENDING (TX_pre not committed,
+	// cascade did not advance), and not enriched.
+	if state := getEntityState(t, entityID); state != "PENDING" {
+		t.Errorf("post-failure state = %q; want PENDING (cascade should have aborted before any commit)", state)
+	}
+	data := getEntityData(t, entityID, "")
+	if data["enriched"] == true {
+		t.Errorf("entity data shows enriched=true; processor must not have run on stale-If-Match abort")
 	}
 }
 
