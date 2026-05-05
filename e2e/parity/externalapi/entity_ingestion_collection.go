@@ -1,6 +1,7 @@
 package externalapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -135,13 +136,16 @@ func RunExternalAPI_04_02_UpdateCollectionAge(t *testing.T, fixture parity.Backe
 }
 
 // RunExternalAPI_04_04_TransactionWindow — dictionary 04/04.
-// Register txwin/1, lock, create N=5 entities via CreateEntitiesCollection.
-// Verify ID count = 5 and ListEntitiesByModel("txwin", 1) returns 5.
+// Pins the documented `transactionWindow` chunking contract from issue
+// #227 against every backend: a POST of N items with a client-supplied
+// window=W produces ceil(N/W) chunk elements, each with a non-empty
+// transactionId and a `entityIds` slice of the right length, and the
+// entities are subsequently retrievable via ListEntitiesByModel.
 //
-// The YAML scenario tests transactionWindow splitting a large POST into
-// multiple transactions. N=5 is well below the default window so this
-// scenario is effectively a count-consistency check confirming all
-// entities land correctly in a single collection POST.
+// Concretely: window=3 with N=7 must produce three chunks of size 3, 3,
+// and 1. The window-supplied form is what makes this an actual chunking
+// exercise (the default window of 100 would otherwise collapse to a
+// single chunk and the test would only verify aggregate count).
 func RunExternalAPI_04_04_TransactionWindow(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -153,7 +157,10 @@ func RunExternalAPI_04_04_TransactionWindow(t *testing.T, fixture parity.Backend
 		t.Fatalf("LockModel txwin: %v", err)
 	}
 
-	const N = 5
+	const (
+		N      = 7
+		Window = 3
+	)
 	items := make([]driver.CollectionItem, 0, N)
 	for i := 0; i < N; i++ {
 		items = append(items, driver.CollectionItem{
@@ -163,19 +170,49 @@ func RunExternalAPI_04_04_TransactionWindow(t *testing.T, fixture parity.Backend
 		})
 	}
 
-	ids, err := d.CreateEntitiesCollection(items)
+	rawBody, err := d.CreateEntitiesCollectionRawWithWindow(items, Window)
 	if err != nil {
-		t.Fatalf("CreateEntitiesCollection: %v", err)
-	}
-	if len(ids) != N {
-		t.Errorf("ids count: got %d, want %d", len(ids), N)
+		t.Fatalf("CreateEntitiesCollectionRawWithWindow: %v", err)
 	}
 
+	// Per-chunk response array. Three chunks expected: 3 + 3 + 1 = 7.
+	type chunkInfo struct {
+		TransactionID string   `json:"transactionId"`
+		EntityIDs     []string `json:"entityIds"`
+	}
+	var chunks []chunkInfo
+	if err := json.Unmarshal(rawBody, &chunks); err != nil {
+		t.Fatalf("decode chunked response: %v; body=%s", err, rawBody)
+	}
+
+	expectedSizes := []int{3, 3, 1}
+	if len(chunks) != len(expectedSizes) {
+		t.Fatalf("chunk count: got %d, want %d (window=%d, N=%d); body=%s",
+			len(chunks), len(expectedSizes), Window, N, rawBody)
+	}
+
+	totalIDs := 0
+	for i, ch := range chunks {
+		if ch.TransactionID == "" {
+			t.Errorf("chunk[%d].transactionId is empty; body=%s", i, rawBody)
+		}
+		if len(ch.EntityIDs) != expectedSizes[i] {
+			t.Errorf("chunk[%d].entityIds: got %d, want %d; body=%s",
+				i, len(ch.EntityIDs), expectedSizes[i], rawBody)
+		}
+		totalIDs += len(ch.EntityIDs)
+	}
+	if totalIDs != N {
+		t.Errorf("total entityIds across chunks: got %d, want %d; body=%s",
+			totalIDs, N, rawBody)
+	}
+
+	// All N entities must be readable via ListEntitiesByModel.
 	list, err := d.ListEntitiesByModel("txwin", 1)
 	if err != nil {
 		t.Fatalf("ListEntitiesByModel: %v", err)
 	}
 	if len(list) != N {
-		t.Errorf("list after create: got %d, want %d", len(list), N)
+		t.Errorf("list after chunked create: got %d, want %d", len(list), N)
 	}
 }
