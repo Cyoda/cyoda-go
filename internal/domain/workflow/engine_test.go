@@ -1965,15 +1965,20 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	var dispatchCtxHasTx bool
+	var dispatchCtxTxID string
 	var dispatchTxToken string
 	var preEntityVisible bool
 
 	mock := &mockExternalProcessing{
 		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
-			// Capture the tx state seen by the processor.
+			// Capture the tx state seen by the processor:
+			//   - dispatchCtxHasTx / dispatchCtxTxID: from the ctx (spi.GetTransaction)
+			//   - dispatchTxToken:                   from the gRPC-arg txID
+			// In the false branch both must be empty/false; in the =true branch
+			// (Task 8 reuses this fixture) both must be non-empty AND agree.
 			if state := spi.GetTransaction(ctx); state != nil {
 				dispatchCtxHasTx = true
-				dispatchTxToken = state.ID
+				dispatchCtxTxID = state.ID
 			}
 			dispatchTxToken = txID
 
@@ -2047,7 +2052,7 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 	// Processor must have been dispatched with NO transaction in ctx and
 	// NO tx token (false branch).
 	if dispatchCtxHasTx {
-		t.Errorf("expected processor ctx to have no tx, but found one")
+		t.Errorf("expected processor ctx to have no tx, but found one (id=%q)", dispatchCtxTxID)
 	}
 	if dispatchTxToken != "" {
 		t.Errorf("expected processor txID token to be empty, got %q", dispatchTxToken)
