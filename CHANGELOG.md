@@ -4,6 +4,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **`PUT /api/entity/{format}` items now accept an optional `ifMatch` field** ([#228](https://github.com/Cyoda-platform/cyoda-go/issues/228)) — the same cross-request optimistic-concurrency precondition that the single-item PUT endpoints already supported via the `If-Match` header, scoped per item on the bulk-update endpoint. Routing mirrors single `UpdateEntity`'s post-#27 flow: for `COMMIT_BEFORE_DISPATCH` cascades the engine consumes the precondition at the first segment-flush (spec §4.1, before any external dispatch fires); for non-segmenting cascades the handler applies `CompareAndSave` post-engine. Per-item `ENTITY_MODIFIED` conflicts are isolated to a new optional per-chunk `failed[]` array — the chunk still commits its remaining successful items rather than rolling everything back. Other per-item failures (missing entity, validation, non-conflict engine errors) continue to roll the chunk back, matching the pre-#228 #92 contract. When every item in a chunk fails its precondition, the chunk still commits as a zero-write transaction so the surfaced `transactionId` remains meaningful for audit correlation. Wire-format additions on `EntityTransactionResponse`: optional `failed[]` with `{entityId, error: {code, message, itemIndex}}`. `failed` uses JSON `omitempty` — fully-successful chunks keep the pre-#228 shape unchanged. `itemIndex` is per-chunk relative.
+
 ## [0.7.0] — 2026-05-04
 
 This release reconciles the OpenAPI spec with the actual server (#21,
