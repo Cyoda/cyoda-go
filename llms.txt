@@ -1,0 +1,166 @@
+# cyoda-go
+
+> A lightweight, multi-node Go digital twin of the Cyoda platform. Goal: API and behavioral fidelity with Cyoda Cloud. Single binary, no heavy JVM stack.
+
+cyoda-go exposes a REST + gRPC API compatible with the Cyoda Cloud platform. It manages entities (JSON documents), workflows (state-machine driven), schemas, and multi-tenant isolation — all in a single statically-compiled Go binary.
+
+## Key facts
+
+- **Language:** Go 1.26+
+- **Storage backends:** PostgreSQL (production), SQLite (single-node), in-memory (tests/dev)
+- **Deployment:** single binary or Docker container; Helm chart for Kubernetes
+- **Container image:** `ghcr.io/cyoda-platform/cyoda:latest`
+- **Latest release:** v0.7.0
+- **License:** see LICENSE
+
+## Quick start (Docker + PostgreSQL)
+
+```bash
+# Requires Docker and a running PostgreSQL instance
+docker run -d \
+  -e CYODA_STORAGE_BACKEND=postgres \
+  -e CYODA_POSTGRES_URL="postgres://user:pass@host:5432/cyoda?sslmode=require" \
+  -e CYODA_IAM_MODE=mock \
+  -p 8080:8080 \
+  ghcr.io/cyoda-platform/cyoda:latest
+```
+
+## Configuration (environment variables)
+
+All variables are prefixed `CYODA_`. Sensitive values accept a companion `_FILE` variant (e.g. `CYODA_JWT_SIGNING_KEY_FILE`) that reads the value from a file — use this in Kubernetes with mounted secrets.
+
+### Storage
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_STORAGE_BACKEND` | `memory` | `postgres`, `sqlite`, or `memory` |
+| `CYODA_POSTGRES_URL` | — | Full DSN: `postgres://user:pass@host:5432/db?sslmode=require` |
+| `CYODA_POSTGRES_MAX_CONNS` | `25` | Connection pool max size |
+| `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run SQL migrations on startup |
+| `CYODA_SQLITE_PATH` | `~/.local/share/cyoda/cyoda.db` | SQLite file path |
+
+### Auth
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_IAM_MODE` | `mock` | `mock` (dev) or `jwt` (production) |
+| `CYODA_REQUIRE_JWT` | `false` | Refuse start unless JWT mode is active |
+| `CYODA_JWT_SIGNING_KEY` | — | PEM-encoded RSA private key |
+| `CYODA_JWT_SIGNING_KEY_FILE` | — | File path for `CYODA_JWT_SIGNING_KEY` |
+| `CYODA_JWT_ISSUER` | `cyoda` | JWT `iss` claim |
+| `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token lifetime |
+
+### Cluster (multi-node)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_HMAC_SECRET` | — | Hex-encoded HMAC secret for inter-node auth |
+| `CYODA_HMAC_SECRET_FILE` | — | File path for `CYODA_HMAC_SECRET` |
+| `CYODA_CLUSTER_BIND_ADDRESS` | `0.0.0.0` | Gossip bind address |
+| `CYODA_CLUSTER_ADVERTISE_ADDRESS` | — | Address advertised to peers |
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `CYODA_OTEL_ENDPOINT` | — | OpenTelemetry collector endpoint |
+| `CYODA_METRICS_REQUIRE_AUTH` | `false` | Require bearer token on `/metrics` |
+
+## Kubernetes deployment (Helm)
+
+The Helm chart lives at `deploy/helm/cyoda`. It is not yet published to an OCI registry — install from the local checkout.
+
+```bash
+# Generate a JWT signing key
+openssl genrsa -out signing-key.pem 4096
+
+# Create required secrets
+kubectl create secret generic cyoda-pg \
+  --from-literal=dsn="postgres://user:pass@host:5432/cyoda?sslmode=require"
+
+kubectl create secret generic cyoda-jwt \
+  --from-file=signing-key.pem=signing-key.pem
+
+# Install
+helm install cyoda ./deploy/helm/cyoda \
+  --set postgres.existingSecret=cyoda-pg \
+  --set jwt.existingSecret=cyoda-jwt \
+  --set replicas=2
+```
+
+Minimum Kubernetes version: 1.31. The chart deploys a StatefulSet (stable pod identity for gossip), a headless Service, a regular Service, and a one-time migration Job.
+
+## Cloud infrastructure (Terraform)
+
+Terraform configurations for AWS, GCP, and Azure live in `deploy/terraform/`. Each directory is a self-contained root module that provisions a managed Kubernetes cluster, a managed PostgreSQL instance (private network), and deploys the Helm chart.
+
+```
+deploy/terraform/
+├── modules/cyoda-helm/   # shared Helm module
+├── aws/                  # EKS + RDS PostgreSQL
+├── gcp/                  # GKE + Cloud SQL
+└── azure/                # AKS + PostgreSQL Flexible Server
+```
+
+See `deploy/terraform/README.md` for the full deployment guide.
+
+## API
+
+The REST API follows the OpenAPI 3.0 spec at `api/openapi.yaml`. Key endpoints:
+
+- `POST /api/v1/entity/{modelName}` — create entity
+- `GET  /api/v1/entity/{modelName}/{id}` — fetch entity
+- `PUT  /api/v1/entity/{modelName}/{id}` — update entity
+- `GET  /api/v1/entity/{modelName}/search` — search entities
+- `POST /api/v1/workflow/{name}/transition` — trigger workflow transition
+- `GET  /api/v1/schema/{modelName}` — get schema
+- `GET  /health` — health check (used by liveness/readiness probes)
+- `GET  /metrics` — Prometheus metrics
+
+gRPC endpoints mirror the REST API. Proto definitions are in `proto/`.
+
+## Repository structure
+
+```
+api/           OpenAPI spec and generated Go bindings
+app/           Application wiring (constructors, server setup)
+cmd/cyoda/     Binary entrypoint and CLI (run, migrate, health, init, help)
+deploy/
+  docker/      Docker Compose files
+  helm/cyoda/  Helm chart
+  terraform/   Cloud infrastructure (AWS / GCP / Azure)
+e2e/parity/    Parity test suite (run against any backend)
+internal/      Core domain: entity store, workflow engine, schema, cluster, IAM
+plugins/
+  memory/      In-memory storage plugin
+  sqlite/      SQLite storage plugin
+  postgres/    PostgreSQL storage plugin
+proto/         Protobuf definitions
+```
+
+## Development
+
+```bash
+# Run all tests (unit + integration + E2E — requires Docker for E2E)
+go test ./... -v
+
+# Unit tests only (no Docker)
+go test -short ./... -v
+
+# Build
+go build -o bin/cyoda ./cmd/cyoda
+
+# Run locally with in-memory backend
+./bin/cyoda run
+```
+
+E2E tests in `internal/e2e/` spin up a PostgreSQL container automatically via testcontainers-go.
+
+## Optional links
+
+- Full API reference: `api/openapi.yaml`
+- Helm chart docs: `deploy/helm/cyoda/README.md`
+- Terraform deployment: `deploy/terraform/README.md`
+- Contributing guide: `CONTRIBUTING.md`
+- Changelog: `CHANGELOG.md`

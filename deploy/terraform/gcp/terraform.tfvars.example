@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and fill in before running.
+# Never commit terraform.tfvars to version control.
+
+project_id   = "my-gcp-project-id"
+region       = "us-central1"
+zone         = "us-central1-a"
+cluster_name = "cyoda"
+
+# GKE
+kubernetes_version = "latest"
+node_machine_type  = "e2-standard-2"
+node_count         = 2
+node_min_count     = 1
+node_max_count     = 4
+
+# Cloud SQL PostgreSQL
+db_name              = "cyoda"
+db_username          = "cyoda"
+db_password          = "CHANGE_ME_strong_password_here"
+db_tier              = "db-g1-small"
+db_disk_size         = 20
+db_availability_type = "ZONAL"   # use REGIONAL for production HA
+
+# cyoda application
+cyoda_replicas  = 1
+cyoda_namespace = "cyoda"
+cyoda_image_tag = ""   # empty = use chart appVersion
+jwt_issuer      = "cyoda"

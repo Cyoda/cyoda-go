@@ -1,0 +1,30 @@
+# Copy to terraform.tfvars and fill in before running.
+# Never commit terraform.tfvars to version control.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "eastus"
+resource_group_name = "cyoda-rg"
+cluster_name        = "cyoda"
+
+# AKS
+kubernetes_version = null   # null = latest stable
+node_vm_size       = "Standard_D2s_v3"
+node_count         = 2
+node_min_count     = 1
+node_max_count     = 4
+
+# Azure Database for PostgreSQL Flexible Server
+db_admin_username = "cyodaadmin"
+db_admin_password = "CHANGE_ME_str0ng!Pass#here"
+db_name           = "cyoda"
+db_sku_name       = "B_Standard_B1ms"
+db_storage_mb     = 32768
+db_version        = "16"
+db_zone           = "1"
+
+# cyoda application
+cyoda_replicas  = 1
+cyoda_namespace = "cyoda"
+cyoda_image_tag = ""   # empty = use chart appVersion
+jwt_issuer      = "cyoda"
+

@@ -1,0 +1,27 @@
+# Copy to terraform.tfvars and fill in the sensitive values before running.
+# Never commit terraform.tfvars to version control.
+
+region       = "us-east-1"
+cluster_name = "cyoda"
+
+# EKS
+kubernetes_version = "1.31"
+node_instance_type = "t3.medium"
+node_desired_size  = 2
+node_min_size      = 1
+node_max_size      = 4
+
+# RDS PostgreSQL
+db_name              = "cyoda"
+db_username          = "cyoda"
+db_password          = "CHANGE_ME_strong_password_here"
+db_instance_class    = "db.t3.micro"
+db_allocated_storage = 20
+db_multi_az          = false
+
+# cyoda application
+cyoda_replicas  = 1
+cyoda_namespace = "cyoda"
+cyoda_image_tag = ""   # empty = use chart appVersion
+jwt_issuer      = "cyoda"
+
