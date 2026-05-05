@@ -1099,16 +1099,11 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	}
 
 	// Distinguish: did the engine segment (and therefore consume IfMatch)?
-	// FinalTxID != txID iff at least one COMMIT_BEFORE_DISPATCH segment
+	// Segmented is true iff at least one COMMIT_BEFORE_DISPATCH segment
 	// committed; the engine's first-segment flush already applied the
-	// caller's IfMatch. For non-segmenting cascades (FinalTxID == txID) the
-	// handler still owns the IfMatch precondition.
-	//
-	// TODO(#228 N1): a future engine-surface improvement should expose
-	// engineResult.Segmented bool so this comparison-vs-entry-txID
-	// convention is centralised at the engine surface, not duplicated
-	// across handlers (mirrored in UpdateEntityCollection's per-item loop).
-	segmented := finalTxID != txID
+	// caller's IfMatch. For non-segmenting cascades the handler still owns
+	// the IfMatch precondition.
+	segmented := engineResult.Segmented
 
 	if input.IfMatch != "" && !segmented {
 		if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
@@ -1329,7 +1324,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// alongside successful siblings on commit.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) {
 				slog.Info("collection update item precondition failed",
-					"entityId", updated.Meta.ID, "itemIndex", i)
+					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
 					EntityID:  updated.Meta.ID,
 					Code:      common.ErrCodeEntityModified,
@@ -1349,18 +1344,12 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		}
 
 		// Distinguish: did the engine segment (and therefore consume IfMatch)?
-		// FinalTxID != entry txID iff at least one CBD segment committed; in
-		// that case the engine's first-segment flush already applied this
-		// item's IfMatch. For non-segmenting cascades the handler still owns
-		// the precondition — apply it via CompareAndSave below. Mirrors the
-		// single-UpdateEntity routing post-#27. Capture BEFORE advancing
-		// currentCtx/currentTxID below.
-		//
-		// TODO(#228 N1): a future engine-surface improvement should expose
-		// engineResult.Segmented bool so this comparison-vs-entry-txID
-		// convention is centralised at the engine surface, not duplicated
-		// across handlers (mirrored in single UpdateEntity above).
-		segmented := engineResult.FinalTxID != currentTxID
+		// Segmented is true iff at least one CBD segment committed; in that
+		// case the engine's first-segment flush already applied this item's
+		// IfMatch. For non-segmenting cascades the handler still owns the
+		// precondition — apply it via CompareAndSave below. Mirrors the
+		// single-UpdateEntity routing post-#27.
+		segmented := engineResult.Segmented
 
 		// Advance the loop's TX to whichever segment is now open. For
 		// non-segmenting cascades these are unchanged; for segmenting
@@ -1393,7 +1382,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		if saveErr != nil {
 			if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
 				slog.Info("collection update item precondition failed",
-					"entityId", updated.Meta.ID, "itemIndex", i)
+					"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
 				// Reviewer S1 (#228): emit a compensating TRANSITION_ABORTED
 				// audit event so the entry-side audit events recorded by the
 				// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
