@@ -266,6 +266,15 @@ func classifyValidateOrExtendErr(err error) *common.AppError {
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
+	// Resolve transactionWindow up-front so an out-of-range value rejects
+	// before we burn any I/O. Mirrors CreateCollection — see the array-body
+	// branch below for where the window is actually applied.
+	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+
 	// Read request body (with size limit)
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -274,7 +283,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 		return
 	}
 
-	// Detect JSON array body — delegate to collection create, one entity per element.
+	// Detect JSON array body — chunk via the same transactionWindow contract
+	// as POST /api/entity/{format} (CreateCollection). Issue #227 pass 3.
 	if string(format) == "JSON" && len(bodyBytes) > 0 && bodyBytes[0] == '[' {
 		var rawItems []json.RawMessage
 		if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
@@ -291,17 +301,27 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 			})
 		}
 
-		result, err := h.CreateEntityCollection(r.Context(), items)
-		if err != nil {
-			common.WriteError(w, r, classifyError(err))
+		// Empty array preserves the historical single-empty-call shape so the
+		// service-layer empty-collection contract is exercised (no chunks).
+		if len(items) == 0 {
+			result, err := h.CreateEntityCollection(r.Context(), items)
+			if err != nil {
+				common.WriteError(w, r, classifyError(err))
+				return
+			}
+			common.WriteJSON(w, http.StatusOK, []collectionChunkResult{{
+				TransactionID: result.TransactionID,
+				EntityIDs:     result.EntityIDs,
+			}})
 			return
 		}
 
-		resp := map[string]any{
-			"transactionId": result.TransactionID,
-			"entityIds":     result.EntityIDs,
+		results, firstChunkErr := h.runChunkedCreate(r.Context(), items, window)
+		if firstChunkErr != nil {
+			common.WriteError(w, r, firstChunkErr)
+			return
 		}
-		common.WriteJSON(w, http.StatusOK, []any{resp})
+		common.WriteJSON(w, http.StatusOK, results)
 		return
 	}
 
@@ -596,6 +616,54 @@ type collectionChunkError struct {
 	ChunkIndex int    `json:"chunkIndex"`
 }
 
+// runChunkedCreate splits items into chunks of size `window` and dispatches
+// each through CreateEntityCollection in commit order, collecting one
+// collectionChunkResult per chunk. Returns:
+//
+//   - (results, nil) — the full per-chunk result array. May contain an
+//     error element on a later-chunk failure (committed chunks before it
+//     are durable; subsequent chunks are NOT attempted).
+//   - (nil, appErr)  — the FIRST chunk failed, no durable progress was
+//     made; the caller writes the conventional 4xx error envelope.
+//
+// Caller must have already resolved `window` via resolveTransactionWindow
+// and handled the empty-items case (the loop emits zero elements when items
+// is empty, which would produce an empty success array — usually not what
+// the empty-batch contract intends; see CreateCollection).
+//
+// Single chunking primitive shared by CreateCollection (POST /entity/{format})
+// and Create (POST /entity/{format}/{entityName}/{modelVersion} array body).
+// Issue #227.
+func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, window int) ([]collectionChunkResult, *common.AppError) {
+	results := make([]collectionChunkResult, 0)
+	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
+		end := start + window
+		if end > len(items) {
+			end = len(items)
+		}
+		result, err := h.CreateEntityCollection(ctx, items[start:end])
+		if err != nil {
+			appErr := classifyError(err)
+			if chunkIdx == 0 {
+				return nil, appErr
+			}
+			results = append(results, collectionChunkResult{
+				Error: &collectionChunkError{
+					Code:       appErr.Code,
+					Message:    appErr.Message,
+					ChunkIndex: chunkIdx,
+				},
+			})
+			return results, nil
+		}
+		results = append(results, collectionChunkResult{
+			TransactionID: result.TransactionID,
+			EntityIDs:     result.EntityIDs,
+		})
+	}
+	return results, nil
+}
+
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, format genapi.CreateCollectionParamsFormat, params genapi.CreateCollectionParams) {
 	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
 	if paramErr != nil {
@@ -647,40 +715,10 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	results := make([]collectionChunkResult, 0)
-	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
-		end := start + window
-		if end > len(items) {
-			end = len(items)
-		}
-		result, err := h.CreateEntityCollection(r.Context(), items[start:end])
-		if err != nil {
-			appErr := classifyError(err)
-			// First chunk failed → no durable progress; preserve historical
-			// 4xx error envelope so existing clients keep getting structured
-			// errors when they pass an entirely-bad batch.
-			if chunkIdx == 0 {
-				common.WriteError(w, r, appErr)
-				return
-			}
-			// Later chunk failed → earlier chunks are committed and durable.
-			// Emit the per-chunk array with an error element marking the
-			// failed chunk's index. Stop iterating; later chunks are not
-			// attempted.
-			results = append(results, collectionChunkResult{
-				Error: &collectionChunkError{
-					Code:       appErr.Code,
-					Message:    appErr.Message,
-					ChunkIndex: chunkIdx,
-				},
-			})
-			common.WriteJSON(w, http.StatusOK, results)
-			return
-		}
-		results = append(results, collectionChunkResult{
-			TransactionID: result.TransactionID,
-			EntityIDs:     result.EntityIDs,
-		})
+	results, firstChunkErr := h.runChunkedCreate(r.Context(), items, window)
+	if firstChunkErr != nil {
+		common.WriteError(w, r, firstChunkErr)
+		return
 	}
 	common.WriteJSON(w, http.StatusOK, results)
 }
