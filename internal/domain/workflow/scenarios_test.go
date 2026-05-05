@@ -566,3 +566,164 @@ func newTestHTTPRequest(t *testing.T, method, target, body string, ctx context.C
 func newTestHTTPResponse() *httptest.ResponseRecorder {
 	return httptest.NewRecorder()
 }
+
+// --- Test: validateProcessorFlags — startNewTxOnDispatch is COMMIT_BEFORE_DISPATCH-only ---
+
+func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(t *testing.T) {
+	// startNewTxOnDispatch:true on a SYNC processor must be rejected at registration.
+	tt := true
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: "EXTERNAL", Name: "p", ExecutionMode: "SYNC",
+						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "startNewTxOnDispatch") {
+		t.Fatalf("error message must mention startNewTxOnDispatch, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "COMMIT_BEFORE_DISPATCH") {
+		t.Fatalf("error message must mention COMMIT_BEFORE_DISPATCH, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SYNC") {
+		t.Fatalf("error message must mention the offending mode (SYNC), got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test-wf") || !strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), `"p"`) {
+		t.Fatalf("error message must mention workflow, transition, and processor names, got: %v", err)
+	}
+}
+
+func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *testing.T) {
+	tt := true
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: "EXTERNAL", Name: "p", ExecutionMode: "COMMIT_BEFORE_DISPATCH",
+						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
+	// Default (nil) must not be rejected. Explicit false must not be rejected.
+	ff := false
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: "EXTERNAL", Name: "p1", ExecutionMode: "SYNC",
+						Config: spi.ProcessorConfig{}},
+					{Type: "EXTERNAL", Name: "p2", ExecutionMode: "SYNC",
+						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &ff}},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Fatalf("expected no error for nil/false flag, got: %v", err)
+	}
+}
+
+// TestScenarioStartNewTxOnDispatchRejectionViaImport asserts that the
+// validator's startNewTxOnDispatch=true-on-non-COMMIT_BEFORE_DISPATCH
+// rejection surfaces through the public workflow-import HTTP path with a
+// 400 Bad Request and a meaningful error message — i.e. that registration
+// callers (not just the package-internal helper) see the rejection. Mirrors
+// TestScenarioStaticLoopDetectionViaImport for parity with the other
+// validateWorkflows guard.
+func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr2 := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr2)
+	handler := New(factory, engine)
+
+	ctx := ctxWithTenant(testTenant)
+
+	// Register the target model so the import handler reaches static
+	// validation (otherwise it returns 404 MODEL_NOT_FOUND first, per #131).
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{
+		Ref:   spi.ModelRef{EntityName: "snttd", ModelVersion: "1"},
+		State: spi.ModelLocked,
+	}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
+
+	// Workflow with a SYNC processor declaring startNewTxOnDispatch=true —
+	// invalid combination per spec; validateProcessorFlags must reject.
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1",
+			"name": "snttd-wf",
+			"initialState": "S1",
+			"active": true,
+			"states": {
+				"S1": {"transitions": [{
+					"name": "t",
+					"next": "S2",
+					"manual": true,
+					"processors": [{
+						"type": "EXTERNAL",
+						"name": "p",
+						"executionMode": "SYNC",
+						"config": {"startNewTxOnDispatch": true}
+					}]
+				}]},
+				"S2": {"transitions": []}
+			}
+		}]
+	}`
+
+	req := newTestHTTPRequest(t, "POST", "/model/snttd/1/workflow/import", body, ctx)
+	rr := newTestHTTPResponse()
+
+	handler.ImportEntityModelWorkflow(rr, req, "snttd", 1)
+
+	if rr.Code != 400 {
+		t.Fatalf("expected status 400 for startNewTxOnDispatch misuse, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	respBody := rr.Body.String()
+	// Pin the full error format reaches the HTTP caller intact: error code,
+	// flag name, plus all four context fields the validator includes
+	// (workflow / transition / processor / offending mode). A future handler
+	// change that collapses this message would surface as a regression here,
+	// not just in the unit-level validator test. The validator uses %q on
+	// each name; the JSON response body escapes those inner quotes as \".
+	for _, want := range []string{
+		"VALIDATION_FAILED",
+		"startNewTxOnDispatch",
+		`workflow \"snttd-wf\"`,
+		`transition \"t\"`,
+		`processor \"p\"`,
+		`got \"SYNC\"`,
+	} {
+		if !strings.Contains(respBody, want) {
+			t.Errorf("expected response body to contain %q; got: %s", want, respBody)
+		}
+	}
+}

@@ -33,6 +33,11 @@ All four plugins (memory, sqlite, postgres, and the commercial cassandra
 plugin) implement this same contract against very different underlying
 engines.
 
+Per-segment commit visibility is *not* part of this contract; see §10 for
+the `COMMIT_BEFORE_DISPATCH` execution mode, which deliberately splits a
+single cascade into multiple transactions and exposes intermediate
+segment-boundary states to concurrent readers.
+
 ## 2. What this contract catches
 
 All three anomalies classically prevented by Snapshot Isolation:
@@ -160,7 +165,16 @@ API surface — `BeginTx` is called in exactly five places, all inside
 `internal/domain/entity/service.go` (create, delete, delete-all, batch
 create, XML import). All cross-entity CRUD performed by workflow
 processors during transition execution happens inside that enclosing
-transaction.
+transaction — **except segments crossed by a `COMMIT_BEFORE_DISPATCH`
+processor, which split the cascade into multiple transactions**. With
+`COMMIT_BEFORE_DISPATCH` the engine commits `TX_pre` before the processor
+is dispatched (the entity becomes durable in the pre-callout state and
+publicly observable; see §10), and opens `TX_post` on the same node when
+the processor returns. CRUD performed by the processor outside any
+transaction does not fall under any umbrella; CRUD performed by the
+processor in `TX_post` (when `startNewTxOnDispatch=true`) falls under
+`TX_post` only, not under `TX_pre`. The umbrella is now per-segment, not
+per-cascade, for these workflows.
 
 This "transactional umbrella" bounds *when* a transaction exists and
 *what work falls under a single commit point*. But it does not prevent
@@ -202,6 +216,16 @@ Code patterns like `search(predicate).count() < threshold` or
 `if !search(predicate).any() { ... }` inside a transition criterion or a
 processor are susceptible to phantom anomalies. Entity-level reads and
 writes (operating on a known entity ID, not a predicate range) are safe.
+
+Additionally: **workflow criteria on transitions following a
+`COMMIT_BEFORE_DISPATCH` segment must not depend on cascade atomicity for
+the work in earlier segments**. The pre-callout state is publicly visible
+between segments (§10), so a criterion that assumes the cascade ran
+atomically — e.g. "if A and B have both been advanced as a unit" — can be
+falsified by a concurrent reader (or another cascade) acting on the
+intermediate state. Express such cross-segment invariants either at the
+entity level on the cascade-anchor (FCW catches contention via CAS at
+segment continuation) or post-cascade as a reconciliation step.
 
 If your business logic requires a count-based invariant, there are three
 robust alternatives:
@@ -419,12 +443,64 @@ A short checklist:
 5. **Keep transactions short.** Long-running transactions hold a larger
    read-set, widening the window in which a concurrent committer can
    invalidate it. If a workflow step needs to do slow work (e.g. an
-   external HTTP call), prefer `ASYNC_NEW_TX` so the slow part runs in a
-   separate transaction with its own short lifespan.
+   external HTTP call), use `COMMIT_BEFORE_DISPATCH` on that processor
+   so the engine commits the pre-callout entity state, runs the slow
+   work outside any transaction, and opens a fresh `TX_post` only for
+   the apply-result work. This collapses connection-hold time from
+   "full processor wall-clock" to "segment-boundary work" (typically
+   tens to low-hundreds of milliseconds), at the cost of breaking
+   cascade atomicity at the segment boundary (see bullets 7–9 below).
+   `ASYNC_NEW_TX` (savepoint mode) does **not** relieve connection-pool
+   pressure; it only changes failure semantics.
 6. **Don't assume Serializable-class isolation.** If your use case truly
    needs phantom protection (e.g. compliance-driven "no more than N
    entities in state X per tenant, ever"), either materialise the count
    or add a reconciliation step.
+7. **`COMMIT_BEFORE_DISPATCH` makes segment-boundary states publicly
+   visible.** A concurrent reader's `Get`/`GetAll`/`Search`/`Count`
+   between `TX_pre.Commit` and `TX_post.Commit` will see the entity in
+   the pre-callout state. A second cascade may decide to fire
+   criteria-driven transitions on that intermediate state. Treat
+   segment-boundary states as committed; design state-machine criteria,
+   transition guards, and external monitoring accordingly. If
+   invisibility is required, model a `DRAFT` parent state with
+   sub-stages in payload, or do not expose the entity until a designated
+   terminal state.
+8. **`COMMIT_BEFORE_DISPATCH` requires processor idempotency.** Replays
+   can fire from CAS conflict during continuation (the caller's retry
+   restarts the cascade and re-dispatches the processor) or from an
+   engine crash between segments (the entity is durable in the
+   pre-callout state, the in-flight orchestration is gone, the caller
+   retries, the cascade re-fires from the beginning). The engine
+   cannot deduplicate replays — workflow authors must implement
+   idempotency on application-meaningful keys (a write-once external
+   resource ID, a deterministic external resource name derived from
+   entity ID, etc.). This is asymmetric to client-driven manual
+   loopback: a client knows it crashed and owns the retry decision; an
+   engine crash mid-cascade leaves the **server** silently holding a
+   partially-progressed entity.
+9. **No double-writing the cascade-anchor entity.** A processor with
+   TX-callback access (SYNC, ASYNC_SAME_TX, COMMIT_BEFORE_DISPATCH with
+   `startNewTxOnDispatch=true`) must not save the entity it is
+   processing for via the supplied transaction token **and** also
+   return mutations for that same entity in its result. The engine's
+   apply-result will overwrite the processor's intra-TX writes
+   (last-writer-wins inside the transaction buffer). Pick one path:
+   let the engine apply the result, OR have the processor write the
+   entity itself and return no mutations for it. Cross-link:
+   `cmd/cyoda/help/content/workflows.md` carries this best-practice
+   verbatim.
+10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
+    `UpdateEntityCollection` (or any all-or-nothing batch) where at
+    least one item triggers a cascade segmented by
+    `COMMIT_BEFORE_DISPATCH`, the all-or-nothing batch semantic
+    degrades. Earlier items' `TX_pre` segments commit durably before
+    later items run; a later item's failure cannot unroll those
+    earlier durable segments. Workflow authors using batch APIs with
+    `COMMIT_BEFORE_DISPATCH` processors must either (a) tolerate
+    partial-success batches and design idempotent re-submission, or
+    (b) avoid `COMMIT_BEFORE_DISPATCH` on workflows reachable from
+    batch endpoints.
 
 ## 11. References
 
@@ -798,6 +874,53 @@ state for the rate-limited transition, and read all peer entities in
 the processor. The cap check then runs against a materialised peer set
 inside the transaction, and FCW converts concurrent violations into
 retryable conflicts.
+
+### A.9 Interaction with `COMMIT_BEFORE_DISPATCH`
+
+The on-duty cap relies on cascade atomicity for the PROMOTE pipeline:
+the criterion `Count(Doctor where state = ON_DUTY) < N` runs in the
+same transaction that performs the `PENDING_ON_DUTY → ON_DUTY` write,
+so FCW catches contention via the materialised peer read-set (A.3,
+A.4). **`COMMIT_BEFORE_DISPATCH` placed on a processor in the PROMOTE
+pipeline breaks this fence.**
+
+Concretely: if any processor on the `PENDING_ON_DUTY → ON_DUTY`
+transition (or on the staging transition `OFF_DUTY → PENDING_ON_DUTY`,
+if the cap is checked there) is configured `COMMIT_BEFORE_DISPATCH`,
+the engine commits the pre-callout state — including any peer reads in
+that segment — before the processor runs, and opens `TX_post` for the
+apply-result. Two failure modes follow:
+
+1. **The peer read-set is split across two transactions.** The
+   criterion's peer reads land in `TX_pre`; the apply-result lands in
+   `TX_post`. `TX_post`'s read-set is *not* the union of both
+   segments' read-sets (each transaction validates its own read-set
+   independently at commit). A concurrent promotion that commits
+   between `TX_pre` and `TX_post` invalidates the cap check the
+   criterion ran against, but `TX_post` does not see the conflict
+   because the peer set was never read inside `TX_post`. The fence is
+   bypassed.
+2. **The pre-callout state is publicly observable.** Between
+   `TX_pre.Commit` and `TX_post.Commit`, the doctor is durably in
+   `PENDING_ON_DUTY` — a concurrent promotion's criterion sees that
+   doctor in its peer set, but that's the only safety net, and it's
+   only as strong as the criterion's read-set semantics, not the
+   pipeline-internal cap check.
+
+**Rule:** transitions that enforce a population-level invariant
+(at-most-N, at-least-M) via materialised peer reads **must not**
+carry a `COMMIT_BEFORE_DISPATCH` processor on either the staging
+transition or the commit transition of the fence. If slow external
+work is required on such a transition (e.g. a notification call), use
+`SYNC` and accept the connection-hold cost, or restructure the
+workflow so the slow work runs on a separate transition that does not
+participate in the fence (e.g. on a post-`ON_DUTY` notification
+transition where atomicity with the cap check is not required).
+
+The same rule applies to the symmetric minimum-cap fence (A.6) and to
+the multi-entity fence pattern in Appendix B: the materialised
+read-set and the apply-result must be in the same transaction.
+`COMMIT_BEFORE_DISPATCH` is incompatible with that requirement.
 
 ---
 

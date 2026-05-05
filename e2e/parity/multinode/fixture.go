@@ -22,4 +22,12 @@ type MultiNodeFixture interface {
 	// NewTenant mints a fresh tenant for the test. The returned JWT
 	// is valid against every node in the cluster.
 	NewTenant(t *testing.T) parity.Tenant
+
+	// ComputeTenant returns a Tenant whose ID matches the
+	// compute-test-client's tenant. Tests that exercise gRPC
+	// processor/criteria dispatch against the cluster-shared compute
+	// member must use this — MemberRegistry lookup is tenant-scoped
+	// and only the compute-test-client tenant has a registered member.
+	// Mirrors parity.BackendFixture.ComputeTenant for the cluster case.
+	ComputeTenant(t *testing.T) parity.Tenant
 }

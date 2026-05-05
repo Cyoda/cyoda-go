@@ -343,6 +343,8 @@ type TransactionManager interface {
 - `GetSubmitTime`: Returns the database timestamp captured at commit. Used for temporal ordering.
 - `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the workflow engine's `ASYNC_NEW_TX` execution mode. The plugin returns a savepoint ID that the caller passes back for rollback or release. Plugins that don't support savepoints may return `common.ErrUnsupported`.
 
+**TX boundary ownership.** For most cascades the request handler in `internal/domain/entity/service.go` opens the transaction, calls the engine, and commits when the engine returns — a single `Begin`/`Commit` pair. When a transition carries a `COMMIT_BEFORE_DISPATCH` processor (see §5.4), the workflow engine — not the handler — owns the transaction boundaries: the engine flushes the pre-callout entity state via `EntityStore.Save`, commits `TX_pre`, dispatches the processor outside any transaction, opens `TX_post` on the same node, applies the result via `CompareAndSave` (CAS expected = the txID stamped at `TX_pre`'s commit), and commits. Per-segment SPI writes are issued by the engine; the handler hands `txMgr` and the `If-Match` precondition to the engine and lets it own boundaries. Single-segment cascades (no `COMMIT_BEFORE_DISPATCH` processor) preserve today's observable behaviour — single `Save`, single `Commit`, single `EntityVersion` row.
+
 ### 3.2 In-Memory SI+FCW Conflict Detection
 
 Extracted to [docs/plugins/IN_MEMORY.md](plugins/IN_MEMORY.md).
@@ -371,6 +373,8 @@ type Manager struct {
 - **TTL enforcement:** `ReapExpired()` -- background goroutine rolls back transactions that exceed their deadline. Outcome recorded as `OutcomeRolledBack`.
 - **Outcome tracking:** `RecordOutcome(txID, committed|rolledBack)` -- moves from active to outcomes map. Outcomes expire after `outcomeTTL`.
 - **Cluster visibility:** `ListByNode(nodeID)` -- returns all active transactions owned by a specific node.
+
+**Mid-cascade home-node crash with `COMMIT_BEFORE_DISPATCH`.** A new failure mode is introduced by the segmented cascade. If the home node crashes after `TX_pre` commits and before `TX_post` opens (or before `TX_post` commits), the entity is durable in the pre-callout state but the in-flight orchestration is lost — there is no engine-side reaper for the stranded cascade. The client retries the original API call, which restarts the cascade from the beginning; the dispatched processor must be idempotent or detect prior completion via an external resource identifier. Recovery is the application's concern; the engine does not automatically resume mid-cascade. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 and `cmd/cyoda/help/content/workflows.md` for the workflow-author idempotency requirements.
 
 ### 3.5 `pgx.Tx` Single-Owner Property
 
@@ -554,6 +558,10 @@ func ResolveTarget(ctx, signer, registry, selfNodeID, tok) (string, bool, error)
 
 gRPC routing is not a transparent proxy -- the gRPC handler checks `ResolveTarget` and either serves locally or returns an error directing the client to retry against the target node.
 
+**`COMMIT_BEFORE_DISPATCH` segment pinning.** A `COMMIT_BEFORE_DISPATCH` cascade pins **all segments to the home node** that opened `TX_pre`. `TX_post` is required to begin on the same node — this is enforced via the cluster's TX-token registry. Cross-node continuation is out of scope for this design: a home-node crash mid-cascade leaves the entity durable in the pre-callout state and the in-flight orchestration lost (see §3.4); the client restarts with a fresh `Begin()` on a surviving node, which re-fires the cascade from the beginning.
+
+**Response txID is the cascade-entry txID.** When a cascade is segmented by `COMMIT_BEFORE_DISPATCH`, the API response carries the txID that `Begin()` returned at cascade entry, **not** the txID that committed `TX_post` (the durable apply-result). This is the audit-correlation txID — `/audit/entity/{id}/workflow/{txId}/finished` looks up cascades by this entry txID. Implementation: `internal/domain/entity/service.go` returns `txID` (cascade-entry) regardless of how many segments the engine internally opened.
+
 ### 4.3 Compute Dispatch Routing
 
 Three strategy interfaces, each with a default implementation:
@@ -682,6 +690,39 @@ Key observations:
 - The compute member is stateless -- it receives entity data via CloudEvent payload and returns modified data the same way.
 - The dispatch forward (t3d) and the CRUD proxy (t7) are distinct network paths that can fail independently.
 
+**Variant: `COMMIT_BEFORE_DISPATCH` (segment boundary at the dispatch).**
+
+When the dispatched processor's `executionMode` is `COMMIT_BEFORE_DISPATCH`, the engine splits the swimlane at the dispatch boundary into two transactions on the same home node:
+
+```
+t0   Client --> POST /entity create --> Node A
+t1   Node A: BEGIN tx-123 (TX_pre), generate txToken --> PG: BEGIN REPEATABLE READ
+t2   Node A: engine flushes pre-callout entity state --> PG: INSERT/UPDATE in TX_pre
+     (audit: SMEventProcessingPaused recorded in TX_pre)
+t3   Node A: COMMIT TX_pre --> PG: COMMIT  ◀── segment boundary; entity durable in pre-callout state
+                                              ◀── connection released for the dispatch wait
+t4   Node A: SM engine dispatches to processor (outside any transaction)
+t4a  Node A: dispatch routing (local member or peer-forward as in the happy path)
+t5   Compute: receives CloudEvent w/ tx-123 (no transactional CRUD if startNewTxOnDispatch=false)
+t6   Compute: executes business logic, makes external side effects
+t7   Compute: responds to Node A (dispatch return)
+t8   Node A: BEGIN tx-456 (TX_post) on the **same node** as TX_pre
+              --> PG: BEGIN REPEATABLE READ
+t9   Node A: CompareAndSave (expected = txID from TX_pre) applies the processor result
+              and runs any subsequent SYNC processors and cascade transitions inline in TX_post
+              (audit: SMEventStateProcessResult recorded in TX_post)
+t10  Node A: COMMIT TX_post --> PG: COMMIT
+t11  Node A: 200 OK {entityId, transactionId: tx-123 /* cascade-entry txID */} --> Client
+```
+
+Segment-boundary observations:
+- `TX_pre.Commit` releases the storage connection for the dispatch wall-clock window. Pool pressure for slow processors drops by `dispatch_duration / total_cascade_duration`.
+- The entity is **publicly observable** in the pre-callout state between `t3` and `t10`. Other transactions' `Get`/`Search` see it; criteria-driven cascades elsewhere can fire on it. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for the visibility caveat.
+- CAS at `t9` expects the txID stamped at `t3`'s commit. A concurrent committer between `t3` and `t9` invalidates that expectation — the engine surfaces `ErrConflict` → `409 retryable`. Entity remains durable in the pre-callout state. No engine-side retry; no automatic compensation.
+- `TX_post` must open on the same node as `TX_pre` (§4.2 segment pinning). Cross-node continuation is out of scope.
+- The response txID at `t11` is `tx-123` (cascade-entry), not `tx-456` (the durable apply-result). Audit lookups use the entry txID per spec §8 audit-correlation.
+- A new failure mode (§3.4): home-node crash between `t3` and `t10` leaves the entity durable in the pre-callout state with no engine-side reaper. Recovery is application-driven retry — see §10 of CONSISTENCY.md and the workflows help topic for the idempotency requirement.
+
 ### 4.5 Network Partition Analysis
 
 **Network links:**
@@ -804,6 +845,38 @@ SAFE: All cases lead to rollback or retry. No data corruption possible because t
 
 ---
 
+#### Phase 5: `COMMIT_BEFORE_DISPATCH` segment-boundary partition
+
+This phase covers the new partition windows opened by the segmented cascade described in §4.4 (variant). The boundary sits between `TX_pre.Commit` (entity durable in pre-callout state) and `TX_post.Begin` (engine resumes after dispatch returns).
+
+**L5 partitions (Node A <-> PG) between segments:**
+
+`TX_pre` already committed. The dispatch is in-flight outside any transaction; PG holds no resources for this cascade. If L5 partitions during the dispatch window, the engine simply cannot open `TX_post` when the processor returns: `Begin()` fails. Node A surfaces `5xx`, the cascade halts, and the entity is durable in the pre-callout state.
+
+ISSUE: The processor may already have produced external side effects (created a TeamCity build, charged a payment, sent a notification). The engine does not roll those back — it cannot, the segment boundary is durable. Recovery is application-driven retry on a fresh `Begin()`, with the processor expected to be idempotent or detect prior completion via an external resource ID. **Stranded entity in pre-callout state with persistent external side effects.** Mitigation: workflow-author idempotency design (`docs/CONSISTENCY.md` §10, `cmd/cyoda/help/content/workflows.md`).
+
+**Home-node crash between `TX_pre.Commit` and `TX_post.Commit`:**
+
+PG already committed `TX_pre` (the entity is durable in pre-callout state). The home node crashes. PG drops the connection used for `TX_pre`. The in-flight orchestration (the dispatch wait, the segment-pinning to that node) is lost. Subsequent client requests with the original token receive `503 TRANSACTION_NODE_UNAVAILABLE` from the cluster proxy.
+
+ISSUE: Same shape as the L5 case above — entity durable in pre-callout state, external side effects may have fired, no engine-side reaper. Client must restart with a fresh `Begin()` on a surviving node, which re-fires the cascade from the beginning. Same idempotency requirement.
+
+**L1 partitions (Client <-> Node A) between segments:**
+
+`TX_pre` committed. Node A is dispatching. Client connection drops; Node A's cascade is autonomous and continues — `TX_post` opens, applies the result, commits. Cascade may complete fully durable while the client never sees the response.
+
+Same as Phase 1/3: client retries create duplicates without idempotency keys. Additionally, here the retry restarts the cascade from the beginning, so the dispatched processor fires twice. The processor must be idempotent.
+
+**L2 partitions (Node A <-> Compute) between segments:**
+
+The dispatch is in-flight outside any TX. gRPC stream breaks — Node A's dispatch call returns error or times out. `TX_post` is never opened. Cascade halts; entity durable in pre-callout state.
+
+Same shape as L5 + home-node-crash above: stranded entity, possible external side effects, application-driven retry with idempotency.
+
+**Summary:** segment-boundary partitions never violate atomicity within a single segment, but they break **cascade atomicity** — earlier segments are durable, later ones are not. This is the mode's defining trade-off and is documented as a property of `COMMIT_BEFORE_DISPATCH` (`docs/CONSISTENCY.md` §4 transactional umbrella; `docs/CONCURRENCY.md` §6 cluster routing).
+
+---
+
 #### Findings Summary
 
 | Category | Finding | Needed Mechanism |
@@ -905,13 +978,14 @@ After any transition fires, the engine cascades: it scans all automatic transiti
 
 ### 5.4 Processor Execution
 
-Processors are dispatched via the `ExternalProcessingService` SPI. In multi-node mode, this is the `ClusterDispatcher` (see Section 4.3). Three execution modes are defined in the Cyoda model:
+Processors are dispatched via the `ExternalProcessingService` SPI. In multi-node mode, this is the `ClusterDispatcher` (see Section 4.3). Four execution modes are defined in the Cyoda model:
 
 | Mode | Behavior |
 |------|----------|
 | `SYNC` | Processor executes within the current transaction. Entity data is updated in-place before the next transition. |
 | `ASYNC_SAME_TX` | Processor executes asynchronously but joins the same transaction. CRUD callbacks are routed back to the transaction owner. |
 | `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: failure rolls back the SAVEPOINT only, parent pipeline continues. Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. See canonical semantics: `docs/superpowers/specs/2026-04-01-workflow-processor-execution-design.md` |
+| `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The processor runs outside any transaction. When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs subsequent SYNC processors and cascade transitions inline, then commits. CAS conflict at the boundary surfaces `ErrConflict` → `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Companion field `startNewTxOnDispatch: bool` (default `false`, sibling on the same processor object, validator rejects `true` for any other mode) controls whether a fresh transaction context is supplied to the dispatched call for processor-side CRUD on entities other than the cascade-anchor. **Audit-trail durability change**: the existing `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; the existing `SMEventStateProcessResult` is recorded in `TX_post`. No new event types are introduced. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
 
 ### 5.5 Audit Trail
 
@@ -931,6 +1005,8 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 | `TRANSITION_NOT_MATCH_CRITERION` | `SMEventTransitionCriterionNoMatch` | Transition criterion failed |
 | `PAUSE_FOR_PROCESSING` | `SMEventProcessingPaused` | Waiting for async processor |
 | `STATE_PROCESS_RESULT` | `SMEventStateProcessResult` | Processor result received |
+
+**Segment-boundary placement for `COMMIT_BEFORE_DISPATCH`** (§5.4): when the engine segments a cascade around a `COMMIT_BEFORE_DISPATCH` processor, the existing `SMEventProcessingPaused` is recorded in `TX_pre` (and durably committed at the segment boundary, surviving an engine crash before the dispatch returns) and the existing `SMEventStateProcessResult` is recorded in `TX_post`. **No event spans both transactions; no new event types are introduced.** Audit consumers can detect a stranded mid-cascade entity by the presence of `SMEventProcessingPaused` without a matching `SMEventStateProcessResult` for the same dispatch.
 
 ---
 
@@ -1519,7 +1595,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 **Expected bottleneck:** The most common performance issue will be long-running compute phases holding PG connections. A processor that takes 10 seconds holds one PG connection for 10+ seconds. With 25 connections and 10-second processors, a single node can sustain ~2.5 new transactions per second.
 
-**Mitigation:** The `ASYNC_NEW_TX` execution mode runs processors within a SAVEPOINT of the parent transaction. ASYNC_NEW_TX failures do not affect the parent pipeline — the SAVEPOINT is rolled back and execution continues. This allows non-critical side-effect processors to fail without aborting the entire cascade. In cyoda-go, all processors execute sequentially (the `ASYNC` label exists for Cyoda Cloud configuration compatibility). The PG connection hold time includes all processors regardless of mode.
+**Mitigation: `COMMIT_BEFORE_DISPATCH`.** This is the **primary connection-pool-pressure mitigation** for slow processors (§5.4). The engine splits the cascade into two transactions around the processor: `TX_pre` flushes the pre-callout entity state and commits **before** dispatch, releasing the PG connection for the duration of the external compute. The processor runs outside any transaction. `TX_post` opens on the same node when the processor returns, reapplies the result via `CompareAndSave`, and commits. The PG connection hold time collapses from "full cascade duration" to "`TX_pre.Commit` time + `TX_post` apply-result time" — typically tens to low-hundreds of milliseconds regardless of processor wall-clock. For a 10-second processor: connection-hold time drops from ~10s to ~150ms, raising sustainable throughput per node from ~2.5 tx/s to ~80+ tx/s on the same pool. Trade-offs: cascade atomicity is broken at the segment boundary (entity becomes publicly observable in pre-callout state; engine cannot rollback if `TX_post` aborts); processor must be idempotent (retries re-dispatch); CAS conflict at segment continuation surfaces as `409 retryable`. See `docs/CONSISTENCY.md` §10 for the full author-facing contract. `ASYNC_NEW_TX` (savepoint mode) does **not** relieve connection-pool pressure — it still holds the parent connection through the processor; it only changes failure semantics (savepoint rollback vs. cascade abort). For slow external work, prefer `COMMIT_BEFORE_DISPATCH`.
 
 ### 14.3 Data Volume Limits
 
@@ -1581,6 +1657,7 @@ These are order-of-magnitude expectations for a 3-node cluster with PostgreSQL o
 | Entity create (no workflow) | 5–20 ms | 50–200/s per node |
 | Entity create (with sync processor, local compute) | 50–500 ms (dominated by processor) | Bounded by processor speed |
 | Entity create (with sync processor, cross-node dispatch) | +1–5 ms over local | One HTTP hop for dispatch forward |
+| Entity create (with `COMMIT_BEFORE_DISPATCH` processor, e.g. 2s external compute) | ~2 s wall-clock; PG connection held ~50–100 ms in `TX_pre` + ~50 ms in `TX_post` (~150 ms cumulative) | Decoupled from processor duration. 10 concurrent such cascades consume ~10 × 150 ms = 1.5 connection-seconds, vs. ~10 × 2 s = 20 connection-seconds under SYNC. |
 | Entity read (current) | 1–5 ms | 200–1000/s per node |
 | Entity read (point-in-time) | 2–10 ms | Depends on version count |
 | Sync search (small result set) | 10–100 ms | Bounded by entity count × predicate cost |
@@ -1590,7 +1667,7 @@ These are order-of-magnitude expectations for a 3-node cluster with PostgreSQL o
 | Cross-node proxy hop (CRUD callback) | 1–3 ms intra-cluster | Transparent, adds to overall latency |
 | Gossip convergence (new member) | 1–3 seconds | Depends on cluster size |
 
-**Key insight for sizing:** The dominant factor in transaction latency is compute phase duration. If processors complete in 100ms, a 3-node cluster with 25 PG connections per node can sustain ~750 concurrent transactions, yielding ~7,500 transactions/second at 100ms each. If processors take 10 seconds, the same cluster sustains ~75 concurrent transactions, yielding ~7.5 transactions/second. Processor speed is the lever.
+**Key insight for sizing:** The dominant factor in transaction latency is compute phase duration. If processors complete in 100ms, a 3-node cluster with 25 PG connections per node can sustain ~750 concurrent transactions, yielding ~7,500 transactions/second at 100ms each. If processors take 10 seconds in `SYNC` mode, the same cluster sustains ~75 concurrent transactions, yielding ~7.5 transactions/second. Under `COMMIT_BEFORE_DISPATCH` the same 10-second processor holds the PG connection only for the segment-boundary work (~150 ms cumulative), restoring per-node throughput to roughly the no-workflow baseline regardless of processor duration. Processor speed is the lever for `SYNC`; for `COMMIT_BEFORE_DISPATCH`, the lever is segment-boundary work duration.
 
 ### DD-10: Store Entity IDs Only in Search Results
 

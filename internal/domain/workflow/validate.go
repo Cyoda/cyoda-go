@@ -7,6 +7,19 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// Processor execution-mode tokens. Sourced from the OpenAPI enum in
+// api/openapi.yaml (mirrored in api/generated.go's
+// ExternalizedProcessorDefinitionDtoExecutionMode constants). Centralised
+// here as untyped strings so engine logic, validator rules, and tests can
+// compare against a single source — the SPI's ExecutionMode field is itself
+// a plain string, so an enum type would not buy compile-time safety.
+const (
+	ExecutionModeSync                 = "SYNC"
+	ExecutionModeAsyncSameTx          = "ASYNC_SAME_TX"
+	ExecutionModeAsyncNewTx           = "ASYNC_NEW_TX"
+	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"
+)
+
 // validateWorkflows checks workflow definitions for definite infinite loops.
 // A definite infinite loop exists when there is a cycle of automated transitions
 // (manual=false) with NO criteria guards (nil/empty criterion = always fires).
@@ -16,6 +29,32 @@ func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 	for _, wf := range workflows {
 		if err := validateWorkflowLoops(wf); err != nil {
 			return fmt.Errorf("workflow %q: %w", wf.Name, err)
+		}
+		if err := validateProcessorFlags(wf); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProcessorFlags rejects misuse of processor-level flags whose
+// semantics are tied to a specific ExecutionMode. Currently enforces:
+//   - StartNewTxOnDispatch=true is only valid with ExecutionMode=COMMIT_BEFORE_DISPATCH.
+//
+// The check is asymmetric: COMMIT_BEFORE_DISPATCH processors with the flag
+// nil/false are equally valid (the flag just defaults to false). We never
+// inspect the flag for COMMIT_BEFORE_DISPATCH processors.
+func validateProcessorFlags(wf spi.WorkflowDefinition) error {
+	for _, st := range wf.States {
+		for _, tr := range st.Transitions {
+			for _, p := range tr.Processors {
+				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
+					p.ExecutionMode != ExecutionModeCommitBeforeDispatch {
+					return fmt.Errorf(
+						"workflow %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
+						wf.Name, tr.Name, p.Name, p.ExecutionMode)
+				}
+			}
 		}
 	}
 	return nil
