@@ -1844,7 +1844,13 @@ paths:
               - XML
         - name: transactionWindow
           in: query
-          description: Maximum number of entities per transaction batch
+          description: |
+            Maximum number of entities per transactional batch. Default 100,
+            maximum 1000; values outside (0, 1000] are rejected with 400
+            BAD_REQUEST. Collections exceeding the window are split into
+            multiple transactional batches committed sequentially. The
+            response is an array with one element per chunk in commit order;
+            chunks committed before any later failure remain durable.
           required: false
           schema:
             type: integer
@@ -1852,7 +1858,12 @@ paths:
             default: 100
         - name: transactionTimeoutMillis
           in: query
-          description: Maximum time in milliseconds allowed for transaction completion
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: integer
@@ -1860,7 +1871,12 @@ paths:
             default: 10000
         - name: waitForConsistencyAfter
           in: query
-          description: If true, waits for consistency after operation completes
+          description: |
+            If true, waits for consistency after operation completes.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: boolean
@@ -1999,7 +2015,13 @@ paths:
           example: JSON
         - name: transactionWindow
           in: query
-          description: Maximum number of entities per transaction batch
+          description: |
+            Maximum number of entities per transactional batch. Default 100,
+            maximum 1000; values outside (0, 1000] are rejected with 400
+            BAD_REQUEST. Collections exceeding the window are split into
+            multiple transactional batches committed sequentially. The
+            response is an array with one element per chunk in commit order;
+            chunks committed before any later failure remain durable.
           required: false
           schema:
             type: integer
@@ -2007,7 +2029,12 @@ paths:
             default: 100
         - name: transactionTimeoutMillis
           in: query
-          description: Maximum time in milliseconds allowed for transaction completion
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: integer
@@ -2015,7 +2042,12 @@ paths:
             default: 10000
         - name: waitForConsistencyAfter
           in: query
-          description: If true, waits for consistency after operation completes
+          description: |
+            If true, waits for consistency after operation completes.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: boolean
@@ -2165,8 +2197,13 @@ paths:
             type: string
         - name: transactionTimeoutMillis
           in: query
-          description: Maximum time in milliseconds allowed for transaction completion.
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
             Operation will fail if it takes longer than this timeout.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: integer
@@ -2175,9 +2212,14 @@ paths:
           example: 30000
         - name: waitForConsistencyAfter
           in: query
-          description: If true, waits for the consistency time to pass before responding.
+          description: |
+            If true, waits for the consistency time to pass before responding.
             May increase response time but guarantees data consistency when
             returning, so that subsequent calls will see the updated data.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: boolean
@@ -2342,8 +2384,13 @@ paths:
             type: string
         - name: transactionTimeoutMillis
           in: query
-          description: Maximum time in milliseconds allowed for transaction completion.
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
             Operation will fail if it takes longer than this timeout.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: integer
@@ -2352,9 +2399,14 @@ paths:
           example: 30000
         - name: waitForConsistencyAfter
           in: query
-          description: If true, waits for the consistency time to pass before responding.
+          description: |
+            If true, waits for the consistency time to pass before responding.
             May increase response time but guarantees data consistency when
             returning, so that subsequent calls will see the updated data.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: boolean
@@ -2512,7 +2564,15 @@ paths:
           example: 1
         - name: transactionWindow
           in: query
-          description: Maximum number of entities to process in a single transaction
+          description: |
+            Maximum number of entities per transactional batch. Applies only
+            when the request body is a JSON array; ignored for single-object
+            bodies. Default 100, maximum 1000; values outside (0, 1000] are
+            rejected with 400 BAD_REQUEST. Array bodies exceeding the window
+            are split into multiple transactional batches committed
+            sequentially. The response is then an array with one element per
+            chunk in commit order; chunks committed before any later failure
+            remain durable.
           required: false
           schema:
             type: integer
@@ -2520,7 +2580,12 @@ paths:
             default: 100
         - name: transactionTimeoutMillis
           in: query
-          description: Maximum time in milliseconds for transaction completion
+          description: |
+            Maximum time in milliseconds for transaction completion.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: integer
@@ -2528,7 +2593,12 @@ paths:
             default: 10000
         - name: waitForConsistencyAfter
           in: query
-          description: If true, waits for consistency after the operation completes
+          description: |
+            If true, waits for consistency after the operation completes.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
           required: false
           schema:
             type: boolean
@@ -7516,9 +7586,19 @@ components:
     EntityTransactionResponse:
       type: object
       description: |
-        Response returned by entity create/update operations. Contains the
-        transaction ID and the list of entity IDs affected by the operation.
-        entityIds contains UUID strings (server is source of truth — the
+        Response element returned by entity create/update operations. The
+        wire response is always an array of these elements, with one
+        element per transactional batch in commit order.
+
+        For collection endpoints the request may be split into multiple
+        chunks of up to `transactionWindow` items each. Successful chunks
+        carry `transactionId` + `entityIds`. If a later chunk fails after
+        earlier chunks have committed, the failure surfaces as an element
+        carrying the `error` object (with `chunkIndex` set to the failing
+        chunk's zero-based position) instead of `transactionId` and
+        `entityIds`. Earlier chunks remain durable.
+
+        `entityIds` contains UUID strings (server is source of truth — the
         server emits []string, not []object).
       properties:
         transactionId:
@@ -7529,8 +7609,26 @@ components:
           items:
             type: string
             format: uuid
-      required:
-        - entityIds
+        error:
+          type: object
+          description: |
+            Present only on chunk-failure elements. Absent on successful
+            elements (which carry `transactionId` + `entityIds`).
+          properties:
+            code:
+              type: string
+              description: AppError code (e.g. MODEL_NOT_FOUND, ENTITY_NOT_FOUND).
+            message:
+              type: string
+              description: Operator-facing failure message; safe for client display.
+            chunkIndex:
+              type: integer
+              format: int32
+              description: Zero-based index of the failing chunk in the response array.
+          required:
+            - code
+            - message
+            - chunkIndex
     LaureateDto:
       type: object
       properties:

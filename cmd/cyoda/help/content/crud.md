@@ -60,12 +60,13 @@ Body size limit on all write endpoints: 10 MiB.
 - `format` (path): `JSON` or `XML`
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32
-- `waitForConsistencyAfter` (query, optional): boolean, default `false`
-- `transactionTimeoutMillis` (query, optional): int64, default `10000`
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — applies only when the request body is a JSON array. Maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Array bodies exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is then an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
-If the request body is a JSON array, the handler delegates to the collection-create path: each element is treated as a separate entity of the same model.
+If the request body is a JSON array, each element is treated as a separate entity of the same model and the collection-create chunking contract applies (see `transactionWindow` above and the `POST /api/entity/{format}` partial-success shape below).
 
-Response: `200 OK`, `application/json`:
+Response: `200 OK`, `application/json`. Single-object body returns a one-element array; an array body returns one element per committed chunk in commit order:
 
 ```json
 [{
@@ -77,6 +78,9 @@ Response: `200 OK`, `application/json`:
 **POST /api/entity/{format}** — Create a collection (mixed models)
 
 - `format` (path): `JSON` or `XML`
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order.
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
 
@@ -96,9 +100,9 @@ Request body: JSON array of `CreatePayload` objects:
 ]
 ```
 
-Each item may reference a different model. All items are created in a single transaction.
+Each item may reference a different model. The collection is committed in transactional batches of at most `transactionWindow` items. Within a single chunk the create is all-or-nothing; chunks committed before any later failure remain durable.
 
-Response: `200 OK`, `application/json`:
+Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — one element per committed chunk in commit order:
 
 ```json
 [{
@@ -109,6 +113,18 @@ Response: `200 OK`, `application/json`:
   ]
 }]
 ```
+
+**Partial-success on chunk failure.** If a later chunk fails after earlier chunks have committed, the response is still HTTP 200 carrying the durable chunks plus an error element marking the failed chunk's index. Subsequent chunks are not attempted.
+
+```json
+[
+  { "transactionId": "tx-0", "entityIds": ["..."] },
+  { "transactionId": "tx-1", "entityIds": ["..."] },
+  { "error": { "code": "MODEL_NOT_FOUND", "message": "...", "chunkIndex": 2 } }
+]
+```
+
+When the very first chunk fails (no durable progress), the response is the standard `application/problem+json` 4xx error envelope instead.
 
 **GET /api/entity/{entityId}** — Read a single entity by UUID
 
@@ -140,8 +156,8 @@ Response: `200 OK`, `application/json`:
 - `format` (path): `JSON` or `XML`
 - `entityId` (path): UUID
 - `If-Match` (header, optional): transaction ID of last read — optimistic concurrency; if the entity was modified since, returns `412 Precondition Failed`
-- `transactionTimeoutMillis` (query, optional): int64, default `10000`
-- `waitForConsistencyAfter` (query, optional): boolean, default `false`
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 Request body: updated entity JSON/XML payload.
 
@@ -160,17 +176,17 @@ Response: `200 OK`, `application/json`:
 - `entityId` (path): UUID
 - `transition` (path): string — transition name defined in the model's workflow
 - `If-Match` (header, optional): transaction ID
-- `transactionTimeoutMillis` (query, optional): int64, default `10000`
-- `waitForConsistencyAfter` (query, optional): boolean, default `false`
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 Response: `200 OK`, same shape as loopback update.
 
 **PUT /api/entity/{format}** — Update a collection (mixed entities)
 
 - `format` (path): `JSON` (only supported format today; single-item PUT endpoints still accept XML)
-- `transactionWindow` (query, optional): int32, default `100`, max `1000` — max items accepted in one batch; batches over the window are rejected with `400 BAD_REQUEST`
-- `transactionTimeoutMillis` (query, optional): int64, default `10000`
-- `waitForConsistencyAfter` (query, optional): boolean, default `false`
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
 
@@ -191,9 +207,9 @@ Request body: JSON array of update items:
 ]
 ```
 
-If any entity in the collection is not found, the entire operation fails and no entities are updated (all-or-nothing).
+Within a single chunk the update is all-or-nothing: if any entity in the chunk is not found, the entire chunk rolls back and earlier chunks remain durable. If the very first chunk fails (no durable progress), the response is the standard `application/problem+json` 4xx error envelope; otherwise the response is HTTP 200 with the per-chunk array (see partial-success shape under collection-create).
 
-Response: `200 OK`, `application/json`, `EntityTransactionResponse` array (one element — the whole collection runs in a single transaction):
+Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — one element per committed chunk in commit order:
 
 ```json
 [
