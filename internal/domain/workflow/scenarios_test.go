@@ -707,10 +707,23 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	if rr.Code != 400 {
 		t.Fatalf("expected status 400 for startNewTxOnDispatch misuse, got %d; body: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "startNewTxOnDispatch") {
-		t.Fatalf("expected 'startNewTxOnDispatch' in response, got: %s", rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "VALIDATION_FAILED") {
-		t.Fatalf("expected VALIDATION_FAILED error code in response, got: %s", rr.Body.String())
+	body := rr.Body.String()
+	// Pin the full error format reaches the HTTP caller intact: error code,
+	// flag name, plus all four context fields the validator includes
+	// (workflow / transition / processor / offending mode). A future handler
+	// change that collapses this message would surface as a regression here,
+	// not just in the unit-level validator test. The validator uses %q on
+	// each name; the JSON response body escapes those inner quotes as \".
+	for _, want := range []string{
+		"VALIDATION_FAILED",
+		"startNewTxOnDispatch",
+		`workflow \"snttd-wf\"`,
+		`transition \"t\"`,
+		`processor \"p\"`,
+		`got \"SYNC\"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected response body to contain %q; got: %s", want, body)
+		}
 	}
 }
