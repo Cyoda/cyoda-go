@@ -2378,3 +2378,163 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 		t.Errorf("durable data unexpectedly contains cascade's intended mutation: %s", got.Data)
 	}
 }
+
+// TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath drives the
+// COMMIT_BEFORE_DISPATCH execution branch with startNewTxOnDispatch=true.
+// In this branch the engine commits TX_pre, opens TX_post BEFORE dispatch,
+// hands the processor TX_post's token (both via the gRPC arg and via the
+// ctx tx-state), then CAS-applies the engine's apply-result against TX_pre's
+// ID inside TX_post. The processor may perform transactional CRUD on
+// secondary entities via TX_post's token; both that CRUD and the engine's
+// CAS land atomically when TX_post commits.
+//
+// Asserts:
+//   - The dispatch ctx carries a transaction (spi.GetTransaction(ctx) != nil).
+//   - The dispatch txID arg is non-empty AND equals the ctx-state TX ID
+//     (the processor sees a single, consistent TX_post identifier).
+//   - The in-memory entity reflects the engine's apply-result (the cascade
+//     anchor's mutated Data) and the post-callout state.
+//
+// Durability of e1 + e2 from an independent reader is NOT asserted here:
+// TX_post is left open by the engine pending the Task 12/13 handler refactor
+// that wires the final commit. See the trailing comment block.
+func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	var dispatchCtxHasTx bool
+	var dispatchCtxTxID string
+	var dispatchTxToken string
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
+			// Capture the tx state seen by the processor:
+			//   - dispatchCtxHasTx / dispatchCtxTxID: from the ctx (spi.GetTransaction)
+			//   - dispatchTxToken:                   from the gRPC-arg txID
+			// In the =true branch both must be non-empty AND agree.
+			if state := spi.GetTransaction(ctx); state != nil {
+				dispatchCtxHasTx = true
+				dispatchCtxTxID = state.ID
+			}
+			dispatchTxToken = txID
+
+			// Processor performs CRUD on a SECONDARY entity (distinct from
+			// the cascade anchor) via TX_post's token in ctx.
+			es, esErr := factory.EntityStore(ctx)
+			if esErr != nil {
+				return nil, fmt.Errorf("processor EntityStore: %w", esErr)
+			}
+			secondary := &spi.Entity{
+				Meta: spi.EntityMeta{
+					ID:            "cbd-true-secondary",
+					TenantID:      testTenant,
+					ModelRef:      entity.Meta.ModelRef,
+					State:         "ready",
+					TransactionID: txID,
+				},
+				Data: []byte(`{"y":1}`),
+			}
+			if _, sErr := es.Save(ctx, secondary); sErr != nil {
+				return nil, fmt.Errorf("processor Save secondary: %w", sErr)
+			}
+
+			// Cascade-anchor mutation; engine applies via CAS in TX_post.
+			modified, _ := json.Marshal(map[string]any{"enriched": true, "x": 42})
+			return &spi.Entity{Data: modified}, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-true", ModelVersion: "1.0"}
+
+	tt := true
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdTrueWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{
+				{Name: "CALLOUT", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{
+							Type:          "EXTERNAL",
+							Name:          "cbd-proc",
+							ExecutionMode: ExecutionModeCommitBeforeDispatch,
+							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
+						},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	// Cascade-entry transaction (TX_pre). The engine commits this during the
+	// CBD branch and opens its own TX_post.
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-true-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: txID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	result, err := engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success=true")
+	}
+	if entity.Meta.State != "S_post" {
+		t.Fatalf("expected state=S_post, got %q", entity.Meta.State)
+	}
+
+	// Processor must have been dispatched with a tx in ctx AND a non-empty
+	// tx token, and the two must agree (single TX_post identifier).
+	if !dispatchCtxHasTx {
+		t.Errorf("expected processor ctx to carry a transaction in =true branch, but found none")
+	}
+	if dispatchTxToken == "" {
+		t.Errorf("expected processor txID arg to be non-empty in =true branch, got empty")
+	}
+	if dispatchCtxTxID != dispatchTxToken {
+		t.Errorf("ctx tx and arg-token disagree: ctx=%q arg=%q", dispatchCtxTxID, dispatchTxToken)
+	}
+	// And the dispatch-time TX_post is distinct from the cascade-entry TX_pre.
+	if dispatchTxToken == txID {
+		t.Errorf("dispatch tx token equals cascade-entry tx (TX_pre); expected a fresh TX_post")
+	}
+
+	// Verify the in-memory entity reflects the processor's mutation
+	// (applied via CompareAndSave inside TX_post's buffer) and the post-
+	// callout state.
+	var finalData map[string]any
+	if err := json.Unmarshal(entity.Data, &finalData); err != nil {
+		t.Fatalf("unmarshal entity data: %v", err)
+	}
+	if finalData["enriched"] != true {
+		t.Errorf("expected in-memory processor mutation enriched=true, got %v", finalData)
+	}
+	if v, ok := finalData["x"].(float64); !ok || v != 42 {
+		t.Errorf("expected in-memory processor mutation x=42, got %v", finalData["x"])
+	}
+
+	// Durability of e1 (cascade anchor in S_post) and e2 (secondary written
+	// by the processor via TX_post's token) is NOT asserted here. Both
+	// writes live in TX_post's buffer, and TX_post is left open by the
+	// engine pending the Task 12/13 handler refactor that wires the final
+	// commit. Once that lands, this test should be extended to assert that
+	// an independent reader sees both entities post-cascade.
+	// TODO(issue-27, Task 13): assert durability of e1 in S_post and e2
+	// once the handler commits the engine's final TX_post.
+}
