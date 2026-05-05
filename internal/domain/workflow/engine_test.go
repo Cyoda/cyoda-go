@@ -2643,3 +2643,188 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *t
 	// add a durable-read assertion confirming the engine's data is what hits
 	// the committed store. Until then, only in-memory entity is asserted.
 }
+
+// TestEngine_CommitBeforeDispatch_AuditEventPlacement pins down spec §8's
+// audit-event labelling decision for COMMIT_BEFORE_DISPATCH:
+//
+//   - SMEventProcessingPaused is recorded BEFORE the processor dispatches; it
+//     lands physically in TX_pre's audit (durable on TX_pre.Commit).
+//   - SMEventStateProcessResult is recorded AFTER the processor returns; it
+//     lands physically in TX_post's audit.
+//   - BOTH events carry the cascade-entry txID as their TransactionID field
+//     (NOT the segment's currentTxID). This preserves the existing
+//     GET /audit/entity/{id}/workflow/{txId}/finished query semantics.
+//
+// We assert both axes inside the dispatch fake (which runs after TX_pre.Commit
+// and before TX_post.Begin in the false branch):
+//
+//   - SMEventProcessingPaused IS visible to a fresh reader (durable in TX_pre)
+//     AND its TransactionID equals the cascade-entry txID.
+//   - SMEventStateProcessResult is NOT yet visible (the engine emits it only
+//     after executeCommitBeforeDispatch returns).
+//
+// After cascade returns, both bracketing events are present with the
+// cascade-entry txID label. Full durable-after-TX_post-commit assertion lands
+// once Task 13 commits TX_post end-to-end.
+func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	var (
+		auditDuringDispatch    []spi.StateMachineEvent
+		auditDuringDispatchErr error
+	)
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			// Read audit from a FRESH context (no inherited tx token) so we
+			// observe what a third-party reader would see at this instant.
+			rCtx := ctxWithTenant(testTenant)
+			rTxID, rTxCtx, err := txMgr.Begin(rCtx)
+			if err != nil {
+				auditDuringDispatchErr = fmt.Errorf("reader Begin: %w", err)
+				return &spi.Entity{Data: e.Data}, nil
+			}
+			defer func() { _ = txMgr.Rollback(rTxCtx, rTxID) }()
+
+			as, err := factory.StateMachineAuditStore(rTxCtx)
+			if err != nil {
+				auditDuringDispatchErr = fmt.Errorf("reader audit store: %w", err)
+				return &spi.Entity{Data: e.Data}, nil
+			}
+			auditDuringDispatch, auditDuringDispatchErr = as.GetEvents(rTxCtx, e.Meta.ID)
+
+			modified, _ := json.Marshal(map[string]any{"x": 42})
+			return &spi.Entity{Data: modified}, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-audit", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdAuditWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t1", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: "EXTERNAL", Name: "p1", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	// Cascade-entry txID — captured before Execute so we can assert that
+	// audit events carry it as their TransactionID label, regardless of
+	// which segment physically commits each event.
+	cascadeEntryTxID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-audit-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: cascadeEntryTxID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if auditDuringDispatchErr != nil {
+		t.Fatalf("audit read inside dispatch failed: %v", auditDuringDispatchErr)
+	}
+
+	// --- Assertion 1: SMEventProcessingPaused is durable during dispatch
+	// (recorded in TX_pre, which has been committed before the processor
+	// runs in the false branch).
+	var paused *spi.StateMachineEvent
+	for i := range auditDuringDispatch {
+		if auditDuringDispatch[i].EventType == spi.SMEventProcessingPaused {
+			paused = &auditDuringDispatch[i]
+			break
+		}
+	}
+	if paused == nil {
+		t.Fatalf("expected SMEventProcessingPaused durable during dispatch (TX_pre.Commit), "+
+			"none found in %d events: %+v", len(auditDuringDispatch), auditDuringDispatch)
+	}
+
+	// --- Assertion 2 (load-bearing): SMEventProcessingPaused carries the
+	// cascade-entry txID as its TransactionID — NOT the segment's currentTxID.
+	// If this fails, Task 5's audit-labelling decision is broken.
+	if paused.TransactionID != cascadeEntryTxID {
+		t.Errorf("paused.TransactionID = %q, want cascade-entry %q "+
+			"(spec §8: bracketing audit events carry the cascade-entry txID)",
+			paused.TransactionID, cascadeEntryTxID)
+	}
+
+	// --- Assertion 3: SMEventStateProcessResult is NOT yet visible during
+	// dispatch — the engine emits it only after executeCommitBeforeDispatch
+	// returns.
+	for _, e := range auditDuringDispatch {
+		if e.EventType == spi.SMEventStateProcessResult {
+			t.Errorf("unexpected SMEventStateProcessResult visible during dispatch "+
+				"(should be emitted only after the processor returns); event=%+v", e)
+		}
+	}
+
+	// --- Assertion 4: after the cascade returns, BOTH bracketing events
+	// are present with the cascade-entry txID label. We read via the
+	// engine-discarded txCtx — which still owns its (unstaffed) tx token,
+	// but the in-memory audit store is non-transactional so it sees
+	// everything recorded so far. This is sufficient to assert labelling;
+	// the durable-read variant of this assertion lands once Task 13
+	// commits TX_post end-to-end.
+	auditAfter, err := func() ([]spi.StateMachineEvent, error) {
+		rCtx := ctxWithTenant(testTenant)
+		rTxID, rTxCtx, bErr := txMgr.Begin(rCtx)
+		if bErr != nil {
+			return nil, bErr
+		}
+		defer func() { _ = txMgr.Rollback(rTxCtx, rTxID) }()
+		as, asErr := factory.StateMachineAuditStore(rTxCtx)
+		if asErr != nil {
+			return nil, asErr
+		}
+		return as.GetEvents(rTxCtx, entity.Meta.ID)
+	}()
+	if err != nil {
+		t.Fatalf("post-cascade audit read: %v", err)
+	}
+
+	var postPaused, postResult *spi.StateMachineEvent
+	for i := range auditAfter {
+		switch auditAfter[i].EventType {
+		case spi.SMEventProcessingPaused:
+			postPaused = &auditAfter[i]
+		case spi.SMEventStateProcessResult:
+			postResult = &auditAfter[i]
+		}
+	}
+	if postPaused == nil {
+		t.Errorf("expected SMEventProcessingPaused after cascade, none in %d events", len(auditAfter))
+	} else if postPaused.TransactionID != cascadeEntryTxID {
+		t.Errorf("post-cascade paused.TransactionID = %q, want %q",
+			postPaused.TransactionID, cascadeEntryTxID)
+	}
+	if postResult == nil {
+		t.Errorf("expected SMEventStateProcessResult after cascade, none in %d events", len(auditAfter))
+	} else if postResult.TransactionID != cascadeEntryTxID {
+		t.Errorf("post-cascade result.TransactionID = %q, want cascade-entry %q "+
+			"(spec §8: even though this event physically lives in TX_post, its "+
+			"TransactionID label is the cascade-entry txID for client correlation)",
+			postResult.TransactionID, cascadeEntryTxID)
+	}
+}
