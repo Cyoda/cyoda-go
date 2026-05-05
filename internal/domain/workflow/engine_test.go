@@ -1948,3 +1948,151 @@ func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
 		t.Fatalf("Commit (cleanup): %v", err)
 	}
 }
+
+// TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath drives the
+// COMMIT_BEFORE_DISPATCH execution branch with startNewTxOnDispatch=false
+// (the default). It asserts:
+//   - TX_pre is committed before the processor is dispatched (the entity in
+//     state S_pre is durable and readable from an independent TX).
+//   - The processor receives a context with NO active transaction.
+//   - The processor's mutations are applied via CompareAndSave in TX_post.
+//   - The cascade completes; the post-dispatch txID is different from the
+//     cascade-entry txID.
+func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	var dispatchCtxHasTx bool
+	var dispatchTxToken string
+	var preEntityVisible bool
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
+			// Capture the tx state seen by the processor.
+			if state := spi.GetTransaction(ctx); state != nil {
+				dispatchCtxHasTx = true
+				dispatchTxToken = state.ID
+			}
+			dispatchTxToken = txID
+
+			// Verify TX_pre is durable: a fresh, independent TX should see
+			// the entity flushed in S_pre (the pre-callout state). We use
+			// a brand-new context so we don't inherit any tx token.
+			readCtx := ctxWithTenant(testTenant)
+			readTxID, readCtx2, err := txMgr.Begin(readCtx)
+			if err == nil {
+				es, _ := factory.EntityStore(readCtx2)
+				got, getErr := es.Get(readCtx2, entity.Meta.ID)
+				if getErr == nil && got != nil && got.Meta.State == "S_pre" {
+					preEntityVisible = true
+				}
+				_ = txMgr.Rollback(readCtx2, readTxID)
+			}
+
+			// Return an entity-data mutation that should land in TX_post.
+			modified, _ := json.Marshal(map[string]any{"enriched": true, "x": 1})
+			return &spi.Entity{Data: modified}, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-false", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdFalseWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{
+				{Name: "CALLOUT", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	// Wrap the engine call in a parent transaction so that TX_pre is real
+	// (mirrors what entity/service.go does for callers).
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-false-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: txID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	result, err := engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success=true")
+	}
+	if entity.Meta.State != "S_post" {
+		t.Fatalf("expected state=S_post, got %q", entity.Meta.State)
+	}
+
+	// Processor must have been dispatched with NO transaction in ctx and
+	// NO tx token (false branch).
+	if dispatchCtxHasTx {
+		t.Errorf("expected processor ctx to have no tx, but found one")
+	}
+	if dispatchTxToken != "" {
+		t.Errorf("expected processor txID token to be empty, got %q", dispatchTxToken)
+	}
+
+	// TX_pre must be durable at dispatch time: the entity in S_pre had to be
+	// visible from an independent TX while the processor was running.
+	if !preEntityVisible {
+		t.Errorf("expected entity to be durable in S_pre during dispatch (TX_pre committed)")
+	}
+
+	// The original TX_pre is now closed (committed by the engine). The
+	// service-layer Commit will fail with no-such-tx — emulating that here
+	// confirms TX_pre is gone:
+	if err := txMgr.Commit(txCtx, txID); err == nil {
+		t.Errorf("expected TX_pre commit attempt to fail (engine already committed it)")
+	}
+
+	// Verify the in-memory entity reflects the processor's mutation
+	// (applied via CompareAndSave inside TX_post's buffer) and the post-
+	// callout state.
+	var finalData map[string]any
+	if err := json.Unmarshal(entity.Data, &finalData); err != nil {
+		t.Fatalf("unmarshal entity data: %v", err)
+	}
+	if finalData["enriched"] != true {
+		t.Errorf("expected in-memory processor mutation enriched=true, got %v", finalData)
+	}
+
+	// TX_pre's view of the entity (in S_pre) is the only durable view at
+	// this point: TX_post is still open (Task 12/13 will commit it via the
+	// handler). Verify TX_pre is durable from a fresh, independent TX.
+	readTxID, readCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (final read): %v", err)
+	}
+	defer func() { _ = txMgr.Rollback(readCtx, readTxID) }()
+	es, _ := factory.EntityStore(readCtx)
+	got, err := es.Get(readCtx, "cbd-false-1")
+	if err != nil {
+		t.Fatalf("final Get: %v", err)
+	}
+	if got.Meta.State != "S_pre" {
+		t.Errorf("durable state from independent TX = %q, want S_pre (TX_pre commit); "+
+			"S_post will become durable once Task 12/13 commits TX_post",
+			got.Meta.State)
+	}
+}

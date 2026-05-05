@@ -140,20 +140,40 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	entity.Meta.State = selectedWF.InitialState
 
 	// Named transition (on creation with explicit transition).
+	currentCtx := ctx
+	currentTxID := txID
 	if transitionName != "" {
-		if err := e.attemptTransition(ctx, entity, selectedWF, transitionName, auditStore, txID); err != nil {
+		nCtx, nTxID, err := e.attemptTransition(currentCtx, entity, selectedWF, transitionName, auditStore, currentTxID)
+		currentCtx = nCtx
+		currentTxID = nTxID
+		if err != nil {
 			return nil, err
 		}
 	}
 
 	// Cascade automated transitions.
-	if err := e.cascadeAutomated(ctx, entity, selectedWF, auditStore, txID); err != nil {
+	nCtx, nTxID, err := e.cascadeAutomated(currentCtx, entity, selectedWF, auditStore, currentTxID)
+	currentCtx = nCtx
+	currentTxID = nTxID
+	if err != nil {
 		return nil, err
 	}
 
-	// Record FINISHED.
-	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+	// Record FINISHED. Recorded via currentCtx so it lands in whichever segment
+	// is currently open; cascade-entry txID for client-correlation continuity
+	// (spec §8).
+	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "State machine finished", map[string]any{"success": true})
+
+	// TODO(issue-27, Task 12): when the cascade segments via
+	// COMMIT_BEFORE_DISPATCH, currentCtx/currentTxID identify TX_post which
+	// is still open here. Task 12 will extend *spi.ExecutionResult to carry
+	// FinalCtx/FinalTxID; Task 13 will refactor entity/service.go to commit
+	// TX_post (instead of the now-closed TX_pre). Until then, segmenting
+	// cascades leak an open TX_post — acceptable only because Task 5 lands
+	// the engine plumbing without yet routing it through the handler.
+	_ = currentCtx
+	_ = currentTxID
 
 	return &spi.ExecutionResult{
 		State:   entity.Meta.State,
@@ -205,16 +225,24 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		return nil, fmt.Errorf("no workflow contains state %q for model %s", entity.Meta.State, entity.Meta.ModelRef)
 	}
 
-	if err := e.attemptTransition(ctx, entity, wf, transitionName, auditStore, txID); err != nil {
+	currentCtx, currentTxID, err := e.attemptTransition(ctx, entity, wf, transitionName, auditStore, txID)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID); err != nil {
+	currentCtx, currentTxID, err = e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
+	if err != nil {
 		return nil, err
 	}
 
-	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "Manual transition finished", map[string]any{"success": true})
+
+	// TODO(issue-27, Task 12): see Execute() for the same gap — TX_post may
+	// still be open if the cascade segmented; Task 12/13 wires this through
+	// *spi.ExecutionResult and the handler.
+	_ = currentCtx
+	_ = currentTxID
 
 	return &spi.ExecutionResult{
 		State:   entity.Meta.State,
@@ -275,12 +303,19 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*spi.Executi
 		}, nil
 	}
 
-	if err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID); err != nil {
+	currentCtx, currentTxID, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
+	if err != nil {
 		return nil, err
 	}
 
-	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "Loopback finished", map[string]any{"success": true})
+
+	// TODO(issue-27, Task 12): see Execute() for the same gap — TX_post may
+	// still be open if the cascade segmented; Task 12/13 wires this through
+	// *spi.ExecutionResult and the handler.
+	_ = currentCtx
+	_ = currentTxID
 
 	return &spi.ExecutionResult{
 		State:   entity.Meta.State,
@@ -349,11 +384,15 @@ func (e *Engine) findWorkflowForState(workflows []spi.WorkflowDefinition, state 
 	return nil
 }
 
-// attemptTransition finds and fires a named transition from the entity's current state.
-func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transitionName string, auditStore spi.StateMachineAuditStore, txID string) error {
+// attemptTransition finds and fires a named transition from the entity's
+// current state. Returns the (possibly updated) ctx and txID — the cascade
+// segment boundary may shift these when a COMMIT_BEFORE_DISPATCH processor
+// runs. Audit events continue to use the cascade-entry txID for
+// client-correlation continuity (spec §8).
+func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transitionName string, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, error) {
 	stateDef, ok := wf.States[entity.Meta.State]
 	if !ok {
-		return fmt.Errorf("state %q not found in workflow %q", entity.Meta.State, wf.Name)
+		return ctx, txID, fmt.Errorf("state %q not found in workflow %q", entity.Meta.State, wf.Name)
 	}
 
 	var transition *spi.TransitionDefinition
@@ -367,13 +406,13 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 	if transition == nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q not found in state %q", transitionName, entity.Meta.State), nil)
-		return fmt.Errorf("transition %q not found in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
+		return ctx, txID, fmt.Errorf("transition %q not found in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
 	if transition.Disabled {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName), nil)
-		return fmt.Errorf("transition %q is disabled in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
+		return ctx, txID, fmt.Errorf("transition %q is disabled in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
 	// Evaluate transition criterion.
@@ -382,41 +421,52 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
-			return fmt.Errorf("failed to evaluate transition criterion: %w", err)
+			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
 		if !matched {
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionCriterionNoMatch,
 				fmt.Sprintf("Transition %q criterion not matched", transitionName), nil)
-			return fmt.Errorf("transition %q criterion not matched", transitionName)
+			return ctx, txID, fmt.Errorf("transition %q criterion not matched", transitionName)
 		}
 	}
 
-	// Execute processors.
-	if err := e.executeProcessors(ctx, transition.Processors, entity, auditStore, wf.Name, transitionName, txID); err != nil {
-		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+	// Execute processors. May shift (ctx, txID) for COMMIT_BEFORE_DISPATCH.
+	newCtx, newTxID, err := e.executeProcessors(ctx, transition.Processors, entity, auditStore, wf.Name, transitionName, txID)
+	if err != nil {
+		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
 			map[string]any{"success": false})
-		return err
+		return newCtx, newTxID, err
 	}
 
-	// Record transition and move state.
-	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+	// Record transition and move state. The audit event uses the cascade-entry
+	// txID for correlation; it is recorded via newCtx so it lands in whichever
+	// segment is currently open.
+	e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventTransitionMade,
 		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
 	entity.Meta.State = transition.Next
 
-	return nil
+	return newCtx, newTxID, nil
 }
 
-// cascadeAutomated loops through automated transitions until a stable state is reached.
-// It enforces both a per-state visit limit and a total cascade depth safety net.
-func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) error {
+// cascadeAutomated loops through automated transitions until a stable state
+// is reached. It enforces both a per-state visit limit and a total cascade
+// depth safety net.
+//
+// Returns the (possibly updated) ctx and txID — the cascade segment boundary
+// may shift these when a COMMIT_BEFORE_DISPATCH processor runs (spec §3, §4).
+// The cascade-entry txID is preserved for audit-event correlation (spec §8).
+func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, error) {
 	ctx, cascadeSpan := tracer.Start(ctx, "workflow.cascade", trace.WithAttributes(
 		observability.AttrWorkflowName.String(wf.Name),
 		observability.AttrEntityID.String(entity.Meta.ID),
 	))
 	defer cascadeSpan.End()
+
+	currentCtx := ctx
+	currentTxID := txID
 
 	stateVisits := make(map[string]int)
 
@@ -425,14 +475,14 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		stateVisits[state]++
 		if stateVisits[state] > e.maxStateVisits {
 			reason := fmt.Sprintf("state %q visited %d times (limit: %d)", state, stateVisits[state], e.maxStateVisits)
-			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
+			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, state,
 				spi.SMEventCancelled, "State machine aborted: "+reason, nil)
-			return fmt.Errorf("state machine aborted: %s", reason)
+			return currentCtx, currentTxID, fmt.Errorf("state machine aborted: %s", reason)
 		}
 
 		stateDef, ok := wf.States[state]
 		if !ok {
-			return nil // state not in workflow — stable
+			return currentCtx, currentTxID, nil // state not in workflow — stable
 		}
 
 		fired := false
@@ -445,38 +495,42 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 			// Evaluate criterion.
 			if len(tr.Criterion) > 0 && string(tr.Criterion) != "null" {
 				matched, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
-					ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
+					ctx: currentCtx, txID: txID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
 				})
 				if err != nil {
-					return fmt.Errorf("failed to evaluate transition criterion: %w", err)
+					return currentCtx, currentTxID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 				}
 				if !matched {
-					e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+					e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 						spi.SMEventTransitionCriterionNoMatch,
 						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name), nil)
 					continue
 				}
 			}
 
-			// Execute processors.
-			_, trSpan := tracer.Start(ctx, "workflow.transition", trace.WithAttributes(
+			// Execute processors. May shift (currentCtx, currentTxID) when
+			// a COMMIT_BEFORE_DISPATCH processor commits the segment.
+			_, trSpan := tracer.Start(currentCtx, "workflow.transition", trace.WithAttributes(
 				observability.AttrTransitionName.String(tr.Name),
 				observability.AttrStateFrom.String(entity.Meta.State),
 				observability.AttrStateTo.String(tr.Next),
 				observability.AttrCascadeDepth.Int(depth),
 			))
-			if err := e.executeProcessors(ctx, tr.Processors, entity, auditStore, wf.Name, tr.Name, txID); err != nil {
+			newCtx, newTxID, err := e.executeProcessors(currentCtx, tr.Processors, entity, auditStore, wf.Name, tr.Name, currentTxID)
+			currentCtx = newCtx
+			currentTxID = newTxID
+			if err != nil {
 				trSpan.RecordError(err)
 				trSpan.End()
-				e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+				e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 					spi.SMEventStateProcessResult,
 					fmt.Sprintf("Processor failed for transition %q: %v", tr.Name, err),
 					map[string]any{"success": false})
-				return err
+				return currentCtx, currentTxID, err
 			}
 
 			// Record transition and move state.
-			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionMade,
 				fmt.Sprintf("Transition %q: %s → %s", tr.Name, entity.Meta.State, tr.Next), nil)
 			entity.Meta.State = tr.Next
@@ -487,14 +541,14 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 
 		if !fired {
 			cascadeSpan.SetAttributes(observability.AttrCascadeDepth.Int(depth))
-			return nil // stable state
+			return currentCtx, currentTxID, nil // stable state
 		}
 	}
 
 	reason := fmt.Sprintf("cascade depth exceeded (%d) at state %q", maxCascadeDepth, entity.Meta.State)
-	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventCancelled, "State machine aborted: "+reason, nil)
-	return fmt.Errorf("state machine aborted: %s", reason)
+	return currentCtx, currentTxID, fmt.Errorf("state machine aborted: %s", reason)
 }
 
 // criterionContext carries contextual information needed for FUNCTION criteria
@@ -528,14 +582,25 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
-// ASYNC_NEW_TX runs within a savepoint (failures are non-fatal), while SYNC
-// and ASYNC_SAME_TX run inline in the caller's transaction context.
-func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) error {
+// ASYNC_NEW_TX runs within a savepoint (failures are non-fatal); SYNC and
+// ASYNC_SAME_TX run inline in the caller's transaction context;
+// COMMIT_BEFORE_DISPATCH commits the current segment before dispatch and
+// continues the cascade in a fresh segment.
+//
+// The function returns the (possibly mutated) ctx and txID that subsequent
+// processors / transitions should use. For SYNC / ASYNC_SAME_TX / ASYNC_NEW_TX
+// these are unchanged from the inputs; for COMMIT_BEFORE_DISPATCH the segment
+// boundary shifts (currentCtx, currentTxID) to TX_post.
+//
+// Per spec §8: every audit event for a single cascade carries the cascade-entry
+// txID for client-correlation continuity, regardless of which segment commits
+// the event.
+func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) (context.Context, string, error) {
 	if len(processors) == 0 {
-		return nil
+		return ctx, txID, nil
 	}
 
-	// Record processing pause.
+	// Record processing pause (in TX_pre, with cascade-entry txID — correct).
 	names := make([]string, len(processors))
 	for i, p := range processors {
 		names[i] = p.Name
@@ -544,13 +609,16 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		spi.SMEventProcessingPaused,
 		fmt.Sprintf("Paused for processors: %v", names), nil)
 
+	currentCtx := ctx
+	currentTxID := txID
+
 	for _, proc := range processors {
 		var success bool
 		var procErr error
 
 		switch proc.ExecutionMode {
 		case ExecutionModeAsyncNewTx:
-			procErr = e.executeAsyncNewTx(ctx, entity, proc, workflow, transition, txID)
+			procErr = e.executeAsyncNewTx(currentCtx, entity, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 
 			// ASYNC_NEW_TX failures are non-fatal: log warning, continue pipeline.
@@ -559,8 +627,18 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 					"pkg", "workflow", "processor", proc.Name, "error", procErr)
 			}
 
+		case ExecutionModeCommitBeforeDispatch:
+			var nCtx context.Context
+			var nTxID string
+			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, proc, workflow, transition, currentTxID)
+			success = procErr == nil
+			if procErr == nil {
+				currentCtx = nCtx
+				currentTxID = nTxID
+			}
+
 		default: // SYNC, ASYNC_SAME_TX — both inline in caller's transaction.
-			procErr = e.executeSyncProcessor(ctx, entity, proc, workflow, transition, txID)
+			procErr = e.executeSyncProcessor(currentCtx, entity, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 		}
 
@@ -571,16 +649,22 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		if procErr != nil {
 			auditData["error"] = procErr.Error()
 		}
-		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+		// Per spec §8: audit events use the cascade-entry txID for
+		// correlation continuity, even though they physically land in
+		// whichever segment's TX is current. The event still records via
+		// currentCtx so that pre-segment-boundary events (in TX_pre) write
+		// to TX_pre's buffer and post-segment-boundary events write to
+		// TX_post's buffer.
+		e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult,
 			fmt.Sprintf("Processor %q completed", proc.Name), auditData)
 
-		// For SYNC/ASYNC_SAME_TX, failure kills the pipeline.
+		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, failure kills the pipeline.
 		if procErr != nil && proc.ExecutionMode != ExecutionModeAsyncNewTx {
-			return fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
+			return currentCtx, currentTxID, fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
 		}
 	}
-	return nil
+	return currentCtx, currentTxID, nil
 }
 
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
@@ -635,6 +719,97 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 		return fmt.Errorf("savepoint release failed: %w", err)
 	}
 	return nil
+}
+
+// executeCommitBeforeDispatch implements processor execution mode
+// COMMIT_BEFORE_DISPATCH (issue #27). The cascade's parent transaction
+// (txID == T_pre) is committed first; the processor is dispatched with no
+// transaction context (default) or with TX_post's token
+// (startNewTxOnDispatch=true); the result is applied via CompareAndSave
+// against T_pre. The caller MUST replace its (ctx, txID) with the returned
+// (newCtx, newTxID) to continue the cascade in TX_post.
+//
+// Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
+// must not save the cascade-anchor entity themselves AND also return
+// mutations for it (last-writer-wins inside TX_post's buffer).
+func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (newCtx context.Context, newTxID string, err error) {
+	tPre := txID
+
+	// Read the flag. Nil pointer == default == false.
+	startNewTx := proc.Config.StartNewTxOnDispatch != nil && *proc.Config.StartNewTxOnDispatch
+
+	if startNewTx {
+		// =true: commit TX_pre, begin TX_post, dispatch with TX_post token,
+		// apply result in TX_post.
+		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID)
+		if err != nil {
+			return nil, "", err
+		}
+
+		if e.extProc != nil {
+			modified, dispatchErr := e.extProc.DispatchProcessor(newCtx, entity, proc, workflow, transition, newTxID)
+			if dispatchErr != nil {
+				_ = e.txMgr.Rollback(newCtx, newTxID)
+				return nil, "", dispatchErr
+			}
+			if modified != nil && modified.Data != nil {
+				entity.Data = modified.Data
+			}
+		}
+	} else {
+		// =false: Save+Commit TX_pre, dispatch outside any transaction, then
+		// begin a fresh TX_post for the apply-result phase.
+		//
+		// We deliberately don't reuse commitAndBeginNextSegment here — that
+		// helper opens a TX immediately after committing, which would leak
+		// TX_post's token into the dispatch context. Splitting Save+Commit
+		// from Begin keeps both modes clean.
+		es, esErr := e.factory.EntityStore(ctx)
+		if esErr != nil {
+			return nil, "", fmt.Errorf("commit-before-dispatch: get entity store: %w", esErr)
+		}
+		if _, sErr := es.Save(ctx, entity); sErr != nil {
+			return nil, "", fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", sErr)
+		}
+		if cErr := e.txMgr.Commit(ctx, txID); cErr != nil {
+			return nil, "", fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", cErr)
+		}
+
+		// Dispatch with NO tx token in ctx. context.WithoutCancel preserves
+		// values (tenant/user) but strips cancellation; we additionally
+		// detach the tx token so the processor sees no transaction.
+		dispatchCtx := spi.WithTransaction(context.WithoutCancel(ctx), nil)
+		var modified *spi.Entity
+		var dispatchErr error
+		if e.extProc != nil {
+			modified, dispatchErr = e.extProc.DispatchProcessor(dispatchCtx, entity, proc, workflow, transition, "")
+		}
+		if dispatchErr != nil {
+			return nil, "", dispatchErr
+		}
+		if modified != nil && modified.Data != nil {
+			entity.Data = modified.Data
+		}
+
+		// Begin TX_post.
+		newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
+		if err != nil {
+			return nil, "", fmt.Errorf("commit-before-dispatch: begin TX_post: %w", err)
+		}
+	}
+
+	// Apply result via CAS against tPre — works in both branches.
+	es, casErr := e.factory.EntityStore(newCtx)
+	if casErr != nil {
+		_ = e.txMgr.Rollback(newCtx, newTxID)
+		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", casErr)
+	}
+	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
+		_ = e.txMgr.Rollback(newCtx, newTxID)
+		return nil, "", saveErr // ErrConflict bubbles through unchanged
+	}
+
+	return newCtx, newTxID, nil
 }
 
 // commitAndBeginNextSegment is the COMMIT_BEFORE_DISPATCH segment-boundary
