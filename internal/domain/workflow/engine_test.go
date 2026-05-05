@@ -2957,3 +2957,100 @@ func TestEngine_Execute_ReturnsInputTxOnNonSegmentingCascade(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 }
+
+// TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment is the regression
+// for security review finding Sec-#2: when a CBD processor segments the
+// cascade (TX_pre committed, TX_post opened) and a SUBSEQUENT processor in
+// the same pipeline fails, the engine must roll back TX_post before
+// returning. Otherwise the caller-side handler — which only knows the
+// original entry txID — never sees TX_post and the connection leaks until
+// postgres' idle-in-transaction timeout reclaims it.
+//
+// Asserts:
+//   - Execute returns an error (existing behavior — pipeline aborts).
+//   - The post-segment TX is no longer registered with the manager
+//     (Commit on it returns "transaction not found" / spi.ErrNotFound,
+//     wrapped). The countingTxManager records exactly one engine Begin
+//     (TX_post) and one engine Rollback (the new defensive cleanup).
+func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	rawTxMgr := factory.NewTransactionManager(uuids)
+	cnt := &segCounter{}
+	txMgr := &countingTxManager{inner: rawTxMgr, c: cnt}
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(_ context.Context, e *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			switch proc.Name {
+			case "cbd-proc":
+				// Successful CBD: just return the entity unchanged. The
+				// engine commits TX_pre and opens TX_post around this call.
+				return e, nil
+			case "sync-fail-proc":
+				return nil, fmt.Errorf("sync processor exploded after CBD segment")
+			}
+			return e, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-then-fail", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdThenFailWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{
+				{Name: "CALLOUT", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: "EXTERNAL", Name: "sync-fail-proc", ExecutionMode: ExecutionModeSync},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entryTxID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	beginsBeforeExecute := cnt.begins
+	rollbacksBeforeExecute := cnt.rollbacks
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-then-fail-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: entryTxID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	_, execErr := engine.Execute(txCtx, entity, "")
+	if execErr == nil {
+		t.Fatalf("expected Execute to fail when SYNC processor after CBD fails")
+	}
+
+	// The engine must have opened TX_post (one Begin attributable to the
+	// CBD segment boundary) and then rolled it back when the SYNC
+	// processor failed (one Rollback attributable to the new cleanup).
+	enginesBegins := cnt.begins - beginsBeforeExecute
+	engineRollbacks := cnt.rollbacks - rollbacksBeforeExecute
+	if enginesBegins < 1 {
+		t.Errorf("expected >=1 engine Begin (TX_post), got %d", enginesBegins)
+	}
+	if engineRollbacks < 1 {
+		t.Errorf("expected >=1 engine Rollback (TX_post cleanup) after SYNC-fail, got %d "+
+			"— TX_post would leak until idle-in-transaction timeout (Sec-#2)",
+			engineRollbacks)
+	}
+
+	// Defensive: caller still rolls back the original entry TX. This is
+	// what the production handler does on a workflow error.
+	_ = txMgr.Rollback(txCtx, entryTxID)
+}

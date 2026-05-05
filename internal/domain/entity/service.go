@@ -1259,10 +1259,18 @@ func classifyError(err error) *common.AppError {
 }
 
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
-// error code. The transition-not-found case (ErrTransitionNotFound sentinel)
-// receives the specific TRANSITION_NOT_FOUND code; all other engine errors
-// fall back to the generic WORKFLOW_FAILED code.
+// error code:
+//
+//   - ErrCommitBeforeDispatchInfra (Begin/Commit/Save plugin failure inside
+//     the engine's segment-boundary code) → sanitized 5xx via common.Internal,
+//     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
+//   - ErrTransitionNotFound → 400 TRANSITION_NOT_FOUND (client-attributable).
+//   - Everything else (processor-domain failures, criterion mismatches, CAS
+//     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
+		return common.Internal("workflow segment boundary failed", err)
+	}
 	if errors.Is(err, wfengine.ErrTransitionNotFound) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
 	}
