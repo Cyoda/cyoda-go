@@ -814,19 +814,24 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes})
 	}
 
-	// Begin transaction -- all entities in one transaction, all-or-nothing.
-	// Per-item failure rolls the whole batch back, matching the contract of
-	// UpdateEntityCollection (issue #92) and preserving the existing
-	// {transactionId, entityIds} response shape.
+	// Begin transaction -- all entities in one transaction, all-or-nothing
+	// in the common (non-segmenting) case. The "current" TX is threaded
+	// through the loop because each item's engine call may segment via
+	// COMMIT_BEFORE_DISPATCH, in which case the engine commits TX_pre and
+	// returns a fresh TX_post on FinalCtx/FinalTxID — subsequent items must
+	// continue saving against that new TX rather than the now-closed
+	// initial one. Mirrors UpdateEntityCollection's segment-aware loop.
+	//
+	// Atomicity caveat for segmenting cascades: once the engine has
+	// committed TX_pre durably, the handler can no longer roll back that
+	// item's pre-callout state. A failure on item N+M will still rollback
+	// the still-open final TX, but earlier segments' TX_pre commits remain
+	// durable. This is a fundamental consequence of CBD and applies
+	// uniformly anywhere the engine segments; non-CBD batches retain the
+	// original all-or-nothing semantic.
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to begin transaction", err)
-	}
-
-	entityStore, err := h.factory.EntityStore(txCtx)
-	if err != nil {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Internal("failed to access entity store", err)
 	}
 
 	now := time.Now()
@@ -840,6 +845,8 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		entityIDs[i] = uuid.UUID(h.uuids.NewTimeUUID()).String()
 	}
 
+	currentCtx, currentTxID := txCtx, txID
+
 	for i, item := range parsed {
 		entity := &spi.Entity{
 			Meta: spi.EntityMeta{
@@ -849,7 +856,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 				State:                   "",
 				CreationDate:            now,
 				LastModifiedDate:        now,
-				TransactionID:           txID,
+				TransactionID:           currentTxID,
 				TransitionForLatestSave: "",
 				ChangeType:              "CREATED",
 				ChangeUser:              uc.UserID,
@@ -857,13 +864,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			Data: item.payloadBytes,
 		}
 
-		// Run workflow engine within the batch transaction context.
-		// Mirrors single CreateEntity's flow so initial-state derivation,
-		// automated cascade and state-machine audit events all apply per
-		// item. Issue #227.
-		result, err := h.engine.Execute(txCtx, entity, "")
+		// Run workflow engine within the current segment's transaction
+		// context. Mirrors single CreateEntity's flow so initial-state
+		// derivation, automated cascade and state-machine audit events all
+		// apply per item. Issue #227.
+		result, err := h.engine.Execute(currentCtx, entity, "")
 		if err != nil {
-			h.txMgr.Rollback(txCtx, txID)
+			h.txMgr.Rollback(currentCtx, currentTxID)
 			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
 			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
 		}
@@ -881,20 +888,39 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			entity.Meta.TransitionForLatestSave = "loopback"
 		}
 
-		if _, err := entityStore.Save(txCtx, entity); err != nil {
-			h.txMgr.Rollback(txCtx, txID)
+		// Advance the loop's TX to whichever segment is now open. For
+		// non-segmenting cascades these are unchanged; for segmenting
+		// cascades the engine committed TX_pre and opened TX_post on
+		// FinalCtx — subsequent items must save against that new TX.
+		if result != nil {
+			currentCtx, currentTxID = result.FinalCtx, result.FinalTxID
+		}
+
+		// Re-resolve the entity store on the now-current segment context;
+		// the per-segment factory may bind storage handles to ctx.
+		finalEntityStore, err := h.factory.EntityStore(currentCtx)
+		if err != nil {
+			h.txMgr.Rollback(currentCtx, currentTxID)
+			return nil, common.Internal("failed to access entity store", err)
+		}
+		if _, err := finalEntityStore.Save(currentCtx, entity); err != nil {
+			h.txMgr.Rollback(currentCtx, currentTxID)
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
 		}
 	}
 
-	// Commit transaction.
-	if err := h.txMgr.Commit(txCtx, txID); err != nil {
+	// Commit the final still-open TX. Equals the entry txID for
+	// non-segmenting batches; for batches with at least one segmenting
+	// cascade this is the post-segment TX (earlier segments already
+	// committed their TX_pre durably).
+	if err := h.txMgr.Commit(currentCtx, currentTxID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
 
+	// Surface the cascade-entry txID for audit correlation (spec §8).
 	return &EntityTransactionResult{
 		TransactionID: txID,
 		EntityIDs:     entityIDs,
