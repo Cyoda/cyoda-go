@@ -2828,3 +2828,132 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 			postResult.TransactionID, cascadeEntryTxID)
 	}
 }
+
+// TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade asserts that after a
+// cascade with one COMMIT_BEFORE_DISPATCH segment, Execute returns the FINAL
+// segment's txID (TX_post) — not the entry txID. The handler (Task 13) needs
+// FinalCtx/FinalTxID to commit TX_post instead of the now-closed TX_pre.
+func TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
+			modified, _ := json.Marshal(map[string]any{"enriched": true})
+			return &spi.Entity{Data: modified}, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-final-tx", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdFinalTxWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{
+				{Name: "CALLOUT", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	cascadeEntryTxID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-final-tx-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: cascadeEntryTxID,
+		},
+		Data: []byte(`{"x":1}`),
+	}
+
+	res, err := engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res == nil {
+		t.Fatal("nil result")
+	}
+	if res.FinalTxID == cascadeEntryTxID {
+		t.Errorf("FinalTxID = entryTxID = %q; expected post-segment txID", cascadeEntryTxID)
+	}
+	if res.FinalTxID == "" {
+		t.Errorf("FinalTxID is empty")
+	}
+	if res.FinalCtx == nil {
+		t.Errorf("FinalCtx is nil")
+	}
+	if state := spi.GetTransaction(res.FinalCtx); state == nil || state.ID != res.FinalTxID {
+		t.Errorf("FinalCtx must carry FinalTxID, got %v", state)
+	}
+
+	// Cleanup: handler-style commit of the final TX (this is what Task 13 will codify).
+	if err := txMgr.Commit(res.FinalCtx, res.FinalTxID); err != nil {
+		t.Fatalf("commit FinalTxID: %v", err)
+	}
+}
+
+// TestEngine_Execute_ReturnsInputTxOnNonSegmentingCascade asserts that for a
+// cascade with no COMMIT_BEFORE_DISPATCH processors, FinalTxID equals the
+// caller's input txID — the engine did not segment.
+func TestEngine_Execute_ReturnsInputTxOnNonSegmentingCascade(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "no-cbd-final-tx", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "NoCbdFinalTxWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "GO", Next: "DONE", Manual: false},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	inputTxID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := makeEntity("no-cbd-final-tx-1", modelRef, map[string]any{"x": 1})
+	entity.Meta.TransactionID = inputTxID
+
+	res, err := engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.FinalTxID != inputTxID {
+		t.Errorf("FinalTxID = %q, want input txID %q", res.FinalTxID, inputTxID)
+	}
+	if res.FinalCtx == nil {
+		t.Errorf("FinalCtx is nil")
+	}
+
+	// Cleanup: caller commits the (un-segmented) input TX.
+	es, _ := factory.EntityStore(txCtx)
+	if _, err := es.Save(txCtx, entity); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := txMgr.Commit(txCtx, inputTxID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}

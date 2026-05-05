@@ -93,7 +93,7 @@ func WithMaxStateVisits(n int) EngineOption {
 // State-machine audit events are recorded under entity.Meta.TransactionID so
 // that the transaction ID returned by POST /entity can be used to look up
 // workflow results via /audit/entity/{id}/workflow/{txId}/finished (issue #20).
-func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*spi.ExecutionResult, error) {
+func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.execute", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -165,25 +165,19 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "State machine finished", map[string]any{"success": true})
 
-	// TODO(issue-27, Task 12): when the cascade segments via
-	// COMMIT_BEFORE_DISPATCH, currentCtx/currentTxID identify TX_post which
-	// is still open here. Task 12 will extend *spi.ExecutionResult to carry
-	// FinalCtx/FinalTxID; Task 13 will refactor entity/service.go to commit
-	// TX_post (instead of the now-closed TX_pre). Until then, segmenting
-	// cascades leak an open TX_post — acceptable only because Task 5 lands
-	// the engine plumbing without yet routing it through the handler.
-	_ = currentCtx
-	_ = currentTxID
-
-	return &spi.ExecutionResult{
-		State:   entity.Meta.State,
-		Success: true,
+	return &EngineResult{
+		ExecutionResult: &spi.ExecutionResult{
+			State:   entity.Meta.State,
+			Success: true,
+		},
+		FinalCtx:  currentCtx,
+		FinalTxID: currentTxID,
 	}, nil
 }
 
 // ManualTransition fires a named transition on an existing entity and cascades
 // any automated transitions from the resulting state.
-func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string) (*spi.ExecutionResult, error) {
+func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.manual_transition", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -238,22 +232,20 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "Manual transition finished", map[string]any{"success": true})
 
-	// TODO(issue-27, Task 12): see Execute() for the same gap — TX_post may
-	// still be open if the cascade segmented; Task 12/13 wires this through
-	// *spi.ExecutionResult and the handler.
-	_ = currentCtx
-	_ = currentTxID
-
-	return &spi.ExecutionResult{
-		State:   entity.Meta.State,
-		Success: true,
+	return &EngineResult{
+		ExecutionResult: &spi.ExecutionResult{
+			State:   entity.Meta.State,
+			Success: true,
+		},
+		FinalCtx:  currentCtx,
+		FinalTxID: currentTxID,
 	}, nil
 }
 
 // Loopback re-evaluates automated transitions from the entity's current state
 // without firing a specific named transition. This is used when entity data is
 // updated and the workflow should re-check conditions from the current state.
-func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*spi.ExecutionResult, error) {
+func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.loopback", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -296,10 +288,14 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*spi.Executi
 			spi.SMEventForcedSuccess, "No workflow contains current state for loopback", nil)
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
-		return &spi.ExecutionResult{
-			State:      entity.Meta.State,
-			Success:    true,
-			StopReason: "STATE_NOT_IN_WORKFLOW",
+		return &EngineResult{
+			ExecutionResult: &spi.ExecutionResult{
+				State:      entity.Meta.State,
+				Success:    true,
+				StopReason: "STATE_NOT_IN_WORKFLOW",
+			},
+			FinalCtx:  ctx,
+			FinalTxID: txID,
 		}, nil
 	}
 
@@ -311,15 +307,13 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*spi.Executi
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "Loopback finished", map[string]any{"success": true})
 
-	// TODO(issue-27, Task 12): see Execute() for the same gap — TX_post may
-	// still be open if the cascade segmented; Task 12/13 wires this through
-	// *spi.ExecutionResult and the handler.
-	_ = currentCtx
-	_ = currentTxID
-
-	return &spi.ExecutionResult{
-		State:   entity.Meta.State,
-		Success: true,
+	return &EngineResult{
+		ExecutionResult: &spi.ExecutionResult{
+			State:   entity.Meta.State,
+			Success: true,
+		},
+		FinalCtx:  currentCtx,
+		FinalTxID: currentTxID,
 	}, nil
 }
 
