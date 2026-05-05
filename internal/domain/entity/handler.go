@@ -626,10 +626,12 @@ type collectionChunkError struct {
 //   - (nil, appErr)  — the FIRST chunk failed, no durable progress was
 //     made; the caller writes the conventional 4xx error envelope.
 //
-// Caller must have already resolved `window` via resolveTransactionWindow
-// and handled the empty-items case (the loop emits zero elements when items
-// is empty, which would produce an empty success array — usually not what
-// the empty-batch contract intends; see CreateCollection).
+// Caller must have already resolved `window` via resolveTransactionWindow.
+// Callers in this file guard `len(items) == 0` before invoking; the helper
+// itself does no empty-items handling (the loop emits zero elements when
+// items is empty, which would produce an empty success array — usually not
+// what the empty-batch contract intends; see CreateCollection). The helper
+// is internal-only and the empty-items guard is by convention.
 //
 // Single chunking primitive shared by CreateCollection (POST /entity/{format})
 // and Create (POST /entity/{format}/{entityName}/{modelVersion} array body).

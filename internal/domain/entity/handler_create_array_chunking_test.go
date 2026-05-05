@@ -289,3 +289,44 @@ func TestCreate_SingleObjectBody_Unaffected(t *testing.T) {
 		t.Errorf("expected 1 entityId, got %d", len(eids))
 	}
 }
+
+// TestCreate_SingleObjectBody_LeadingWhitespace_StillSingleObjectPath —
+// regression guard pinning the byte-zero array detection in handler.go.
+// The current detector keys on `bodyBytes[0] == '['`, so a single-object
+// body with leading whitespace (e.g. `   {"name":"Bob"}`) must still be
+// classified as a single-object create — going through CreateEntity, not
+// the chunked array path. If a future refactor swaps byte-zero detection
+// for a `json.Valid`-based check that strips whitespace before classifying,
+// this test will not detect it on its own — but the response shape is
+// asserted to match the single-object path (one element, one entityId)
+// rather than the chunked-array path. Issue #227 review pass 4.
+func TestCreate_SingleObjectBody_LeadingWhitespace_StillSingleObjectPath(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ArrCreateSingleWS", 1, `{"name":"Alice"}`)
+
+	// 3 leading spaces before the single-object body.
+	resp := doCreateEntity(t, srv.URL, "JSON", "ArrCreateSingleWS", 1, `   {"name":"Bob"}`)
+	defer resp.Body.Close()
+	rbody := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, rbody)
+	}
+
+	var arr []map[string]any
+	if err := json.Unmarshal(rbody, &arr); err != nil {
+		t.Fatalf("parse: %v; body: %s", err, rbody)
+	}
+	if len(arr) != 1 {
+		t.Fatalf("expected 1-element response array (single-object path), got %d", len(arr))
+	}
+	if tx, _ := arr[0]["transactionId"].(string); tx == "" {
+		t.Errorf("missing transactionId; got %v", arr[0])
+	}
+	eids, _ := arr[0]["entityIds"].([]any)
+	if len(eids) != 1 {
+		t.Fatalf("expected 1 entityId (single-object path), got %d", len(eids))
+	}
+	if id, _ := eids[0].(string); id == "" {
+		t.Errorf("expected non-empty entityId, got %v", eids[0])
+	}
+}
