@@ -74,7 +74,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		case ExecutionModeCommitBeforeDispatch:
 			var nCtx context.Context
 			var nTxID string
-			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, proc, workflow, transition, currentTxID)
+			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, proc, workflow, transition, currentTxID, auditStore, txID)
 			success = procErr == nil
 			if procErr == nil {
 				currentCtx = nCtx
@@ -198,7 +198,7 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
 // must not save the cascade-anchor entity themselves AND also return
 // mutations for it (last-writer-wins inside TX_post's buffer).
-func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (newCtx context.Context, newTxID string, err error) {
+func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
 	tPre := txID
 
 	// Read the flag. Nil pointer == default == false.
@@ -217,6 +217,17 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// apply result in TX_post.
 		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed)
 		if err != nil {
+			// Reviewer S1 (#228): if the engine's first-segment flush rejected
+			// the caller's IfMatch precondition we have already recorded
+			// entry-side audit events (STATE_MACHINE_START, WORKFLOW_FOUND).
+			// Emit a compensating TRANSITION_ABORTED so the audit trail
+			// remains self-consistent. Best-effort — auditStore is the
+			// engine's own handle so this lands in the same TX buffer as the
+			// entry events (rolls back together with them on a chunk-wide
+			// rollback, commits together on per-item-isolated paths).
+			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) {
+				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
+			}
 			return nil, "", err
 		}
 
@@ -239,6 +250,11 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// TX_post's token into the dispatch context. Splitting Save+Commit
 		// from Begin keeps both modes clean.
 		if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed); fcErr != nil {
+			// See the matching block in the startNewTx==true branch above
+			// for the rationale (#228 reviewer S1).
+			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) {
+				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
+			}
 			return nil, "", fcErr
 		}
 

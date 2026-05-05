@@ -1107,8 +1107,17 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 
 	if input.IfMatch != "" && !segmented {
 		if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
-			_ = h.txMgr.Rollback(finalCtx, finalTxID)
 			if errors.Is(err, spi.ErrConflict) {
+				// Reviewer S1 (#228): emit the compensating
+				// TRANSITION_ABORTED into the same TX buffer as the
+				// entry-side audit events BEFORE rolling back, so on
+				// stores where audit is TX-bound the abort event rolls
+				// back together with the entry events (audit log
+				// remains empty, consistent), and on stores where audit
+				// is not TX-bound the abort event is preserved as a
+				// pair with the entry events.
+				h.emitTransitionAborted(finalCtx, updated, txID, input.Transition, input.IfMatch)
+				_ = h.txMgr.Rollback(finalCtx, finalTxID)
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -1116,6 +1125,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 				appErr.Props = map[string]any{"entityId": input.EntityID}
 				return nil, appErr
 			}
+			_ = h.txMgr.Rollback(finalCtx, finalTxID)
 			return nil, common.Internal("failed to save entity", err)
 		}
 	} else {
@@ -1307,11 +1317,11 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		if engineErr != nil {
 			// Per-item ENTITY_MODIFIED isolation: the engine's CBD
 			// first-segment flush rejected the IfMatch precondition before
-			// committing TX_pre or firing any external dispatch. The
-			// per-item buffered audit events for this item land along
-			// with successful siblings — an acceptable cosmetic cost given
-			// the chunk-level batch contract (orphan STATE_MACHINE_*
-			// events for a rolled-back item).
+			// committing TX_pre or firing any external dispatch. The engine
+			// has already emitted a compensating TRANSITION_ABORTED audit
+			// event before returning ErrConflict (#228 reviewer S1) so the
+			// audit trail for this item is paired (entry + abort) and lands
+			// alongside successful siblings on commit.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) {
 				slog.Info("collection update item precondition failed",
 					"entityId", updated.Meta.ID, "itemIndex", i)
@@ -1374,6 +1384,14 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
 				slog.Info("collection update item precondition failed",
 					"entityId", updated.Meta.ID, "itemIndex", i)
+				// Reviewer S1 (#228): emit a compensating TRANSITION_ABORTED
+				// audit event so the entry-side audit events recorded by the
+				// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
+				// / TRANSITION_MAKE) have a paired terminal event in the
+				// audit log. Best-effort; routed through the engine's
+				// audit-store handle so it lands in the same TX buffer as
+				// the entry events on stores where audit is TX-bound.
+				h.emitTransitionAborted(currentCtx, updated, currentTxID, item.transition, item.ifMatch)
 				failed = append(failed, UpdateCollectionItemFailure{
 					EntityID:  updated.Meta.ID,
 					Code:      common.ErrCodeEntityModified,
@@ -1437,4 +1455,38 @@ func classifyWorkflowError(err error) *common.AppError {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+}
+
+// emitTransitionAborted writes a TRANSITION_ABORTED audit event for a
+// post-engine CompareAndSave conflict on the supplied entity. Routes
+// through the same audit-store handle the engine uses so the abort lands
+// in the same TX buffer as the entry-side audit events emitted earlier in
+// the cascade.
+//
+// transitionName may be "" for loopback updates — kept verbatim in the
+// event payload so downstream consumers can distinguish loopback aborts
+// from named-transition aborts. Best-effort: any failure to load the
+// audit store is logged at DEBUG and swallowed (an audit-emission failure
+// must not break the per-item-isolated commit path).
+func (h *Handler) emitTransitionAborted(
+	ctx context.Context,
+	entity *spi.Entity,
+	cascadeEntryTxID string,
+	transitionName string,
+	expectedTxID string,
+) {
+	auditStore, err := h.factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		slog.Debug("transition-aborted: audit store unavailable",
+			"pkg", "entity", "entityId", entity.Meta.ID, "error", err)
+		return
+	}
+	transitionForAudit := transitionName
+	if transitionForAudit == "" {
+		transitionForAudit = "loopback"
+	}
+	actualTxID := wfengine.LookupActualTxID(ctx, h.factory, entity.Meta.ID)
+	wfengine.EmitTransitionAborted(ctx, auditStore, h.uuids,
+		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
+		transitionForAudit, expectedTxID, actualTxID)
 }
