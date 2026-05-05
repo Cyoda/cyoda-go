@@ -2538,3 +2538,108 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 	// TODO(issue-27, Task 13): assert durability of e1 in S_post and e2
 	// once the handler commits the engine's final TX_post.
 }
+
+// TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins
+// documents (does NOT endorse) the last-writer-wins outcome when a
+// startNewTxOnDispatch=true processor writes the cascade-anchor entity
+// itself AND returns mutations for it.
+//
+// Per spec §10.3, this pattern is forbidden by existing best-practice
+// across SYNC, ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH (true). The engine
+// does NOT detect or prevent the violation — the processor's intra-TX_post
+// write is silently overwritten by the engine's apply-result CAS.
+//
+// This test exists so the LWW outcome is pinned down (not "undefined")
+// and so a future engine change that accidentally REVERSES the order
+// (processor's write wins) would surface as a test failure for review.
+//
+// Asserts the in-memory entity after Execute, NOT durable state: TX_post
+// is left open by the engine pending the Task 12/13 handler refactor.
+func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
+			// VIOLATION: processor writes the cascade-anchor entity it is
+			// being dispatched FOR, via TX_post's token in ctx.
+			es, esErr := factory.EntityStore(ctx)
+			if esErr != nil {
+				return nil, fmt.Errorf("processor EntityStore: %w", esErr)
+			}
+			processorWrite := &spi.Entity{
+				Meta: spi.EntityMeta{
+					ID:            entity.Meta.ID,
+					TenantID:      entity.Meta.TenantID,
+					ModelRef:      entity.Meta.ModelRef,
+					State:         entity.Meta.State,
+					TransactionID: txID,
+				},
+				Data: []byte(`{"processor_wrote":true}`),
+			}
+			if _, sErr := es.Save(ctx, processorWrite); sErr != nil {
+				return nil, fmt.Errorf("processor double-write: %w", sErr)
+			}
+
+			// AND ALSO returns conflicting mutations for the same entity.
+			return &spi.Entity{Data: []byte(`{"engine_applied":true}`)}, nil
+		},
+	}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cbd-true-lww", ModelVersion: "1.0"}
+
+	tt := true
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CbdTrueLWWWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{
+				{Name: "CALLOUT", Next: "S_post", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{
+							Type:          "EXTERNAL",
+							Name:          "cbd-proc",
+							ExecutionMode: ExecutionModeCommitBeforeDispatch,
+							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
+						},
+					}},
+			}},
+			"S_post": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	// Cascade-entry transaction (TX_pre).
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:            "cbd-true-lww-1",
+			TenantID:      testTenant,
+			ModelRef:      modelRef,
+			State:         "",
+			TransactionID: txID,
+		},
+		Data: []byte(`{"x":0}`),
+	}
+
+	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Engine's apply-result wins: the in-memory entity carries the engine's
+	// data, NOT the processor's intra-TX_post write.
+	if string(entity.Data) != `{"engine_applied":true}` {
+		t.Errorf("LWW expected engine apply-result to win, got: %s", entity.Data)
+	}
+
+	// TODO(issue-27, Task 13): once the handler refactor commits TX_post,
+	// add a durable-read assertion confirming the engine's data is what hits
+	// the committed store. Until then, only in-memory entity is asserted.
+}
