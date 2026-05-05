@@ -234,6 +234,29 @@ func TestCreate_ArrayBody_ChunkFailureLeavesEarlierChunksDurable(t *testing.T) {
 	if idx, _ := errObj["chunkIndex"].(float64); int(idx) != 2 {
 		t.Errorf("error.chunkIndex: got %v, want 2", errObj["chunkIndex"])
 	}
+
+	// Read-back durability assertion (mirrors
+	// TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable): each
+	// entityId reported by chunks 0 and 1 must be retrievable via GET, and
+	// its payload must reflect what was POSTed.
+	wantNames := []string{"a", "b", "c", "d"}
+	gotNames := collectCommittedEntityNames(t, srv.URL, arr[:2])
+	if len(gotNames) != len(wantNames) {
+		t.Fatalf("durable read-back: got %d entities, want %d", len(gotNames), len(wantNames))
+	}
+	for i, want := range wantNames {
+		if gotNames[i] != want {
+			t.Errorf("durable read-back: entity %d data.name = %q, want %q", i, gotNames[i], want)
+		}
+	}
+
+	// Negative case: total store count for the model must equal the
+	// durable count. The failed chunk's item must not have leaked.
+	// (Server-generated IDs make per-failed-id assertion impossible — the
+	// failed item never received an ID — so we pin the total instead.)
+	if got := countEntitiesForModel(t, srv.URL, "ArrCreateChunkFail", 1); got != 4 {
+		t.Errorf("post-failure store count for ArrCreateChunkFail = %d, want 4", got)
+	}
 }
 
 // TestCreate_SingleObjectBody_Unaffected — regression guard. A single-object

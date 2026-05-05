@@ -239,4 +239,84 @@ func TestCreateCollection_ChunkFailureLeavesEarlierChunksDurable(t *testing.T) {
 	if idx, _ := errObj["chunkIndex"].(float64); int(idx) != 2 {
 		t.Errorf("error.chunkIndex: got %v, want 2", errObj["chunkIndex"])
 	}
+
+	// Read-back durability assertion (mirrors
+	// TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable): each
+	// entityId reported by chunks 0 and 1 must be retrievable via GET, and
+	// its payload must reflect what was POSTed. The failed chunk reported
+	// no entityIds (it never committed), so there is nothing to check by id
+	// for it; the in-store count assertion below pins the negative case.
+	wantNames := []string{"a", "b", "c", "d"}
+	gotNames := collectCommittedEntityNames(t, srv.URL, arr[:2])
+	if len(gotNames) != len(wantNames) {
+		t.Fatalf("durable read-back: got %d entities, want %d", len(gotNames), len(wantNames))
+	}
+	for i, want := range wantNames {
+		if gotNames[i] != want {
+			t.Errorf("durable read-back: entity %d payload name = %q, want %q", i, gotNames[i], want)
+		}
+	}
+
+	// Negative case: total entity count for the good model must equal the
+	// committed count (4) — the failed chunk's item must not have leaked
+	// into the store. (No item from CreateChunkFailMissing could exist —
+	// that model is unregistered — so we count by the good model.)
+	if got := countEntitiesForModel(t, srv.URL, "CreateChunkFailGood", 1); got != 4 {
+		t.Errorf("post-failure store count for CreateChunkFailGood = %d, want 4", got)
+	}
+}
+
+// collectCommittedEntityNames flattens the entityIds across the given chunk
+// results, GETs each entity, and extracts payload.name in commit order.
+// Used by chunk-failure durability tests to prove that entities reported in
+// the response are actually retrievable and carry the POSTed payload.
+func collectCommittedEntityNames(t *testing.T, base string, chunks []map[string]any) []string {
+	t.Helper()
+	names := make([]string, 0)
+	for ci, chunk := range chunks {
+		eids, _ := chunk["entityIds"].([]any)
+		for ei, raw := range eids {
+			id, ok := raw.(string)
+			if !ok || id == "" {
+				t.Fatalf("chunk %d entity %d: empty/non-string entityId in %v", ci, ei, chunk)
+			}
+			gb := readBody(t, doGetEntity(t, base, id))
+			var env map[string]any
+			if err := json.Unmarshal(gb, &env); err != nil {
+				t.Fatalf("chunk %d entity %d (%s): parse GET response: %v; body: %s", ci, ei, id, err, gb)
+			}
+			data, _ := env["data"].(map[string]any)
+			if data == nil {
+				t.Fatalf("chunk %d entity %d (%s): missing data object in GET response: %s", ci, ei, id, gb)
+			}
+			name, _ := data["name"].(string)
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// countEntitiesForModel returns the live entity count for the given model
+// via the /entity/stats/{name}/{version} endpoint. Used by chunk-failure
+// tests to assert that no items from the failed chunk leaked into the store.
+func countEntitiesForModel(t *testing.T, base, entityName string, version int) int {
+	t.Helper()
+	url := fmt.Sprintf("%s/entity/stats/%s/%d", base, entityName, version)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("stats request failed: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stats: status %d; body: %s", resp.StatusCode, body)
+	}
+	var stats map[string]any
+	if err := json.Unmarshal(body, &stats); err != nil {
+		t.Fatalf("stats: parse: %v; body: %s", err, body)
+	}
+	count, ok := stats["count"].(float64)
+	if !ok {
+		t.Fatalf("stats: missing/non-numeric count: %v", stats)
+	}
+	return int(count)
 }
