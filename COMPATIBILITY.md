@@ -55,9 +55,9 @@ cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugin
 
 | Plugin module | Latest tag | Tracks |
 |---|---|---|
-| `cyoda-go/plugins/memory` | `v0.1.0` | Memory backend (test + reference) |
-| `cyoda-go/plugins/sqlite` | `v0.1.0` | SQLite backend (single-node, embedded) |
-| `cyoda-go/plugins/postgres` | `v0.1.0` | PostgreSQL backend (production multi-node) |
+| `cyoda-go/plugins/memory` | `v0.7.1` | Memory backend (test + reference) |
+| `cyoda-go/plugins/sqlite` | `v0.7.1` | SQLite backend (single-node, embedded) |
+| `cyoda-go/plugins/postgres` | `v0.7.1` | PostgreSQL backend (production multi-node) |
 
 These rarely move because each plugin's *exported* Go API (factory constructors, package-level helpers) is stable. Internal changes ride along with `cyoda-go` binary releases without a submodule tag bump. Out-of-tree consumers (e.g. cyoda-go-cassandra's parity test fixtures) pin pseudo-versions resolving to specific cyoda-go commits.
 
