@@ -293,6 +293,26 @@ Release in topological order:
 Each step waits for the prior tag to land before its `go mod tidy`
 can resolve. In practice: merge, tag, wait for CI, then move on.
 
+### Bumping cyoda-go-spi
+
+`cyoda-go-spi` must be pinned to the same version in every `go.mod` in
+this repo: the root and all `plugins/*/go.mod`. The CI gate
+`make check-spi-pin-sync` (workflow job `pin-sync`) enforces this and
+will fail on PR if any manifest disagrees.
+
+When you bump cyoda-go-spi:
+
+1. Bump in `go.mod` (root).
+2. Bump identically in `plugins/memory/go.mod`, `plugins/postgres/go.mod`, `plugins/sqlite/go.mod`.
+3. Run `go mod tidy` in each module.
+4. Run `make test-all` to verify cross-plugin interactions.
+5. Run `make check-spi-pin-sync` locally to confirm green.
+
+This rule is in addition to the existing **plugin-version lockstep**
+rule (plugin submodule tags use the same version as the umbrella).
+The two rules together ensure that consumers see consistent
+SPI-and-plugin pinning at every umbrella tag.
+
 ### 8. Publish the Helm chart
 
 Frontline binary releases auto-open a PR from

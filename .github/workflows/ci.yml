@@ -88,7 +88,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
-        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh
+        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh
 
   # Continuous security gates (issue #67):
   #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,
@@ -133,3 +133,11 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: moderate
+
+  pin-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Verify SPI pin sync
+        run: ./scripts/check-spi-pin-sync.sh

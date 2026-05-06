@@ -82,6 +82,8 @@ Release builds additionally run a Trivy scan against the published GHCR image (`
 
 No external web frameworks. No DI frameworks. No ORM.
 
+- When bumping `cyoda-go-spi` in the root `go.mod`, bump it identically in every `plugins/*/go.mod` in the same PR. The `check-spi-pin-sync` CI gate enforces this. See [`MAINTAINING.md`](MAINTAINING.md#bumping-cyoda-go-spi) for the full procedure.
+
 | Dependency | Purpose |
 |------------|---------|
 | Go standard library `net/http` | HTTP server and routing (Go 1.22+ pattern matching) |

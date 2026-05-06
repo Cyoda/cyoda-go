@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all clean docker-build docker-push todos
+.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all clean docker-build docker-push todos check-spi-pin-sync
 
 # Plugin submodules: each has its own go.mod, so `go test ./...` from the
 # repo root does not recurse into them. The aggregator targets below close
@@ -85,6 +85,9 @@ todos-p%:              ## List TODOs for a specific plan (e.g. make todos-p6)
 
 clean:                 ## Remove build artifacts
 	rm -rf bin/ coverage.out
+
+check-spi-pin-sync:    ## Verify cyoda-go-spi is pinned to the same version across root and all plugin go.mods
+	@./scripts/check-spi-pin-sync.sh
 
 help:                  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
