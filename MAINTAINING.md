@@ -216,6 +216,16 @@ The CI smoke-test job `release-smoke.yml` runs this check automatically
 on every PR touching `.goreleaser.yaml` or the Dockerfile — but this
 manual step stays in the checklist as a final pre-release confirmation.
 
+### 6.5. Update COMPATIBILITY.md
+
+Add a row to the `cyoda-go × cyoda-go-spi` matrix in [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the new `cyoda-go` tag. Capture: root `go.mod` SPI pin, plugin submodule SPI pins (these may differ from root if the submodules don't need new SPI fields), and a one-line summary of the SPI surface added in this release (or `—` if binary-only).
+
+If the chart `version:` or `appVersion:` changed in this cycle, update the "Helm chart × binary" table.
+
+If out-of-tree-plugin guidance changed (e.g. cassandra adopted a new SPI pin), update the "Out-of-tree plugins" table.
+
+The update lands either on the release-prep PR (if the matrix data is known pre-tag) or on a follow-up `docs(compatibility): record v<X.Y.Z>` commit immediately after step 7. The latter is acceptable because the matrix records the pin observed AT a published tag.
+
 ### 7. Cut the release
 
 Use `gh release create` rather than raw `git tag + git push`:
