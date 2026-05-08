@@ -49,9 +49,11 @@ func (e *AppError) Unwrap() error { return e.Err }
 
 // AsRetryable flips the retryable bit on a 4xx error and returns the
 // receiver for fluent chaining. Use for the rare case a 4xx is
-// retry-eligible — typically SERIALIZABLE transaction aborts
-// (40001/40P01) or optimistic-lock failures triggered by concurrent
-// writers, where naive retry without a state change can succeed.
+// retry-eligible — typically SI+FCW transaction aborts (PostgreSQL
+// 40001 / 40P01 under REPEATABLE READ, or application-layer FCW
+// validation failures on memory/sqlite/cassandra) or optimistic-lock
+// failures triggered by concurrent writers, where naive retry without
+// a state change can succeed.
 //
 // Permanent business-logic conflicts (locked-state mismatches, ETag
 // mismatches, cardinality precondition failures) MUST NOT be flagged
@@ -74,8 +76,8 @@ func (e *AppError) AsRetryable() *AppError {
 
 // Operational creates a client error (4xx). No internal detail is captured.
 //
-// Default is non-retryable; for the rare retry-eligible 4xx (e.g. a
-// SERIALIZABLE transaction abort), chain .AsRetryable().
+// Default is non-retryable; for the rare retry-eligible 4xx (e.g. an
+// SI+FCW transaction abort), chain .AsRetryable().
 func Operational(status int, code string, message string) *AppError {
 	return &AppError{
 		Level:   LevelOperational,

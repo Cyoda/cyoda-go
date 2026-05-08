@@ -13,7 +13,7 @@ import (
 
 const submitTimeTTL = 1 * time.Hour
 
-// committedTx records a committed transaction for SSI conflict detection.
+// committedTx records a committed transaction for SI+FCW conflict detection.
 type committedTx struct {
 	id         string
 	submitTime time.Time
@@ -29,7 +29,8 @@ type savepointSnapshot struct {
 	deletes  map[string]bool
 }
 
-// TransactionManager implements spi.TransactionManager using Snapshot Isolation (SSI).
+// TransactionManager implements spi.TransactionManager using Snapshot Isolation
+// with First-Committer-Wins (SI+FCW) — see docs/CONSISTENCY.md for the contract.
 // It lives in the memory package because it needs direct access to StoreFactory's
 // entityData map and mu lock for the atomic commit flush.
 type TransactionManager struct {
@@ -142,7 +143,7 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 	return spi.WithTransaction(ctx, tx), nil
 }
 
-// Commit validates the transaction against the committed log for SSI conflicts,
+// Commit validates the transaction against the committed log for SI+FCW conflicts,
 // flushes the write buffer and deletes to the entity store, and records the
 // commit in the log.
 func (m *TransactionManager) Commit(ctx context.Context, txID string) error {

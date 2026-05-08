@@ -421,7 +421,9 @@ func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID 
 // fresh snapshot is safe" to spi.ErrConflict. Everything else passes through.
 //
 // Retryable codes:
-//   - serialization_failure (40001) — SSI detected an r/w dependency cycle
+//   - serialization_failure (40001) — under REPEATABLE READ, raised when a
+//     concurrent committer has already modified a row this tx is updating
+//     (PostgreSQL: "could not serialize access due to concurrent update")
 //   - deadlock_detected (40P01) — deadlock victim chosen by the server
 //
 // Both sentinels stay reachable: spi.ErrConflict satisfies handler-level

@@ -27,7 +27,7 @@ Cyoda-Go is a **modular monolith** organized by domain-driven design boundaries.
 │  Storage Backend (selected at startup)           │
 ├────────────────────┬─────────────────────────────┤
 │  In-Memory Store   │  PostgreSQL Store           │
-│  (SSI isolation)   │  (SERIALIZABLE isolation)   │
+│  (SI+FCW)          │  (SI+FCW: RR + FCW)         │
 └────────────────────┴─────────────────────────────┘
 ```
 
@@ -49,9 +49,9 @@ Cyoda-Go is a **modular monolith** organized by domain-driven design boundaries.
 
 Two storage backends, selected at startup via `CYODA_STORAGE_BACKEND`:
 
-**In-Memory** — Thread-safe maps with `sync.RWMutex`, tenant-partitioned, append-only entity versioning. Transactions use Serializable Snapshot Isolation (SSI) with conflict detection at commit.
+**In-Memory** — Thread-safe maps with `sync.RWMutex`, tenant-partitioned, append-only entity versioning. Transactions use Snapshot Isolation with First-Committer-Wins (SI+FCW), with conflict detection at commit.
 
-**PostgreSQL** — `SERIALIZABLE` isolation, bi-temporal entity versioning (`valid_time`, `transaction_time`, `wall_clock_time`), automatic schema migrations, row-level security policies. A `Querier` interface abstracts `pgxpool.Pool` and `pgx.Tx` so stores work transparently inside and outside transactions.
+**PostgreSQL** — `REPEATABLE READ` snapshot isolation plus application-layer first-committer-wins (SI+FCW), bi-temporal entity versioning (`valid_time`, `transaction_time`, `wall_clock_time`), automatic schema migrations, row-level security policies. A `Querier` interface abstracts `pgxpool.Pool` and `pgx.Tx` so stores work transparently inside and outside transactions. See [docs/CONSISTENCY.md](docs/CONSISTENCY.md) for the full contract.
 
 ### Multi-Tenancy
 
@@ -59,7 +59,7 @@ Tenant isolation is structural, not conventional. `TenantID` is a named Go type 
 
 ### Transactions
 
-ACID transactions with Serializable Snapshot Isolation:
+ACID transactions with Snapshot Isolation and First-Committer-Wins (SI+FCW):
 
 1. **Begin** — snapshot time captured, empty read/write sets
 2. **Read** — buffer first (read-your-own-writes), then snapshot view
@@ -118,7 +118,7 @@ Three-tier classification: **Operational** (4xx, full detail to client), **Inter
 - Soft delete with deletion markers (preserves history)
 - Point-in-time retrieval (`?pointInTime=<ISO8601>`)
 - Entity statistics (count, state distribution per model)
-- Optimistic concurrency via `If-Match` header (transaction ID based) — layered on top of always-on SERIALIZABLE + first-committer-wins at the transaction layer
+- Optimistic concurrency via `If-Match` header (transaction ID based) — layered on top of always-on SI+FCW at the transaction layer
 
 ### Entity Models
 - Schema discovery from sample JSON/XML data
@@ -194,7 +194,7 @@ Three-tier classification: **Operational** (4xx, full detail to client), **Inter
 
 ### Pluggable Persistence
 - In-memory backend (zero dependencies, sub-millisecond)
-- PostgreSQL backend (durable, SERIALIZABLE isolation, automatic migrations)
+- PostgreSQL backend (durable, SI+FCW via `REPEATABLE READ` + first-committer-wins, automatic migrations)
 
 ---
 

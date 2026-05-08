@@ -26,7 +26,8 @@
 // # TransactionManager and RLS
 //
 // The plugin's TM is a lifecycle tracker over a thread-safe txRegistry
-// mapping txID → pgx.Tx. TM.Begin starts a SERIALIZABLE transaction,
+// mapping txID → pgx.Tx. TM.Begin starts a REPEATABLE READ transaction
+// (snapshot isolation; first-committer-wins is layered on top in the TM),
 // runs SELECT set_config('app.current_tenant', $1, true) for row-level
 // security (the set_config function accepts bound parameters where
 // SET LOCAL does not under pgx's extended-query protocol), and records
