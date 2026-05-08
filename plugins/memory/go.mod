@@ -1,6 +1,6 @@
 module github.com/cyoda-platform/cyoda-go/plugins/memory
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/cyoda-platform/cyoda-go-spi v0.7.1
