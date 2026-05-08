@@ -56,11 +56,11 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	}
 
 	// Atomically upsert the entities row, incrementing version in the database
-	// without a prior SELECT. This avoids creating a predicate read lock on the
-	// entities table under SERIALIZABLE isolation — a read-then-write pattern
-	// (SELECT MAX(version) followed by INSERT) would cause relation-level
-	// predicate locks when the table is empty, triggering false serialization
-	// failures for concurrent inserts of distinct entities.
+	// without a prior SELECT. The single-statement upsert keeps version
+	// allocation inside one tuple-level operation — under REPEATABLE READ,
+	// concurrent inserts of distinct entities never contend, and concurrent
+	// writers to the same (tenant_id, entity_id) serialise via row locks
+	// (the loser sees 40001, classifyError → spi.ErrConflict).
 	//
 	// We insert a placeholder doc first, then update it below once we know the
 	// version. The (xmax = 0) expression is true for newly inserted rows and

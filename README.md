@@ -12,8 +12,8 @@ Cyoda-Go operates in three modes:
   - **Edge and IoT deployments** — single-binary, single-file persistence for resource-constrained environments
   - **Small team self-hosting** — durable storage without the operational overhead of a database server
   - **Local development with persistence** — keep data across restarts while retaining the simplicity of `go run`
-- **PostgreSQL mode** — durable storage with `SERIALIZABLE` isolation for production workloads.
-  - **Zero-compromise transactional safety** — full ACID with PostgreSQL-native SSI; no eventual consistency, no conflict windows, no split-brain
+- **PostgreSQL mode** — durable storage with Snapshot Isolation + first-committer-wins (SI+FCW) for production workloads.
+  - **Zero-compromise transactional safety** — full ACID with SI+FCW (`REPEATABLE READ` + application-layer first-committer-wins on entity rows; see [docs/CONSISTENCY.md](docs/CONSISTENCY.md)); no eventual consistency, no split-brain
   - **Active-active high availability** — 3-10 stateless Go nodes behind a load balancer, any node serves any request, no leader election
   - **Operational simplicity** — PostgreSQL is the only infrastructure dependency; no ZooKeeper, no etcd, no Kafka
 
@@ -207,7 +207,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8123/api/health
 │ Node 2  │
 │ Node 3  │
 ├─────────┤
-│PostgreSQL│ ← Shared, SERIALIZABLE isolation
+│PostgreSQL│ ← Shared, SI+FCW (REPEATABLE READ + FCW)
 └─────────┘
 ```
 
@@ -223,7 +223,7 @@ Cyoda-Go's storage layer is a plugin system defined by the stable [`cyoda-go-spi
 |---------|---------|-------|
 | `memory` | ✓ | Zero configuration. In-process, ephemeral. Single-node only. The default so `go build && ./cyoda` just runs. |
 | `sqlite` |   | Persistent, zero-ops embedded storage. Single-node, single-process. No external dependencies. Configure via `CYODA_SQLITE_*`. |
-| `postgres` |   | Durable, `SERIALIZABLE` isolation. Configure via `CYODA_POSTGRES_*`. Supports multi-node clusters (see cluster deployment guide). |
+| `postgres` |   | Durable, SI+FCW (`REPEATABLE READ` + first-committer-wins). Configure via `CYODA_POSTGRES_*`. Supports multi-node clusters (see cluster deployment guide). |
 
 The stock binary contains all three. A proprietary `cassandra` plugin ships in the separate `cyoda-go-cassandra` binary for deployments that need horizontal write scalability.
 
@@ -274,7 +274,7 @@ See the [`cyoda-go-spi` package documentation](https://pkg.go.dev/github.com/cyo
 | Cluster size | 3-5 nodes | 10-20 nodes |
 | Concurrent transactions | 50-250 | ~750 (3 nodes x 25 PG connections) |
 | Entity volume | Up to millions per model | Bounded by PG storage |
-| Write throughput | 50-200 entity creates/s per node | Bounded by PG SERIALIZABLE |
+| Write throughput | 50-200 entity creates/s per node | Bounded by PG `REPEATABLE READ` + commit-time FCW validation |
 
 Cyoda-Go excels at transactional correctness and operational simplicity for small-to-medium data volumes (terabytes, not petabytes). It trades away horizontal write scalability — all writes go through a single PostgreSQL instance.
 
