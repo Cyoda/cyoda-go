@@ -1,4 +1,4 @@
-# README + OVERVIEW Reframe + Help-Topic DevX Refactor
+# README + OVERVIEW→FEATURES + Help-Topic DevX Refactor
 
 **Date:** 2026-05-08
 **Status:** Design (awaiting user review)
@@ -24,8 +24,8 @@ Concretely, it suffers from:
 ## Goals
 
 1. **README ≤ ~140 lines**, optimized for an evaluator's first 60 seconds, with a clean hand-off matrix.
-2. **Every removed concept lands in a definite home** — `cyoda help` topic, `docs/ARCHITECTURE.md`, `docs/PRD.md`, OVERVIEW (reframed), `docs/plugins.md`, or `MAINTAINING.md`. No information loss.
-3. **`docs/ARCHITECTURE.md` becomes the canonical "Architecture" destination** referenced from the README. OVERVIEW.md is shrunk to its non-overlapping role (feature inventory + REST/gRPC API surface tables) and stops claiming to be an architecture doc.
+2. **Every removed concept lands in a definite home** — `cyoda help` topic, `docs/ARCHITECTURE.md`, `docs/PRD.md`, `docs/FEATURES.md` (the renamed OVERVIEW), `docs/plugins.md`, or `MAINTAINING.md`. No information loss.
+3. **`docs/ARCHITECTURE.md` becomes the canonical "Architecture" destination** referenced from the README. The legacy `OVERVIEW.md` is renamed to `docs/FEATURES.md` and shrunk to its non-overlapping role (feature inventory + REST/gRPC API surface tables); it stops claiming to be an architecture doc and the new filename advertises its actual scope.
 4. **Two new help topics** (`admin`, `cluster`) eliminate the only gaps where evicted content has nowhere canonical to land.
 5. **No transient broken cross-references** at any point in the implementation sequence.
 
@@ -109,7 +109,7 @@ Concretely, it suffers from:
   | Deploy with Docker Compose    | examples/compose-with-observability/              |
   | Architecture                  | docs/ARCHITECTURE.md                              |
   | Product overview              | docs/PRD.md                                       |
-  | Feature & API inventory       | OVERVIEW.md                                       |
+  | Feature & API inventory       | docs/FEATURES.md                                  |
   | Multi-node cluster            | https://docs.cyoda.net/help/cluster (deep dive: docs/ARCHITECTURE.md §4) |
   | Admin endpoints (log/trace)   | https://docs.cyoda.net/help/admin                 |
   | Write a storage plugin        | docs/plugins.md                                   |
@@ -133,7 +133,7 @@ In the table below, **"verify"** means: confirm during Phase 1.8 that the destin
 |---|---|
 | Three-mode pitch (5–19) | Compressed into pitch + "Four engines" table; depth in `cyoda help config.database` |
 | Target Applications (20–27) | Already in `docs/PRD.md` §1 ("Target Applications") — no action |
-| EDBMS Features 12-bullet list (29–44) | OVERVIEW.md "Feature List" (already there in expanded form; verify during shrink pass) |
+| EDBMS Features 12-bullet list (29–44) | `docs/FEATURES.md` "Feature List" (already there in expanded form in the legacy OVERVIEW.md content; verify during shrink pass) |
 | Documentation pointer (46–55) | Folded into "Where to go next" matrix |
 | Requirements (57–61) | "From source" install subsection |
 | Versioning (63–69) | README "Versioning" (kept, shortened) + maintenance-policy paragraph moves to `MAINTAINING.md` |
@@ -162,13 +162,15 @@ In the table below, **"verify"** means: confirm during Phase 1.8 that the destin
 | Admin Endpoints — log-level (461–480) | New `cyoda help admin` topic |
 | Admin Endpoints — trace-sampler (482–545) | New `cyoda help admin` topic |
 
-### 3. OVERVIEW.md reframe — drop the architecture half
+### 3. OVERVIEW.md → docs/FEATURES.md — rename, relocate, drop the architecture half
 
-OVERVIEW.md duplicates `docs/ARCHITECTURE.md` at lower fidelity. Rather than recon-and-extend (which preserves the duplication), shrink OVERVIEW to its **non-overlapping** role: a flat feature-and-API-surface inventory that ARCHITECTURE.md does not provide.
+The legacy `OVERVIEW.md` duplicates `docs/ARCHITECTURE.md` at lower fidelity. Rather than recon-and-extend (which preserves the duplication), the file is **renamed to `docs/FEATURES.md`** (the new name advertises its actual scope) and shrunk to its **non-overlapping** role: a flat feature-and-API-surface inventory that ARCHITECTURE.md does not provide.
+
+**Move:** `git mv OVERVIEW.md docs/FEATURES.md` (preserves git history; relocates to `docs/` alongside ARCHITECTURE.md and PRD.md). Title becomes `# Cyoda-Go — Feature & API Surface Inventory`.
 
 **New scope (kept):**
 - One-paragraph re-scoped intro — explicitly states this is the feature & API inventory; points readers at `docs/ARCHITECTURE.md` for architecture and `docs/PRD.md` for product context.
-- **Feature List** — ~80-bullet inventory across Entity / Models / Workflow / Search / Audit / Messaging / gRPC / Auth / Multi-Tenancy / Temporal / Pluggable Persistence. **Refresh:** add the sqlite plugin to "Pluggable Persistence" (currently lists only memory + postgres).
+- **Feature List** — ~80-bullet inventory across Entity / Models / Workflow / Search / Audit / Messaging / gRPC / Auth / Multi-Tenancy / Temporal / Pluggable Persistence. **Refresh:** add the sqlite plugin to "Pluggable Persistence" (the legacy file lists only memory + postgres).
 - **REST API Surface** — one-row-per-area table.
 - **gRPC API Surface** — `CloudEventsService` proto block.
 
@@ -189,7 +191,10 @@ OVERVIEW.md duplicates `docs/ARCHITECTURE.md` at lower fidelity. Rather than rec
 - The REST API Surface table matches the OpenAPI spec generated from `api/`. Update any drifted endpoint group.
 - The gRPC API Surface proto block matches `proto/`.
 
-**Renaming.** Filename stays `OVERVIEW.md` to preserve any existing inbound links. Title becomes `# Cyoda-Go — Feature & API Surface Inventory`. (If you want a rename to `docs/FEATURES.md`, say so before plan-out — it's a one-line spec change.)
+**Inbound link updates** (do these in the same PR):
+- `README.md:44` — currently `See [OVERVIEW.md](OVERVIEW.md)`. Removed by README rewrite (Phase 2.1) — no separate fix needed.
+- `docs/proposals/2026-04-16-Cyoda_Mem_PRD_Final.md:8` — uses an absolute GitHub URL `.../blob/main/OVERVIEW.md`. Update to `.../blob/main/docs/FEATURES.md`. (This is a proposal doc, not a historical plan, so updating links is appropriate.)
+- `docs/superpowers/specs/2026-04-16-provisioning-shared-design.md:210` — historical spec record, not living documentation. Per `.claude/rules/documentation-hygiene.md` ("`docs/plans/` — historical records, not living documents") and the same logic for completed specs, **do not edit**. The mention there refers to the OSS-metadata layout decision at the time of that spec.
 
 ### 4. New help topic: `cyoda help admin`
 
@@ -338,9 +343,15 @@ Phase 1 — Build destinations (no README touch)
   1.3  Update cmd/cyoda/help/help_test.go (topLevelTopicsV061)
   1.4  Add docs/plugins.md (thin entry point)
   1.5  Add maintenance-policy subsection to MAINTAINING.md
-  1.6  OVERVIEW.md reframe — strip architecture sections; refresh
-       Feature List + REST/gRPC API Surface; new title and intro
-       paragraph re-scoping the doc.
+  1.6  OVERVIEW.md → docs/FEATURES.md:
+       a. git mv OVERVIEW.md docs/FEATURES.md (preserves history)
+       b. Strip architecture sections; refresh Feature List
+          (add sqlite to Pluggable Persistence) + REST/gRPC API Surface
+       c. New title (# Cyoda-Go — Feature & API Surface Inventory)
+          and intro paragraph re-scoping the doc and pointing readers
+          at ARCHITECTURE.md / PRD.md
+       d. Update inbound link in
+          docs/proposals/2026-04-16-Cyoda_Mem_PRD_Final.md (GitHub URL)
   1.7  Help-topic gap audit:
        - For every "verify" row in the destination map, confirm the
          content already lives in the named cyoda help topic. If a
@@ -354,7 +365,7 @@ Phase 2 — README cut
   2.3  Destination-map audit: grep the old README for every distinctive
        phrase moved (e.g. "txID-to-physical-handle bridge", "SI+FCW",
        "Bootstrap M2M client") and confirm it lives in the destination
-       (cyoda help topic, ARCHITECTURE.md, PRD.md, OVERVIEW.md, plugins.md,
+       (cyoda help topic, ARCHITECTURE.md, PRD.md, FEATURES.md, plugins.md,
        or MAINTAINING.md)
 
 Phase 3 — Verify hygiene
@@ -371,8 +382,11 @@ Phase 3 — Verify hygiene
 - **Risk:** External links (blog posts, docs sites) reference README anchors that will disappear.
   **Mitigation:** Aggressive cuts are sanctioned by user. Anchor breakage is acceptable; link breakage to docs.cyoda.net is not (it's the canonical replacement). The link-check in Phase 2.2 is binding.
 
-- **Risk:** OVERVIEW reframe surfaces feature-list staleness (a feature shipped that's not listed, or vice versa).
+- **Risk:** FEATURES.md reframe surfaces feature-list staleness (a feature shipped that's not listed, or vice versa).
   **Mitigation:** Bounded by the spot-check rules in §3 ("verification of the kept content"). If a gap is found, fix it inline. If a gap turns out to be a code-vs-docs drift requiring *code* changes (i.e. an undocumented behavior that should arguably be removed), surface it to the user (Gate 6) rather than silently documenting aspirational behavior.
+
+- **Risk:** External inbound links to `github.com/.../blob/main/OVERVIEW.md` (blog posts, tweets, slides) 404 after rename.
+  **Mitigation:** Acceptable per the user's "aggressive cuts" mandate. The two in-repo references are handled in §3 ("Inbound link updates"). External rot is a one-time hit, comparable in severity to the README anchor breakage already accepted.
 
 - **Risk:** ARCHITECTURE.md itself drifts before this PR lands, making the README link stale.
   **Mitigation:** ARCHITECTURE.md is dated and version-tagged; if its date is older than ~3 months at PR-prep time, flag for the user — the README link is still correct in *direction*, but a separate ARCHITECTURE refresh may be warranted (out of scope here).
@@ -390,7 +404,9 @@ Phase 3 — Verify hygiene
 - `go test ./cmd/cyoda/...` is green (help-tree tests pass with new topics)
 - `cyoda help admin` and `cyoda help cluster` render
 - Manual: every link in the README resolves
-- OVERVIEW.md no longer contains the architecture sections; intro paragraph re-scopes it as feature & API surface inventory and points to ARCHITECTURE.md / PRD.md
-- OVERVIEW.md "Feature List" includes the sqlite plugin under Pluggable Persistence
-- README routing matrix's "Architecture" row points to `docs/ARCHITECTURE.md`, not OVERVIEW.md
+- `OVERVIEW.md` no longer exists at the repo root; `docs/FEATURES.md` exists and contains only Feature List + REST/gRPC API Surface, with an intro paragraph pointing to ARCHITECTURE.md / PRD.md
+- `git log --follow docs/FEATURES.md` resolves history back through the rename to the original OVERVIEW.md commits
+- `docs/FEATURES.md` "Feature List" includes the sqlite plugin under Pluggable Persistence
+- README routing matrix's "Architecture" row points to `docs/ARCHITECTURE.md`; "Feature & API inventory" row points to `docs/FEATURES.md`
+- `docs/proposals/2026-04-16-Cyoda_Mem_PRD_Final.md` GitHub URL updated to `docs/FEATURES.md`
 - No external Go source files changed (this is a docs-only PR)
