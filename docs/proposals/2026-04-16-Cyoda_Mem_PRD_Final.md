@@ -5,7 +5,7 @@
 **Version:** 3.0 — April 2026
 **Status:** Proposal for Stakeholder Review
 **Authors:** Cyoda Platform Team
-**Prerequisite Reading:** [Cyoda-Go OVERVIEW.md](https://github.com/Cyoda-platform/cyoda-go/blob/main/docs/FEATURES.md)
+**Prerequisite Reading:** [Cyoda-Go FEATURES.md](https://github.com/Cyoda-platform/cyoda-go/blob/main/docs/FEATURES.md)
 
 ---
 
