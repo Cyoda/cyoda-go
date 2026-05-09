@@ -8,6 +8,7 @@ see_also:
   - run
   - quickstart
   - helm
+  - errors
 ---
 
 # cluster
@@ -34,7 +35,7 @@ Multi-node cyoda is supported only on the `postgres` storage backend. All nodes 
 
 Any node can serve any HTTP or gRPC request. The load balancer does not need session affinity for stateless requests. For requests carrying a transaction-routing token (see `TRANSACTION ROUTING`), the in-process proxy forwards to the node that owns the transaction.
 
-PostgreSQL is the only stateful component. Cluster size is bounded below by quorum-free PostgreSQL replication (typically 3 cyoda nodes minimum for HA) and above by PostgreSQL connection-pool capacity (typically 10 nodes maximum).
+PostgreSQL is the only stateful component. Cluster size is bounded below by quorum-free PostgreSQL replication (typically 3 cyoda nodes minimum for HA) and above by PostgreSQL connection-pool capacity (typically 10 nodes maximum; see `config.database` for connection-pool tuning).
 
 ## DISCOVERY
 
@@ -44,7 +45,7 @@ The gossip protocol is operationally invisible — there are no per-message logs
 
 ## TRANSACTION ROUTING
 
-PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` is single-owner). When a node begins a transaction, it issues a routing token containing the owning node's identity, an opaque transaction reference, and an expiry, signed with HMAC-SHA256 keyed on `CYODA_HMAC_SECRET`. The token is returned to the client (HTTP header `X-Tx-Token`, gRPC metadata key equivalent) and replayed on subsequent requests against that transaction.
+PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` is single-owner). When a node begins a transaction, it issues a routing token containing the owning node's identity, an opaque transaction reference, and an expiry, signed with HMAC-SHA256 keyed on `CYODA_HMAC_SECRET`. The token is returned to the client (HTTP header `X-Tx-Token`, gRPC metadata key `tx-token`) and replayed on subsequent requests against that transaction.
 
 The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handle the request locally (token's owner is this node) or reverse-proxy to the owning node. Failure modes:
 
@@ -58,7 +59,7 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - **Growing the cluster.** Start a new node with the same `CYODA_HMAC_SECRET` and a seed-list pointing at any existing node. Gossip propagates membership within seconds. The load balancer's health checks (against `/readyz`) decide when to send traffic.
 - **Shrinking the cluster.** Send SIGTERM. The node finishes in-flight requests, declares itself dead via gossip, and exits. Outstanding transactions owned by the departing node abort cleanly via PostgreSQL connection close.
 - **Rolling restart.** Restart one node at a time, waiting for `/readyz` to report ready before moving on. Transactions in flight on the restarting node abort; clients retry.
-- **Network partitions.** A node partitioned from PostgreSQL fails its own `/readyz` and is removed from the load balancer. A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
+- **Network partitions.** A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. A node partitioned from PostgreSQL continues to pass `/readyz` (the current readiness check is a static initialization flag, not a live store probe — see `app/app.go ReadinessCheck`); individual requests fail at query time and the client retries. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
 
 ## SEE ALSO
 
@@ -67,3 +68,4 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - `run` — server lifecycle
 - `quickstart` — first-run defaults
 - `helm` — Kubernetes deployment of multi-node clusters
+- `errors` — per-code error reference
