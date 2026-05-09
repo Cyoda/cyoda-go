@@ -2,7 +2,7 @@
 
 This document inventories every feature implemented in cyoda-go and lists the REST and gRPC API surfaces. It is the answer to "what can this thing do" and "where does endpoint X live."
 
-For **architecture** — modular layout, storage plugin contract, transaction model, multi-node routing, partition analysis — see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
+For **architecture** — modular layout, storage plugin contract, transaction model, multi-node routing, network partition analysis — see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 
 For **product context** — value proposition, target use cases, scale envelope, cost model — see [`docs/PRD.md`](PRD.md).
 
@@ -94,7 +94,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 ### Pluggable Persistence
 - In-memory backend (zero dependencies, sub-millisecond)
 - SQLite backend (single-file persistent storage; no external server; embedded SQL migrations)
-- PostgreSQL backend (durable, SI+FCW via `REPEATABLE READ` + first-committer-wins, automatic migrations, multi-node-capable)
+- PostgreSQL backend (durable, SI+FCW via `REPEATABLE READ` + first-committer-wins, automatic migrations; required for cyoda multi-node cluster mode)
 
 ---
 
@@ -110,10 +110,10 @@ For **product context** — value proposition, target use cases, scale envelope,
 | **Search** | `POST /search/{direct,async}/...`, `GET /search/async/{jobId}` |
 | **Audit** | `GET /audit/entity/{entityId}`, workflow finished event |
 | **Messaging** | `POST/GET/DELETE /message/...` |
-| **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management |
+| **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key + trusted-key management |
+| **M2M Clients** | `GET/POST /account/m2m`, `DELETE /account/m2m/{clientId}`, `POST /account/m2m/{clientId}/secret/reset` |
 | **Account** | `GET /account`, subscriptions |
-| **Cluster** | `GET /cluster/members/calculation/...` |
-| **Admin** | `GET/POST /admin/log-level` |
+| **Admin** | `GET/POST /admin/log-level`, `GET/POST /admin/trace-sampler` |
 
 ## gRPC API Surface
 
