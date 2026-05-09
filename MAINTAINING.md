@@ -427,6 +427,18 @@ Delete the rc release afterwards if desired:
 gh release delete v0.1.0-rc.1 --cleanup-tag --yes
 ```
 
+## Maintenance of older release lines
+
+Cyoda-go is pre-1.0 and **older release lines are not maintained**. No back-port branches exist by default. Patch bumps within the active line are non-breaking; minor bumps may break wire format, configuration, or operational surface.
+
+If a real consumer needs a fix on an older line:
+
+1. Open an issue describing the constraint (which version, which fix, why an upgrade is not viable).
+2. The maintainers will consider creating an official maintenance branch for that line.
+3. If accepted, the branch is named `release/vX.Y.x` (e.g. `release/v0.6.x`) and is cut from the relevant tag.
+
+Until a maintenance branch is created and announced, treat older lines as frozen.
+
 ## Gotcha: snapshot-testing from a local clone
 
 GoReleaser generates the Homebrew formula's `url` fields from the git
