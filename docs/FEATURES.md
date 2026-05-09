@@ -1,111 +1,10 @@
-# Cyoda-Go — Architecture & Feature Overview
+# Cyoda-Go — Feature & API Surface Inventory
 
-This document describes the system architecture and implemented features of Cyoda-Go, a single-node Go digital twin of the [Cyoda](https://cyoda.com) EDBMS platform.
+This document inventories every feature implemented in cyoda-go and lists the REST and gRPC API surfaces. It is the answer to "what can this thing do" and "where does endpoint X live."
 
-## System Architecture
+For **architecture** — modular layout, storage plugin contract, transaction model, multi-node routing, partition analysis — see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 
-Cyoda-Go is a **modular monolith** organized by domain-driven design boundaries. Every cross-cutting concern is defined as a Go interface (SPI) before any implementation, with components depending only on abstractions.
-
-```
-┌──────────────────────────────────────────────────┐
-│  REST API (OpenAPI spec-first, oapi-codegen)     │
-│  gRPC Server (CloudEventsService)                │
-├──────────────────────────────────────────────────┤
-│  Auth Middleware ─► UserContext injection        │
-│  Recovery Middleware ─► Error handling (RFC 9457)│
-├──────────────────────────────────────────────────┤
-│  Domain Handlers                                 │
-│  Entity · Model · Search · Audit · Messaging     │
-├──────────────────────────────────────────────────┤
-│  Workflow Engine                                 │
-│  State machine execution · Criteria evaluation   │
-│  Processor dispatch (local or gRPC)              │
-├──────────────────────────────────────────────────┤
-│  SPI Layer (Persistence Abstraction)             │
-│  StoreFactory ─► EntityStore, ModelStore, etc.   │
-├──────────────────────────────────────────────────┤
-│  Storage Backend (selected at startup)           │
-├────────────────────┬─────────────────────────────┤
-│  In-Memory Store   │  PostgreSQL Store           │
-│  (SI+FCW)          │  (SI+FCW: RR + FCW)         │
-└────────────────────┴─────────────────────────────┘
-```
-
-### Domain Modules
-
-| Module | Responsibility |
-|--------|---------------|
-| **Entity** | CRUD, versioning, batch operations, point-in-time retrieval |
-| **Model** | Schema discovery from sample data, lock/unlock lifecycle, validation, dynamic extension |
-| **Workflow** | State machine execution, automated/manual transitions, criteria evaluation, processor dispatch |
-| **Search** | Predicate-based queries (sync and async), pagination, point-in-time search |
-| **Audit** | Entity change history, state machine event trail (13 event types) |
-| **Messaging** | Edge message storage with streaming payloads |
-| **Auth** | JWT issuance, JWKS, M2M clients, OBO token exchange (RFC 8693), trusted keys |
-| **gRPC** | Bidirectional streaming for externalized processors and criteria via CloudEvents |
-| **Cluster** | Connected calculation member registry, tag-based routing |
-
-### Persistence
-
-Two storage backends, selected at startup via `CYODA_STORAGE_BACKEND`:
-
-**In-Memory** — Thread-safe maps with `sync.RWMutex`, tenant-partitioned, append-only entity versioning. Transactions use Snapshot Isolation with First-Committer-Wins (SI+FCW), with conflict detection at commit.
-
-**PostgreSQL** — `REPEATABLE READ` snapshot isolation plus application-layer first-committer-wins (SI+FCW), bi-temporal entity versioning (`valid_time`, `transaction_time`, `wall_clock_time`), automatic schema migrations, row-level security policies. A `Querier` interface abstracts `pgxpool.Pool` and `pgx.Tx` so stores work transparently inside and outside transactions. See [docs/CONSISTENCY.md](docs/CONSISTENCY.md) for the full contract.
-
-### Multi-Tenancy
-
-Tenant isolation is structural, not conventional. `TenantID` is a named Go type (not a bare string). Every request carries a resolved `UserContext` with tenant identity, injected by auth middleware. The `StoreFactory` extracts tenant from context and returns a tenant-scoped view — there is no API path where tenant is absent or bypassable. A `SYSTEM` tenant exists for platform-level shared data.
-
-### Transactions
-
-ACID transactions with Snapshot Isolation and First-Committer-Wins (SI+FCW):
-
-1. **Begin** — snapshot time captured, empty read/write sets
-2. **Read** — buffer first (read-your-own-writes), then snapshot view
-3. **Write** — buffered, not yet visible to other transactions
-4. **Commit** — conflict detection against concurrent writes, atomic flush
-5. **Rollback** — discard buffer
-
-Three processor execution modes control transactional participation:
-
-| Mode | Transaction | On Failure |
-|------|-------------|------------|
-| `SYNC` | Caller's transaction | Rollback all |
-| `ASYNC_SAME_TX` | Caller's transaction | Rollback all |
-| `ASYNC_NEW_TX` | Independent transaction | Caller unaffected |
-
-### Workflow Engine
-
-Entities are finite state machines. On creation, the engine selects a matching workflow by evaluating criteria, sets the initial state, then cascades through automated transitions until a stable state is reached.
-
-**Criteria types:** Simple (JSONPath + operator), Lifecycle (metadata fields), Group (AND/OR composition), Array (positional matching), Function (delegated to external compute nodes via gRPC).
-
-**23 operators:** equality, comparison, string matching, case-insensitive variants, pattern matching, between, null checks.
-
-**Audit trail:** 13 event types track the full state machine narrative — workflow selection, transitions attempted/made/denied, processor results, cancellation.
-
-### gRPC & Externalized Processing
-
-Cyoda-Go implements Cyoda's `CloudEventsService` with bidirectional streaming. Calculation members (external compute nodes) connect via gRPC, register with capability tags, and receive processor/criteria dispatch requests as CloudEvents.
-
-**Protocol:** Join → Greet → Keep-alive loop → Processor/Criteria requests → Responses. Tag-based routing matches processor requirements to member capabilities. Members must authenticate with `ROLE_M2M` JWT tokens.
-
-### Authentication
-
-Two modes: **mock** (all requests auto-authenticated, zero setup) and **jwt** (real OAuth 2.0 with RS256 JWT tokens).
-
-JWT mode provides:
-- Token issuance via `client_credentials` grant
-- On-behalf-of token exchange (RFC 8693)
-- JWKS endpoint for public key discovery
-- M2M technical user management
-- Trusted external key registration (persisted via KV store)
-- Bootstrap M2M client at startup (solves chicken-and-egg)
-
-### Error Handling
-
-Three-tier classification: **Operational** (4xx, full detail to client), **Internal** (5xx, generic message + correlation ticket), **Fatal** (5xx, marks health unhealthy). Responses follow RFC 9457 Problem Details format. Error detail level controlled by `CYODA_ERROR_RESPONSE_MODE` (sanitized or verbose).
+For **product context** — value proposition, target use cases, scale envelope, cost model — see [`docs/PRD.md`](PRD.md).
 
 ---
 
@@ -194,7 +93,8 @@ Three-tier classification: **Operational** (4xx, full detail to client), **Inter
 
 ### Pluggable Persistence
 - In-memory backend (zero dependencies, sub-millisecond)
-- PostgreSQL backend (durable, SI+FCW via `REPEATABLE READ` + first-committer-wins, automatic migrations)
+- SQLite backend (single-file persistent storage; no external server; embedded SQL migrations)
+- PostgreSQL backend (durable, SI+FCW via `REPEATABLE READ` + first-committer-wins, automatic migrations, multi-node-capable)
 
 ---
 
