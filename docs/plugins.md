@@ -13,7 +13,7 @@ You are writing a Go module that plugs into a custom cyoda binary as a new stora
 
 ## Reference implementations to fork
 
-The in-tree plugins each ship with package documentation explicitly maintained as a reference for plugin authors:
+The in-tree plugins are reference examples for plugin authors:
 
 - `plugins/memory/doc.go` — simplest implementation; in-process SI+FCW with `sync.RWMutex`. Read this first.
 - `plugins/postgres/doc.go` — production-grade persistent storage with the `txID`-to-`pgx.Tx` bridge pattern for multi-node transaction routing, and the `DescribablePlugin` `ConfigVars()` pattern that drives `--help` output.
@@ -23,20 +23,7 @@ The Cassandra storage backend offered as a commercial product by Cyoda implement
 
 ## Custom binary
 
-cyoda-go does not export a reusable `Main()` entrypoint; the supported pattern is to fork `cmd/cyoda/main.go` into your own module and add your plugin to its blank-import block, alongside the stock plugins:
-
-```go
-package main
-
-import (
-    _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
-    _ "example.com/your-org/your-plugin"
-
-    // ... rest of cmd/cyoda/main.go imports and the main() body
-)
-```
+cyoda-go does not export a reusable `Main()` entrypoint. The supported pattern is to maintain your custom binary inside a fork or vendored copy of `cyoda-go` (the entry point depends on `internal/...` packages that are not importable across module boundaries). Add your plugin's blank-import line to `cmd/cyoda/main.go`'s import block alongside the stock plugins (`plugins/memory`, `plugins/sqlite`, `plugins/postgres`).
 
 Selecting your plugin at runtime is then `CYODA_STORAGE_BACKEND=your-plugin-name`, where the name is whatever your `Plugin.Name()` method returns.
 
