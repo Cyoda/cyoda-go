@@ -70,25 +70,33 @@ This binary uses the in-memory backend by default. Run `cyoda init` for sqlite p
 
 ## First real call
 
-The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt:
+The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt — without leaking the bootstrap secret into your shell history or `ps` output — use the project's profile pattern:
 
 ```bash
-# Generate a JWT signing key
+# Generate a JWT signing key (openssl writes it 0600 by default; make it explicit)
 openssl genrsa -out /tmp/jwt.key 2048
+chmod 600 /tmp/jwt.key
 
-# Initialize sqlite config and configure jwt mode
-cyoda init
-export CYODA_IAM_MODE=jwt
-export CYODA_JWT_SIGNING_KEY_FILE=/tmp/jwt.key
-export CYODA_BOOTSTRAP_CLIENT_ID=demo
-export CYODA_BOOTSTRAP_CLIENT_SECRET=demo-secret
+# Write a local profile with sqlite + jwt + bootstrap creds. .env.local is
+# gitignored; chmod 600 keeps the secret off other users' eyes on shared boxes.
+cat > .env.local <<'EOF'
+CYODA_STORAGE_BACKEND=sqlite
+CYODA_IAM_MODE=jwt
+CYODA_JWT_SIGNING_KEY_FILE=/tmp/jwt.key
+CYODA_BOOTSTRAP_CLIENT_ID=demo
+CYODA_BOOTSTRAP_CLIENT_SECRET=demo-secret
+EOF
+chmod 600 .env.local
 
-# Start the server
-cyoda &
+# Start cyoda with the local profile (loads .env.local automatically)
+CYODA_PROFILES=local cyoda &
+
+# Read the secret from the file at the moment we need it — never `export` it
+SECRET=$(grep '^CYODA_BOOTSTRAP_CLIENT_SECRET=' .env.local | cut -d= -f2-)
 
 # Get an OAuth 2.0 token via client_credentials
 TOKEN=$(curl -sX POST http://localhost:8080/api/oauth/token \
-  -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" \
+  -u "demo:$SECRET" \
   -d "grant_type=client_credentials" | jq -r .access_token)
 
 # Make an authenticated call
