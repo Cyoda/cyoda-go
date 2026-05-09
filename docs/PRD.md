@@ -14,10 +14,14 @@ Cyoda-Go is an Entity Database Management System (EDBMS) — a database engine w
 
 High-complexity, high-consistency enterprise domains where correctness is non-negotiable:
 
-- **Financial ledgers** — double-entry bookkeeping with strict state machine enforcement on journal entries
-- **Order management** — multi-stage order lifecycles with automated and manual state transitions, external processor callouts for validation/enrichment
-- **Regulatory compliance** — auditable entity histories with point-in-time retrieval for regulatory reporting windows
-- **Digital twin orchestration** — behavioral clones of production systems for scenario testing at volumes exceeding production limits
+- **Embedded subledgers for fintech and vertical SaaS** — double-entry ledgers for wallets, BNPL, lending, escrow, and remittance with FSM-enforced journal entries.
+- **Loan origination and servicing** — multi-year loan entities spanning application, underwriting, disbursement, repayment, modification, default, and recovery, with retroactive corrections and point-in-time disclosure reconstruction.
+- **Cross-border payment routing** — multi-leg settlement flows requiring strict state coordination across internal accounts and external clearing networks.
+- **Trade lifecycle and surveillance** — order and execution state machines with bi-temporal reconstruction of order books for MiFID II, CAT, SEC Rule 613, and Reg BI.
+- **Insurance claims with reserves and sub-claims** — hierarchical claim entities with retroactively-adjustable reserves, automated rule cascades, manual adjuster interventions, and quarter-end snapshots for IFRS 17 and Solvency II.
+- **KYC, AML, and financial-crime case management** — customer lifecycle state machines with externalized sanctions screening, document OCR, and ML risk scoring under one transactional boundary.
+- **Governed agentic AI workflows** — AI-driven business actions expressed as gated state transitions on entity workflows, with policy-as-code criteria, externalized agent processors, and per-version capture of action, reasoning, and context.
+- **Digital twin orchestration** — behavioral clones of production Cyoda systems for rapid semi-automated application development using agentic engineering techniques, as well as scenario testing with high request volumes.
 
 ### Scale Profile
 
