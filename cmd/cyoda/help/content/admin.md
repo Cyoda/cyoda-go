@@ -25,7 +25,7 @@ POST /api/admin/trace-sampler
 
 ## DESCRIPTION
 
-Both endpoint families require `ROLE_ADMIN` on the JWT and update process-local state atomically. State is **not** propagated across nodes; multi-node deployments must hit each node's endpoint separately, the same as `/api/admin/log-level` has always behaved.
+Both endpoint families require `ROLE_ADMIN` on the JWT and update process-local state atomically. State is **not** propagated across nodes; multi-node deployments must hit each node's endpoint separately.
 
 ## ENDPOINTS
 
@@ -37,7 +37,7 @@ Both endpoint families require `ROLE_ADMIN` on the JWT and update process-local 
 {"level": "info"}
 ```
 
-`POST /api/admin/log-level` changes the level atomically. Body shape mirrors the GET response. Valid values: `debug`, `info`, `warn`, `error`.
+`POST /api/admin/log-level` changes the level atomically. Request body: `{"level": "<level>"}`. Response: `{"level": "<new>", "previous": "<old>"}`. Valid values: `debug`, `info`, `warn`, `error`.
 
 ### trace-sampler
 
@@ -47,7 +47,7 @@ Both endpoint families require `ROLE_ADMIN` on the JWT and update process-local 
 {"sampler": "ratio", "ratio": 0.1, "parent_based": true}
 ```
 
-`POST /api/admin/trace-sampler` changes the sampler atomically. Body shape mirrors the GET response. Valid `sampler` values: `always`, `never`, `ratio`. When `sampler` is `ratio`, `ratio` must be a float in `[0, 1]`.
+`POST /api/admin/trace-sampler` changes the sampler atomically. Body shape mirrors the GET response. Valid `sampler` values: `always`, `never`, `ratio`. When `sampler` is `ratio`, `ratio` must be a float in `(0, 1]`. Use `sampler: never` for zero sampling — `ratio: 0` is rejected.
 
 ## EXAMPLES
 
@@ -74,7 +74,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   -d '{"sampler":"always","parent_based":false}' \
   http://localhost:8080/api/admin/trace-sampler
 
-# Disable tracing
+# Disable local sampling (still honors upstream-sampled traceparent; set parent_based:false to override)
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sampler":"never"}' \
