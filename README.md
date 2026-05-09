@@ -2,7 +2,7 @@
 
 **One transactional runtime for the entity lifecycle.**
 
-cyoda-go is an EDBMS — state machine, processors, and full revision history live inside the record, committed atomically. Minimizes the need for sagas, CDC pipelines, and external orchestration.
+cyoda-go is an EDBMS (Entity Database Management System) — state machine, processors, and full revision history live inside the record, committed atomically. Minimizes the need for sagas, CDC pipelines, and external orchestration.
 
 ## Four storage engines, one application contract
 
@@ -26,7 +26,7 @@ curl http://localhost:8080/api/health
 # {"status":"UP"}
 ```
 
-This starts cyoda with mock auth and sqlite persistence at `~/.local/share/cyoda/cyoda.db`. See **Install** for non-Homebrew options and **First real call** for jwt + a real authenticated request.
+`cyoda init` writes a sqlite-backed user config (default path `~/.local/share/cyoda/cyoda.db`); `cyoda` then starts the server with that config and mock auth. See **Install** for non-Homebrew options and **First real call** for jwt + a real authenticated request.
 
 ## Install
 
@@ -103,16 +103,16 @@ Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` 
 
 | Goal                          | Link                                              |
 |-------------------------------|---------------------------------------------------|
-| Build an app                  | https://docs.cyoda.net/help/quickstart            |
-| Configure                     | https://docs.cyoda.net/help/config                |
-| Error reference               | https://docs.cyoda.net/help/errors                |
-| Deploy with Helm              | https://docs.cyoda.net/help/helm                  |
+| Build an app                  | [docs.cyoda.net/help/quickstart](https://docs.cyoda.net/help/quickstart) |
+| Configure                     | [docs.cyoda.net/help/config](https://docs.cyoda.net/help/config)       |
+| Error reference               | [docs.cyoda.net/help/errors](https://docs.cyoda.net/help/errors)       |
+| Deploy with Helm              | [docs.cyoda.net/help/helm](https://docs.cyoda.net/help/helm)           |
 | Deploy with Docker Compose    | [examples/compose-with-observability/](examples/compose-with-observability/) |
 | Architecture                  | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      |
 | Product overview              | [docs/PRD.md](docs/PRD.md)                        |
 | Feature & API inventory       | [docs/FEATURES.md](docs/FEATURES.md)              |
-| Multi-node cluster            | https://docs.cyoda.net/help/cluster (deep dive: [docs/ARCHITECTURE.md §4](docs/ARCHITECTURE.md#4-multi-node-routing-architecture)) |
-| Admin endpoints (log/trace)   | https://docs.cyoda.net/help/admin                 |
+| Multi-node cluster            | [docs.cyoda.net/help/cluster](https://docs.cyoda.net/help/cluster) |
+| Admin endpoints (log/trace)   | [docs.cyoda.net/help/admin](https://docs.cyoda.net/help/admin)         |
 | Write a storage plugin        | [docs/plugins.md](docs/plugins.md)                |
 | Contribute                    | [CONTRIBUTING.md](CONTRIBUTING.md)                |
 | Security disclosures          | [SECURITY.md](SECURITY.md)                        |
