@@ -59,14 +59,17 @@ Concretely, it suffers from:
 ## Four storage engines, one application contract                   (14 lines)
   Same application code, four operational shapes:
 
-  | Engine     | Where it fits                                 | Ships in    |
-  |------------|-----------------------------------------------|-------------|
-  | memory     | Local dev, unit tests, digital-twin scenarios | cyoda-go    |
-  | sqlite     | Edge, single-node self-host, persistent dev   | cyoda-go    |
-  | postgres   | Production transactional workloads, HA        | cyoda-go    |
-  | cassandra  | Distributed scale, high write throughput      | commercial  |
+  | Engine     | Where it fits                                 | Availability       |
+  |------------|-----------------------------------------------|--------------------|
+  | memory     | Local dev, unit tests, digital-twin scenarios | open source        |
+  | sqlite     | Edge, single-node self-host, persistent dev   | open source        |
+  | postgres   | Production transactional workloads, HA        | open source        |
+  | cassandra  | Distributed scale, high write throughput      | commercial (Cyoda) |
 
   Switch by setting `CYODA_STORAGE_BACKEND` — no code changes.
+  The cassandra engine is offered as a commercial backend by Cyoda for
+  workloads that outgrow a single PostgreSQL primary; contact info in
+  the cyoda.com website footer.
 
 ## Try it in 30 seconds                                              (12 lines)
   brew install cyoda-platform/cyoda-go/cyoda
@@ -308,12 +311,11 @@ Registration: add `cluster` to `topLevelTopicsV061`.
 Absorbs README lines 248–268 plus expansion. Target ~80 lines.
 
 Sections:
-- **Why a plugin?** When external storage justifies a plugin (the cassandra escape hatch as motivation).
+- **Why a plugin?** When external storage justifies a plugin. The commercial cassandra engine is referenced here only as motivation for the SPI's existence — its source is not public, so this doc describes the SPI contract that any storage backend must satisfy, not a recipe for cloning a specific implementation.
 - **Dependency rule.** Only `cyoda-go-spi`. SPI is stdlib-only at the surface.
 - **Required interfaces.** `spi.Plugin`, `spi.DescribablePlugin`, `spi.StoreFactory`, `spi.TransactionManager`, optional `spi.Startable`. One-line contract per method.
-- **Reference implementations.** `plugins/memory/` (simplest), `plugins/postgres/` (txID-bridge pattern).
+- **Reference implementations.** `plugins/memory/` (simplest), `plugins/postgres/` (txID-bridge pattern). These are the canonical, public references — readers wanting to see a working out-of-tree plugin should fork from `plugins/sqlite/` or `plugins/postgres/`.
 - **Custom-binary blank-import example.** Verbatim from current README lines 258–266.
-- **Real-world out-of-tree example.** Link to `cyoda-go-cassandra` repo with a note on what makes it different (LWT-based first-committer-wins, distributed write scale).
 - **Pin discipline.** Link to `MAINTAINING.md#bumping-cyoda-go-spi`. The CI gate `check-spi-pin-sync` is mentioned here too.
 
 ### 7. MAINTAINING.md addition
