@@ -117,6 +117,7 @@ Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` 
 | Deploy with Helm              | [docs.cyoda.net/help/helm](https://docs.cyoda.net/help/helm)           |
 | Deploy with Docker Compose    | [examples/compose-with-observability/](examples/compose-with-observability/) |
 | Architecture                  | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      |
+| Application examples          | [docs/PRD.md#target-applications](docs/PRD.md#target-applications) |
 | Product overview              | [docs/PRD.md](docs/PRD.md)                        |
 | Feature & API inventory       | [docs/FEATURES.md](docs/FEATURES.md)              |
 | Multi-node cluster            | [docs.cyoda.net/help/cluster](https://docs.cyoda.net/help/cluster) |
