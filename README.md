@@ -1,3 +1,8 @@
+[![CI](https://github.com/Cyoda-platform/cyoda-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Cyoda-platform/cyoda-go/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Cyoda-platform/cyoda-go)](https://github.com/Cyoda-platform/cyoda-go/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cyoda-platform/cyoda-go.svg)](https://pkg.go.dev/github.com/cyoda-platform/cyoda-go)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 # cyoda-go
 
 **One transactional runtime for the entity lifecycle.**
@@ -111,6 +116,7 @@ Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` 
 
 | Goal                          | Link                                              |
 |-------------------------------|---------------------------------------------------|
+| Build an app fast (Claude Code) | [github.com/Cyoda-platform/cyoda-skills](https://github.com/Cyoda-platform/cyoda-skills) — install the cyoda-skills plugin and use `/cyoda:app` to scaffold |
 | Build an app                  | [docs.cyoda.net/help/quickstart](https://docs.cyoda.net/help/quickstart) |
 | Configure                     | [docs.cyoda.net/help/config](https://docs.cyoda.net/help/config)       |
 | Error reference               | [docs.cyoda.net/help/errors](https://docs.cyoda.net/help/errors)       |
@@ -125,6 +131,15 @@ Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` 
 | Write a storage plugin        | [docs/plugins.md](docs/plugins.md)                |
 | Contribute                    | [CONTRIBUTING.md](CONTRIBUTING.md)                |
 | Security disclosures          | [SECURITY.md](SECURITY.md)                        |
+
+## Related projects
+
+Sibling repositories under [github.com/Cyoda-platform](https://github.com/Cyoda-platform) that complement cyoda-go:
+
+- **[cyoda-skills](https://github.com/Cyoda-platform/cyoda-skills)** — Claude Code skills (`/cyoda:app`, `/cyoda:design`, `/cyoda:build`, `/cyoda:test`, ...) for AI-assisted Cyoda app development against a local cyoda-go or Cyoda Cloud instance.
+- **[cyoda-cloud-cli](https://github.com/Cyoda-platform/cyoda-cloud-cli)** — Command-line client for Cyoda Cloud with OAuth 2.0 authentication and Cloud-side API operations.
+- **[cyoda-docs](https://github.com/Cyoda-platform/cyoda-docs)** — Source for [docs.cyoda.net](https://docs.cyoda.net) — developer guides, onboarding, and the rendered `cyoda help` topic tree.
+- **[cyoda-workflow-editor](https://github.com/Cyoda-platform/cyoda-workflow-editor)** — TypeScript components for parsing, rendering, and editing Cyoda workflow JSON definitions.
 
 ## Versioning
 
