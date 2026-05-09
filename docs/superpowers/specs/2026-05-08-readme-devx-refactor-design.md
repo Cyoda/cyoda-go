@@ -1,4 +1,4 @@
-# README + OVERVIEW + Help-Topic DevX Refactor
+# README + OVERVIEW Reframe + Help-Topic DevX Refactor
 
 **Date:** 2026-05-08
 **Status:** Design (awaiting user review)
@@ -19,13 +19,13 @@ Concretely, it suffers from:
 - **Duplicated reference material.** ~265 lines of env-var tables and admin-endpoint reference duplicate `cyoda help config.*` and would belong in the canonical help system.
 - **Buried value proposition.** The headline pitch is a long compound sentence. The "growth path" framing that docs.cyoda.net leads with is missing entirely.
 - **No clear hand-off.** Sections of operational depth (multi-node cluster topology, security floors, JWKS bearer setup, admin endpoints) interrupt the evaluator's flow without giving operators a clean entry point either.
-- **OVERVIEW.md is stale.** The user has flagged it as needing recon against current code before it can absorb depth-content evicted from README.
+- **OVERVIEW.md duplicates `docs/ARCHITECTURE.md` at lower fidelity.** ARCHITECTURE.md (1694 lines, v2.1, dated 2026-04-18, status "reconciled against commit at branch tip") is the maintained, version-tagged source of truth for system architects. OVERVIEW.md is undated, unversioned, and already drifted (it calls cyoda-go a "single-node Go digital twin" and omits the sqlite plugin from its Persistence section). Two architecture docs means only the one architects actually use stays correct.
 
 ## Goals
 
 1. **README ≤ ~140 lines**, optimized for an evaluator's first 60 seconds, with a clean hand-off matrix.
-2. **Every removed concept lands in a definite home** — `cyoda help` topic, `OVERVIEW.md`, `docs/plugins.md`, or `MAINTAINING.md`. No information loss.
-3. **OVERVIEW.md** is reconned against current code and extended to absorb evicted depth-content (use cases, cluster topology, scale).
+2. **Every removed concept lands in a definite home** — `cyoda help` topic, `docs/ARCHITECTURE.md`, `docs/PRD.md`, OVERVIEW (reframed), `docs/plugins.md`, or `MAINTAINING.md`. No information loss.
+3. **`docs/ARCHITECTURE.md` becomes the canonical "Architecture" destination** referenced from the README. OVERVIEW.md is shrunk to its non-overlapping role (feature inventory + REST/gRPC API surface tables) and stops claiming to be an architecture doc.
 4. **Two new help topics** (`admin`, `cluster`) eliminate the only gaps where evicted content has nowhere canonical to land.
 5. **No transient broken cross-references** at any point in the implementation sequence.
 
@@ -107,8 +107,10 @@ Concretely, it suffers from:
   | Error reference               | https://docs.cyoda.net/help/errors                |
   | Deploy with Helm              | https://docs.cyoda.net/help/helm                  |
   | Deploy with Docker Compose    | examples/compose-with-observability/              |
-  | Architecture                  | OVERVIEW.md                                       |
-  | Multi-node cluster            | https://docs.cyoda.net/help/cluster               |
+  | Architecture                  | docs/ARCHITECTURE.md                              |
+  | Product overview              | docs/PRD.md                                       |
+  | Feature & API inventory       | OVERVIEW.md                                       |
+  | Multi-node cluster            | https://docs.cyoda.net/help/cluster (deep dive: docs/ARCHITECTURE.md §4) |
   | Admin endpoints (log/trace)   | https://docs.cyoda.net/help/admin                 |
   | Write a storage plugin        | docs/plugins.md                                   |
   | Contribute                    | CONTRIBUTING.md                                   |
@@ -130,8 +132,8 @@ In the table below, **"verify"** means: confirm during Phase 1.8 that the destin
 | Currently in README (line range) | Destination |
 |---|---|
 | Three-mode pitch (5–19) | Compressed into pitch + "Four engines" table; depth in `cyoda help config.database` |
-| Target Applications (20–27) | New `OVERVIEW.md#use-cases` section |
-| EDBMS Features 12-bullet list (29–44) | Already in OVERVIEW.md (verify during recon) |
+| Target Applications (20–27) | Already in `docs/PRD.md` §1 ("Target Applications") — no action |
+| EDBMS Features 12-bullet list (29–44) | OVERVIEW.md "Feature List" (already there in expanded form; verify during shrink pass) |
 | Documentation pointer (46–55) | Folded into "Where to go next" matrix |
 | Requirements (57–61) | "From source" install subsection |
 | Versioning (63–69) | README "Versioning" (kept, shortened) + maintenance-policy paragraph moves to `MAINTAINING.md` |
@@ -139,12 +141,12 @@ In the table below, **"verify"** means: confirm during Phase 1.8 that the destin
 | Local dev `run-local.sh` block (144–161) | "First real call" uses sqlite + jwt instead; the script remains documented in `cyoda help cli` |
 | In-memory `go run` block (163–174) | "Try it in 30 seconds" covers the simplest path; deeper detail in `cyoda help quickstart` |
 | Docker Compose block — broken (176–197) | **Deleted.** Replaced by routing-matrix link to `examples/compose-with-observability/` |
-| Multi-node cluster diagram + routing-token paragraph (199–216) | New `OVERVIEW.md#cluster-topology` + new `cyoda help cluster` topic |
+| Multi-node cluster diagram + routing-token paragraph (199–216) | Already in `docs/ARCHITECTURE.md` §4 ("Multi-Node Routing Architecture", 6 subsections including swimlane and partition analysis) + new `cyoda help cluster` topic for operator quick-reference |
 | Storage backend matrix (218–228) | Replaced by README "Four engines" table; full detail in `cyoda help config.database` |
 | SQLite quick config (230–238) | `cyoda help config.database` (already there — verify) |
 | PostgreSQL quick config (240–246) | `cyoda help config.database` (already there — verify) |
-| Writing a third-party plugin (248–268) | New `docs/plugins.md` |
-| Scale Profile table (270–279) | New `OVERVIEW.md#scale` section |
+| Writing a third-party plugin (248–268) | New `docs/plugins.md` (thin entry point — defers to `docs/ARCHITECTURE.md` §1 for the contract reference and `pkg.go.dev/.../cyoda-go-spi` for the API surface) |
+| Scale Profile table (270–279) | Already in `docs/PRD.md` §1 ("Scale Profile", per-engine envelope) and `docs/ARCHITECTURE.md` §14 ("Non-Functional Limits and Design Boundaries") — no action |
 | Configuration top + sources + subcommands + profiles (281–329) | `cyoda help config` + `cyoda help cli` (verify; bridge gaps) |
 | Server env vars table (332–344) | `cyoda help config.server` (verify) |
 | Authentication env vars table (346–356) | `cyoda help config.auth` (verify) |
@@ -160,29 +162,34 @@ In the table below, **"verify"** means: confirm during Phase 1.8 that the destin
 | Admin Endpoints — log-level (461–480) | New `cyoda help admin` topic |
 | Admin Endpoints — trace-sampler (482–545) | New `cyoda help admin` topic |
 
-### 3. OVERVIEW.md recon plan
+### 3. OVERVIEW.md reframe — drop the architecture half
 
-OVERVIEW.md is 231 lines and explicitly flagged as "quite outdated." Two-phase pass:
+OVERVIEW.md duplicates `docs/ARCHITECTURE.md` at lower fidelity. Rather than recon-and-extend (which preserves the duplication), shrink OVERVIEW to its **non-overlapping** role: a flat feature-and-API-surface inventory that ARCHITECTURE.md does not provide.
 
-**Audit pass — verify each claim against current code:**
+**New scope (kept):**
+- One-paragraph re-scoped intro — explicitly states this is the feature & API inventory; points readers at `docs/ARCHITECTURE.md` for architecture and `docs/PRD.md` for product context.
+- **Feature List** — ~80-bullet inventory across Entity / Models / Workflow / Search / Audit / Messaging / gRPC / Auth / Multi-Tenancy / Temporal / Pluggable Persistence. **Refresh:** add the sqlite plugin to "Pluggable Persistence" (currently lists only memory + postgres).
+- **REST API Surface** — one-row-per-area table.
+- **gRPC API Surface** — `CloudEventsService` proto block.
 
-| OVERVIEW claim | Verify against |
-|---|---|
-| Modular monolith, DDD boundaries | Top-level package layout under `internal/` |
-| Auth + Recovery middleware (RFC 9457) | `internal/middleware/`, `internal/api/errors/` |
-| Domain modules table (Entity / Model / Workflow / Search / Audit / Messaging / Auth / gRPC / Cluster) | One package per row exists; responsibilities match |
-| SPI Layer interfaces | Current `cyoda-go-spi` interface set |
-| In-Memory Store + PostgreSQL Store (SI+FCW: RR + FCW) | `internal/store/postgres/`, `plugins/memory/`, `plugins/postgres/`, `plugins/sqlite/` (sqlite missing from current OVERVIEW diagram) |
-| 13 audit event types | `internal/audit/` event-type enum |
-| OBO token exchange (RFC 8693) | `internal/auth/` |
-| Bidirectional gRPC streaming for processors/criteria via CloudEvents | `internal/grpc/`, proto definitions |
+**Removed (now lives in ARCHITECTURE.md):**
+- "System Architecture" section + diagram (duplicates ARCHITECTURE §1)
+- "Domain Modules" table (duplicates ARCHITECTURE §1 package layout)
+- "Persistence" prose (duplicates ARCHITECTURE §2)
+- "Multi-Tenancy" prose (duplicates ARCHITECTURE §1, §5)
+- "Transactions" prose + table (duplicates ARCHITECTURE §3)
+- "Workflow Engine" prose (duplicates ARCHITECTURE §5)
+- "gRPC & Externalized Processing" prose (duplicates ARCHITECTURE §6)
+- "Authentication" prose (duplicates ARCHITECTURE §7)
+- "Error Handling" prose (duplicates ARCHITECTURE §8)
+- "single-node Go digital twin" tagline (factually wrong since cluster work shipped — ARCHITECTURE §4)
 
-**Extension pass — absorb evicted depth-content:**
+**Verification of the kept content** (bounded — these are the only checks needed):
+- The Feature List bullets match what is implemented today. Spot-check via `internal/domain/` package surface and the OpenAPI spec; remove any feature that was deprecated or never shipped, add any that landed since the last edit.
+- The REST API Surface table matches the OpenAPI spec generated from `api/`. Update any drifted endpoint group.
+- The gRPC API Surface proto block matches `proto/`.
 
-- New `## Use Cases` section (~25 lines) — financial ledgers, OMS, regulatory compliance, digital-twin orchestration. Source: README lines 20–27, expanded with one-paragraph elaborations.
-- New `## Cluster Topology` section (~50 lines) — diagram from README lines 201–211, gossip/SWIM, txID routing-token, owner-node failure semantics. Sourced from current `internal/cluster/` code (recon) plus README lines 213–216.
-- New `## Scale` section (~20 lines) — sweet-spot vs upper-bound table from README lines 270–279, plus a short paragraph on when cassandra is the right escape hatch.
-- The existing "Persistence" section drops backend-specific config tables and keeps the SPI contract diagram only.
+**Renaming.** Filename stays `OVERVIEW.md` to preserve any existing inbound links. Title becomes `# Cyoda-Go — Feature & API Surface Inventory`. (If you want a rename to `docs/FEATURES.md`, say so before plan-out — it's a one-line spec change.)
 
 ### 4. New help topic: `cyoda help admin`
 
@@ -306,17 +313,17 @@ gossip port, peer hints, routing-token signing key, etc.)
 
 Registration: add `cluster` to `topLevelTopicsV061`.
 
-### 6. New `docs/plugins.md`
+### 6. New `docs/plugins.md` — thin entry point
 
-Absorbs README lines 248–268 plus expansion. Target ~80 lines.
+Absorbs README lines 248–268. Target **~40 lines** (not 80) — `docs/ARCHITECTURE.md` §1 already contains the full Plugin Contract reference (interfaces, code blocks, blank-import pattern, package layout including each plugin's `doc.go` "reference example for plugin authors"). This file is the discoverable starting point that points readers at the right destinations; it does not re-state the contract.
 
 Sections:
-- **Why a plugin?** When external storage justifies a plugin. The commercial cassandra engine is referenced here only as motivation for the SPI's existence — its source is not public, so this doc describes the SPI contract that any storage backend must satisfy, not a recipe for cloning a specific implementation.
-- **Dependency rule.** Only `cyoda-go-spi`. SPI is stdlib-only at the surface.
-- **Required interfaces.** `spi.Plugin`, `spi.DescribablePlugin`, `spi.StoreFactory`, `spi.TransactionManager`, optional `spi.Startable`. One-line contract per method.
-- **Reference implementations.** `plugins/memory/` (simplest), `plugins/postgres/` (txID-bridge pattern). These are the canonical, public references — readers wanting to see a working out-of-tree plugin should fork from `plugins/sqlite/` or `plugins/postgres/`.
+- **Audience.** Authors of out-of-tree storage plugins.
+- **Where to read the contract.** `docs/ARCHITECTURE.md` §1 (Plugin Contract summary + SPI module surface) and the upstream `pkg.go.dev/github.com/cyoda-platform/cyoda-go-spi`.
+- **Reference examples to fork.** `plugins/memory/doc.go`, `plugins/sqlite/doc.go`, `plugins/postgres/doc.go` (each is explicitly maintained as a "reference example for plugin authors", per ARCHITECTURE §1 package layout).
 - **Custom-binary blank-import example.** Verbatim from current README lines 258–266.
-- **Pin discipline.** Link to `MAINTAINING.md#bumping-cyoda-go-spi`. The CI gate `check-spi-pin-sync` is mentioned here too.
+- **Pin discipline.** SPI version in your plugin's `go.mod` must match the cyoda-go binary you compile into. Link to `MAINTAINING.md#bumping-cyoda-go-spi` and note the in-repo CI gate `check-spi-pin-sync` enforces this for in-tree plugins.
+- **About the cassandra engine.** Cassandra is offered as a commercial backend by Cyoda; its source is not public. The SPI contract is the same — third-party plugins implement it the same way the open-source plugins do.
 
 ### 7. MAINTAINING.md addition
 
@@ -329,11 +336,12 @@ Phase 1 — Build destinations (no README touch)
   1.1  Add cmd/cyoda/help/content/admin.md
   1.2  Add cmd/cyoda/help/content/cluster.md
   1.3  Update cmd/cyoda/help/help_test.go (topLevelTopicsV061)
-  1.4  Add docs/plugins.md
+  1.4  Add docs/plugins.md (thin entry point)
   1.5  Add maintenance-policy subsection to MAINTAINING.md
-  1.6  OVERVIEW.md audit pass (verify each claim against code)
-  1.7  OVERVIEW.md extension pass (Use Cases, Cluster Topology, Scale)
-  1.8  Help-topic gap audit:
+  1.6  OVERVIEW.md reframe — strip architecture sections; refresh
+       Feature List + REST/gRPC API Surface; new title and intro
+       paragraph re-scoping the doc.
+  1.7  Help-topic gap audit:
        - For every "verify" row in the destination map, confirm the
          content already lives in the named cyoda help topic. If a
          gap is found, file or fix in the same PR. Note: do not
@@ -346,6 +354,8 @@ Phase 2 — README cut
   2.3  Destination-map audit: grep the old README for every distinctive
        phrase moved (e.g. "txID-to-physical-handle bridge", "SI+FCW",
        "Bootstrap M2M client") and confirm it lives in the destination
+       (cyoda help topic, ARCHITECTURE.md, PRD.md, OVERVIEW.md, plugins.md,
+       or MAINTAINING.md)
 
 Phase 3 — Verify hygiene
   3.1  go test ./cmd/cyoda/... (help-tree tests)
@@ -361,8 +371,11 @@ Phase 3 — Verify hygiene
 - **Risk:** External links (blog posts, docs sites) reference README anchors that will disappear.
   **Mitigation:** Aggressive cuts are sanctioned by user. Anchor breakage is acceptable; link breakage to docs.cyoda.net is not (it's the canonical replacement). The link-check in Phase 2.2 is binding.
 
-- **Risk:** OVERVIEW recon surfaces architectural drift larger than a doc fix can absorb.
-  **Mitigation:** OVERVIEW recon is bounded — verify-and-extend, not rewrite. If the recon surfaces a code-vs-docs drift that requires *code* changes to resolve, surface it to the user (Gate 6: "stop and surface the choice"); do not silently rewrite OVERVIEW to match aspirational architecture.
+- **Risk:** OVERVIEW reframe surfaces feature-list staleness (a feature shipped that's not listed, or vice versa).
+  **Mitigation:** Bounded by the spot-check rules in §3 ("verification of the kept content"). If a gap is found, fix it inline. If a gap turns out to be a code-vs-docs drift requiring *code* changes (i.e. an undocumented behavior that should arguably be removed), surface it to the user (Gate 6) rather than silently documenting aspirational behavior.
+
+- **Risk:** ARCHITECTURE.md itself drifts before this PR lands, making the README link stale.
+  **Mitigation:** ARCHITECTURE.md is dated and version-tagged; if its date is older than ~3 months at PR-prep time, flag for the user — the README link is still correct in *direction*, but a separate ARCHITECTURE refresh may be warranted (out of scope here).
 
 - **Risk:** Help-topic gap audit (1.8) balloons.
   **Mitigation:** Audit is bounded to the destination-map rows. Each row is verify-or-add — no speculative restructuring. If a row's gap exceeds ~30 lines of new content, surface it as a follow-up rather than bundling.
@@ -377,5 +390,7 @@ Phase 3 — Verify hygiene
 - `go test ./cmd/cyoda/...` is green (help-tree tests pass with new topics)
 - `cyoda help admin` and `cyoda help cluster` render
 - Manual: every link in the README resolves
-- OVERVIEW.md no longer contains claims contradicted by current code
+- OVERVIEW.md no longer contains the architecture sections; intro paragraph re-scopes it as feature & API surface inventory and points to ARCHITECTURE.md / PRD.md
+- OVERVIEW.md "Feature List" includes the sqlite plugin under Pluggable Persistence
+- README routing matrix's "Architecture" row points to `docs/ARCHITECTURE.md`, not OVERVIEW.md
 - No external Go source files changed (this is a docs-only PR)
