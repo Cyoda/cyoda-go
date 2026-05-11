@@ -130,7 +130,7 @@ jobs:
       # Push events to main/develop skip this step — the govulncheck above still runs.
       - name: Dependency review
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: moderate
 
