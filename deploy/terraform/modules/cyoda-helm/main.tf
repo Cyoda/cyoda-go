@@ -26,7 +26,7 @@ locals {
 
 resource "random_password" "hmac" {
   count   = var.hmac_secret == "" ? 1 : 0
-  length  = 64
+  length  = 32
   special = false
 }
 
@@ -89,7 +89,7 @@ resource "helm_release" "cyoda" {
   chart      = var.chart_path
   namespace  = kubernetes_namespace.cyoda.metadata[0].name
   wait       = true
-  timeout    = 300
+  timeout    = 600
 
   set {
     name  = "replicas"

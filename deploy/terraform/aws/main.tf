@@ -159,14 +159,14 @@ resource "aws_security_group" "eks_nodes" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.cluster_name}-rds-sg"
-  description = "RDS PostgreSQL security group — only EKS nodes may connect"
+  description = "RDS PostgreSQL security group - only EKS nodes may connect"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.eks_nodes.id]
+    security_groups = [aws_eks_cluster.main.vpc_config[0].cluster_security_group_id]
   }
 
   egress {
@@ -336,8 +336,10 @@ module "cyoda" {
   image_tag           = var.cyoda_image_tag
   replicas            = var.cyoda_replicas
   postgres_dsn        = local.postgres_dsn
-  jwt_signing_key_pem = var.jwt_signing_key_pem
-  jwt_issuer          = var.jwt_issuer
+  jwt_signing_key_pem     = var.jwt_signing_key_pem
+  jwt_issuer              = var.jwt_issuer
+  bootstrap_client_id     = var.bootstrap_client_id
+  bootstrap_client_secret = var.bootstrap_client_secret
 
   depends_on = [aws_eks_node_group.main]
 }

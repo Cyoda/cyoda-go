@@ -125,3 +125,16 @@ variable "jwt_issuer" {
   type        = string
   default     = "cyoda"
 }
+
+variable "bootstrap_client_id" {
+  description = "Bootstrap M2M client ID. Leave empty to skip bootstrap client creation."
+  type        = string
+  default     = ""
+}
+
+variable "bootstrap_client_secret" {
+  description = "Bootstrap M2M client secret. Required when bootstrap_client_id is set."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

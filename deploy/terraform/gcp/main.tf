@@ -219,8 +219,10 @@ module "cyoda" {
   image_tag           = var.cyoda_image_tag
   replicas            = var.cyoda_replicas
   postgres_dsn        = local.postgres_dsn
-  jwt_signing_key_pem = var.jwt_signing_key_pem
-  jwt_issuer          = var.jwt_issuer
+  jwt_signing_key_pem     = var.jwt_signing_key_pem
+  jwt_issuer              = var.jwt_issuer
+  bootstrap_client_id     = var.bootstrap_client_id
+  bootstrap_client_secret = var.bootstrap_client_secret
 
   depends_on = [google_container_node_pool.main]
 }

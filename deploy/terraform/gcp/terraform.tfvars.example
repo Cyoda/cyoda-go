@@ -4,7 +4,7 @@
 project_id   = "my-gcp-project-id"
 region       = "us-central1"
 zone         = "us-central1-a"
-cluster_name = "cyoda"
+cluster_name = "cyoda-go"
 
 # GKE
 kubernetes_version = "latest"
@@ -25,4 +25,6 @@ db_availability_type = "ZONAL"   # use REGIONAL for production HA
 cyoda_replicas  = 1
 cyoda_namespace = "cyoda"
 cyoda_image_tag = ""   # empty = use chart appVersion
-jwt_issuer      = "cyoda"
+jwt_issuer              = "cyoda"
+bootstrap_client_id     = "cyoda-admin"
+bootstrap_client_secret = "CHANGE_ME_strong_secret_here"

@@ -4,7 +4,7 @@
 subscription_id     = "00000000-0000-0000-0000-000000000000"
 location            = "eastus"
 resource_group_name = "cyoda-rg"
-cluster_name        = "cyoda"
+cluster_name        = "cyoda-go"
 
 # AKS
 kubernetes_version = null   # null = latest stable
@@ -26,5 +26,7 @@ db_zone           = "1"
 cyoda_replicas  = 1
 cyoda_namespace = "cyoda"
 cyoda_image_tag = ""   # empty = use chart appVersion
-jwt_issuer      = "cyoda"
+jwt_issuer              = "cyoda"
+bootstrap_client_id     = "cyoda-admin"
+bootstrap_client_secret = "CHANGE_ME_strong_secret_here"
 

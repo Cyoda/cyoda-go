@@ -2,7 +2,7 @@
 # Never commit terraform.tfvars to version control.
 
 region       = "us-east-1"
-cluster_name = "cyoda"
+cluster_name = "cyoda-go"
 
 # EKS
 kubernetes_version = "1.31"
@@ -23,5 +23,7 @@ db_multi_az          = false
 cyoda_replicas  = 1
 cyoda_namespace = "cyoda"
 cyoda_image_tag = ""   # empty = use chart appVersion
-jwt_issuer      = "cyoda"
+jwt_issuer              = "cyoda"
+bootstrap_client_id     = "cyoda-admin"
+bootstrap_client_secret = "CHANGE_ME_strong_secret_here"
 

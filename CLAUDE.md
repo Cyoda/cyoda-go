@@ -112,3 +112,6 @@ aggregator targets below when you want coverage across the whole repo.
 - Build: `go build -o bin/cyoda ./cmd/cyoda`
 - Tidy: `go mod tidy`
 - Vet (root module): `go vet ./...` — the `per-module-hygiene` CI job vets each plugin separately
+
+## Cloud Deployment (Terraform)
+Terraform configurations for AWS, GCP, and Azure live in `deploy/terraform/`.
