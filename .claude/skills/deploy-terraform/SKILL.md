@@ -1,6 +1,6 @@
 ---
 name: deploy-terraform
-description: Provision cyoda-go infrastructure on AWS, GCP, or Azure using Terraform. Use when the user asks how to deploy infrastructure, set up an EKS/GKE/AKS cluster, provision a managed PostgreSQL database, run terraform init/plan/apply, or configure terraform.tfvars.
+description: Phase-1 cyoda-go infrastructure provisioning on AWS, GCP, or Azure using Terraform. Use when the user asks how to deploy infrastructure, set up an EKS/GKE/AKS cluster, provision a managed PostgreSQL database, run terraform init/plan/apply, or configure terraform.tfvars.
 allowed-tools: Bash(terraform *) Bash(aws *) Bash(gcloud *) Bash(az *) Bash(kubectl *) Bash(openssl *) Read Write
 ---
 

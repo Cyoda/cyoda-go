@@ -1,6 +1,6 @@
 ---
 name: deploy-app
-description: Day-2 cyoda-go app operations on Kubernetes: update image, scale replicas, roll back, rotate secrets, debug pods, run migrations, get API tokens, uninstall. Use after infrastructure already exists. For initial infrastructure provisioning use /deploy-terraform.
+description: Phase-2 cyoda-go app operations on Kubernetes: update image, scale replicas, roll back, rotate secrets, debug pods, run migrations, get API tokens, uninstall. Use after infrastructure already exists. For initial infrastructure provisioning use /deploy-terraform.
 allowed-tools: Bash(kubectl *) Bash(helm *) Bash(curl *) Read
 ---
 
