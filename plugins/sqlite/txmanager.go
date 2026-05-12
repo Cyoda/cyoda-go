@@ -30,15 +30,15 @@ type savepointSnapshot struct {
 }
 
 // transactionManager implements spi.TransactionManager with application-layer
-// Serializable Snapshot Isolation. In-memory committedLog tracks conflicts;
-// SQLite is the persistence layer.
+// Snapshot Isolation + First-Committer-Wins (SI+FCW). In-memory committedLog
+// tracks conflicts; SQLite is the persistence layer.
 //
-// Commit ordering: acquire commitMu -> validate SSI -> capture submitTime ->
+// Commit ordering: acquire commitMu -> validate SI+FCW -> capture submitTime ->
 // BEGIN IMMEDIATE -> flush -> COMMIT -> append committedLog -> prune -> release commitMu.
 type transactionManager struct {
 	factory  *StoreFactory
 	uuids    spi.UUIDGenerator
-	commitMu sync.Mutex // serializes the entire commit path for SSI correctness
+	commitMu sync.Mutex // serializes the entire commit path for SI+FCW correctness
 	mu       sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints
 
 	active         map[string]*spi.TransactionState
@@ -142,11 +142,11 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 	return spi.WithTransaction(ctx, tx), nil
 }
 
-// Commit validates the transaction against the committed log for SSI conflicts,
+// Commit validates the transaction against the committed log for SI+FCW conflicts,
 // flushes the write buffer and deletes to SQLite, and records the commit in the
 // log.
 //
-// The commitMu serializes the entire commit path. This is required for SSI
+// The commitMu serializes the entire commit path. This is required for SI+FCW
 // correctness -- without it, two commits could both validate against a stale
 // committedLog and both succeed, missing a conflict.
 func (m *transactionManager) Commit(ctx context.Context, txID string) error {
@@ -182,7 +182,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 
 	// 3. Conflict detection: check committed log for overlapping write sets.
 	// Unlike the memory plugin which uses entityMu to serialize CAS checks
-	// against commits, the SQLite plugin uses commitMu. The SSI check uses
+	// against commits, the SQLite plugin uses commitMu. The SI+FCW check uses
 	// !Before (>=) rather than After (>) for the submit time comparison.
 	// This catches write-write conflicts even when commits happen at the
 	// same clock tick (e.g., frozen TestClock). The memory plugin avoids

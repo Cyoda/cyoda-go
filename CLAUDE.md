@@ -27,6 +27,7 @@ Validate input at system boundaries. Sanitize output — no stack traces or inte
 ### Gate 4: Documentation hygiene
 When changing env vars, update the relevant `cmd/cyoda/help/content/config/*.md` help topic, `README.md`, and `DefaultConfig()` together.
 When changing public interfaces or developer workflow, check `README.md` and `CONTRIBUTING.md`.
+When bumping the `cyoda-go-spi` pin in `go.mod`, when tagging a `cyoda-go` binary release, when changing the chart `version:` / `appVersion:`, or when out-of-tree-plugin pin guidance changes, update `COMPATIBILITY.md` in the same change.
 
 ### Gate 5: Verify before claiming done
 Use `superpowers:verification-before-completion` skill before claiming work is complete.

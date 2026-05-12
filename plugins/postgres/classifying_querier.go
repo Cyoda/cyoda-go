@@ -17,7 +17,8 @@ import (
 // conns are saturated by in-flight txs.
 //
 // Errors returned from Exec/Query/QueryRow flow through classifyError so
-// SERIALIZABLE aborts (40001/40P01) surface as spi.ErrConflict for the
+// concurrent-update aborts (40001 serialization_failure under REPEATABLE
+// READ, 40P01 deadlock_detected) surface as spi.ErrConflict for the
 // handler's errors.Is check.
 type ctxQuerier struct {
 	factory *StoreFactory

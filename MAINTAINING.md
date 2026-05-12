@@ -216,6 +216,16 @@ The CI smoke-test job `release-smoke.yml` runs this check automatically
 on every PR touching `.goreleaser.yaml` or the Dockerfile — but this
 manual step stays in the checklist as a final pre-release confirmation.
 
+### 6.5. Update COMPATIBILITY.md
+
+Add a row to the `cyoda-go × cyoda-go-spi` matrix in [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the new `cyoda-go` tag. Capture: root `go.mod` SPI pin, plugin submodule SPI pins (these may differ from root if the submodules don't need new SPI fields), and a one-line summary of the SPI surface added in this release (or `—` if binary-only).
+
+If the chart `version:` or `appVersion:` changed in this cycle, update the "Helm chart × binary" table.
+
+If out-of-tree-plugin guidance changed (e.g. cassandra adopted a new SPI pin), update the "Out-of-tree plugins" table.
+
+The update lands either on the release-prep PR (if the matrix data is known pre-tag) or on a follow-up `docs(compatibility): record v<X.Y.Z>` commit immediately after step 7. The latter is acceptable because the matrix records the pin observed AT a published tag.
+
 ### 7. Cut the release
 
 Use `gh release create` rather than raw `git tag + git push`:
@@ -282,6 +292,26 @@ Release in topological order:
 
 Each step waits for the prior tag to land before its `go mod tidy`
 can resolve. In practice: merge, tag, wait for CI, then move on.
+
+### Bumping cyoda-go-spi
+
+`cyoda-go-spi` must be pinned to the same version in every `go.mod` in
+this repo: the root and all `plugins/*/go.mod`. The CI gate
+`make check-spi-pin-sync` (workflow job `pin-sync`) enforces this and
+will fail on PR if any manifest disagrees.
+
+When you bump cyoda-go-spi:
+
+1. Bump in `go.mod` (root).
+2. Bump identically in `plugins/memory/go.mod`, `plugins/postgres/go.mod`, `plugins/sqlite/go.mod`.
+3. Run `go mod tidy` in each module.
+4. Run `make test-all` to verify cross-plugin interactions.
+5. Run `make check-spi-pin-sync` locally to confirm green.
+
+This rule is in addition to the existing **plugin-version lockstep**
+rule (plugin submodule tags use the same version as the umbrella).
+The two rules together ensure that consumers see consistent
+SPI-and-plugin pinning at every umbrella tag.
 
 ### 8. Publish the Helm chart
 
@@ -396,6 +426,18 @@ Delete the rc release afterwards if desired:
 ```bash
 gh release delete v0.1.0-rc.1 --cleanup-tag --yes
 ```
+
+## Maintenance of older release lines
+
+Cyoda-go is pre-1.0 and **older release lines are not maintained**. No back-port branches exist by default. Patch bumps within the active line are non-breaking; minor bumps may break wire format, configuration, or operational surface.
+
+If a real consumer needs a fix on an older line:
+
+1. Open an issue describing the constraint (which version, which fix, why an upgrade is not viable).
+2. The maintainers will consider creating an official maintenance branch for that line.
+3. If accepted, the branch is named `release/vX.Y.x` (e.g. `release/v0.6.x`) and is cut from the relevant tag.
+
+Until a maintenance branch is created and announced, treat older lines as frozen.
 
 ## Gotcha: snapshot-testing from a local clone
 

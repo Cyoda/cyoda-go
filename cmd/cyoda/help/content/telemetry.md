@@ -143,6 +143,16 @@ The comparison is constant-time to prevent timing attacks. `GET :9091/livez` and
 
 When `CYODA_METRICS_BEARER` is empty (default), `/metrics` is unauthenticated. This is the expected posture when the admin listener is bound to loopback (`CYODA_ADMIN_BIND_ADDRESS=127.0.0.1`) and access is controlled at the network level.
 
+### Bind-address modes
+
+`CYODA_ADMIN_BIND_ADDRESS` is the outer boundary of the admin listener. Pair it with the bearer-token settings according to the deployment shape:
+
+- **Desktop**: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only); no bearer needed.
+- **Kubernetes**: bind to `0.0.0.0` so kubelet probes and Prometheus reach the pod-facing interface, and enable `CYODA_METRICS_BEARER` (+ `CYODA_METRICS_REQUIRE_AUTH=true`). The Helm chart does both, mounts the token via `_FILE`, and points the `ServiceMonitor` at it via `bearerTokenSecret`.
+- **Docker Compose**: keep the default loopback bind inside the container and publish the port as `127.0.0.1:9091:9091` so it is only reachable from the host; no bearer needed.
+
+The `/livez` and `/readyz` probe endpoints stay unauthenticated regardless of bind address, since kubelet probes carry no bearer.
+
 ## SAMPLER
 
 The trace sampler is runtime-configurable via:

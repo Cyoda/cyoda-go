@@ -282,7 +282,7 @@ func (f *StoreFactory) Close() error {
 	return firstErr
 }
 
-// initTransactionManager installs the SSI transaction manager on the factory.
+// initTransactionManager installs the SI+FCW transaction manager on the factory.
 // Called by Plugin.NewFactory after the factory is created.
 // Seeds lastSubmitTime from the database to maintain monotonicity across restarts.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {

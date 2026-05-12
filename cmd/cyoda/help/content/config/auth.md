@@ -24,13 +24,23 @@ startup unless JWT mode is properly configured.
 ### IAM mode
 
 - `CYODA_IAM_MODE` — authentication mode: `mock` or `jwt` (default: `mock`)
-- `CYODA_REQUIRE_JWT` — refuse to start unless `jwt` mode is active and a signing key is set
-  (default: `false`)
+- `CYODA_REQUIRE_JWT` — production safety floor. When `true`, the binary refuses to
+  start unless `CYODA_IAM_MODE=jwt` *and* `CYODA_JWT_SIGNING_KEY` are both set.
+  Prevents accidentally deploying with mock auth enabled. The canonical Helm chart
+  enables this by default. Desktop and Docker leave it off so the mock-auth fallback
+  still applies to evaluators. (default: `false`)
 
 ### Mock mode (`CYODA_IAM_MODE=mock`)
 
 - `CYODA_IAM_MOCK_ROLES` — comma-separated default user roles assigned to all requests
   in mock mode (default: `ROLE_ADMIN,ROLE_M2M`)
+
+When running in mock mode, the binary emits a prominent `MOCK AUTH IS ACTIVE`
+warning banner at startup so operators see the security posture of the running
+instance. `CYODA_SUPPRESS_BANNER=true` silences both the startup banner and the
+mock-auth warning. It is intended only for CI/test harnesses where the warning
+is noise — never set it in production, since the banner is the only in-process
+signal that requests are unauthenticated.
 
 ### JWT mode (`CYODA_IAM_MODE=jwt`)
 
