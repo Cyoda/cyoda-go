@@ -90,6 +90,13 @@ variable "db_multi_az" {
   default     = false
 }
 
+variable "prevent_destroy" {
+  description = "When true, a final RDS snapshot is created on teardown to prevent data loss. Default false — destroy leaves nothing behind."
+  type        = bool
+  default     = false
+}
+
+
 # cyoda
 variable "cyoda_image_tag" {
   description = "cyoda container image tag"

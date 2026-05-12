@@ -104,9 +104,7 @@ deploy-aws:            ## Deploy to AWS (EKS + RDS). Requires deploy/terraform/a
 	$$(terraform -chdir=$(TF_AWS) output -raw kubeconfig_command) && \
 	kubectl get pods -n cyoda
 
-destroy-aws:           ## Destroy AWS deployment (disables RDS deletion protection first)
-	CLUSTER=$$(terraform -chdir=$(TF_AWS) output -raw eks_cluster_name) && \
-	aws rds modify-db-instance --db-instance-identifier $$CLUSTER-postgres --no-deletion-protection && \
+destroy-aws:           ## Destroy AWS deployment (set prevent_destroy=true in tfvars to retain a final snapshot)
 	terraform -chdir=$(TF_AWS) destroy -auto-approve
 
 deploy-gcp:            ## Deploy to GCP (GKE + Cloud SQL). Requires deploy/terraform/gcp/terraform.tfvars

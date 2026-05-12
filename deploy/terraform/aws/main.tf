@@ -293,9 +293,9 @@ resource "aws_db_instance" "postgres" {
   password               = var.db_password
   multi_az               = var.db_multi_az
   publicly_accessible    = false
-  skip_final_snapshot    = false
+  skip_final_snapshot       = !var.prevent_destroy
   final_snapshot_identifier = "${var.cluster_name}-postgres-final"
-  deletion_protection    = true
+  deletion_protection       = false
   vpc_security_group_ids = [aws_security_group.rds.id]
   db_subnet_group_name   = aws_db_subnet_group.main.name
 

@@ -18,6 +18,7 @@ db_password          = "CHANGE_ME_strong_password_here"
 db_instance_class    = "db.t3.micro"
 db_allocated_storage = 20
 db_multi_az          = false
+prevent_destroy      = false  # set true to retain a final RDS snapshot on teardown (production)
 
 # cyoda application
 cyoda_replicas  = 1
