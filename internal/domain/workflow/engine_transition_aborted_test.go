@@ -44,7 +44,7 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted(t *te
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S_post", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},

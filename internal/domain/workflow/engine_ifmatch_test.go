@@ -113,7 +113,7 @@ func TestManualTransitionWithIfMatch_CBDCascadeMatching(t *testing.T) {
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S_post", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -209,7 +209,7 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch(t *test
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S_post", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
