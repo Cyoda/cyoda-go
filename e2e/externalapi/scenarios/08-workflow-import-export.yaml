@@ -99,8 +99,14 @@ scenarios:
         target: "exp.workflows[0].states.start.transitions[0].processors[0].executionMode"
         expected: "ASYNC_NEW_TX"
 
+  # wf-import/03 originally exercised a scheduled-transition processor inside
+  # processors[]. That conflation has been removed from the schema; the
+  # scheduled-transition primitive is reintroduced at its proper home (a
+  # sibling primitive on TransitionDefinition) in a separate scenario. This
+  # test now covers group-criterion + function-criterion + externalized-
+  # processor round-trip only.
   - id: wf-import/03-advanced-criteria-and-processors
-    name: Advanced FSM: group criterion (AND), function criterion, scheduled processor
+    name: Advanced FSM: group criterion (AND), function criterion, externalized processor
     source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import workflow with criterion on transition and processors
     data:
       model: { name: wfAdvanced, version: 1 }
@@ -124,9 +130,7 @@ scenarios:
               "processors":[
                 {"name":"send_approval_notification","executionMode":"ASYNC_NEW_TX",
                  "config":{"attachEntity":true,"calculationNodesTags":"notification,approval",
-                           "responseTimeoutMs":5000,"retryPolicy":"NONE"}},
-                {"type":"scheduled","name":"schedule_close_process",
-                 "config":{"delayMs":300,"timeoutMs":30000,"transition":"Close"}}
+                           "responseTimeoutMs":5000,"retryPolicy":"NONE"}}
               ]}]},
             "approved":{"transitions":[{"name":"Close","manual":true,"next":"closed","disabled":false}]},
             "closed":{"transitions":[]}
