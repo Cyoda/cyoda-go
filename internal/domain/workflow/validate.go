@@ -20,6 +20,23 @@ const (
 	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"
 )
 
+// Processor execution-location tokens. Sourced from the OpenAPI enum in
+// api/openapi.yaml (mirrored in api/generated.go's ProcessorDefinitionDto
+// type constants). Centralised here as untyped strings so engine logic,
+// validator rules, and tests can compare against a single source — the
+// SPI's ProcessorDefinition.Type field is itself a plain string, so an
+// enum type would not buy compile-time safety.
+//
+// Empty value is treated as ProcessorTypeExternalized at dispatch. Any
+// value other than ProcessorTypeInternalized falls through to the
+// ExecutionMode dispatch path at engine fire time; the only Type
+// rejection performed by the engine is on the exact value
+// ProcessorTypeInternalized.
+const (
+	ProcessorTypeExternalized = "externalized"
+	ProcessorTypeInternalized = "internalized"
+)
+
 // validateWorkflows checks workflow definitions for definite infinite loops.
 // A definite infinite loop exists when there is a cycle of automated transitions
 // (manual=false) with NO criteria guards (nil/empty criterion = always fires).
