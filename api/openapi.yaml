@@ -8673,42 +8673,27 @@ components:
       type: object
       discriminator:
         propertyName: type
+        mapping:
+          externalized: "#/components/schemas/ExternalizedProcessorDefinitionDto"
       properties:
         type:
           type: string
-          description: Type of the processor (externalized or scheduled)
+          enum:
+            - externalized
+          description: |
+            Processor execution-location axis. `externalized` dispatches the
+            processor via gRPC to a calculation node selected by
+            `calculationNodesTags`. Empty or omitted is treated as
+            `externalized` by the runtime. The engine reserves the value
+            `internalized` for an in-process execution location not yet
+            implemented; any payload carrying `type: "internalized"` is
+            rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
+            reserved value is intentionally absent from this enum until the
+            in-process subtype lands together with its schema.
         name:
           type: string
           description: Name of the processor
       required:
-        - name
-    ScheduledTransitionConfigDto:
-      type: object
-      properties:
-        delayMs:
-          type: integer
-          format: int64
-          description: Delay in milliseconds before executing the transition
-        transition:
-          type: string
-          description: The transition to execute after waiting delayMs
-        timeoutMs:
-          type: integer
-          format: int64
-          description: Timeout in milliseconds for executing the transition task, after
-            which it will be expired
-      required:
-        - delayMs
-        - transition
-    ScheduledTransitionProcessorDefinitionDto:
-      allOf:
-        - $ref: "#/components/schemas/ProcessorDefinitionDto"
-        - type: object
-          properties:
-            config:
-              $ref: "#/components/schemas/ScheduledTransitionConfigDto"
-      required:
-        - config
         - name
     StateDefinitionDto:
       type: object
@@ -8739,7 +8724,6 @@ components:
           items:
             oneOf:
               - $ref: "#/components/schemas/ExternalizedProcessorDefinitionDto"
-              - $ref: "#/components/schemas/ScheduledTransitionProcessorDefinitionDto"
         criterion:
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
