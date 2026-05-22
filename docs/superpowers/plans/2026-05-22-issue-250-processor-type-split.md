@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Revision history**
+>
+> - **Revision 1 (2026-05-22):** initial plan.
+> - **Revision 2 (2026-05-22):** incorporated thorough plan review against the codebase. Six corrections: (a) Tasks 7/8/9 test code switched from `result.Meta.State` / `result.Data` to `entity.Meta.State` / `entity.Data` — `Engine.Execute` returns `*EngineResult` (embeds `*spi.ExecutionResult` — has `State`/`Success`/`StopReason`/`Error`, no `Meta`/`Data`). (b) Task 10 simplified — local `contains`/`stringContains` helpers replaced with `strings.Contains` from stdlib to avoid package-level helper collisions. (c) Task 11 sweep extended to include `plugins/memory/workflow_store_test.go:28` (separate go.mod — uses the literal `"externalized"` instead of importing the workflow-package constant). (d) Task 12 E2E test fully rewritten using the actual harness pattern: package `e2e_test`, helpers `setupModelWithWorkflow` / `createEntityE2E` / `getEntityState` / `doAuth` / `readBody`, URL paths `/api/...`, and PUT method for manual transitions (per `entity_lifecycle_test.go:76`). (e) Task 14 Step 5 grep switched to `grep -E` for portable alternation. (f) Task 18 Step 4 corrected — the parity Go test (`ExternalAPI_08_03_AdvancedCriteriaAndProcessors`) hand-codes its body inline and does NOT consume the YAML's `import_body`; the YAML edit is documentation-hygiene only, and the Go test is unaffected. (g) Task 19 Step 8 — SPI sibling-repo path corrected to absolute `/Users/paul/go-projects/cyoda-light/cyoda-go-spi/types.go` (the sibling repo is outside the worktree).
+
 **Goal:** Split `ProcessorDefinition.Type` from the conflated `[externalized, scheduled]` discriminator into an execution-location axis (`externalized` today, `internalized` reserved for #260). Remove `ScheduledTransitionProcessorDefinitionDto` and `ScheduledTransitionConfigDto` from OpenAPI. Reject `Type: "internalized"` at engine fire time via an early-return so the rejection cannot be silently swallowed by the existing `ExecutionMode`-keyed abort gate. Sweep stale `Type: "EXTERNAL"`/`"INTERNAL"` test fixtures (Gate 6). Introduce `docs/PROCESSOR_EXECUTION_MODES.md`.
 
 **Spec:** `docs/superpowers/specs/2026-05-20-issue-250-processor-type-split-design.md` (revision 4).
@@ -772,15 +777,15 @@ func TestType_Externalized_FallsThroughToExecutionModeDispatch(t *testing.T) {
 			saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 			entity := makeEntity("e1", modelRef, map[string]any{})
-			result, err := engine.Execute(ctx, entity, "")
+			_, err := engine.Execute(ctx, entity, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if !dispatched {
 				t.Errorf("mockExternalProcessing.DispatchProcessor was NOT called — externalized fall-through is broken")
 			}
-			if result.Meta.State != "DONE" {
-				t.Errorf("entity state = %q, want DONE", result.Meta.State)
+			if entity.Meta.State != "DONE" {
+				t.Errorf("entity state = %q, want DONE", entity.Meta.State)
 			}
 		})
 	}
@@ -827,15 +832,15 @@ func TestType_UnknownValues_FallThrough(t *testing.T) {
 			saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 			entity := makeEntity("e1", modelRef, map[string]any{})
-			result, err := engine.Execute(ctx, entity, "")
+			_, err := engine.Execute(ctx, entity, "")
 			if err != nil {
 				t.Fatalf("Type=%q produced error %v — should have fallen through to externalized dispatch", typeVal, err)
 			}
 			if !dispatched {
 				t.Errorf("Type=%q did not reach the ExecutionMode dispatch — fall-through broken", typeVal)
 			}
-			if result.Meta.State != "DONE" {
-				t.Errorf("Type=%q result state = %q, want DONE", typeVal, result.Meta.State)
+			if entity.Meta.State != "DONE" {
+				t.Errorf("Type=%q entity state = %q, want DONE", typeVal, entity.Meta.State)
 			}
 		})
 	}
@@ -863,12 +868,12 @@ func TestType_EmptyProcessors_NoOp(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", modelRef, map[string]any{})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Meta.State != "DONE" {
-		t.Errorf("entity state = %q, want DONE", result.Meta.State)
+	if entity.Meta.State != "DONE" {
+		t.Errorf("entity state = %q, want DONE", entity.Meta.State)
 	}
 
 	auditStore, _ := factory.StateMachineAuditStore(ctx)
@@ -979,7 +984,7 @@ func TestInternalizedRejection_CascadePosition_SYNC(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", modelRef, map[string]any{"original": true})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err == nil {
 		t.Fatalf("expected rejection error from B (internalized), got nil")
 	}
@@ -993,14 +998,14 @@ func TestInternalizedRejection_CascadePosition_SYNC(t *testing.T) {
 	}
 
 	// A's mutation applied to in-memory entity.Data.
-	if string(result.Data) != `{"A_ran":true}` {
-		t.Errorf("result.Data = %s, want A's mutation (in-memory layer)", result.Data)
+	if string(entity.Data) != `{"A_ran":true}` {
+		t.Errorf("entity.Data = %s, want A's mutation (in-memory layer)", entity.Data)
 	}
 
-	// Entity.Meta.State stays in source state — engine never reached the
+	// entity.Meta.State stays in source state — engine never reached the
 	// post-executeProcessors line that sets entity.Meta.State.
-	if result.Meta.State != "" {
-		t.Errorf("result.Meta.State = %q, want source state (\"\")", result.Meta.State)
+	if entity.Meta.State != "" {
+		t.Errorf("entity.Meta.State = %q, want source state (\"\")", entity.Meta.State)
 	}
 }
 ```
@@ -1155,15 +1160,16 @@ Use the Write tool:
 package workflow
 
 import (
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// TestValidator_TypeInternalized_WithStartNewTxOnDispatch_FailsAtImport
-// asserts that the existing StartNewTxOnDispatch flag-coherence check
-// (validate.go:51-55) fires at import time and short-circuits before any
-// engine-time Type rejection can run. Two sub-cases pin the ordering.
+// TestValidator_TypeInternalized_WithStartNewTxOnDispatch asserts that
+// the existing StartNewTxOnDispatch flag-coherence check (validate.go:51-55)
+// fires at import time and short-circuits before any engine-time Type
+// rejection can run. Two sub-cases pin the ordering.
 func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 	t.Run("internalized+SYNC+startNewTxOnDispatch=true is rejected at import", func(t *testing.T) {
 		trueVal := true
@@ -1193,7 +1199,7 @@ func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 		}
 		// Error should reference startNewTxOnDispatch — confirms it's the
 		// flag-coherence check firing, NOT the Type-axis engine rejection.
-		if !contains(err.Error(), "startNewTxOnDispatch") {
+		if !strings.Contains(err.Error(), "startNewTxOnDispatch") {
 			t.Errorf("error = %q, want it to mention startNewTxOnDispatch (proves flag-coherence check fired, not Type-axis)", err.Error())
 		}
 	})
@@ -1228,29 +1234,9 @@ func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 		// TestInternalizedRejection_ExecutionModeMatrix/ExecutionMode_COMMIT_BEFORE_DISPATCH.
 	})
 }
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (haystack == needle || stringContains(haystack, needle))
-}
-
-func stringContains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
 ```
 
-Note: the local `contains` and `stringContains` helpers avoid importing `strings` here; the existing test file may have the helper too. If `internal/domain/workflow/engine_processors_type_test.go` already imports `strings`, prefer that — but this test file is independent. Inspect to keep DRY:
-
-Run (Bash) before writing:
-```bash
-grep -l "func contains\|strings.Contains" internal/domain/workflow/*_test.go | head
-```
-
-If a `contains` helper already exists in the package's test files, drop the local helpers and just use `strings.Contains` instead — replace `contains(err.Error(), ...)` with `strings.Contains(err.Error(), ...)` and adjust the imports accordingly.
+`strings.Contains` is used from the standard library — no local helpers needed. (`validateWorkflows` is the unexported entry point from `validate.go:28`; same-package test access is fine.)
 
 - [ ] **Step 2: Run the validator-ordering test**
 
@@ -1297,16 +1283,20 @@ Replace `Type: "EXTERNAL"` / `"INTERNAL"` / `"external"` with `ProcessorTypeExte
 - Modify: `internal/domain/workflow/engine_result_test.go` (~2 lines)
 - Modify: `internal/domain/workflow/engine_transition_aborted_test.go` (~2 lines)
 - Modify: `internal/domain/workflow/scenarios_test.go` (~5 lines)
+- Modify: `plugins/memory/workflow_store_test.go` (1 line — separate go.mod, can't import the constant; use the literal `"externalized"` instead)
 
-- [ ] **Step 1: List all stale fixture occurrences**
+- [ ] **Step 1: List all stale fixture occurrences across the root module AND plugin submodules**
 
 Run:
 ```bash
 grep -rn 'Type:.*"\(EXTERNAL\|INTERNAL\|external\|scheduled\)"' \
      --include="*_test.go" internal/domain/workflow/
+echo "--- plugin submodules ---"
+grep -rn 'Type:.*"\(EXTERNAL\|INTERNAL\|external\|scheduled\)"' \
+     --include="*_test.go" plugins/
 ```
 
-Expected: ~40 lines across 5 files. Capture the full list to a scratchpad for the next steps.
+Expected: ~40 lines across 5 root-module files PLUS `plugins/memory/workflow_store_test.go:28` (one match). Capture the full list to a scratchpad for the next steps. Per memory `feedback_plugin_submodule_tests`, plugin submodules have their own `go.mod` and are skipped by `go test ./...` from the root — they must be swept explicitly.
 
 - [ ] **Step 2: Replace `Type: "EXTERNAL"` with `Type: ProcessorTypeExternalized` across all matches**
 
@@ -1368,24 +1358,44 @@ grep -n 'Type:.*"INTERNAL"' internal/domain/workflow/*_test.go
 
 Expected: no matches after the edit.
 
-- [ ] **Step 5: Final grep — confirm sweep is complete**
+- [ ] **Step 4b: Sweep the plugin submodule fixture**
+
+The plugin submodule has its own `go.mod`, so it cannot import `workflow.ProcessorTypeExternalized`. Use the string literal instead.
+
+Use the Edit tool on `plugins/memory/workflow_store_test.go`. `old_string`:
+```
+									Type: "EXTERNAL",
+```
+`new_string`:
+```
+									Type: "externalized",
+```
+
+Verify:
+```bash
+grep -n 'Type:' plugins/memory/workflow_store_test.go | grep -v 'externalized'
+```
+Expected: empty output.
+
+- [ ] **Step 5: Final grep — confirm sweep is complete across root + plugins**
 
 Run:
 ```bash
 grep -rn 'Type:.*"\(EXTERNAL\|INTERNAL\|external\|scheduled\)"' \
-     --include="*_test.go" internal/domain/workflow/
+     --include="*_test.go" internal/domain/workflow/ plugins/
 ```
 
 Expected: empty output.
 
-- [ ] **Step 6: Re-run the workflow package tests**
+- [ ] **Step 6: Re-run the workflow package tests + plugin submodule tests**
 
 Run:
 ```bash
 go test ./internal/domain/workflow/... -v 2>&1 | tail -30
+cd plugins/memory && go test ./... -v 2>&1 | tail -10 && cd -
 ```
 
-Expected: all PASS. The sweep should be behaviour-preserving — `"EXTERNAL"`, `"INTERNAL"`, etc. were all falling through to ExecutionMode dispatch already; `ProcessorTypeExternalized` (= `"externalized"`) is also fall-through-via-recognised-value. No semantic change.
+Expected: all PASS in both the root module and the memory plugin. The sweep should be behaviour-preserving — `"EXTERNAL"`, `"INTERNAL"`, etc. were all falling through to ExecutionMode dispatch already; `ProcessorTypeExternalized` (= `"externalized"`) and the literal `"externalized"` are also fall-through-via-recognised-value. No semantic change.
 
 - [ ] **Step 7: Commit**
 
@@ -1394,17 +1404,22 @@ git add internal/domain/workflow/engine_test.go \
         internal/domain/workflow/engine_ifmatch_test.go \
         internal/domain/workflow/engine_result_test.go \
         internal/domain/workflow/engine_transition_aborted_test.go \
-        internal/domain/workflow/scenarios_test.go
+        internal/domain/workflow/scenarios_test.go \
+        plugins/memory/workflow_store_test.go
 git commit -m "$(cat <<'EOF'
-test(workflow): normalise stale Type fixture strings to constants
+test(workflow): normalise stale Type fixture strings
 
 Gate 6 sweep — replace Type: "EXTERNAL" / "INTERNAL" / "external"
-literals in internal/domain/workflow/**_test.go with the new
-workflow.ProcessorTypeExternalized constant. The "INTERNAL" fixtures
-were particularly risky after the Type-axis rejection landed: a
-future reader sees Type: "INTERNAL" and reasonably assumes it tests
-the rejection path, when in fact it falls through (case-mismatch
-against "internalized").
+literals with the new workflow.ProcessorTypeExternalized constant in
+internal/domain/workflow/**_test.go. The "INTERNAL" fixtures were
+particularly risky after the Type-axis rejection landed: a future
+reader sees Type: "INTERNAL" and reasonably assumes it tests the
+rejection path, when in fact it falls through (case-mismatch against
+"internalized").
+
+plugins/memory/workflow_store_test.go normalised to the string literal
+"externalized" — the plugin submodule has its own go.mod and cannot
+import the workflow-package constant.
 
 Behaviour-preserving: all the replaced literals were falling through
 to ExecutionMode dispatch already; ProcessorTypeExternalized
@@ -1415,32 +1430,36 @@ EOF
 
 ---
 
-## Task 12: E2E test — POST /workflow/import + manual transition fire returns 400 WORKFLOW_FAILED
+## Task 12: E2E test — workflow import + manual transition fire returns 400 WORKFLOW_FAILED
 
 **Files:**
 - Create: `internal/e2e/workflow_internalized_test.go`
 
-Model on existing `internal/e2e/` workflow tests (e.g. `internal/e2e/collection_workflow_test.go`). The E2E harness spins up its own PostgreSQL container via testcontainers-go and an in-process `httptest.Server` with JWT auth — Docker required.
+The E2E harness's existing pattern is established in `internal/e2e/workflow_test.go` and `internal/e2e/workflow_proc_test.go`:
+- Package `e2e_test` (note the suffix).
+- Helpers: `setupModelWithWorkflow(t, entityName, workflowJSON)` (combines model import + lock + workflow import); `createEntityE2E(t, entityName, modelVersion, payload)` returns the new entity ID; `getEntityState(t, entityID)` returns the state string; `doAuth(t, method, path, body)` is the generic HTTP helper.
+- URL paths: `/api/model/{name}/{version}/workflow/import` (POST), `/api/entity/{format}/{name}/{version}` (POST creates), `/api/entity/{format}/{entityID}/{transitionName}` (PUT fires manual transition) — see `internal/e2e/entity_lifecycle_test.go:76`.
 
-- [ ] **Step 1: Inspect an existing E2E workflow test pattern**
+The harness spins up its own PostgreSQL container via testcontainers-go and an in-process `httptest.Server` with JWT auth — Docker required.
+
+- [ ] **Step 1: Inspect the helpers to confirm signatures**
 
 Run:
 ```bash
-ls internal/e2e/*workflow*
-head -80 internal/e2e/collection_workflow_test.go 2>/dev/null || head -80 internal/e2e/entity_lifecycle_test.go
+grep -n 'func setupModelWithWorkflow\|func createEntityE2E\|func getEntityState\|func doAuth\|func readBody' internal/e2e/*.go
 ```
 
-Note the helper functions used (likely `helpers_test.go`) and the JSON-body format the existing tests POST.
+Expected: helpers live in `helpers_test.go` (`doAuth`, `readBody`), `workflow_proc_test.go` (`setupModelWithWorkflow`, `getEntityState`), `entity_test.go` (`createEntityE2E`).
 
 - [ ] **Step 2: Create the E2E test**
 
 Use the Write tool to create `internal/e2e/workflow_internalized_test.go`:
 
 ```go
-package e2e
+package e2e_test
 
 import (
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -1450,120 +1469,72 @@ import (
 // full HTTP path: import a workflow whose transition has a Type:
 // "internalized" processor → import succeeds (no Type-axis validation at
 // handler) → create an entity (no cascade) → fire the manual transition
-// → 400 WORKFLOW_FAILED with the rejection sub-string → GET entity shows
-// it's still in the source state.
+// → 400 WORKFLOW_FAILED with the rejection sub-string → entity stays in
+// the source state.
 func TestE2E_InternalizedRejection_ManualTransitionReturns400(t *testing.T) {
-	client := newAuthedClient(t)
-	model := "internalized-reject-e2e"
+	const model = "e2e-internalized-reject"
 
-	// (1) Create the entity model. Use whatever helper the rest of
-	// internal/e2e/ uses — for collection_workflow_test.go style this is
-	// likely a helper like ensureModel(t, client, model, 1) or a direct
-	// POST. Adjust the call shape to the existing pattern; the body shape
-	// for the model is irrelevant to this test as long as version=1 is
-	// created.
-	ensureModel(t, client, model, 1)
-
-	// (2) Import the workflow with a Type: "internalized" processor on a
-	// Manual=true transition.
-	importBody := map[string]any{
-		"workflows": []map[string]any{
-			{
-				"version":      "1.0",
-				"name":         "InternalizedRejectWF",
-				"initialState": "INITIAL",
-				"active":       true,
-				"states": map[string]any{
-					"INITIAL": map[string]any{
-						"transitions": []map[string]any{
-							{
-								"name":     "FIRE",
-								"next":     "DONE",
-								"manual":   true,
-								"disabled": false,
-								"processors": []map[string]any{
-									{
-										"type":          "internalized",
-										"name":          "internal-proc",
-										"executionMode": "SYNC",
-									},
-								},
-							},
-						},
-					},
-					"DONE": map[string]any{},
+	// (1) Import workflow with Type: "internalized" processor on a
+	// Manual=true transition. setupModelWithWorkflow combines model
+	// import + lock + workflow import. The workflow has no cascade out
+	// of the initial state, so entity creation lands in NONE without
+	// firing the internalized processor.
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1",
+			"name": "internalized-wf",
+			"initialState": "NONE",
+			"active": true,
+			"states": {
+				"NONE": {
+					"transitions": [{
+						"name": "fire",
+						"next": "DONE",
+						"manual": true,
+						"processors": [{
+							"type": "internalized",
+							"name": "internal-proc",
+							"executionMode": "SYNC"
+						}]
+					}]
 				},
-			},
-		},
-	}
-	importBytes, _ := json.Marshal(importBody)
-	resp := doRequest(t, client, http.MethodPost,
-		"/model/"+model+"/1/workflow/import",
-		"application/json", importBytes)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("workflow import failed: status=%d body=%s", resp.StatusCode, readBody(t, resp))
+				"DONE": {}
+			}
+		}]
+	}`
+	setupModelWithWorkflow(t, model, wf)
+
+	// (2) Create an entity instance — lands in NONE (no automatic
+	// transitions out of the initial state, so no cascade fires).
+	entityID := createEntityE2E(t, model, 1, `{"name":"test"}`)
+	if s := getEntityState(t, entityID); s != "NONE" {
+		t.Fatalf("entity initial state = %q, want NONE", s)
 	}
 
-	// (3) Create an entity instance — initial state, no cascade fires
-	// because the only transition is Manual=true.
-	entityResp := doRequest(t, client, http.MethodPost,
-		"/entity/"+model+"/1",
-		"application/json", []byte(`{"some":"data"}`))
-	if entityResp.StatusCode != http.StatusOK && entityResp.StatusCode != http.StatusCreated {
-		t.Fatalf("entity create failed: status=%d body=%s", entityResp.StatusCode, readBody(t, entityResp))
+	// (3) Fire the manual transition via PUT /api/entity/{format}/{id}/{transition}.
+	// Expect 400 WORKFLOW_FAILED with the rejection sub-string.
+	path := fmt.Sprintf("/api/entity/JSON/%s/fire", entityID)
+	resp := doAuth(t, http.MethodPut, path, `{"name":"test"}`)
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("transition fire: status=%d (want 400), body=%s", resp.StatusCode, body)
 	}
-	var entityCreatedBody map[string]any
-	if err := json.NewDecoder(entityResp.Body).Decode(&entityCreatedBody); err != nil {
-		t.Fatalf("entity create response decode: %v", err)
+	if !strings.Contains(body, "WORKFLOW_FAILED") {
+		t.Errorf("response body missing WORKFLOW_FAILED code: %s", body)
 	}
-	entityID, _ := entityCreatedBody["id"].(string)
-	if entityID == "" {
-		t.Fatalf("entity create response missing id: %+v", entityCreatedBody)
+	if !strings.Contains(body, `execution type "internalized" is not yet implemented`) {
+		t.Errorf("response body missing rejection sub-string: %s", body)
 	}
 
-	// (4) Fire the manual transition. Expect 400 WORKFLOW_FAILED with the
-	// rejection sub-string.
-	fireResp := doRequest(t, client, http.MethodPost,
-		"/entity/"+model+"/1/"+entityID+"/transition/FIRE",
-		"application/json", []byte("{}"))
-	if fireResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("transition fire: status=%d (want 400), body=%s", fireResp.StatusCode, readBody(t, fireResp))
-	}
-	fireBody := readBody(t, fireResp)
-	if !strings.Contains(fireBody, "WORKFLOW_FAILED") {
-		t.Errorf("response body missing WORKFLOW_FAILED code: %s", fireBody)
-	}
-	if !strings.Contains(fireBody, `execution type "internalized" is not yet implemented`) {
-		t.Errorf("response body missing rejection sub-string: %s", fireBody)
-	}
-
-	// (5) GET the entity — confirm it's in the initial state.
-	getResp := doRequest(t, client, http.MethodGet,
-		"/entity/"+model+"/1/"+entityID,
-		"application/json", nil)
-	if getResp.StatusCode != http.StatusOK {
-		t.Fatalf("entity get: status=%d body=%s", getResp.StatusCode, readBody(t, getResp))
-	}
-	var getBody map[string]any
-	if err := json.NewDecoder(getResp.Body).Decode(&getBody); err != nil {
-		t.Fatalf("entity get decode: %v", err)
-	}
-	// State field name in the response body depends on the existing
-	// project conventions — adapt as needed by inspecting helpers_test.go.
-	// Common shapes are getBody["meta"].(map[string]any)["state"] or
-	// getBody["state"]. Pick the right one based on actual response shape.
-	state := extractEntityState(t, getBody)
-	if state != "INITIAL" {
-		t.Errorf("entity state = %q after failed transition, want INITIAL (source state preserved)", state)
+	// (4) Confirm the entity stayed in the source state — the failed
+	// transition must not have advanced it to DONE.
+	if s := getEntityState(t, entityID); s != "NONE" {
+		t.Errorf("entity state after failed transition = %q, want NONE (source state preserved)", s)
 	}
 }
 ```
-
-**Note for the implementer:** the exact helper names (`newAuthedClient`, `ensureModel`, `doRequest`, `readBody`, `extractEntityState`) likely differ from what `internal/e2e/helpers_test.go` actually exports. Before writing the file, run:
-```bash
-grep -n 'func ' internal/e2e/helpers_test.go | head -20
-```
-Adapt the helper calls to match the existing names. If a helper doesn't exist for "extract state from entity response", inline the equivalent (`getBody["meta"].(map[string]any)["state"].(string)` or similar based on the actual shape). The test's *behaviour* is the contract; helper choice is implementation detail.
 
 - [ ] **Step 3: Run the E2E test (Docker required)**
 
@@ -1799,7 +1770,7 @@ Expected: three matches (one for each helper).
 
 Run:
 ```bash
-grep -n "TransitionDefinitionDto_Processors_Item\|Processors\s*\[\]" api/generated.go | head -5
+grep -nE "TransitionDefinitionDto_Processors_Item|Processors[[:space:]]*\[\]" api/generated.go | head -5
 ```
 
 Expected: at least one match showing the union-helper type or the embedded array shape. Open the area in an editor if needed to confirm the shape is structurally correct.
@@ -2208,22 +2179,15 @@ Expected: empty output.
 
 - [ ] **Step 4: Run the parity test suite**
 
-The parity scenarios are driven by the parity test runner. Inspect existing tests for how they fire:
+**Important:** the parity Go test at `e2e/parity/externalapi/workflow_import_export.go:147` hand-codes its own JSON body inline — it does NOT consume the YAML's `import_body` field. The YAML scenario in `08-workflow-import-export.yaml` is dictionary/documentation metadata; the Go test is the executable contract. The YAML edit in Steps 1-3 is therefore documentation-hygiene only.
 
-Run:
-```bash
-grep -rn "08-workflow-import-export.yaml\|TestParityScenarios" e2e/ internal/ 2>/dev/null | head -5
-```
-
-Identify the test entry point (likely something like `TestParityScenarios` or a generic runner that walks the `e2e/externalapi/scenarios/` directory). Run it:
+Confirm the Go test still passes (no change to its inline body is needed because the inline body never carried a scheduled-processor entry; it carries `"type": "FUNCTION"` which is a free-string that falls through):
 
 ```bash
-go test ./e2e/parity/... -v -run 'wf-import/03' 2>&1 | tail -30
+go test ./e2e/parity/externalapi/... -v -run 'ExternalAPI_08_03_AdvancedCriteriaAndProcessors' 2>&1 | tail -20
 ```
 
-Or, if the parity runner uses a different invocation, adapt the command. The acceptance criterion: `wf-import/03` passes with the new import_body.
-
-Expected: PASS. The `json_equals_normalized` assertion holds because import and export both contain only the externalized processor entry.
+Expected: PASS. The Go test exercises group-criterion + simple-criterion + externalized-processor round-trip and is unaffected by the YAML edit.
 
 - [ ] **Step 5: Commit**
 
@@ -2319,18 +2283,23 @@ Expected: same set as before this PR; no new entries from #250 work. (The engine
 
 - [ ] **Step 8: Confirm no GitHub issue IDs leaked into shipped artefacts**
 
-Run:
+Run from the worktree root:
 ```bash
-grep -rn '#25[0-9]\|#26[0-9]\|#19[0-9]\|#13[0-9]\|#3[0-9]' \
-     api/ internal/ cmd/ docs/PROCESSOR_EXECUTION_MODES.md \
-     cyoda-go-spi/types.go 2>/dev/null \
+grep -rnE '#(25[0-9]|26[0-9]|19[0-9]|13[0-9]|3[0-9])\b' \
+     api/ internal/ cmd/ docs/PROCESSOR_EXECUTION_MODES.md 2>/dev/null \
      | grep -v 'docs/superpowers/' \
      | grep -v 'docs/WORKFLOW_IMPORT_EXPORT_AUDIT.md' \
      | grep -v '_test.go' \
      | head -20
 ```
 
-Expected: empty output. (Spec docs under `docs/superpowers/` and the audit doc are explicitly allowed to reference issue IDs; test files may reference issues if they were grandfathered in.)
+Then check the SPI sibling repo separately (it lives outside this worktree):
+```bash
+grep -nE '#(25[0-9]|26[0-9]|19[0-9]|13[0-9]|3[0-9])\b' \
+     /Users/paul/go-projects/cyoda-light/cyoda-go-spi/types.go 2>/dev/null
+```
+
+Expected: both empty. (Spec docs under `docs/superpowers/` and the audit doc are explicitly allowed to reference issue IDs; test files may reference issues if they were grandfathered in.)
 
 If anything matches, examine the location and remove the issue ID — per memory `feedback_no_issue_ids_in_code`, shipped artefacts must be self-contained.
 
