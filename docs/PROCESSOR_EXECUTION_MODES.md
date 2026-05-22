@@ -15,6 +15,27 @@ Companion documents:
 
 ---
 
+## 0. Axis Summary
+
+Workflow processors have two orthogonal configuration axes.
+
+**`type` — execution-location.** Determines where the processor runs.
+Currently only `externalized` (gRPC dispatch to a calculation node) is
+implemented. The value `internalized` is reserved for in-process
+execution; any transition firing a processor with `type: "internalized"`
+is rejected at dispatch with `WORKFLOW_FAILED` (400). Empty or omitted
+on the wire is treated as `externalized`.
+
+**`executionMode` — transactional semantics of dispatch.** Determines
+whether the dispatch is synchronous or asynchronous, and whether the
+caller's transaction stays open across the dispatch. The four values
+(`SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`) are
+the focus of this document. All `executionMode` semantics described
+below apply to `externalized` processors; the `internalized` location
+has no documented dispatch semantics yet.
+
+---
+
 ## 1. Quick Reference
 
 | Mode | Synchrony | Open TX during dispatch | Result mutations applied | Failure | Suitable for |
