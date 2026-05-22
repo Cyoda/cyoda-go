@@ -231,3 +231,74 @@ func TestType_EmptyProcessors_NoOp(t *testing.T) {
 		}
 	}
 }
+
+// TestInternalizedRejection_CascadePosition_SYNC asserts that a SYNC
+// predecessor's mutations land in entity.Data, the internalized rejection
+// aborts the pipeline, and the successor processor is never invoked.
+// entity.Meta.State stays in the source state.
+//
+// Per spec §6.1 test 5 the variant tests for A:ASYNC_NEW_TX and
+// A:COMMIT_BEFORE_DISPATCH are explicitly out of scope — those
+// transactional shapes have their own well-tested abort semantics
+// independent of the Type-axis check.
+func TestInternalizedRejection_CascadePosition_SYNC(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "cascade-position", ModelVersion: "1.0"}
+
+	dispatchOrder := []string{}
+	engine.extProc = &mockExternalProcessing{
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
+			dispatchOrder = append(dispatchOrder, proc.Name)
+			if proc.Name == "A" {
+				modified := *entity
+				modified.Data = []byte(`{"A_ran":true}`)
+				return &modified, nil
+			}
+			return entity, nil
+		},
+	}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "CascadePosWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "RUN", Next: "DONE", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{Type: ProcessorTypeExternalized, Name: "A", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeInternalized, Name: "B", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "C", ExecutionMode: ExecutionModeSync},
+					}},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("e1", modelRef, map[string]any{"original": true})
+	_, err := engine.Execute(ctx, entity, "")
+	if err == nil {
+		t.Fatalf("expected rejection error from B (internalized), got nil")
+	}
+	if !strings.Contains(err.Error(), `execution type "internalized" is not yet implemented`) {
+		t.Errorf("error = %q, want rejection sub-string", err.Error())
+	}
+
+	// A ran, B never reached the mock (early-return short-circuit), C never ran.
+	if len(dispatchOrder) != 1 || dispatchOrder[0] != "A" {
+		t.Errorf("dispatch order = %v, want [A] (B should not reach mock; C should not be dispatched)", dispatchOrder)
+	}
+
+	// A's mutation applied to in-memory entity.Data.
+	if string(entity.Data) != `{"A_ran":true}` {
+		t.Errorf("entity.Data = %s, want A's mutation (in-memory layer)", entity.Data)
+	}
+
+	// entity.Meta.State stays in source state. NOTE: the engine sets
+	// entity.Meta.State = selectedWF.InitialState ("INITIAL") at
+	// engine.go:139 before the cascade runs, so the source state is
+	// "INITIAL", not "" — see the matrix test for the same reasoning.
+	if entity.Meta.State != "INITIAL" {
+		t.Errorf("entity.Meta.State = %q, want source state (\"INITIAL\")", entity.Meta.State)
+	}
+}
