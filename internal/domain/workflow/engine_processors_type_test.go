@@ -82,3 +82,152 @@ func TestInternalizedRejection_ExecutionModeMatrix(t *testing.T) {
 		})
 	}
 }
+
+// TestType_Externalized_FallsThroughToExecutionModeDispatch asserts that
+// Type: "externalized" (and Type: "" / unset) is treated identically by
+// the engine — both fall through to the ExecutionMode dispatch path.
+func TestType_Externalized_FallsThroughToExecutionModeDispatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		typeVal string
+	}{
+		{name: "Type unset", typeVal: ""},
+		{name: "Type externalized", typeVal: ProcessorTypeExternalized},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, factory := setupEngine(t)
+			ctx := ctxWithTenant(testTenant)
+			modelRef := spi.ModelRef{EntityName: "fall-through-" + tc.typeVal, ModelVersion: "1.0"}
+
+			var dispatched bool
+			engine.extProc = &mockExternalProcessing{
+				dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
+					dispatched = true
+					return entity, nil
+				},
+			}
+
+			wf := spi.WorkflowDefinition{
+				Version: "1.0", Name: "FallThroughWF", InitialState: "INITIAL", Active: true,
+				States: map[string]spi.StateDefinition{
+					"INITIAL": {Transitions: []spi.TransitionDefinition{
+						{Name: "RUN", Next: "DONE", Manual: false,
+							Processors: []spi.ProcessorDefinition{
+								{Type: tc.typeVal, Name: "p", ExecutionMode: ExecutionModeSync},
+							}},
+					}},
+					"DONE": {},
+				},
+			}
+			saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+			entity := makeEntity("e1", modelRef, map[string]any{})
+			_, err := engine.Execute(ctx, entity, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !dispatched {
+				t.Errorf("mockExternalProcessing.DispatchProcessor was NOT called — externalized fall-through is broken")
+			}
+			if entity.Meta.State != "DONE" {
+				t.Errorf("entity state = %q, want DONE", entity.Meta.State)
+			}
+		})
+	}
+}
+
+// TestType_UnknownValues_FallThrough asserts that any Type value other
+// than the exact string "internalized" falls through to the ExecutionMode
+// dispatch path. Pins the no-normalisation, exact-match contract.
+func TestType_UnknownValues_FallThrough(t *testing.T) {
+	cases := []string{
+		"scheduled",            // legacy value removed from OpenAPI in this PR
+		"EXTERNALIZED",         // case-mismatched uppercase
+		" externalized ",       // whitespace-padded
+		"internalized\nfoo",    // newline injection — exact-match boundary
+		"future_unknown_value", // arbitrary unknown
+	}
+
+	for _, typeVal := range cases {
+		t.Run("Type="+typeVal, func(t *testing.T) {
+			engine, factory := setupEngine(t)
+			ctx := ctxWithTenant(testTenant)
+			modelRef := spi.ModelRef{EntityName: "unknown-" + typeVal, ModelVersion: "1.0"}
+
+			var dispatched bool
+			engine.extProc = &mockExternalProcessing{
+				dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
+					dispatched = true
+					return entity, nil
+				},
+			}
+
+			wf := spi.WorkflowDefinition{
+				Version: "1.0", Name: "UnknownTypeWF", InitialState: "INITIAL", Active: true,
+				States: map[string]spi.StateDefinition{
+					"INITIAL": {Transitions: []spi.TransitionDefinition{
+						{Name: "RUN", Next: "DONE", Manual: false,
+							Processors: []spi.ProcessorDefinition{
+								{Type: typeVal, Name: "p", ExecutionMode: ExecutionModeSync},
+							}},
+					}},
+					"DONE": {},
+				},
+			}
+			saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+			entity := makeEntity("e1", modelRef, map[string]any{})
+			_, err := engine.Execute(ctx, entity, "")
+			if err != nil {
+				t.Fatalf("Type=%q produced error %v — should have fallen through to externalized dispatch", typeVal, err)
+			}
+			if !dispatched {
+				t.Errorf("Type=%q did not reach the ExecutionMode dispatch — fall-through broken", typeVal)
+			}
+			if entity.Meta.State != "DONE" {
+				t.Errorf("Type=%q entity state = %q, want DONE", typeVal, entity.Meta.State)
+			}
+		})
+	}
+}
+
+// TestType_EmptyProcessors_NoOp asserts that a transition with no
+// processors at all imports, fires, and reaches the target state without
+// entering the per-processor loop. No SMEventProcessingPaused is emitted.
+// Pins that the new Type-axis early-return does not regress the
+// empty-pipeline path (executeProcessors early-return at lines 43-45).
+func TestType_EmptyProcessors_NoOp(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "no-procs", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "NoProcsWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "RUN", Next: "DONE", Manual: false},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("e1", modelRef, map[string]any{})
+	_, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entity.Meta.State != "DONE" {
+		t.Errorf("entity state = %q, want DONE", entity.Meta.State)
+	}
+
+	auditStore, _ := factory.StateMachineAuditStore(ctx)
+	events, _ := auditStore.GetEvents(ctx, "e1")
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventProcessingPaused {
+			t.Errorf("SMEventProcessingPaused was emitted for an empty processors[] — expected zero")
+		}
+	}
+}
