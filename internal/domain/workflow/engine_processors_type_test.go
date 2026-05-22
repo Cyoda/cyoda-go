@@ -72,9 +72,12 @@ func TestInternalizedRejection_ExecutionModeMatrix(t *testing.T) {
 				t.Errorf("error message missing outer-wrap prefix: %q", msg)
 			}
 
-			// Entity must remain in the source state.
-			if entity.Meta.State != "" {
-				t.Errorf("entity state expected source state (\"\"), got %q", entity.Meta.State)
+			// Entity must not have advanced to the transition's Next state.
+			// Execute places the entity at InitialState ("INITIAL") before
+			// running the cascade, so after a processor failure the entity
+			// sits at the initial state — it did not advance to "DONE".
+			if entity.Meta.State != "INITIAL" {
+				t.Errorf("entity state expected initial state (\"INITIAL\"), got %q", entity.Meta.State)
 			}
 		})
 	}
