@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -300,5 +301,46 @@ func TestInternalizedRejection_CascadePosition_SYNC(t *testing.T) {
 	// "INITIAL", not "" — see the matrix test for the same reasoning.
 	if entity.Meta.State != "INITIAL" {
 		t.Errorf("entity.Meta.State = %q, want source state (\"INITIAL\")", entity.Meta.State)
+	}
+}
+
+// TestType_RoundTrip_PreservesUnknownValues confirms that removing the
+// ScheduledTransitionProcessorDefinitionDto from OpenAPI does not change
+// wire behaviour for the SPI's free-string Type field. An unknown value
+// like "scheduled" or "future_unknown_value" survives the JSON round-trip
+// through spi.WorkflowDefinition verbatim.
+func TestType_RoundTrip_PreservesUnknownValues(t *testing.T) {
+	cases := []string{"scheduled", "future_unknown_value"}
+
+	for _, typeVal := range cases {
+		t.Run("Type="+typeVal, func(t *testing.T) {
+			wf := spi.WorkflowDefinition{
+				Version: "1.0", Name: "RoundTrip", InitialState: "INITIAL", Active: true,
+				States: map[string]spi.StateDefinition{
+					"INITIAL": {Transitions: []spi.TransitionDefinition{
+						{Name: "RUN", Next: "DONE", Manual: true,
+							Processors: []spi.ProcessorDefinition{
+								{Type: typeVal, Name: "p", ExecutionMode: ExecutionModeSync},
+							}},
+					}},
+					"DONE": {},
+				},
+			}
+
+			raw, err := json.Marshal(wf)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var roundTrip spi.WorkflowDefinition
+			if err := json.Unmarshal(raw, &roundTrip); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			gotType := roundTrip.States["INITIAL"].Transitions[0].Processors[0].Type
+			if gotType != typeVal {
+				t.Errorf("round-trip Type = %q, want %q", gotType, typeVal)
+			}
+		})
 	}
 }
