@@ -10,31 +10,44 @@ processor execution-location shape + SPI)
 > **Revision history**
 >
 > - **Revision 1 (2026-05-20):** initial spec.
-> - **Revision 2 (2026-05-20):** incorporated first senior-architect review.
->   Engine-dispatch integration point corrected; audit-event coherence
->   spelled out; Type string constants moved from SPI to
->   `internal/domain/workflow` (resolves a sequencing contradiction);
->   OpenAPI `discriminator.mapping` made explicit; test plan expanded;
->   backwards-compat table extended with a DTO-client row; the silent-drop
->   of scheduled config fields reframed as carried-over debt.
+> - **Revision 2 (2026-05-20):** incorporated first senior-architect review
+>   (engine-dispatch integration corrected, audit-event coherence spelled
+>   out, Type constants moved from SPI to `internal/domain/workflow`,
+>   `discriminator.mapping` made explicit, test plan expanded, compat
+>   table extended, silent-drop reframed as carried-over debt).
 > - **Revision 3 (2026-05-21):** incorporated second senior-architect
->   review. Engine-dispatch code shape corrected from "fall through to
->   ExecutionMode switch" (which overwrote `procErr`) to a nested-switch
->   that short-circuits cleanly; line range citation fixed (`:59-116`);
->   error message stripped of the doubled `processor` prefix; SPI docstring
->   rewritten to match engine tolerance semantics (only the explicit
->   `internalized` value is rejected; unknown values fall through);
->   audit-event behaviour reframed as pass-through of the author's
->   declared `ExecutionMode` (`mode: ""` for internalized processors with
->   no ExecutionMode declared) rather than "matches SYNC-failure shape";
->   docs sweep extended to `cmd/cyoda/help/content/workflows.md:63` (stale
->   `EXTERNAL` example) and `cmd/cyoda/help/content/grpc.md:219` (stale
->   `EXTERNAL` reference); `docs/cyoda/*` vendored upstream copies
->   declared explicitly out-of-scope; parity-scenario sweep result
->   recorded (one match, `08-workflow-import-export.yaml:128`);
->   test 5 (cascade-position) pinned to `A: SYNC`; test 3
->   (unknown Type) expanded to cover case-mismatch and whitespace as
->   fall-through values.
+>   review (engine-dispatch nested-switch shape, line range fixed, error
+>   message de-doubled, SPI docstring matched to engine tolerance,
+>   audit-event behaviour reframed as pass-through, docs sweep extended
+>   to workflows.md:63 and grpc.md:219, vendored `docs/cyoda/*` declared
+>   out-of-scope, parity-scenario sweep result recorded, test 5 pinned to
+>   `A: SYNC`, test 3 expanded for case/whitespace, test 2b for empty
+>   pipeline).
+> - **Revision 4 (2026-05-22):** incorporated third senior-architect
+>   review. Three load-bearing defects fixed: (a) **engine-dispatch
+>   code shape rewritten as an early-return at the top of the
+>   per-processor loop** — revision 3's nested-switch let `Type:
+>   internalized + ExecutionMode: ASYNC_NEW_TX` fall through the line
+>   109 abort gate (which keys on `proc.ExecutionMode`, not on rejection
+>   origin), silently succeeding; the early-return is self-contained and
+>   immune to the gate's behaviour. (b) **Audit-event cardinality
+>   corrected** — fatal failures emit `SMEventStateProcessResult` TWICE,
+>   once inside `executeProcessors` and once in the calling
+>   `engine.go` (with the wrapped error string in Details);
+>   revision 3 incorrectly claimed "exactly once" in §5.4 and test 4.
+>   (c) **OpenAPI enum scope tightened** — `internalized` is removed from
+>   the enum AND the discriminator mapping for #250; the engine still
+>   rejects the value at fire time as a defensive guard for raw-JSON
+>   clients; #260 will add `internalized` to enum, mapping, AND a new
+>   subtype schema together. Also: `docs/PROCESSOR_EXECUTION_MODES.md`
+>   added as a new file in #250's PR (was only present as untracked in
+>   the parent worktree); existing test-fixture sweep added for stale
+>   `Type: "EXTERNAL"`/`"INTERNAL"` strings (Gate 6); test 5 tightened
+>   to differentiate in-memory `entity.Data` mutation from durable
+>   persistence; test 8 trigger pinned; help-text wording tightened to
+>   "any value other than `internalized` falls through"; `make generate`
+>   spike got acceptance criteria; v0.7.x → v0.8.0 upgrade no-op
+>   reassurance added.
 
 ---
 
@@ -77,6 +90,9 @@ misleading:
   An example JSON at `cmd/cyoda/help/content/workflows.md:63` carries the
   same stale `"type": "EXTERNAL"` value; `cmd/cyoda/help/content/grpc.md:219`
   references an `EXTERNAL` processor in the gRPC compute-member section.
+  Several test fixtures under `internal/domain/workflow/` also carry stale
+  `Type: "EXTERNAL"`/`Type: "INTERNAL"` strings; these are normalised by
+  this PR (§5.8 sweep).
 
 The parity scenario `e2e/externalapi/scenarios/08-workflow-import-export.yaml`
 `wf-import/03` imports a workflow with one externalized processor (no `type`
@@ -92,9 +108,13 @@ scheduling config fields are silently dropped by JSON unmarshal").
 
 ## 2. Goals
 
-- Reshape `api/openapi.yaml` so processor `type` is the execution-location axis
-  only. Enum becomes `[externalized, internalized]`, with an explicit
-  `discriminator.mapping` block.
+- Reshape `api/openapi.yaml` so processor `type` is the execution-location
+  axis only. For #250 the enum becomes `[externalized]` — a single value
+  with an explicit `discriminator.mapping` entry. #260 later adds
+  `internalized` to both the enum and the mapping, together with the new
+  subtype schema. Keeping `internalized` out of the OpenAPI surface until
+  its schema is defined avoids producing a strictly invalid document
+  (enum value with no discriminator target).
 - Remove `ScheduledTransitionProcessorDefinitionDto` and
   `ScheduledTransitionConfigDto` from the OpenAPI surface entirely. The new
   home for scheduled-transitions is the next carve-out (#259); both ship
@@ -109,11 +129,16 @@ scheduling config fields are silently dropped by JSON unmarshal").
   `validate.go:13-21`).
 - Bring `cyoda help workflows`, `cyoda help grpc`, and any other affected
   docs into sync with actual behaviour. Help text is derived from the
-  codebase, not authoritative on its own.
+  codebase, not authoritative on its own. Add
+  `docs/PROCESSOR_EXECUTION_MODES.md` as a new doc — drafted under v0.8.0
+  scoping — with a §0 axis-summary anchoring the `type` × `executionMode`
+  distinction.
 - Reject `type: internalized` at engine dispatch with a clear,
-  self-contained "not yet implemented" error message. Surfaces the planned
-  shape to workflow authors so they can compose against it before #260 lands
-  the runtime.
+  self-contained "not yet implemented" error message. Implemented as an
+  early-return at the top of the per-processor loop so the rejection
+  cannot be silently swallowed by the existing ExecutionMode-keyed abort
+  gate (engine_processors.go:109). The engine-side guard is the
+  defensive backstop for raw-JSON clients that bypass the OpenAPI DTOs.
 
 ## 3. Non-goals
 
@@ -121,7 +146,8 @@ scheduling config fields are silently dropped by JSON unmarshal").
   the runtime — timer persistence, cluster ownership, work-stealing recovery,
   audit surface.)
 - Implement internalized processor execution. (#260 owns the SPI shape +
-  registration, #252 owns the runtime — in-process isolation, lifecycle.)
+  registration + the new `InternalizedProcessorDefinitionDto` OpenAPI
+  subtype + enum/mapping extension, #252 owns the runtime.)
 - Tighten import-time validation for unknown `type` values. That is #255's
   scope (state-graph, names, `ExecutionMode` enum, `Type` enum). #250
   reshapes the schema only; #255 enforces it at import.
@@ -134,19 +160,21 @@ scheduling config fields are silently dropped by JSON unmarshal").
   upstream and synchronised through a separate workflow; they will pick
   up the cleanup when Cloud lands the equivalent change.
 
-## 4. Decision summary (post-clarification + two review passes)
+## 4. Decision summary (post-clarification + three review passes)
 
 | Question | Decision |
 |---|---|
-| OpenAPI scope | **Full split now.** Remove ScheduledTransitionProcessorDefinitionDto + ScheduledTransitionConfigDto entirely. processors[] oneOf collapses to ExternalizedProcessorDefinitionDto (single-member oneOf, retained as a forward-extension point for InternalizedProcessorDefinitionDto in #260). |
-| OpenAPI discriminator | **Explicit `discriminator.mapping` block.** Generator behaviour for value-to-schema mapping varies; explicit is safer than implicit-name-match (`externalized` ≠ `ExternalizedProcessorDefinitionDto`). |
-| Type enum values | **`[externalized, internalized]`.** Empty/omitted defaults to `externalized` on the wire — preserves current parity payloads where `type` is omitted on externalized processors. |
-| Where to reject `internalized` | **At engine fire time, with a nested switch inside the per-processor dispatch loop.** Mirrors #259's planned pattern for scheduled-transition runtime rejection. Import accepts (validation tightening is #255's scope). |
-| Engine-dispatch integration shape | **Nested switch on `proc.Type` wrapping the existing `switch proc.ExecutionMode`.** The Type-axis check short-circuits dispatch cleanly without overwriting `procErr` (see §5.4 for the exact code shape). |
+| OpenAPI scope | **Full split now.** Remove ScheduledTransitionProcessorDefinitionDto + ScheduledTransitionConfigDto entirely. processors[] oneOf collapses to ExternalizedProcessorDefinitionDto (single-member oneOf, retained as a forward-extension point for #260). |
+| OpenAPI enum scope | **`type: enum: [externalized]`** for #250. `internalized` is added to the enum AND the discriminator mapping AND a new `InternalizedProcessorDefinitionDto` subtype together by #260. Keeping the enum consistent with the mapping avoids producing a strictly invalid OpenAPI document. The engine rejects `Type: "internalized"` at fire time regardless (defensive guard for raw-JSON clients). |
+| OpenAPI discriminator | **Explicit `discriminator.mapping` block.** Mapping contains only `externalized: "#/components/schemas/ExternalizedProcessorDefinitionDto"`. Generator behaviour for value-to-schema mapping varies; explicit + consistent-with-enum is safest. |
+| Where to reject `internalized` | **At engine fire time via early-return at the top of the per-processor loop.** §5.4 spells out the exact code. Mirrors #259's planned pattern for scheduled-transition runtime rejection. Import accepts (validation tightening is #255's scope). |
+| Engine-dispatch integration shape | **Early-return from a Type-axis check at the top of the per-processor loop**, emitting the per-processor `SMEventStateProcessResult` audit event explicitly inside the branch (mirroring the line 104 shape) and calling `rollbackOpenSegmentOnFailure` before returning. **Not** a nested switch around the ExecutionMode dispatch (revision 3's choice), because the post-switch abort gate at line 109 keys on `proc.ExecutionMode` and would let `Type: internalized + ExecutionMode: ASYNC_NEW_TX` silently succeed. |
 | Constants for Type values | **In `internal/domain/workflow`,** not the SPI. The SPI carries the wire field; the engine owns the value semantics. Same split as `ExecutionMode*` constants — see precedent + rationale in `validate.go:13-15`. |
 | SPI `Type` field | **Keep, document.** Docstring matches engine tolerance: only `internalized` is rejected; unknown values fall through. No new symbols. SPI change is comment-only, so no SPI tag is forced by #250. |
-| Audit-event `mode` value on internalized rejection | **Pass-through.** The existing per-processor failure audit at `engine_processors.go:104-106` emits `auditData{success: false, mode: proc.ExecutionMode}` — that shape is preserved unchanged. For an internalized processor with no `executionMode` declared, `mode` audits as `""`. The audit-row consumer cannot self-describe the rejection cause; the error message in the response and the operator-side slog log carry the cause. No special-casing of the audit emit. |
+| Audit-event behaviour | **Two `SMEventStateProcessResult` emits per fatal failure** — one inside `executeProcessors` (with `Data: {success: false, mode: <declared ExecutionMode>}`, Details `Processor %q completed`), one inside the calling `engine.go` failure path (with `Data: {success: false}`, no `mode`, Details embedding the full wrapped error string). The second emit's Details DOES describe the rejection cause; an audit consumer reading Details can see exactly which Type value triggered the rejection. This is the existing two-event shape for every fatal processor failure (SYNC/CBD); the internalized rejection does not change it. |
 | Parity scenario 08 | **Strip the scheduled entry from `wf-import/03`.** Grep of `e2e/externalapi/scenarios/` for `"type":"scheduled"` confirmed scenario 08 line 128 is the only match. |
+| Test-fixture sweep | **Normalise stale `Type: "EXTERNAL"`/`"INTERNAL"`/`"external"` strings** in `internal/domain/workflow/**_test.go` to `workflow.ProcessorTypeExternalized` (or drop where the value is irrelevant to the test). Gate 6 — resolve, don't defer. |
+| `docs/PROCESSOR_EXECUTION_MODES.md` | **New file, lands in #250's PR.** A draft is currently in the parent worktree's working copy at `docs/PROCESSOR_EXECUTION_MODES.md` (untracked, written for v0.8.0). The first implementation commit copies the file in verbatim from the parent worktree, the second adds the §0 axis-summary anchoring `type` vs `executionMode`. Subsequent v0.8.0 carve-outs (#259, #260) extend the doc. |
 | Error messages | **No issue-ID references in any shipped artefact.** Self-contained phrasing in error messages, log lines, code comments, OpenAPI descriptions, and help-topic content. Issue IDs are appropriate only in this spec doc, PR bodies, commit messages, and CHANGELOG. |
 | Source of truth for Type strings | **`internal/domain/workflow` constants** are authoritative. Engine code references those, not the regenerated `api/generated.go`'s `ProcessorDefinitionDtoType*` constants (which are an artefact of `oapi-codegen` and should not leak across package boundaries). |
 
@@ -154,11 +182,9 @@ scheduling config fields are silently dropped by JSON unmarshal").
 
 ### 5.1 OpenAPI changes (`api/openapi.yaml`)
 
-**`ProcessorDefinitionDto`** — `type` becomes a constrained enum with an
-explicit discriminator mapping. The mapping defends against generator
-behaviour that defaults to implicit name-match (`externalized` →
-`Externalized` capitalised → schema search), which works only by
-coincidence today and is fragile to renaming.
+**`ProcessorDefinitionDto`** — `type` is a constrained enum containing only
+the values that have a corresponding subtype schema. For #250 that is
+exactly `externalized`. The discriminator mapping mirrors the enum.
 
 ```yaml
 ProcessorDefinitionDto:
@@ -167,21 +193,21 @@ ProcessorDefinitionDto:
     propertyName: type
     mapping:
       externalized: "#/components/schemas/ExternalizedProcessorDefinitionDto"
-      # internalized: "#/components/schemas/InternalizedProcessorDefinitionDto"
-      # ^ added by #260 when the internalized shape lands.
   properties:
     type:
       type: string
       enum:
         - externalized
-        - internalized
       description: |
         Processor execution-location axis. `externalized` dispatches the
         processor via gRPC to a calculation node selected by
-        `calculationNodesTags`. `internalized` runs the processor in-process
-        within cyoda-go; reserved value, currently rejected at engine
-        dispatch as not yet implemented. Empty or omitted is treated as
-        `externalized`.
+        `calculationNodesTags`. Empty or omitted is treated as
+        `externalized` by the runtime. The engine reserves the value
+        `internalized` for an in-process execution location not yet
+        implemented; any payload carrying `type: "internalized"` is
+        rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
+        reserved value is intentionally absent from this enum until the
+        in-process subtype lands together with its schema.
     name:
       type: string
       description: Name of the processor
@@ -217,12 +243,25 @@ processors:
       - $ref: "#/components/schemas/ExternalizedProcessorDefinitionDto"
 ```
 
-A verification spike on the regenerated `api/generated.go` (run `make
-generate` and inspect the union helpers) is part of the implementation
-sequence — if `oapi-codegen` emits malformed helpers without the explicit
-mapping, the mapping is already in place to fix it. Fallback: drop the
-`oneOf` wrapper and direct-reference `ExternalizedProcessorDefinitionDto`;
-#260 reintroduces `oneOf` when it needs to.
+**Verification spike on the regenerated `api/generated.go`** is part of
+the implementation sequence. Concrete acceptance criteria for the spike:
+
+1. `make generate` runs to completion without error.
+2. `go build ./...` is clean post-regeneration.
+3. `api/generated.go` retains `AsExternalizedProcessorDefinitionDto`,
+   `FromExternalizedProcessorDefinitionDto`, and
+   `MergeExternalizedProcessorDefinitionDto` method signatures on the
+   `TransitionDefinitionDto_Processors_Item` (or equivalent) type — i.e.,
+   the union-helper API is structurally preserved for the single member.
+4. `api/generated.go` no longer contains the three
+   `*ScheduledTransitionProcessorDefinitionDto` union helpers nor the
+   two `ScheduledTransition*Dto` struct declarations.
+
+If any of (1)–(3) fails, the fallback is to drop the `oneOf` wrapper and
+direct-reference `ExternalizedProcessorDefinitionDto` from
+`TransitionDefinitionDto.processors[].items`; #260 reintroduces `oneOf`
+when adding the second subtype. Document the fallback choice in the PR
+description.
 
 ### 5.2 Generated DTOs (`api/generated.go`)
 
@@ -236,9 +275,10 @@ Regenerated from the updated `openapi.yaml`. The following entries
 
 The `ExternalizedProcessorDefinitionDto` entry and its union helpers
 (`AsExternalizedProcessorDefinitionDto` at ~line 4113 et seq.) stay. The
-`ProcessorDefinitionDto` struct gains generator-emitted constants — likely
-`ProcessorDefinitionDtoTypeExternalized` and
-`ProcessorDefinitionDtoTypeInternalized`. **These exist as a side effect
+`ProcessorDefinitionDto` struct gains a generator-emitted single-value
+type constant — likely `ProcessorDefinitionDtoTypeExternalized = "externalized"`.
+The previously-emitted `ProcessorDefinitionDtoTypeScheduled` constant
+disappears. **These regenerator-emitted constants exist as a side effect
 of the generator and are not the authoritative source of truth.** Engine
 code in `internal/domain/workflow` references its own constants (§5.5);
 `api/generated.go`'s constants are usable only inside `api/` and at the
@@ -265,11 +305,12 @@ type ProcessorDefinition struct {
     // Type is the execution-location axis. Recognised values are defined
     // by the cyoda-go engine package; canonical values are "externalized"
     // (dispatched via gRPC to a calculation node selected by
-    // Config.CalculationNodesTags) and "internalized" (runs in-process
-    // within cyoda-go; reserved, currently rejected by the engine at
+    // Config.CalculationNodesTags) and "internalized" (reserved for an
+    // in-process execution location, currently rejected at engine
     // dispatch as not yet implemented). Empty is treated as "externalized".
-    // Unknown values are tolerated and fall through to the ExecutionMode
-    // dispatch path. Import-time validation does not constrain this field.
+    // Any value other than "internalized" falls through to the
+    // ExecutionMode dispatch path; import-time validation does not
+    // constrain this field.
     Type          string          `json:"type"`
     Name          string          `json:"name"`
     ExecutionMode string          `json:"executionMode,omitempty"`
@@ -285,91 +326,92 @@ work in those carve-outs.
 
 ### 5.4 Engine dispatch (`internal/domain/workflow/engine_processors.go`)
 
-**Integration point.** The check goes **inside the per-processor loop** in
-`executeProcessors` at `engine_processors.go:59-116` — the loop spans those
-lines, the inner `switch proc.ExecutionMode` is at `:63-87`, and the
-per-processor failure handling is at `:89-115`. The Type-axis check sits
-between the loop entry (line 59) and the ExecutionMode switch (line 63),
-**wrapping the ExecutionMode switch** as a nested switch — not "before
-and then fall through", because the existing ExecutionMode branches all
-unconditionally assign `procErr`, which would overwrite an internalized
-rejection error if the check sat in series.
+**Integration point.** The check goes at **the top of the per-processor
+loop** in `executeProcessors`, between line 59 (loop entry) and line 60
+(local `success`/`procErr` declarations). It is an **early-return**, not
+a nested switch — the existing per-failure abort gate at line 109 keys
+on `proc.ExecutionMode != ExecutionModeAsyncNewTx`, so a non-returning
+rejection followed by fall-through would let `Type: internalized +
+ExecutionMode: ASYNC_NEW_TX` silently succeed.
 
 ```go
 for _, proc := range processors {
+    // Execution-location axis. Rejection is fatal and self-contained:
+    // emit the per-processor SMEventStateProcessResult audit row
+    // explicitly (mirroring the shape recorded by the post-dispatch
+    // emit at lines 104-106), perform the same segment-rollback that
+    // the line 109 abort gate would, then return. The caller's
+    // failure path in engine.go emits its own SMEventStateProcessResult
+    // with the wrapped error in Details (lines 466 / 553).
+    if proc.Type == ProcessorTypeInternalized {
+        auditData := map[string]any{
+            "success": false,
+            "mode":    proc.ExecutionMode,
+        }
+        e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
+            spi.SMEventStateProcessResult,
+            fmt.Sprintf("Processor %q completed", proc.Name), auditData)
+        e.rollbackOpenSegmentOnFailure(currentCtx, currentTxID, txID, proc.Name)
+        return currentCtx, currentTxID, fmt.Errorf(
+            "processor %s failed: execution type %q is not yet implemented",
+            proc.Name, proc.Type)
+    }
+
     var success bool
     var procErr error
 
-    // Execution-location axis. Rejection short-circuits the ExecutionMode
-    // dispatch entirely so procErr is not subsequently overwritten.
-    switch proc.Type {
-    case ProcessorTypeInternalized:
-        procErr = fmt.Errorf(
-            "execution type %q is not yet implemented", proc.Type)
-        success = false
-    default:
-        // "", ProcessorTypeExternalized, or any unknown value — dispatch
-        // via the existing ExecutionMode path. Import-time tightening of
-        // unknown values is deferred to the validator carve-out; the
-        // engine stays permissive to avoid double-rejection of payloads
-        // carrying legacy or future-reserved Type strings.
-        switch proc.ExecutionMode {
-        case ExecutionModeAsyncNewTx:
-            procErr = e.executeAsyncNewTx(currentCtx, entity, proc, workflow, transition, currentTxID)
-            success = procErr == nil
-            if procErr != nil {
-                slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
-                    "pkg", "workflow", "processor", proc.Name, "error", procErr)
-            }
-        case ExecutionModeCommitBeforeDispatch:
-            // ... (existing branch, lines 74-82, unchanged)
-        default: // SYNC, ASYNC_SAME_TX
-            procErr = e.executeSyncProcessor(currentCtx, entity, proc, workflow, transition, currentTxID)
-            success = procErr == nil
-        }
+    switch proc.ExecutionMode {
+        // ... unchanged: lines 63-87 of the existing executeProcessors body ...
     }
 
-    // auditData + recordEvent + per-failure abort: unchanged from current
-    // lines 89-115. The internalized-rejection path naturally produces
-    // success=false and proc.ExecutionMode-as-declared in the audit row;
-    // the outer error wrap at line 114 prefixes "processor %s failed: %w".
+    // ... unchanged: lines 89-115 (audit emit + abort gate) ...
 }
 ```
 
-**Error message shape.** The inner `fmt.Errorf` carries
-`execution type "internalized" is not yet implemented` — no leading
-`processor X:` prefix because the outer wrap at line 114
-(`fmt.Errorf("processor %s failed: %w", proc.Name, procErr)`) already
-names the processor. Final operator-visible message:
-`processor send_x failed: execution type "internalized" is not yet implemented`.
+**Failure surface.** The wrapped error chain is
+`fmt.Errorf("processor %s failed: execution type %q is not yet implemented", proc.Name, proc.Type)`.
+`classifyWorkflowError` (`internal/domain/entity/service.go:1449-1457`)
+matches no specific sentinel, falls through to the default branch, and
+returns `common.Operational(http.StatusBadRequest,
+common.ErrCodeWorkflowFailed, err.Error())`. The HTTP response is
+`400 WORKFLOW_FAILED`. The entity stays in the source state because the
+engine never reaches the post-`executeProcessors` state-mutation line.
 
-**Failure surface.** `classifyWorkflowError`
-(`internal/domain/entity/service.go` default branch) maps the outer
-wrapped error to `WORKFLOW_FAILED` (HTTP 400). The entity stays in the
-source state; the cascade aborts. Behaviour is indistinguishable from a
-SYNC processor that returned `success: false` — same response code, same
-state outcome.
+**Audit-event behaviour.** The full audit trail for a single internalized
+rejection (assuming `executeProcessors` is called once for the failing
+transition) is:
 
-**Audit-event behaviour.** Because the rejection runs inside the
-per-processor loop, the existing audit sequence is preserved without any
-new emit code:
+1. `SMEventProcessingPaused` at the start of `executeProcessors` (line 52-54
+   in the existing code; **only emitted if `len(processors) > 0`** because
+   of the early return at line 43-45). Recorded with the cascade-entry
+   txID for correlation. Details: `"Paused for processors: [<names>]"`.
+2. `SMEventStateProcessResult` from the early-return's explicit emit (the
+   new code above). `Data: {success: false, mode: <declared ExecutionMode>}`.
+   Details: `"Processor \"<name>\" completed"`. For an internalized
+   processor with `executionMode` unset on the import payload, `mode`
+   audits as `""`; for one with `executionMode: "SYNC"` declared, `mode`
+   audits as `"SYNC"`. The `mode` field is a pass-through of the author's
+   declaration — no synthesised sentinel value.
+3. `SMEventStateProcessResult` from the caller-level failure emit
+   (`engine.go:466` for manual transitions, `:553` for cascaded automatic
+   transitions). `Data: {success: false}` — no `mode` key. Details:
+   `"Processor failed for transition \"<transition>\": processor <name> failed: execution type \"internalized\" is not yet implemented"`.
+   This second emit IS the audit-trail's self-descriptive record of the
+   rejection cause: an audit consumer reading Details can see the
+   processor name and the rejection sub-string. This is the existing
+   two-event shape for every fatal processor failure (SYNC/CBD/timeout
+   etc.); the internalized rejection does not change it.
 
-- `SMEventProcessingPaused` fires once at `:52-54` before the loop —
-  correct, the processor pipeline is entered.
-- `SMEventStateProcessResult` fires once per processor at `:104-106` with
-  `auditData{success: false, mode: proc.ExecutionMode}`. For an
-  internalized processor that has no `executionMode` declared (the
-  natural shape — why declare a transactional execution mode on a
-  processor that won't dispatch externally?), the audit row records
-  `mode: ""`. The audit row does NOT self-describe the cause of
-  rejection; the operator-side log and the response body carry the
-  causal detail. This is the same audit-shape contract as every other
-  per-processor failure mode — no special-casing.
-- `SMEventStateMachineFinish` is not emitted — correct, the cascade
-  aborted.
+`SMEventStateMachineFinish` is not emitted — correct, the cascade aborted.
 
-The test plan (§6.1 test 4) asserts the sequence and the `mode: ""`
-payload explicitly.
+**Operator-side slog.** No `slog.Warn` is emitted at the rejection site.
+This is consistent with the existing engine pattern: fatal failure paths
+(SYNC/CBD failures, ASYNC_SAME_TX failures) write the audit event but
+do not duplicate it to slog. Only `ASYNC_NEW_TX` (non-fatal) calls
+`slog.Warn` at `engine_processors.go:70` because the failure is
+swallowed and would otherwise be invisible. The internalized rejection
+is fatal, surfaces as a `400 WORKFLOW_FAILED` response, and is recorded
+in two audit events; no slog is added.
 
 **No issue IDs in the error message.** The message names the type value
 and declares the absence of an implementation; it does not link to a
@@ -395,9 +437,10 @@ exported.
 // SPI's ProcessorDefinition.Type field is itself a plain string, so an
 // enum type would not buy compile-time safety.
 //
-// Empty value is treated as ProcessorTypeExternalized. Unknown values are
-// tolerated at engine dispatch (fall-through). The only rejection
-// performed by the engine is on the exact value ProcessorTypeInternalized.
+// Empty value is treated as ProcessorTypeExternalized. Any value other
+// than ProcessorTypeInternalized falls through to the ExecutionMode
+// dispatch path at engine fire time; the only Type rejection performed
+// by the engine is on the exact value ProcessorTypeInternalized.
 const (
     ProcessorTypeExternalized = "externalized"
     ProcessorTypeInternalized = "internalized"
@@ -406,9 +449,9 @@ const (
 
 This mirrors the precedent for `ExecutionMode*` (validate.go:13-21).
 Anywhere engine code or test code needs to name a Type value, it imports
-these constants. The regenerated `api/generated.go` constants
-(`ProcessorDefinitionDtoTypeExternalized` etc.) are an OpenAPI-tooling
-artefact and stay scoped to that package.
+these constants. The regenerated `api/generated.go` constants (e.g.
+`ProcessorDefinitionDtoTypeExternalized`) are an OpenAPI-tooling artefact
+and stay scoped to that package.
 
 ### 5.6 Help text (`cmd/cyoda/help/content/workflows.md`)
 
@@ -417,7 +460,7 @@ Three contiguous changes:
 **(a) Line 63 — stale `EXTERNAL` in an example JSON payload.** The example
 shows a processor with `"type": "EXTERNAL"` (uppercase). Update to
 `"type": "externalized"` (the OpenAPI value) or remove the `type` field
-entirely (it is optional and defaults to externalized).
+entirely (it is optional and defaults to externalized in the runtime).
 
 **(b) Line 130 — field listing.** Keep `type` in the field summary and
 add a one-line note: "execution-location axis; see below for valid
@@ -444,16 +487,22 @@ No other types are supported. Supplying any other value produces `errors.VALIDAT
   calculation node selected by `Config.calculationNodesTags`. This is the
   only execution location implemented today; all the `executionMode`
   semantics below apply to externalized processors.
-- `"internalized"` — reserved for in-process execution. The engine rejects
-  this value at dispatch with `WORKFLOW_FAILED` (400) and the message
-  `processor X failed: execution type "internalized" is not yet implemented`.
-  Authors may include the value in workflow definitions for forward-
-  compatibility, but any transition that fires it will fail until the
-  internalized runtime lands.
 
-Unknown values are currently tolerated at import and fall through to the
-default `executionMode` branch (behaving as `SYNC`/`ASYNC_SAME_TX`). This
-permissiveness will narrow in a future release; do not rely on it.
+The engine reserves the value `"internalized"` for an in-process
+execution location not yet implemented. Any transition that fires a
+processor with `type: "internalized"` is rejected at dispatch with
+`WORKFLOW_FAILED` (400) and the operator-visible error
+`processor X failed: execution type "internalized" is not yet implemented`.
+The reserved value is intentionally absent from the OpenAPI enum until
+the subtype lands; workflow authors who include it in import payloads
+will not be rejected at import, but their entities cannot transit past
+the affected step.
+
+Any value other than `"internalized"` (including the empty string, the
+canonical `"externalized"`, and unknown values such as legacy
+`"scheduled"` or `"EXTERNAL"`) falls through to the `executionMode`
+dispatch path. This permissiveness will narrow in a future release; do
+not rely on it.
 ```
 
 ### 5.7 Parity scenario (`e2e/externalapi/scenarios/08-workflow-import-export.yaml`)
@@ -490,7 +539,7 @@ Comment added above the test (YAML `#` comment):
 
 `json_equals_normalized` assertion is preserved unchanged.
 
-### 5.8 Other docs hygiene (Gate 4 sweep)
+### 5.8 Other docs hygiene + test-fixture sweep (Gate 4 + Gate 6 sweep)
 
 - **`README.md`** — grep confirmed no `EXTERNAL` or scheduled-processor
   references. No change required, but re-run the grep as a verification
@@ -500,15 +549,22 @@ Comment added above the test (YAML `#` comment):
   `EntityProcessorCalculationRequest` when a workflow transition invokes
   an `EXTERNAL` processor whose `calculationNodesTags` matches...". Update
   to `externalized` (matching the OpenAPI enum and §5.6 help text).
-- **`docs/PROCESSOR_EXECUTION_MODES.md`** — this user-facing doc currently
-  scopes to `executionMode` only and does not mention the `type` axis.
-  That's the right scope for the runtime-semantics doc, but a one-paragraph
-  preface in §1 ("Quick Reference") anchoring the two-axis distinction
-  (execution-**location** = `type`; execution-**mode** = `executionMode`)
-  is added by this PR. A new `## 0. Axis Summary` (or appendix) section is
-  acceptable. The goal: a reader of this doc should know that `type`
-  exists and is a different axis, even if its detail lives in the
-  workflows help-topic.
+- **`docs/PROCESSOR_EXECUTION_MODES.md`** — **new file in #250's PR.** A
+  draft was prepared during the v0.8.0 audit (currently untracked in the
+  parent worktree). The first implementation commit copies the file
+  verbatim into the worktree; a follow-up commit adds the §0 axis-summary:
+
+  > **§0. Axis Summary.** Workflow processors have two orthogonal
+  > configuration axes. `type` (this document refers to it as
+  > "execution-location") determines where the processor runs — currently
+  > only `externalized` (gRPC dispatch to a calculation node) is
+  > implemented; `internalized` is reserved for in-process execution.
+  > `executionMode` (the focus of this document) determines the
+  > transactional semantics of dispatch — `SYNC`, `ASYNC_SAME_TX`,
+  > `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`. All `executionMode`
+  > semantics described below apply to `externalized` processors; the
+  > `internalized` axis has no documented dispatch semantics yet.
+
 - **`CLAUDE.md`** — grep confirmed no scheduled-processor or stale
   `EXTERNAL` references. No change required; re-run the grep.
 - **`cmd/cyoda/help/content/workflows.md`** — covered in §5.6.
@@ -522,11 +578,29 @@ Comment added above the test (YAML `#` comment):
   merges, the audit's tracking remains accurate. No change.
 - **`docs/cyoda/openapi.yml`, `docs/cyoda/api/openapi-workflow.yml`,
   `docs/cyoda/api/openapi-common.yml`** — **explicitly out of scope.**
-  These are vendored upstream OpenAPI snapshots of the Cloud contract.
-  They are maintained upstream and synchronised through a separate
-  workflow, not authored by this repository. They will pick up the
-  cleanup when Cloud lands the equivalent change; this PR does not
-  modify them.
+  Vendored upstream Cloud snapshots, synchronised through a separate
+  workflow.
+- **Test-fixture sweep (`internal/domain/workflow/*_test.go`)** — Gate 6
+  cleanup. Existing tests carry stale `Type: "EXTERNAL"` (uppercase) and
+  `Type: "INTERNAL"` and one `Type: "external"` (lowercase non-canonical
+  but functionally a fall-through value). Replace each occurrence with
+  one of:
+  - `workflow.ProcessorTypeExternalized` (for fixtures that are
+    conceptually externalized — the majority).
+  - drop the assignment entirely (for fixtures where the value is
+    irrelevant to the test's assertion and the test relies only on
+    `Name` / `ExecutionMode`).
+  - `workflow.ProcessorTypeInternalized` (for new tests added by §6.1).
+
+  Concrete grep command for the implementer:
+  ```bash
+  grep -rn 'Type:.*"\(EXTERNAL\|INTERNAL\|external\|scheduled\)"' \
+       --include="*_test.go" internal/domain/workflow/
+  ```
+  Each match is normalised in the same PR. The `Type: "INTERNAL"`
+  fixtures are particularly important: post-#250 they are one keystroke
+  away from triggering the rejection path. Leaving them as test
+  fixtures is a Gate 6 violation — fix now.
 
 ## 6. Test plan (TDD)
 
@@ -537,64 +611,102 @@ authored before implementation, run to confirm RED, then driven GREEN.
 The unit-test target is `internal/domain/workflow/engine_processors_test.go`
 or a sibling test file in the same package.
 
-1. **Engine dispatch — `Type: internalized` is rejected at fire time.**
-   Build a workflow whose transition has a single processor with
-   `Type: workflow.ProcessorTypeInternalized` (and `ExecutionMode`
-   declared explicitly as some recognisable value, e.g. `"SYNC"`, plus a
-   sibling test with `ExecutionMode` unset). Fire the transition. Assert:
-   the returned error contains `execution type "internalized" is not yet
-   implemented`; the outer wrap prefixes `processor <name> failed:`; the
-   entity remains in the source state. RED → implement §5.4 → GREEN.
+1. **Engine dispatch — `Type: internalized` is rejected at fire time
+   regardless of `ExecutionMode`.** **Four matrix cases** (this is the
+   F1 defect coverage that revisions 1-3 missed):
+   - `Type: internalized + ExecutionMode: <unset>` → reject.
+   - `Type: internalized + ExecutionMode: "SYNC"` → reject.
+   - `Type: internalized + ExecutionMode: "ASYNC_NEW_TX"` → reject.
+     **This is the critical case** — revision 3's nested-switch design
+     would have let this silently succeed because the line 109 abort
+     gate keys on `proc.ExecutionMode`. The early-return shape (§5.4)
+     does not depend on the gate.
+   - `Type: internalized + ExecutionMode: "COMMIT_BEFORE_DISPATCH"` → reject.
+
+   All four assert: returned error contains `execution type
+   "internalized" is not yet implemented`; outer wrap prefixes
+   `processor <name> failed:`; the entity remains in the source state;
+   no segment is left open (verify via `txMgr.Rollback` was called or
+   no orphan TX visible to a subsequent `Get`).
 
 2. **Engine dispatch — `Type: ""` and `Type: "externalized"` behave
    identically to today.** Two test cases, same workflow shape, asserting
    identical gRPC dispatch paths. Anchors regression detection for the
-   new Type-axis switch.
+   new Type-axis check.
 
    **2b. Empty `processors[]` is a no-op regardless of any per-processor
    Type.** A transition with no processors at all imports, fires, and
    reaches the target state without entering the per-processor loop
    (early return at `engine_processors.go:43-45`). No
    `SMEventProcessingPaused` is emitted. Pins that the new Type-axis
-   switch does not regress the empty-pipeline path.
+   check does not regress the empty-pipeline path.
 
-3. **Engine dispatch — unknown `Type` values fall through.** Three test
-   cases: `Type: "scheduled"` (legacy value removed from OpenAPI in this
-   PR), `Type: "EXTERNALIZED"` (case-mismatched), `Type: " externalized "`
-   (whitespace-padded). All three must dispatch via the ExecutionMode
-   path and behave indistinguishably from `Type: "externalized"`. The
-   case-sensitivity is exact — no normalisation, no trimming.
+3. **Engine dispatch — unknown `Type` values fall through.** Cases:
+   - `Type: "scheduled"` (legacy value removed from OpenAPI in this PR).
+   - `Type: "EXTERNALIZED"` (case-mismatched uppercase).
+   - `Type: " externalized "` (whitespace-padded).
+   - `Type: "internalized\nfoo"` (newline injection — exact-match
+     boundary).
+   - `Type: "future_unknown_value"`.
 
-4. **Audit-event coherence for the internalized rejection.** Same
-   workflow as test 1, but assert the audit-event sequence emitted by
-   the engine:
-   - `SMEventProcessingPaused` fires exactly once before the loop.
-   - `SMEventStateProcessResult` fires exactly once for the internalized
-     processor with `auditData{success: false, mode: ""}` (when
-     ExecutionMode is unset on the processor) or `mode: "SYNC"` (when
-     ExecutionMode is declared as `"SYNC"`). The `mode` value is the
-     literal pass-through of the author's declared ExecutionMode, NOT a
-     synthesised sentinel.
-   - `SMEventStateMachineFinish` does NOT fire.
+   All five must dispatch via the ExecutionMode path and behave
+   indistinguishably from `Type: "externalized"`. The case-sensitivity
+   is exact — no normalisation, no trimming, no embedded-control-char
+   handling beyond Go's natural `==` semantics.
 
-   This anchors the §5.4 audit-coherence claim and catches future code
-   changes that move the Type-axis check out of the loop.
+4. **Audit-event sequence for the internalized rejection.** Two
+   sub-cases anchoring the §5.4 audit contract:
 
-5. **Cascade-position behaviour — internalized abort is fatal in a SYNC
-   pipeline.** A workflow with `processors[A_SYNC_succeeds,
-   B_internalized, C_SYNC_would_succeed]`. **Test fixture explicitly
-   declares A's ExecutionMode as SYNC** (not ASYNC_NEW_TX or
-   COMMIT_BEFORE_DISPATCH — those have different transactional
-   semantics; see `docs/PROCESSOR_EXECUTION_MODES.md` §3, §4). Assert: A
-   runs and its returned mutations are applied to the cascade's open
-   transaction; B's rejection surfaces; C is never dispatched; the
-   transition fails with `WORKFLOW_FAILED` 400; the entity stays in the
-   source state because the caller's handler rolls back the open
-   transaction. Pins internalized-rejection-after-SYNC behaviour
-   specifically. Variant tests for `A_ASYNC_NEW_TX` and
-   `A_COMMIT_BEFORE_DISPATCH` are out of scope for #250 (those
-   transactional shapes have their own well-tested abort semantics
-   independent of the Type-axis check).
+   4a. **Manual transition firing.** Same workflow as test 1, fired via
+   an explicit `POST /entity/X/transition/Y` (or the test's manual-fire
+   helper). Assert the emitted sequence:
+   - 1× `SMEventProcessingPaused` (from `executeProcessors:52-54`),
+     with cascade-entry txID, Details `"Paused for processors: [<names>]"`.
+   - 1× `SMEventStateProcessResult` from the early-return's explicit
+     emit, with `Data: {success: false, mode: <declared ExecutionMode>}`
+     (so `mode: ""` for the unset-ExecutionMode case, `mode: "SYNC"`
+     for the SYNC case, etc.), Details `"Processor \"<name>\" completed"`.
+   - 1× `SMEventStateProcessResult` from the caller's failure emit at
+     `engine.go:466`, with `Data: {success: false}` (no `mode` key),
+     Details containing `"Processor failed for transition \"<transition>\": processor <name> failed: execution type \"internalized\" is not yet implemented"`.
+   - 0× `SMEventStateMachineFinish`.
+
+   4b. **Cascaded automatic transition firing.** A workflow where the
+   internalized processor lives on a Manual=false transition reached via
+   cascade. Same audit sequence; second `SMEventStateProcessResult`
+   comes from `engine.go:553` (cascade path) instead of `:466` (manual
+   path). Assert the per-emit shape is identical.
+
+5. **Cascade-position behaviour — `A: SYNC` succeeds, `B: internalized`
+   aborts, `C` is never dispatched.** Workflow with three processors in
+   order: `A_SYNC` (succeeds, returns a mutation to `entity.Data`),
+   `B_internalized`, `C_SYNC` (would succeed if dispatched). The test
+   distinguishes three observable layers — pick whichever the existing
+   harness supports:
+
+   - **In-memory `entity.Data`:** A's returned mutations are written
+     to `entity.Data` by `executeSyncProcessor` at
+     `engine_processors.go:148`. After B's rejection,
+     `executeProcessors` returns the wrapped error and the engine never
+     calls `executeProcessors`'s remaining iterations — C is never
+     dispatched. So the in-memory entity carries A's mutations.
+   - **In-memory `entity.Meta.State`:** unchanged from source. The
+     engine never reaches the post-`executeProcessors` line that sets
+     `entity.Meta.State = transition.Next`.
+   - **Durable persistence:** depends on the caller's transaction
+     control. The engine does not itself `Save` during SYNC dispatch;
+     the caller's handler rolls back the open TX on the wrapped error.
+     The durable row reflects the pre-transition state.
+
+   The test asserts: returned error contains the rejection sub-string;
+   `entity.Meta.State` is the source state; C was not invoked (verify
+   via a test-double processor counter that A's count is 1, C's is 0);
+   the caller-side `Save` either didn't fire or rolled back (test
+   asserts a fresh `Get` returns the pre-transition entity row).
+
+   Variant tests for `A: ASYNC_NEW_TX` and `A: COMMIT_BEFORE_DISPATCH`
+   are out of scope for #250 — those transactional shapes have their
+   own well-tested abort semantics independent of the Type-axis check.
 
 6. **Round-trip of unknown `Type` values on the wire.** Import a
    workflow with `Type: "scheduled"` (or `"future_unknown_value"`),
@@ -613,14 +725,28 @@ or a sibling test file in the same package.
      StartNewTxOnDispatch: true`. Imports successfully; engine rejects at
      fire time with the internalized "not yet implemented" error.
 
-8. **E2E — POST /workflow/import accepts `Type: internalized` payload;
-   subsequent entity creation that fires the internalized processor
-   returns 400 `WORKFLOW_FAILED`.** Integration test in `internal/e2e/`
-   using the in-process HTTP server. The OpenAPI request validator is
-   not applied at handler level — `handler.go:43` unmarshals raw JSON
-   into `spi.WorkflowDefinition` and is the only validation surface
-   beyond `validateWorkflows`'s static checks. No conditional language
-   in the test description.
+8. **E2E — manual-transition-fired internalized processor returns 400
+   `WORKFLOW_FAILED`.** Integration test in `internal/e2e/` using the
+   in-process HTTP server. Test sequence (model on existing
+   `internal/e2e/` workflow tests):
+   1. Create an entity model.
+   2. `POST /model/X/1/workflow/import` with a workflow whose initial
+      state has a Manual=true transition with a single processor
+      `{type: "internalized", name: "calc", executionMode: "SYNC"}`.
+      Assert HTTP 200 (import passes — no Type-axis validation at
+      import).
+   3. `POST /entity/X` to create an instance — initial state, no
+      cascade fires.
+   4. `POST /entity/X/<id>/transition/<name>` to fire the manual
+      transition. Assert HTTP 400 with error code
+      `WORKFLOW_FAILED` and the response body's message contains
+      `execution type "internalized" is not yet implemented`.
+   5. `GET /entity/X/<id>` returns the entity in the initial state
+      (source state preserved).
+
+   The OpenAPI request validator is not applied at handler level —
+   `handler.go:43` unmarshals raw JSON into `spi.WorkflowDefinition` —
+   so the import step succeeds regardless of the OpenAPI enum change.
 
 9. **E2E — round-trip of a workflow with `Type: externalized` succeeds.**
    Verifies that the new oneOf in `processors[]` parses correctly on
@@ -646,29 +772,37 @@ or a sibling test file in the same package.
 |---|---|---|
 | `processors[]` with `Type` omitted | Accepted, dispatched as externalized | Same |
 | `processors[]` with `Type: "externalized"` | Accepted, dispatched as externalized | Same |
-| `processors[]` with `Type: "internalized"` | Accepted, dispatched as externalized (default branch) | **Accepted at import, rejected at engine dispatch with `WORKFLOW_FAILED` 400** |
-| `processors[]` with `Type: "scheduled"` + scheduled config fields (raw JSON path) | Accepted at handler.go:43 (DTOs bypassed); scheduled config fields silently dropped by SPI unmarshal; dispatched as externalized at runtime | **Same wire behaviour.** Carried-over technical debt, not a feature — audit §H1 grades the silent-drop as HIGH. #255 may tighten; #250 deliberately preserves the runtime tolerance to avoid breaking parity payloads. Same path applies to third-party tools pinned to v0.7.x OpenAPI emitting `type: "scheduled"` payloads. |
-| `processors[]` with `Type: "scheduled"` (clients using generated OpenAPI DTOs) | Validated by the generated client against ScheduledTransitionProcessorDefinitionDto; serialised, sent, accepted | **Fails client-side serialisation.** ScheduledTransitionProcessorDefinitionDto no longer exists in api/generated.go. Client-side union helpers `AsScheduledTransitionProcessorDefinitionDto` / `FromScheduledTransitionProcessorDefinitionDto` / `MergeScheduledTransitionProcessorDefinitionDto` also disappear. Clients regenerating from the v0.8.0 OpenAPI cannot construct the shape. Acceptable because #259 ships in the same release with the replacement shape — clients regenerate once at v0.8.0 and pick up both changes. |
-| `processors[]` with unknown `Type` (any case, whitespace) | Accepted, dispatched as externalized | Same. Type is exact-match; no normalisation. |
+| `processors[]` with `Type: "internalized"` | Accepted, dispatched as externalized (default branch) | **Accepted at import, rejected at engine dispatch with `WORKFLOW_FAILED` 400 regardless of declared `ExecutionMode`.** Rejection covers `ExecutionMode` unset, SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH. |
+| `processors[]` with `Type: "scheduled"` + scheduled config fields (raw JSON path) | Accepted at handler.go:43 (DTOs bypassed); scheduled config fields silently dropped by SPI unmarshal; dispatched as externalized at runtime | **Same wire behaviour.** Carried-over technical debt, not a feature — audit §H1 grades the silent-drop as HIGH. #255 may tighten; #250 deliberately preserves the runtime tolerance to avoid breaking parity payloads. Same path applies to third-party tools pinned to v0.7.x OpenAPI emitting `type: "scheduled"` payloads, and to v0.7.x-stored workflows read by the engine on v0.8.0 startup (no upgrade migration required — the on-disk JSON survives untouched). |
+| `processors[]` with `Type: "scheduled"` (clients using generated OpenAPI DTOs from v0.7.x) | Validated by the generated client against ScheduledTransitionProcessorDefinitionDto; serialised, sent, accepted | **Fails client-side serialisation.** ScheduledTransitionProcessorDefinitionDto no longer exists in api/generated.go. Client-side union helpers `AsScheduledTransitionProcessorDefinitionDto` / `FromScheduledTransitionProcessorDefinitionDto` / `MergeScheduledTransitionProcessorDefinitionDto` also disappear. Clients regenerating from the v0.8.0 OpenAPI cannot construct the shape. Acceptable because #259 ships in the same release with the replacement shape — clients regenerate once at v0.8.0 and pick up both changes. |
+| `processors[]` with unknown `Type` (any case, whitespace, control chars) | Accepted, dispatched as externalized | Same. Type is exact-match against `"internalized"` only; no normalisation. |
 
 The wire surface is **strictly tighter** in exactly one place
 (`Type: internalized` now fails at runtime where previously it
 default-dispatched). Everywhere else the wire is identical. The DTO
 surface, however, is strictly tighter for two values (`scheduled` removed
-entirely, `internalized` added as a reserved value) — DTO-using clients
-regenerate at v0.8.0 and pick up the new shape together with #259's
-replacement.
+entirely; `internalized` not yet added to OpenAPI in #250) — DTO-using
+clients regenerate at v0.8.0 and pick up the new shape together with
+#259's replacement and (later) #260's `internalized` subtype.
+
+**v0.7.x → v0.8.0 upgrade.** No migration is required. Workflows
+persisted under v0.7.x with any `Type` value (`""`, `"externalized"`,
+`"scheduled"`, anything else) continue to operate identically on
+v0.8.0. The only behaviour change for upgrade traffic is for workflows
+that happen to carry `Type: "internalized"` — those weren't producible
+in v0.7.x via DTO clients and would have come from a raw-JSON client
+authoring against the future-reserved value; on v0.8.0 they fail at
+fire time with the rejection error.
 
 ## 8. Risks
 
 - **OpenAPI generator behaviour around discriminator + oneOf with a single
   member.** Some `oapi-codegen` versions emit broken or unused union
   helpers when the `oneOf` has one member. Mitigation: the §5.1 explicit
-  `discriminator.mapping` block, plus a verification spike on the
-  regenerated `api/generated.go` before committing the generation.
-  Fallback: drop the `oneOf` wrapper and direct-reference
-  `ExternalizedProcessorDefinitionDto`; #260 reintroduces `oneOf` when it
-  needs to.
+  `discriminator.mapping` block, plus the verification-spike acceptance
+  criteria. Fallback: drop the `oneOf` wrapper and direct-reference
+  `ExternalizedProcessorDefinitionDto`; #260 reintroduces `oneOf` when
+  it needs to.
 - **Generator-emitted child `Type` field.** `oapi-codegen` materialises
   the inherited `Type` field on `ExternalizedProcessorDefinitionDto` as a
   sibling on the child struct (current behaviour at `api/generated.go:2089`).
@@ -681,17 +815,20 @@ replacement.
 - **#260's `InternalizedProcessorDefinitionDto` shape may differ from
   `ExternalizedProcessorDefinitionDto`.** When #260 lands, the
   `processors[]` `oneOf` grows a second `$ref`. The single-entry `oneOf`
-  is forward-compatible. The `discriminator.mapping` block gains a second
-  entry.
+  is forward-compatible. The enum, mapping, and a new subtype schema all
+  land together to preserve OpenAPI document validity.
 - **SPI tag coupling.** Since §5.3 is comment-only, #250 does not force a
   SPI tag at all. v0.8.0's bundled SPI tag (carrying #259's and #260's
   substantive shape work) picks up the docstring change as part of the
-  bundle. No sequencing contradiction.
+  bundle.
 - **Cyoda Cloud parity.** Cloud will need to regenerate its OpenAPI
   client and pick up the v0.8.0 changes (the new scheduled-transition
   shape from #259 + the Type-axis from #250 + the internalized reservation
   from #260). All three carve-outs ship in v0.8.0 so Cloud regenerates
-  once.
+  once. v0.7.x payloads emitted by an out-of-sync Cloud continue to be
+  accepted (silent-drop of legacy scheduled config, runtime treats as
+  externalized) — the engine's forward-compat is wider than the OpenAPI
+  surface.
 - **`api/generated.go` constants vs `internal/domain/workflow` constants.**
   Two source-of-truth sets exist post-regeneration. The §5.2 declaration
   resolves this — engine code uses the workflow-package constants;
@@ -708,6 +845,8 @@ replacement.
 - Internalized processor runtime (registration, in-process isolation,
   not-registered rejection mirroring `NO_COMPUTE_MEMBER_FOR_TAG`) — #260,
   #252.
+- Internalized processor OpenAPI subtype, enum extension, mapping
+  extension — #260.
 - Import-time validator tightening — #255.
 - `ProcessorConfig.Context` / `RetryPolicy` wiring — #253, #254, #262.
 - `WorkflowStore.CompareAndSave` SPI addition — #35 (gates on
@@ -720,16 +859,17 @@ replacement.
 
 | File | Change |
 |---|---|
-| `api/openapi.yaml` | Rewrite `ProcessorDefinitionDto.type` enum + add explicit `discriminator.mapping` block; remove `ScheduledTransitionProcessorDefinitionDto`, `ScheduledTransitionConfigDto`; collapse `processors[]` oneOf to single-member. |
+| `api/openapi.yaml` | Rewrite `ProcessorDefinitionDto.type` enum to `[externalized]` + explicit `discriminator.mapping` with `externalized` only; remove `ScheduledTransitionProcessorDefinitionDto`, `ScheduledTransitionConfigDto`; collapse `processors[]` oneOf to single-member. |
 | `api/generated.go` | Regenerated from the above. |
 | `cyoda-go-spi/types.go` (sibling repo) | Docstring on `ProcessorDefinition.Type` only. Comment-only change; no SPI tag forced. |
 | `internal/domain/workflow/validate.go` (or sibling) | Add `ProcessorTypeExternalized` and `ProcessorTypeInternalized` untyped string constants alongside the existing `ExecutionMode*` block. |
-| `internal/domain/workflow/engine_processors.go` | Add a nested `switch proc.Type { case Internalized: ...; default: <existing ExecutionMode switch> }` at lines 59-87 of the per-processor loop. The internalized branch sets `procErr = fmt.Errorf("execution type %q is not yet implemented", proc.Type)`; the default branch contains the existing ExecutionMode dispatch unchanged. Outer wrap at line 114 (`processor %s failed: %w`) names the processor; inner error does not duplicate the prefix. |
-| `internal/domain/workflow/engine_processors_test.go` (or sibling) | TDD tests per §6.1 items 1–7. |
-| `internal/e2e/` | E2E tests per §6.1 items 8–9. |
+| `internal/domain/workflow/engine_processors.go` | Add early-return Type-axis check at the top of the per-processor loop (between lines 59 and 60). The internalized branch emits the per-processor `SMEventStateProcessResult` audit event explicitly (mirroring lines 104-106), calls `rollbackOpenSegmentOnFailure`, and returns `fmt.Errorf("processor %s failed: execution type %q is not yet implemented", proc.Name, proc.Type)`. The existing ExecutionMode switch + audit emit + abort gate (lines 63-115) are unchanged. |
+| `internal/domain/workflow/engine_processors_test.go` (or sibling) | TDD tests per §6.1 items 1–7. Test 1 expanded to a four-case ExecutionMode matrix to catch the F1 silent-success defect. |
+| `internal/domain/workflow/*_test.go` (broad sweep) | Normalise stale `Type: "EXTERNAL"`/`"INTERNAL"`/`"external"` fixture strings to `workflow.ProcessorTypeExternalized` or drop where irrelevant. Concrete grep in §5.8. |
+| `internal/e2e/` | E2E tests per §6.1 items 8–9. Item 8 includes a five-step manual-transition fixture (import, create entity, fire manual transition, assert 400, re-GET to verify source-state preservation). |
 | `cmd/cyoda/help/content/workflows.md` | Lines 63, 130, 135–139 rewritten per §5.6. |
 | `cmd/cyoda/help/content/grpc.md` | Line 219 — replace `EXTERNAL` with `externalized`. |
-| `docs/PROCESSOR_EXECUTION_MODES.md` | One-paragraph axis-summary preface (or new §0) anchoring `type` vs `executionMode` distinction. |
+| `docs/PROCESSOR_EXECUTION_MODES.md` | **New file.** Copy drafted v0.8.0 content from parent worktree's working copy verbatim; add §0 axis-summary per §5.8. |
 | `e2e/externalapi/scenarios/08-workflow-import-export.yaml` | Strip scheduled entry from `wf-import/03`; retitle test; add comment. (Only scenario with a `"type":"scheduled"` payload — sweep confirmed.) |
 | `README.md` | Grep — no current matches; re-verify as a hygiene step. |
 | `CLAUDE.md` | Grep — no current matches; re-verify as a hygiene step. |
