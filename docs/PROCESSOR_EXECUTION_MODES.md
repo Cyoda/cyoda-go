@@ -469,7 +469,7 @@ currently a labelling-only variant.
 | Segment flush + commit | `engine_processors.go:314` |
 | `If-Match` plumbing | `internal/domain/workflow/ifmatch.go` |
 | `TRANSITION_ABORTED` audit | `internal/domain/workflow/transition_aborted.go` |
-| gRPC processor dispatch | `internal/domain/workflow/grpc/dispatch.go:42` |
+| gRPC processor dispatch | `internal/grpc/dispatch.go:43` |
 | Memory plugin txmanager | `plugins/memory/txmanager.go` |
 | SQLite plugin txmanager | `plugins/sqlite/txmanager.go` |
 | PostgreSQL plugin txmanager | `plugins/postgres/transaction_manager.go` |
