@@ -11,7 +11,7 @@
 # busybox pinned to a specific version for release-pipeline
 # reproducibility. Bump intentionally; the stage is discarded post-build
 # so image size is irrelevant.
-FROM busybox:1.37 AS stage
+FROM busybox:1.38 AS stage
 RUN mkdir -p /data && chown 65532:65532 /data
 
 # distroless/static pinned by digest for supply-chain integrity. The digest
