@@ -155,7 +155,7 @@ simpler and matches the documented intent.
 
 ## 4. `COMMIT_BEFORE_DISPATCH`
 
-`COMMIT_BEFORE_DISPATCH` (introduced in issue #27) is the only mode that
+`COMMIT_BEFORE_DISPATCH` is the only mode that
 **splits a cascade across two transactions** around a processor dispatch. It
 is the recommended mode for slow external work — minutes-long callouts,
 external batch jobs, third-party APIs — because it releases the database
