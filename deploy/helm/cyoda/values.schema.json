@@ -170,7 +170,18 @@
       }
     },
     "networkPolicy": {"type": "object"},
-    "migrate": {"type": "object"},
+    "migrate": {
+      "type": "object",
+      "properties": {
+        "postgres": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {"type": "string"},
+            "existingSecretKey": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
     "podDisruptionBudget": {"type": "object"},
     "serviceAccount": {"type": "object"},
     "podAnnotations": {"type": "object"},

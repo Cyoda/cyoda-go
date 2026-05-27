@@ -73,7 +73,8 @@ When cyoda-go-cassandra bumps to `cyoda-go v0.7.0`, the four new parity scenario
 
 | Chart `version:` | Chart `appVersion:` | Default binary | Notes |
 |---|---|---|---|
-| `0.6.3` | `0.7.0` | `cyoda-go v0.7.0` | **Current.** Chart manifests unchanged since `cyoda-0.6.3`; `appVersion` advances independently per [PR #232](https://github.com/Cyoda-platform/cyoda-go/pull/232). |
+| `0.7.0` | `0.7.1` | `cyoda-go v0.7.1` | **Current.** Adds optional `migrate.postgres` DSN — a separate migration-Job (owner/DDL) role for the two-role DB model; backward-compatible (falls back to `postgres.existingSecret`). First chart-manifest change since `0.6.3`. |
+| `0.6.3` | `0.7.0` | `cyoda-go v0.7.0` | Chart manifests unchanged since `cyoda-0.6.3`; `appVersion` advances independently per [PR #232](https://github.com/Cyoda-platform/cyoda-go/pull/232). |
 | `0.6.3` | `0.6.3` | `cyoda-go v0.6.3` | Tagged as `cyoda-0.6.3` chart release (April 2026). |
 
 The chart's `version:` bumps only when **rendered manifests** change (templates, values, schema). The chart's `appVersion:` advances each binary release worth advertising via the chart. The two are decoupled by Helm convention.

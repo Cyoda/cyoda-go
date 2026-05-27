@@ -65,6 +65,27 @@ helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
 The chart auto-generates the secret (or use
 `bootstrap.clientSecret.existingSecret` for GitOps).
 
+### Separate migration DSN (optional, two-role DB model)
+
+By default the migration Job and the runtime pods share one DSN
+(`postgres.existingSecret`). For least-privilege deployments you can run the
+migration Job (which performs DDL) as a dedicated **owner** role while the
+runtime StatefulSet connects as a non-owner **runtime** role. Set
+`migrate.postgres.existingSecret` (and optionally `existingSecretKey`, default
+`dsn`) to a Secret holding the owner DSN:
+
+```bash
+kubectl -n cyoda create secret generic cyoda-dsn-migrate \
+  --from-literal=dsn='postgres://cyoda_owner:REDACTED@pg.example.com:5432/cyoda?sslmode=require'
+
+helm upgrade cyoda cyoda/cyoda -n cyoda \
+  --set migrate.postgres.existingSecret=cyoda-dsn-migrate
+  # ... your other --set flags
+```
+
+When `migrate.postgres.existingSecret` is unset, the migration Job falls back
+to `postgres.existingSecret`, so existing single-DSN installs are unchanged.
+
 ### NetworkPolicy (default ON)
 
 The chart ships with `networkPolicy.enabled=true`. This restricts port
