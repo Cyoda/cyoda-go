@@ -282,9 +282,12 @@ paths:
 	if err != nil {
 		t.Fatalf("load fixture: %v", err)
 	}
-	if err := doc.Validate(loader.Context); err != nil {
-		t.Fatalf("validate fixture: %v", err)
-	}
+	// Deliberately skip doc.Validate here: this fixture contains overlapping
+	// path templates (/entity/{format} vs /entity/{entityId}) — the exact
+	// scenario the fallback matcher exists for. kin-openapi 0.139+ rejects such
+	// overlaps in doc.Validate ("conflicting paths"), but production loads the
+	// real spec via api.GetSwagger (LoadFromData only, no Validate) and
+	// gorillamux.NewRouter accepts it, so the fixture mirrors that path.
 	v, err := NewValidator(doc)
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
