@@ -28,7 +28,9 @@ resources:
     cpu: 1000m
     memory: 512Mi
 
-# -- Postgres DSN via operator-managed Secret. REQUIRED.
+# -- Postgres DSN for the RUNTIME pods (StatefulSet) via operator-managed
+# Secret. REQUIRED. In the two-role model this is the non-owner runtime role;
+# the migration Job uses migrate.postgres (falling back to this when unset).
 # The Secret must have a key (default "dsn") whose value is the full
 # connection string: postgres://user:pass@host:5432/db?sslmode=require
 postgres:
@@ -160,6 +162,12 @@ autoscaling:
   behavior: {}
 
 migrate:
+  # -- Optional SEPARATE DSN for the migration Job (the owner/DDL role in the
+  # two-role model). Leave existingSecret empty to fall back to
+  # postgres.existingSecret (single-DSN, backward-compatible default).
+  postgres:
+    existingSecret: ""
+    existingSecretKey: dsn
   activeDeadlineSeconds: 600
   backoffLimit: 2
   resources:
