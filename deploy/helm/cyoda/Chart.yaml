@@ -6,7 +6,7 @@ description: |
   Postgres, fronted by Gateway API (default) or a still-maintained Ingress
   controller (transitional).
 type: application
-version: 0.6.3
+version: 0.7.0
 appVersion: "0.7.1" # bump-chart-appversion.yml syncs this to the binary
 kubeVersion: ">=1.31.0"
 keywords:
@@ -21,4 +21,4 @@ maintainers:
     url: https://github.com/cyoda-platform
 annotations:
   artifacthub.io/changes: |
-    - Chart and appVersion synced to the v0.6.x binary series
+    - Optional separate migration DSN (migrate.postgres) for the two-role DB model

@@ -60,7 +60,7 @@ spec:
             defaultMode: 0400
             sources:
               - secret:
-                  name: {{ .Values.postgres.existingSecret }}
+                  name: {{ include "cyoda.migrateSecretName" . }}
                   items:
-                    - key: {{ .Values.postgres.existingSecretKey }}
+                    - key: {{ include "cyoda.migrateSecretKey" . }}
                       path: postgres-dsn
