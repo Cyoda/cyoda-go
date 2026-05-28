@@ -36,7 +36,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - Entities as finite state machines with automated and manual transitions
 - Multiple workflows per model with criteria-based selection
 - Transition criteria (JSONPath predicates, lifecycle conditions, group logic, external functions)
-- Processor execution on transitions (SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX)
+- Processor execution on transitions (SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH) — see [`docs/PROCESSOR_EXECUTION_MODES.md`](PROCESSOR_EXECUTION_MODES.md)
 - Cascade loop — automated transitions fire until stable state
 - Loopback — re-evaluate automation from current state on data update
 - Workflow import/export (MERGE, REPLACE, ACTIVATE modes)
