@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, main, 'release/**']
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, 'release/**']
   workflow_dispatch:
 
 # Default to read-only token for all jobs. Individual jobs may opt-in to
