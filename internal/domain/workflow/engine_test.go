@@ -404,7 +404,7 @@ func TestProcessorStubSuccess(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "external", Name: "myProcessor"},
+						{Type: ProcessorTypeExternalized, Name: "myProcessor"},
 					}},
 			}},
 			"DONE": {Transitions: []spi.TransitionDefinition{}},
@@ -737,7 +737,7 @@ func TestProcessorAsyncNewTxIndependent(t *testing.T) {
 					{
 						Name: "auto-process", Next: "PROCESSED", Manual: false,
 						Processors: []spi.ProcessorDefinition{
-							{Type: "EXTERNAL", Name: "ext-proc", ExecutionMode: "ASYNC_NEW_TX"},
+							{Type: ProcessorTypeExternalized, Name: "ext-proc", ExecutionMode: "ASYNC_NEW_TX"},
 						},
 					},
 				},
@@ -780,7 +780,7 @@ func TestProcessorSyncInCallerTx(t *testing.T) {
 					{
 						Name: "auto-sync", Next: "DONE", Manual: false,
 						Processors: []spi.ProcessorDefinition{
-							{Type: "INTERNAL", Name: "sync-proc", ExecutionMode: "SYNC"},
+							{Type: ProcessorTypeExternalized, Name: "sync-proc", ExecutionMode: "SYNC"},
 						},
 					},
 				},
@@ -823,7 +823,7 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 					{
 						Name: "auto-same", Next: "COMPLETE", Manual: false,
 						Processors: []spi.ProcessorDefinition{
-							{Type: "INTERNAL", Name: "same-proc", ExecutionMode: "ASYNC_SAME_TX"},
+							{Type: ProcessorTypeExternalized, Name: "same-proc", ExecutionMode: "ASYNC_SAME_TX"},
 						},
 					},
 				},
@@ -892,7 +892,7 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "ext-proc-1", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "ext-proc-1", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -942,7 +942,7 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "ext-proc-new-tx", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "ext-proc-new-tx", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -992,7 +992,7 @@ func TestProcessorDispatchError(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "fail-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "fail-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -1028,7 +1028,7 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "ENRICH", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "enrich-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "enrich-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -1067,8 +1067,8 @@ func TestNilExtProcProcessorNoOp(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "proc-1", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "proc-2", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "proc-1", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "proc-2", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1567,8 +1567,8 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "sync-proc", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "async-fail-proc", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "sync-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "async-fail-proc", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1622,7 +1622,7 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "async-mutator", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "async-mutator", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1692,9 +1692,9 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "first", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "second", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "third", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "first", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "second", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "third", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -1770,8 +1770,8 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "sync-modifier", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "async-reader", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "sync-modifier", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "async-reader", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1806,7 +1806,7 @@ func TestSyncProcessor_ContextCancellation(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "slow-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "slow-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -2013,7 +2013,7 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2189,7 +2189,7 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t1", Next: "S2", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "p1", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
 					}},
 			}},
 			"S2": {Transitions: []spi.TransitionDefinition{
@@ -2312,7 +2312,7 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2458,7 +2458,7 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
 						{
-							Type:          "EXTERNAL",
+							Type:          ProcessorTypeExternalized,
 							Name:          "cbd-proc",
 							ExecutionMode: ExecutionModeCommitBeforeDispatch,
 							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
@@ -2600,7 +2600,7 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *t
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
 						{
-							Type:          "EXTERNAL",
+							Type:          ProcessorTypeExternalized,
 							Name:          "cbd-proc",
 							ExecutionMode: ExecutionModeCommitBeforeDispatch,
 							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
@@ -2711,7 +2711,7 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t1", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "p1", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2856,7 +2856,7 @@ func TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade(t *testing.T) {
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -3004,8 +3004,8 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
-						{Type: "EXTERNAL", Name: "sync-fail-proc", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "sync-fail-proc", ExecutionMode: ExecutionModeSync},
 					}},
 			}},
 			"S_post": {},

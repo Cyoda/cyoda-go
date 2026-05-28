@@ -25,7 +25,7 @@ func sampleWorkflows() []spi.WorkflowDefinition {
 							Next: "APPROVED",
 							Processors: []spi.ProcessorDefinition{
 								{
-									Type: "EXTERNAL",
+									Type: "externalized",
 									Name: "validate-order",
 									Config: spi.ProcessorConfig{
 										AttachEntity:      true,

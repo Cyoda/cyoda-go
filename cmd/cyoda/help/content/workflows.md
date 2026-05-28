@@ -60,7 +60,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
           "criterion": null,
           "processors": [
             {
-              "type": "EXTERNAL",
+              "type": "externalized",
               "name": "notify-approval",
               "executionMode": "SYNC",
               "config": {
@@ -127,16 +127,18 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **ProcessorDefinition fields:**
 
-- `type` — string — processor type; see valid values below
+- `type` — string — execution-location axis; see below for valid values
 - `name` — string — logical processor name
 - `executionMode` — string — execution mode; see valid values below
 - `config` — `ProcessorConfig`
 
-**Valid `type` values (exhaustive for v0.6.1):**
+**Processor `type` (execution-location axis):**
 
-- `"EXTERNAL"` — dispatches to a calculation node via gRPC using `calculationNodesTags` for routing
+- `"externalized"` (default when omitted) — dispatched via gRPC to a calculation node selected by `Config.calculationNodesTags`. This is the only execution location implemented today; all the `executionMode` semantics below apply to externalized processors.
 
-No other types are supported. Supplying any other value produces `errors.VALIDATION_FAILED` at workflow import time.
+The engine reserves the value `"internalized"` for an in-process execution location not yet implemented. Any transition that fires a processor with `type: "internalized"` is rejected at dispatch with `WORKFLOW_FAILED` (400) and the operator-visible error `processor X failed: execution type "internalized" is not yet implemented`. The reserved value is intentionally absent from the OpenAPI enum until the subtype lands; workflow authors who include it in import payloads will not be rejected at import, but their entities cannot transit past the affected step.
+
+Any value other than `"internalized"` (including the empty string, the canonical `"externalized"`, and unknown values such as legacy `"scheduled"` or `"EXTERNAL"`) falls through to the `executionMode` dispatch path. This permissiveness will narrow in a future release; do not rely on it.
 
 **Valid `executionMode` values (exhaustive):**
 

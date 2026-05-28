@@ -577,7 +577,7 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
-					{Type: "EXTERNAL", Name: "p", ExecutionMode: "SYNC",
+					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: "SYNC",
 						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
 				}},
 			}},
@@ -609,7 +609,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
-					{Type: "EXTERNAL", Name: "p", ExecutionMode: "COMMIT_BEFORE_DISPATCH",
+					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: "COMMIT_BEFORE_DISPATCH",
 						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
 				}},
 			}},
@@ -629,9 +629,9 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
-					{Type: "EXTERNAL", Name: "p1", ExecutionMode: "SYNC",
+					{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: "SYNC",
 						Config: spi.ProcessorConfig{}},
-					{Type: "EXTERNAL", Name: "p2", ExecutionMode: "SYNC",
+					{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: "SYNC",
 						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &ff}},
 				}},
 			}},

@@ -57,6 +57,27 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 	currentTxID := txID
 
 	for _, proc := range processors {
+		// Execution-location axis. Rejection is fatal and self-contained:
+		// emit the per-processor SMEventStateProcessResult audit row
+		// explicitly (mirroring the post-dispatch emit lower in this loop),
+		// roll back any open segment, then return. The post-dispatch abort
+		// gate keys on proc.ExecutionMode and would silently swallow the
+		// rejection if proc.ExecutionMode == ExecutionModeAsyncNewTx, so the
+		// rejection must short-circuit the loop entirely.
+		if proc.Type == ProcessorTypeInternalized {
+			auditData := map[string]any{
+				"success": false,
+				"mode":    proc.ExecutionMode,
+			}
+			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
+				spi.SMEventStateProcessResult,
+				fmt.Sprintf("Processor %q completed", proc.Name), auditData)
+			e.rollbackOpenSegmentOnFailure(currentCtx, currentTxID, txID, proc.Name)
+			return currentCtx, currentTxID, fmt.Errorf(
+				"processor %s failed: execution type %q is not yet implemented",
+				proc.Name, proc.Type)
+		}
+
 		var success bool
 		var procErr error
 

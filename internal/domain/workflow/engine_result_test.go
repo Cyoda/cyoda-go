@@ -99,7 +99,7 @@ func TestEngineResult_Segmented_TrueOnCBDCascade(t *testing.T) {
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
