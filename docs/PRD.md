@@ -267,7 +267,7 @@ Processors may create or mutate other entities, triggering further workflow trav
 ### Workflow Management
 
 - **Import/Export** via REST API
-- **Modes:** `MERGE` (additive), `REPLACE` (full swap), `ACTIVATE` (replace + activate)
+- **Modes:** `MERGE` (additive), `REPLACE` (full swap), `ACTIVATE` (replace same-named + deactivate the rest; `active` on incoming is importer-controlled)
 - **Multiple workflows per model** — workflow-level selection criteria determine which workflow applies to a given entity
 
 ### Audit Trail

@@ -200,8 +200,8 @@ Request body (`application/json`):
 }
 ```
 
-- `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones and are set `active=true`; existing workflows not in the import set are set `active=false`.
-- `workflows` — array of `WorkflowDefinition`; all imported workflows are set `active=true` regardless of the `active` field in the body
+- `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`.
+- `workflows` — array of `WorkflowDefinition`. The `active` flag on each incoming workflow is preserved as supplied; the server never overrides it. Controlling which workflows are active is entirely up to the importer.
 
 Static validation runs before saving: definite infinite loops (cycles reachable only via automated transitions) cause `400 VALIDATION_FAILED`.
 
