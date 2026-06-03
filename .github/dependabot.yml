@@ -1,8 +1,20 @@
 version: 2
+
+# target-branch is set per-entry to the active release branch so Dependabot
+# PRs land directly on the release branch during a release cycle (rather
+# than `main`, which would require manual retargeting + rebase — see
+# .claude/memory note "Dependabot PRs during a release cycle").
+#
+# Maintenance: when a release branch merges and is deleted, update every
+# `target-branch:` below to the next active release branch, or remove the
+# field entirely (PRs revert to the default branch). Leaving a stale
+# branch name here makes future Dependabot runs fail silently.
+
 updates:
   # Root Go module
   - package-ecosystem: gomod
     directory: "/"
+    target-branch: "release/v0.8.0"
     schedule:
       interval: weekly
       day: monday
@@ -17,6 +29,7 @@ updates:
   # consumable, so each must be tracked separately.
   - package-ecosystem: gomod
     directory: "/plugins/memory"
+    target-branch: "release/v0.8.0"
     schedule:
       interval: weekly
       day: monday
@@ -29,6 +42,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: "/plugins/sqlite"
+    target-branch: "release/v0.8.0"
     schedule:
       interval: weekly
       day: monday
@@ -41,6 +55,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: "/plugins/postgres"
+    target-branch: "release/v0.8.0"
     schedule:
       interval: weekly
       day: monday
@@ -55,6 +70,7 @@ updates:
   # so distroless/static base updates surface as PRs.
   - package-ecosystem: docker
     directory: "/deploy/docker"
+    target-branch: "release/v0.8.0"
     schedule:
       interval: weekly
       day: monday
@@ -68,6 +84,7 @@ updates:
   # GitHub Actions used by workflows in .github/workflows.
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: "release/v0.8.0"
     schedule:
       interval: weekly
       day: monday
