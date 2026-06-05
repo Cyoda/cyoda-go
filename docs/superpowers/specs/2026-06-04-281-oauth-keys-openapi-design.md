@@ -5,13 +5,13 @@
 **Issue:** [#281](https://github.com/Cyoda-platform/cyoda-go/issues/281)
 **Milestone:** v0.8.0
 **Sub-issue of:** #194 (decomposition spec: `docs/superpowers/specs/2026-06-04-194-decomposition-design.md` §3.1)
-**Revision:** rev3 (second fresh-context architect review folded in; rev1→rev2 changelog in commit log)
+**Revision:** rev4 (third fresh-context architect review folded in; rev1→rev2→rev3→rev4 changelog in commit log)
 
 ---
 
 ## 1. Goal
 
-Make the 10 JWT-keypair + trusted-key admin operations respond with the OpenAPI-declared DTOs through the generated chi router, remove the legacy `/oauth/keys/` prefix mux entry that masks the OpenAPI surface today, and reconcile cyoda-go's behaviour with the Cyoda Cloud reference implementation wherever the cloud's choices are reachable without bringing in dependencies (KMS, scheduler, multi-issuer validators) that belong to other follow-ups.
+Make the 10 JWT-keypair + trusted-key admin operations respond with the OpenAPI-declared DTOs through the generated chi router, remove the legacy `/oauth/keys/` prefix mux entry that masks the OpenAPI surface today, and reconcile cyoda-go's behaviour with the Cyoda Cloud reference implementation wherever the cloud's choices are reachable without bringing in dependencies (KMS, scheduler, multi-issuer validators, multi-algorithm signing) that belong to other follow-ups.
 
 The 10 operations:
 
@@ -36,23 +36,25 @@ A deep scan of the Kotlin reference implementation at `/Users/paul/dev/cyoda/bac
 
 | Capability | Cloud behaviour | cyoda-go decision |
 |---|---|---|
-| `algorithm` enum (10 values) | All supported (RS*, PS*, ES*, EdDSA) | RS*+PS* implemented (same RSA-2048 keypair, signing-method dispatch); ES*+EdDSA always rejected with 400 `UNSUPPORTED_ALGORITHM` (follow-up issue tracks adding generators) |
+| `algorithm` enum (10 values) | All supported (RS*, PS*, ES*, EdDSA) | **RS256 only** for sign/verify (current `jwt.go` capability). All other enum values rejected with 400 `UNSUPPORTED_ALGORITHM` at adapter boundary. Multi-algorithm dispatch deferred to a v0.8.1 follow-up issue covering RS384/RS512/PS*/ES*/EdDSA. Documented §3.2 #10. |
 | `audience` (human\|client) | Partitioned via per-audience providerId | Stored on `KeyPair`; `GetActive(audience)` partitions; bootstrap key gets configurable default audience |
 | `validFrom`/`validTo` | Explicit timestamps; lazy `isValidKey(now)` filter | Same — `ValidTo *time.Time`; lazy filter at JWKS and trusted-key validator reads |
-| `validTo` default for trusted keys | `validFrom + trustedKeyMaxValidity` (default 365d); user-supplied accepted as-is (no clamp) | Same — `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default 365) used as **default only** (no clamp); user-supplied honoured |
+| `validTo` default for keypairs | `validFrom + keyPairDefaultValidity` (365d) | Same — `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` (default 365). Applies to runtime-issued keypairs AND the bootstrap key. Startup logs WARN if the active bootstrap key expires within 30 days. |
+| `validTo` default for trusted keys | `validFrom + trustedKeyMaxValidity` (365d); user-supplied accepted as-is (no clamp) | Same — `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default 365) used as **default only** (no clamp); user-supplied honoured |
 | `invalidateCurrent` / `invalidatePrevious` + `gracePeriodSec` | Lazy validity (`validTo = now + grace`), no timers | Same — atomic mutex-scoped flip via single `Save`/`Register` call carrying `RotateOptions{Invalidate, GracePeriodSec}` |
 | Standalone `POST .../invalidate` body | `InvalidateKeyRequestDto { gracePeriodSec: int? = 0 }` | Same |
-| `reactivate` semantics | Clears `validTo` to nil (acknowledged TODO bug; zombie keys) | **Diverges** — cyoda-go requires fresh `validFrom`/`validTo` body; rejects with 400 if absent or past. Documented in §3.2 as security fix. |
+| `reactivate` semantics | Clears `validTo` to nil (acknowledged TODO bug; zombie keys) | **Diverges** — cyoda-go requires fresh `validTo` body; rejects with 400 if absent or past. Documented in §3.2 #5 as security fix. |
 | `jwk` on `TrustedKeyResponseDto` | Decoded then re-serialised via `Jwks.builder()` | Stored as `map[string]any` and emitted verbatim. OpenAPI schema bug (`additionalProperties: { type: object }`) fixed in §10.1 so generated type becomes `map[string]any` (was `map[string]map[string]any`). |
 | `legalEntityId` + tenant scoping | Per-tenant partitioning via `owner = legalEntityId` | Same — `TenantID` on `TrustedKey`; CRUD scoped by `uc.Tenant.ID`; mapped to wire as `legalEntityId = string(tk.TenantID)` |
 | Cross-tenant keyId collision on register | `409 Conflict` | Same — `KEY_OWNED_BY_DIFFERENT_TENANT` |
 | Cross-tenant lifecycle access | **403 FORBIDDEN** (leaks existence) | **404** (no leakage) — documented divergence (cyoda-go more secure; see §3.2) |
 | Same-tenant re-register with same keyId | Delete-and-replace atomically (`TrustedKeyRegistrationService.kt:91-101`) | **Diverges** — cyoda-go silently upserts (current `KVTrustedKeyStore.Register` behaviour preserved). Observable behaviour identical; transactional surgery deferred. Documented §3.2. |
-| JWK content checks | `kty` required, `kid ≡ keyId`, max 20 fields | Same — implemented at validate-boundary; `MaxJWKProperties` configurable via `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` (default 20) |
-| Trusted-key cap | Per-tenant, default 10, returns **400** | Same — `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default 10); 400 `TRUSTED_KEY_CAP_REACHED`. Resolves the existing `TODO(#163)`. |
+| JWK content checks | `kty` required, `kid ≡ keyId`, max 20 fields; supports `RSA`/`EC`/`OKP` kty | Same `kty`/`kid`/max-fields checks. **Only `kty=RSA` supported**; `EC`/`OKP` rejected with 400 `UNSUPPORTED_KEY_TYPE`. Follow-up issue tracks EC/OKP (same follow-up as multi-algorithm). |
+| Trusted-key cap | Per-tenant, default 10, returns **400**; counts only currently-valid keys | Same — `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default 10); 400 `TRUSTED_KEY_CAP_REACHED`; counts only `Active && (ValidTo == nil || now.Before(*ValidTo))` (matches cloud). Resolves the existing `TODO(#163)`. |
 | `keyPairInvalidateGracePeriodSec` default | 3600s (cloud's safer default for non-explicit grace) | **Diverges** — cyoda-go defaults absent/nil/zero to **immediate** (0s). Operators wanting grace must specify explicitly. Documented §3.2. |
 | `trustedKeyRegistrationEnabled` flag | Default **false**; gates all 5 trusted-key ops with **404** | Same — `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` (default `false`); 404 `FEATURE_DISABLED` |
 | Token-exchange tenant invariant | `techUser.legalEntityId == subjectToken.caas_org_id` only; no check on `trustedKey.owner` (TechnicalUserService.kt:339-341, 352-354) | Same — `client.TenantID == subOrgID` only (existing `token.go:203` check); no new check on `trustedKey.TenantID`. Forging requires private-key material which stays with the registering tenant. |
+| Selection rule when multiple keys active for same audience | Latest `validFrom` (`StoredJWKService.kt:378`) | Same — `GetActive(audience)` returns the entry with the maximum `ValidFrom`. |
 | Private signing-key persistence | Encrypted PKCS#8 blob in DB | Out of scope — held in-memory; runtime-issued keys lost on restart; bootstrap (PEM-derived deterministic KID) survives. Per follow-up §3.5. |
 | Role gate | ADMIN ∨ SUPER_USER | **ROLE_ADMIN only**, per issue body. OpenAPI prose updated SUPER_USER → ROLE_ADMIN. |
 | Public JWKS endpoint | None — verification uses direct `findKeyEntryByKeyId` | cyoda-go retains `/.well-known/jwks.json`; sourced from `ListForVerification()` so grace-period keys remain discoverable until `ValidTo` |
@@ -63,21 +65,36 @@ A deep scan of the Kotlin reference implementation at `/Users/paul/dev/cyoda/bac
 
 ### 3.1 In scope — implemented in this PR
 
-1. **`algorithm` enum (RS*+PS* subset)** — `RS256, RS384, RS512, PS256, PS384, PS512`. All six use the same RSA-2048 keypair; signing-method dispatch picks the digest+padding at sign time. Default `RS256` when absent. Stored on `KeyPair.Algorithm`. Round-tripped in response. ES*/EdDSA always rejected with 400 `UNSUPPORTED_ALGORITHM`; a follow-up issue (filed at PR-merge time) tracks adding ECDSA + Ed25519 generators.
+1. **`algorithm` enum — RS256 only signs/verifies; others rejected at adapter** — All algorithm enum values other than `RS256` (i.e. `RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA`) are rejected with 400 `UNSUPPORTED_ALGORITHM` at the adapter boundary. The store's `KeyPair.Algorithm` field exists and stores `"RS256"`. `internal/auth/jwt.go` is **not modified** in this PR (its existing RS256-only `Sign`/`Verify`/`EnsureAlgRS256` stays). A v0.8.1 follow-up issue (filed at PR-merge time) covers adding multi-algorithm sign/verify dispatch — that issue is the single channel for RS384/RS512/PS*/ES*/EdDSA + `kty=EC`/`kty=OKP` registration.
 2. **`publicKey` base64-DER on `JwtKeyPairResponseDto`** — `base64.StdEncoding.EncodeToString(x509.MarshalPKIXPublicKey(pub))`. **No PEM armor.** Matches OpenAPI's "Base64-encoded public key in X.509 SubjectPublicKeyInfo format" and cloud's `Base64.getEncoder().encodeToString(publicKey)` at `JwtKeyPairInteractor.kt:85`.
-3. **`validFrom`/`validTo` timestamps on `KeyPair` and `TrustedKey`** — rename `KeyPair.CreatedAt → ValidFrom`; add `KeyPair.ValidTo *time.Time` and confirm/keep `TrustedKey.ValidTo *time.Time`. Nil `ValidTo` = no expiry (signing keypair). Trusted-key `ValidTo` defaults at register-time to `validFrom + TrustedKeyMaxValidityDays` (matches cloud's default-only behaviour; no clamp on user-supplied values). Set to `now + gracePeriodSec` at invalidate time. Lazy filter at all verification reads: `Active && (ValidTo == nil || now.Before(*ValidTo))`.
-4. **`validFrom`/`validTo` overrides on issue/register** — honoured when supplied. Defaults: `validFrom = now()`. Default `validTo`: nil (signing keypair); `validFrom + 365d` (trusted key). User-supplied `validTo` accepted as-is (no clamp). Reject `validTo < validFrom` with 400 `BAD_REQUEST` (see §3.2 — stricter than cloud).
+3. **`validFrom`/`validTo` timestamps on `KeyPair` and `TrustedKey`** — rename `KeyPair.CreatedAt → ValidFrom`; add `KeyPair.ValidTo *time.Time` and confirm/keep `TrustedKey.ValidTo *time.Time`. Trusted-key default at register-time: `validFrom + TrustedKeyMaxValidityDays`. Keypair default at issue-time and bootstrap: `validFrom + KeypairDefaultValidityDays`. Set to `now + gracePeriodSec` at invalidate time. Lazy filter at all verification reads: `Active && (ValidTo == nil || now.Before(*ValidTo))`. For both stores, **`GetActive(audience)` selects the entry with the maximum `ValidFrom`** when multiple are active (matches cloud).
+4. **`validFrom`/`validTo` overrides on issue/register** — honoured when supplied. Defaults: `validFrom = now()`. User-supplied `validTo` accepted as-is (no clamp). Reject `validTo < validFrom` with 400 `BAD_REQUEST` (see §3.2 — stricter than cloud).
 5. **`jwk` round-trip on trusted-key response** — store as `map[string]any` on `TrustedKey`; emit verbatim. Existing JWK validation (`parseRSAPublicKeyFromJWK`) gates incoming registrations. Three content checks at validate-boundary (match cloud `TrustedKeyRegistrationService.kt:119-130, 262-269`):
-   - JWK must contain `kty` (already implicit in RSA path; now explicit).
+   - JWK must contain `kty`; only `kty="RSA"` supported (others → 400 `UNSUPPORTED_KEY_TYPE`).
    - JWK `kid` field, if present, must equal request `keyId` — else 400 `BAD_REQUEST` (security: prevents `keyId=trusted-app` with `jwk.kid=attacker-kid` injection).
    - JWK max `MaxJWKProperties` properties (default 20) — else 400 `BAD_REQUEST`.
 6. **`legalEntityId` + per-tenant trusted-key scoping** — add `TenantID spi.TenantID` to `TrustedKey`. CRUD methods scoped by caller's `uc.Tenant.ID`. Cross-tenant `Get`/`Delete`/`Invalidate`/`Reactivate` returns **404** `TRUSTED_KEY_NOT_FOUND` (does not leak existence; cyoda-go diverges from cloud's 403 for this reason — see §3.2). `Register` with keyId-collision against another tenant returns **409** `KEY_OWNED_BY_DIFFERENT_TENANT`. On the wire: `legalEntityId = string(tk.TenantID)`.
-7. **`invalidateCurrent` (issue) / `invalidatePrevious` (register) booleans + `invalidateGracePeriodSec`** — folded into the `Save`/`Register` call signatures via a single shared `RotateOptions{Invalidate bool, GracePeriodSec int64}`. Single mutex acquisition: under one critical section the store inserts the new key and flips siblings' `Active=false`, `ValidTo=now+grace`. (Same partition definition: keypairs = same `audience`; trusted keys = same `tenantID`.) Grace=0 ⇒ immediate. Lazy filter at JWKS endpoint and validator paths means tokens signed with the just-invalidated kid continue to verify until grace passes. The adapter populates `RotateOptions.Invalidate` from `req.InvalidateCurrent` (keypair) or `req.InvalidatePrevious` (trusted) and clamps the grace per `req.InvalidateGracePeriodSec` (nil/zero ⇒ 0; negative ⇒ 400 `BAD_REQUEST` at adapter boundary, see §3.2).
+7. **`invalidateCurrent` (issue) / `invalidatePrevious` (register) booleans + `invalidateGracePeriodSec`** — folded into the `Save`/`Register` call signatures via a single shared `RotateOptions{Invalidate bool, GracePeriodSec int64}`. Single mutex acquisition: under one critical section the store inserts the new key and flips siblings' `Active=false`, `ValidTo=now+grace`. (Same partition definition: keypairs = same `audience`; trusted keys = same `tenantID`.) Grace=0 ⇒ immediate. **No-op cases**: `Invalidate=true` with no existing active siblings ⇒ successful insert, nothing to flip; `InvalidateCurrent=false` + non-zero `invalidateGracePeriodSec` ⇒ the grace value is ignored (no flip happens; documented at adapter). For `KVTrustedKeyStore`, the mutex is held across N + 1 `kv.Put` calls during rotation; this trades concurrent-read latency during a (rare) rotation for transactional atomicity. **Rollback ordering**: in-memory map mutation runs **last**, so a partial KV failure mid-rotation leaves the in-memory cache untouched and the caller observes an `Internal` 5xx with no half-applied state. The adapter populates `RotateOptions.Invalidate` from `req.InvalidateCurrent` (keypair) or `req.InvalidatePrevious` (trusted) and clamps grace per `req.InvalidateGracePeriodSec` (nil/zero ⇒ 0; negative ⇒ 400 `BAD_REQUEST`, see §3.2).
 8. **Standalone `POST .../invalidate` request body** — `InvalidateKeyRequestDto { gracePeriodSec int64 }`; absent body, nil, or zero ⇒ immediate. Both keypair and trusted-key invalidate endpoints accept the body. Negative values rejected with 400 `BAD_REQUEST` (§3.2).
 9. **`audience` (human\|client) on keypairs** — add `Audience string` to `KeyPair`. New `KeyStore.GetActive(audience string)` partitions. `issueJwtKeyPair` partitions by request audience. `getCurrentJwtKeyPair?audience=X` returns **404** `KEYPAIR_NOT_FOUND` if no active key for X. Bootstrap key gets audience `CYODA_JWT_BOOTSTRAP_AUDIENCE` (default `client`, alternative `human`); the existing M2M token-signing path (`POST /oauth/token`) becomes `GetActive("client")`. Pre-merge verification step: grep all `KeyStore.GetActive()` call sites and confirm none implicitly sign human-audience tokens today; if any exist, this default needs revisiting. Adapter calls `params.Audience.Valid()` and rejects invalid enums with 400 `BAD_REQUEST`. The bootstrap-audience env var is validated at boot — invalid values (e.g. `robot`) fail startup with a clear error.
-10. **Reactivate — requires fresh validity window (diverges from cloud)** — `Reactivate(tenantID, kid, validFrom, validTo)` (trusted) and `Reactivate(kid, audience, validFrom, validTo)` (keypair). Body of the `POST .../reactivate` endpoints accepts `ReactivateRequestDto { validFrom?, validTo }` (validTo required; validFrom defaults to now). Ownership check happens inside the store (`Reactivate(tenantID, kid)` looks up via tenant-scoped Get first; cross-tenant returns 404). Validation: `validTo > now`; `validTo > validFrom` — else 400 `BAD_REQUEST`. Prevents zombie-key resurrection that cloud's TODO at `TrustedKeyRegistrationService.kt:202-204` acknowledges. Documented §3.2.
-11. **`keyId` validation on path-parameter lifecycle ops** — apply `trustedKIDPattern` (`^[A-Za-z0-9._-]{1,128}$`) ONLY to user-controlled path parameters on `deleteTrustedKey`, `invalidateTrustedKey`, `reactivateTrustedKey`. **Not** applied to keypair path-parameter lifecycle ops (`deleteJwtKeyPair`, `invalidateJwtKeyPair`, `reactivateJwtKeyPair`): match cloud, drop the validator, let the store lookup return 404. Server-generated KIDs (16-byte hex from `internal/auth/keys.go:99`) are validated by construction. Per-spec: keypair lifecycle ops declare 401/403/404/500; no 400 on the wire.
-12. **OpenAPI JWK schema fix** — `api/openapi.yaml` lines 8413-8416 and 8457-8460 declare `jwk` with `additionalProperties: { type: object }`, which oapi-codegen generates as `map[string]map[string]interface{}` — a nested-map type that's wrong for flat JWKs. Replace with `additionalProperties: true` so the generated type is `map[string]any`. The fix is part of this PR; no separate change.
+10. **Reactivate — requires fresh validity window (diverges from cloud)** — `Reactivate(kid, validFrom, validTo)` (keypair) and `Reactivate(tenantID, kid, validFrom, validTo)` (trusted) — keypair signature drops audience (kid is unique). Body of the `POST .../reactivate` endpoints accepts a new schema (added to OpenAPI in this PR):
+   ```yaml
+   ReactivateKeyRequestDto:
+     type: object
+     properties:
+       validFrom:
+         type: string
+         format: date-time
+         description: Optional; defaults to now.
+       validTo:
+         type: string
+         format: date-time
+         description: Required. Must be > now and > validFrom.
+     required: [validTo]
+   ```
+   Single shared schema used by both reactivate endpoints. Operation `requestBody` set to `required: true` for both. New `400` response declaration added to both. Ownership check happens inside the store. Validation: `validTo` required, parses RFC3339, must be `> now` and `> validFrom` — else 400 `BAD_REQUEST`. **Reactivate on already-active key**: idempotent; sets the new validity window and remains `Active=true`. Prevents zombie-key resurrection that cloud's TODO at `TrustedKeyRegistrationService.kt:202-204` acknowledges. Documented §3.2.
+11. **`keyId` validation on path-parameter lifecycle ops** — apply `trustedKIDPattern` (`^[A-Za-z0-9._-]{1,128}$`) ONLY to user-controlled path parameters on `deleteTrustedKey`, `invalidateTrustedKey`, `reactivateTrustedKey`. **Not** applied to keypair path-parameter lifecycle ops (`deleteJwtKeyPair`, `invalidateJwtKeyPair`, `reactivateJwtKeyPair`): match cloud, drop the validator, let the store lookup return 404. Server-generated KIDs (16-byte hex from `internal/auth/keys.go:99`) are validated by construction. Per-spec: keypair lifecycle ops declare 401/403/404/500; no 400 on the wire **except for reactivate**, which gets a 400 declaration because of the new request-body validation in #10.
+12. **OpenAPI JWK schema fix** — `api/openapi.yaml` lines 8413-8416 and 8457-8460 declare `jwk` with `additionalProperties: { type: object }`, which oapi-codegen generates as `map[string]map[string]interface{}` — a nested-map type that's wrong for flat JWKs. Replace with `additionalProperties: true` so the generated type is `map[string]any`. The fix is part of this PR; regen `api/generated.go`.
 
 ### 3.2 Documented divergences from cloud
 
@@ -90,6 +107,7 @@ A deep scan of the Kotlin reference implementation at `/Users/paul/dev/cyoda/bac
 7. **`gracePeriodSec` default** — cyoda-go defaults absent/nil/zero to **immediate** (0s); cloud defaults to 3600s. Operators wanting a grace period must specify it explicitly. Surfaces in the OpenAPI prose for the two invalidate endpoints.
 8. **Same-tenant idempotent re-register** — cyoda-go preserves the existing silent upsert semantics in `KVTrustedKeyStore.Register`. Cloud explicitly does delete-and-replace atomically. Observable wire behaviour is identical (200 + new entry); transactional surgery is deferred. Documented for completeness.
 9. **Signing-key persistence** — out of scope; runtime-issued keypairs lost on restart. Bootstrap key (PEM-derived deterministic KID per ARCHITECTURE.md §7.2) survives. v0.8.0 release notes call this out and link follow-up §3.5.
+10. **Algorithm support** — cyoda-go signs and verifies RS256 only in v0.8.0; cloud supports the full enum (RS*, PS*, ES*, EdDSA) plus `kty=EC`/`kty=OKP` for trusted keys. Adapter rejects non-RS256 with 400 `UNSUPPORTED_ALGORITHM` and non-RSA `kty` with 400 `UNSUPPORTED_KEY_TYPE`. v0.8.1 follow-up issue tracks adding the rest.
 
 ---
 
@@ -101,7 +119,7 @@ A deep scan of the Kotlin reference implementation at `/Users/paul/dev/cyoda/bac
 type KeyPair struct {
     KID        string
     Audience   string          // NEW: "human" | "client"
-    Algorithm  string          // NEW: one of RS256/RS384/RS512/PS256/PS384/PS512
+    Algorithm  string          // NEW: stored value (always "RS256" in v0.8.0)
     PublicKey  *rsa.PublicKey
     PrivateKey *rsa.PrivateKey
     Active     bool
@@ -123,7 +141,7 @@ type TrustedKey struct {
 
 // RotateOptions carries the invalidate-siblings option for both issueKeyPair
 // (sibling-flip across same audience) and registerTrustedKey (sibling-flip
-// across same tenantID). Field-name in DTOs differs (`invalidateCurrent` vs
+// across same tenantID). DTO field-names differ (`invalidateCurrent` vs
 // `invalidatePrevious`); the store layer uses a single struct.
 type RotateOptions struct {
     Invalidate     bool
@@ -137,12 +155,12 @@ type RotateOptions struct {
 type KeyStore interface {
     Save(kp *KeyPair, opts RotateOptions) error             // NEW signature: opts folds in atomic sibling-flip
     Get(kid string) (*KeyPair, error)
-    GetActive(audience string) (*KeyPair, error)             // CHANGED: audience param
+    GetActive(audience string) (*KeyPair, error)             // CHANGED: audience param; selects max-ValidFrom when multiple active
     List() []*KeyPair                                        // all entries (admin listing)
     ListForVerification() []*KeyPair                         // NEW: lazy ValidTo filter
     Delete(kid string) error
     Invalidate(kid string, gracePeriodSec int64) error       // CHANGED: grace param
-    Reactivate(kid string, validFrom time.Time, validTo time.Time) error  // CHANGED: requires fresh window
+    Reactivate(kid string, validFrom time.Time, validTo time.Time) error  // CHANGED: requires fresh window; signature drops audience (kid is unique)
 }
 
 type TrustedKeyStore interface {
@@ -156,9 +174,13 @@ type TrustedKeyStore interface {
 }
 ```
 
-`Save`/`Register` atomicity: a single mutex acquisition inserts the new entry and (if `opts.Invalidate`) flips siblings in the same partition to `Active=false`, `ValidTo=now+grace`. For `KVTrustedKeyStore`, the mutex is held across N + 1 `kv.Put` calls during rotation; this trades concurrent-read latency during a (rare) rotation for transactional atomicity.
+`Save`/`Register` atomicity: a single mutex acquisition inserts the new entry and (if `opts.Invalidate`) flips siblings in the same partition to `Active=false`, `ValidTo=now+grace`. For `KVTrustedKeyStore`, the mutex is held across N + 1 `kv.Put` calls during rotation; in-memory map mutation runs LAST so partial KV failure leaves the cache untouched.
 
 **In-package verification helper (unexported)** — `token.go`'s JWT-bearer/token-exchange flow needs to resolve a trusted key by kid without the caller's tenant. Instead of an interface method, an unexported helper `getTrustedKeyByKID(store TrustedKeyStore, kid string) (*TrustedKey, error)` lives in `internal/auth/` and iterates `ListForVerification()`. Same package as both the store and `token.go` — no new interface surface; no contract that external consumers might rely on.
+
+**Bootstrap call-site update** — `internal/auth/service.go` currently calls `keyStore.Save(kp)` (single-arg). With the new signature, all `Save` call sites pass `RotateOptions{}` (zero-value) for the no-flip case. Same for `KVTrustedKeyStore.Register` if any in-tree caller exists.
+
+**New accessor on `AuthService`** — `service.go` already exposes `KeyStore()`; add `TrustedKeyStore()` accessor for the new adapters' construction-time dependency.
 
 ### 4.3 Handler struct changes (`internal/domain/account/handler.go`)
 
@@ -173,18 +195,21 @@ type Handler struct {
 }
 ```
 
-The new IAM-feature fields live directly on `auth.AuthConfig` (matching the existing god-struct pattern). For the Handler, `auth.IAMConfig` is a small value-struct extracted at construction with just the subset the adapters need:
+`auth.IAMConfig` is a new value-struct **peer to (not nested under) `auth.AuthConfig`** in `internal/auth/service.go`:
 ```go
 type IAMConfig struct {
     TrustedKeyRegistrationEnabled bool
     TrustedKeyMaxPerTenant        int
     TrustedKeyMaxValidityDays     int
     TrustedKeyMaxJWKProperties    int
+    KeypairDefaultValidityDays    int
     BootstrapAudience             string
 }
 ```
 
-Per `.claude/rules/ownership-mutability.md` rule 3: stores shared via interface; `IAMConfig` is value-copied (read-only data, no shared mutable state). `account.New(...)` signature updated to accept these three new dependencies; `app.go:443` call site passes them through.
+`AuthConfig` gains a single field `IAM IAMConfig` (composition over flat fields) so call sites can pass the bundle as `cfg.IAM`. Per `.claude/rules/ownership-mutability.md` rule 3: stores shared via interface; `IAMConfig` is value-copied (read-only data, no shared mutable state).
+
+`account.New(...)` signature updated to accept these three new dependencies; `app.go:443` call site passes them through.
 
 ### 4.4 Adapter files (handler.go split)
 
@@ -192,16 +217,18 @@ The existing `internal/domain/account/handler.go` keeps the account methods. The
 
 - `internal/domain/account/keys_adapter.go` — 5 keypair handler methods + DTO helpers (`toJwtKeyPairResponse`, `parseIssueRequest`).
 - `internal/domain/account/trusted_adapter.go` — 5 trusted-key handler methods + DTO helpers (`toTrustedKeyResponse`, `tenantFromContext`).
-- `internal/domain/account/io.go` — shared `boundedJSONDecode(r *http.Request, max int64, dst any) error` helper used by all four POST adapters.
+- `internal/domain/account/io.go` — shared `boundedJSONDecode(r *http.Request, max int64, dst any) error` helper used by all four POST adapters. Returns `400 BAD_REQUEST` on body-too-large (oversized bodies hit the `MaxBytesReader` cap which surfaces to `json.Decoder` as a decode error; the helper translates to 400). The OpenAPI spec declares `400` (not `413`) for body-too-large.
 
 Both adapter files take `*Handler` as the receiver.
 
-### 4.5 Removed (dead code)
+### 4.5 Removed (dead code) + new helper file
 
 - `internal/auth/keys.go` — `KeysHandler`, `keysInfoResponse`, all `ServeHTTP` path-parsing. Domain logic moves inline to the new adapter.
 - `internal/auth/trusted.go` — `TrustedKeysHandler`, `trustedKeyInfoResponse`, `ServeHTTP`, `handleList/Register/Delete/Invalidate/Reactivate`, `validateLifecycleKID`, `extractKeyID`. The input-validation helpers (`trustedKIDPattern`, `parseRSAPublicKeyFromJWK`, `validateRSAPublicExponent`) move to a small `internal/auth/keyvalidation.go` so the new adapter can reuse them. `decodeBase64URL` lives in `internal/auth/jwt.go` and is unaffected.
 - `internal/auth/service.go` adminMux entries for `/oauth/keys/...` (lines 86–89). The `/account/m2m` entries stay (#194-B territory).
 - `app/app.go:482` `mux.Handle("/oauth/keys/", ...)` — removed.
+
+**`internal/auth/jwt.go` — NOT modified** in this PR. Existing `Sign`/`Verify`/`EnsureAlgRS256` (RS256-only) stay. Multi-algorithm dispatch is the v0.8.1 follow-up.
 
 ### 4.6 Exporting `requireAdmin`
 
@@ -209,13 +236,14 @@ Both adapter files take `*Handler` as the receiver.
 
 ### 4.7 Wiring changes (`app/app.go`)
 
-- Bootstrap-key save now sets `Algorithm = "RS256"` and `Audience = config.Bootstrap.Audience` (new field; default `client`).
-- New `AuthConfig` fields:
-  - `BootstrapAudience string` (default `client`; validated at boot — invalid ⇒ startup error)
-  - `TrustedKeyRegistrationEnabled bool` (default `false`)
-  - `TrustedKeyMaxPerTenant int` (default `10`)
-  - `TrustedKeyMaxValidityDays int` (default `365`; used as default-only at register-time, not a clamp on user-supplied values)
-  - `TrustedKeyMaxJWKProperties int` (default `20`)
+- Bootstrap-key save now sets `Algorithm = "RS256"`, `Audience = config.IAM.BootstrapAudience`, `ValidFrom = now()`, `ValidTo = &(now + KeypairDefaultValidityDays·day)`. After save, startup logs a WARN if `ValidTo - now < 30 days` (operator must rotate soon).
+- New `AuthConfig.IAM` (value struct, peer to existing fields). Fields parsed from env vars and validated at boot:
+  - `BootstrapAudience string` (env `CYODA_JWT_BOOTSTRAP_AUDIENCE`, default `client`; invalid enum ⇒ startup error)
+  - `TrustedKeyRegistrationEnabled bool` (env `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`, default `false`)
+  - `TrustedKeyMaxPerTenant int` (env `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT`, default `10`; `0` ⇒ unbounded; negative ⇒ startup error)
+  - `TrustedKeyMaxValidityDays int` (env `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS`, default `365`; ≤ 0 ⇒ startup error; default-only at register-time, no clamp)
+  - `TrustedKeyMaxJWKProperties int` (env `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES`, default `20`; ≤ 0 ⇒ startup error)
+  - `KeypairDefaultValidityDays int` (env `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS`, default `365`; ≤ 0 ⇒ startup error; applies to bootstrap + runtime-issued keypairs)
 - M2M signing call sites switch to `GetActive("client")`.
 - Token-verification path (`internal/auth/token.go:137`) switches from `Get(kid)` to in-package helper `getTrustedKeyByKID(trustedKeyStore, kid)`.
 - JWKS endpoint source switches to `KeyStore.ListForVerification()`.
@@ -229,10 +257,11 @@ Both adapter files take `*Handler` as the receiver.
 | Code | HTTP | Trigger |
 |---|---|---|
 | `FEATURE_DISABLED` | 404 | Trusted-key endpoint while `TrustedKeyRegistrationEnabled=false` |
-| `UNSUPPORTED_ALGORITHM` | 400 | `algorithm ∈ {ES*, EdDSA}` |
+| `UNSUPPORTED_ALGORITHM` | 400 | `algorithm ≠ RS256` (anywhere in the spec's enum) |
+| `UNSUPPORTED_KEY_TYPE` | 400 | JWK `kty ≠ RSA` on register |
 | `KEY_OWNED_BY_DIFFERENT_TENANT` | 409 | `registerTrustedKey` keyId collision with another tenant |
 | `KEYPAIR_NOT_FOUND` | 404 | Keypair lifecycle on missing kid; `getCurrent` with no key for requested audience |
-| `TRUSTED_KEY_CAP_REACHED` | 400 | Per-tenant trusted-key cap reached on register |
+| `TRUSTED_KEY_CAP_REACHED` | 400 | Per-tenant trusted-key cap reached on register (counts only currently-valid keys) |
 
 `TRUSTED_KEY_NOT_FOUND` already exists and is reused for tenant-scoped lookups (returned uniformly whether the kid doesn't exist or belongs to another tenant — no existence leakage). The existing `kv_trusted_store.go:157` 409-on-registry-full path is **replaced** (not augmented) by the new 400 + `TRUSTED_KEY_CAP_REACHED` code.
 
@@ -252,24 +281,25 @@ Per `.claude/rules/security.md`, validate at the boundary:
 | Field | Check | Failure |
 |---|---|---|
 | `audience` (request body + query) | `params.Audience.Valid()` from generated enum | 400 `BAD_REQUEST` |
-| `algorithm` | enum + in {RS256, RS384, RS512, PS256, PS384, PS512} | ES*/EdDSA → 400 `UNSUPPORTED_ALGORITHM`; non-enum → 400 `BAD_REQUEST` |
+| `algorithm` | enum + `== RS256` | non-RS256 → 400 `UNSUPPORTED_ALGORITHM`; non-enum → 400 `BAD_REQUEST` |
 | `gracePeriodSec` (anywhere) | `>= 0` | 400 `BAD_REQUEST` (see §3.2 stricter-than-cloud) |
 | `validTo` on issue/register (request) | `>= validFrom` | 400 `BAD_REQUEST` (see §3.2 stricter-than-cloud) |
 | `validTo` on reactivate (request) | required; `> now`; `> validFrom` | 400 `BAD_REQUEST` (see §3.2 reactivate fix) |
 | trusted-key `keyId` (path param) | `trustedKIDPattern` regex `^[A-Za-z0-9._-]{1,128}$` | 400 `BAD_REQUEST` |
 | trusted-key `keyId` (request body) | same regex | 400 `BAD_REQUEST` |
-| trusted-key JWK | `kty` required; `kid` (if present) == `keyId`; ≤ `MaxJWKProperties` fields | 400 `BAD_REQUEST` |
+| trusted-key JWK | `kty` required AND `kty == "RSA"`; `kid` (if present) == `keyId`; ≤ `MaxJWKProperties` fields | non-RSA → 400 `UNSUPPORTED_KEY_TYPE`; others → 400 `BAD_REQUEST` |
 | keypair `keyId` (path param) | not validated; store lookup returns 404 (matches cloud) | — |
-| request body size (all 4 POSTs) | `http.MaxBytesReader(w, r.Body, 1<<20)` via shared `boundedJSONDecode` helper | 413 Request Entity Too Large or 400 |
+| request body size (all 4 POSTs) | `http.MaxBytesReader(w, r.Body, 1<<20)` via shared `boundedJSONDecode` helper | 400 `BAD_REQUEST` (decoder fails on oversized body; OpenAPI declares 400 not 413) |
 | `BootstrapAudience` env var | parsed at boot; in {`human`, `client`} | startup error |
-| `TrustedKeyMaxPerTenant` env var | `>= 0`; `0` means **unbounded** (matches `InMemoryTrustedKeyStore.maxTrustedKeys > 0` short-circuit) | startup error if negative |
+| `TrustedKeyMaxPerTenant` env var | `>= 0`; `0` means **unbounded** | startup error if negative |
 | `TrustedKeyMaxValidityDays` env var | `> 0` | startup error if `≤ 0` |
 | `TrustedKeyMaxJWKProperties` env var | `> 0` | startup error if `≤ 0` |
+| `KeypairDefaultValidityDays` env var | `> 0` | startup error if `≤ 0` |
 
 ### 5.4 Security checks (Gate 3)
 
 - **Tenant isolation** — `TenantID` derived from `uc.Tenant.ID` server-side, never from request body. Cross-tenant access returns 404 (lookup) or 409 (collision on register), never 200+leak or 403+confirmation.
-- **In-memory cache isolation** (`KVTrustedKeyStore.keys`) — cache value carries `TenantID`. All tenant-scoped methods verify `cached.TenantID == requested.TenantID` after both cache hit and post-`loadOne` re-cache; mismatch returns 404 (treats it as if cache contained nothing for this tenant). The unexported `getTrustedKeyByKID` verification helper is the documented exception; it returns the raw entry (TenantID embedded). A unit test asserts the race: tenant-A `Get` triggers cache-load of tenant-B's key, tenant-B `Get` then succeeds for itself (no cross-pollination), tenant-A `Get` still returns 404.
+- **In-memory cache isolation** (`KVTrustedKeyStore.keys`) — cache value carries `TenantID`. All tenant-scoped methods verify `cached.TenantID == requested.TenantID` after both cache hit AND post-`loadOne` re-cache; mismatch returns 404 (treats it as if cache contained nothing for this tenant). The unexported `getTrustedKeyByKID` verification helper is the documented exception; it returns the raw entry (TenantID embedded). A unit test asserts the race: tenant-A `Get` triggers cache-load of tenant-B's key, tenant-B `Get` then succeeds for itself (no cross-pollination), tenant-A `Get` still returns 404.
 - **No secrets in logs** — bootstrap PEM stays unprinted; rotated kids are logged only when an operation references them. Private RSA material never serialised in any response or log line. slog field allowlist: `kid`, `tenant`, `audience`, `algorithm`.
 - **No issue IDs in shipped artefacts** — per the standing rule, no `#281` in error messages, response bodies, OpenAPI prose, code comments, or help topics.
 - **No stack traces in 5xx responses** — `common.Internal` ticket pattern only.
@@ -283,10 +313,10 @@ Per `.claude/rules/security.md`, validate at the boundary:
   - KV-key encoding changes from `trustedkey:<kid>` to `trustedkey:<tenantID>:<kid>` to make tenant isolation an invariant of the storage layer itself.
   - `trustedKeyRecord` serialization schema gains two fields: `tenantID string` and `jwk map[string]any`. Backward-compatible on read: missing fields handled gracefully.
   - In-memory cache map remains keyed by raw `kid` for O(1) `getTrustedKeyByKID` access; the cached value's `TenantID` field is what tenant-scoped methods consult.
-  - **Old-prefix entries (pre-v0.8.0)** — entries with old key shape `trustedkey:<kid>` (no tenant segment) are never queried under the new prefix, so they remain dormant in the KV store. `loadAll()` does not enumerate them, does not delete them, does not log per-entry. v0.8.0 release notes instruct operators how to inspect (`grep "^trustedkey:[^:]*$" <kvdump>`) and clean up. This avoids loader complexity and tests for slog event assertions, while preserving operator visibility into orphaned data. cyoda-go has no production users on this surface today; the simpler story dominates.
+  - **Old-prefix entries (pre-v0.8.0)** — `loadAll()` enumerates all entries under the namespace. Entries whose key shape doesn't match `trustedkey:<tenantID>:<kid>` are skipped silently (not loaded into cache, not deleted from KV). At end of `loadAll`, if any old-shape entries were observed, a **single one-shot startup WARN** is emitted: `"pre-v0.8.0 trusted-key entries found in KV (count=N); not loaded under new key shape — re-register via /oauth/keys/trusted; see v0.8.0 release notes"`. The count is the only data emitted; specific kids are NOT logged (cyoda-go has no production users on this surface today and per-entry log noise is not warranted).
+  - **Rollback hazard** (v0.8.0 → pre-v0.8.0 binary): pre-v0.8.0 binary lists `trustedkey:*` and would observe entries with shape `trustedkey:<tenantID>:<kid>`. Pre-v0.8.0's parser treats the segment after `trustedkey:` as the kid — so it sees a "kid" literally equal to `<tenantID>:<kid>`. Not corrupt, but visible as a mangled-kid entry. Documented in release notes; operators rolling back must purge new-shape entries out-of-band.
 - Signing-key persistence — out of scope (follow-up §3.5). Bootstrap key survives restart; runtime-issued keypairs do not.
-- **Rollback-compat note** — a v0.8.0 → pre-v0.8.0 binary rollback would not see entries written under the new prefix (different key shape). Pre-v0.8.0 trusted keys (old prefix) are still readable. Operators rolling back must re-register any keys created under v0.8.0. Documented in release notes.
-- **Lazy ValidTo and stale entries** — known limitation: invalidated keys past `ValidTo` are filtered at every read but never pruned. With per-tenant cap of 10, a tenant rotating quarterly accumulates ~4 stale entries/year. Documented; periodic prune is a follow-up if it becomes a problem.
+- **Lazy ValidTo and stale entries** — known limitation: invalidated keys past `ValidTo` are filtered at every read but never pruned. With per-tenant cap of 10 (counting only currently-valid keys), the cap itself naturally bounds growth; stale entries past `ValidTo` are excluded from the cap count, so they accumulate freely. With a tenant rotating quarterly, ~4 stale entries/year. Documented; periodic prune is a follow-up if it becomes a problem.
 
 ---
 
@@ -301,7 +331,7 @@ Per `.claude/rules/security.md`, validate at the boundary:
 
 The grant at `internal/auth/token.go:65` (`urn:ietf:params:oauth:grant-type:token-exchange`) currently flows: extract `kid` → `trustedKeyStore.Get(kid)` (line 137) → verify signature → read `subOrgID = parsed.Claims["caas_org_id"]` (line 191) → reject if `client.TenantID != subOrgID` (line 203).
 
-Post-rev3:
+Post-rev4:
 
 - The trusted-key lookup switches to `getTrustedKeyByKID(trustedKeyStore, kid)` (unexported, in-package; iterates `ListForVerification()` with lazy `ValidTo` filter).
 - **No new check on `trustedKey.TenantID` is added.** This matches cloud (`TechnicalUserService.kt:339-341, 352-354`), which enforces `techUser.legalEntityId == subjectToken.caas_org_id` but does not consult the trusted key's owner field at verification time. Forging a token signed by tenant-A's key requires tenant-A's private-key material; without it, no other tenant can mount the attack. The existing line-203 check (`client.TenantID != subOrgID`) closes the only practically reachable vector.
@@ -315,7 +345,7 @@ This invariant is explicitly tested (§9.3) so a future change to either the clo
 `internal/auth/integration_test.go:268–301` has two sub-tests routing through `svc.AdminHandler()`:
 
 - `m2m create endpoint rejects oversized body` — left untouched (#194-B territory).
-- `trusted key register endpoint rejects oversized body` — relocated: a shared helper `account.boundedJSONDecode(r, 1<<20, &dst)` wraps `http.MaxBytesReader` + `json.Decoder.Decode`; called by all four POST adapters (issue keypair, register trusted key, invalidate keypair, invalidate trusted key). E2E test asserts the same 413/400 behaviour by POSTing >1 MB through chi. The integration-level sub-test is deleted.
+- `trusted key register endpoint rejects oversized body` — relocated: a shared helper `account.boundedJSONDecode(r, 1<<20, &dst)` wraps `http.MaxBytesReader` + `json.Decoder.Decode`; called by all four POST adapters (issue keypair, register trusted key, invalidate keypair, invalidate trusted key). E2E test asserts the 400 behaviour by POSTing >1 MB through chi. The integration-level sub-test is deleted.
 
 ---
 
@@ -323,19 +353,30 @@ This invariant is explicitly tested (§9.3) so a future change to either the clo
 
 ### 9.1 Unit (TDD red-first)
 
-- `internal/auth/store_test.go` — audience-scoped `GetActive`; grace-period `Invalidate` sets `ValidTo`; `ListForVerification` lazy filter (including past-`ValidTo` filtered out); reactivate with fresh window sets values; reactivate with missing or past `validTo` rejected; cross-tenant trusted-key isolation; same-tenant upsert vs cross-tenant 409; per-tenant cap reached → `TRUSTED_KEY_CAP_REACHED`; JWK `kid` ≠ `keyId` rejected; JWK > `MaxJWKProperties` rejected; `Save`/`Register` with `RotateOptions{Invalidate: true}` atomically flip siblings; `Reactivate` cross-tenant returns 404 from the store (not just the adapter); two concurrent `Save(opts)` with `Invalidate: true` for the same audience produce exactly one active key (whichever lands second wins; first invalidated).
-- `internal/auth/kv_trusted_store_test.go` — tenant-scoped key prefix; tenant-A cache load does not let tenant-B see tenant-A's key (cross-pollination guard); record schema round-trips `tenantID` and `jwk`; concurrent rotation under the store mutex holds reader-blocking semantics (correctness, not perf).
-- `internal/auth/keypair_signing_test.go` (new) — sign + verify a sample JWT for each of `RS256/RS384/RS512/PS256/PS384/PS512`; ES256/ES384/ES512/EdDSA rejected.
+- `internal/auth/store_test.go` — audience-scoped `GetActive` selects max-ValidFrom when multiple active; grace-period `Invalidate` sets `ValidTo`; `ListForVerification` lazy filter (including past-`ValidTo` filtered out); reactivate with fresh window sets values; reactivate on already-active key is idempotent (sets new window); reactivate with missing or past `validTo` rejected; cross-tenant trusted-key isolation; same-tenant upsert vs cross-tenant 409; per-tenant cap reached → `TRUSTED_KEY_CAP_REACHED` (counts only currently-valid keys); JWK `kid` ≠ `keyId` rejected; JWK `kty ≠ RSA` rejected with `UNSUPPORTED_KEY_TYPE`; JWK > `MaxJWKProperties` rejected; `Save`/`Register` with `RotateOptions{Invalidate: true}` atomically flip siblings; `Save`/`Register` with `Invalidate: true` and no siblings is a no-op flip; `Reactivate` cross-tenant returns 404 from the store; two concurrent `Save(opts)` with `Invalidate: true` for the same audience produce exactly one active key.
+- `internal/auth/kv_trusted_store_test.go` — tenant-scoped key prefix; tenant-A cache load does not let tenant-B see tenant-A's key (cross-pollination guard); record schema round-trips `tenantID` and `jwk`; old-shape entries cause one-shot WARN at `loadAll` end (count only); partial KV failure during rotation leaves in-memory cache untouched (rollback ordering).
+- `internal/auth/keypair_signing_test.go` (new) — RS256 sign+verify round-trip; **every other algorithm enum value (RS384/RS512/PS256/PS384/PS512/ES256/ES384/ES512/EdDSA) at adapter rejected with 400 `UNSUPPORTED_ALGORITHM`** (`jwt.go` is RS256-only).
 - `internal/auth/token_test.go` — `getTrustedKeyByKID` returns trusted key by kid regardless of tenant; lazy ValidTo filter applied (past-validity returns nil); the existing `client.TenantID != subOrgID` check still enforces principal tenancy.
-- `internal/auth/config_validation_test.go` — `BootstrapAudience=robot` → startup error; `TrustedKeyMaxPerTenant=-1` → startup error; `TrustedKeyMaxPerTenant=0` interpreted as unbounded; `TrustedKeyMaxValidityDays=0` → startup error.
+- `internal/auth/config_validation_test.go` — `BootstrapAudience=robot` → startup error; `TrustedKeyMaxPerTenant=-1` → startup error; `TrustedKeyMaxPerTenant=0` interpreted as unbounded; `TrustedKeyMaxValidityDays=0` → startup error; `KeypairDefaultValidityDays=0` → startup error.
 
 ### 9.2 Adapter
 
 - `internal/domain/account/keys_adapter_test.go`, `trusted_adapter_test.go` — per-operation DTO marshalling round-trip; ROLE_ADMIN gate (401 unauth, 403 wrong role); validation error codes; response shape matched against the generated DTOs; `publicKey` is base64-DER (no PEM); `legalEntityId == string(uc.Tenant.ID)`; ProblemDetail wire shape on every 4xx/5xx (content-type `application/problem+json`); audience-query enum validation.
-- `algorithm=ES256` → 400 `UNSUPPORTED_ALGORITHM`.
+- `algorithm=RS384` (or any non-RS256) → 400 `UNSUPPORTED_ALGORITHM`.
+- JWK with `kty=EC` → 400 `UNSUPPORTED_KEY_TYPE`.
 - `TrustedKeyRegistrationEnabled=false` → 404 `FEATURE_DISABLED` on all 5 trusted-key endpoints.
-- Body-size limit: POST > 1 MB to any of the 4 POST adapters → 413 or 400.
-- Per documented divergence: cross-tenant lifecycle returns 404 (regression-locks the security choice vs cloud's 403); `gracePeriodSec=0` is the default (vs cloud's 3600); reactivate with absent body → 400; reactivate with past `validTo` → 400; `validTo < validFrom` → 400; `gracePeriodSec < 0` → 400.
+- Body-size limit: POST > 1 MB to any of the 4 POST adapters → 400.
+- **Per-divergence regression-lock tests** (one per §3.2 item to prevent silent drift toward cloud):
+  - JWKS retained (publishes grace-period keys).
+  - ROLE_ADMIN only (not ADMIN ∨ SUPER_USER).
+  - Cross-tenant lifecycle 404 (not 403).
+  - Trusted-key `audience` honored on round-trip.
+  - Reactivate rejects absent/past `validTo`.
+  - `validTo < validFrom` rejected with 400.
+  - `gracePeriodSec < 0` rejected with 400.
+  - `gracePeriodSec` default is 0 (not 3600).
+  - Same-tenant re-register succeeds (silent upsert; no 409, no 400).
+  - Non-RS256 algorithm rejected (regression-locks the v0.8.0 limit).
 
 ### 9.3 E2E (Gate 2)
 
@@ -368,15 +409,39 @@ cyoda-go-cassandra (`/Users/paul/go-projects/cyoda-light/cyoda-go-cassandra`) do
 
 ## 10. Documentation updates (Gate 4)
 
-### 10.1 OpenAPI spec (`api/openapi.yaml`)
+### 10.1 OpenAPI spec (`api/openapi.yaml`) + codegen
+
+**Spec changes:**
 
 - Remove `501 NotImplemented` declarations from all 10 operations.
 - Replace `$ref ErrorResponseDto` (RFC 6749 OAuth-error shape) with `$ref ProblemDetail` + `application/problem+json` content-type on **every** 4xx/5xx response declaration of the 10 operations. Matches established audit pattern.
 - Replace `SUPER_USER` → `ROLE_ADMIN` in the 10 operation descriptions (role-gate divergence intentional per §3.2).
-- **JWK schema fix**: change `additionalProperties: { type: object }` to `additionalProperties: true` at lines 8413-8416 and 8457-8460 so the generated Go type for `jwk` becomes `map[string]any` (was `map[string]map[string]any`). The schema fix is part of this PR.
-- Keep the `trustedKeyRegistrationEnabled` 404 declarations and prose — they accurately describe the implementation.
-- Add request-body descriptions on `POST /oauth/keys/keypair/{keyId}/reactivate` and `POST /oauth/keys/trusted/{keyId}/reactivate` referencing the new `ReactivateRequestDto { validFrom?, validTo }` shape (matches §3.2 reactivate fix).
-- Embedded `//go:embed` of `api/openapi.yaml` automatically picks the changes up; no oapi-codegen regeneration needed (per `project_openapi_spec_embed_via_goembed`).
+- **JWK schema fix**: change `additionalProperties: { type: object }` to `additionalProperties: true` at lines 8413-8416 and 8457-8460 so the generated Go type for `jwk` becomes `map[string]any` (was `map[string]map[string]any`).
+- **Add `ReactivateKeyRequestDto` schema** (new component, shared by both reactivate operations):
+  ```yaml
+  ReactivateKeyRequestDto:
+    type: object
+    properties:
+      validFrom:
+        type: string
+        format: date-time
+        description: Optional; defaults to now if absent.
+      validTo:
+        type: string
+        format: date-time
+        description: Required. Must be > now and > validFrom.
+    required: [validTo]
+  ```
+- **Update `reactivateJwtKeyPair` + `reactivateTrustedKey`** operations: add `requestBody` with `required: true` referencing `ReactivateKeyRequestDto`; add `"400"` response declaration `$ref ProblemDetail`.
+- Add brief prose to `issueJwtKeyPair`, `registerTrustedKey`, and both invalidate operations noting the cyoda-go-specific defaults (`algorithm` defaults `RS256`; `audience` no default — required; `gracePeriodSec` default `0` immediate; `validTo` default `validFrom + 365d` for keypairs and trusted keys).
+
+**Codegen regen required**:
+
+The previous "no regen needed" claim was wrong. The following spec changes are STRUCTURAL and force `api/generated.go` to be regenerated:
+- JWK type change (`map[string]map[string]any` → `map[string]any`).
+- New `ReactivateKeyRequestDto` schema + `requestBody` on both reactivate operations changes their `ServerInterface` method signatures (gain a JSON-decoded payload).
+
+Run `go generate ./api/...` (or whatever the project's codegen command is) after spec edits; verify the regen surface in PR review.
 
 ### 10.2 Audit table (`docs/superpowers/audits/2026-04-29-openapi-conformance-audit.md`)
 
@@ -388,20 +453,26 @@ For each of the 10 rows (lines 122–131), change disposition from `out-of-scope
 - Under JWT mode: `CYODA_JWT_BOOTSTRAP_AUDIENCE` (default `client`; alt `human`).
 - New **IAM features** subsection:
   - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` (default `false`; off → 404 `FEATURE_DISABLED`).
-  - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`; `0` means unbounded).
+  - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`; `0` means unbounded; counts currently-valid keys only).
   - `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`; default-only — user-supplied `validTo` honored as-is).
   - `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` (default `20`).
-- New **JWT signing keypair rotation** subsection (3 paragraphs) — bootstrap vs runtime rotation, v0.8.0 persistence limitation.
+  - `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` (default `365`; applies to bootstrap + runtime-issued keypairs; startup logs WARN if active key expires within 30 days).
+- New **JWT signing keypair rotation** subsection (3 paragraphs) — bootstrap vs runtime rotation, v0.8.0 persistence limitation, expiry behaviour.
 - New EXAMPLES block — trusted-key flag enabled.
 
-**`errors/`** — 5 new topic files (mirror `TRUSTED_KEY_NOT_FOUND.md` template):
+**`errors/`** — 6 new topic files (mirror `TRUSTED_KEY_NOT_FOUND.md` template):
 - `FEATURE_DISABLED.md`
 - `UNSUPPORTED_ALGORITHM.md`
+- `UNSUPPORTED_KEY_TYPE.md`
 - `KEY_OWNED_BY_DIFFERENT_TENANT.md`
 - `KEYPAIR_NOT_FOUND.md`
 - `TRUSTED_KEY_CAP_REACHED.md`
 
-**`errors.md`** — append the 5 new codes to the catalogue table (alphabetical).
+**`errors.md`** — append the 6 new codes to the catalogue table (alphabetical).
+
+**`errors/TRUSTED_KEY_NOT_FOUND.md`** (existing) — update DESCRIPTION to add: "Returned uniformly for kids that don't exist AND kids owned by another tenant; the response does not distinguish — by design, to prevent cross-tenant existence enumeration."
+
+**`errors/NOT_FOUND.md`** (existing) — add SEE ALSO entry pointing at the new `KEYPAIR_NOT_FOUND` for keypair-specific 404s.
 
 **`openapi.md:96`** — clarify which `/oauth/*` operations are live in v0.8.0 (the 10 oauth/keys ops) and which remain 501 (OIDC providers — #194-D, v0.9.0+).
 
@@ -409,20 +480,21 @@ For each of the 10 rows (lines 122–131), change disposition from `out-of-scope
 
 ### 10.4 README.md
 
-Add the four new env vars to the config-reference table.
+Add the five new env vars to the config-reference table.
 
 ### 10.5 `DefaultConfig()`
 
-Five new fields with documented defaults.
+Six new fields with documented defaults (composed under `auth.IAMConfig`).
 
 ### 10.6 v0.8.0 release notes
 
-Four operational notes:
+Four operational notes + one limitation:
 
 - Runtime-issued signing keypairs lost on restart (bootstrap PEM-derived KID survives) — points at follow-up §3.5.
 - `trustedKeyRegistrationEnabled` default `false`; existing customers using `/oauth/keys/trusted/*` through the legacy mux must opt in via env var.
 - KV trusted-key entries written by versions < v0.8.0 use a different key prefix and are not visible to v0.8.0's OpenAPI surface (orphaned, not deleted). Operators must re-register affected keys. Inspection: `grep "^trustedkey:[^:]*$" <kvdump>`. cyoda-go has no known production users on this surface.
-- v0.8.0 → pre-v0.8.0 rollback: trusted keys created under v0.8.0 will not be visible (different key prefix). Re-register if rolling back.
+- v0.8.0 → pre-v0.8.0 rollback: trusted keys created under v0.8.0 will be visible to pre-v0.8.0 binary as **mangled-kid entries** (`<tenantID>:<kid>` treated as the kid). Operators must purge them out-of-band before rollback if visibility matters.
+- **Algorithm support**: cyoda-go v0.8.0 signs and verifies RS256 only. The OpenAPI declares the full enum (RS*, PS*, ES*, EdDSA); non-RS256 values are rejected with 400 `UNSUPPORTED_ALGORITHM`. Trusted-key registration accepts only `kty=RSA` JWKs (`kty=EC`/`OKP` rejected with 400 `UNSUPPORTED_KEY_TYPE`). v0.8.1 follow-up issue tracks multi-algorithm + non-RSA `kty` support.
 
 ---
 
@@ -431,37 +503,44 @@ Four operational notes:
 - [ ] All 10 operations return OpenAPI-conformant DTOs through the chi router.
 - [ ] `mux.Handle("/oauth/keys/", ...)` removed from `app/app.go`.
 - [ ] adminMux entries for `/oauth/keys/keypair` and `/oauth/keys/trusted` removed.
-- [ ] `internal/auth/keys.go` and `internal/auth/trusted.go` HTTP handlers removed; reusable validators retained in new `internal/auth/keyvalidation.go`.
+- [ ] `internal/auth/keys.go` and `internal/auth/trusted.go` HTTP handlers removed; reusable validators retained in new `internal/auth/keyvalidation.go`. `internal/auth/jwt.go` NOT modified.
 - [ ] `auth.RequireAdmin` exported; in-package call sites updated.
+- [ ] `auth.AuthService.TrustedKeyStore()` accessor added.
 - [ ] `Handler` struct gains `keyStore`, `trustedKeyStore`, `iam` fields; `account.New` signature + `app.go:443` call updated.
+- [ ] All `Save`/`Register` call sites (including bootstrap path in `service.go`) updated to pass `RotateOptions{}` when no flip needed.
 - [ ] `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` implemented (default `false`); 404 `FEATURE_DISABLED` on all 5 trusted-key endpoints when off.
-- [ ] `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` implemented (default `10`; `0` unbounded; negative rejected at boot); 400 `TRUSTED_KEY_CAP_REACHED` at cap; existing 409-on-registry-full path replaced; resolves `TODO(#163)`.
+- [ ] `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` implemented (default `10`; `0` unbounded; negative rejected at boot); 400 `TRUSTED_KEY_CAP_REACHED` at cap; counts only currently-valid keys; existing 409-on-registry-full path replaced; resolves `TODO(#163)`.
 - [ ] `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` implemented (default `365`; default-only at register; ≤ 0 rejected at boot).
 - [ ] `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` implemented (default `20`; ≤ 0 rejected at boot).
+- [ ] `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` implemented (default `365`; applies to bootstrap + runtime keys; ≤ 0 rejected at boot; startup WARN if active key expires within 30 days).
 - [ ] `CYODA_JWT_BOOTSTRAP_AUDIENCE` implemented (default `client`; invalid enum rejected at boot); pre-merge grep verifies no existing path signs human-audience tokens.
-- [ ] JWK kid≡keyId check implemented; max-fields check implemented.
+- [ ] JWK validation: `kty=RSA` required (else 400 `UNSUPPORTED_KEY_TYPE`); `kid≡keyId` check; max-fields check.
+- [ ] Algorithm validation: only `RS256` accepted at adapter; all other enum values → 400 `UNSUPPORTED_ALGORITHM`; `jwt.go` unchanged.
 - [ ] Tenant-scoped trusted-key store; cross-tenant 404 / register-collision 409.
 - [ ] In-package `getTrustedKeyByKID(store, kid)` helper implemented; token-verification path uses it; no new check on `trustedKey.TenantID` added (matches cloud per §7.1).
 - [ ] `KVTrustedKeyStore` cache value carries `TenantID`; tenant-scoped methods verify cached TenantID matches caller after cache hit AND post-`loadOne` re-cache; serialization round-trips `tenantID` + `jwk`.
-- [ ] `RotateOptions{Invalidate, GracePeriodSec}` introduced; `Save`/`Register` carry it for atomic sibling-flip.
-- [ ] Reactivate accepts `ReactivateRequestDto { validFrom?, validTo }`; rejects absent/past `validTo` with 400.
+- [ ] `RotateOptions{Invalidate, GracePeriodSec}` introduced; `Save`/`Register` carry it for atomic sibling-flip; in-memory mutation runs last for rollback safety.
+- [ ] `GetActive(audience)` selects max-`ValidFrom` when multiple active (matches cloud).
+- [ ] Reactivate accepts `ReactivateKeyRequestDto { validFrom?, validTo }`; rejects absent/past `validTo` with 400; idempotent on already-active key.
 - [ ] `publicKey` returned as base64-DER (no PEM armor).
-- [ ] JWK OpenAPI schema fixed (`additionalProperties: true`); generated `Jwk` type becomes `map[string]any`.
+- [ ] **OpenAPI codegen regen**: `api/generated.go` regenerated after spec changes (new ReactivateKeyRequestDto + JWK schema fix changes type/method signatures).
+- [ ] OpenAPI spec: 501s removed from the 10 ops; every 4xx/5xx switched from `ErrorResponseDto` to `ProblemDetail` + `application/problem+json`; `SUPER_USER` → `ROLE_ADMIN` in prose; JWK schema fixed; `ReactivateKeyRequestDto` added + both reactivate ops gain required request body + 400 response; default-behaviour prose added to issue/register/invalidate ops.
 - [ ] Body-size assertion: shared `boundedJSONDecode` helper applied to all 4 POST adapters; integration sub-test relocated to E2E; old `integration_test.go` sub-test for trusted-key deleted.
-- [ ] OpenAPI spec: 501s removed from the 10 ops; every 4xx/5xx switched from `ErrorResponseDto` to `ProblemDetail` + `application/problem+json`; `SUPER_USER` → `ROLE_ADMIN` in prose; reactivate request-body descriptions added.
 - [ ] Audit table dispositions updated.
-- [ ] Cyoda help: 5 new error topics, 4 new env vars + bootstrap audience, errors.md + openapi.md index updates.
+- [ ] Cyoda help: 6 new error topics, 5 new env vars + bootstrap audience, errors.md + openapi.md index updates, existing `TRUSTED_KEY_NOT_FOUND.md` updated for cross-tenant case, `NOT_FOUND.md` cross-ref to `KEYPAIR_NOT_FOUND`.
 - [ ] `DefaultConfig()` updated; README config table updated.
-- [ ] Release notes: 4 operational notes (restart loss, flag default, orphan story with grep, rollback).
+- [ ] Release notes: 5 entries (restart loss, flag default, orphan story with grep, rollback hazard, algorithm scope).
+- [ ] Per-divergence regression-lock tests in `9.2` cover all 10 §3.2 items.
 - [ ] Full test suite (`go test ./... -v`) + `make test-all` + `go test -race ./...` green.
-- [ ] Follow-up issue filed: implement ECDSA + Ed25519 algorithm generators.
+- [ ] Follow-up issue filed: multi-algorithm signing (RS384/RS512/PS*/ES*/EdDSA) + non-RSA JWK (`kty=EC`/`OKP`).
 
 ---
 
 ## 12. Out of scope (tracked elsewhere)
 
+- Multi-algorithm signing (RS384/RS512/PS*/ES*/EdDSA) — v0.8.1 follow-up filed at PR-merge time.
+- Non-RSA JWK kty (`EC`/`OKP`) — same follow-up.
 - Signing-key persistence (follow-up §3.5 — secrets-management interface design).
-- ECDSA / Ed25519 keypair generators (new follow-up filed at PR-merge time).
 - M2M client-store persistence (follow-up §3.6 — picked up by #194-B's spec, not this one).
 - `/clients` OpenAPI conformance (#194-B).
 - `accountSubscriptionsGet` (#194-C).
