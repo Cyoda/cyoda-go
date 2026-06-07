@@ -81,7 +81,6 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(toJwtKeyPairResponse(kp))
 }
 
@@ -127,7 +126,7 @@ func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
@@ -186,7 +185,13 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	kp, err := h.keyStore.Get(keyId)
+	if err != nil {
+		common.WriteError(w, r, common.Internal("keyStore.Get after Reactivate", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(toJwtKeyPairResponse(kp))
 }
 
 func tenantFromCtx(r *http.Request) spi.TenantID {

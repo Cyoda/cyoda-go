@@ -40,7 +40,7 @@ func TestRegisterTrustedKey_Happy(t *testing.T) {
 	req := adminReq(t, "POST", "/oauth/keys/trusted", body)
 	w := httptest.NewRecorder()
 	h.RegisterTrustedKey(w, req)
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp genapi.TrustedKeyResponseDto
@@ -170,6 +170,13 @@ func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
+	var reactivateResp genapi.TrustedKeyResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &reactivateResp); err != nil {
+		t.Fatalf("reactivate response decode: %v", err)
+	}
+	if reactivateResp.KeyId == "" {
+		t.Error("reactivate response missing keyId")
+	}
 }
 
 func ptrInt64(v int64) *int64 { return &v }
@@ -190,9 +197,8 @@ func TestRegression_TrustedAudienceRoundTrip(t *testing.T) {
 }
 
 // Regression-lock test: same-tenant re-register with same keyId is a silent
-// upsert (200 or 201, no error). Cloud does atomic delete-and-replace
-// transactionally; cyoda-go preserves the existing silent-upsert behaviour
-// in KVTrustedKeyStore.Register.
+// upsert (200, no error). Cloud does atomic delete-and-replace transactionally;
+// cyoda-go preserves the existing silent-upsert behaviour in KVTrustedKeyStore.Register.
 // Spec §3.2 #8.
 func TestRegression_SameTenantSilentUpsert(t *testing.T) {
 	h := enabledHandler(t)
@@ -200,7 +206,7 @@ func TestRegression_SameTenantSilentUpsert(t *testing.T) {
 		body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k", Jwk: rsaJWK(t, "k"), Audience: "human"})
 		w := httptest.NewRecorder()
 		h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
-		if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		if w.Code != http.StatusOK {
 			t.Errorf("iteration %d: status=%d", i, w.Code)
 		}
 	}

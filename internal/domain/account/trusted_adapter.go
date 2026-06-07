@@ -91,7 +91,6 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(toTrustedKeyResponse(tk))
 }
 
@@ -253,5 +252,11 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	tk, err := h.trustedKeyStore.Get(tID, keyId)
+	if err != nil {
+		common.WriteError(w, r, common.Internal("trustedKeyStore.Get after Reactivate", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(toTrustedKeyResponse(tk))
 }

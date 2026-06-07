@@ -27,6 +27,9 @@ var operationalPathPrefixes = []string{
 	"/api/openapi.json",
 	"/api/admin/",
 	"/api/.well-known/",
+	// Internal M2M client management — not part of the customer API spec.
+	// Mounted for test bootstrapping and admin provisioning only.
+	"/api/account/m2m",
 }
 
 // isOperationalPath reports whether path p is an operational/admin endpoint

@@ -71,9 +71,9 @@ func TestE2E_IssueJwtKeyPair_Happy(t *testing.T) {
 	body := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
 	resp := adminRequest(t, "POST", "/oauth/keys/keypair", body)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
 	}
 	var dto genapi.JwtKeyPairResponseDto
 	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
@@ -95,7 +95,7 @@ func TestE2E_GetCurrentJwtKeyPair_Happy(t *testing.T) {
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human"})
 	issueResp := adminRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	issueResp.Body.Close()
-	if issueResp.StatusCode != http.StatusCreated {
+	if issueResp.StatusCode != http.StatusOK {
 		t.Fatalf("issue prerequisite keypair: got %d", issueResp.StatusCode)
 	}
 
@@ -121,15 +121,15 @@ func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
 	issueResp.Body.Close()
-	if issueResp.StatusCode != http.StatusCreated {
+	if issueResp.StatusCode != http.StatusOK {
 		t.Fatalf("issue: got %d", issueResp.StatusCode)
 	}
 
 	resp := adminRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestE2E_InvalidateJwtKeyPair_Happy(t *testing.T) {
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
 	issueResp.Body.Close()
-	if issueResp.StatusCode != http.StatusCreated {
+	if issueResp.StatusCode != http.StatusOK {
 		t.Fatalf("issue: got %d", issueResp.StatusCode)
 	}
 
@@ -159,7 +159,7 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
 	issueResp.Body.Close()
-	if issueResp.StatusCode != http.StatusCreated {
+	if issueResp.StatusCode != http.StatusOK {
 		t.Fatalf("issue: got %d", issueResp.StatusCode)
 	}
 
@@ -189,9 +189,9 @@ func TestE2E_RegisterTrustedKey_Happy(t *testing.T) {
 	})
 	resp := adminRequest(t, "POST", "/oauth/keys/trusted", body)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
 	}
 	var dto genapi.TrustedKeyResponseDto
 	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
@@ -215,7 +215,7 @@ func TestE2E_ListTrustedKeys_Happy(t *testing.T) {
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
-	if regResp.StatusCode != http.StatusCreated {
+	if regResp.StatusCode != http.StatusOK {
 		t.Fatalf("register prerequisite: got %d", regResp.StatusCode)
 	}
 
@@ -250,7 +250,7 @@ func TestE2E_DeleteTrustedKey_Happy(t *testing.T) {
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
-	if regResp.StatusCode != http.StatusCreated {
+	if regResp.StatusCode != http.StatusOK {
 		t.Fatalf("register: got %d", regResp.StatusCode)
 	}
 
@@ -271,7 +271,7 @@ func TestE2E_InvalidateTrustedKey_Happy(t *testing.T) {
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
-	if regResp.StatusCode != http.StatusCreated {
+	if regResp.StatusCode != http.StatusOK {
 		t.Fatalf("register: got %d", regResp.StatusCode)
 	}
 
@@ -292,7 +292,7 @@ func TestE2E_ReactivateTrustedKey_Happy(t *testing.T) {
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
-	if regResp.StatusCode != http.StatusCreated {
+	if regResp.StatusCode != http.StatusOK {
 		t.Fatalf("register: got %d", regResp.StatusCode)
 	}
 
@@ -360,7 +360,7 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	var kpA genapi.JwtKeyPairResponseDto
 	json.NewDecoder(respA.Body).Decode(&kpA)
 	respA.Body.Close()
-	if respA.StatusCode != http.StatusCreated {
+	if respA.StatusCode != http.StatusOK {
 		t.Fatalf("issue A: got %d", respA.StatusCode)
 	}
 
@@ -375,7 +375,7 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	var kpB genapi.JwtKeyPairResponseDto
 	json.NewDecoder(respB.Body).Decode(&kpB)
 	respB.Body.Close()
-	if respB.StatusCode != http.StatusCreated {
+	if respB.StatusCode != http.StatusOK {
 		t.Fatalf("issue B: got %d", respB.StatusCode)
 	}
 
@@ -535,7 +535,7 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 	})
 	respA := adminRequest(t, "POST", "/oauth/keys/trusted", bodyA)
 	respA.Body.Close()
-	if respA.StatusCode != http.StatusCreated {
+	if respA.StatusCode != http.StatusOK {
 		t.Fatalf("register as tenant A: got %d", respA.StatusCode)
 	}
 

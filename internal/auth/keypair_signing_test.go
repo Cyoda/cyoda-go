@@ -42,7 +42,7 @@ func TestAdapter_AlgorithmEnum_RS256_HappyPath(t *testing.T) {
 	req = req.WithContext(spi.WithUserContext(req.Context(), uc))
 	w := httptest.NewRecorder()
 	h.IssueJwtKeyPair(w, req)
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }

@@ -57,7 +57,7 @@ func TestIssueJwtKeyPair_Happy(t *testing.T) {
 	req := adminReq(t, "POST", "/oauth/keys/keypair", body)
 	w := httptest.NewRecorder()
 	h.IssueJwtKeyPair(w, req)
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp genapi.JwtKeyPairResponseDto
@@ -161,7 +161,7 @@ func TestDeleteJwtKeyPair(t *testing.T) {
 	_ = ks.Save(kp, auth.RotateOptions{})
 	w := httptest.NewRecorder()
 	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "k")
-	if w.Code != http.StatusNoContent {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d", w.Code)
 	}
 	if _, err := ks.Get("k"); err == nil {
@@ -230,6 +230,13 @@ func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
 	if w.Code != http.StatusOK {
 		t.Fatalf("fresh validTo: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var reactivateResp genapi.JwtKeyPairResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &reactivateResp); err != nil {
+		t.Fatalf("reactivate response decode: %v", err)
+	}
+	if reactivateResp.KeyId == "" {
+		t.Error("reactivate response missing keyId")
 	}
 }
 
