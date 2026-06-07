@@ -348,11 +348,10 @@ func fetchJWKSKIDs(t *testing.T) map[string]bool {
 // invalidateCurrent + a 2 s grace. Asserts the correct JWKS state before and
 // after the grace window.
 //
-// JWKS semantics: when a keypair is invalidated (Active=false), it is
-// immediately removed from JWKS even if the grace window is still open. The
-// grace window only extends ValidTo so that the JWT *verification* path
-// (ListForVerification) can still validate tokens signed before the rotation.
-// B (the new active key) is visible in JWKS throughout.
+// JWKS semantics (spec §3.2 #1): grace-period keys (Active=false, ValidTo in
+// the future) ARE published in JWKS so that external verifiers can validate
+// tokens signed before the rotation. After ValidTo passes the key is excluded
+// by ListForVerification and therefore absent from JWKS.
 func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	// Step 1: issue keypair A.
 	bodyA := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
@@ -379,18 +378,19 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 		t.Fatalf("issue B: got %d", respB.StatusCode)
 	}
 
-	// Step 3: immediately after rotation, A is inactive (not in JWKS) and B is active.
-	// The grace window extends ValidTo for JWT *verification* (ListForVerification),
-	// not for JWKS publication — JWKS only contains Active=true keys.
+	// Step 3: immediately after rotation, BOTH A (grace-period) and B (active)
+	// appear in JWKS. A's ValidTo is still in the future so ListForVerification
+	// includes it; JWKS publishes it so external verifiers can validate
+	// tokens signed with A before the rotation.
 	kidsDuring := fetchJWKSKIDs(t)
-	if kidsDuring[kpA.KeyId] {
-		t.Errorf("expected kid A (%s) absent from JWKS after invalidation (Active=false); got keys: %v", kpA.KeyId, kidsDuring)
+	if !kidsDuring[kpA.KeyId] {
+		t.Errorf("expected kid A (%s) present in JWKS during grace window; got keys: %v", kpA.KeyId, kidsDuring)
 	}
 	if !kidsDuring[kpB.KeyId] {
 		t.Errorf("expected kid B (%s) present in JWKS as new active key; got keys: %v", kpB.KeyId, kidsDuring)
 	}
 
-	// Step 4: wait for grace to expire — B remains the sole active key.
+	// Step 4: wait for grace to expire — A's ValidTo passes; only B remains.
 	time.Sleep(3 * time.Second)
 
 	kidsAfter := fetchJWKSKIDs(t)

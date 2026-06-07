@@ -448,22 +448,29 @@ func isASCII(s string) bool {
 	return true
 }
 
-// ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary
-// refuses to run with mock auth or a missing signing key. Intended for
-// production provisioning (Helm) where silent mock-auth fallback would be
-// a security hazard. Callers must invoke this before wiring auth in New().
+// ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT
+// is set, mock mode is rejected and the signing key must be present. In JWT
+// mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
+// env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
+// etc. fail startup rather than being silently ignored.
+// Callers must invoke this before wiring auth in New().
 func ValidateIAM(iam IAMConfig) error {
-	if !iam.RequireJWT {
-		return nil
-	}
-	if iam.Mode != "jwt" {
+	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
+	// can never silently fall back to unauthenticated access.
+	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
 	}
-	if iam.JWTSigningKey == "" {
+	// Mock mode needs no further validation.
+	if iam.Mode == "mock" {
+		return nil
+	}
+	// JWT mode: signing-key presence gated on RequireJWT; feature validation
+	// is unconditional so misconfigured env values fail at startup.
+	if iam.RequireJWT && iam.JWTSigningKey == "" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_JWT_SIGNING_KEY is empty")
 	}
 	if err := iam.AuthIAMFeatures().Validate(); err != nil {
-		return err
+		return fmt.Errorf("IAM features validation: %w", err)
 	}
 	return nil
 }

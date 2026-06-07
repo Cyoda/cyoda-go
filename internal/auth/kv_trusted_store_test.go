@@ -291,7 +291,7 @@ func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 		}
 	}
 
-	// Fourth registration must fail with a 409 Conflict AppError.
+	// Fourth registration must fail with a 400 Bad Request AppError.
 	overflowKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	overflow := &auth.TrustedKey{
 		KID:       "cap-key-overflow",

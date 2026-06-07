@@ -224,7 +224,8 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore)
+		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore,
+			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant))
 		if err != nil {
 			slog.Error("startup failure",
 				"phase", "kv-trusted-store-bootstrap",
