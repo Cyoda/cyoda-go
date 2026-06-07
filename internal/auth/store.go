@@ -137,7 +137,8 @@ func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
 			}
 		}
 	}
-	s.keys[kp.KID] = kp
+	copied := *kp
+	s.keys[kp.KID] = &copied
 	return nil
 }
 

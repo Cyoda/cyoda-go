@@ -588,6 +588,23 @@ func TestKeyStore_Reactivate_IdempotentOnActive(t *testing.T) {
 	}
 }
 
+func TestKeyStore_ListForVerification_IncludesGracePeriodKey(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	now := time.Now()
+	future := now.Add(1 * time.Hour)
+	grace := &auth.KeyPair{
+		KID: "grace", Audience: "client", Algorithm: "RS256",
+		PublicKey: &priv.PublicKey, PrivateKey: priv,
+		Active: false, ValidFrom: now.Add(-1 * time.Hour), ValidTo: &future,
+	}
+	_ = s.Save(grace, auth.RotateOptions{})
+	got := s.ListForVerification()
+	if len(got) != 1 || got[0].KID != "grace" {
+		t.Fatalf("expected grace-period key included, got %+v", got)
+	}
+}
+
 func testRSAPriv(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
