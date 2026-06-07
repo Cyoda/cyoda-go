@@ -1,11 +1,18 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"math/big"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -572,4 +579,77 @@ func mustNewMemoryKV(t *testing.T, ctx context.Context) spi.KeyValueStore {
 		t.Fatalf("memory KV: %v", err)
 	}
 	return kv
+}
+
+func TestKVTrustedKeyStore_LoadAll_SkipsOldShape_EmitsWARN(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rec := map[string]any{
+		"kid": "old1", "audience": "human", "active": true, "validFrom": time.Now(),
+		"n": base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
+		"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+	}
+	data, _ := json.Marshal(rec)
+	if err := kv.Put(ctx, "trusted-keys", "old1", data); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := kv.Put(ctx, "trusted-keys", "old2", data); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+	store, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if got := store.List(spi.TenantID("any")); len(got) != 0 {
+		t.Errorf("legacy entries should not surface; got %d", len(got))
+	}
+	if !strings.Contains(buf.String(), "pre-v0.8.0 trusted-key entries") {
+		t.Errorf("expected WARN; got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "count=2") {
+		t.Errorf("expected count=2; got: %s", buf.String())
+	}
+}
+
+type failingKV struct {
+	spi.KeyValueStore
+	failOn string
+}
+
+func (f *failingKV) Put(ctx context.Context, ns, key string, value []byte) error {
+	if key == f.failOn {
+		return fmt.Errorf("injected failure")
+	}
+	return f.KeyValueStore.Put(ctx, ns, key, value)
+}
+
+func TestKVTrustedKeyStore_PartialKVFailureLeavesCacheUntouched(t *testing.T) {
+	ctx := systemCtx()
+	mem := mustNewMemoryKV(t, ctx)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	tID := spi.TenantID("t")
+	pre, _ := auth.NewKVTrustedKeyStore(ctx, mem)
+	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "a"}, Audience: "human", Active: true, ValidFrom: time.Now()}
+	_ = pre.Register(a, auth.RotateOptions{})
+
+	// Inject failure on the SIBLING flip-write (key 't:a').
+	kv := &failingKV{KeyValueStore: mem, failOn: auth.TrustedKeyKVKeyForTesting(tID, "a")}
+	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
+	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "b"}, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
+	err := store.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
+	if err == nil {
+		t.Fatal("expected register failure")
+	}
+	gotA, _ := store.Get(tID, "a")
+	if gotA == nil || !gotA.Active {
+		t.Errorf("a should still be active after rollback; got %+v", gotA)
+	}
+	if _, err := store.Get(tID, "b"); err == nil {
+		t.Error("b should not be visible after rollback")
+	}
 }

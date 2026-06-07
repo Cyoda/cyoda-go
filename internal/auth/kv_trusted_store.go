@@ -129,7 +129,7 @@ func (s *KVTrustedKeyStore) loadAll() error {
 		s.keys[tk.KID] = tk
 	}
 	if skipped > 0 {
-		slog.Warn("skipped legacy trusted-key entries without tenant scope",
+		slog.Warn("skipped pre-v0.8.0 trusted-key entries without tenant scope",
 			"count", skipped,
 			"namespace", trustedKeysNamespace)
 	}
@@ -473,4 +473,10 @@ func copyTrustedKey(tk *TrustedKey) *TrustedKey {
 		copied.JWK = jwkCopy
 	}
 	return &copied
+}
+
+// TrustedKeyKVKeyForTesting exposes trustedKeyKey for cross-package tests
+// that need to predict KV keys (e.g. for injection mocks).
+func TrustedKeyKVKeyForTesting(tenantID spi.TenantID, kid string) string {
+	return trustedKeyKey(tenantID, kid)
 }
