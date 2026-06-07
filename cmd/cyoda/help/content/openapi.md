@@ -93,7 +93,7 @@ The spec declares 83 paths across these tag groups:
 - **User, Machine** — M2M client management under `/clients/`
 - **Entity, Audit** — audit log retrieval under `/audit/`
 - **Messaging** — message CRUD under `/message/`
-- **IAM** — OAuth token, key management, OIDC providers under `/oauth/`
+- **IAM** — OAuth token and key management under `/oauth/`. As of v0.8.0, the 10 `/oauth/keys/*` admin operations (keypair + trusted-key lifecycle) are conformant. OIDC providers under `/oauth/oidc/providers/*` remain 501 until v0.9.0.
 - **SQL Schema** — SQL schema generation and management under `/sql/schema/` (excluded from cyoda-go — see below)
 - **Platform API** — stream-data operations under `/platform-api/stream-data/` (excluded from cyoda-go — see below)
 

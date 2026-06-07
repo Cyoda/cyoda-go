@@ -119,16 +119,16 @@ change.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| deleteJwtKeyPair | DELETE | /oauth/keys/keypair/{keyId} | `internal/domain/account/handler.go:93` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| deleteTrustedKey | DELETE | /oauth/keys/trusted/{keyId} | `internal/domain/account/handler.go:113` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| getCurrentJwtKeyPair | GET | /oauth/keys/keypair/current | `internal/domain/account/handler.go:89` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| invalidateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/invalidate | `internal/domain/account/handler.go:97` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| invalidateTrustedKey | POST | /oauth/keys/trusted/{keyId}/invalidate | `internal/domain/account/handler.go:117` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| issueJwtKeyPair | POST | /oauth/keys/keypair | `internal/domain/account/handler.go:85` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| listTrustedKeys | GET | /oauth/keys/trusted | `internal/domain/account/handler.go:105` | `type:array items:$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| reactivateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/reactivate | `internal/domain/account/handler.go:101` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| reactivateTrustedKey | POST | /oauth/keys/trusted/{keyId}/reactivate | `internal/domain/account/handler.go:121` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| registerTrustedKey | POST | /oauth/keys/trusted | `internal/domain/account/handler.go:109` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| deleteJwtKeyPair | DELETE | /oauth/keys/keypair/{keyId} | `internal/domain/account/handler.go:93` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| deleteTrustedKey | DELETE | /oauth/keys/trusted/{keyId} | `internal/domain/account/handler.go:113` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| getCurrentJwtKeyPair | GET | /oauth/keys/keypair/current | `internal/domain/account/handler.go:89` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| invalidateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/invalidate | `internal/domain/account/handler.go:97` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| invalidateTrustedKey | POST | /oauth/keys/trusted/{keyId}/invalidate | `internal/domain/account/handler.go:117` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| issueJwtKeyPair | POST | /oauth/keys/keypair | `internal/domain/account/handler.go:85` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| listTrustedKeys | GET | /oauth/keys/trusted | `internal/domain/account/handler.go:105` | `type:array items:$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| reactivateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/reactivate | `internal/domain/account/handler.go:101` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| reactivateTrustedKey | POST | /oauth/keys/trusted/{keyId}/reactivate | `internal/domain/account/handler.go:121` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| registerTrustedKey | POST | /oauth/keys/trusted | `internal/domain/account/handler.go:109` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
 
 ---
 
