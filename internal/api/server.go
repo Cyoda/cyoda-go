@@ -417,83 +417,50 @@ func (s *Server) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, p
 	s.Unimplemented.GetTechnicalUserToken(w, r, params)
 }
 
+// TODO(#281-task15-20): re-enable Account dispatch after adapters land.
+// IssueJwtKeyPair, GetCurrentJwtKeyPair, DeleteJwtKeyPair,
+// InvalidateJwtKeyPair, ReactivateJwtKeyPair, ListTrustedKeys,
+// RegisterTrustedKey, DeleteTrustedKey, InvalidateTrustedKey,
+// ReactivateTrustedKey — all fall through to Unimplemented until
+// the chi adapters (Tasks 15-19) are wired.
+
 func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.IssueJwtKeyPair(w, r)
-		return
-	}
 	s.Unimplemented.IssueJwtKeyPair(w, r)
 }
 
 func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
-	if s.Account != nil {
-		s.Account.GetCurrentJwtKeyPair(w, r, params)
-		return
-	}
 	s.Unimplemented.GetCurrentJwtKeyPair(w, r, params)
 }
 
 func (s *Server) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	if s.Account != nil {
-		s.Account.DeleteJwtKeyPair(w, r, keyId)
-		return
-	}
 	s.Unimplemented.DeleteJwtKeyPair(w, r, keyId)
 }
 
 func (s *Server) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	if s.Account != nil {
-		s.Account.InvalidateJwtKeyPair(w, r, keyId)
-		return
-	}
 	s.Unimplemented.InvalidateJwtKeyPair(w, r, keyId)
 }
 
 func (s *Server) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	if s.Account != nil {
-		s.Account.ReactivateJwtKeyPair(w, r, keyId)
-		return
-	}
 	s.Unimplemented.ReactivateJwtKeyPair(w, r, keyId)
 }
 
 func (s *Server) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.ListTrustedKeys(w, r)
-		return
-	}
 	s.Unimplemented.ListTrustedKeys(w, r)
 }
 
 func (s *Server) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.RegisterTrustedKey(w, r)
-		return
-	}
 	s.Unimplemented.RegisterTrustedKey(w, r)
 }
 
 func (s *Server) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
-	if s.Account != nil {
-		s.Account.DeleteTrustedKey(w, r, keyId)
-		return
-	}
 	s.Unimplemented.DeleteTrustedKey(w, r, keyId)
 }
 
 func (s *Server) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
-	if s.Account != nil {
-		s.Account.InvalidateTrustedKey(w, r, keyId)
-		return
-	}
 	s.Unimplemented.InvalidateTrustedKey(w, r, keyId)
 }
 
 func (s *Server) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
-	if s.Account != nil {
-		s.Account.ReactivateTrustedKey(w, r, keyId)
-		return
-	}
 	s.Unimplemented.ReactivateTrustedKey(w, r, keyId)
 }
 

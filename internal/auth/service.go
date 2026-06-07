@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -15,6 +16,7 @@ type AuthConfig struct {
 	Issuer          string          // e.g., "cyoda"
 	ExpirySeconds   int             // e.g., 3600
 	TrustedKeyStore TrustedKeyStore // optional: externally-provided persistent store; if nil, uses in-memory
+	IAMFeatures     IAMFeatures     // IAM feature surface for /oauth/keys/* and bootstrap key config
 }
 
 // AuthService wires together all auth components and exposes HTTP handlers.
@@ -33,6 +35,13 @@ type AuthService struct {
 
 // NewAuthService creates a fully wired AuthService from the given config.
 func NewAuthService(config AuthConfig) (*AuthService, error) {
+	// Apply defaults for zero-value IAMFeatures so callers that don't set the
+	// field (e.g. existing tests with no explicit IAMFeatures) still get sane
+	// bootstrap-key behaviour.
+	if config.IAMFeatures.KeypairDefaultValidityDays == 0 {
+		config.IAMFeatures = DefaultIAMFeatures()
+	}
+
 	privateKey, err := ParseRSAPrivateKeyFromPEM([]byte(config.SigningKeyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse signing key: %w", err)
@@ -55,20 +64,30 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 		return nil, fmt.Errorf("failed to marshal public key for KID: %w", err)
 	}
 	kidHash := sha256.Sum256(pubDER)
-	kid := hex.EncodeToString(kidHash[:16])
+	signingKID := hex.EncodeToString(kidHash[:16])
 
 	// Register the signing key as the initial active key pair.
+	now := time.Now().UTC()
+	validTo := now.Add(time.Duration(config.IAMFeatures.KeypairDefaultValidityDays) * 24 * time.Hour)
 	kp := &KeyPair{
-		KID:        kid,
-		Audience:   "client", // bootstrap audience config will land in Task 14
+		KID:        signingKID,
+		Audience:   config.IAMFeatures.BootstrapAudience,
 		Algorithm:  "RS256",
 		PublicKey:  &privateKey.PublicKey,
 		PrivateKey: privateKey,
 		Active:     true,
-		ValidFrom:  time.Now().UTC(),
+		ValidFrom:  now,
+		ValidTo:    &validTo,
 	}
 	if err := keyStore.Save(kp, RotateOptions{}); err != nil {
-		return nil, fmt.Errorf("failed to save signing key: %w", err)
+		return nil, fmt.Errorf("save bootstrap key: %w", err)
+	}
+	if validTo.Sub(now) < 30*24*time.Hour {
+		slog.Warn("bootstrap signing key expires within 30 days; rotate before expiry",
+			"pkg", "auth",
+			"kid", signingKID,
+			"validTo", validTo.Format(time.RFC3339),
+		)
 	}
 
 	// Build handlers.
@@ -91,7 +110,7 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 		keyStore:     keyStore,
 		trustedStore: trustedStore,
 		m2mStore:     m2mStore,
-		signingKID:   kid,
+		signingKID:   signingKID,
 		issuer:       config.Issuer,
 		handler:      publicMux,
 		adminHandler: adminMux,

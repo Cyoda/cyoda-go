@@ -7,17 +7,28 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type Handler struct {
-	authSvc  contract.AuthenticationService
-	authzSvc contract.AuthorizationService
+	authSvc         contract.AuthenticationService
+	authzSvc        contract.AuthorizationService
+	keyStore        auth.KeyStore
+	trustedKeyStore auth.TrustedKeyStore
+	iam             auth.IAMFeatures
 }
 
-func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService) *Handler {
-	return &Handler{authSvc: authSvc, authzSvc: authzSvc}
+func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService,
+	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, iam auth.IAMFeatures) *Handler {
+	return &Handler{
+		authSvc:         authSvc,
+		authzSvc:        authzSvc,
+		keyStore:        keyStore,
+		trustedKeyStore: trustedKeyStore,
+		iam:             iam,
+	}
 }
 
 func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
@@ -79,46 +90,6 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
-	h.stub(w, r)
-}
-
-func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
-	h.stub(w, r)
-}
-
-func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
-	h.stub(w, r)
-}
-
-func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
-	h.stub(w, r)
-}
-
-func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
-	h.stub(w, r)
-}
-
-func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
 	h.stub(w, r)
 }
 

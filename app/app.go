@@ -236,6 +236,7 @@ func New(cfg Config) *App {
 			Issuer:          cfg.IAM.JWTIssuer,
 			ExpirySeconds:   cfg.IAM.JWTExpiry,
 			TrustedKeyStore: trustedKeyStore,
+			IAMFeatures:     cfg.IAM.AuthIAMFeatures(),
 		})
 		if err != nil {
 			slog.Error("startup failure",
@@ -440,7 +441,13 @@ func New(cfg Config) *App {
 	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
-	server.Account = account.New(a.authService, a.authzService)
+	var accountKeyStore auth.KeyStore
+	var accountTrustedKeyStore auth.TrustedKeyStore
+	if authSvc != nil {
+		accountKeyStore = authSvc.KeyStore()
+		accountTrustedKeyStore = authSvc.TrustedKeyStore()
+	}
+	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, cfg.IAM.AuthIAMFeatures())
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
