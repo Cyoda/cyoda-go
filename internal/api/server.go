@@ -417,10 +417,6 @@ func (s *Server) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, p
 	s.Unimplemented.GetTechnicalUserToken(w, r, params)
 }
 
-// Trusted-key ops (ListTrustedKeys, RegisterTrustedKey, DeleteTrustedKey,
-// InvalidateTrustedKey, ReactivateTrustedKey) remain Unimplemented until
-// Phase 6 (Tasks 19-20).
-
 func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if s.Account != nil {
 		s.Account.IssueJwtKeyPair(w, r)
@@ -462,22 +458,42 @@ func (s *Server) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, ke
 }
 
 func (s *Server) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
+	if s.Account != nil {
+		s.Account.ListTrustedKeys(w, r)
+		return
+	}
 	s.Unimplemented.ListTrustedKeys(w, r)
 }
 
 func (s *Server) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
+	if s.Account != nil {
+		s.Account.RegisterTrustedKey(w, r)
+		return
+	}
 	s.Unimplemented.RegisterTrustedKey(w, r)
 }
 
 func (s *Server) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
+	if s.Account != nil {
+		s.Account.DeleteTrustedKey(w, r, keyId)
+		return
+	}
 	s.Unimplemented.DeleteTrustedKey(w, r, keyId)
 }
 
 func (s *Server) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
+	if s.Account != nil {
+		s.Account.InvalidateTrustedKey(w, r, keyId)
+		return
+	}
 	s.Unimplemented.InvalidateTrustedKey(w, r, keyId)
 }
 
 func (s *Server) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
+	if s.Account != nil {
+		s.Account.ReactivateTrustedKey(w, r, keyId)
+		return
+	}
 	s.Unimplemented.ReactivateTrustedKey(w, r, keyId)
 }
 
