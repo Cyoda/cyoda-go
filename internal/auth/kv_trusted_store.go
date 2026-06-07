@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,14 +20,10 @@ import (
 const trustedKeysNamespace = "trusted-keys"
 
 // defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
-// default. Trusted keys are an admin-managed registry — a 100-key default
-// covers expected operational use (rotations, multi-issuer federation) and
-// defends against runaway registration if the admin endpoint is ever
+// default per tenant. Trusted keys are an admin-managed registry — a 100-key
+// default covers expected operational use (rotations, multi-issuer federation)
+// and defends against runaway registration if the admin endpoint is ever
 // misconfigured. Override via WithMaxTrustedKeys.
-//
-// TODO(#163): when the trusted-key registry becomes tenant-scoped, move this
-// cap to per-tenant; otherwise a hostile admin in one tenant can lock out
-// every other tenant from registering keys.
 const defaultMaxTrustedKeys = 100
 
 // KVTrustedKeyStoreOption configures a KVTrustedKeyStore at construction time.
@@ -35,41 +33,53 @@ type kvTrustedKeyStoreConfig struct {
 	maxTrustedKeys int
 }
 
-// WithMaxTrustedKeys overrides the default cap on registered trusted keys.
-// Values <= 0 disable the cap (registration becomes unbounded — only use this
-// in tests that exercise the unbounded path; production deployments must keep
-// the default).
+// WithMaxTrustedKeys overrides the default per-tenant cap on registered trusted
+// keys. Values <= 0 disable the cap (registration becomes unbounded — only use
+// this in tests that exercise the unbounded path; production deployments must
+// keep the default).
 func WithMaxTrustedKeys(n int) KVTrustedKeyStoreOption {
 	return func(c *kvTrustedKeyStoreConfig) {
 		c.maxTrustedKeys = n
 	}
 }
 
+// trustedKeyKey returns the KV key (within trustedKeysNamespace) for a
+// (tenantID, kid). Layout "<tenantID>:<kid>" makes tenant isolation a
+// storage-layer invariant.
+func trustedKeyKey(tenantID spi.TenantID, kid string) string {
+	return string(tenantID) + ":" + kid
+}
+
 // trustedKeyRecord is the JSON-serializable form of a TrustedKey.
 type trustedKeyRecord struct {
-	KID       string   `json:"kid"`
-	Audience  string   `json:"audience"`
-	Issuers   []string `json:"issuers,omitempty"`
-	Active    bool     `json:"active"`
-	ValidFrom string   `json:"validFrom"`
-	ValidTo   *string  `json:"validTo,omitempty"`
+	KID      string         `json:"kid"`
+	TenantID string         `json:"tenantID,omitempty"`
+	JWK      map[string]any `json:"jwk,omitempty"`
+	Audience string         `json:"audience"`
+	Issuers  []string       `json:"issuers,omitempty"`
+	Active   bool           `json:"active"`
+	// validFrom / validTo stored as RFC3339Nano strings for precision.
+	ValidFrom string  `json:"validFrom"`
+	ValidTo   *string `json:"validTo,omitempty"`
 	// RSA public key in JWK-like format.
 	N string `json:"n"` // base64url-encoded modulus
 	E string `json:"e"` // base64url-encoded exponent
 }
 
 // KVTrustedKeyStore persists trusted keys via a KeyValueStore backend.
-// It keeps an in-memory cache for fast reads and writes through to KV on mutations.
+// It keeps an in-memory cache for fast reads and writes through to KV on
+// mutations. All operations are tenant-scoped: KV keys use the layout
+// "<tenantID>:<kid>" and cache reads verify the stored TenantID.
 type KVTrustedKeyStore struct {
 	mu   sync.RWMutex
-	keys map[string]*TrustedKey
+	keys map[string]*TrustedKey // keyed by kid (KV key within namespace is tenantID:kid)
 	kv   spi.KeyValueStore
 	// ctx is a long-lived system context for KV operations. It is stored here
 	// because the TrustedKeyStore interface does not accept context parameters.
 	// This context must never carry cancellation or deadlines.
 	ctx context.Context
-	// maxTrustedKeys is the cap enforced by Register; <=0 means unbounded.
-	maxTrustedKeys int
+	// maxPerTenant is the per-tenant cap enforced by Register; <=0 means unbounded.
+	maxPerTenant int
 }
 
 // NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
@@ -83,11 +93,11 @@ func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVT
 		keys: make(map[string]*TrustedKey),
 		kv:   kv,
 		// context.WithoutCancel ensures the long-lived store ctx never propagates
-		// a cancellation or deadline from the caller (#34 item 5). Defence in
-		// depth: a future caller passing a request-scoped ctx would otherwise
-		// silently abort KV operations on request completion.
-		ctx:            context.WithoutCancel(ctx),
-		maxTrustedKeys: cfg.maxTrustedKeys,
+		// a cancellation or deadline from the caller. Defence in depth: a future
+		// caller passing a request-scoped ctx would otherwise silently abort KV
+		// operations on request completion.
+		ctx:          context.WithoutCancel(ctx),
+		maxPerTenant: cfg.maxTrustedKeys,
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
@@ -100,38 +110,58 @@ func (s *KVTrustedKeyStore) loadAll() error {
 	if err != nil {
 		return err
 	}
-	for _, data := range entries {
+	skipped := 0
+	for kvKey, data := range entries {
+		// Skip legacy entries: those stored before tenant-scoping used bare <kid>
+		// keys with no ":" separator and no tenantID in the record.
+		if !strings.Contains(kvKey, ":") {
+			skipped++
+			continue
+		}
 		tk, err := deserializeTrustedKey(data)
 		if err != nil {
-			return fmt.Errorf("failed to deserialize trusted key: %w", err)
+			return fmt.Errorf("failed to deserialize trusted key %q: %w", kvKey, err)
+		}
+		if tk.TenantID == "" {
+			skipped++
+			continue
 		}
 		s.keys[tk.KID] = tk
+	}
+	if skipped > 0 {
+		slog.Warn("skipped legacy trusted-key entries without tenant scope",
+			"count", skipped,
+			"namespace", trustedKeysNamespace)
 	}
 	return nil
 }
 
-// loadOne loads a single trusted key from the KV backend into the in-memory cache.
-func (s *KVTrustedKeyStore) loadOne(kid string) error {
-	data, err := s.kv.Get(s.ctx, trustedKeysNamespace, kid)
+// loadOne loads a single trusted key for the given tenant from the KV backend
+// into the in-memory cache. Returns an error if not found or tenant mismatch.
+func (s *KVTrustedKeyStore) loadOne(tenantID spi.TenantID, kid string) error {
+	data, err := s.kv.Get(s.ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid))
 	if err != nil {
 		return err
 	}
 	tk, err := deserializeTrustedKey(data)
 	if err != nil {
-		return fmt.Errorf("failed to deserialize trusted key %s: %w", kid, err)
+		return fmt.Errorf("failed to deserialize trusted key %s:%s: %w", tenantID, kid, err)
+	}
+	if tk.TenantID != tenantID {
+		return fmt.Errorf("trusted key not found: %s", kid)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.keys[tk.KID] = tk
+	s.keys[kid] = tk
 	return nil
 }
 
-func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
+func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
 	data, err := serializeTrustedKey(tk)
 	if err != nil {
 		return err
 	}
-	return s.kv.Put(s.ctx, trustedKeysNamespace, tk.KID, data)
+	return s.kv.Put(s.ctx, trustedKeysNamespace, kvKey, data)
 }
 
 // Register adds or replaces a trusted key and persists it. Per the cyoda
@@ -139,74 +169,122 @@ func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
 // an existing KID atomically replaces the JWK material under the same record,
 // which makes the endpoint idempotent / retry-safe during key rotation.
 //
-// 409 Conflict is reserved for the registry-full guard. Cross-tenant KID
-// collision and RotateOptions.Invalidate are handled in the InMemoryTrustedKeyStore
-// today; deep tenant-scoping of KVTrustedKeyStore is tracked in Task 8.
+// Cross-tenant KID collision returns 409 KEY_OWNED_BY_DIFFERENT_TENANT.
+// Per-tenant cap (counts only currently-valid keys, excluding the KID being
+// registered so same-KID upserts don't consume a slot) returns
+// 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, all other active
+// siblings in the same tenant are marked inactive with a gracePeriod ValidTo.
 //
-// The cap check only fires on insert (new KID), not on upsert — replacing
-// an existing record does not grow the registry.
-//
-// TODO(#281-task8): tenant-scope Register; honour opts.Invalidate sibling
-// invalidation and cross-tenant collision guard.
-func (s *KVTrustedKeyStore) Register(tk *TrustedKey, _ RotateOptions) error {
+// KV writes happen FIRST; in-memory map mutation is LAST so a partial KV
+// failure leaves the cache untouched (rollback safety).
+func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, exists := s.keys[tk.KID]
-	if !exists && s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
-		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
+	// Cross-tenant collision guard.
+	if existing, ok := s.keys[tk.KID]; ok && existing.TenantID != tk.TenantID {
+		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
 	}
 
-	copied := copyTrustedKey(tk)
-	if err := s.persist(copied); err != nil {
+	// Per-tenant cap: count only currently-valid keys (excluding the KID being
+	// registered so same-KID upserts don't consume a slot).
+	if s.maxPerTenant > 0 {
+		now := time.Now()
+		count := 0
+		for _, k := range s.keys {
+			if k.TenantID != tk.TenantID || k.KID == tk.KID {
+				continue
+			}
+			if !k.Active {
+				continue
+			}
+			if k.ValidTo != nil && !now.Before(*k.ValidTo) {
+				continue
+			}
+			count++
+		}
+		if count >= s.maxPerTenant {
+			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
+		}
+	}
+
+	// Shallow-copy on store (callers may continue using *tk after Register).
+	copied := *tk
+
+	// Atomic sibling invalidation within the same tenant.
+	// We must write sibling KV updates before mutating memory (rollback safety).
+	if opts.Invalidate {
+		now := time.Now()
+		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
+		for _, k := range s.keys {
+			if k.TenantID != tk.TenantID || !k.Active || k.KID == tk.KID {
+				continue
+			}
+			// Clone, mutate, persist to KV.
+			sibling := *k
+			sibling.Active = false
+			e := expiry
+			sibling.ValidTo = &e
+			if err := s.persistWithKey(trustedKeyKey(k.TenantID, k.KID), &sibling); err != nil {
+				return fmt.Errorf("failed to persist sibling invalidation for %s: %w", k.KID, err)
+			}
+			// Commit sibling to cache after successful KV write.
+			*k = sibling
+		}
+	}
+
+	// Write the new/updated entry to KV first (rollback safety).
+	kvKey := trustedKeyKey(tk.TenantID, tk.KID)
+	if err := s.persistWithKey(kvKey, &copied); err != nil {
 		return fmt.Errorf("failed to persist trusted key: %w", err)
 	}
-	s.keys[copied.KID] = copied
+	// Commit to cache only after KV write succeeded.
+	s.keys[copied.KID] = &copied
 	return nil
 }
 
-// Get retrieves a trusted key by KID. The tenantID parameter is accepted for
-// interface compliance but tenant isolation is not yet enforced here — Task 8
-// will add the tenant check.
-//
-// If the key is not in the in-memory cache, it attempts to load it from the KV
-// backend. This handles the multi-node case where a key was registered on
-// another node after this store was constructed.
-//
-// TODO(#281-task8): tenant-scope Get; reject keys owned by different tenant.
-func (s *KVTrustedKeyStore) Get(_ spi.TenantID, kid string) (*TrustedKey, error) {
+// Get retrieves a trusted key by tenant and KID. Cache hits verify that the
+// cached entry belongs to the caller's tenant; cross-tenant cache hits fall
+// through to a KV lookup. If the key is not in cache, it attempts to load it
+// from the KV backend (multi-node visibility: a key registered on another node
+// after this store was constructed will be found here).
+func (s *KVTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	s.mu.RLock()
-	tk, ok := s.keys[kid]
+	cached, ok := s.keys[kid]
 	s.mu.RUnlock()
+
 	if ok {
-		return copyTrustedKey(tk), nil
+		if cached.TenantID == tenantID {
+			return copyTrustedKey(cached), nil
+		}
+		// Cross-tenant cache hit — this tenant doesn't own this KID.
+		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
 
-	// Cache miss — try loading from KV backend (may have been registered on another node).
-	if err := s.loadOne(kid); err != nil {
+	// Cache miss — try loading from KV backend (may have been registered on
+	// another node after this instance started).
+	if err := s.loadOne(tenantID, kid); err != nil {
 		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
 
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	tk, ok = s.keys[kid]
-	if !ok {
+	tk, ok := s.keys[kid]
+	s.mu.RUnlock()
+	if !ok || tk.TenantID != tenantID {
 		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
 	return copyTrustedKey(tk), nil
 }
 
-// List returns all trusted keys. The tenantID parameter is accepted for
-// interface compliance but tenant filtering is not yet enforced here — Task 8
-// will add per-tenant filtering.
-//
-// TODO(#281-task8): tenant-scope List; return only keys owned by tenantID.
-func (s *KVTrustedKeyStore) List(_ spi.TenantID) []*TrustedKey {
+// List returns all trusted keys for the given tenant.
+func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*TrustedKey, 0, len(s.keys))
+	result := make([]*TrustedKey, 0)
 	for _, tk := range s.keys {
-		result = append(result, copyTrustedKey(tk))
+		if tk.TenantID == tenantID {
+			result = append(result, copyTrustedKey(tk))
+		}
 	}
 	return result
 }
@@ -226,63 +304,73 @@ func (s *KVTrustedKeyStore) ListForVerification() []*TrustedKey {
 	return out
 }
 
-// Delete removes a trusted key and persists the deletion. The tenantID
-// parameter is accepted for interface compliance but tenant isolation is not
-// yet enforced here — Task 8 will add the tenant check.
-//
-// TODO(#281-task8): tenant-scope Delete; reject operations from different tenant.
-func (s *KVTrustedKeyStore) Delete(_ spi.TenantID, kid string) error {
+// Delete removes a trusted key by tenant and KID. Returns an error if the key
+// does not exist or belongs to a different tenant.
+func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.keys[kid]; !ok {
+	tk, ok := s.keys[kid]
+	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
 	}
-	if err := s.kv.Delete(s.ctx, trustedKeysNamespace, kid); err != nil {
+	if err := s.kv.Delete(s.ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid)); err != nil {
 		return fmt.Errorf("failed to delete trusted key from KV store: %w", err)
 	}
 	delete(s.keys, kid)
 	return nil
 }
 
-// Invalidate marks a trusted key as inactive and persists. The tenantID
-// parameter is accepted for interface compliance but tenant isolation is not
-// yet enforced here — Task 8 will add the tenant check and gracePeriodSec
-// support.
-//
-// TODO(#281-task8): tenant-scope Invalidate; apply gracePeriodSec ValidTo.
-func (s *KVTrustedKeyStore) Invalidate(_ spi.TenantID, kid string, _ int64) error {
+// Invalidate marks a trusted key as inactive, sets ValidTo to
+// now+gracePeriodSec, and persists. Returns an error if the key does not
+// exist or belongs to a different tenant.
+func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
-	if !ok {
+	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
 	}
-	tk.Active = false
-	if err := s.persist(tk); err != nil {
-		tk.Active = true // rollback in-memory on failure
+	// Clone, mutate, persist to KV first (rollback safety).
+	updated := *tk
+	updated.Active = false
+	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
+	updated.ValidTo = &expiry
+	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
 		return fmt.Errorf("failed to persist invalidation: %w", err)
 	}
+	// Commit to cache after successful KV write.
+	s.keys[kid] = &updated
 	return nil
 }
 
-// Reactivate marks a trusted key as active and persists. The tenantID,
-// validFrom, and validTo parameters are accepted for interface compliance but
-// tenant isolation and window updates are not yet enforced here — Task 8 will
-// implement those.
-//
-// TODO(#281-task8): tenant-scope Reactivate; apply validFrom/validTo window.
-func (s *KVTrustedKeyStore) Reactivate(_ spi.TenantID, kid string, _, _ time.Time) error {
+// Reactivate sets a trusted key as active, updates its validity window, and
+// persists. Returns an error if the key does not exist or belongs to a
+// different tenant. Zero validFrom/validTo values are accepted (no window
+// constraint applied when zero).
+func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
-	if !ok {
+	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
 	}
-	tk.Active = true
-	if err := s.persist(tk); err != nil {
-		tk.Active = false // rollback in-memory on failure
+	// Clone, mutate, persist to KV first (rollback safety).
+	updated := *tk
+	updated.Active = true
+	if !validFrom.IsZero() {
+		updated.ValidFrom = validFrom
+	}
+	if !validTo.IsZero() {
+		vt := validTo
+		updated.ValidTo = &vt
+	} else {
+		updated.ValidTo = nil
+	}
+	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
 		return fmt.Errorf("failed to persist reactivation: %w", err)
 	}
+	// Commit to cache after successful KV write.
+	s.keys[kid] = &updated
 	return nil
 }
 
@@ -291,6 +379,8 @@ func (s *KVTrustedKeyStore) Reactivate(_ spi.TenantID, kid string, _, _ time.Tim
 func serializeTrustedKey(tk *TrustedKey) ([]byte, error) {
 	rec := trustedKeyRecord{
 		KID:       tk.KID,
+		TenantID:  string(tk.TenantID),
+		JWK:       tk.JWK,
 		Audience:  tk.Audience,
 		Issuers:   tk.Issuers,
 		Active:    tk.Active,
@@ -345,6 +435,8 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 
 	return &TrustedKey{
 		KID:       rec.KID,
+		TenantID:  spi.TenantID(rec.TenantID),
+		JWK:       rec.JWK,
 		PublicKey: pubKey,
 		Audience:  rec.Audience,
 		Issuers:   rec.Issuers,
@@ -372,6 +464,13 @@ func copyTrustedKey(tk *TrustedKey) *TrustedKey {
 	if tk.ValidTo != nil {
 		vt := *tk.ValidTo
 		copied.ValidTo = &vt
+	}
+	if tk.JWK != nil {
+		jwkCopy := make(map[string]any, len(tk.JWK))
+		for k, v := range tk.JWK {
+			jwkCopy[k] = v
+		}
+		copied.JWK = jwkCopy
 	}
 	return &copied
 }
