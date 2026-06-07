@@ -119,6 +119,76 @@ func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, p
 	_ = json.NewEncoder(w).Encode(toJwtKeyPairResponse(kp))
 }
 
+func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if err := h.keyStore.Delete(keyId); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	var grace int64
+	if r.ContentLength != 0 {
+		var req genapi.InvalidateKeyRequestDto
+		if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+			return
+		}
+		if req.GracePeriodSec != nil {
+			grace = *req.GracePeriodSec
+			if grace < 0 {
+				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "gracePeriodSec must be >= 0"))
+				return
+			}
+		}
+	}
+	if err := h.keyStore.Invalidate(keyId, grace); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	var req genapi.ReactivateKeyRequestDto
+	if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		return
+	}
+	if req.ValidTo.IsZero() {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo required"))
+		return
+	}
+	validFrom := time.Now()
+	if req.ValidFrom != nil {
+		validFrom = *req.ValidFrom
+	}
+	validTo := req.ValidTo
+	if !validTo.After(time.Now()) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
+		return
+	}
+	if !validTo.After(validFrom) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
+		return
+	}
+	if err := h.keyStore.Reactivate(keyId, validFrom, validTo); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func tenantFromCtx(r *http.Request) spi.TenantID {
 	uc := spi.GetUserContext(r.Context())
 	if uc == nil {

@@ -154,3 +154,81 @@ func TestGetCurrentJwtKeyPair_404_NoKeyForAudience(t *testing.T) {
 	}
 	commontest.ExpectErrorCode(t, w.Result(), "KEYPAIR_NOT_FOUND")
 }
+
+func TestDeleteJwtKeyPair(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	kp := mkRSAKeyPair(t, "client")
+	_ = ks.Save(kp, auth.RotateOptions{})
+	w := httptest.NewRecorder()
+	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "k")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if _, err := ks.Get("k"); err == nil {
+		t.Error("expected deleted")
+	}
+}
+
+func TestDeleteJwtKeyPair_404(t *testing.T) {
+	h, _, _ := newHandler(t)
+	w := httptest.NewRecorder()
+	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "missing")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d", w.Code)
+	}
+	commontest.ExpectErrorCode(t, w.Result(), "KEYPAIR_NOT_FOUND")
+}
+
+func TestInvalidateJwtKeyPair_GraceDefaultZero(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	now := time.Now()
+	kp := mkRSAKeyPair(t, "client")
+	_ = ks.Save(kp, auth.RotateOptions{})
+	w := httptest.NewRecorder()
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), "k")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	got, _ := ks.Get("k")
+	if got.ValidTo == nil || !got.ValidTo.Before(now.Add(2*time.Second)) {
+		t.Errorf("expected ValidTo near now (grace=0); got %v", got.ValidTo)
+	}
+}
+
+func TestInvalidateJwtKeyPair_NegativeGraceRejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	w := httptest.NewRecorder()
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":-5}`)), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", w.Code)
+	}
+}
+
+func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	past := time.Now().Add(-1 * time.Hour)
+	priv := &auth.KeyPair{KID: "k", Audience: "client", Algorithm: "RS256", PublicKey: mkRSAPub(t), Active: false, ValidFrom: past, ValidTo: &past}
+	_ = ks.Save(priv, auth.RotateOptions{})
+
+	w := httptest.NewRecorder()
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing validTo: status=%d", w.Code)
+	}
+
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: past})
+	w = httptest.NewRecorder()
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("past validTo: status=%d", w.Code)
+	}
+
+	future := time.Now().Add(24 * time.Hour)
+	body, _ = json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: future})
+	w = httptest.NewRecorder()
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusOK {
+		t.Fatalf("fresh validTo: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
