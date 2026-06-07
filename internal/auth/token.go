@@ -76,7 +76,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, clientID s
 		return
 	}
 
-	kp, err := h.keyStore.GetActive()
+	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
 		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
 		return
@@ -205,7 +205,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	kp, err := h.keyStore.GetActive()
+	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
 		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
 		return

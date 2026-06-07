@@ -101,13 +101,15 @@ func (h *KeysHandler) issueKeyPair(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	kp := &KeyPair{
 		KID:        kid,
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &privateKey.PublicKey,
 		PrivateKey: privateKey,
 		Active:     true,
-		CreatedAt:  now,
+		ValidFrom:  now,
 	}
 
-	if err := h.keyStore.Save(kp); err != nil {
+	if err := h.keyStore.Save(kp, RotateOptions{}); err != nil {
 		common.WriteError(w, r, common.Internal("failed to save key pair", err))
 		return
 	}
@@ -124,7 +126,7 @@ func (h *KeysHandler) issueKeyPair(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *KeysHandler) getCurrent(w http.ResponseWriter, r *http.Request) {
-	kp, err := h.keyStore.GetActive()
+	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
 		common.WriteError(w, r, common.Operational(
 			http.StatusNotFound, common.ErrCodeNotFound, "no active key pair"))
@@ -134,7 +136,7 @@ func (h *KeysHandler) getCurrent(w http.ResponseWriter, r *http.Request) {
 	resp := keysInfoResponse{
 		KID:       kp.KID,
 		Active:    kp.Active,
-		CreatedAt: kp.CreatedAt.Format(time.RFC3339),
+		CreatedAt: kp.ValidFrom.Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -154,7 +156,8 @@ func (h *KeysHandler) deleteKeyPair(w http.ResponseWriter, r *http.Request, keyI
 }
 
 func (h *KeysHandler) invalidateKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
-	if err := h.keyStore.Invalidate(keyID); err != nil {
+	// gracePeriodSec=0 means immediate expiry; Task 6 will expose this as a request param.
+	if err := h.keyStore.Invalidate(keyID, 0); err != nil {
 		slog.Info("key pair invalidate: not found", "pkg", "auth", "kid", keyID)
 		common.WriteError(w, r, common.Operational(
 			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
@@ -164,7 +167,9 @@ func (h *KeysHandler) invalidateKeyPair(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h *KeysHandler) reactivateKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
-	if err := h.keyStore.Reactivate(keyID); err != nil {
+	// Task 6 will expose validFrom/validTo as request params; default to now + 365 days.
+	now := time.Now().UTC()
+	if err := h.keyStore.Reactivate(keyID, now, now.Add(365*24*time.Hour)); err != nil {
 		slog.Info("key pair reactivate: not found", "pkg", "auth", "kid", keyID)
 		common.WriteError(w, r, common.Operational(
 			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))

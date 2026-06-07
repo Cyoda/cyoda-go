@@ -49,12 +49,14 @@ func TestJWKS_OneActiveKey(t *testing.T) {
 
 	kp := &KeyPair{
 		KID:        "key-1",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &privKey.PublicKey,
 		PrivateKey: privKey,
 		Active:     true,
-		CreatedAt:  time.Now(),
+		ValidFrom:  time.Now(),
 	}
-	if err := store.Save(kp); err != nil {
+	if err := store.Save(kp, RotateOptions{}); err != nil {
 		t.Fatalf("failed to save key pair: %v", err)
 	}
 
@@ -114,16 +116,18 @@ func TestJWKS_InvalidatedKeyNotIncluded(t *testing.T) {
 
 	kp := &KeyPair{
 		KID:        "key-inactive",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &privKey.PublicKey,
 		PrivateKey: privKey,
 		Active:     true,
-		CreatedAt:  time.Now(),
+		ValidFrom:  time.Now(),
 	}
-	if err := store.Save(kp); err != nil {
+	if err := store.Save(kp, RotateOptions{}); err != nil {
 		t.Fatalf("failed to save key pair: %v", err)
 	}
 
-	if err := store.Invalidate("key-inactive"); err != nil {
+	if err := store.Invalidate("key-inactive", 0); err != nil {
 		t.Fatalf("failed to invalidate key: %v", err)
 	}
 
@@ -165,12 +169,14 @@ func TestJWKS_MultipleKeys_OnlyActiveIncluded(t *testing.T) {
 
 		kp := &KeyPair{
 			KID:        tc.kid,
+			Audience:   "client",
+			Algorithm:  "RS256",
 			PublicKey:  &privKey.PublicKey,
 			PrivateKey: privKey,
 			Active:     tc.active,
-			CreatedAt:  time.Now(),
+			ValidFrom:  time.Now(),
 		}
-		if err := store.Save(kp); err != nil {
+		if err := store.Save(kp, RotateOptions{}); err != nil {
 			t.Fatalf("failed to save key pair %s: %v", tc.kid, err)
 		}
 	}

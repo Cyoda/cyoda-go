@@ -60,12 +60,14 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	// Register the signing key as the initial active key pair.
 	kp := &KeyPair{
 		KID:        kid,
+		Audience:   "client", // bootstrap audience config will land in Task 14
+		Algorithm:  "RS256",
 		PublicKey:  &privateKey.PublicKey,
 		PrivateKey: privateKey,
 		Active:     true,
-		CreatedAt:  time.Now().UTC(),
+		ValidFrom:  time.Now().UTC(),
 	}
-	if err := keyStore.Save(kp); err != nil {
+	if err := keyStore.Save(kp, RotateOptions{}); err != nil {
 		return nil, fmt.Errorf("failed to save signing key: %w", err)
 	}
 

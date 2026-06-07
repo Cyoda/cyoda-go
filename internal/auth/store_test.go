@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,24 +24,28 @@ func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
 
 	kp1 := &auth.KeyPair{
 		KID:        "kid-1",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &key1.PublicKey,
 		PrivateKey: key1,
 		Active:     true,
-		CreatedAt:  time.Now(),
+		ValidFrom:  time.Now(),
 	}
 	kp2 := &auth.KeyPair{
 		KID:        "kid-2",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &key2.PublicKey,
 		PrivateKey: key2,
 		Active:     false,
-		CreatedAt:  time.Now(),
+		ValidFrom:  time.Now(),
 	}
 
 	// Save
-	if err := store.Save(kp1); err != nil {
+	if err := store.Save(kp1, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Save kp1 failed: %v", err)
 	}
-	if err := store.Save(kp2); err != nil {
+	if err := store.Save(kp2, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Save kp2 failed: %v", err)
 	}
 
@@ -60,7 +65,7 @@ func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
 	}
 
 	// GetActive
-	active, err := store.GetActive()
+	active, err := store.GetActive("client")
 	if err != nil {
 		t.Fatalf("GetActive failed: %v", err)
 	}
@@ -75,7 +80,7 @@ func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
 	}
 
 	// Invalidate
-	if err := store.Invalidate("kid-1"); err != nil {
+	if err := store.Invalidate("kid-1", 0); err != nil {
 		t.Fatalf("Invalidate failed: %v", err)
 	}
 	got, _ = store.Get("kid-1")
@@ -84,13 +89,14 @@ func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
 	}
 
 	// GetActive should fail now (both inactive)
-	_, err = store.GetActive()
+	_, err = store.GetActive("client")
 	if err == nil {
 		t.Fatal("expected error when no active keys, got nil")
 	}
 
 	// Reactivate
-	if err := store.Reactivate("kid-1"); err != nil {
+	now := time.Now()
+	if err := store.Reactivate("kid-1", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("Reactivate failed: %v", err)
 	}
 	got, _ = store.Get("kid-1")
@@ -117,12 +123,14 @@ func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
 	}
 
 	// Invalidate not found
-	if err := store.Invalidate("kid-999"); err == nil {
+	if err := store.Invalidate("kid-999", 0); err == nil {
 		t.Fatal("expected error invalidating non-existent key, got nil")
 	}
 
 	// Reactivate not found
-	if err := store.Reactivate("kid-999"); err == nil {
+	futureFrom := time.Now()
+	futureTo := futureFrom.Add(24 * time.Hour)
+	if err := store.Reactivate("kid-999", futureFrom, futureTo); err == nil {
 		t.Fatal("expected error reactivating non-existent key, got nil")
 	}
 }
@@ -431,4 +439,160 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 	if err := store.Delete("client-1"); err == nil {
 		t.Fatal("expected error deleting non-existent client, got nil")
 	}
+}
+
+// --- KeyStore (audience-partitioned) Tests ---
+
+func TestKeyStore_GetActive_AudiencePartition(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	now := time.Now()
+	human := &auth.KeyPair{KID: "h1", Audience: "human", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
+	client := &auth.KeyPair{KID: "c1", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
+	if err := s.Save(human, auth.RotateOptions{}); err != nil {
+		t.Fatalf("save human: %v", err)
+	}
+	if err := s.Save(client, auth.RotateOptions{}); err != nil {
+		t.Fatalf("save client: %v", err)
+	}
+	got, err := s.GetActive("human")
+	if err != nil || got.KID != "h1" {
+		t.Fatalf("GetActive(human): got=%+v err=%v", got, err)
+	}
+	if _, err := s.GetActive("robot"); err == nil {
+		t.Fatal("GetActive(robot) should error")
+	}
+}
+
+func TestKeyStore_GetActive_MaxValidFrom(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	older := &auth.KeyPair{KID: "old", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now().Add(-1 * time.Hour)}
+	newer := &auth.KeyPair{KID: "new", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
+	_ = s.Save(older, auth.RotateOptions{})
+	_ = s.Save(newer, auth.RotateOptions{})
+	got, _ := s.GetActive("client")
+	if got.KID != "new" {
+		t.Errorf("expected newer ValidFrom selected, got %s", got.KID)
+	}
+}
+
+func TestKeyStore_Save_RotateInvalidatesSiblings(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	now := time.Now()
+	existing := &auth.KeyPair{KID: "e1", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
+	_ = s.Save(existing, auth.RotateOptions{})
+	fresh := &auth.KeyPair{KID: "f1", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now.Add(1 * time.Second)}
+	if err := s.Save(fresh, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	old, _ := s.Get("e1")
+	if old.Active {
+		t.Error("expected e1.Active=false")
+	}
+	if old.ValidTo == nil {
+		t.Error("expected e1.ValidTo set")
+	}
+}
+
+func TestKeyStore_Save_RotateNoOp(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	fresh := &auth.KeyPair{KID: "alone", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
+	if err := s.Save(fresh, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, _ := s.Get("alone")
+	if !got.Active {
+		t.Error("solo Save with Invalidate=true should still leave new key active")
+	}
+}
+
+func TestKeyStore_Save_ConcurrentRotateExactlyOneActive(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	baseline := &auth.KeyPair{KID: "base", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
+	_ = s.Save(baseline, auth.RotateOptions{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			kp := &auth.KeyPair{KID: fmt.Sprintf("c%d", i), Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now().Add(time.Duration(i+1) * time.Millisecond)}
+			_ = s.Save(kp, auth.RotateOptions{Invalidate: true, GracePeriodSec: 1})
+		}()
+	}
+	wg.Wait()
+	active := 0
+	for _, kid := range []string{"base", "c0", "c1"} {
+		if kp, err := s.Get(kid); err == nil && kp.Active {
+			active++
+		}
+	}
+	if active != 1 {
+		t.Errorf("expected exactly 1 active client-audience key, got %d", active)
+	}
+}
+
+func TestKeyStore_ListForVerification_LazyFilter(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	active := &auth.KeyPair{KID: "active", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
+	expired := &auth.KeyPair{KID: "expired", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: false, ValidFrom: past, ValidTo: &past}
+	_ = s.Save(active, auth.RotateOptions{})
+	_ = s.Save(expired, auth.RotateOptions{})
+	got := s.ListForVerification()
+	if len(got) != 1 || got[0].KID != "active" {
+		t.Fatalf("expected only active, got %+v", got)
+	}
+}
+
+func TestKeyStore_Reactivate_FreshWindow(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	expired := &auth.KeyPair{KID: "e", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: false, ValidFrom: past, ValidTo: &past}
+	_ = s.Save(expired, auth.RotateOptions{})
+	if err := s.Reactivate("e", now, past); err == nil {
+		t.Error("expected past-validTo to reject")
+	}
+	if err := s.Reactivate("e", now, now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	got, _ := s.Get("e")
+	if !got.Active {
+		t.Error("expected Active=true after reactivate")
+	}
+}
+
+func TestKeyStore_Reactivate_IdempotentOnActive(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	kp := &auth.KeyPair{KID: "k", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
+	_ = s.Save(kp, auth.RotateOptions{})
+	newWindow := time.Now().Add(48 * time.Hour)
+	if err := s.Reactivate("k", time.Now(), newWindow); err != nil {
+		t.Fatalf("reactivate on already-active: %v", err)
+	}
+	got, _ := s.Get("k")
+	if !got.Active {
+		t.Error("expected Active=true (idempotent)")
+	}
+	if got.ValidTo == nil || !got.ValidTo.Equal(newWindow) {
+		t.Errorf("expected ValidTo updated to %v, got %v", newWindow, got.ValidTo)
+	}
+}
+
+func testRSAPriv(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	return priv
 }

@@ -43,11 +43,13 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	}
 	err = keyStore.Save(&auth.KeyPair{
 		KID:        "signing-kid-1",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &signingKey.PublicKey,
 		PrivateKey: signingKey,
 		Active:     true,
-		CreatedAt:  time.Now(),
-	})
+		ValidFrom:  time.Now(),
+	}, auth.RotateOptions{})
 	if err != nil {
 		t.Fatalf("failed to save signing key: %v", err)
 	}
