@@ -2427,6 +2427,15 @@ type QueryConditionDto struct {
 	Type string `json:"type"`
 }
 
+// ReactivateKeyRequestDto defines model for ReactivateKeyRequestDto.
+type ReactivateKeyRequestDto struct {
+	// ValidFrom Optional; defaults to now if absent.
+	ValidFrom *time.Time `json:"validFrom,omitempty"`
+
+	// ValidTo Required. Must be > now and > validFrom.
+	ValidTo time.Time `json:"validTo"`
+}
+
 // ReactivateOidcProviderRequestDto defines model for ReactivateOidcProviderRequestDto.
 type ReactivateOidcProviderRequestDto struct {
 	// ReactivateKeys If true, also reactivates all related JWK keys that were invalidated with this provider
@@ -2456,7 +2465,7 @@ type RegisterTrustedKeyRequestDto struct {
 	Issuers *[]string `json:"issuers,omitempty"`
 
 	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions.
-	Jwk map[string]map[string]interface{} `json:"jwk"`
+	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Unique key identifier. Will be matched against the `kid` header in JWTs.
 	KeyId string `json:"keyId"`
@@ -2777,7 +2786,7 @@ type TrustedKeyResponseDto struct {
 	Issuers  *[]string                     `json:"issuers,omitempty"`
 
 	// Jwk The registered public key in JWK format (RFC 7517). Contains only public key components.
-	Jwk map[string]map[string]interface{} `json:"jwk"`
+	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Unique key identifier
 	KeyId string `json:"keyId"`
@@ -3420,11 +3429,17 @@ type IssueJwtKeyPairJSONRequestBody = IssueJwtKeyPairRequestDto
 // InvalidateJwtKeyPairJSONRequestBody defines body for InvalidateJwtKeyPair for application/json ContentType.
 type InvalidateJwtKeyPairJSONRequestBody = InvalidateKeyRequestDto
 
+// ReactivateJwtKeyPairJSONRequestBody defines body for ReactivateJwtKeyPair for application/json ContentType.
+type ReactivateJwtKeyPairJSONRequestBody = ReactivateKeyRequestDto
+
 // RegisterTrustedKeyJSONRequestBody defines body for RegisterTrustedKey for application/json ContentType.
 type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
 
 // InvalidateTrustedKeyJSONRequestBody defines body for InvalidateTrustedKey for application/json ContentType.
 type InvalidateTrustedKeyJSONRequestBody = InvalidateKeyRequestDto
+
+// ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
+type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
 
 // RegisterOidcProviderJSONRequestBody defines body for RegisterOidcProvider for application/json ContentType.
 type RegisterOidcProviderJSONRequestBody = RegisterOidcProviderRequestDto
