@@ -4048,7 +4048,7 @@ paths:
         Generates and stores a new asymmetric key-pair (public/private) for
         signing and validating OAuth 2.0 JWT
 
-        access tokens.
+        access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
       operationId: issueJwtKeyPair
       requestBody:
         content:
@@ -4066,29 +4066,27 @@ paths:
         "400":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -4119,35 +4117,33 @@ paths:
         "400":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -4175,29 +4171,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -4211,7 +4205,7 @@ paths:
         After invalidation, the key will no longer be used for signing new
         tokens,
 
-        and existing tokens signed with this key pair would not be accepted.
+        and existing tokens signed with this key pair would not be accepted. If `gracePeriodSec` is omitted or zero, invalidation is immediate.
       operationId: invalidateJwtKeyPair
       parameters:
         - name: keyId
@@ -4232,29 +4226,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -4277,6 +4269,12 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactivateKeyRequestDto"
+        required: true
       responses:
         "200":
           description: JWT key-pair reactivated successfully or already active
@@ -4284,32 +4282,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
+        "400":
+          description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -4319,7 +4321,7 @@ paths:
       summary: List registered trusted keys
       description: |
         Returns all trusted public keys registered for the caller's tenant.
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
       operationId: listTrustedKeys
       responses:
         "200":
@@ -4333,29 +4335,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Feature is disabled
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -4394,9 +4394,9 @@ paths:
         during which the old keys continue to be accepted.
 
 
-        Requires ADMIN or SUPER_USER role. Disabled by default — enable via
+        Requires ADMIN or ROLE_ADMIN role. Disabled by default — enable via
 
-        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`.
+        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
       operationId: registerTrustedKey
       requestBody:
         content:
@@ -4414,41 +4414,39 @@ paths:
         "400":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Feature is disabled
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "409":
           description: Key with this keyId belongs to a different tenant
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -4460,7 +4458,7 @@ paths:
         Deletes a registered trusted public key. The key must belong to the
         caller's tenant.
 
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
       operationId: deleteTrustedKey
       parameters:
         - name: keyId
@@ -4476,29 +4474,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -4511,9 +4507,9 @@ paths:
         signed with the
 
         corresponding private key will no longer be accepted for validation
-        (after the grace period).
+        (after the grace period). If `gracePeriodSec` is omitted or zero, invalidation is immediate.
 
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
       operationId: invalidateTrustedKey
       parameters:
         - name: keyId
@@ -4534,29 +4530,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -4570,7 +4564,7 @@ paths:
 
         be accepted again. This operation is idempotent.
 
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
 
 
         **Important**: Reactivation removes the key's expiration entirely
@@ -4588,6 +4582,12 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactivateKeyRequestDto"
+        required: true
       responses:
         "200":
           description: Trusted key reactivated successfully
@@ -4595,32 +4595,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
+        "400":
+          description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers:
@@ -8412,8 +8416,7 @@ components:
           example: my-app-key-1
         jwk:
           type: object
-          additionalProperties:
-            type: object
+          additionalProperties: true
           description: "The registered public key in JWK format (RFC 7517). Contains only
             public key components. "
         audience:
@@ -8456,8 +8459,7 @@ components:
           example: my-app-key-1
         jwk:
           type: object
-          additionalProperties:
-            type: object
+          additionalProperties: true
           description: 'A JSON Web Key (JWK) as defined in RFC 7517. Must contain the
             public key components only. Supported key types: RSA (`kty: "RSA"`),
             EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC
@@ -8516,6 +8518,19 @@ components:
             is 0 (immediate invalidation).
           example: 3600
           minimum: 0
+    ReactivateKeyRequestDto:
+      type: object
+      properties:
+        validFrom:
+          type: string
+          format: date-time
+          description: Optional; defaults to now if absent.
+        validTo:
+          type: string
+          format: date-time
+          description: Required. Must be > now and > validFrom.
+      required:
+        - validTo
     JwtKeyPairResponseDto:
       type: object
       properties:
