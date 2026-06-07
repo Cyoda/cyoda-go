@@ -3,7 +3,6 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -135,7 +134,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	trustedKey, err := findTrustedKeyByKIDStub(h.trustedKeyStore, kid)
+	trustedKey, err := getTrustedKeyByKID(h.trustedKeyStore, kid)
 	if err != nil {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unknown trusted key")
 		return
@@ -282,16 +281,4 @@ func writeTokenResponse(w http.ResponseWriter, status int, body map[string]any) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)
-}
-
-// findTrustedKeyByKIDStub is a transitional helper for Task 6 → Task 7.
-// Iterates ListForVerification() applying lazy ValidTo filter. Replaced by
-// the canonical getTrustedKeyByKID in Task 7.
-func findTrustedKeyByKIDStub(store TrustedKeyStore, kid string) (*TrustedKey, error) {
-	for _, tk := range store.ListForVerification() {
-		if tk.KID == kid {
-			return tk, nil
-		}
-	}
-	return nil, fmt.Errorf("trusted key not found")
 }
