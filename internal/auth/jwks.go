@@ -39,7 +39,7 @@ func (h *JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allKeys := h.keyStore.List()
+	allKeys := h.keyStore.ListForVerification()
 
 	entries := make([]jwkEntry, 0, len(allKeys))
 	for _, kp := range allKeys {

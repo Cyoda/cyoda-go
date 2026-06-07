@@ -74,7 +74,6 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	// Build handlers.
 	jwksHandler := NewJWKSHandler(keyStore)
 	tokenHandler := NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.ExpirySeconds)
-	keysHandler := NewKeysHandler(keyStore)
 	trustedHandler := NewTrustedKeysHandler(trustedStore)
 	m2mHandler := NewM2MHandler(m2mStore)
 
@@ -85,8 +84,6 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 
 	// Admin mux: key management, trusted keys, M2M clients (requires auth + ROLE_ADMIN).
 	adminMux := http.NewServeMux()
-	adminMux.Handle("/oauth/keys/keypair/", keysHandler)
-	adminMux.Handle("/oauth/keys/keypair", keysHandler)
 	adminMux.Handle("/oauth/keys/trusted/", trustedHandler)
 	adminMux.Handle("/oauth/keys/trusted", trustedHandler)
 	adminMux.Handle("/account/m2m/", m2mHandler)

@@ -3,8 +3,8 @@ package auth
 import (
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // requireAdmin gates administrative endpoints: the key pair handler, the

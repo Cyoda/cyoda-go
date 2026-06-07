@@ -304,11 +304,11 @@ func TestTrustedKeysHandler_RegisterAcceptsValidKIDChars(t *testing.T) {
 // methods to return injected errors. Used by handler tests to verify error
 // translation without standing up a flaky storage backend.
 type errorReturningTrustedKeyStore struct {
-	inner          TrustedKeyStore
-	registerErr    error
-	deleteErr      error
-	invalidateErr  error
-	reactivateErr  error
+	inner         TrustedKeyStore
+	registerErr   error
+	deleteErr     error
+	invalidateErr error
+	reactivateErr error
 }
 
 func (s *errorReturningTrustedKeyStore) Register(tk *TrustedKey) error {
@@ -318,7 +318,7 @@ func (s *errorReturningTrustedKeyStore) Register(tk *TrustedKey) error {
 	return s.inner.Register(tk)
 }
 func (s *errorReturningTrustedKeyStore) Get(kid string) (*TrustedKey, error) { return s.inner.Get(kid) }
-func (s *errorReturningTrustedKeyStore) List() []*TrustedKey                  { return s.inner.List() }
+func (s *errorReturningTrustedKeyStore) List() []*TrustedKey                 { return s.inner.List() }
 func (s *errorReturningTrustedKeyStore) Delete(kid string) error {
 	if s.deleteErr != nil {
 		return s.deleteErr
