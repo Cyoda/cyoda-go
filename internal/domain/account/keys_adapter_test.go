@@ -269,6 +269,20 @@ func TestRegression_StrictValidation_ValidToBeforeValidFrom(t *testing.T) {
 	}
 }
 
+// Regression-lock: nil keyStore (mock IAM mode wiring) must return 501 NOT_IMPLEMENTED,
+// never panic. Without this guard the recovery middleware flips healthFlag to false
+// permanently on the first admin request.
+func TestKeysAdapter_NilStoreInMockMode_Returns501(t *testing.T) {
+	h := account.New(nil, nil, nil, nil, auth.DefaultIAMFeatures())
+	req := adminReq(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
+	w := httptest.NewRecorder()
+	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("want 501 NOT_IMPLEMENTED in mock mode (nil keyStore); got %d", w.Code)
+	}
+	commontest.ExpectErrorCode(t, w.Result(), "NOT_IMPLEMENTED")
+}
+
 // §3.2 #3 Cross-tenant lifecycle 404 (not 403) — already covered by
 // TestDeleteTrustedKey_CrossTenant_404 in trusted_adapter_test.go.
 // §3.2 #5 Reactivate fresh validTo — covered by TestReactivateJwtKeyPair_RequiresFreshValidTo.

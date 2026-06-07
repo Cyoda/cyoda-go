@@ -181,6 +181,22 @@ func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
 
 func ptrInt64(v int64) *int64 { return &v }
 
+// Regression-lock: nil trustedKeyStore (mock IAM mode wiring) must return 501
+// NOT_IMPLEMENTED, never panic. The feature flag is enabled to bypass
+// FEATURE_DISABLED and reach the nil-store guard.
+func TestTrustedAdapter_NilStoreInMockMode_Returns501(t *testing.T) {
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true // bypass FEATURE_DISABLED to reach nil-store guard
+	h := account.New(nil, nil, nil, nil, feats)
+	req := adminReq(t, "GET", "/oauth/keys/trusted", nil)
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, req)
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("want 501 NOT_IMPLEMENTED; got %d", w.Code)
+	}
+	commontest.ExpectErrorCode(t, w.Result(), "NOT_IMPLEMENTED")
+}
+
 // Regression-lock test: cyoda-go honors the request `audience` and round-trips
 // it on the response. Cloud always coerces to "human".
 // Spec §3.2 #4.

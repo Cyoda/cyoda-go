@@ -13,6 +13,17 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
+// requireTrustedKeyStore returns false after writing 501 NOT_IMPLEMENTED if the
+// trusted-key store wasn't wired (e.g. mock IAM mode). All 5 trusted-key adapters call this.
+func (h *Handler) requireTrustedKeyStore(w http.ResponseWriter, r *http.Request) bool {
+	if h.trustedKeyStore == nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
+			common.ErrCodeNotImplemented, "trusted-key management requires JWT IAM mode"))
+		return false
+	}
+	return true
+}
+
 func (h *Handler) gateTrustedKeyFeature(w http.ResponseWriter, r *http.Request) bool {
 	if !h.iam.TrustedKeyRegistrationEnabled {
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeFeatureDisabled, "trusted-key registration is disabled"))
@@ -26,6 +37,9 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !h.requireTrustedKeyStore(w, r) {
 		return
 	}
 	var req genapi.RegisterTrustedKeyRequestDto
@@ -151,6 +165,9 @@ func (h *Handler) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
 	if !h.gateTrustedKeyFeature(w, r) {
 		return
 	}
+	if !h.requireTrustedKeyStore(w, r) {
+		return
+	}
 	tID := tenantFromCtx(r)
 	keys := h.trustedKeyStore.List(tID)
 	out := make([]genapi.TrustedKeyResponseDto, 0, len(keys))
@@ -166,6 +183,9 @@ func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId
 		return
 	}
 	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !h.requireTrustedKeyStore(w, r) {
 		return
 	}
 	if !auth.MatchesTrustedKIDPattern(keyId) {
@@ -185,6 +205,9 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !h.requireTrustedKeyStore(w, r) {
 		return
 	}
 	if !auth.MatchesTrustedKIDPattern(keyId) {
@@ -219,6 +242,9 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !h.requireTrustedKeyStore(w, r) {
 		return
 	}
 	if !auth.MatchesTrustedKIDPattern(keyId) {

@@ -120,11 +120,14 @@ v0.8.0 limitations:
 
 #### Upgrading from v0.7.x
 
-KV-backed trusted-key entries written by versions < v0.8.0 use the key
-shape `trustedkey:<kid>` and are not visible to v0.8.0's OpenAPI surface
-(orphaned, not deleted). Operators must re-register affected keys.
-Inspection: `grep "^trustedkey:[^:]*$" <kvdump>`. cyoda-go has no known
-production users on this surface.
+KV-backed trusted-key entries written by versions < v0.8.0 are orphaned.
+Within the `trusted-keys` namespace, entries are now keyed `<tenantID>:<kid>`
+(was bare `<kid>`). v0.8.0 does not query the old shape; affected entries are
+left in place but not loaded. Operators must re-register affected keys. To audit,
+look for entries in the `trusted-keys` namespace whose key contains no `:`
+separator (the exact query depends on the KV backend; for the SQLite plugin:
+`SELECT key FROM kv_store WHERE namespace='trusted-keys' AND key NOT LIKE '%:%'`).
+cyoda-go has no known production users on this surface.
 
 ## EXAMPLES
 

@@ -29,7 +29,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Known limitations
 
 - **Runtime-issued signing keypairs are lost on process restart.** The bootstrap key survives (its KID is deterministic per PEM). Persistent signing-key storage is tracked in a v0.8.x follow-up.
-- **Pre-v0.8.0 KV trusted-key entries are orphaned.** They use the old key shape (`trustedkey:<kid>` directly in the namespace); v0.8.0 uses `trustedkey:<tenantID>:<kid>` and does not query the old shape. Operators must re-register affected keys. Inspection: `grep "^trustedkey:[^:]*$" <kvdump>`.
+- **Pre-v0.8.0 KV trusted-key entries are orphaned.** Within the `trusted-keys` namespace, entries are now keyed `<tenantID>:<kid>` (was bare `<kid>`). v0.8.0 does not query the old shape; affected entries are left in place but not loaded. Operators must re-register affected keys. To audit, look for entries in the `trusted-keys` namespace whose key contains no `:` separator (the exact query depends on the KV backend; for the SQLite plugin: `SELECT key FROM kv_store WHERE namespace='trusted-keys' AND key NOT LIKE '%:%'`).
 - **v0.8.0 → pre-v0.8.0 rollback hazard.** Trusted keys created under v0.8.0 are visible to pre-v0.8.0 binaries as mangled-kid entries (`<tenantID>:<kid>` treated as the kid). Purge out-of-band before rollback if visibility matters.
 
 ---

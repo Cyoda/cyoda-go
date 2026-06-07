@@ -17,8 +17,22 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
+// requireKeyStore returns false after writing 501 NOT_IMPLEMENTED if the
+// store wasn't wired (e.g. mock IAM mode). All 5 keypair adapters call this.
+func (h *Handler) requireKeyStore(w http.ResponseWriter, r *http.Request) bool {
+	if h.keyStore == nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
+			common.ErrCodeNotImplemented, "key management requires JWT IAM mode"))
+		return false
+	}
+	return true
+}
+
 func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireKeyStore(w, r) {
 		return
 	}
 	var req genapi.IssueJwtKeyPairRequestDto
@@ -105,6 +119,9 @@ func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, p
 	if !auth.RequireAdmin(w, r) {
 		return
 	}
+	if !h.requireKeyStore(w, r) {
+		return
+	}
 	if !isValidKeyPairAudience(string(params.Audience)) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
 		return
@@ -122,6 +139,9 @@ func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId
 	if !auth.RequireAdmin(w, r) {
 		return
 	}
+	if !h.requireKeyStore(w, r) {
+		return
+	}
 	if err := h.keyStore.Delete(keyId); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
 		return
@@ -131,6 +151,9 @@ func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId
 
 func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
 	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireKeyStore(w, r) {
 		return
 	}
 	var grace int64
@@ -157,6 +180,9 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 
 func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
 	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireKeyStore(w, r) {
 		return
 	}
 	var req genapi.ReactivateKeyRequestDto

@@ -249,9 +249,13 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 // from the KV backend (multi-node visibility: a key registered on another node
 // after this store was constructed will be found here).
 func (s *KVTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	s.mu.RLock()
-	cached, ok := s.keys[kid]
-	s.mu.RUnlock()
+	// Critical section 1: cache lookup.
+	cached, ok := func() (*TrustedKey, bool) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		v, ok := s.keys[kid]
+		return v, ok
+	}()
 
 	if ok {
 		if cached.TenantID == tenantID {
@@ -262,14 +266,18 @@ func (s *KVTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey,
 	}
 
 	// Cache miss — try loading from KV backend (may have been registered on
-	// another node after this instance started).
+	// another node after this instance started). Slow I/O outside any lock.
 	if err := s.loadOne(tenantID, kid); err != nil {
 		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
 
-	s.mu.RLock()
-	tk, ok := s.keys[kid]
-	s.mu.RUnlock()
+	// Critical section 2: re-read from cache after load.
+	tk, ok := func() (*TrustedKey, bool) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		v, ok := s.keys[kid]
+		return v, ok
+	}()
 	if !ok || tk.TenantID != tenantID {
 		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
