@@ -9,6 +9,13 @@ import (
 	"regexp"
 )
 
+// trustedKIDPattern is the character whitelist enforced on trusted-key
+// identifiers across every lifecycle endpoint (register, delete, invalidate,
+// reactivate). Allowed: ASCII alphanumerics plus '-', '_', '.', length 1..128.
+// Anything else (control characters, slashes, query syntax, JSON-breaking
+// punctuation, unicode confusables) is rejected at the boundary so neither
+// the persistence layer nor downstream logs ever see attacker-controlled
+// fragments outside this safe set.
 var trustedKIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // MatchesTrustedKIDPattern is the exported form for adapter consumption.
@@ -50,19 +57,24 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
 }
 
+// validateRSAPublicExponent enforces the integrity invariants on an RSA
+// public-key exponent: positive, fits in int, and odd. RFC 3447 allows e in
+// [3, 2^256-1] and the practical universe of public exponents (3, 17, 65537)
+// all fit comfortably; rejecting anything that overflows int avoids the
+// silent-truncation hazard at int(big.Int.Int64()) call sites.
 func validateRSAPublicExponent(e *big.Int) (int, error) {
 	if e.Sign() <= 0 {
-		return 0, fmt.Errorf("exponent must be positive")
+		return 0, fmt.Errorf("rsa exponent must be positive")
 	}
 	if !e.IsInt64() {
-		return 0, fmt.Errorf("exponent too large")
+		return 0, fmt.Errorf("rsa exponent does not fit in int64")
 	}
 	v := e.Int64()
 	if v > int64(math.MaxInt) {
-		return 0, fmt.Errorf("exponent too large")
+		return 0, fmt.Errorf("rsa exponent does not fit in int")
 	}
 	if v&1 == 0 {
-		return 0, fmt.Errorf("exponent must be odd")
+		return 0, fmt.Errorf("rsa exponent must be odd")
 	}
 	return int(v), nil
 }
