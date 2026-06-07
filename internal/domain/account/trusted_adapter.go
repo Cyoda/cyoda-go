@@ -144,3 +144,114 @@ func toTrustedKeyResponse(tk *auth.TrustedKey) genapi.TrustedKeyResponseDto {
 	}
 	return resp
 }
+
+func (h *Handler) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	tID := tenantFromCtx(r)
+	keys := h.trustedKeyStore.List(tID)
+	out := make([]genapi.TrustedKeyResponseDto, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, toTrustedKeyResponse(k))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !auth.MatchesTrustedKIDPattern(keyId) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
+		return
+	}
+	tID := tenantFromCtx(r)
+	if err := h.trustedKeyStore.Delete(tID, keyId); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !auth.MatchesTrustedKIDPattern(keyId) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
+		return
+	}
+	var grace int64
+	if r.ContentLength != 0 {
+		var req genapi.InvalidateKeyRequestDto
+		if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+			return
+		}
+		if req.GracePeriodSec != nil {
+			grace = *req.GracePeriodSec
+			if grace < 0 {
+				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "gracePeriodSec must be >= 0"))
+				return
+			}
+		}
+	}
+	tID := tenantFromCtx(r)
+	if err := h.trustedKeyStore.Invalidate(tID, keyId, grace); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.gateTrustedKeyFeature(w, r) {
+		return
+	}
+	if !auth.MatchesTrustedKIDPattern(keyId) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
+		return
+	}
+	var req genapi.ReactivateKeyRequestDto
+	if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		return
+	}
+	if req.ValidTo.IsZero() {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo required"))
+		return
+	}
+	validFrom := time.Now()
+	if req.ValidFrom != nil {
+		validFrom = *req.ValidFrom
+	}
+	validTo := req.ValidTo
+	if !validTo.After(time.Now()) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
+		return
+	}
+	if !validTo.After(validFrom) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
+		return
+	}
+	tID := tenantFromCtx(r)
+	if err := h.trustedKeyStore.Reactivate(tID, keyId, validFrom, validTo); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}

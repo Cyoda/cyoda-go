@@ -101,3 +101,75 @@ func TestRegisterTrustedKey_CrossTenantCollision_409(t *testing.T) {
 	}
 	commontest.ExpectErrorCode(t, w.Result(), "KEY_OWNED_BY_DIFFERENT_TENANT")
 }
+
+func TestListTrustedKeys_TenantScoped(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	mine := &auth.TrustedKey{KID: "mine", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "mine"}}
+	theirs := &auth.TrustedKey{KID: "theirs", TenantID: spi.TenantID("other"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "theirs"}}
+	_ = ts.Register(mine, auth.RotateOptions{})
+	_ = ts.Register(theirs, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, adminReq(t, "GET", "/oauth/keys/trusted", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp []genapi.TrustedKeyResponseDto
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp) != 1 || resp[0].KeyId != "mine" {
+		t.Fatalf("expected only 'mine', got %+v", resp)
+	}
+}
+
+func TestDeleteTrustedKey_CrossTenant_404(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("other"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now()}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	w := httptest.NewRecorder()
+	h.DeleteTrustedKey(w, adminReq(t, "DELETE", "/", nil), "k")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d", w.Code)
+	}
+}
+
+func TestInvalidateTrustedKey_Grace(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	body, _ := json.Marshal(genapi.InvalidateKeyRequestDto{GracePeriodSec: ptrInt64(60)})
+	w := httptest.NewRecorder()
+	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	got, _ := ts.Get(spi.TenantID("t1"), "k")
+	if got.Active || got.ValidTo == nil {
+		t.Errorf("expected invalidated; got %+v", got)
+	}
+}
+
+func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	past := time.Now().Add(-1 * time.Hour)
+	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: false, ValidFrom: past, ValidTo: &past, JWK: map[string]any{"kty": "RSA", "kid": "k"}}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func ptrInt64(v int64) *int64 { return &v }
