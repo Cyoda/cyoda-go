@@ -6,6 +6,7 @@ see_also:
   - errors
   - errors.ENTITY_NOT_FOUND
   - errors.MODEL_NOT_FOUND
+  - errors.KEYPAIR_NOT_FOUND
 ---
 
 # errors.NOT_FOUND
@@ -31,3 +32,4 @@ Not retryable; the resource must be created or registered before the request can
 - errors
 - errors.ENTITY_NOT_FOUND
 - errors.MODEL_NOT_FOUND
+- errors.KEYPAIR_NOT_FOUND
