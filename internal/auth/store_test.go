@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
@@ -139,12 +140,14 @@ func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
 
 func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T) {
 	store := auth.NewInMemoryTrustedKeyStore()
+	tID := spi.TenantID("tenant-test")
 
 	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
 	key2, _ := rsa.GenerateKey(rand.Reader, 2048)
 
 	tk1 := &auth.TrustedKey{
 		KID:       "tk-1",
+		TenantID:  tID,
 		PublicKey: &key1.PublicKey,
 		Audience:  "api://default",
 		Active:    true,
@@ -153,6 +156,7 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	expiry := time.Now().Add(24 * time.Hour)
 	tk2 := &auth.TrustedKey{
 		KID:       "tk-2",
+		TenantID:  tID,
 		PublicKey: &key2.PublicKey,
 		Audience:  "api://other",
 		Active:    true,
@@ -161,15 +165,15 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Register
-	if err := store.Register(tk1); err != nil {
+	if err := store.Register(tk1, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register tk1 failed: %v", err)
 	}
-	if err := store.Register(tk2); err != nil {
+	if err := store.Register(tk2, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register tk2 failed: %v", err)
 	}
 
 	// Get
-	got, err := store.Get("tk-1")
+	got, err := store.Get(tID, "tk-1")
 	if err != nil {
 		t.Fatalf("Get tk-1 failed: %v", err)
 	}
@@ -178,72 +182,72 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Get not found
-	_, err = store.Get("tk-999")
+	_, err = store.Get(tID, "tk-999")
 	if err == nil {
 		t.Fatal("expected error for missing trusted key, got nil")
 	}
 
 	// List
-	all := store.List()
+	all := store.List(tID)
 	if len(all) != 2 {
 		t.Errorf("expected 2 trusted keys, got %d", len(all))
 	}
 
-	// Invalidate
-	if err := store.Invalidate("tk-1"); err != nil {
+	// Invalidate (with 0 grace period — ValidTo = now)
+	if err := store.Invalidate(tID, "tk-1", 0); err != nil {
 		t.Fatalf("Invalidate failed: %v", err)
 	}
-	got, _ = store.Get("tk-1")
+	got, _ = store.Get(tID, "tk-1")
 	if got.Active {
 		t.Error("expected tk-1 to be inactive after Invalidate")
 	}
 
-	// Reactivate
-	if err := store.Reactivate("tk-1"); err != nil {
+	// Reactivate with a fresh validity window
+	now := time.Now()
+	if err := store.Reactivate(tID, "tk-1", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("Reactivate failed: %v", err)
 	}
-	got, _ = store.Get("tk-1")
+	got, _ = store.Get(tID, "tk-1")
 	if !got.Active {
 		t.Error("expected tk-1 to be active after Reactivate")
 	}
 
 	// Delete
-	if err := store.Delete("tk-1"); err != nil {
+	if err := store.Delete(tID, "tk-1"); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	_, err = store.Get("tk-1")
+	_, err = store.Get(tID, "tk-1")
 	if err == nil {
 		t.Fatal("expected error after Delete, got nil")
 	}
-	all = store.List()
+	all = store.List(tID)
 	if len(all) != 1 {
 		t.Errorf("expected 1 trusted key after delete, got %d", len(all))
 	}
 
 	// Delete not found
-	if err := store.Delete("tk-1"); err == nil {
+	if err := store.Delete(tID, "tk-1"); err == nil {
 		t.Fatal("expected error deleting non-existent trusted key, got nil")
 	}
 
 	// Invalidate not found
-	if err := store.Invalidate("tk-999"); err == nil {
+	if err := store.Invalidate(tID, "tk-999", 0); err == nil {
 		t.Fatal("expected error invalidating non-existent trusted key, got nil")
 	}
 
 	// Reactivate not found
-	if err := store.Reactivate("tk-999"); err == nil {
+	if err := store.Reactivate(tID, "tk-999", now, now.Add(24*time.Hour)); err == nil {
 		t.Fatal("expected error reactivating non-existent trusted key, got nil")
 	}
 }
 
-// TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys mirrors the KV-backed
-// store's cap test: an admin must not be able to grow the in-memory map
-// without bound. The two stores implement the same role and must agree on
-// the bound; otherwise tests using the in-memory variant would silently
-// permit what production rejects.
+// TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys verifies that the cap
+// is enforced per-tenant on currently-valid keys. The new implementation
+// returns 400 TRUSTED_KEY_CAP_REACHED (not 409) for cap violations.
 func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
-	const cap = 3
-	store := auth.NewInMemoryTrustedKeyStore(auth.WithInMemoryMaxTrustedKeys(cap))
+	const capVal = 3
+	store := auth.NewInMemoryTrustedKeyStoreWithCap(capVal)
+	tID := spi.TenantID("tenant-cap")
 
 	mkKey := func(i int) *auth.TrustedKey {
 		k, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -252,6 +256,7 @@ func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
 		}
 		return &auth.TrustedKey{
 			KID:       fmt.Sprintf("cap-key-%d", i),
+			TenantID:  tID,
 			PublicKey: &k.PublicKey,
 			Audience:  "svc",
 			Active:    true,
@@ -259,16 +264,15 @@ func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
 		}
 	}
 
-	for i := 0; i < cap; i++ {
-		if err := store.Register(mkKey(i)); err != nil {
+	for i := 0; i < capVal; i++ {
+		if err := store.Register(mkKey(i), auth.RotateOptions{}); err != nil {
 			t.Fatalf("Register #%d (under cap): %v", i, err)
 		}
 	}
 
-	// (N+1)th must be rejected with a 409 Conflict AppError, matching the
-	// KV-backed variant's behaviour.
-	overflow := mkKey(cap)
-	err := store.Register(overflow)
+	// (N+1)th must be rejected with 400 TRUSTED_KEY_CAP_REACHED.
+	overflow := mkKey(capVal)
+	err := store.Register(overflow, auth.RotateOptions{})
 	if err == nil {
 		t.Fatalf("Register beyond cap: expected error, got nil")
 	}
@@ -276,45 +280,46 @@ func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
 	if !errors.As(err, &appErr) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
 	}
-	if appErr.Status != http.StatusConflict {
-		t.Errorf("status = %d, want 409", appErr.Status)
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", appErr.Status)
 	}
-	if appErr.Code != common.ErrCodeConflict {
-		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeConflict)
+	if appErr.Code != common.ErrCodeTrustedKeyCapReached {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeTrustedKeyCapReached)
 	}
 
 	// Existing keys are unaffected — overflow rejection must not corrupt state.
-	if got := len(store.List()); got != cap {
-		t.Errorf("expected list size %d after overflow rejection, got %d", cap, got)
+	if got := len(store.List(tID)); got != capVal {
+		t.Errorf("expected list size %d after overflow rejection, got %d", capVal, got)
 	}
 }
 
 // TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot
 // mirrors the KV-store edge case: re-registering an existing KID at full
-// capacity must remain permitted (rotation), only brand-new KIDs trip the cap.
+// capacity must remain permitted (rotation), only brand-new active KIDs trip the cap.
 func TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot(t *testing.T) {
-	store := auth.NewInMemoryTrustedKeyStore(auth.WithInMemoryMaxTrustedKeys(2))
+	store := auth.NewInMemoryTrustedKeyStoreWithCap(2)
+	tID := spi.TenantID("tenant-upsert")
 
 	mk := func(kid string) *auth.TrustedKey {
 		k, _ := rsa.GenerateKey(rand.Reader, 2048)
 		return &auth.TrustedKey{
-			KID: kid, PublicKey: &k.PublicKey, Audience: "svc",
+			KID: kid, TenantID: tID, PublicKey: &k.PublicKey, Audience: "svc",
 			Active: true, ValidFrom: time.Now().UTC(),
 		}
 	}
 
-	if err := store.Register(mk("k1")); err != nil {
+	if err := store.Register(mk("k1"), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register k1: %v", err)
 	}
-	if err := store.Register(mk("k2")); err != nil {
+	if err := store.Register(mk("k2"), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register k2: %v", err)
 	}
-	// Re-register existing kid — should succeed even at cap.
-	if err := store.Register(mk("k1")); err != nil {
+	// Re-register existing kid — should succeed even at cap (upsert, not insert).
+	if err := store.Register(mk("k1"), auth.RotateOptions{}); err != nil {
 		t.Fatalf("re-Register k1 (upsert at cap): %v", err)
 	}
-	// New kid still rejected with 409.
-	err := store.Register(mk("k3"))
+	// New kid still rejected with 400.
+	err := store.Register(mk("k3"), auth.RotateOptions{})
 	if err == nil {
 		t.Fatalf("Register k3 beyond cap: expected error, got nil")
 	}
@@ -322,8 +327,8 @@ func TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot(t *tes
 	if !errors.As(err, &appErr) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
 	}
-	if appErr.Status != http.StatusConflict {
-		t.Errorf("status = %d, want 409", appErr.Status)
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", appErr.Status)
 	}
 }
 
@@ -612,4 +617,108 @@ func testRSAPriv(t *testing.T) *rsa.PrivateKey {
 		t.Fatalf("rsa.GenerateKey: %v", err)
 	}
 	return priv
+}
+
+func TestTrustedKeyStore_TenantIsolation(t *testing.T) {
+	s := auth.NewInMemoryTrustedKeyStore()
+	priv := testRSAPriv(t)
+	tA := spi.TenantID("tenant-a")
+	tB := spi.TenantID("tenant-b")
+	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	if err := s.Register(tk, auth.RotateOptions{}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := s.Get(tB, "k1"); err == nil {
+		t.Error("B.Get(k1) leaked")
+	}
+	if err := s.Delete(tB, "k1"); err == nil {
+		t.Error("B.Delete(k1) leaked")
+	}
+	if err := s.Invalidate(tB, "k1", 0); err == nil {
+		t.Error("B.Invalidate(k1) leaked")
+	}
+}
+
+func TestTrustedKeyStore_CrossTenantCollision_409(t *testing.T) {
+	s := auth.NewInMemoryTrustedKeyStore()
+	priv := testRSAPriv(t)
+	tA := spi.TenantID("tenant-a")
+	tB := spi.TenantID("tenant-b")
+	kA := &auth.TrustedKey{KID: "shared", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	_ = s.Register(kA, auth.RotateOptions{})
+	kB := &auth.TrustedKey{KID: "shared", TenantID: tB, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	err := s.Register(kB, auth.RotateOptions{})
+	if err == nil {
+		t.Fatal("expected cross-tenant error")
+	}
+	var ae *common.AppError
+	if !errors.As(err, &ae) || ae.Code != common.ErrCodeKeyOwnedByDifferentTenant {
+		t.Errorf("expected KEY_OWNED_BY_DIFFERENT_TENANT, got %v", err)
+	}
+}
+
+func TestTrustedKeyStore_CapReached(t *testing.T) {
+	s := auth.NewInMemoryTrustedKeyStoreWithCap(2)
+	priv := testRSAPriv(t)
+	tID := spi.TenantID("t")
+	mk := func(kid string) *auth.TrustedKey {
+		return &auth.TrustedKey{KID: kid, TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	}
+	_ = s.Register(mk("k1"), auth.RotateOptions{})
+	_ = s.Register(mk("k2"), auth.RotateOptions{})
+	err := s.Register(mk("k3"), auth.RotateOptions{})
+	if err == nil {
+		t.Fatal("expected cap-reached error")
+	}
+	var ae *common.AppError
+	if !errors.As(err, &ae) || ae.Code != common.ErrCodeTrustedKeyCapReached {
+		t.Errorf("expected TRUSTED_KEY_CAP_REACHED, got %v", err)
+	}
+}
+
+func TestTrustedKeyStore_CapCountsValidOnly(t *testing.T) {
+	s := auth.NewInMemoryTrustedKeyStoreWithCap(2)
+	priv := testRSAPriv(t)
+	tID := spi.TenantID("t")
+	past := time.Now().Add(-1 * time.Hour)
+	expired := &auth.TrustedKey{KID: "old", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
+	active := &auth.TrustedKey{KID: "new", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	_ = s.Register(expired, auth.RotateOptions{})
+	_ = s.Register(active, auth.RotateOptions{})
+	third := &auth.TrustedKey{KID: "third", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	if err := s.Register(third, auth.RotateOptions{}); err != nil {
+		t.Fatalf("expected accept; expired excluded from count; got %v", err)
+	}
+}
+
+func TestTrustedKeyStore_RotateInvalidatesSameTenant(t *testing.T) {
+	s := auth.NewInMemoryTrustedKeyStore()
+	priv := testRSAPriv(t)
+	tID := spi.TenantID("t")
+	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+	_ = s.Register(a, auth.RotateOptions{})
+	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
+	if err := s.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	gotA, _ := s.Get(tID, "a")
+	if gotA.Active || gotA.ValidTo == nil {
+		t.Errorf("expected a invalidated with ValidTo; got %+v", gotA)
+	}
+}
+
+func TestTrustedKeyStore_Reactivate_RequiresFreshWindow(t *testing.T) {
+	s := auth.NewInMemoryTrustedKeyStore()
+	priv := testRSAPriv(t)
+	tID := spi.TenantID("t")
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	expired := &auth.TrustedKey{KID: "e", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
+	_ = s.Register(expired, auth.RotateOptions{})
+	if err := s.Reactivate(tID, "e", now, past); err == nil {
+		t.Error("expected past validTo rejected")
+	}
+	if err := s.Reactivate(tID, "e", now, now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
 }

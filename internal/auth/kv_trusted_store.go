@@ -139,16 +139,16 @@ func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
 // an existing KID atomically replaces the JWK material under the same record,
 // which makes the endpoint idempotent / retry-safe during key rotation.
 //
-// 409 Conflict is reserved for the registry-full guard (#34 item 2). The
-// full cloud contract also returns 409 on cross-tenant KID collision; the
-// cyoda-go store does not yet thread tenant through the registry, so that
-// branch is tracked for v0.7.0 (full replace/rotation per cloud contract).
+// 409 Conflict is reserved for the registry-full guard. Cross-tenant KID
+// collision and RotateOptions.Invalidate are handled in the InMemoryTrustedKeyStore
+// today; deep tenant-scoping of KVTrustedKeyStore is tracked in Task 8.
 //
 // The cap check only fires on insert (new KID), not on upsert — replacing
-// an existing record does not grow the registry, and rotating against a
-// cap-saturated registry would otherwise erroneously fail with
-// "registry full".
-func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
+// an existing record does not grow the registry.
+//
+// TODO(#281-task8): tenant-scope Register; honour opts.Invalidate sibling
+// invalidation and cross-tenant collision guard.
+func (s *KVTrustedKeyStore) Register(tk *TrustedKey, _ RotateOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -165,10 +165,16 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
 	return nil
 }
 
-// Get retrieves a trusted key by KID. If the key is not in the in-memory cache,
-// it attempts to load it from the KV backend. This handles the multi-node case
-// where a key was registered on another node after this store was constructed.
-func (s *KVTrustedKeyStore) Get(kid string) (*TrustedKey, error) {
+// Get retrieves a trusted key by KID. The tenantID parameter is accepted for
+// interface compliance but tenant isolation is not yet enforced here — Task 8
+// will add the tenant check.
+//
+// If the key is not in the in-memory cache, it attempts to load it from the KV
+// backend. This handles the multi-node case where a key was registered on
+// another node after this store was constructed.
+//
+// TODO(#281-task8): tenant-scope Get; reject keys owned by different tenant.
+func (s *KVTrustedKeyStore) Get(_ spi.TenantID, kid string) (*TrustedKey, error) {
 	s.mu.RLock()
 	tk, ok := s.keys[kid]
 	s.mu.RUnlock()
@@ -176,7 +182,7 @@ func (s *KVTrustedKeyStore) Get(kid string) (*TrustedKey, error) {
 		return copyTrustedKey(tk), nil
 	}
 
-	// Cache miss — try loading from KV backend (may have been registered on another node)
+	// Cache miss — try loading from KV backend (may have been registered on another node).
 	if err := s.loadOne(kid); err != nil {
 		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
@@ -190,8 +196,12 @@ func (s *KVTrustedKeyStore) Get(kid string) (*TrustedKey, error) {
 	return copyTrustedKey(tk), nil
 }
 
-// List returns all trusted keys.
-func (s *KVTrustedKeyStore) List() []*TrustedKey {
+// List returns all trusted keys. The tenantID parameter is accepted for
+// interface compliance but tenant filtering is not yet enforced here — Task 8
+// will add per-tenant filtering.
+//
+// TODO(#281-task8): tenant-scope List; return only keys owned by tenantID.
+func (s *KVTrustedKeyStore) List(_ spi.TenantID) []*TrustedKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*TrustedKey, 0, len(s.keys))
@@ -201,8 +211,27 @@ func (s *KVTrustedKeyStore) List() []*TrustedKey {
 	return result
 }
 
-// Delete removes a trusted key and persists the deletion.
-func (s *KVTrustedKeyStore) Delete(kid string) error {
+// ListForVerification returns keys still within their validity window across
+// all tenants. Used to populate the JWKS endpoint during grace periods.
+func (s *KVTrustedKeyStore) ListForVerification() []*TrustedKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	out := make([]*TrustedKey, 0, len(s.keys))
+	for _, tk := range s.keys {
+		if tk.ValidTo == nil || now.Before(*tk.ValidTo) {
+			out = append(out, copyTrustedKey(tk))
+		}
+	}
+	return out
+}
+
+// Delete removes a trusted key and persists the deletion. The tenantID
+// parameter is accepted for interface compliance but tenant isolation is not
+// yet enforced here — Task 8 will add the tenant check.
+//
+// TODO(#281-task8): tenant-scope Delete; reject operations from different tenant.
+func (s *KVTrustedKeyStore) Delete(_ spi.TenantID, kid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.keys[kid]; !ok {
@@ -215,8 +244,13 @@ func (s *KVTrustedKeyStore) Delete(kid string) error {
 	return nil
 }
 
-// Invalidate marks a trusted key as inactive and persists.
-func (s *KVTrustedKeyStore) Invalidate(kid string) error {
+// Invalidate marks a trusted key as inactive and persists. The tenantID
+// parameter is accepted for interface compliance but tenant isolation is not
+// yet enforced here — Task 8 will add the tenant check and gracePeriodSec
+// support.
+//
+// TODO(#281-task8): tenant-scope Invalidate; apply gracePeriodSec ValidTo.
+func (s *KVTrustedKeyStore) Invalidate(_ spi.TenantID, kid string, _ int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
@@ -231,8 +265,13 @@ func (s *KVTrustedKeyStore) Invalidate(kid string) error {
 	return nil
 }
 
-// Reactivate marks a trusted key as active and persists.
-func (s *KVTrustedKeyStore) Reactivate(kid string) error {
+// Reactivate marks a trusted key as active and persists. The tenantID,
+// validFrom, and validTo parameters are accepted for interface compliance but
+// tenant isolation and window updates are not yet enforced here — Task 8 will
+// implement those.
+//
+// TODO(#281-task8): tenant-scope Reactivate; apply validFrom/validTo window.
+func (s *KVTrustedKeyStore) Reactivate(_ spi.TenantID, kid string, _, _ time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]

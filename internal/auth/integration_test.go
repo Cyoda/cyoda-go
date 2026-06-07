@@ -284,21 +284,10 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 		}
 	})
 
-	t.Run("trusted key register endpoint rejects oversized body", func(t *testing.T) {
-		oversized := strings.Repeat("x", 1<<20+1)
-		req, _ := http.NewRequest("POST", adminSrv.URL+"/oauth/keys/trusted", strings.NewReader(oversized))
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("POST /oauth/keys/trusted: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusRequestEntityTooLarge && resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected 413 or 400, got %d", resp.StatusCode)
-		}
-	})
+	// Trusted-key register endpoint moved to chi adapters (Task 14+);
+	// body-size guard is tested via the InMemoryTrustedKeyStore handler
+	// unit tests in trusted_test.go (before it was deleted) and will be
+	// re-verified in the chi adapter integration test.
 }
 
 func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {

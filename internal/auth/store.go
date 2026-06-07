@@ -73,12 +73,13 @@ type KeyStore interface {
 
 // TrustedKeyStore manages trusted external public keys.
 type TrustedKeyStore interface {
-	Register(tk *TrustedKey) error
-	Get(kid string) (*TrustedKey, error)
-	List() []*TrustedKey
-	Delete(kid string) error
-	Invalidate(kid string) error
-	Reactivate(kid string) error
+	Register(tk *TrustedKey, opts RotateOptions) error
+	Get(tenantID spi.TenantID, kid string) (*TrustedKey, error)
+	List(tenantID spi.TenantID) []*TrustedKey
+	ListForVerification() []*TrustedKey
+	Delete(tenantID spi.TenantID, kid string) error
+	Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error
+	Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
 }
 
 // M2MClientStore manages machine-to-machine clients.
@@ -262,111 +263,175 @@ func (s *InMemoryKeyStore) Reactivate(kid string, validFrom, validTo time.Time) 
 
 // --- InMemoryTrustedKeyStore ---
 
-// InMemoryTrustedKeyStore stores trusted external public keys in memory.
+// InMemoryTrustedKeyStore stores trusted external public keys in memory with
+// full tenant scoping. Each KID is globally unique — cross-tenant KID
+// collisions are rejected with KEY_OWNED_BY_DIFFERENT_TENANT (409).
 type InMemoryTrustedKeyStore struct {
-	mu             sync.RWMutex
-	keys           map[string]*TrustedKey
-	maxTrustedKeys int
+	mu           sync.RWMutex
+	keys         map[string]*TrustedKey
+	maxPerTenant int
 }
 
-// InMemoryTrustedKeyStoreOption configures an InMemoryTrustedKeyStore at
-// construction time. Mirrors the KV-backed store's option pattern so tests
-// and callers see a single contract for capping the trusted-key registry.
-type InMemoryTrustedKeyStoreOption func(*InMemoryTrustedKeyStore)
+// NewInMemoryTrustedKeyStore creates a new InMemoryTrustedKeyStore with no cap.
+func NewInMemoryTrustedKeyStore() *InMemoryTrustedKeyStore {
+	return NewInMemoryTrustedKeyStoreWithCap(0)
+}
 
-// WithInMemoryMaxTrustedKeys overrides the default cap on registered trusted
-// keys for the in-memory store. Values <= 0 disable the cap.
-func WithInMemoryMaxTrustedKeys(n int) InMemoryTrustedKeyStoreOption {
-	return func(s *InMemoryTrustedKeyStore) {
-		s.maxTrustedKeys = n
+// NewInMemoryTrustedKeyStoreWithCap creates a new InMemoryTrustedKeyStore with
+// a per-tenant cap on currently-valid (non-expired) keys. Values <= 0 disable
+// the cap.
+func NewInMemoryTrustedKeyStoreWithCap(cap int) *InMemoryTrustedKeyStore {
+	return &InMemoryTrustedKeyStore{
+		keys:         make(map[string]*TrustedKey),
+		maxPerTenant: cap,
 	}
 }
 
-// NewInMemoryTrustedKeyStore creates a new InMemoryTrustedKeyStore. The
-// default cap matches KVTrustedKeyStore's defaultMaxTrustedKeys; pass
-// WithInMemoryMaxTrustedKeys to override (e.g. in tests exercising the cap).
-func NewInMemoryTrustedKeyStore(opts ...InMemoryTrustedKeyStoreOption) *InMemoryTrustedKeyStore {
-	s := &InMemoryTrustedKeyStore{
-		keys:           make(map[string]*TrustedKey),
-		maxTrustedKeys: defaultMaxTrustedKeys,
-	}
-	for _, opt := range opts {
-		opt(s)
-	}
-	return s
-}
-
-// Register adds a trusted key. Re-registering an existing KID is an
-// idempotent upsert and never trips the registry cap; only a brand-new KID
-// at full capacity is rejected with a 409 Conflict AppError. The capacity
-// check and the insert are performed under a single Lock so concurrent
-// registrations cannot collectively exceed the cap. This mirrors
-// KVTrustedKeyStore.Register so that tests using the in-memory variant
-// observe the same bound as production code paths.
-func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey) error {
+// Register adds or replaces a trusted key. Cross-tenant KID collision returns
+// 409 KEY_OWNED_BY_DIFFERENT_TENANT. Per-tenant cap (counts only
+// currently-valid keys) returns 400 TRUSTED_KEY_CAP_REACHED. When
+// opts.Invalidate is true, all other active siblings in the same tenant
+// partition are marked inactive with a gracePeriod ValidTo. Stores a shallow
+// copy of *tk (ownership-mutability rule 4).
+func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.keys[tk.KID]; !exists && s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
-		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
+
+	// Cross-tenant collision guard.
+	if existing, ok := s.keys[tk.KID]; ok && existing.TenantID != tk.TenantID {
+		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
 	}
-	s.keys[tk.KID] = copyTrustedKey(tk)
+
+	// Per-tenant cap: count only currently-valid keys (excluding the KID being
+	// registered, so same-KID upserts don't consume a slot).
+	if s.maxPerTenant > 0 {
+		now := time.Now()
+		count := 0
+		for _, k := range s.keys {
+			if k.TenantID != tk.TenantID || k.KID == tk.KID {
+				continue
+			}
+			if !k.Active {
+				continue
+			}
+			if k.ValidTo != nil && !now.Before(*k.ValidTo) {
+				continue
+			}
+			count++
+		}
+		if count >= s.maxPerTenant {
+			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
+		}
+	}
+
+	// Atomic sibling invalidation within the same tenant.
+	if opts.Invalidate {
+		now := time.Now()
+		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
+		for _, k := range s.keys {
+			if k.TenantID == tk.TenantID && k.Active && k.KID != tk.KID {
+				k.Active = false
+				e := expiry
+				k.ValidTo = &e
+			}
+		}
+	}
+
+	// Shallow-copy on store (callers may continue using *tk after Register).
+	copied := *tk
+	s.keys[tk.KID] = &copied
 	return nil
 }
 
-// Get retrieves a trusted key by KID.
-func (s *InMemoryTrustedKeyStore) Get(kid string) (*TrustedKey, error) {
+// Get retrieves a trusted key by tenant and KID. Returns an error if the key
+// does not exist or belongs to a different tenant.
+func (s *InMemoryTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tk, ok := s.keys[kid]
-	if !ok {
+	if !ok || tk.TenantID != tenantID {
 		return nil, fmt.Errorf("trusted key not found: %s", kid)
 	}
-	return copyTrustedKey(tk), nil
+	copied := *tk
+	return &copied, nil
 }
 
-// List returns all trusted keys.
-func (s *InMemoryTrustedKeyStore) List() []*TrustedKey {
+// List returns all trusted keys for the given tenant.
+func (s *InMemoryTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*TrustedKey, 0, len(s.keys))
+	result := make([]*TrustedKey, 0)
 	for _, tk := range s.keys {
-		result = append(result, copyTrustedKey(tk))
+		if tk.TenantID == tenantID {
+			copied := *tk
+			result = append(result, &copied)
+		}
 	}
 	return result
 }
 
-// Delete removes a trusted key by KID.
-func (s *InMemoryTrustedKeyStore) Delete(kid string) error {
+// ListForVerification returns keys still within their validity window across
+// all tenants. Used to populate the JWKS endpoint during grace periods.
+func (s *InMemoryTrustedKeyStore) ListForVerification() []*TrustedKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	out := make([]*TrustedKey, 0, len(s.keys))
+	for _, tk := range s.keys {
+		if tk.ValidTo == nil || now.Before(*tk.ValidTo) {
+			copied := *tk
+			out = append(out, &copied)
+		}
+	}
+	return out
+}
+
+// Delete removes a trusted key by tenant and KID.
+func (s *InMemoryTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.keys[kid]; !ok {
+	tk, ok := s.keys[kid]
+	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
 	}
 	delete(s.keys, kid)
 	return nil
 }
 
-// Invalidate marks a trusted key as inactive.
-func (s *InMemoryTrustedKeyStore) Invalidate(kid string) error {
+// Invalidate marks a trusted key as inactive and sets ValidTo to
+// now+gracePeriodSec so grace-period JWKS publishing still includes the key.
+func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
-	if !ok {
+	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
 	}
+	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
 	tk.Active = false
+	tk.ValidTo = &expiry
 	return nil
 }
 
-// Reactivate marks a trusted key as active.
-func (s *InMemoryTrustedKeyStore) Reactivate(kid string) error {
+// Reactivate sets a trusted key as active and updates its validity window.
+// validTo must be strictly in the future and after validFrom.
+func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
-	if !ok {
+	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
 	}
+	if !validTo.After(time.Now()) {
+		return fmt.Errorf("validTo must be in the future")
+	}
+	if !validTo.After(validFrom) {
+		return fmt.Errorf("validTo must be after validFrom")
+	}
 	tk.Active = true
+	tk.ValidFrom = validFrom
+	vt := validTo
+	tk.ValidTo = &vt
 	return nil
 }
 

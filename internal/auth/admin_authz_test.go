@@ -89,34 +89,6 @@ func TestM2MHandler_NoUserContextUnauthorized(t *testing.T) {
 	assertUnauthorized(t, handler, req, "no-ctx list")
 }
 
-// --- Trusted keys handler ---
-
-func TestTrustedKeysHandler_NonAdminForbidden(t *testing.T) {
-	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
-
-	cases := []struct {
-		name string
-		req  *http.Request
-	}{
-		{"list", httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil)},
-		{"register", httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted", bytes.NewBufferString(`{}`))},
-		{"delete", httptest.NewRequest(http.MethodDelete, "/oauth/keys/trusted/some-kid", nil)},
-		{"invalidate", httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted/some-kid/invalidate", nil)},
-		{"reactivate", httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted/some-kid/reactivate", nil)},
-	}
-	for _, tc := range cases {
-		tc.req.Header.Set("Content-Type", "application/json")
-		assertForbidden(t, handler, withNonAdminCtx(tc.req), "non-admin "+tc.name)
-	}
-}
-
-func TestTrustedKeysHandler_NoUserContextUnauthorized(t *testing.T) {
-	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
-
-	req := httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil)
-	assertUnauthorized(t, handler, req, "no-ctx list")
-}
-
 // --- Positive case: admin context allows through ---
 // These guard against a future mistake where the guard rejects admins.
 
@@ -124,18 +96,6 @@ func TestM2MHandler_AdminCanList(t *testing.T) {
 	handler := NewM2MHandler(NewInMemoryM2MClientStore())
 
 	req := withAdminCtx(httptest.NewRequest(http.MethodGet, "/account/m2m", nil))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("admin list: expected 200, got %d (body=%q)", rec.Code, rec.Body.String())
-	}
-}
-
-func TestTrustedKeysHandler_AdminCanList(t *testing.T) {
-	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
-
-	req := withAdminCtx(httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -169,10 +129,10 @@ func decodeProblemErrorCode(t *testing.T, rec *httptest.ResponseRecorder) string
 }
 
 func TestRequireAdmin_NoUserContext_ReturnsRFC9457Unauthorized(t *testing.T) {
-	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
+	handler := NewM2MHandler(NewInMemoryM2MClientStore())
 
 	// No admin context attached — middleware bypass / misconfiguration case.
-	req := httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil)
+	req := httptest.NewRequest(http.MethodGet, "/account/m2m", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -185,9 +145,9 @@ func TestRequireAdmin_NoUserContext_ReturnsRFC9457Unauthorized(t *testing.T) {
 }
 
 func TestRequireAdmin_NonAdmin_ReturnsRFC9457Forbidden(t *testing.T) {
-	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
+	handler := NewM2MHandler(NewInMemoryM2MClientStore())
 
-	req := withNonAdminCtx(httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil))
+	req := withNonAdminCtx(httptest.NewRequest(http.MethodGet, "/account/m2m", nil))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

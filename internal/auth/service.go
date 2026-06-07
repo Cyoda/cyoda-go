@@ -74,7 +74,6 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	// Build handlers.
 	jwksHandler := NewJWKSHandler(keyStore)
 	tokenHandler := NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.ExpirySeconds)
-	trustedHandler := NewTrustedKeysHandler(trustedStore)
 	m2mHandler := NewM2MHandler(m2mStore)
 
 	// Public mux: token issuance and JWKS (no auth required).
@@ -82,10 +81,9 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	publicMux.Handle("GET /.well-known/jwks.json", jwksHandler)
 	publicMux.Handle("POST /oauth/token", tokenHandler)
 
-	// Admin mux: key management, trusted keys, M2M clients (requires auth + ROLE_ADMIN).
+	// Admin mux: key management, M2M clients (requires auth + ROLE_ADMIN).
+	// Trusted-key endpoints moved to chi adapters in Task 14+.
 	adminMux := http.NewServeMux()
-	adminMux.Handle("/oauth/keys/trusted/", trustedHandler)
-	adminMux.Handle("/oauth/keys/trusted", trustedHandler)
 	adminMux.Handle("/account/m2m/", m2mHandler)
 	adminMux.Handle("/account/m2m", m2mHandler)
 

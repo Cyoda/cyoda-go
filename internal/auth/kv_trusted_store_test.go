@@ -55,12 +55,12 @@ func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
 		t.Fatalf("NewKVTrustedKeyStore (instance 1): %v", err)
 	}
 
-	if err := store1.Register(tk); err != nil {
+	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	// Verify it's accessible on instance 1.
-	got, err := store1.Get("persist-key-1")
+	got, err := store1.Get(spi.SystemTenantID, "persist-key-1")
 	if err != nil {
 		t.Fatalf("Get on instance 1: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
 
-	got2, err := store2.Get("persist-key-1")
+	got2, err := store2.Get(spi.SystemTenantID, "persist-key-1")
 	if err != nil {
 		t.Fatalf("Get on instance 2 (after simulated restart): %v", err)
 	}
@@ -138,12 +138,12 @@ func TestKVTrustedKeyStore_CrossNodeVisibility(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store1.Register(tk); err != nil {
+	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register on node-1: %v", err)
 	}
 
 	// Node-2 must see the key without restart
-	got, err := store2.Get("cross-node-key")
+	got, err := store2.Get(spi.SystemTenantID, "cross-node-key")
 	if err != nil {
 		t.Fatalf("Get on node-2 should find key registered on node-1: %v", err)
 	}
@@ -173,10 +173,10 @@ func TestKVTrustedKeyStore_DeletePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore: %v", err)
 	}
-	if err := store1.Register(tk); err != nil {
+	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := store1.Delete("del-key"); err != nil {
+	if err := store1.Delete(spi.SystemTenantID, "del-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestKVTrustedKeyStore_DeletePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	_, err = store2.Get("del-key")
+	_, err = store2.Get(spi.SystemTenantID, "del-key")
 	if err == nil {
 		t.Fatal("expected error for deleted key on new instance, got nil")
 	}
@@ -212,10 +212,10 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore: %v", err)
 	}
-	if err := store1.Register(tk); err != nil {
+	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := store1.Invalidate("toggle-key"); err != nil {
+	if err := store1.Invalidate(spi.SystemTenantID, "toggle-key", 0); err != nil {
 		t.Fatalf("Invalidate: %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	got, err := store2.Get("toggle-key")
+	got, err := store2.Get(spi.SystemTenantID, "toggle-key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -233,14 +233,14 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	}
 
 	// Reactivate and verify persists.
-	if err := store2.Reactivate("toggle-key"); err != nil {
+	if err := store2.Reactivate(spi.SystemTenantID, "toggle-key", time.Time{}, time.Time{}); err != nil {
 		t.Fatalf("Reactivate: %v", err)
 	}
 	store3, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 3): %v", err)
 	}
-	got3, err := store3.Get("toggle-key")
+	got3, err := store3.Get(spi.SystemTenantID, "toggle-key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 			Active:    true,
 			ValidFrom: time.Now().UTC(),
 		}
-		if err := store.Register(tk); err != nil {
+		if err := store.Register(tk, auth.RotateOptions{}); err != nil {
 			t.Fatalf("Register %d: %v", i, err)
 		}
 	}
@@ -288,7 +288,7 @@ func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	err = store.Register(overflow)
+	err = store.Register(overflow, auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected Register to reject 4th key when MaxTrustedKeys=3, got nil")
 	}
@@ -336,7 +336,7 @@ func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store.Register(original); err != nil {
+	if err := store.Register(original, auth.RotateOptions{}); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
 
@@ -350,11 +350,11 @@ func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store.Register(rotated); err != nil {
+	if err := store.Register(rotated, auth.RotateOptions{}); err != nil {
 		t.Fatalf("re-Register (upsert): expected nil, got %v", err)
 	}
 
-	got, err := store.Get("rotate-kid")
+	got, err := store.Get(spi.SystemTenantID, "rotate-kid")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	got2, err := store2.Get("rotate-kid")
+	got2, err := store2.Get(spi.SystemTenantID, "rotate-kid")
 	if err != nil {
 		t.Fatalf("Get on instance 2: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
 			Active:    true,
 			ValidFrom: time.Now().UTC(),
 		}
-		if err := store.Register(tk); err != nil {
+		if err := store.Register(tk, auth.RotateOptions{}); err != nil {
 			t.Fatalf("Register %d (%s): %v", i, kid, err)
 		}
 	}
@@ -421,7 +421,7 @@ func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store.Register(rotated); err != nil {
+	if err := store.Register(rotated, auth.RotateOptions{}); err != nil {
 		t.Fatalf("upsert on cap-saturated registry: expected nil, got %v", err)
 	}
 
@@ -434,7 +434,7 @@ func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	err = store.Register(novel)
+	err = store.Register(novel, auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected Register of new KID at cap to be rejected, got nil")
 	}
@@ -464,12 +464,12 @@ func TestKVTrustedKeyStore_ListPersists(t *testing.T) {
 	}
 	if err := store1.Register(&auth.TrustedKey{
 		KID: "list-1", PublicKey: &key1.PublicKey, Audience: "a", Active: true, ValidFrom: time.Now().UTC(),
-	}); err != nil {
+	}, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register list-1: %v", err)
 	}
 	if err := store1.Register(&auth.TrustedKey{
 		KID: "list-2", PublicKey: &key2.PublicKey, Audience: "b", Active: true, ValidFrom: time.Now().UTC(),
-	}); err != nil {
+	}, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register list-2: %v", err)
 	}
 
@@ -478,7 +478,7 @@ func TestKVTrustedKeyStore_ListPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	all := store2.List()
+	all := store2.List(spi.SystemTenantID)
 	if len(all) != 2 {
 		t.Errorf("expected 2 keys on new instance, got %d", len(all))
 	}
