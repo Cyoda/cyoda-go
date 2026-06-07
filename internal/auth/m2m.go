@@ -42,7 +42,7 @@ func NewM2MHandler(store M2MClientStore) *M2MHandler {
 
 // ServeHTTP routes M2M client management requests. Requires ROLE_ADMIN.
 func (h *M2MHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !RequireAdmin(w, r) {
 		return
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
