@@ -1,29 +1,15 @@
 package auth
 
 import (
-	"crypto/rsa"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
-	"math"
-	"math/big"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
-
-// trustedKIDPattern is the character whitelist enforced on trusted-key
-// identifiers across every lifecycle endpoint (register, delete, invalidate,
-// reactivate). Allowed: ASCII alphanumerics plus '-', '_', '.', length 1..128.
-// Anything else (control characters, slashes, query syntax, JSON-breaking
-// punctuation, unicode confusables) is rejected at the boundary so neither
-// the persistence layer nor downstream logs ever see attacker-controlled
-// fragments outside this safe set.
-var trustedKIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // registerTrustedKeyRequest is the JSON body for POST /oauth/keys/trusted.
 // Matches Cyoda Cloud's RegisterTrustedKeyRequest schema.
@@ -269,67 +255,6 @@ func extractKeyID(path, prefix string) string {
 		return ""
 	}
 	return kid
-}
-
-// parseRSAPublicKeyFromJWK parses an RSA public key from a JWK JSON object.
-func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
-	if len(jwkData) == 0 {
-		return nil, fmt.Errorf("empty JWK")
-	}
-	var jwk struct {
-		Kty string `json:"kty"`
-		N   string `json:"n"`
-		E   string `json:"e"`
-	}
-	if err := json.Unmarshal(jwkData, &jwk); err != nil {
-		return nil, fmt.Errorf("failed to parse JWK: %w", err)
-	}
-	if jwk.Kty != "RSA" {
-		return nil, fmt.Errorf("unsupported key type: %s (only RSA supported)", jwk.Kty)
-	}
-	if jwk.N == "" || jwk.E == "" {
-		return nil, fmt.Errorf("missing n or e in JWK")
-	}
-
-	nBytes, err := decodeBase64URL(jwk.N)
-	if err != nil {
-		return nil, fmt.Errorf("invalid n value: %w", err)
-	}
-	eBytes, err := decodeBase64URL(jwk.E)
-	if err != nil {
-		return nil, fmt.Errorf("invalid e value: %w", err)
-	}
-
-	n := new(big.Int).SetBytes(nBytes)
-	eBig := new(big.Int).SetBytes(eBytes)
-	e, err := validateRSAPublicExponent(eBig)
-	if err != nil {
-		return nil, err
-	}
-
-	return &rsa.PublicKey{N: n, E: e}, nil
-}
-
-// validateRSAPublicExponent enforces the integrity invariants on an RSA
-// public-key exponent (#34 item 4): positive, fits in int, and odd. RFC 3447
-// allows e in [3, 2^256-1] and the practical universe of public exponents
-// (3, 17, 65537) all fit comfortably; rejecting anything that overflows int
-// avoids the silent-truncation hazard at int(big.Int.Int64()) call sites.
-func validateRSAPublicExponent(e *big.Int) (int, error) {
-	if e.Sign() <= 0 {
-		return 0, fmt.Errorf("rsa exponent must be positive")
-	}
-	if !e.IsInt64() {
-		return 0, fmt.Errorf("rsa exponent does not fit in int64")
-	}
-	v := e.Int64()
-	if v > int64(math.MaxInt) {
-		return 0, fmt.Errorf("rsa exponent does not fit in int")
-	}
-	if v&1 == 0 {
-		return 0, fmt.Errorf("rsa exponent must be odd")
-	}
-	return int(v), nil
 }
 
 // toTrustedKeyInfoResponse converts a TrustedKey to its JSON response representation.
