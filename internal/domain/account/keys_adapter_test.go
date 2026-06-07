@@ -232,3 +232,43 @@ func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 		t.Fatalf("fresh validTo: status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// Regression-lock test: SUPER_USER must NOT be admitted. cyoda-go enforces
+// ROLE_ADMIN only; cloud accepts ADMIN ∨ SUPER_USER.
+// Spec §3.2 #2.
+func TestRegression_RoleGate_RoleAdminOnly(t *testing.T) {
+	h, _, _ := newHandler(t)
+	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"SUPER_USER"}}
+	req := httptest.NewRequest("GET", "/", nil).WithContext(spi.WithUserContext(httptest.NewRequest("GET", "/", nil).Context(), uc))
+	w := httptest.NewRecorder()
+	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+	if w.Code != http.StatusForbidden {
+		t.Errorf("SUPER_USER should not be admitted; want 403, got %d", w.Code)
+	}
+}
+
+// Regression-lock test: validTo < validFrom must be rejected with 400.
+// Cloud accepts and silently produces invalid keys.
+// Spec §3.2 #6.
+func TestRegression_StrictValidation_ValidToBeforeValidFrom(t *testing.T) {
+	h, _, _ := newHandler(t)
+	from := time.Now().Add(2 * time.Hour)
+	to := time.Now().Add(1 * time.Hour)
+	body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: "RS256", Audience: "client", ValidFrom: &from, ValidTo: &to})
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for validTo<validFrom; got %d", w.Code)
+	}
+}
+
+// §3.2 #3 Cross-tenant lifecycle 404 (not 403) — already covered by
+// TestDeleteTrustedKey_CrossTenant_404 in trusted_adapter_test.go.
+// §3.2 #5 Reactivate fresh validTo — covered by TestReactivateJwtKeyPair_RequiresFreshValidTo.
+// §3.2 #6 negative gracePeriodSec — covered by TestInvalidateJwtKeyPair_NegativeGraceRejected.
+// §3.2 #7 gracePeriodSec default 0 — covered by TestInvalidateJwtKeyPair_GraceDefaultZero.
+// §3.2 #10 Non-RS256 rejected — covered by TestIssueJwtKeyPair_RejectsNonRS256 and
+//
+//	the table in internal/auth/keypair_signing_test.go.
+//
+// §3.2 #1 JWKS-retained — covered by TestE2E_GracePeriodRoundTrip.

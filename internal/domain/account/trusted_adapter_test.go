@@ -173,3 +173,35 @@ func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+// Regression-lock test: cyoda-go honors the request `audience` and round-trips
+// it on the response. Cloud always coerces to "human".
+// Spec §3.2 #4.
+func TestRegression_TrustedAudienceRoundTrip(t *testing.T) {
+	h := enabledHandler(t)
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "client"})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	var resp genapi.TrustedKeyResponseDto
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if string(resp.Audience) != "client" {
+		t.Errorf("expected audience='client' (cloud coerces to 'human'); got %q", resp.Audience)
+	}
+}
+
+// Regression-lock test: same-tenant re-register with same keyId is a silent
+// upsert (200 or 201, no error). Cloud does atomic delete-and-replace
+// transactionally; cyoda-go preserves the existing silent-upsert behaviour
+// in KVTrustedKeyStore.Register.
+// Spec §3.2 #8.
+func TestRegression_SameTenantSilentUpsert(t *testing.T) {
+	h := enabledHandler(t)
+	for i := 0; i < 2; i++ {
+		body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k", Jwk: rsaJWK(t, "k"), Audience: "human"})
+		w := httptest.NewRecorder()
+		h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+		if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+			t.Errorf("iteration %d: status=%d", i, w.Code)
+		}
+	}
+}
