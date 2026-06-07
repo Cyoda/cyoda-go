@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,5 +310,144 @@ func TestE2E_ReactivateTrustedKey_Happy(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Grace-period round-trip + body-size assertions
+// ─────────────────────────────────────────────────────────────────────────────
+
+// fetchJWKSKIDs fetches /.well-known/jwks.json and returns the set of key IDs.
+// The JWKS endpoint is mounted under the context path (/api).
+func fetchJWKSKIDs(t *testing.T) map[string]bool {
+	t.Helper()
+	resp, err := http.Get(serverURL + "/api/.well-known/jwks.json")
+	if err != nil {
+		t.Fatalf("GET jwks.json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("jwks.json: got %d", resp.StatusCode)
+	}
+	var jwks struct {
+		Keys []struct {
+			KID string `json:"kid"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		t.Fatalf("decode jwks: %v", err)
+	}
+	kids := make(map[string]bool, len(jwks.Keys))
+	for _, k := range jwks.Keys {
+		kids[k.KID] = true
+	}
+	return kids
+}
+
+// TestE2E_GracePeriodRoundTrip issues keypair A, then keypair B with
+// invalidateCurrent + a 2 s grace. Asserts the correct JWKS state before and
+// after the grace window.
+//
+// JWKS semantics: when a keypair is invalidated (Active=false), it is
+// immediately removed from JWKS even if the grace window is still open. The
+// grace window only extends ValidTo so that the JWT *verification* path
+// (ListForVerification) can still validate tokens signed before the rotation.
+// B (the new active key) is visible in JWKS throughout.
+func TestE2E_GracePeriodRoundTrip(t *testing.T) {
+	// Step 1: issue keypair A.
+	bodyA := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	respA := adminRequest(t, "POST", "/oauth/keys/keypair", bodyA)
+	var kpA genapi.JwtKeyPairResponseDto
+	json.NewDecoder(respA.Body).Decode(&kpA)
+	respA.Body.Close()
+	if respA.StatusCode != http.StatusCreated {
+		t.Fatalf("issue A: got %d", respA.StatusCode)
+	}
+
+	// Step 2: issue keypair B with invalidateCurrent=true and a 2 s grace period.
+	bodyB := mustJSON(t, map[string]any{
+		"algorithm":                "RS256",
+		"audience":                 "client",
+		"invalidateCurrent":        true,
+		"invalidateGracePeriodSec": int64(2),
+	})
+	respB := adminRequest(t, "POST", "/oauth/keys/keypair", bodyB)
+	var kpB genapi.JwtKeyPairResponseDto
+	json.NewDecoder(respB.Body).Decode(&kpB)
+	respB.Body.Close()
+	if respB.StatusCode != http.StatusCreated {
+		t.Fatalf("issue B: got %d", respB.StatusCode)
+	}
+
+	// Step 3: immediately after rotation, A is inactive (not in JWKS) and B is active.
+	// The grace window extends ValidTo for JWT *verification* (ListForVerification),
+	// not for JWKS publication — JWKS only contains Active=true keys.
+	kidsDuring := fetchJWKSKIDs(t)
+	if kidsDuring[kpA.KeyId] {
+		t.Errorf("expected kid A (%s) absent from JWKS after invalidation (Active=false); got keys: %v", kpA.KeyId, kidsDuring)
+	}
+	if !kidsDuring[kpB.KeyId] {
+		t.Errorf("expected kid B (%s) present in JWKS as new active key; got keys: %v", kpB.KeyId, kidsDuring)
+	}
+
+	// Step 4: wait for grace to expire — B remains the sole active key.
+	time.Sleep(3 * time.Second)
+
+	kidsAfter := fetchJWKSKIDs(t)
+	if kidsAfter[kpA.KeyId] {
+		t.Errorf("expected kid A (%s) absent from JWKS after grace expired; got keys: %v", kpA.KeyId, kidsAfter)
+	}
+	if !kidsAfter[kpB.KeyId] {
+		t.Errorf("expected kid B (%s) still present in JWKS after grace expired; got keys: %v", kpB.KeyId, kidsAfter)
+	}
+}
+
+// TestE2E_KeypairBodySizeLimit verifies that POST /oauth/keys/keypair rejects
+// a request body larger than 1 MiB with 400.
+func TestE2E_KeypairBodySizeLimit(t *testing.T) {
+	padding := strings.Repeat("x", 1<<20+1)
+	oversized := fmt.Sprintf(`{"algorithm":"RS256","audience":"client","_padding":"%s"}`, padding)
+
+	token := getToken(t, "test-client", "test-secret")
+	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/keypair", strings.NewReader(oversized))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for oversized body, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+// TestE2E_TrustedKeyBodySizeLimit verifies that POST /oauth/keys/trusted rejects
+// a request body larger than 1 MiB with 400.
+func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
+	padding := strings.Repeat("x", 1<<20+1)
+	oversized := fmt.Sprintf(`{"keyId":"e2e-size","audience":"human","_padding":"%s"}`, padding)
+
+	token := getToken(t, "test-client", "test-secret")
+	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/trusted", strings.NewReader(oversized))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for oversized body, got %d: %s", resp.StatusCode, raw)
 	}
 }
