@@ -132,3 +132,25 @@ func mkRSAPub(t *testing.T) *rsa.PublicKey {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	return &priv.PublicKey
 }
+
+func TestGetCurrentJwtKeyPair_Happy(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	req := adminReq(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
+	w := httptest.NewRecorder()
+	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetCurrentJwtKeyPair_404_NoKeyForAudience(t *testing.T) {
+	h, _, _ := newHandler(t)
+	req := adminReq(t, "GET", "/oauth/keys/keypair/current?audience=human", nil)
+	w := httptest.NewRecorder()
+	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "human"})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d", w.Code)
+	}
+	commontest.ExpectErrorCode(t, w.Result(), "KEYPAIR_NOT_FOUND")
+}

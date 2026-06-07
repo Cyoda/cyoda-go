@@ -102,6 +102,23 @@ func toJwtKeyPairResponse(kp *auth.KeyPair) genapi.JwtKeyPairResponseDto {
 	return resp
 }
 
+func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !isValidKeyPairAudience(string(params.Audience)) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
+		return
+	}
+	kp, err := h.keyStore.GetActive(string(params.Audience))
+	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "no active key pair for audience"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(toJwtKeyPairResponse(kp))
+}
+
 func tenantFromCtx(r *http.Request) spi.TenantID {
 	uc := spi.GetUserContext(r.Context())
 	if uc == nil {
