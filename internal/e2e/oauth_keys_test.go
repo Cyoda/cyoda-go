@@ -451,3 +451,133 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 		t.Fatalf("expected 400 for oversized body, got %d: %s", resp.StatusCode, raw)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-tenant isolation + deferred cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+// createM2MClient provisions a new M2M client via POST /api/account/m2m.
+// Returns (clientID, clientSecret). The bootstrap admin token authorises the call.
+func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (string, string) {
+	t.Helper()
+	body := mustJSON(t, map[string]any{
+		"tenantId": tenantID,
+		"userId":   userID,
+		"roles":    roles,
+	})
+	token := getToken(t, "test-client", "test-secret")
+	req, err := e2eNewRequest(t, "POST", serverURL+"/api/account/m2m", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do POST /account/m2m: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create m2m client: got %d: %s", resp.StatusCode, raw)
+	}
+	var r struct {
+		ClientID     string `json:"clientId"`
+		ClientSecret string `json:"clientSecret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatalf("decode m2m create response: %v", err)
+	}
+	if r.ClientID == "" || r.ClientSecret == "" {
+		t.Fatal("empty clientId or clientSecret in m2m create response")
+	}
+	return r.ClientID, r.ClientSecret
+}
+
+// adminRequestAs issues an authenticated request using a specific M2M client's token.
+func adminRequestAs(t *testing.T, clientID, clientSecret, method, path string, body []byte) *http.Response {
+	t.Helper()
+	token := getToken(t, clientID, clientSecret)
+	var br io.Reader
+	if body != nil {
+		br = bytes.NewReader(body)
+	}
+	req, err := e2eNewRequest(t, method, serverURL+"/api"+path, br)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do %s %s: %v", method, path, err)
+	}
+	return resp
+}
+
+// TestE2E_CrossTenant_TrustedKey_409 registers a trusted key as the bootstrap
+// tenant, then attempts to register the same keyId from a second tenant and
+// expects 409 KEY_OWNED_BY_DIFFERENT_TENANT. Adapter-level coverage also
+// exists at TestRegisterTrustedKey_CrossTenantCollision_409.
+func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
+	// Provision a second M2M client at a different tenant.
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+
+	kid := fmt.Sprintf("e2e-xtenant-%d", time.Now().UnixNano())
+
+	// Register the key as the bootstrap tenant (tenant A = "test-tenant").
+	bodyA := mustJSON(t, map[string]any{
+		"keyId":    kid,
+		"jwk":      rsaJWK(t, kid),
+		"audience": "human",
+	})
+	respA := adminRequest(t, "POST", "/oauth/keys/trusted", bodyA)
+	respA.Body.Close()
+	if respA.StatusCode != http.StatusCreated {
+		t.Fatalf("register as tenant A: got %d", respA.StatusCode)
+	}
+
+	// Attempt to register the same keyId from tenant B.
+	bodyB := mustJSON(t, map[string]any{
+		"keyId":    kid,
+		"jwk":      rsaJWK(t, kid),
+		"audience": "human",
+	})
+	respB := adminRequestAs(t, clientBID, clientBSecret, "POST", "/oauth/keys/trusted", bodyB)
+	raw, _ := io.ReadAll(respB.Body)
+	respB.Body.Close()
+	if respB.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 for cross-tenant collision, got %d: %s", respB.StatusCode, raw)
+	}
+	// The RFC 7807 problem response embeds the error code in properties.errorCode.
+	var errBody struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	_ = json.Unmarshal(raw, &errBody)
+	if errBody.Properties.ErrorCode != "KEY_OWNED_BY_DIFFERENT_TENANT" {
+		t.Errorf("expected error code KEY_OWNED_BY_DIFFERENT_TENANT, got %q (body: %s)", errBody.Properties.ErrorCode, raw)
+	}
+}
+
+// TestE2E_FeatureFlag_Deferred — the server is started once in TestMain with
+// TrustedKeyRegistrationEnabled=true. There is no mechanism to restart the
+// server with the flag flipped to false for a single test within the TestMain
+// harness. Adapter-level TestRegisterTrustedKey_FlagDisabled_404 covers the
+// invariant at handler level, which is where the flag is enforced.
+//
+// TODO(#281): Add an E2E feature-flag test if the harness ever supports
+// per-test server restarts with different config.
+
+// TestE2E_TokenExchange_Deferred — verifying the token-exchange grant via a
+// trusted key requires signing a subject_token with the private key material
+// that was used to build the registered JWK. The E2E harness does not retain
+// private keys after registration; fabricating a valid signed token in-test
+// would duplicate the signing logic. The token-exchange principal-tenant
+// invariant is asserted at unit level in internal/auth/store_test.go and
+// internal/auth/kv_trusted_store_test.go.
+//
+// TODO(#281): Add an E2E token-exchange test with an embedded fixture key.
