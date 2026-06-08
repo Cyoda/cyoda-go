@@ -628,7 +628,12 @@ func (f *failingKV) Put(ctx context.Context, ns, key string, value []byte) error
 	return f.KeyValueStore.Put(ctx, ns, key, value)
 }
 
-func TestKVTrustedKeyStore_PartialKVFailureLeavesCacheUntouched(t *testing.T) {
+// TestKVTrustedKeyStore_PartialKVFailureKeepsNewKey verifies the reordered
+// write sequence: new key is persisted first, then siblings are invalidated.
+// If a sibling KV write fails, the new key is still active; the failed sibling
+// remains active (operator can retry). This is strictly better than the old
+// order where a sibling-flip failure left the new key missing and siblings dead.
+func TestKVTrustedKeyStore_PartialKVFailureKeepsNewKey(t *testing.T) {
 	ctx := systemCtx()
 	mem := mustNewMemoryKV(t, ctx)
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
@@ -638,18 +643,50 @@ func TestKVTrustedKeyStore_PartialKVFailureLeavesCacheUntouched(t *testing.T) {
 	_ = pre.Register(a, auth.RotateOptions{})
 
 	// Inject failure on the SIBLING flip-write (key 't:a').
+	// New key 'b' write succeeds (it happens first); sibling 'a' flip fails.
 	kv := &failingKV{KeyValueStore: mem, failOn: auth.TrustedKeyKVKeyForTesting(tID, "a")}
 	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
 	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "b"}, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
 	err := store.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
 	if err == nil {
-		t.Fatal("expected register failure")
+		t.Fatal("expected error reporting sibling invalidation failed")
+	}
+	// New key B IS persisted and cached (written before sibling flip).
+	gotB, getErr := store.Get(tID, "b")
+	if getErr != nil || gotB == nil {
+		t.Errorf("new key b should be present despite sibling failure: %v", getErr)
+	}
+	// Sibling A is unchanged (still active — KV write failed before mutation).
+	gotA, _ := store.Get(tID, "a")
+	if gotA == nil || !gotA.Active {
+		t.Errorf("sibling a should still be active after failed flip; got %+v", gotA)
+	}
+}
+
+// TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange verifies that if the
+// new-key KV write itself fails (before any sibling flips), no state changes.
+func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
+	ctx := systemCtx()
+	mem := mustNewMemoryKV(t, ctx)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	tID := spi.TenantID("t")
+	pre, _ := auth.NewKVTrustedKeyStore(ctx, mem)
+	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "a"}, Audience: "human", Active: true, ValidFrom: time.Now()}
+	_ = pre.Register(a, auth.RotateOptions{})
+
+	// Inject failure on the NEW KEY write (key 't:b'). No sibling should be touched.
+	kv := &failingKV{KeyValueStore: mem, failOn: auth.TrustedKeyKVKeyForTesting(tID, "b")}
+	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
+	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "b"}, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
+	err := store.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
+	if err == nil {
+		t.Fatal("expected error from new-key KV write failure")
+	}
+	if _, e := store.Get(tID, "b"); e == nil {
+		t.Error("new key b should NOT be visible after its own write failed")
 	}
 	gotA, _ := store.Get(tID, "a")
 	if gotA == nil || !gotA.Active {
-		t.Errorf("a should still be active after rollback; got %+v", gotA)
-	}
-	if _, err := store.Get(tID, "b"); err == nil {
-		t.Error("b should not be visible after rollback")
+		t.Errorf("sibling a should still be active (no flip attempted): %+v", gotA)
 	}
 }

@@ -175,8 +175,12 @@ func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
 // 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, all other active
 // siblings in the same tenant are marked inactive with a gracePeriod ValidTo.
 //
-// KV writes happen FIRST; in-memory map mutation is LAST so a partial KV
-// failure leaves the cache untouched (rollback safety).
+// Write order: new key FIRST, then siblings. This guarantees that a KV failure
+// mid-sibling-flip never destroys the only active key:
+//   - new-key write fails → no state change (rollback safe).
+//   - sibling-flip fails → new key is active; stale siblings remain active
+//     (operator can retry Register to clean up — strictly better than the
+//     inverse where siblings are dead with no replacement).
 func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,14 +212,23 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 		}
 	}
 
-	// Shallow-copy on store (callers may continue using *tk after Register).
+	// Step 1: persist the new/updated entry to KV FIRST.
+	// If this fails, no state has been mutated — safe to return.
 	copied := *tk
+	kvKey := trustedKeyKey(tk.TenantID, tk.KID)
+	if err := s.persistWithKey(kvKey, &copied); err != nil {
+		return fmt.Errorf("failed to persist trusted key: %w", err)
+	}
+	// Commit to cache after successful KV write.
+	s.keys[copied.KID] = &copied
 
-	// Atomic sibling invalidation within the same tenant.
-	// We must write sibling KV updates before mutating memory (rollback safety).
+	// Step 2: invalidate siblings (best-effort). A sibling KV write failure
+	// leaves the new key active (already committed above) and the sibling
+	// unchanged — operator can retry Register to clean up stragglers.
 	if opts.Invalidate {
 		now := time.Now()
 		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
+		var failed []string
 		for _, k := range s.keys {
 			if k.TenantID != tk.TenantID || !k.Active || k.KID == tk.KID {
 				continue
@@ -226,20 +239,17 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 			e := expiry
 			sibling.ValidTo = &e
 			if err := s.persistWithKey(trustedKeyKey(k.TenantID, k.KID), &sibling); err != nil {
-				return fmt.Errorf("failed to persist sibling invalidation for %s: %w", k.KID, err)
+				failed = append(failed, k.KID)
+				continue
 			}
 			// Commit sibling to cache after successful KV write.
 			*k = sibling
 		}
+		if len(failed) > 0 {
+			return fmt.Errorf("key %s registered, but failed to invalidate siblings %v (retry Register or invalidate manually)", tk.KID, failed)
+		}
 	}
 
-	// Write the new/updated entry to KV first (rollback safety).
-	kvKey := trustedKeyKey(tk.TenantID, tk.KID)
-	if err := s.persistWithKey(kvKey, &copied); err != nil {
-		return fmt.Errorf("failed to persist trusted key: %w", err)
-	}
-	// Commit to cache only after KV write succeeded.
-	s.keys[copied.KID] = &copied
 	return nil
 }
 
