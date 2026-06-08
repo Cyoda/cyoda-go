@@ -29,13 +29,13 @@ var knownUncoveredOps = map[string]bool{
 	"listTechnicalUsers":       true,
 	"resetTechnicalUserSecret": true,
 	// OIDC provider ops — implementation tracked in #194.
-	"deleteOidcProvider":    true,
+	"deleteOidcProvider":     true,
 	"invalidateOidcProvider": true,
-	"listOidcProviders":     true,
+	"listOidcProviders":      true,
 	"reactivateOidcProvider": true,
-	"registerOidcProvider":  true,
-	"reloadOidcProviders":   true,
-	"updateOidcProvider":    true,
+	"registerOidcProvider":   true,
+	"reloadOidcProviders":    true,
+	"updateOidcProvider":     true,
 	// Outside the generated ServerInterface dispatch — see #21 design
 	// Section 8, Task 5.1's Option B note. Tracked as future cleanup.
 	"fetchEntityTransitions": true,
