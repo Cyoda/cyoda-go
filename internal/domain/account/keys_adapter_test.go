@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -271,16 +272,41 @@ func TestRegression_StrictValidation_ValidToBeforeValidFrom(t *testing.T) {
 
 // Regression-lock: nil keyStore (mock IAM mode wiring) must return 501 NOT_IMPLEMENTED,
 // never panic. Without this guard the recovery middleware flips healthFlag to false
-// permanently on the first admin request.
-func TestKeysAdapter_NilStoreInMockMode_Returns501(t *testing.T) {
+// permanently on the first admin request. All 5 keypair handlers are covered so
+// an accidental removal of the requireKeyStore guard is caught per-handler.
+func TestKeysAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
 	h := account.New(nil, nil, nil, nil, auth.DefaultIAMFeatures())
-	req := adminReq(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
-	w := httptest.NewRecorder()
-	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
-	if w.Code != http.StatusNotImplemented {
-		t.Errorf("want 501 NOT_IMPLEMENTED in mock mode (nil keyStore); got %d", w.Code)
+	cases := []struct {
+		name string
+		call func(w http.ResponseWriter)
+	}{
+		{"IssueJwtKeyPair", func(w http.ResponseWriter) {
+			body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: "RS256", Audience: "client"})
+			h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+		}},
+		{"GetCurrentJwtKeyPair", func(w http.ResponseWriter) {
+			h.GetCurrentJwtKeyPair(w, adminReq(t, "GET", "/", nil), genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+		}},
+		{"DeleteJwtKeyPair", func(w http.ResponseWriter) {
+			h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "k")
+		}},
+		{"InvalidateJwtKeyPair", func(w http.ResponseWriter) {
+			h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), "k")
+		}},
+		{"ReactivateJwtKeyPair", func(w http.ResponseWriter) {
+			body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+			h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+		}},
 	}
-	commontest.ExpectErrorCode(t, w.Result(), "NOT_IMPLEMENTED")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			tc.call(w)
+			if w.Code != http.StatusNotImplemented {
+				t.Errorf("status=%d want 501 NOT_IMPLEMENTED", w.Code)
+			}
+		})
+	}
 }
 
 // §3.2 #3 Cross-tenant lifecycle 404 (not 403) — already covered by
@@ -367,5 +393,29 @@ func TestIssueJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
+	}
+}
+
+// TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary pins the > vs >= comparison:
+// exactly at cap is accepted; one over cap is rejected.
+func TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+
+	// Exactly at cap: accept.
+	w := httptest.NewRecorder()
+	body := []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec))
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusOK {
+		t.Errorf("at-cap (%d): status=%d want 200", account.MaxGracePeriodSec, w.Code)
+	}
+
+	// One over cap: reject.
+	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	w = httptest.NewRecorder()
+	body = []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec+1))
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("one-over-cap: status=%d want 400", w.Code)
 	}
 }

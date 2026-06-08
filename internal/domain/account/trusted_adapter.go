@@ -106,6 +106,10 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 			common.WriteError(w, r, ae)
 			return
 		}
+		// Note: a 500 here may indicate partial success — the new key was
+		// persisted but sibling invalidation failed. The new key is live;
+		// the retry is safe (silent upsert + repeats sibling-flip best-effort).
+		// The failed sibling KIDs are logged server-side, never in the response.
 		common.WriteError(w, r, common.Internal("trustedKeyStore.Register", err))
 		return
 	}

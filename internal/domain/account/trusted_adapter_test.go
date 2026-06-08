@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -256,18 +257,44 @@ func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
 
 // Regression-lock: nil trustedKeyStore (mock IAM mode wiring) must return 501
 // NOT_IMPLEMENTED, never panic. The feature flag is enabled to bypass
-// FEATURE_DISABLED and reach the nil-store guard.
-func TestTrustedAdapter_NilStoreInMockMode_Returns501(t *testing.T) {
+// FEATURE_DISABLED and reach the nil-store guard. All 5 trusted-key handlers
+// are covered so an accidental removal of the requireTrustedKeyStore guard is
+// caught per-handler.
+func TestTrustedAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
-	feats.TrustedKeyRegistrationEnabled = true // bypass FEATURE_DISABLED to reach nil-store guard
+	feats.TrustedKeyRegistrationEnabled = true // bypass FEATURE_DISABLED so we hit the nil-store guard
 	h := account.New(nil, nil, nil, nil, feats)
-	req := adminReq(t, "GET", "/oauth/keys/trusted", nil)
-	w := httptest.NewRecorder()
-	h.ListTrustedKeys(w, req)
-	if w.Code != http.StatusNotImplemented {
-		t.Errorf("want 501 NOT_IMPLEMENTED; got %d", w.Code)
+	cases := []struct {
+		name string
+		call func(w http.ResponseWriter)
+	}{
+		{"RegisterTrustedKey", func(w http.ResponseWriter) {
+			body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k", Jwk: rsaJWK(t, "k"), Audience: "human"})
+			h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+		}},
+		{"ListTrustedKeys", func(w http.ResponseWriter) {
+			h.ListTrustedKeys(w, adminReq(t, "GET", "/", nil))
+		}},
+		{"DeleteTrustedKey", func(w http.ResponseWriter) {
+			h.DeleteTrustedKey(w, adminReq(t, "DELETE", "/", nil), "k")
+		}},
+		{"InvalidateTrustedKey", func(w http.ResponseWriter) {
+			h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", []byte(`{}`)), "k")
+		}},
+		{"ReactivateTrustedKey", func(w http.ResponseWriter) {
+			body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+			h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
+		}},
 	}
-	commontest.ExpectErrorCode(t, w.Result(), "NOT_IMPLEMENTED")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			tc.call(w)
+			if w.Code != http.StatusNotImplemented {
+				t.Errorf("status=%d want 501 NOT_IMPLEMENTED", w.Code)
+			}
+		})
+	}
 }
 
 // Regression-lock test: cyoda-go honors the request `audience` and round-trips
@@ -311,6 +338,35 @@ func TestRegisterTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
 	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestInvalidateTrustedKey_GracePeriodAtCapBoundary pins the > vs >= comparison:
+// exactly at cap is accepted; one over cap is rejected.
+func TestInvalidateTrustedKey_GracePeriodAtCapBoundary(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+
+	// Exactly at cap: accept.
+	w := httptest.NewRecorder()
+	body := []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec))
+	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusOK {
+		t.Errorf("at-cap (%d): status=%d want 200", account.MaxGracePeriodSec, w.Code)
+	}
+
+	// Reset to active, then one over cap: reject.
+	tk2 := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
+	_ = ts.Register(tk2, auth.RotateOptions{})
+	w = httptest.NewRecorder()
+	body = []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec+1))
+	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("one-over-cap: status=%d want 400", w.Code)
 	}
 }
 

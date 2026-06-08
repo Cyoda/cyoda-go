@@ -414,13 +414,16 @@ func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, 
 }
 
 // Reactivate sets a trusted key as active and updates its validity window.
-// validTo must be strictly in the future and after validFrom.
+// validTo must be non-zero, strictly in the future, and after validFrom.
 func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("trusted key not found: %s", kid)
+	}
+	if validTo.IsZero() {
+		return fmt.Errorf("validTo required for reactivation")
 	}
 	if !validTo.After(time.Now()) {
 		return fmt.Errorf("validTo must be in the future")
