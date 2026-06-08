@@ -71,7 +71,7 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		}
 		if grace > MaxGracePeriodSec {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-				fmt.Sprintf("gracePeriodSec must be <= %d (approx 1 year)", MaxGracePeriodSec)))
+				fmt.Sprintf("gracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
 			return
 		}
 	}
@@ -178,7 +178,7 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 			}
 			if grace > MaxGracePeriodSec {
 				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-					fmt.Sprintf("gracePeriodSec must be <= %d (approx 1 year)", MaxGracePeriodSec)))
+					fmt.Sprintf("gracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
 				return
 			}
 		}
