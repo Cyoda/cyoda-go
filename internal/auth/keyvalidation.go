@@ -46,6 +46,13 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid n: %w", err)
 	}
+	// Cap modulus at 4096-bit (512 bytes). Beyond this is impractical for RS256
+	// and would waste memory; pathological values approaching the body limit
+	// would otherwise allocate ~1 MB big.Int per registration request.
+	const maxModulusBytes = 512
+	if len(nBytes) > maxModulusBytes {
+		return nil, fmt.Errorf("rsa modulus too large: %d bytes (max %d)", len(nBytes), maxModulusBytes)
+	}
 	eBytes, err := decodeBase64URL(jwk.E)
 	if err != nil {
 		return nil, fmt.Errorf("invalid e: %w", err)
