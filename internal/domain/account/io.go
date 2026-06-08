@@ -19,8 +19,3 @@ func boundedJSONDecode(w http.ResponseWriter, r *http.Request, max int64, dst an
 	}
 	return nil
 }
-
-// BoundedJSONDecodeForTesting exposes boundedJSONDecode for external tests.
-func BoundedJSONDecodeForTesting(w http.ResponseWriter, r *http.Request, max int64, dst any) error {
-	return boundedJSONDecode(w, r, max, dst)
-}
