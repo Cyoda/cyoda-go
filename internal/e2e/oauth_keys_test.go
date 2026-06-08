@@ -563,21 +563,18 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 	}
 }
 
-// TestE2E_FeatureFlag_Deferred — the server is started once in TestMain with
-// TrustedKeyRegistrationEnabled=true. There is no mechanism to restart the
-// server with the flag flipped to false for a single test within the TestMain
-// harness. Adapter-level TestRegisterTrustedKey_FlagDisabled_404 covers the
-// invariant at handler level, which is where the flag is enforced.
-//
-// TODO(#281): Add an E2E feature-flag test if the harness ever supports
-// per-test server restarts with different config.
+// NOTE: E2E feature-flag coverage — the server is started once in TestMain
+// with TrustedKeyRegistrationEnabled=true. There is no mechanism to restart
+// the server with the flag flipped to false for a single test within the
+// TestMain harness. Adapter-level TestRegisterTrustedKey_FlagDisabled_404
+// covers the invariant at handler level, which is where the flag is enforced.
 
-// TestE2E_TokenExchange_Deferred — verifying the token-exchange grant via a
-// trusted key requires signing a subject_token with the private key material
+// NOTE: E2E token-exchange coverage — verifying the token-exchange grant via
+// a trusted key requires signing a subject_token with the private key material
 // that was used to build the registered JWK. The E2E harness does not retain
 // private keys after registration; fabricating a valid signed token in-test
 // would duplicate the signing logic. The token-exchange principal-tenant
 // invariant is asserted at unit level in internal/auth/store_test.go and
 // internal/auth/kv_trusted_store_test.go.
-//
-// TODO(#281): Add an E2E token-exchange test with an embedded fixture key.
+// TODO(#288): add an E2E token-exchange test once the harness supports
+// embedded fixture keys with private-key material retained across calls.
