@@ -106,6 +106,7 @@ func toJwtKeyPairResponse(kp *auth.KeyPair) genapi.JwtKeyPairResponseDto {
 		KeyId:     kp.KID,
 		Algorithm: genapi.JwtKeyPairResponseDtoAlgorithm(kp.Algorithm),
 		PublicKey: base64.StdEncoding.EncodeToString(der),
+		Active:    kp.Active,
 		ValidFrom: kp.ValidFrom,
 	}
 	if kp.ValidTo != nil {

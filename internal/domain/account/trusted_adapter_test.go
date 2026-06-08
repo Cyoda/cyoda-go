@@ -181,6 +181,79 @@ func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
 
 func ptrInt64(v int64) *int64 { return &v }
 
+func TestRegisterTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
+	h := enabledHandler(t)
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "human"})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp genapi.TrustedKeyResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Active {
+		t.Error("newly registered trusted key should have active=true")
+	}
+}
+
+func TestListTrustedKeys_InvalidatedKeyHasActiveFalse(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	tk := &auth.TrustedKey{
+		KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
+		Audience: "human", Active: true, ValidFrom: time.Now(),
+		JWK: map[string]any{"kty": "RSA", "kid": "k"},
+	}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Invalidate(spi.TenantID("t1"), "k", 0)
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, adminReq(t, "GET", "/oauth/keys/trusted", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp []genapi.TrustedKeyResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(resp))
+	}
+	if resp[0].Active {
+		t.Error("invalidated trusted key should have active=false")
+	}
+}
+
+func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	past := time.Now().Add(-1 * time.Hour)
+	tk := &auth.TrustedKey{
+		KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
+		Audience: "human", Active: false, ValidFrom: past, ValidTo: &past,
+		JWK: map[string]any{"kty": "RSA", "kid": "k"},
+	}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp genapi.TrustedKeyResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Active {
+		t.Error("reactivated trusted key response should have active=true")
+	}
+}
+
 // Regression-lock: nil trustedKeyStore (mock IAM mode wiring) must return 501
 // NOT_IMPLEMENTED, never panic. The feature flag is enabled to bypass
 // FEATURE_DISABLED and reach the nil-store guard.

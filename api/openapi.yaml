@@ -8410,40 +8410,44 @@ components:
     TrustedKeyResponseDto:
       type: object
       properties:
-        keyId:
-          type: string
-          description: Unique key identifier
-          example: my-app-key-1
-        jwk:
-          type: object
-          additionalProperties: true
-          description: "The registered public key in JWK format (RFC 7517). Contains only
-            public key components. "
+        active:
+          type: boolean
+          description: Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
         audience:
           type: string
           enum:
             - human
             - client
-        validFrom:
-          type: string
-          format: date-time
-          description: When this key became valid
-          example: 2025-11-01T10:00:00.000Z
-        legalEntityId:
-          type: string
-          description: The tenant this key is bound to
-          example: tenant-abc-123
         issuers:
           type: array
           example: "[https://my-app.local/]"
           items:
             type: string
+        jwk:
+          type: object
+          additionalProperties: true
+          description: "The registered public key in JWK format (RFC 7517). Contains only
+            public key components. "
+        keyId:
+          type: string
+          description: Unique key identifier
+          example: my-app-key-1
+        legalEntityId:
+          type: string
+          description: The tenant this key is bound to
+          example: tenant-abc-123
+        validFrom:
+          type: string
+          format: date-time
+          description: When this key became valid
+          example: 2025-11-01T10:00:00.000Z
         validTo:
           type: string
           format: date-time
           description: When this key expires
           example: 2026-02-01T10:00:00.000Z
       required:
+        - active
         - audience
         - jwk
         - keyId
@@ -8534,11 +8538,9 @@ components:
     JwtKeyPairResponseDto:
       type: object
       properties:
-        keyId:
-          type: string
-          description: Unique identifier for this key-pair (UUID). Included in JWT header
-            as 'kid' claim.
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+        active:
+          type: boolean
+          description: Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
         algorithm:
           type: string
           enum:
@@ -8552,6 +8554,11 @@ components:
             - PS384
             - PS512
             - EdDSA
+        keyId:
+          type: string
+          description: Unique identifier for this key-pair (UUID). Included in JWT header
+            as 'kid' claim.
+          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         publicKey:
           type: string
           description: Base64-encoded public key in X.509 SubjectPublicKeyInfo format.
@@ -8567,6 +8574,7 @@ components:
           description: When this key-pair expires
           example: 2026-10-15T10:00:00.000Z
       required:
+        - active
         - algorithm
         - keyId
         - publicKey

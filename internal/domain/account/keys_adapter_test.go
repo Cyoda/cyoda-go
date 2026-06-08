@@ -293,3 +293,58 @@ func TestKeysAdapter_NilStoreInMockMode_Returns501(t *testing.T) {
 //	the table in internal/auth/keypair_signing_test.go.
 //
 // §3.2 #1 JWKS-retained — covered by TestE2E_GracePeriodRoundTrip.
+
+func TestIssueJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
+	h, _, _ := newHandler(t)
+	body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: "RS256", Audience: "client"})
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp genapi.JwtKeyPairResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Active {
+		t.Error("newly issued keypair should have active=true")
+	}
+}
+
+func TestGetCurrentJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	w := httptest.NewRecorder()
+	h.GetCurrentJwtKeyPair(w, adminReq(t, "GET", "/", nil), genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp genapi.JwtKeyPairResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Active {
+		t.Error("active keypair from GetCurrentJwtKeyPair should have active=true")
+	}
+}
+
+func TestReactivateJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	past := time.Now().Add(-1 * time.Hour)
+	kp := &auth.KeyPair{KID: "k2", Audience: "client", Algorithm: "RS256", PublicKey: mkRSAPub(t), Active: false, ValidFrom: past, ValidTo: &past}
+	_ = ks.Save(kp, auth.RotateOptions{})
+	future := time.Now().Add(24 * time.Hour)
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: future})
+	w := httptest.NewRecorder()
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k2")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp genapi.JwtKeyPairResponseDto
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Active {
+		t.Error("reactivated keypair response should have active=true")
+	}
+}

@@ -145,6 +145,7 @@ func toTrustedKeyResponse(tk *auth.TrustedKey) genapi.TrustedKeyResponseDto {
 		KeyId: tk.KID, LegalEntityId: string(tk.TenantID),
 		Jwk:       tk.JWK,
 		Audience:  genapi.TrustedKeyResponseDtoAudience(tk.Audience),
+		Active:    tk.Active,
 		ValidFrom: tk.ValidFrom,
 	}
 	if tk.Issuers != nil {

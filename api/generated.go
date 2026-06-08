@@ -2216,6 +2216,8 @@ type JsonNode = map[string]interface{}
 
 // JwtKeyPairResponseDto defines model for JwtKeyPairResponseDto.
 type JwtKeyPairResponseDto struct {
+	// Active Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
+	Active    bool                           `json:"active"`
 	Algorithm JwtKeyPairResponseDtoAlgorithm `json:"algorithm"`
 
 	// KeyId Unique identifier for this key-pair (UUID). Included in JWT header as 'kid' claim.
@@ -2782,6 +2784,8 @@ type TransitionNameList = []string
 
 // TrustedKeyResponseDto defines model for TrustedKeyResponseDto.
 type TrustedKeyResponseDto struct {
+	// Active Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
+	Active   bool                          `json:"active"`
 	Audience TrustedKeyResponseDtoAudience `json:"audience"`
 	Issuers  *[]string                     `json:"issuers,omitempty"`
 
