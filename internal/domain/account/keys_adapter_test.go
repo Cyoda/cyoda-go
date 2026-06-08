@@ -348,3 +348,24 @@ func TestReactivateJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 		t.Error("reactivated keypair response should have active=true")
 	}
 }
+
+func TestInvalidateJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	w := httptest.NewRecorder()
+	// Value above the 1-year cap → must be rejected before multiplying by time.Second
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
+	}
+}
+
+func TestIssueJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
+	h, _, _ := newHandler(t)
+	body := []byte(`{"algorithm":"RS256","audience":"client","invalidateCurrent":true,"invalidateGracePeriodSec":9999999999}`)
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
+	}
+}

@@ -8508,6 +8508,7 @@ components:
             invalidation). "
           example: 3600
           minimum: 0
+          maximum: 31622400
       required:
         - audience
         - jwk
@@ -8522,6 +8523,7 @@ components:
             is 0 (immediate invalidation).
           example: 3600
           minimum: 0
+          maximum: 31622400
     ReactivateKeyRequestDto:
       type: object
       properties:
@@ -8623,6 +8625,7 @@ components:
             Only applicable when invalidateCurrent is true.
           example: 36000
           minimum: 0
+          maximum: 31622400
       required:
         - algorithm
         - audience

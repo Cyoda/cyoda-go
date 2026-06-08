@@ -285,6 +285,35 @@ func TestRegression_TrustedAudienceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestInvalidateTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStore()
+	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
+	_ = ts.Register(tk, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, feats)
+	w := httptest.NewRecorder()
+	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), "k")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", w.Code)
+	}
+}
+
+func TestRegisterTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), feats)
+	jwk := rsaJWK(t, "k")
+	jwkBytes, _ := json.Marshal(jwk)
+	body := append([]byte(`{"keyId":"k","jwk":`), jwkBytes...)
+	body = append(body, []byte(`,"audience":"human","invalidatePrevious":true,"invalidateGracePeriodSec":9999999999}`)...)
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", w.Code, w.Body.String())
+	}
+}
+
 // Regression-lock test: same-tenant re-register with same keyId is a silent
 // upsert (200, no error). Cloud does atomic delete-and-replace transactionally;
 // cyoda-go preserves the existing silent-upsert behaviour in KVTrustedKeyStore.Register.
