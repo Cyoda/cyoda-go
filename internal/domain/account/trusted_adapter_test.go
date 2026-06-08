@@ -329,3 +329,54 @@ func TestRegression_SameTenantSilentUpsert(t *testing.T) {
 		}
 	}
 }
+
+// 401/403 coverage for trusted-key endpoints.
+// Mirrors the keypair-adapter pattern: RequireAdmin must reject missing
+// UserContext (401) and missing ROLE_ADMIN (403) on every handler.
+
+func TestRegisterTrustedKey_401_NoAuth(t *testing.T) {
+	h := enabledHandler(t)
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k", Jwk: rsaJWK(t, "k"), Audience: "human"})
+	req := httptest.NewRequest("POST", "/oauth/keys/trusted", bytes.NewReader(body))
+	// No UserContext attached — must return 401.
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d want 401", w.Code)
+	}
+}
+
+func TestRegisterTrustedKey_403_NonAdmin(t *testing.T) {
+	h := enabledHandler(t)
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k", Jwk: rsaJWK(t, "k"), Audience: "human"})
+	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"ROLE_M2M"}}
+	req := httptest.NewRequest("POST", "/oauth/keys/trusted", bytes.NewReader(body))
+	req = req.WithContext(spi.WithUserContext(req.Context(), uc))
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status=%d want 403", w.Code)
+	}
+}
+
+func TestListTrustedKeys_401_NoAuth(t *testing.T) {
+	h := enabledHandler(t)
+	req := httptest.NewRequest("GET", "/oauth/keys/trusted", nil)
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d want 401", w.Code)
+	}
+}
+
+func TestListTrustedKeys_403_NonAdmin(t *testing.T) {
+	h := enabledHandler(t)
+	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"ROLE_M2M"}}
+	req := httptest.NewRequest("GET", "/oauth/keys/trusted", nil)
+	req = req.WithContext(spi.WithUserContext(req.Context(), uc))
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status=%d want 403", w.Code)
+	}
+}
