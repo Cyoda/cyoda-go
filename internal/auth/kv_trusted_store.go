@@ -363,9 +363,19 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 
 // Reactivate sets a trusted key as active, updates its validity window, and
 // persists. Returns an error if the key does not exist or belongs to a
-// different tenant. Zero validFrom/validTo values are accepted (no window
-// constraint applied when zero).
+// different tenant. Enforces the same contract as InMemoryTrustedKeyStore:
+// validTo is required (non-zero), must be strictly in the future, and must
+// be after validFrom.
 func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
+	if validTo.IsZero() {
+		return fmt.Errorf("validTo required for reactivation")
+	}
+	if !validTo.After(time.Now()) {
+		return fmt.Errorf("validTo must be in the future")
+	}
+	if !validTo.After(validFrom) {
+		return fmt.Errorf("validTo must be after validFrom")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
@@ -375,15 +385,9 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk
 	updated.Active = true
-	if !validFrom.IsZero() {
-		updated.ValidFrom = validFrom
-	}
-	if !validTo.IsZero() {
-		vt := validTo
-		updated.ValidTo = &vt
-	} else {
-		updated.ValidTo = nil
-	}
+	updated.ValidFrom = validFrom
+	vt := validTo
+	updated.ValidTo = &vt
 	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
 		return fmt.Errorf("failed to persist reactivation: %w", err)
 	}

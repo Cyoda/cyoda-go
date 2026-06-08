@@ -243,8 +243,9 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 		t.Error("expected key to be inactive after persist")
 	}
 
-	// Reactivate and verify persists.
-	if err := store2.Reactivate(spi.SystemTenantID, "toggle-key", time.Time{}, time.Time{}); err != nil {
+	// Reactivate and verify persists. Must supply a valid future validTo.
+	future := time.Now().Add(24 * time.Hour)
+	if err := store2.Reactivate(spi.SystemTenantID, "toggle-key", time.Now(), future); err != nil {
 		t.Fatalf("Reactivate: %v", err)
 	}
 	store3, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
@@ -688,5 +689,40 @@ func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
 	gotA, _ := store.Get(tID, "a")
 	if gotA == nil || !gotA.Active {
 		t.Errorf("sibling a should still be active (no flip attempted): %+v", gotA)
+	}
+}
+
+// TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo verifies that
+// KVTrustedKeyStore.Reactivate enforces the same contract as
+// InMemoryTrustedKeyStore.Reactivate: validTo is required and must be in the
+// future and after validFrom. This aligns the two store implementations so a
+// caller bypassing the adapter cannot accidentally create an immortal key.
+func TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	tID := spi.TenantID("t1")
+	past := time.Now().Add(-1 * time.Hour)
+	tk := &auth.TrustedKey{KID: "k", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA"}, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
+	_ = store.Register(tk, auth.RotateOptions{})
+
+	// Zero validTo must be rejected.
+	if err := store.Reactivate(tID, "k", time.Now(), time.Time{}); err == nil {
+		t.Error("expected error for zero validTo")
+	}
+	// Past validTo must be rejected.
+	if err := store.Reactivate(tID, "k", past.Add(-1*time.Hour), past); err == nil {
+		t.Error("expected error for past validTo")
+	}
+	// validTo before validFrom must be rejected.
+	future := time.Now().Add(24 * time.Hour)
+	wayFuture := time.Now().Add(48 * time.Hour)
+	if err := store.Reactivate(tID, "k", wayFuture, future); err == nil {
+		t.Error("expected error for validTo < validFrom")
+	}
+	// Valid call must succeed.
+	if err := store.Reactivate(tID, "k", time.Now(), future); err != nil {
+		t.Errorf("valid Reactivate failed: %v", err)
 	}
 }
