@@ -17,7 +17,7 @@ The memory plugin (and, by mirroring, the sqlite plugin) returns transaction-lif
 
 This forces callers — including the memory plugin's own race-conditional tests in `plugins/memory/concurrency_*_test.go` — to do `strings.Contains` substring matching alongside `errors.Is(spi.ErrNotFound)`. The substring fallback is brittle, typo-sensitive, and can silently swallow unrelated errors that happen to contain the same substring.
 
-`plugins/memory/concurrency_savepoint_test.go:49-51` already carries a `TODO(#200)` flagging this. This spec discharges that TODO.
+`plugins/memory/concurrency_savepoint_test.go:49-52` already carries a `TODO(#200)` flagging this. This spec discharges that TODO.
 
 ## Why this is SPI-level
 
@@ -162,12 +162,12 @@ Rationale: these signal misuse of the API rather than an operational tx-state co
 | 122 | `"Commit: tx state for %s not found"` | `ErrTxNotFound` |
 | 215, 220 | `"Rollback: transaction %s not found"` | `ErrTxNotFound` |
 | 244, 249 | `"Join: transaction %s not found"` (both lookup paths) | `ErrTxNotFound` |
-| 318 | `"Savepoint: transaction %s not found"` | `ErrTxNotFound` |
-| 344 | `"RollbackToSavepoint: transaction %s not found"` | `ErrTxNotFound` |
-| 370 | `"ReleaseSavepoint: transaction %s not found"` | `ErrTxNotFound` |
+| 318, 322 | `"Savepoint: transaction %s not found"` / `"Savepoint: tx state for %s not found"` (registry + txState lookups) | `ErrTxNotFound` (both) |
+| 344, 348 | `"RollbackToSavepoint: transaction %s not found"` / `"RollbackToSavepoint: tx state for %s not found"` | `ErrTxNotFound` (both) |
+| 370, 374 | `"ReleaseSavepoint: transaction %s not found"` / `"ReleaseSavepoint: tx state for %s not found"` | `ErrTxNotFound` (both) |
 | **414** | **`verifyTenant()` helper — `"%s: tenant mismatch on transaction %s"`** | **`ErrTxTenantMismatch` — single wrap site, called from Commit (L124), Rollback (L222), Join (L251), Savepoint (L324), RollbackToSavepoint (L350), ReleaseSavepoint (L376)** |
 
-L270 (`GetSubmitTime: ... has no submit time (not yet committed or unknown)`) deliberately conflates "not yet committed" with "unknown txID" into one operational message — stays plain per the SDK-misuse / one-site policy applied to memory `txmanager.go:339`.
+L270 (`GetSubmitTime: ... has no submit time (not yet committed or unknown)`) deliberately conflates "not yet committed" with "unknown txID" into one operational message. Note this is **not** the same situation as memory L339 (where the code distinguishes active-vs-unknown but the spec policy keeps it plain due to one-site, no-consumer-match): postgres' `submitTimes` map is only populated on terminal entry, so active-but-uncommitted and never-existed are **observationally identical** at this site without extra bookkeeping. Stays plain on data-structure grounds. Splitting would require adding a probe into `tm.tenants[txID]` (which IS populated for active txs) — out of scope here.
 
 `plugins/postgres/txstate.go`:
 
@@ -176,7 +176,7 @@ L270 (`GetSubmitTime: ... has no submit time (not yet committed or unknown)`) de
 | 166, 223 | `"unknown savepoint %q"` | `ErrSavepointNotFound` |
 
 Postgres does **not** have:
-- In-process `tx.RolledBack` race (server-side tx; mid-op rollback surfaces as `pgconn.PgError` SQLSTATE 25P02, already mapped to `ErrConflict` via `classifyError` at `transaction_manager.go:171-174` — not changed; this is the postgres-engine caveat documented in the SPI godoc on `ErrTxTerminated`)
+- In-process `tx.RolledBack` race (server-side tx; mid-op rollback surfaces as `pgconn.PgError` SQLSTATE 25P02, already mapped to `ErrConflict` via the inline `InFailedSQLTransaction` branch at `transaction_manager.go:170-174`, with the broader serialization/deadlock mapping in `classifyError` at L432-441 — not changed; this is the postgres-engine caveat documented in the SPI godoc on `ErrTxTerminated`)
 - `transaction already being committed` (no in-process commit registry)
 - `transaction already closed` distinct from `transaction not found` (server-side tx; once committed/rolled back, lookups return "not found")
 
@@ -186,7 +186,11 @@ Postgres `GetSubmitTime` "not yet committed" path (if present and distinct from 
 
 ### Cassandra plugin (not modified in this PR)
 
-Cassandra picks up the new sentinels when it next bumps its `cyoda-go-spi` pin. Until then its own string-coded error system (`TX_NOT_FOUND`, `TX_NOT_ACTIVE`, `ErrCodeTxNoState`, etc. at `cyoda-go-cassandra/internal/tx/tx_manager.go`) continues unchanged. On the bump, expect approximately six conformance subtest failures: `JoinAfterCommit`, `CommitAfterCommit`, `CommitAfterRollback`, `TenantMismatchOnJoin`, `TenantMismatchOnCommit`, and `SavepointNotFound` — a predictable, scoped conformance prompt. **No courtesy PR; no tracking issue in the Cassandra repo** (per project convention — Cassandra repo is private and out of scope here).
+Cassandra picks up the new sentinels when it next bumps its `cyoda-go-spi` pin. Until then its own string-coded error system (`TX_NOT_FOUND`, `TX_NOT_ACTIVE`, `ErrCodeTxNoState`, etc. at `cyoda-go-cassandra/internal/tx/tx_manager.go`) continues unchanged. On the bump, expect approximately six conformance subtest failures: `JoinAfterCommit`, `CommitAfterCommit`, `CommitAfterRollback`, `TenantMismatchOnJoin`, `TenantMismatchOnCommit`, and `SavepointNotFound` — a predictable, scoped conformance prompt.
+
+Note for the future Cassandra-side change: tenant-mismatch is **not just a sentinel rename** there. Cassandra's tx lookups are tenant-partitioned, so a tenant-B caller looking up a tenant-A tx falls through to `TX_NOT_FOUND` instead of "tenant mismatch". Conforming to `ErrTxTenantMismatch` requires an explicit pre-lookup tenant check, not just wrapping the existing error code. This is a substantive Cassandra-side change, not a sed-rewrite — documented here so the future Cassandra PR author isn't surprised.
+
+**No courtesy PR; no tracking issue in the Cassandra repo** (per project convention — Cassandra repo is private and out of scope here).
 
 ## Parity Test Additions
 
@@ -205,6 +209,9 @@ Hierarchy and distinctness are properties of the SPI itself, not per-backend beh
   - `errors.Is(ErrTxNotFound, ErrTxRolledBack) == false`
   - `errors.Is(ErrTxRolledBack, ErrNotFound) == false`
   - `errors.Is(ErrTxTenantMismatch, ErrTxTerminated) == false`
+  - `errors.Is(ErrSavepointNotFound, ErrTxNotFound) == false` — siblings under `ErrNotFound`; callers distinguishing "tx missing" vs "savepoint missing" rely on this distinction.
+  - `errors.Is(ErrTxNotFound, ErrSavepointNotFound) == false` — mirror of the above.
+  - `errors.Is(ErrTxCommitInProgress, ErrTxTerminated) == false` — CommitInProgress is a transient race, not a terminal state.
   - … etc., covering every off-diagonal pair.
 - **Wrap chain** — `fmt.Errorf("ctx: %w", ErrTxNotFound)` is `errors.Is`-detectable as both `ErrTxNotFound` AND `ErrNotFound` (verifying the `sentinelErr.Unwrap` chain composes correctly with `fmt.Errorf`'s wrap).
 
@@ -255,8 +262,8 @@ Only `OpAfterRollback` is skipped on postgres. `SavepointNotFound` is NOT skippe
 
 `plugins/memory/concurrency_inreadops_test.go`, `concurrency_cas_test.go`, `concurrency_savepoint_test.go`:
 
-- Replace each `runOpVsRollback` / `runOpVsCommit` helper's `strings.Contains(msg, "rolled back") || strings.Contains(msg, "already completed") || ...` block with a single `errors.Is(err, spi.ErrTxTerminated) || errors.Is(err, spi.ErrTxNotFound)`.
-- Drop the `TODO(#200)` comment block at `concurrency_savepoint_test.go:49-51`.
+- Replace each `runOpVsRollback` / `runOpVsCommit` helper's `strings.Contains(msg, "rolled back") || strings.Contains(msg, "already completed") || ...` block with a three-way `errors.Is(err, spi.ErrTxTerminated) || errors.Is(err, spi.ErrTxNotFound) || errors.Is(err, spi.ErrTxCommitInProgress)`. The third disjunct is required for any helper that currently tolerates `"already being committed"` (`concurrency_inreadops_test.go:283`, `concurrency_savepoint_test.go:143,295`) — `ErrTxCommitInProgress` is deliberately not under the `ErrTxTerminated` umbrella because the tx is not yet terminal. Helpers that don't tolerate that substring today can stay two-way.
+- Drop the `TODO(#200)` comment block at `concurrency_savepoint_test.go:49-52`.
 
 ## Migration Sequencing
 
@@ -267,7 +274,7 @@ Only `OpAfterRollback` is skipped on postgres. `SavepointNotFound` is NOT skippe
    - `plugins/sqlite/go.mod`
    - `plugins/postgres/go.mod`
 
-   Migrate memory/sqlite/postgres error sites; update memory concurrency tests; configure `Harness.Skip` for postgres-irrelevant subtests; update `COMPATIBILITY.md` matrix (new SPI tag row, listing the seven added sentinels in the "SPI surface" column); run `make test-all` AND each `plugins/{memory,sqlite,postgres}` independently `go test ./...` (root `./...` does not cross plugin submodule boundaries — see `CLAUDE.md` "Plugin submodules need explicit test runs"); run `go vet ./...` per the per-module-hygiene CI job; one-shot `go test -race ./...` before PR.
+   Migrate memory/sqlite/postgres error sites; update memory concurrency tests; configure `Harness.Skip` for postgres-irrelevant subtests; update `COMPATIBILITY.md` matrix by listing the seven added sentinels in the `cyoda-go` v0.8.0 row's "SPI surface" column (the matrix is indexed by cyoda-go version, not by SPI tag, so the sentinels are bundled into the v0.8.0 entry rather than getting their own row); run `make test-all` AND each `plugins/{memory,sqlite,postgres}` independently `go test ./...` (root `./...` does not cross plugin submodule boundaries — see `CLAUDE.md` "Plugin submodules need explicit test runs"); run `go vet ./...` per the per-module-hygiene CI job; one-shot `go test -race ./...` before PR.
 
 3. **`cyoda-go-cassandra` (out of scope, separate repo)** — conforms on next SPI bump. Pinning protects existing CI.
 
@@ -288,7 +295,7 @@ Only `OpAfterRollback` is skipped on postgres. `SavepointNotFound` is NOT skippe
 - [ ] Postgres plugin wraps the sentinels at every applicable site, including `verifyTenant()` (L414) which carries the entire postgres tenant-mismatch contract via one wrap, savepoint paths in `transaction_manager.go` (L315/341/367) and `txstate.go` (L166, 223). `Harness.Skip` documents the single non-applicable subtest (`OpAfterRollback`) with reason.
 - [ ] `plugins/memory/concurrency_*_test.go` uses `errors.Is` against `ErrTxTerminated` / `ErrTxNotFound`; no `strings.Contains` on tx-state error messages; `TODO(#200)` comment removed.
 - [ ] New `spitest/transaction.go` subtests pass on memory, sqlite, AND postgres (with only `OpAfterRollback` skipped on postgres).
-- [ ] `COMPATIBILITY.md` matrix updated with the new `cyoda-go-spi` tag row.
+- [ ] `COMPATIBILITY.md` matrix's v0.8.0 row lists the seven added sentinels in the "SPI surface" column.
 - [ ] `make test-all` green AND each `plugins/{memory,sqlite,postgres}` module independently `go test ./...` green.
 - [ ] `go test -race ./...` clean per project convention (one-shot before PR; not per-step).
 - [ ] `go vet ./...` clean across root + each plugin submodule.
@@ -297,7 +304,7 @@ Only `OpAfterRollback` is skipped on postgres. `SavepointNotFound` is NOT skippe
 ## References
 
 - Issue #200
-- `plugins/memory/concurrency_savepoint_test.go:49-51` — original `TODO(#200)` marker
+- `plugins/memory/concurrency_savepoint_test.go:49-52` — original `TODO(#200)` marker
 - `plugins/memory/txmanager.go`, `plugins/memory/entity_store.go` — primary migration targets
 - `plugins/sqlite/txmanager.go`, `plugins/sqlite/entity_store.go` — mirror migration
 - `plugins/postgres/transaction_manager.go`, `plugins/postgres/txstate.go` — migration including full savepoint paths and `verifyTenant()` single-wrap
