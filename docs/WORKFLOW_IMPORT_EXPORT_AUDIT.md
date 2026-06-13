@@ -325,7 +325,7 @@ Verified via repository-wide grep of non-test code:
 | Field | OpenAPI / SPI | Consumed? |
 |---|---|---|
 | `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8619–8621`, `cyoda-go-spi@v0.7.1/types.go:152` | **No.** Only references are the generated DTO and the SPI struct. |
-| `ProcessorConfig.Context` | `api/openapi.yaml:8622–8624`, `types.go:153` | **No.** Same. |
+| `ProcessorConfig.Context` | `api/openapi.yaml:8622–8624`, `types.go:153` | **Resolved in v0.8.0.** Wired as a pass-through string into the dispatch `parameters` JSON node at `internal/grpc/dispatch.go:71, 221`. Historical analysis below retained for context. |
 | `ProcessorDefinition.Type` | `api/openapi.yaml:8674–8679`, `types.go:141` | **No.** Discriminator carried for parity, no engine branch uses it. |
 
 The other ProcessorConfig fields **are** consumed by the gRPC dispatcher
@@ -723,7 +723,7 @@ and the OpenAPI-generated DTO reference the field.
 | `ProcessorConfig.CalculationNodesTags` | USED (dispatcher) | `internal/grpc/dispatch.go:47, 187`; `internal/cluster/dispatch/cluster_dispatcher.go:65` |
 | `ProcessorConfig.ResponseTimeoutMs` | USED (dispatcher) | `internal/grpc/dispatch.go:104, 248` (defaults to 30 s) |
 | `ProcessorConfig.RetryPolicy` | DEAD | no consumer |
-| `ProcessorConfig.Context` | DEAD | no consumer |
+| `ProcessorConfig.Context` | USED (dispatcher) | `internal/grpc/dispatch.go:71, 221` — pass-through string forwarded as `parameters` JSON node; resolved in v0.8.0 |
 | `ProcessorConfig.StartNewTxOnDispatch` | USED | `engine_processors.go:205` (only when COMMIT_BEFORE_DISPATCH; validated by `validate.go:51`) |
 
 The dispatcher consumption matters: every claim about a "dead" config field
