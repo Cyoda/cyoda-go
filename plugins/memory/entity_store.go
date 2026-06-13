@@ -103,7 +103,7 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return 0, fmt.Errorf("transaction has been rolled back")
+			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Transaction mode: write to buffer, not main store.
 		cp := copyEntity(entity)
@@ -128,7 +128,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return 0, fmt.Errorf("transaction has been rolled back")
+			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Check CAS against main store (committed data), not buffer.
 		// Hold entityMu.RLock through both version check AND buffer write
@@ -250,7 +250,7 @@ func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return nil, fmt.Errorf("transaction has been rolled back")
+			return nil, fmt.Errorf("Get: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Check if deleted in this transaction.
 		if tx.Deletes[entityID] {
@@ -293,7 +293,7 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return nil, fmt.Errorf("transaction has been rolled back")
+			return nil, fmt.Errorf("GetAsAt: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		tx.ReadSet[entityID] = true
 	}
@@ -345,7 +345,7 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return nil, fmt.Errorf("transaction has been rolled back")
+			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Combine: snapshot of main store + buffer - deletes. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer (per
@@ -447,7 +447,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return fmt.Errorf("transaction has been rolled back")
+			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Check existence: buffer first, then committed store. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer.
@@ -510,7 +510,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return fmt.Errorf("transaction has been rolled back")
+			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Get all entities for the model (snapshot), mark each as deleted
 		// in tx. Wrap the entityMu hold in an IIFE so the unlock runs via
@@ -585,7 +585,7 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return false, fmt.Errorf("transaction has been rolled back")
+			return false, fmt.Errorf("Exists: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
 		// Check deletes first.
 		if tx.Deletes[entityID] {
