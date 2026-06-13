@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.7.1
+	github.com/cyoda-platform/cyoda-go-spi v0.8.0
 	github.com/getkin/kin-openapi v0.139.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/google/uuid v1.6.0
@@ -177,3 +177,5 @@ require (
 )
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
+
+replace github.com/cyoda-platform/cyoda-go-spi => /Users/paul/go-projects/cyoda-light/cyoda-go-spi

@@ -3,9 +3,11 @@ module github.com/cyoda-platform/cyoda-go/plugins/memory
 go 1.26.4
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.7.1
+	github.com/cyoda-platform/cyoda-go-spi v0.8.0
 	github.com/google/uuid v1.6.0
 )
+
+replace github.com/cyoda-platform/cyoda-go-spi => /Users/paul/go-projects/cyoda-light/cyoda-go-spi
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

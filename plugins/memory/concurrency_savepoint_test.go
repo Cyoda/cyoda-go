@@ -2,13 +2,30 @@ package memory_test
 
 import (
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
+
+// isToleratedClosedTxErr reports whether err is a benign "tx already
+// closed/rolled back/committed/not found" outcome — the kind that is
+// expected when a concurrent op wins the race against Savepoint/Join/Save/
+// RollbackToSavepoint. Anything else is a defect and should fail the test.
+func isToleratedClosedTxErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, spi.ErrTxNotFound),
+		errors.Is(err, spi.ErrTxTerminated),
+		errors.Is(err, spi.ErrTxCommitInProgress),
+		errors.Is(err, spi.ErrNotFound):
+		return true
+	}
+	return false
+}
 
 // Locking-discipline race tests for Savepoint, RollbackToSavepoint, and
 // Join in plugins/memory/txmanager.go. Issue #199 surfaces that Savepoint
@@ -46,10 +63,10 @@ import (
 //     (in an IIFE) — Commit and Rollback both write tx.Closed in their defer
 //     under tx.OpMu.Lock only, never under m.mu.
 //
-// TODO(#200): replace substring matches on tolerated errors ("not found",
-// "rolled back", "already closed", "already completed", "already being
-// committed") with errors.Is against sentinel error types once they land.
-// Until then a closed-mid-op tx is a legitimate outcome, not a defect.
+// Tolerated errors are recognised via errors.Is against the SPI tx-state
+// sentinel hierarchy (ErrTxNotFound, ErrTxTerminated, ErrTxCommitInProgress,
+// ErrNotFound) — see isToleratedClosedTxErr below. A closed-mid-op tx is a
+// legitimate outcome, not a defect.
 //
 // These tests are intended to be run with `go test -race`. Without `-race`
 // they still verify the tolerated-error contract.
@@ -120,11 +137,7 @@ func TestSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, sperr := txMgr.Savepoint(ctx, txID); sperr != nil {
-					msg := sperr.Error()
-					if strings.Contains(msg, "not found") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already closed") {
+					if isToleratedClosedTxErr(sperr) {
 						return
 					}
 					t.Errorf("Savepoint failed: %v", sperr)
@@ -136,12 +149,7 @@ func TestSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if cerr := txMgr.Commit(ctx, txID); cerr != nil {
-					if errors.Is(cerr, spi.ErrConflict) || errors.Is(cerr, spi.ErrNotFound) {
-						return
-					}
-					msg := cerr.Error()
-					if strings.Contains(msg, "already being committed") ||
-						strings.Contains(msg, "not found") {
+					if errors.Is(cerr, spi.ErrConflict) || isToleratedClosedTxErr(cerr) {
 						return
 					}
 					t.Errorf("Commit failed: %v", cerr)
@@ -192,11 +200,7 @@ func TestSavepoint_VsRollback_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, sperr := txMgr.Savepoint(ctx, txID); sperr != nil {
-					msg := sperr.Error()
-					if strings.Contains(msg, "not found") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already closed") {
+					if isToleratedClosedTxErr(sperr) {
 						return
 					}
 					t.Errorf("Savepoint failed: %v", sperr)
@@ -272,11 +276,7 @@ func TestRollbackToSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if rerr := txMgr.RollbackToSavepoint(ctx, txID, spID); rerr != nil {
-					msg := rerr.Error()
-					if strings.Contains(msg, "not found") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already closed") {
+					if isToleratedClosedTxErr(rerr) {
 						return
 					}
 					t.Errorf("RollbackToSavepoint failed: %v", rerr)
@@ -288,12 +288,7 @@ func TestRollbackToSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if cerr := txMgr.Commit(ctx, txID); cerr != nil {
-					if errors.Is(cerr, spi.ErrConflict) || errors.Is(cerr, spi.ErrNotFound) {
-						return
-					}
-					msg := cerr.Error()
-					if strings.Contains(msg, "already being committed") ||
-						strings.Contains(msg, "not found") {
+					if errors.Is(cerr, spi.ErrConflict) || isToleratedClosedTxErr(cerr) {
 						return
 					}
 					t.Errorf("Commit failed: %v", cerr)
@@ -361,10 +356,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, serr := store.Save(txCtx, e); serr != nil {
-					msg := serr.Error()
-					if strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "not found") {
+					if isToleratedClosedTxErr(serr) {
 						return
 					}
 					t.Errorf("Save failed: %v", serr)
@@ -376,11 +368,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if rerr := txMgr.RollbackToSavepoint(ctx, txID, spID); rerr != nil {
-					msg := rerr.Error()
-					if strings.Contains(msg, "not found") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already closed") {
+					if isToleratedClosedTxErr(rerr) {
 						return
 					}
 					t.Errorf("RollbackToSavepoint failed: %v", rerr)
@@ -433,10 +421,7 @@ func TestJoin_VsRollback_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, jerr := txMgr.Join(ctx, txID); jerr != nil {
-					msg := jerr.Error()
-					if strings.Contains(msg, "not found") ||
-						strings.Contains(msg, "already closed") ||
-						strings.Contains(msg, "rolled back") {
+					if isToleratedClosedTxErr(jerr) {
 						return
 					}
 					t.Errorf("Join failed: %v", jerr)
