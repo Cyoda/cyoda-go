@@ -378,13 +378,12 @@ func externalProcessorWorkflowWithContext(workflowName, procName, contextValue s
 	}`
 }
 
-// RunExternalAPI_09_13_ProcessorContextPassesThrough
-//
-// ProcessorConfig.context is a pass-through string forwarded verbatim as the
-// `parameters` JSON node of EntityProcessorCalculationRequest. The
-// echo-context-to-field processor records the received parameters string at
-// entity.data._context. We assert the value round-trips through the engine
-// dispatcher to the calculation member faithfully.
+// RunExternalAPI_09_13_ProcessorContextPassesThrough — ProcessorConfig.context
+// is a pass-through string forwarded verbatim as the `parameters` JSON node of
+// EntityProcessorCalculationRequest. The echo-context-to-field processor
+// records the received parameters string at entity.data._context. We assert
+// the value round-trips through the engine dispatcher to the calculation
+// member faithfully.
 func RunExternalAPI_09_13_ProcessorContextPassesThrough(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	tenant := fixture.ComputeTenant(t)
@@ -435,13 +434,11 @@ func criterionContextWorkflow(workflowName, contextValue string) string {
 	}`
 }
 
-// RunExternalAPI_09_14_CriterionContextPassesThrough
-//
-// FunctionCondition.config.context follows the same pass-through-string rule
-// as the processor path. The context-equals criterion returns true only when
-// the dispatched parameters string equals "match". With context="match" the
-// transition fires and the entity reaches PROCESSED — the negative case is
-// covered by 09/15 below.
+// RunExternalAPI_09_14_CriterionContextPassesThrough — FunctionCondition.config.context
+// follows the same pass-through-string rule as the processor path. The
+// context-equals criterion returns true only when the dispatched parameters
+// string equals "match". With context="match" the transition fires and the
+// entity reaches PROCESSED — the negative case is covered by 09/15 below.
 func RunExternalAPI_09_14_CriterionContextPassesThrough(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	tenant := fixture.ComputeTenant(t)
@@ -464,14 +461,13 @@ func RunExternalAPI_09_14_CriterionContextPassesThrough(t *testing.T, fixture pa
 	}
 }
 
-// RunExternalAPI_09_15_CriterionContextNegative
-//
-// Mirror of 09_14 with a non-matching context. context-equals returns false,
-// the auto-transition does not fire, and the entity stays at CREATED. This
-// proves end-to-end that the engine actually forwards the configured context
-// value — not that context-equals coincidentally returns true (which is what
-// the positive case alone could be explained by if the dispatcher passed an
-// arbitrary or hard-coded payload).
+// RunExternalAPI_09_15_CriterionContextNegative — mirror of 09_14 with a
+// non-matching context. context-equals returns false, the auto-transition
+// does not fire, and the entity stays at CREATED. This proves end-to-end
+// that the engine actually forwards the configured context value — not that
+// context-equals coincidentally returns true (which is what the positive
+// case alone could be explained by if the dispatcher passed an arbitrary or
+// hard-coded payload).
 func RunExternalAPI_09_15_CriterionContextNegative(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	tenant := fixture.ComputeTenant(t)

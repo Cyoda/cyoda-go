@@ -363,11 +363,11 @@ func extractParameters(ce *cepb.CloudEvent) (json.RawMessage, bool, error) {
 	return raw, true, nil
 }
 
-// TestDispatchProcessor_ContextSurfacesAsParametersString
-// processor.Config.Context is a pass-through string. When non-empty, the
-// dispatcher must place it verbatim into the request's `parameters` JSON node
-// so a single external processor implementation can serve multiple workflow
-// roles distinguished by the context value.
+// TestDispatchProcessor_ContextSurfacesAsParametersString verifies that
+// processor.Config.Context, when non-empty, is placed verbatim into the
+// request's `parameters` JSON node so a single external processor
+// implementation can serve multiple workflow roles distinguished by the
+// context value.
 func TestDispatchProcessor_ContextSurfacesAsParametersString(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := testContext()
@@ -427,10 +427,10 @@ func TestDispatchProcessor_ContextSurfacesAsParametersString(t *testing.T) {
 	}
 }
 
-// TestDispatchProcessor_EmptyContextOmitsParameters
-// When Context is the zero value, dispatcher must omit parameters entirely
-// (no `"parameters":null` and no empty string) so existing requests on the
-// wire are unchanged. The `parameters` field carries `omitempty` for that reason.
+// TestDispatchProcessor_EmptyContextOmitsParameters verifies that when
+// Context is the zero value the dispatcher omits parameters entirely (no
+// `"parameters":null` and no empty string) so existing requests on the wire
+// are unchanged. The `parameters` field carries `omitempty` for that reason.
 func TestDispatchProcessor_EmptyContextOmitsParameters(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := testContext()
@@ -466,10 +466,10 @@ func TestDispatchProcessor_EmptyContextOmitsParameters(t *testing.T) {
 	}
 }
 
-// TestDispatchCriteria_ContextSurfacesAsParametersString
+// TestDispatchCriteria_ContextSurfacesAsParametersString verifies that
 // FunctionCondition.config.context follows the same pass-through-string rule
-// as the processor path. The criterion JSON shape carries the function wrapper
-// emitted by the engine's evaluateCriterion routing.
+// as the processor path. The criterion JSON shape carries the function
+// wrapper emitted by the engine's evaluateCriterion routing.
 func TestDispatchCriteria_ContextSurfacesAsParametersString(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := testContext()
@@ -522,7 +522,9 @@ func TestDispatchCriteria_ContextSurfacesAsParametersString(t *testing.T) {
 	}
 }
 
-// TestDispatchCriteria_EmptyContextOmitsParameters
+// TestDispatchCriteria_EmptyContextOmitsParameters verifies that an absent
+// or empty criterion context omits the request's parameters field — mirror
+// of TestDispatchProcessor_EmptyContextOmitsParameters for the criteria path.
 func TestDispatchCriteria_EmptyContextOmitsParameters(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := testContext()
