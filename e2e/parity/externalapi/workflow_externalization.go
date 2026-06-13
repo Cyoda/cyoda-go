@@ -28,9 +28,9 @@ package externalapi
 //
 // Compute-test-client catalog (cmd/compute-test-client/catalog.go):
 //   processors: noop, tag-with-foo, bump-amount, inject-error,
-//               slow-configurable, set-field
+//               slow-configurable, set-field, echo-context-to-field
 //   criteria:   always-true, always-false, amount-gt-100, select-premium,
-//               select-standard, field-equals
+//               select-standard, field-equals, context-equals
 //
 // The catalog has no warning/error-flag processor — adding one would
 // require extending processorFunc to expose the gRPC ProcessorResponse
@@ -60,6 +60,8 @@ func init() {
 		parity.NamedTest{Name: "ExternalAPI_09_10_ExternalTimeoutFailover", Fn: RunExternalAPI_09_10_ExternalTimeoutFailover},
 		parity.NamedTest{Name: "ExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest", Fn: RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest},
 		parity.NamedTest{Name: "ExternalAPI_09_12_ExternalizedCriterionSkipsCall", Fn: RunExternalAPI_09_12_ExternalizedCriterionSkipsCall},
+		parity.NamedTest{Name: "ExternalAPI_09_13_ProcessorContextPassesThrough", Fn: RunExternalAPI_09_13_ProcessorContextPassesThrough},
+		parity.NamedTest{Name: "ExternalAPI_09_14_CriterionContextPassesThrough", Fn: RunExternalAPI_09_14_CriterionContextPassesThrough},
 	)
 }
 
@@ -351,6 +353,106 @@ func RunExternalAPI_09_12_ExternalizedCriterionSkipsCall(t *testing.T, fixture p
 	}
 	if got.Meta.State != "CREATED" {
 		t.Errorf("09/12: expected entity at CREATED (criterion=always-false → transition not taken), got %s", got.Meta.State)
+	}
+}
+
+// externalProcessorWorkflowWithContext returns a workflow whose
+// CREATED→PROCESSED transition carries a single externalized processor with
+// the given pass-through context string. Used by the issue-253 parity test
+// to observe ProcessorConfig.context surfacing at the calculation member.
+func externalProcessorWorkflowWithContext(workflowName, procName, contextValue string) string {
+	return `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
+			"states": {
+				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
+					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "SYNC",
+						"config": {"attachEntity": true, "calculationNodesTags": "", "context": "` + contextValue + `"}}]
+				}]},
+				"PROCESSED": {}
+			}
+		}]
+	}`
+}
+
+// RunExternalAPI_09_13_ProcessorContextPassesThrough
+//
+// ProcessorConfig.context is a pass-through string forwarded verbatim as the
+// `parameters` JSON node of EntityProcessorCalculationRequest. The
+// echo-context-to-field processor records the received parameters string at
+// entity.data._context. We assert the value round-trips through the engine
+// dispatcher to the calculation member faithfully.
+func RunExternalAPI_09_13_ProcessorContextPassesThrough(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	tenant := fixture.ComputeTenant(t)
+	c := parityclient.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "extCtxProc"
+	const modelVersion = 1
+	const contextValue = "premium-role"
+	wf := externalProcessorWorkflowWithContext("ext-ctx-proc-wf", "echo-context-to-field", contextValue)
+	setupExternalModel(t, c, modelName, modelVersion, `{"k":1}`, wf)
+
+	id, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	got, err := c.GetEntity(t, id)
+	if err != nil {
+		t.Fatalf("GetEntity: %v", err)
+	}
+	if got.Meta.State != "PROCESSED" {
+		t.Fatalf("expected state PROCESSED, got %s", got.Meta.State)
+	}
+	if v, ok := got.Data["_context"]; !ok {
+		t.Errorf("expected entity.data._context to be populated by echo-context-to-field (data=%+v)", got.Data)
+	} else if v != contextValue {
+		t.Errorf("expected entity.data._context=%q, got %q (processor saw mismatched parameters — Context not passed through)", contextValue, v)
+	}
+}
+
+// RunExternalAPI_09_14_CriterionContextPassesThrough
+//
+// FunctionCondition.config.context follows the same pass-through-string rule
+// as the processor path. The context-equals criterion returns true only when
+// the parameters string equals "match". Two workflows on the same model are
+// not supported by the current external-criterion plumbing, so we exercise the
+// positive case (context="match" → transition fires → entity at PROCESSED)
+// here; the negative case is covered indirectly by 09/12 and the unit test
+// TestDispatchCriteria_EmptyContextOmitsParameters.
+func RunExternalAPI_09_14_CriterionContextPassesThrough(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	tenant := fixture.ComputeTenant(t)
+	c := parityclient.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "extCtxCrit"
+	const modelVersion = 1
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "ext-ctx-crit-wf", "initialState": "CREATED", "active": true,
+			"states": {
+				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
+					"criterion": {"type": "function", "function": {"name": "context-equals",
+						"config": {"calculationNodesTags": "", "context": "match"}}}
+				}]},
+				"PROCESSED": {}
+			}
+		}]
+	}`
+	setupExternalModel(t, c, modelName, modelVersion, `{"k":1}`, wf)
+
+	id, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	got, err := c.GetEntity(t, id)
+	if err != nil {
+		t.Fatalf("GetEntity: %v", err)
+	}
+	if got.Meta.State != "PROCESSED" {
+		t.Errorf("expected state PROCESSED (criterion context=\"match\" → transition fires); got %s — Context not passed through to criterion", got.Meta.State)
 	}
 }
 

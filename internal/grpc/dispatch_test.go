@@ -342,3 +342,221 @@ func TestDispatchCriteria_MatchesFalse(t *testing.T) {
 		t.Error("expected matches=false")
 	}
 }
+
+// extractParameters returns the "parameters" field of the request payload as a
+// raw JSON value (or nil if absent). Cloud's contract for ProcessorConfig.context
+// is pass-as-string into the request's parameters node — see
+// docs/WORKFLOW_IMPORT_EXPORT_AUDIT.md §M1 and api/grpc/events/types.go:822, 2403.
+func extractParameters(ce *cepb.CloudEvent) (json.RawMessage, bool, error) {
+	_, payload, err := ParseCloudEvent(ce)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to parse cloud event: %w", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+	raw, ok := m["parameters"]
+	if !ok {
+		return nil, false, nil
+	}
+	return raw, true, nil
+}
+
+// TestDispatchProcessor_ContextSurfacesAsParametersString
+// processor.Config.Context is a pass-through string. When non-empty, the
+// dispatcher must place it verbatim into the request's `parameters` JSON node
+// so a single external processor implementation can serve multiple workflow
+// roles distinguished by the context value.
+func TestDispatchProcessor_ContextSurfacesAsParametersString(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	const ctxValue = `{"role":"premium-approver"}`
+	processor := spi.ProcessorDefinition{
+		Name: "my-proc",
+		Config: spi.ProcessorConfig{
+			AttachEntity:         false,
+			CalculationNodesTags: "python",
+			ResponseTimeoutMs:    5000,
+			Context:              ctxValue,
+		},
+	}
+
+	go func() {
+		ce := <-sentCh
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+
+		raw, present, err := extractParameters(ce)
+		if err != nil {
+			t.Errorf("extractParameters: %v", err)
+			return
+		}
+		if !present {
+			t.Error("expected parameters field to be present when Context is set")
+		} else {
+			var got string
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Errorf("expected parameters to be a JSON string, got %s: %v", raw, err)
+			} else if got != ctxValue {
+				t.Errorf("expected parameters=%q, got %q", ctxValue, got)
+			}
+		}
+
+		// Also assert via the generated typed schema decodes cleanly with the
+		// string-shaped parameters (Parameters is interface{}).
+		_, payload, _ := ParseCloudEvent(ce)
+		var typed events.EntityProcessorCalculationRequestJson
+		if err := json.Unmarshal(payload, &typed); err != nil {
+			t.Errorf("sent processor request does not match schema: %v", err)
+		} else if s, ok := typed.Parameters.(string); !ok || s != ctxValue {
+			t.Errorf("expected typed.Parameters as string %q, got %T %v", ctxValue, typed.Parameters, typed.Parameters)
+		}
+
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
+	}()
+
+	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestDispatchProcessor_EmptyContextOmitsParameters
+// When Context is the zero value, dispatcher must omit parameters entirely
+// (no `"parameters":null` and no empty string) so existing requests on the
+// wire are unchanged. The `parameters` field carries `omitempty` for that reason.
+func TestDispatchProcessor_EmptyContextOmitsParameters(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	processor := spi.ProcessorDefinition{
+		Name: "my-proc",
+		Config: spi.ProcessorConfig{
+			CalculationNodesTags: "python",
+			ResponseTimeoutMs:    5000,
+			// Context deliberately empty.
+		},
+	}
+
+	go func() {
+		ce := <-sentCh
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		if _, present, err := extractParameters(ce); err != nil {
+			t.Errorf("extractParameters: %v", err)
+		} else if present {
+			t.Error("expected parameters field to be omitted when Context is empty")
+		}
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
+	}()
+
+	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestDispatchCriteria_ContextSurfacesAsParametersString
+// FunctionCondition.config.context follows the same pass-through-string rule
+// as the processor path. The criterion JSON shape carries the function wrapper
+// emitted by the engine's evaluateCriterion routing.
+func TestDispatchCriteria_ContextSurfacesAsParametersString(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	const ctxValue = `gold-tier`
+	criterion := json.RawMessage(`{
+		"type": "function",
+		"function": {
+			"name": "my-criteria",
+			"config": {
+				"calculationNodesTags": "python",
+				"responseTimeoutMs": 5000,
+				"context": "` + ctxValue + `"
+			}
+		}
+	}`)
+
+	go func() {
+		ce := <-sentCh
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+
+		raw, present, err := extractParameters(ce)
+		if err != nil {
+			t.Errorf("extractParameters: %v", err)
+			return
+		}
+		if !present {
+			t.Error("expected parameters field to be present when criterion context is set")
+		} else {
+			var got string
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Errorf("expected parameters to be a JSON string, got %s: %v", raw, err)
+			} else if got != ctxValue {
+				t.Errorf("expected parameters=%q, got %q", ctxValue, got)
+			}
+		}
+
+		matchesTrue := true
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
+	}()
+
+	if _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestDispatchCriteria_EmptyContextOmitsParameters
+func TestDispatchCriteria_EmptyContextOmitsParameters(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	criterion := json.RawMessage(`{
+		"type": "function",
+		"function": {
+			"name": "my-criteria",
+			"config": {
+				"calculationNodesTags": "python",
+				"responseTimeoutMs": 5000
+			}
+		}
+	}`)
+
+	go func() {
+		ce := <-sentCh
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		if _, present, err := extractParameters(ce); err != nil {
+			t.Errorf("extractParameters: %v", err)
+		} else if present {
+			t.Error("expected parameters field to be omitted when criterion context is empty")
+		}
+		matchesTrue := true
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
+	}()
+
+	if _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

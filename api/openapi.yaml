@@ -7989,7 +7989,14 @@ components:
           description: Retry policy for the function
         context:
           type: string
-          description: Additional context for the function
+          description: |
+            Pass-through string forwarded verbatim as the `parameters` JSON
+            node of the outgoing `EntityCriteriaCalculationRequest`. The value
+            is encoded as a JSON string (pass-as-string); the receiver gets a
+            JSON-quoted string in `parameters`. Empty value causes the
+            `parameters` field to be omitted entirely. Use to distinguish
+            multiple workflow roles served by a single externalized criterion
+            implementation without registering a separate name per role.
     ExternalizedFunctionDto:
       type: object
       properties:
@@ -8647,7 +8654,14 @@ components:
           description: Retry policy for the function
         context:
           type: string
-          description: Additional context for the function
+          description: |
+            Pass-through string forwarded verbatim as the `parameters` JSON
+            node of the outgoing `EntityProcessorCalculationRequest`. The
+            value is encoded as a JSON string (pass-as-string); the receiver
+            gets a JSON-quoted string in `parameters`. Empty value causes the
+            `parameters` field to be omitted entirely. Use to distinguish
+            multiple workflow roles served by a single externalized processor
+            implementation without registering a separate name per role.
         asyncResult:
           type: boolean
           description: |

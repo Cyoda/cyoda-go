@@ -209,3 +209,79 @@ func TestCatalog_FieldEquals(t *testing.T) {
 		t.Error("field-equals: got true for non-matching value, want false")
 	}
 }
+
+// TestCatalog_EchoContextToField verifies the pass-through Context (delivered
+// as a JSON-string in parameters) is recorded into _context.
+func TestCatalog_EchoContextToField(t *testing.T) {
+	cat := newCatalog()
+	proc, ok := cat.processor("echo-context-to-field")
+	if !ok {
+		t.Fatal("echo-context-to-field processor not registered")
+	}
+
+	// Context present: a JSON-string config like `"premium"` ends up in _context.
+	out, err := proc(context.Background(), &Entity{ID: "e-1", Data: json.RawMessage(`{"k":1}`)}, json.RawMessage(`"premium"`))
+	if err != nil {
+		t.Fatalf("echo-context-to-field: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(out.Data, &data); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if data["_context"] != "premium" {
+		t.Errorf("expected _context=premium, got %v", data["_context"])
+	}
+
+	// Context absent: no _context field written.
+	out2, err := proc(context.Background(), &Entity{ID: "e-2", Data: json.RawMessage(`{"k":1}`)}, nil)
+	if err != nil {
+		t.Fatalf("echo-context-to-field (empty config): %v", err)
+	}
+	var data2 map[string]any
+	if err := json.Unmarshal(out2.Data, &data2); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if _, ok := data2["_context"]; ok {
+		t.Error("expected no _context field when config is empty")
+	}
+
+	// Malformed (non-string JSON) surfaces as an error.
+	if _, err := proc(context.Background(), &Entity{ID: "e-3", Data: json.RawMessage(`{"k":1}`)}, json.RawMessage(`{"role":"premium"}`)); err == nil {
+		t.Error("expected error for non-string JSON config")
+	}
+}
+
+// TestCatalog_ContextEquals verifies the context-equals criterion matches only
+// when the pass-through Context equals the literal "match".
+func TestCatalog_ContextEquals(t *testing.T) {
+	cat := newCatalog()
+	crit, ok := cat.criterion("context-equals")
+	if !ok {
+		t.Fatal("context-equals criterion not registered")
+	}
+
+	got, err := crit(context.Background(), &Entity{ID: "e-1"}, json.RawMessage(`"match"`))
+	if err != nil {
+		t.Fatalf("context-equals match: %v", err)
+	}
+	if !got {
+		t.Error("context-equals: expected true for context=\"match\"")
+	}
+
+	got, err = crit(context.Background(), &Entity{ID: "e-2"}, json.RawMessage(`"nope"`))
+	if err != nil {
+		t.Fatalf("context-equals nope: %v", err)
+	}
+	if got {
+		t.Error("context-equals: expected false for context=\"nope\"")
+	}
+
+	// No context: false.
+	got, err = crit(context.Background(), &Entity{ID: "e-3"}, nil)
+	if err != nil {
+		t.Fatalf("context-equals nil: %v", err)
+	}
+	if got {
+		t.Error("context-equals: expected false when context absent")
+	}
+}
