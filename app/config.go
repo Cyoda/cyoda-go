@@ -11,16 +11,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type Config struct {
-	HTTPPort           int
-	ContextPath        string
-	ErrorResponseMode  string
-	MaxStateVisits     int
-	LogLevel           string
+	HTTPPort          int
+	ContextPath       string
+	ErrorResponseMode string
+	MaxStateVisits    int
+	LogLevel          string
 	// Version is the ldflag-injected binary version string reported in the
 	// REST /help payload. Defaults to "dev" when unset.
 	Version            string
@@ -76,6 +77,14 @@ type IAMConfig struct {
 	JWTAudience    string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
 	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
 	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
+
+	// NEW: IAM feature surface for /oauth/keys/* — passed through to auth.IAMFeatures.
+	TrustedKeyRegistrationEnabled bool
+	TrustedKeyMaxPerTenant        int
+	TrustedKeyMaxValidityDays     int
+	TrustedKeyMaxJWKProperties    int
+	KeypairDefaultValidityDays    int
+	BootstrapAudience             string
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -152,19 +161,25 @@ func DefaultConfig() Config {
 			MetricsRequireAuth: envBool("CYODA_METRICS_REQUIRE_AUTH", false),
 			MetricsBearerToken: metricsBearerToken,
 		},
-		StartupTimeout:     envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
+		StartupTimeout: envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
-			Mode:           envString("CYODA_IAM_MODE", "mock"),
-			MockUserID:     "mock-user-001",
-			MockUserName:   "Mock User",
-			MockTenantID:   "mock-tenant",
-			MockTenantName: "Mock Tenant",
-			MockRoles:      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			JWTSigningKey:  jwtSigningKey,
-			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda"),
-			JWTAudience:    envString("CYODA_JWT_AUDIENCE", ""),
-			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
-			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
+			Mode:                          envString("CYODA_IAM_MODE", "mock"),
+			MockUserID:                    "mock-user-001",
+			MockUserName:                  "Mock User",
+			MockTenantID:                  "mock-tenant",
+			MockTenantName:                "Mock Tenant",
+			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			JWTSigningKey:                 jwtSigningKey,
+			JWTIssuer:                     envString("CYODA_JWT_ISSUER", "cyoda"),
+			JWTAudience:                   envString("CYODA_JWT_AUDIENCE", ""),
+			JWTExpiry:                     envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
+			RequireJWT:                    envBool("CYODA_REQUIRE_JWT", false),
+			TrustedKeyRegistrationEnabled: envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
+			TrustedKeyMaxPerTenant:        envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
+			TrustedKeyMaxValidityDays:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
+			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
+			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
+			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
 		},
 		Cluster: cluster.Config{
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
@@ -433,19 +448,42 @@ func isASCII(s string) bool {
 	return true
 }
 
-// ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary
-// refuses to run with mock auth or a missing signing key. Intended for
-// production provisioning (Helm) where silent mock-auth fallback would be
-// a security hazard. Callers must invoke this before wiring auth in New().
+// ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT
+// is set, mock mode is rejected and the signing key must be present. In JWT
+// mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
+// env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
+// etc. fail startup rather than being silently ignored.
+// Callers must invoke this before wiring auth in New().
 func ValidateIAM(iam IAMConfig) error {
-	if !iam.RequireJWT {
-		return nil
-	}
-	if iam.Mode != "jwt" {
+	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
+	// can never silently fall back to unauthenticated access.
+	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
 	}
-	if iam.JWTSigningKey == "" {
+	// Mock mode needs no further validation.
+	if iam.Mode == "mock" {
+		return nil
+	}
+	// JWT mode: signing-key presence gated on RequireJWT; feature validation
+	// is unconditional so misconfigured env values fail at startup.
+	if iam.RequireJWT && iam.JWTSigningKey == "" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_JWT_SIGNING_KEY is empty")
 	}
+	if err := iam.AuthIAMFeatures().Validate(); err != nil {
+		return fmt.Errorf("IAM features validation: %w", err)
+	}
 	return nil
+}
+
+// AuthIAMFeatures projects the new IAM-feature fields out of IAMConfig
+// into the auth-package value struct.
+func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
+	return auth.IAMFeatures{
+		TrustedKeyRegistrationEnabled: c.TrustedKeyRegistrationEnabled,
+		TrustedKeyMaxPerTenant:        c.TrustedKeyMaxPerTenant,
+		TrustedKeyMaxValidityDays:     c.TrustedKeyMaxValidityDays,
+		TrustedKeyMaxJWKProperties:    c.TrustedKeyMaxJWKProperties,
+		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
+		BootstrapAudience:             c.BootstrapAudience,
+	}
 }

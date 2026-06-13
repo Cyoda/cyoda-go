@@ -22,16 +22,22 @@ const (
 	// FoundIncompatibleTypeWithEntityModelException. Distinct from
 	// ErrCodeConditionTypeMismatch which is the search-side equivalent
 	// for a condition's literal-vs-field mismatch.
-	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
-	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
-	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
-	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
-	ErrCodeUnauthorized         = "UNAUTHORIZED"
-	ErrCodeForbidden            = "FORBIDDEN"
-	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
-	ErrCodeServerError          = "SERVER_ERROR"
-	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
-	ErrCodeNotFound             = "NOT_FOUND"
+	ErrCodeIncompatibleType          = "INCOMPATIBLE_TYPE"
+	ErrCodeInvalidChangeLevel        = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath          = "INVALID_FIELD_PATH"
+	ErrCodePolymorphicSlot           = "POLYMORPHIC_SLOT"
+	ErrCodeUnauthorized              = "UNAUTHORIZED"
+	ErrCodeForbidden                 = "FORBIDDEN"
+	ErrCodeFeatureDisabled           = "FEATURE_DISABLED"
+	ErrCodeKeyOwnedByDifferentTenant = "KEY_OWNED_BY_DIFFERENT_TENANT"
+	ErrCodeKeypairNotFound           = "KEYPAIR_NOT_FOUND"
+	ErrCodeTrustedKeyCapReached      = "TRUSTED_KEY_CAP_REACHED"
+	ErrCodeTrustedKeyNotFound        = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeUnsupportedAlgorithm      = "UNSUPPORTED_ALGORITHM"
+	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
+	ErrCodeServerError               = "SERVER_ERROR"
+	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
+	ErrCodeNotFound                  = "NOT_FOUND"
 )
 
 const (

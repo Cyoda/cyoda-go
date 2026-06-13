@@ -29,9 +29,9 @@ import (
 )
 
 var (
-	serverURL      string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
-	dbPool         *pgxpool.Pool                     // direct DB access for verification queries
-	procSvc        *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
+	serverURL       string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
+	dbPool          *pgxpool.Pool                     // direct DB access for verification queries
+	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
 )
 
@@ -99,12 +99,12 @@ func TestMain(m *testing.M) {
 	cfg := app.DefaultConfig()
 	cfg.ContextPath = "/api"
 	cfg.StorageBackend = "postgres"
-	cfg.IAM = app.IAMConfig{
-		Mode:          "jwt",
-		JWTSigningKey: keyPEM,
-		JWTIssuer:     "cyoda-test",
-		JWTExpiry:     3600,
-	}
+	// Override only the JWT auth fields; preserve IAM feature defaults
+	// (KeypairDefaultValidityDays, TrustedKeyMax*, etc.) from DefaultConfig.
+	cfg.IAM.Mode = "jwt"
+	cfg.IAM.JWTSigningKey = keyPEM
+	cfg.IAM.JWTIssuer = "cyoda-test"
+	cfg.IAM.JWTExpiry = 3600
 	cfg.Bootstrap = app.BootstrapConfig{
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -112,6 +112,9 @@ func TestMain(m *testing.M) {
 		UserID:       "test-admin",
 		Roles:        "ROLE_ADMIN,ROLE_M2M",
 	}
+	// Enable trusted-key feature for E2E coverage. The KV store backing the
+	// trusted-key store is wired in app.New, so this must be set before that call.
+	cfg.IAM.TrustedKeyRegistrationEnabled = true
 
 	// In-process processor/criteria service for workflow E2E tests.
 	procSvc = localproc.New()

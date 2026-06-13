@@ -224,7 +224,8 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore)
+		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore,
+			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant))
 		if err != nil {
 			slog.Error("startup failure",
 				"phase", "kv-trusted-store-bootstrap",
@@ -236,6 +237,7 @@ func New(cfg Config) *App {
 			Issuer:          cfg.IAM.JWTIssuer,
 			ExpirySeconds:   cfg.IAM.JWTExpiry,
 			TrustedKeyStore: trustedKeyStore,
+			IAMFeatures:     cfg.IAM.AuthIAMFeatures(),
 		})
 		if err != nil {
 			slog.Error("startup failure",
@@ -440,7 +442,13 @@ func New(cfg Config) *App {
 	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
-	server.Account = account.New(a.authService, a.authzService)
+	var accountKeyStore auth.KeyStore
+	var accountTrustedKeyStore auth.TrustedKeyStore
+	if authSvc != nil {
+		accountKeyStore = authSvc.KeyStore()
+		accountTrustedKeyStore = authSvc.TrustedKeyStore()
+	}
+	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, cfg.IAM.AuthIAMFeatures())
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
@@ -458,12 +466,12 @@ func New(cfg Config) *App {
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
 	//     and must be reachable by unauthenticated callers by protocol.
 	//
-	//   ADMIN (authMW + ROLE_ADMIN): /oauth/keys/*, /account/m2m, /account/m2m/*.
+	//   ADMIN (authMW + ROLE_ADMIN): /account/m2m, /account/m2m/*.
 	//     Two-layer enforcement: middleware.Auth populates UserContext (or
 	//     rejects with 401), then the handlers in internal/auth/ call the
 	//     requireAdmin guard which enforces ROLE_ADMIN (or rejects with 403).
 	//     Both layers are required — authMW alone would let any
-	//     authenticated caller manage signing keys.
+	//     authenticated caller manage M2M clients.
 
 	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
@@ -479,7 +487,6 @@ func New(cfg Config) *App {
 	// guarantees the UserContext is populated so the guard has something
 	// to check.
 	if authSvc != nil {
-		mux.Handle("/oauth/keys/", authMW(authSvc.AdminHandler()))
 		mux.Handle("/account/m2m/", authMW(authSvc.AdminHandler()))
 		mux.Handle("/account/m2m", authMW(authSvc.AdminHandler()))
 	}

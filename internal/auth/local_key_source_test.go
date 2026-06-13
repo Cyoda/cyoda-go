@@ -20,11 +20,13 @@ func TestLocalKeySource_ReturnsPublicKeyForRegisteredKID(t *testing.T) {
 	kid := "test-kid-123"
 	if err := ks.Save(&auth.KeyPair{
 		KID:        kid,
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &priv.PublicKey,
 		PrivateKey: priv,
 		Active:     true,
-		CreatedAt:  time.Now().UTC(),
-	}); err != nil {
+		ValidFrom:  time.Now().UTC(),
+	}, auth.RotateOptions{}); err != nil {
 		t.Fatalf("failed to save keypair: %v", err)
 	}
 
@@ -85,11 +87,13 @@ func TestLocalKeySource_RejectsInvalidatedKey(t *testing.T) {
 	const kid = "rotation-victim"
 	if err := ks.Save(&auth.KeyPair{
 		KID:        kid,
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &priv.PublicKey,
 		PrivateKey: priv,
 		Active:     true,
-		CreatedAt:  time.Now().UTC(),
-	}); err != nil {
+		ValidFrom:  time.Now().UTC(),
+	}, auth.RotateOptions{}); err != nil {
 		t.Fatalf("failed to save keypair: %v", err)
 	}
 
@@ -100,8 +104,8 @@ func TestLocalKeySource_RejectsInvalidatedKey(t *testing.T) {
 		t.Fatalf("GetKey while active: unexpected error: %v", err)
 	}
 
-	// Invalidate the key.
-	if err := ks.Invalidate(kid); err != nil {
+	// Invalidate the key (gracePeriodSec=0 means immediate expiry).
+	if err := ks.Invalidate(kid, 0); err != nil {
 		t.Fatalf("Invalidate: %v", err)
 	}
 

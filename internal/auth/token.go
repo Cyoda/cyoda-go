@@ -76,7 +76,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, clientID s
 		return
 	}
 
-	kp, err := h.keyStore.GetActive()
+	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
 		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
 		return
@@ -134,7 +134,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	trustedKey, err := h.trustedKeyStore.Get(kid)
+	trustedKey, err := getTrustedKeyByKID(h.trustedKeyStore, kid)
 	if err != nil {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unknown trusted key")
 		return
@@ -205,7 +205,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	kp, err := h.keyStore.GetActive()
+	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
 		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
 		return

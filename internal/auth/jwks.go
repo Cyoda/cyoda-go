@@ -39,13 +39,14 @@ func (h *JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allKeys := h.keyStore.List()
+	allKeys := h.keyStore.ListForVerification()
 
+	// ListForVerification already filters expired keys (ValidTo in the past).
+	// We do NOT filter by Active here: grace-period keys (Active=false, ValidTo
+	// in the future) are intentionally published so external verifiers can
+	// validate tokens that were signed before a rotation (spec §3.2 #1).
 	entries := make([]jwkEntry, 0, len(allKeys))
 	for _, kp := range allKeys {
-		if !kp.Active {
-			continue
-		}
 		entries = append(entries, jwkEntry{
 			Kty: "RSA",
 			KID: kp.KID,

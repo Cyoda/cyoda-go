@@ -67,10 +67,13 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.ENTITY_MODIFIED` — `412` — not retryable — `If-Match`-guarded entity update rejected; supplied transaction ID does not match the entity's current version
 - `errors.ENTITY_NOT_FOUND` — `404` — not retryable — entity UUID does not exist or is not accessible to the caller
 - `errors.EPOCH_MISMATCH` — `409` — retryable — writing node's cached shard epoch is stale; another node has since taken ownership
+- `errors.FEATURE_DISABLED` — `404` — not retryable — Optional feature not enabled in this deployment.
 - `errors.FORBIDDEN` — `403` — not retryable — authenticated caller lacks the required role or the tenant does not match
 - `errors.HELP_TOPIC_NOT_FOUND` — `404` — not retryable — help topic path does not resolve to any topic in the tree
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — not retryable — request with the same idempotency key was received but payload differs from the original
 - `errors.INCOMPATIBLE_TYPE` — `400` — not retryable — entity payload's leaf value type is not assignable to the schema's declared DataType for that path; carries `fieldPath`, `expectedType`, `actualType` in `properties` (Cloud's `FoundIncompatibleTypeWithEntityModelException` equivalent)
+- `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
+- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist.
 - `errors.INVALID_CHANGE_LEVEL` — `400` — not retryable — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`
 - `errors.INVALID_FIELD_PATH` — `400` — not retryable — search condition references one or more JSONPath field paths absent from the target model's locked schema; bounded refresh did not surface the path
 - `errors.MODEL_ALREADY_LOCKED` — `409` — not retryable — admin operation requires `UNLOCKED` state but the model is `LOCKED` (relock attempt or re-import on a locked model)
@@ -91,12 +94,15 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable — cluster node that owns the open transaction is unreachable
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
 - `errors.TRANSITION_NOT_FOUND` — `404` — not retryable — requested workflow transition is not defined for the entity's current state
+- `errors.TRUSTED_KEY_CAP_REACHED` — `400` — not retryable — Per-tenant trusted-key cap reached.
 - `errors.TRUSTED_KEY_NOT_FOUND` — `404` — not retryable — referenced trusted-key KID is not present in the registry (delete / invalidate / reactivate target missing)
 - `errors.TX_CONFLICT` — `409` — retryable — transaction aborted due to storage-level serialization conflict
 - `errors.TX_COORDINATOR_NOT_CONFIGURED` — `503` — not retryable — distributed transaction coordinator is disabled or misconfigured on this node
 - `errors.TX_NO_STATE` — `404` — not retryable — coordinator has no state record for the given transaction ID
 - `errors.TX_REQUIRED` — `400` — not retryable — operation requires a transaction context but none was provided
 - `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, signature is invalid, or issuer is untrusted
+- `errors.UNSUPPORTED_ALGORITHM` — `400` — not retryable — Requested JWT algorithm not supported in this version.
+- `errors.UNSUPPORTED_KEY_TYPE` — `400` — not retryable — JWK `kty` not supported in this version.
 - `errors.VALIDATION_FAILED` — `400` — not retryable — payload is structurally valid JSON but fails the model's schema or workflow validation rules
 - `errors.WORKFLOW_FAILED` — `400` — not retryable — workflow processor or guard condition returned a failure during state transition
 - `errors.WORKFLOW_NOT_FOUND` — `404` — not retryable — workflow definition referenced by the entity model does not exist
