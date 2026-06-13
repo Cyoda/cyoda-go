@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -123,8 +124,8 @@ func TestJoinTenantMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on tenant mismatch join")
 	}
-	if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("unexpected error message: %v", err)
+	if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	// Clean up.
@@ -226,8 +227,8 @@ func TestJoinRejectsNilUserContext(t *testing.T) {
 	// Pass a context with NO UserContext — Join must reject.
 	if _, err := tm.Join(spi.WithTransaction(t.Context(), nil), txID); err == nil {
 		t.Fatal("expected error when joining without UserContext")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctx, txID)

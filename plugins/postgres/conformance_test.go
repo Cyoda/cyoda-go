@@ -161,5 +161,14 @@ func TestConformance(t *testing.T) {
 			}
 			time.Sleep(d)
 		},
+		Skip: map[string]string{
+			// pgx.Tx aborts surface as ErrConflict via SQLSTATE 25P02
+			// (in_failed_sql_transaction), not as ErrTxRolledBack. This is
+			// the documented postgres-engine behaviour per the ErrTxTerminated
+			// SPI godoc — backends that don't own their own in-process
+			// tx-state buffer surface mid-op rollback through the engine's
+			// failure code.
+			"Transaction/TxStateErrors/OpAfterRollback": "postgres: pgx.Tx aborts surface as ErrConflict via SQLSTATE 25P02, not as ErrTxRolledBack",
+		},
 	})
 }

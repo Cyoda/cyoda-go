@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -269,21 +270,27 @@ func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
 }
 
 // TestRestoreSavepoint_Unknown verifies that restoring an unknown savepoint
-// returns an error.
+// returns spi.ErrSavepointNotFound.
 func TestRestoreSavepoint_Unknown(t *testing.T) {
 	s := newTxState("t1")
 	err := s.RestoreSavepoint("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
 	}
+	if !errors.Is(err, spi.ErrSavepointNotFound) {
+		t.Fatalf("expected ErrSavepointNotFound, got: %v", err)
+	}
 }
 
 // TestReleaseSavepoint_Unknown verifies that releasing an unknown savepoint
-// returns an error.
+// returns spi.ErrSavepointNotFound.
 func TestReleaseSavepoint_Unknown(t *testing.T) {
 	s := newTxState("t1")
 	err := s.ReleaseSavepoint("bogus")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
+	}
+	if !errors.Is(err, spi.ErrSavepointNotFound) {
+		t.Fatalf("expected ErrSavepointNotFound, got: %v", err)
 	}
 }

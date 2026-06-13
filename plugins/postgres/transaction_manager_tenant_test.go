@@ -1,8 +1,10 @@
 package postgres_test
 
 import (
-	"strings"
+	"errors"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // Tenant-isolation regression tests for the postgres plugin's TM lifecycle
@@ -39,8 +41,8 @@ func TestPostgresCommit_RejectsCrossTenant(t *testing.T) {
 
 	if err := tm.Commit(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B commits tenant A's tx")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -58,8 +60,8 @@ func TestPostgresRollback_RejectsCrossTenant(t *testing.T) {
 
 	if err := tm.Rollback(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B rolls back tenant A's tx")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -77,8 +79,8 @@ func TestPostgresJoin_RejectsCrossTenant(t *testing.T) {
 
 	if _, err := tm.Join(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B joins tenant A's tx")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -96,8 +98,8 @@ func TestPostgresSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	if _, err := tm.Savepoint(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B takes savepoint on tenant A's tx")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -119,8 +121,8 @@ func TestPostgresRollbackToSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	if err := tm.RollbackToSavepoint(ctxB, txAID, spID); err == nil {
 		t.Fatal("expected error when tenant B rolls back tenant A's savepoint")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -142,8 +144,8 @@ func TestPostgresReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	if err := tm.ReleaseSavepoint(ctxB, txAID, spID); err == nil {
 		t.Fatal("expected error when tenant B releases tenant A's savepoint")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
