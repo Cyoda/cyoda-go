@@ -9,24 +9,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// isToleratedClosedTxErr reports whether err is a benign "tx already
-// closed/rolled back/committed/not found" outcome — the kind that is
-// expected when a concurrent op wins the race against Savepoint/Join/Save/
-// RollbackToSavepoint. Anything else is a defect and should fail the test.
-func isToleratedClosedTxErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	switch {
-	case errors.Is(err, spi.ErrTxNotFound),
-		errors.Is(err, spi.ErrTxTerminated),
-		errors.Is(err, spi.ErrTxCommitInProgress),
-		errors.Is(err, spi.ErrNotFound):
-		return true
-	}
-	return false
-}
-
 // Locking-discipline race tests for Savepoint, RollbackToSavepoint, and
 // Join in plugins/memory/txmanager.go. Issue #199 surfaces that Savepoint
 // and RollbackToSavepoint mutate tx-state under m.mu only, never tx.OpMu —
