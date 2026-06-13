@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -46,8 +45,10 @@ import (
 //   - Join reads tx.RolledBack / tx.Closed. Required posture: tx.OpMu.RLock
 //     in an IIFE.
 //
-// TODO(#200): replace substring matches on tolerated errors with
-// errors.Is against sentinel error types once they land.
+// Tolerated-error matching uses errors.Is against the SPI sentinel
+// hierarchy (ErrTxNotFound, ErrTxTerminated, ErrTxCommitInProgress,
+// ErrNotFound) — see isToleratedTxClosedErr below. A closed-mid-op tx
+// is a tolerated race outcome, not a defect.
 
 const sqliteSavepointRaceIterations = 50
 
@@ -117,8 +118,7 @@ func TestSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, sperr := tm.Savepoint(ctx, txID); sperr != nil {
-					msg := sperr.Error()
-					if isToleratedTxClosedErr(msg) {
+					if isToleratedTxClosedErr(sperr) {
 						return
 					}
 					t.Errorf("Savepoint failed: %v", sperr)
@@ -130,10 +130,7 @@ func TestSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if cerr := tm.Commit(ctx, txID); cerr != nil {
-					if errors.Is(cerr, spi.ErrConflict) || errors.Is(cerr, spi.ErrNotFound) {
-						return
-					}
-					if isToleratedTxClosedErr(cerr.Error()) {
+					if errors.Is(cerr, spi.ErrConflict) || isToleratedTxClosedErr(cerr) {
 						return
 					}
 					t.Errorf("Commit failed: %v", cerr)
@@ -174,8 +171,7 @@ func TestSavepoint_VsRollback_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, sperr := tm.Savepoint(ctx, txID); sperr != nil {
-					msg := sperr.Error()
-					if isToleratedTxClosedErr(msg) {
+					if isToleratedTxClosedErr(sperr) {
 						return
 					}
 					t.Errorf("Savepoint failed: %v", sperr)
@@ -248,8 +244,7 @@ func TestRollbackToSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if rerr := tm.RollbackToSavepoint(ctx, txID, spID); rerr != nil {
-					msg := rerr.Error()
-					if isToleratedTxClosedErr(msg) {
+					if isToleratedTxClosedErr(rerr) {
 						return
 					}
 					t.Errorf("RollbackToSavepoint failed: %v", rerr)
@@ -261,10 +256,7 @@ func TestRollbackToSavepoint_VsCommit_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if cerr := tm.Commit(ctx, txID); cerr != nil {
-					if errors.Is(cerr, spi.ErrConflict) || errors.Is(cerr, spi.ErrNotFound) {
-						return
-					}
-					if isToleratedTxClosedErr(cerr.Error()) {
+					if errors.Is(cerr, spi.ErrConflict) || isToleratedTxClosedErr(cerr) {
 						return
 					}
 					t.Errorf("Commit failed: %v", cerr)
@@ -323,7 +315,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if _, serr := store.Save(txCtx, e); serr != nil {
-					if isToleratedTxClosedErr(serr.Error()) {
+					if isToleratedTxClosedErr(serr) {
 						return
 					}
 					t.Errorf("Save failed: %v", serr)
@@ -335,7 +327,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if rerr := tm.RollbackToSavepoint(ctx, txID, spID); rerr != nil {
-					if isToleratedTxClosedErr(rerr.Error()) {
+					if isToleratedTxClosedErr(rerr) {
 						return
 					}
 					t.Errorf("RollbackToSavepoint failed: %v", rerr)
@@ -359,10 +351,20 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 // memory plugin is documented in
 // docs/audits/2026-05-sqlite-plugin-tx-locking.md.
 
-func isToleratedTxClosedErr(msg string) bool {
-	return strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "already completed") ||
-		strings.Contains(msg, "rolled back") ||
-		strings.Contains(msg, "already closed") ||
-		strings.Contains(msg, "already being committed")
+// isToleratedTxClosedErr reports whether err is a benign "tx already
+// closed/rolled back/committed/not found" outcome — the kind that is
+// expected when a concurrent op races against Commit/Rollback/Savepoint/
+// RollbackToSavepoint/Join. Anything else is a defect and should fail the
+// test.
+//
+// Matches the three-way disjunction of transaction-state sentinels defined
+// in cyoda-go-spi, plus bare ErrNotFound because in-read ops
+// (Get/GetAll/Exists/Delete) can legitimately surface entity-level not-found
+// when a concurrent Rollback or Commit changes visibility mid-op — that is
+// a tolerated race outcome, not a defect.
+func isToleratedTxClosedErr(err error) bool {
+	return errors.Is(err, spi.ErrTxNotFound) ||
+		errors.Is(err, spi.ErrTxTerminated) ||
+		errors.Is(err, spi.ErrTxCommitInProgress) ||
+		errors.Is(err, spi.ErrNotFound)
 }
