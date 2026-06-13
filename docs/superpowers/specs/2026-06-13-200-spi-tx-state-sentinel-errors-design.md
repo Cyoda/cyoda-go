@@ -144,9 +144,9 @@ Rationale: these signal misuse of the API rather than an operational tx-state co
 | 449, 452, 459, 467, 471 | RollbackToSavepoint variants | corresponding sentinels |
 | 500, 503, 508, 511 | ReleaseSavepoint variants | corresponding sentinels |
 
-`plugins/memory/entity_store.go` — 8 sites (Save 106, CompareAndSave 131, Get 253, GetAll 296, Delete 348, Exists 450, Count 513, DeleteAll 588):
+`plugins/memory/entity_store.go` — 8 sites (Save, CompareAndSave, Get, GetAsAt, GetAll, Delete, DeleteAll, Exists). `Count` (around L615) delegates to `GetAll` for the in-tx case so it inherits the `ErrTxRolledBack` wrap via the call chain — no separate site.
 
-- `"transaction has been rolled back"` → `fmt.Errorf("tx %s: %w", txID, spi.ErrTxRolledBack)` (adds tx ID for debuggability)
+- `"transaction has been rolled back"` → `fmt.Errorf("<Method>: %w (txID=%s)", spi.ErrTxRolledBack, txID)` (adds tx ID for debuggability)
 
 ### SQLite plugin
 
@@ -262,7 +262,7 @@ Only `OpAfterRollback` is skipped on postgres. `SavepointNotFound` is NOT skippe
 
 `plugins/memory/concurrency_inreadops_test.go`, `concurrency_cas_test.go`, `concurrency_savepoint_test.go`:
 
-- Replace each `runOpVsRollback` / `runOpVsCommit` helper's `strings.Contains(msg, "rolled back") || strings.Contains(msg, "already completed") || ...` block with a three-way `errors.Is(err, spi.ErrTxTerminated) || errors.Is(err, spi.ErrTxNotFound) || errors.Is(err, spi.ErrTxCommitInProgress)`. The third disjunct is required for any helper that currently tolerates `"already being committed"` (`concurrency_inreadops_test.go:283`, `concurrency_savepoint_test.go:143,295`) — `ErrTxCommitInProgress` is deliberately not under the `ErrTxTerminated` umbrella because the tx is not yet terminal. Helpers that don't tolerate that substring today can stay two-way.
+- Replace each `runOpVsRollback` / `runOpVsCommit` helper's `strings.Contains(msg, "rolled back") || strings.Contains(msg, "already completed") || ...` block with a sentinel-based check via a shared `isToleratedClosedTxErr` helper. The helper matches the three-way disjunction `errors.Is(err, spi.ErrTxTerminated) || errors.Is(err, spi.ErrTxNotFound) || errors.Is(err, spi.ErrTxCommitInProgress)`, PLUS bare `errors.Is(err, spi.ErrNotFound)` to preserve the existing tolerance of entity-level not-found from in-read ops (Get/GetAll/Exists/Delete legitimately surface entity-not-found when a concurrent Rollback/Commit changes visibility mid-op). The `ErrTxCommitInProgress` disjunct is required for any helper that currently tolerates `"already being committed"` (`concurrency_inreadops_test.go:283`, `concurrency_savepoint_test.go:143,295`) — `ErrTxCommitInProgress` is deliberately not under the `ErrTxTerminated` umbrella because the tx is not yet terminal.
 - Drop the `TODO(#200)` comment block at `concurrency_savepoint_test.go:49-52`.
 
 ## Migration Sequencing
