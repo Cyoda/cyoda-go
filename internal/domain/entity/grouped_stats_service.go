@@ -3,6 +3,7 @@ package entity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 
@@ -18,6 +19,15 @@ import (
 // neither spi.Iterable nor spi.GroupedAggregator. The HTTP handler maps
 // this to 501 NOT_IMPLEMENTED_BY_BACKEND.
 var ErrBackendNotSupported = errors.New("backend supports neither Iterable nor GroupedAggregator")
+
+// ErrInvalidCondition wraps any predicate.ParseCondition failure that
+// surfaces from the service-layer dispatch. The HTTP handler maps this
+// (via errors.Is) to 400 INVALID_CONDITION per spec §3. We need the
+// sentinel because the predicate package returns plain fmt.Errorf
+// values, so the handler has no other typed signal to distinguish a
+// malformed condition (client fault) from an upstream/storage error
+// (5xx with ticket).
+var ErrInvalidCondition = errors.New("invalid condition")
 
 // GroupedStatsService is the per-request dispatcher described in spec §4.
 // It decides between native pushdown (spi.GroupedAggregator) and the
@@ -60,7 +70,12 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	if len(req.Condition) > 0 {
 		c, err := predicate.ParseCondition(req.Condition)
 		if err != nil {
-			return nil, err
+			// Wrap with ErrInvalidCondition sentinel so the handler can
+			// route this to 400 INVALID_CONDITION via errors.Is. The
+			// underlying predicate error message is preserved in the
+			// chain (and surfaces in server-side logs) but the client
+			// sees a stable error code.
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 		}
 		parsedCond = c
 	}

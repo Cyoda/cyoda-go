@@ -43,6 +43,12 @@ type Config struct {
 	// ExternalProcessing overrides the default gRPC processor dispatcher.
 	// Used in tests to inject a LocalProcessingService.
 	ExternalProcessing contract.ExternalProcessingService
+	// StatsGroupMax is the cardinality ceiling for grouped-stats results
+	// (POST /api/entity/stats/{entityName}/{modelVersion}/query). When the
+	// service produces more distinct groupKey combinations than this value,
+	// the request fails with 422 GROUP_CARDINALITY_EXCEEDED. Defaults to
+	// 10000; tune via CYODA_STATS_GROUP_MAX. See spec D2.
+	StatsGroupMax int
 }
 
 type AdminConfig struct {
@@ -155,6 +161,7 @@ func DefaultConfig() Config {
 		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
+		StatsGroupMax:      envInt("CYODA_STATS_GROUP_MAX", 10000),
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
