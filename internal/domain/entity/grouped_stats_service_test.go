@@ -303,6 +303,92 @@ func TestQueryGroupedStats_AggregationsViaStreaming(t *testing.T) {
 	}
 }
 
+func TestQueryGroupedStats_GroupByNumberProducesMultipleBuckets(t *testing.T) {
+	// D4 regression: numeric runtime values are scalar and must be grouped
+	// by their text representation, not collapsed into a single null bucket.
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":1}`)},
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":1}`)},
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":2}`)},
+	}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{Path: "$.tier"}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2 (one per distinct numeric value)", len(buckets))
+	}
+	// Sorted count desc — first bucket should be tier=1 with count 2.
+	if buckets[0].Count != 2 || buckets[1].Count != 1 {
+		t.Fatalf("bucket counts = [%d, %d], want [2, 1]", buckets[0].Count, buckets[1].Count)
+	}
+	// The groupKey value should be the JSON text form "1" / "2", matching
+	// postgres's `doc->>'tier'` behaviour.
+	if got := buckets[0].GroupKey[0].Value; got != "1" {
+		t.Fatalf("buckets[0] groupKey value = %v (%T), want string \"1\"", got, got)
+	}
+	if got := buckets[1].GroupKey[0].Value; got != "2" {
+		t.Fatalf("buckets[1] groupKey value = %v (%T), want string \"2\"", got, got)
+	}
+}
+
+func TestQueryGroupedStats_GroupByBoolProducesMultipleBuckets(t *testing.T) {
+	// D4 regression: boolean runtime values are scalar and must be grouped
+	// by "true"/"false", not collapsed into a single null bucket.
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"premium":true}`)},
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"premium":false}`)},
+	}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{Path: "$.premium"}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2 (one per distinct bool value)", len(buckets))
+	}
+	// With equal counts, D12 total order is groupKey lex; "false" < "true".
+	if got := buckets[0].GroupKey[0].Value; got != "false" {
+		t.Fatalf("buckets[0] groupKey value = %v (%T), want string \"false\"", got, got)
+	}
+	if got := buckets[1].GroupKey[0].Value; got != "true" {
+		t.Fatalf("buckets[1] groupKey value = %v (%T), want string \"true\"", got, got)
+	}
+}
+
+func TestQueryGroupedStats_NonScalarRuntimeValueCoercesToNull(t *testing.T) {
+	// D4: object/array runtime values DO coerce to null (this protects
+	// D4's actual intent — only non-scalar values collapse).
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"variantId":{"x":1}}`)},
+		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"variantId":[1,2,3]}`)},
+	}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{Path: "$.variantId"}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 1 {
+		t.Fatalf("got %d buckets, want 1 (object + array both coerce to null)", len(buckets))
+	}
+	if buckets[0].Count != 2 {
+		t.Fatalf("bucket count = %d, want 2", buckets[0].Count)
+	}
+	if got := buckets[0].GroupKey[0].Value; got != nil {
+		t.Fatalf("groupKey value = %v (%T), want nil (D4 null coercion)", got, got)
+	}
+}
+
 func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 	// If the pushdown plugin itself reports cardinality exceeded, surface
 	// that — do NOT silently fall back to streaming (streaming would re-do

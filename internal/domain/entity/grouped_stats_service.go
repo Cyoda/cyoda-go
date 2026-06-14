@@ -168,10 +168,12 @@ func (s *GroupedStatsService) tallyStreaming(
 // buildGroupKeyFromEntity extracts the per-entry values for both the map
 // key (raw any slice) and the response groupKey ([]GroupKeyEntryWire).
 //
-// Per spec D4, only scalar string-typed values become real key values.
-// Numbers, booleans, objects, arrays, and missing fields all coerce to
-// nil; the encoded group-key collapses them into one "null" bucket per
-// dimension.
+// Per spec D4, only object/array runtime values (non-scalar) coerce to
+// null; scalar strings, numbers, and booleans become real key values.
+// Numbers and booleans use their JSON text representation (res.Raw),
+// matching the postgres equivalent `doc->>'field'` which returns the
+// canonical text form ("1", "true"). Missing fields and explicit JSON
+// null also coerce to nil.
 func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any, []GroupKeyEntryWire) {
 	rawVals := make([]any, len(groups))
 	keys := make([]GroupKeyEntryWire, len(groups))
@@ -186,11 +188,22 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 		} else {
 			path = g.Path
 			res := gjson.GetBytes(e.Data, gjsonPath(g.Path))
-			if res.Exists() && res.Type == gjson.String {
+			switch {
+			case !res.Exists():
+				val = nil
+			case res.Type == gjson.String:
 				val = res.String()
-			} else {
-				// Numbers / bools / objects / arrays / missing / null all
-				// collapse to nil per D4 (only strings carry through).
+			case res.Type == gjson.Number:
+				// Canonical text form of the JSON number — matches
+				// postgres's `doc->>'field'` behaviour for cross-backend
+				// consistency.
+				val = res.Raw
+			case res.Type == gjson.True || res.Type == gjson.False:
+				// "true" / "false" verbatim.
+				val = res.Raw
+			default:
+				// gjson.Null, gjson.JSON (object/array) — coerce to nil
+				// per spec D4 (non-scalar runtime values).
 				val = nil
 			}
 		}

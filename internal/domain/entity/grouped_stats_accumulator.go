@@ -15,8 +15,10 @@ import (
 //
 // Concatenation across entries. Collision-free under arbitrary inputs.
 //
-// Non-string runtime values (numbers, bool, objects, missing) coerce to
-// null per spec D4 — only the string type is treated as a real value.
+// Callers pass either nil (null bucket — per spec D4 this covers
+// object/array runtime values, JSON null, and missing fields) or a Go
+// string (scalar value: original string, canonical number text, or
+// "true"/"false"). Any other Go type is defensively treated as null.
 func buildGroupKey(values []any) string {
 	var size int
 	for _, v := range values {
