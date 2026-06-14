@@ -37,18 +37,102 @@ const (
 	ProcessorTypeInternalized = "internalized"
 )
 
-// validateWorkflows checks workflow definitions for definite infinite loops.
-// A definite infinite loop exists when there is a cycle of automated transitions
-// (manual=false) with NO criteria guards (nil/empty criterion = always fires).
-// Transitions WITH criteria are not flagged because the criterion might return
-// false and break the cycle.
+// validExecutionModes is the set of accepted ExecutionMode values for
+// import-time validation (audit §H4). Empty string is also accepted —
+// the engine defaults to SYNC when ExecutionMode is unset.
+var validExecutionModes = map[string]struct{}{
+	"":                                {},
+	ExecutionModeSync:                 {},
+	ExecutionModeAsyncSameTx:          {},
+	ExecutionModeAsyncNewTx:           {},
+	ExecutionModeCommitBeforeDispatch: {},
+}
+
+// validateWorkflows enforces the structural invariants required at import
+// time. Violations are returned as plain errors that the caller wraps in
+// a 400 with ErrCodeValidationFailed.
+//
+// Rules enforced (per issue #255 / audit §H4, §H6, §M4):
+//   - H6.c — workflow Name must be non-empty.
+//   - H6.d — workflow Names must be unique within the validated slice.
+//   - H6.a — InitialState must be non-empty and ∈ States.
+//   - H6.b — every Transition.Next must be ∈ States.
+//   - H6.e — Transition Names must be unique within a single state.
+//   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
+//     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
+//
+// Plus the pre-existing checks:
+//   - definite-infinite-loop detection on unguarded automated transitions.
+//   - StartNewTxOnDispatch / COMMIT_BEFORE_DISPATCH flag coherence.
+//
+// All error messages name the offending workflow/state/transition so
+// operators can locate the problem without re-reading the import body.
 func validateWorkflows(workflows []spi.WorkflowDefinition) error {
+	// H6.d — workflow Name uniqueness within the request.
+	seen := make(map[string]struct{}, len(workflows))
 	for _, wf := range workflows {
+		if _, dup := seen[wf.Name]; dup && wf.Name != "" {
+			return fmt.Errorf("duplicate workflow name %q in request", wf.Name)
+		}
+		seen[wf.Name] = struct{}{}
+	}
+
+	for _, wf := range workflows {
+		if err := validateWorkflowStructure(wf); err != nil {
+			return err
+		}
 		if err := validateWorkflowLoops(wf); err != nil {
 			return fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}
 		if err := validateProcessorFlags(wf); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateWorkflowStructure enforces the per-workflow structural rules
+// added in #255 (H6.a, H6.b, H6.c, H6.e, H4). Any violation is a 4xx
+// at import time — the engine would otherwise silently degrade at
+// runtime (park entity in an undefined state, shadow duplicate
+// transitions, coerce typo'd ExecutionMode to SYNC).
+func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
+	// H6.c — Name non-empty.
+	if wf.Name == "" {
+		return fmt.Errorf("workflow with empty name is not allowed")
+	}
+
+	// H6.a — InitialState non-empty and ∈ States.
+	if wf.InitialState == "" {
+		return fmt.Errorf("workflow %q: initialState must not be empty", wf.Name)
+	}
+	if _, ok := wf.States[wf.InitialState]; !ok {
+		return fmt.Errorf("workflow %q: initialState %q is not declared in states", wf.Name, wf.InitialState)
+	}
+
+	// H6.b — Transition.Next ∈ States.
+	// H6.e — Transition Name unique within state.
+	// H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
+	for stateName, stateDef := range wf.States {
+		trNames := make(map[string]struct{}, len(stateDef.Transitions))
+		for _, tr := range stateDef.Transitions {
+			if _, dup := trNames[tr.Name]; dup {
+				return fmt.Errorf("workflow %q state %q: duplicate transition name %q",
+					wf.Name, stateName, tr.Name)
+			}
+			trNames[tr.Name] = struct{}{}
+
+			if _, ok := wf.States[tr.Next]; !ok {
+				return fmt.Errorf("workflow %q state %q transition %q: next state %q is not declared in states",
+					wf.Name, stateName, tr.Name, tr.Next)
+			}
+
+			for _, p := range tr.Processors {
+				if _, ok := validExecutionModes[p.ExecutionMode]; !ok {
+					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",
+						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)
+				}
+			}
 		}
 	}
 	return nil

@@ -28,13 +28,13 @@ date.
 | H1 — scheduled-transition processors advertised but unimplemented | **Tracked** | #250 (schema/help cleanup), #251 (implementation), #252 (sibling: internalized processors) | None; the trio fully covers the surface. #250 is the prerequisite. |
 | H2 — `Active=true` force-override on every import | **Tracked** | #256 (silent-default semantics review — H2/H5/M3 cluster) | Bundled with H5/M3 because the decisions interact. Design-first issue. |
 | H3 — Read-Merge-Write race; `WorkflowStore` has no CAS | **Tracked** | #35 (first-committer-wins for non-entity stores; amended 2026-05-19 with HTTP-surface context + interim mutex suggestion); cassandra sibling cyoda-go-cassandra#22 | #35 lists WorkflowStore explicitly as affected. Decision still pending. |
-| H4 — unknown `ExecutionMode` silently coerced to SYNC | **Tracked** | #255 (validation hardening — H4/H6/M4 cluster) | Bundled with H6/M4 — all validator extensions. |
+| H4 — unknown `ExecutionMode` silently coerced to SYNC | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects unknown ExecutionMode values at import. |
 | H5 — default-workflow fallback masks REPLACE-with-empty and criterion mismatches | **Tracked** | #256 | Bundled with H2/M3. |
-| H6 — no state-graph validation at import (InitialState, Next, name uniqueness, criterion well-formedness) | **Tracked** | #255 | Bundled with H4/M4. |
+| H6 — no state-graph validation at import (InitialState, Next, name uniqueness, criterion well-formedness) | **Resolved in v0.8.0 (subset)** | #255 | H6.a–e closed by #255 (initialState, next, name uniqueness, transition uniqueness). H6.f (per-state unguarded-automated cap) and Criterion / Version well-formedness rows remain deferred. |
 | M1 — boundary-accepted fields with no consumer | **Tracked (split)** | #250 (`ProcessorDefinition.Type` via schema reshape), #253 (`Context` pass-through), #254 (`RetryPolicy`), #257 (`Workflow.Description` cleanup as part of the boundary hygiene sweep) | `Workflow.Version` reserved as forward-looking per §L5 — out of scope of any cleanup. |
 | M2 — export does not check model existence; 404 conflates two cases | **Tracked** | #257 (boundary hygiene sweep) | |
 | M3 — empty `workflows` array silently destructive in REPLACE/ACTIVATE | **Tracked** | #256 | Bundled with H2/H5. |
-| M4 — MERGE silently coalesces duplicate / empty workflow names | **Tracked** | #255 | Bundled with H4/H6. |
+| M4 — MERGE silently coalesces duplicate / empty workflow names | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects duplicate or empty workflow names within a request. |
 | M5 — `importMode` default + case-insensitivity undocumented | **Tracked** | #257 | |
 | M6 — JSON unmarshal silently drops unknown fields; `asyncResult` / `crossoverToAsyncMs` not implemented | **Tracked** | #145 (amended 2026-05-19 to include workflow handler scope), #223 (asyncResult + crossoverToAsyncMs Cloud-parity) | |
 | M7 — no audit logging on successful import | **Tracked** | #257 | |
@@ -224,7 +224,7 @@ cyoda-go-cassandra#22 so both plugins stay behaviourally equivalent.
 
 ### H4. Unknown `ExecutionMode` is silently coerced to SYNC
 
-**Issues:** None. **Untracked.**
+**Issues:** [#255](https://github.com/Cyoda-platform/cyoda-go/issues/255). **Resolved in v0.8.0** — `validateWorkflows` now rejects any `ExecutionMode` outside `{SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}` with `400 VALIDATION_FAILED`. Historical analysis below retained for context.
 
 **Where.** `engine_processors.go:63–87` is a `switch proc.ExecutionMode`
 covering `ASYNC_NEW_TX` and `COMMIT_BEFORE_DISPATCH` explicitly; the `default`
@@ -282,7 +282,7 @@ misconfigurations).
 
 ### H6. No state-graph validation at import time
 
-**Issues:** None. **Untracked.**
+**Issues:** [#255](https://github.com/Cyoda-platform/cyoda-go/issues/255). **Resolved in v0.8.0** (scoped subset H6.a–e). `validateWorkflows` now rejects: empty workflow name (H6.c), duplicate workflow names within a request (H6.d), empty or undeclared `initialState` (H6.a), transition `next` not in `states` (H6.b), duplicate transition names within a state (H6.e), and unknown `executionMode` values (H4). Each error names the offending workflow / state / transition. The validator runs on the incoming request only — legacy stored workflows are not retroactively re-validated. H6.f (per-state at-most-one unguarded automated transition) and the Criterion / Version validity rows in the table below remain deferred. Historical analysis below retained for context.
 
 **Where.** `validate.go:28–38`. The only static checks are
 `validateWorkflowLoops` (cycle detection) and `validateProcessorFlags`.
@@ -474,7 +474,7 @@ both supply non-empty incoming sets).
 
 ### M4. `applyImportMode` MERGE silently coalesces duplicate names
 
-**Issues:** None. **Untracked.**
+**Issues:** [#255](https://github.com/Cyoda-platform/cyoda-go/issues/255). **Resolved in v0.8.0** — `validateWorkflows` now rejects duplicate or empty workflow names within a single import request before `applyImportMode` runs, so the silent-clobber path is no longer reachable. Historical analysis below retained for context.
 
 
 `import.go:33–44` keys by `wf.Name`. The same name appearing twice within

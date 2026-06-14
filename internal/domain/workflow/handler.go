@@ -102,13 +102,17 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		req.Workflows[i].Active = true
 	}
 
-	result := applyImportMode(existing, req.Workflows, mode)
-
-	// Static validation: detect definite infinite loops before saving.
-	if err := validateWorkflows(result); err != nil {
+	// Static validation on the incoming workflows (not the merged result):
+	// existing stored workflows have already been validated under whichever
+	// rules applied at their original import time. Re-validating them on
+	// every subsequent import would surface legacy stored shapes as fresh
+	// 4xx errors against unrelated incoming requests (#255).
+	if err := validateWorkflows(req.Workflows); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
+
+	result := applyImportMode(existing, req.Workflows, mode)
 
 	if err := wfStore.Save(r.Context(), ref, result); err != nil {
 		common.WriteError(w, r, common.Internal("failed to save workflows", err))
