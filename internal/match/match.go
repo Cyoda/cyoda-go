@@ -171,6 +171,15 @@ func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 	return true, nil
 }
 
+// --- spi.Filter-based evaluation (used by Iterable/GroupedAggregator/streaming-tally) ---
+//
+// The helpers below mirror plugins/sqlite/post_filter.go semantics so that an
+// in-process evaluator (memory Iterate, residual post-filter, streaming tally)
+// produces bit-identical results to the sqlite backend's post-filter step.
+// Drift between the two would silently change grouped-stats results across
+// backends — see e2e/parity/MatchFilterSqliteEvaluateFilterParity (the smoke
+// test that pins this contract).
+
 // MatchFilter evaluates an spi.Filter against an entity. Filter is the
 // pushdown-friendly subset of predicate.Condition used by GroupedAggregator,
 // Iterable, and the existing Searcher. Used by the memory plugin's Iterate
@@ -186,10 +195,13 @@ func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 // (which would only happen on a programmer error or SPI/plugin drift) is
 // treated as a non-match.
 func MatchFilter(f spi.Filter, data []byte, meta spi.EntityMeta) bool {
-	// Zero-value filter matches everything. We only check Op because a
-	// genuinely-empty filter has no Op; an explicit Op: FilterAnd with no
-	// children must fall through to the group evaluator (which returns true).
-	if f.Op == "" && f.Path == "" && f.Source == "" && len(f.Children) == 0 && f.Value == nil && f.Values == nil {
+	// Zero-value filter (no Op) matches everything. We deliberately only
+	// check Op: an explicit Op (even FilterAnd with no children) must reach
+	// the group evaluator so the group identity is honored (empty AND → true,
+	// empty OR → false). evalLeafFilter returns false when Source/Path are
+	// also empty, so a non-empty Op with an unset Source/Path won't false-
+	// positive into the "match everything" branch.
+	if f.Op == "" {
 		return true
 	}
 	return evalFilter(f, data, meta)
@@ -264,8 +276,7 @@ func evalLeafFilter(f spi.Filter, data []byte, meta spi.EntityMeta) bool {
 	case spi.FilterEndsWith:
 		return strings.HasSuffix(fmt.Sprint(val), fmt.Sprint(f.Value))
 	case spi.FilterLike:
-		ok, err := opLike(toGjsonResult(val), f.Value)
-		return err == nil && ok
+		return matchFilterLike(fmt.Sprint(val), fmt.Sprint(f.Value))
 	case spi.FilterBetween:
 		if len(f.Values) < 2 {
 			return false
@@ -349,6 +360,13 @@ func extractFilterMetaValue(path string, meta spi.EntityMeta) (any, bool) {
 
 // timeToMicro converts a time.Time to microseconds since Unix epoch.
 // Mirrors plugins/sqlite/post_filter.go timeToMicro.
+//
+// The t.IsZero() guard is intentional: a zero time.Time is year 1
+// (0001-01-01 UTC), which UnixMicro() reports as a very large negative
+// number (~-62,135,596,800,000,000), not 0. Without the guard, ordering
+// ops against created_at/updated_at on a zero-time entity would silently
+// classify it as "much earlier than any valid timestamp" rather than
+// "unset/sentinel zero". The sqlite plugin handles this the same way.
 func timeToMicro(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
@@ -357,11 +375,16 @@ func timeToMicro(t time.Time) int64 {
 }
 
 // compareFilterValues orders two raw values. Returns <0, 0, >0 like strings.Compare.
-// Reuses operators.go toFloat64 for numeric coercion; falls back to string compare.
+//
+// Numeric coercion intentionally does NOT parse strings — only float64/float32/
+// int/int64/json.Number are treated as numeric. This mirrors the sqlite plugin's
+// compareValues + toFloat64 (plugins/sqlite/post_filter.go). The Match path
+// (predicate.Condition) does parse strings via operators.go toFloat64 — keep
+// the two helpers separate so the Filter path stays in lockstep with sqlite.
 func compareFilterValues(a, b any) int {
-	af, aerr := toFloat64(a)
-	bf, berr := toFloat64(b)
-	if aerr == nil && berr == nil {
+	af, aok := toFilterFloat64(a)
+	bf, bok := toFilterFloat64(b)
+	if aok && bok {
 		switch {
 		case af < bf:
 			return -1
@@ -374,10 +397,87 @@ func compareFilterValues(a, b any) int {
 	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
 }
 
+// toFilterFloat64 mirrors plugins/sqlite/post_filter.go toFloat64 exactly.
+// Strings are NOT parsed as numbers — a stringly-typed numeric field falls
+// through to byte-lex string comparison, just like in sqlite. Keep this in
+// sync with that file; drift would silently change cross-backend semantics
+// for ordering ops (Gt/Lt/Gte/Lte/Between) on string-encoded numerics.
+func toFilterFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	}
+	return 0, false
+}
+
+// matchFilterLike mirrors the sqlite plugin's matchLike (plugins/sqlite/
+// post_filter.go) — byte-based, NOT rune-based. `_` matches a single byte;
+// `%` matches any byte sequence; `\` escapes. Multibyte characters in the
+// data string are spanned by multiple `_` pattern bytes, matching SQLite's
+// default LIKE semantics. Keep in sync with the sqlite implementation —
+// drift would silently disagree on LIKE patterns crossing multibyte chars.
+func matchFilterLike(s, pattern string) bool {
+	return matchFilterLikeHelper(s, 0, pattern, 0)
+}
+
+func matchFilterLikeHelper(s string, si int, pattern string, pi int) bool {
+	for pi < len(pattern) {
+		ch := pattern[pi]
+		switch {
+		case ch == '\\' && pi+1 < len(pattern):
+			pi++
+			if si >= len(s) || s[si] != pattern[pi] {
+				return false
+			}
+			si++
+			pi++
+		case ch == '%':
+			for pi < len(pattern) && pattern[pi] == '%' {
+				pi++
+			}
+			if pi == len(pattern) {
+				return true
+			}
+			for si <= len(s) {
+				if matchFilterLikeHelper(s, si, pattern, pi) {
+					return true
+				}
+				si++
+			}
+			return false
+		case ch == '_':
+			if si >= len(s) {
+				return false
+			}
+			si++
+			pi++
+		default:
+			if si >= len(s) || s[si] != ch {
+				return false
+			}
+			si++
+			pi++
+		}
+	}
+	return si == len(s)
+}
+
 // toGjsonResult wraps a raw value in a gjson.Result for reuse of the
-// existing operators.go opLike / opMatchesPattern (which take gjson.Result).
+// existing operators.go opMatchesPattern (which takes gjson.Result).
 // This is a thin shim — we encode the value as JSON, parse it, and let
-// gjson surface it as a Result. Used only for regex/LIKE leaf evaluation,
+// gjson surface it as a Result. Used only for regex leaf evaluation,
 // where the per-entity cost is dominated by regex compile anyway.
 func toGjsonResult(v any) gjson.Result {
 	b, err := json.Marshal(v)

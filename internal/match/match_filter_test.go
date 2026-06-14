@@ -250,8 +250,9 @@ func TestMatchFilter_EmptyAndGroupIsTrue(t *testing.T) {
 
 func TestMatchFilter_EmptyOrGroupIsFalse(t *testing.T) {
 	// An empty OR is the identity element for OR — false.
+	// Op is explicitly FilterOr, so the zero-value-Filter early-out (Op == "")
+	// is not triggered and the group evaluator runs over zero children.
 	f := spi.Filter{Op: spi.FilterOr, Children: []spi.Filter{}}
-	// Children explicit slice (len 0) avoids zero-value-Filter early-out.
 	if match.MatchFilter(f, nil, spi.EntityMeta{}) {
 		t.Fatalf("expected empty OR to be false")
 	}
