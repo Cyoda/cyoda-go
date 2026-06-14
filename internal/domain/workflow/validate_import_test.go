@@ -21,32 +21,34 @@ import (
 
 // --- H6.c — Workflow Name non-empty ----------------------------------
 
-func TestValidateWorkflows_RejectsEmptyWorkflowName(t *testing.T) {
+func TestValidateImportRequest_RejectsEmptyWorkflowName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatalf("expected error for empty workflow name, got nil")
 	}
-	if !strings.Contains(err.Error(), "name") {
-		t.Errorf("error must mention the name rule, got: %v", err)
+	// Pin on "empty name" so an `initialState … name` style error from a
+	// different rule can't accidentally satisfy this assertion.
+	if !strings.Contains(err.Error(), "empty name") {
+		t.Errorf("error must name the empty-name rule, got: %v", err)
 	}
 }
 
 // --- H6.d / M4 — Workflow Name unique within request ------------------
 
-func TestValidateWorkflows_RejectsDuplicateWorkflowNamesInRequest(t *testing.T) {
+func TestValidateImportRequest_RejectsDuplicateWorkflowNamesInRequest(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "dup-wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf, wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf, wf})
 	if err == nil {
 		t.Fatalf("expected error for duplicate workflow names, got nil")
 	}
@@ -60,14 +62,14 @@ func TestValidateWorkflows_RejectsDuplicateWorkflowNamesInRequest(t *testing.T) 
 
 // --- H6.a — InitialState non-empty and ∈ States -----------------------
 
-func TestValidateWorkflows_RejectsEmptyInitialState(t *testing.T) {
+func TestValidateImportRequest_RejectsEmptyInitialState(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-empty-initial", InitialState: "", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatalf("expected error for empty initialState, got nil")
 	}
@@ -79,14 +81,14 @@ func TestValidateWorkflows_RejectsEmptyInitialState(t *testing.T) {
 	}
 }
 
-func TestValidateWorkflows_RejectsInitialStateNotInStates(t *testing.T) {
+func TestValidateImportRequest_RejectsInitialStateNotInStates(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-bad-initial", InitialState: "MISSING", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatalf("expected error for initialState not in States, got nil")
 	}
@@ -103,7 +105,7 @@ func TestValidateWorkflows_RejectsInitialStateNotInStates(t *testing.T) {
 
 // --- H6.b — Transition.Next ∈ States ----------------------------------
 
-func TestValidateWorkflows_RejectsTransitionNextNotInStates(t *testing.T) {
+func TestValidateImportRequest_RejectsTransitionNextNotInStates(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-bad-next", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -112,7 +114,7 @@ func TestValidateWorkflows_RejectsTransitionNextNotInStates(t *testing.T) {
 			}},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatalf("expected error for transition Next not in States, got nil")
 	}
@@ -132,7 +134,7 @@ func TestValidateWorkflows_RejectsTransitionNextNotInStates(t *testing.T) {
 
 // --- H6.e — Transition Name unique within state -----------------------
 
-func TestValidateWorkflows_RejectsDuplicateTransitionNameWithinState(t *testing.T) {
+func TestValidateImportRequest_RejectsDuplicateTransitionNameWithinState(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-dup-trans", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -144,7 +146,7 @@ func TestValidateWorkflows_RejectsDuplicateTransitionNameWithinState(t *testing.
 			"S3": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatalf("expected error for duplicate transition name within state, got nil")
 	}
@@ -161,7 +163,7 @@ func TestValidateWorkflows_RejectsDuplicateTransitionNameWithinState(t *testing.
 
 // Different states sharing a transition name is fine (the audit only
 // flags duplicates within a single state).
-func TestValidateWorkflows_AcceptsSameTransitionNameAcrossStates(t *testing.T) {
+func TestValidateImportRequest_AcceptsSameTransitionNameAcrossStates(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-cross-state-name", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -174,14 +176,14 @@ func TestValidateWorkflows_AcceptsSameTransitionNameAcrossStates(t *testing.T) {
 			"S3": {},
 		},
 	}
-	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
 		t.Fatalf("expected no error for same-name transitions in different states, got: %v", err)
 	}
 }
 
 // --- H4 — ExecutionMode enum check ------------------------------------
 
-func TestValidateWorkflows_RejectsUnknownExecutionMode(t *testing.T) {
+func TestValidateImportRequest_RejectsUnknownExecutionMode(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-bad-mode", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -193,7 +195,7 @@ func TestValidateWorkflows_RejectsUnknownExecutionMode(t *testing.T) {
 			"S2": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatalf("expected error for typo'd ExecutionMode, got nil")
 	}
@@ -209,7 +211,7 @@ func TestValidateWorkflows_RejectsUnknownExecutionMode(t *testing.T) {
 }
 
 // Empty ExecutionMode must remain valid — engine treats "" as SYNC.
-func TestValidateWorkflows_AcceptsEmptyExecutionMode(t *testing.T) {
+func TestValidateImportRequest_AcceptsEmptyExecutionMode(t *testing.T) {
 	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "wf-empty-mode", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -221,13 +223,13 @@ func TestValidateWorkflows_AcceptsEmptyExecutionMode(t *testing.T) {
 			"S2": {},
 		},
 	}
-	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
 		t.Fatalf("expected no error for empty ExecutionMode, got: %v", err)
 	}
 }
 
 // All four named modes must be accepted.
-func TestValidateWorkflows_AcceptsAllKnownExecutionModes(t *testing.T) {
+func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{
 		ExecutionModeSync,
 		ExecutionModeAsyncSameTx,
@@ -246,7 +248,7 @@ func TestValidateWorkflows_AcceptsAllKnownExecutionModes(t *testing.T) {
 					"S2": {},
 				},
 			}
-			if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+			if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
 				t.Fatalf("expected no error for ExecutionMode=%q, got: %v", mode, err)
 			}
 		})

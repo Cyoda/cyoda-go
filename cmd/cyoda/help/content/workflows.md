@@ -213,7 +213,7 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 
-The validator runs on the incoming request only — existing stored workflows are not retroactively re-checked when a new import lands.
+The new structural rules (state graph, name uniqueness, `executionMode` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
 Response: `200 OK`, `application/json`:
 
@@ -261,7 +261,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
-- `errors.VALIDATION_FAILED` — `400` — workflow import structural validation failed (cycle detection, state-graph integrity, name uniqueness, `executionMode` enum, `startNewTxOnDispatch` coherence — see IMPORT REQUEST above for the full list)
+- `errors.VALIDATION_FAILED` — `400` — workflow import validation failed; see IMPORT REQUEST above for the enumerated rules
 
 ## EXAMPLES
 

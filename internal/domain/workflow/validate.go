@@ -48,11 +48,12 @@ var validExecutionModes = map[string]struct{}{
 	ExecutionModeCommitBeforeDispatch: {},
 }
 
-// validateWorkflows enforces the structural invariants required at import
-// time. Violations are returned as plain errors that the caller wraps in
-// a 400 with ErrCodeValidationFailed.
+// validateImportRequest enforces the per-incoming-workflow structural
+// rules added in issue #255 (audit §H4, §H6.a–e, §M4). Violations are
+// returned as plain errors that the caller wraps in a 400 with
+// ErrCodeValidationFailed.
 //
-// Rules enforced (per issue #255 / audit §H4, §H6, §M4):
+// Rules enforced:
 //   - H6.c — workflow Name must be non-empty.
 //   - H6.d — workflow Names must be unique within the validated slice.
 //   - H6.a — InitialState must be non-empty and ∈ States.
@@ -61,14 +62,21 @@ var validExecutionModes = map[string]struct{}{
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
 //
-// Plus the pre-existing checks:
-//   - definite-infinite-loop detection on unguarded automated transitions.
-//   - StartNewTxOnDispatch / COMMIT_BEFORE_DISPATCH flag coherence.
+// Scope: called only on the **incoming** import request. Legacy stored
+// workflows are not retroactively re-checked against these rules, so an
+// in-place upgrade does not invalidate previously-imported shapes that
+// happened to slip past weaker pre-v0.8.0 validation. The behavioural
+// invariants the engine actually relies on at runtime (unguarded loops,
+// flag coherence) are enforced separately by validateWorkflows on the
+// post-merge result — see that function's doc for the contrast.
 //
 // All error messages name the offending workflow/state/transition so
 // operators can locate the problem without re-reading the import body.
-func validateWorkflows(workflows []spi.WorkflowDefinition) error {
-	// H6.d — workflow Name uniqueness within the request.
+func validateImportRequest(workflows []spi.WorkflowDefinition) error {
+	// H6.d — workflow Name uniqueness within the request. The empty-name
+	// case is handled below by validateWorkflowStructure (H6.c) so that
+	// a single empty-named workflow surfaces as "empty name" rather than
+	// the less actionable "duplicate empty name".
 	seen := make(map[string]struct{}, len(workflows))
 	for _, wf := range workflows {
 		if _, dup := seen[wf.Name]; dup && wf.Name != "" {
@@ -81,6 +89,21 @@ func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 		if err := validateWorkflowStructure(wf); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateWorkflows enforces the behavioural invariants that the engine
+// relies on at runtime: definite infinite loops (unguarded automated
+// cycles) and StartNewTxOnDispatch / COMMIT_BEFORE_DISPATCH flag
+// coherence. Called on the post-merge result so that a legacy stored
+// cycle or incoherent flag in MERGE/ACTIVATE mode still surfaces at
+// import time (pre-v0.8.0 behaviour preserved for these checks).
+//
+// The newer structural rules added in #255 deliberately do NOT run
+// here — see validateImportRequest for why.
+func validateWorkflows(workflows []spi.WorkflowDefinition) error {
+	for _, wf := range workflows {
 		if err := validateWorkflowLoops(wf); err != nil {
 			return fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}

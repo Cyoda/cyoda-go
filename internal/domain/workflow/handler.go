@@ -102,17 +102,26 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		req.Workflows[i].Active = true
 	}
 
-	// Static validation on the incoming workflows (not the merged result):
-	// existing stored workflows have already been validated under whichever
-	// rules applied at their original import time. Re-validating them on
-	// every subsequent import would surface legacy stored shapes as fresh
-	// 4xx errors against unrelated incoming requests (#255).
-	if err := validateWorkflows(req.Workflows); err != nil {
+	// Structural validation (#255) runs on the incoming request only —
+	// the new H4/H6 rules are deliberately not retroactive against
+	// legacy stored shapes. Behavioural validation (loops + flag
+	// coherence) runs on the merged result below, preserving pre-v0.8.0
+	// semantics for those specific invariants.
+	if err := validateImportRequest(req.Workflows); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
 
 	result := applyImportMode(existing, req.Workflows, mode)
+
+	// Behavioural validation on the merged result: definite-loop
+	// detection and StartNewTxOnDispatch coherence. A pre-existing
+	// stored workflow that violates these still surfaces here, matching
+	// pre-#255 behaviour.
+	if err := validateWorkflows(result); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
 
 	if err := wfStore.Save(r.Context(), ref, result); err != nil {
 		common.WriteError(w, r, common.Internal("failed to save workflows", err))
