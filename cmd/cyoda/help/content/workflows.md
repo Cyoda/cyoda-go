@@ -164,7 +164,7 @@ Any value other than `"internalized"` (including the empty string, the canonical
   Pick one path: let the engine apply the result, OR have the processor write
   the entity itself and return no mutations for it.
 
-An invalid `executionMode` value is treated as `SYNC` / `ASYNC_SAME_TX` (the engine's default branch). It is not rejected at import time but produces undefined behaviour and must not be relied upon.
+Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 
 **ProcessorConfig fields:**
 
@@ -203,7 +203,20 @@ Request body (`application/json`):
 - `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`.
 - `workflows` — array of `WorkflowDefinition`. The `active` flag on each incoming workflow is preserved as supplied; the server never overrides it. Controlling which workflows are active is entirely up to the importer.
 
-Static validation runs before saving: definite infinite loops (cycles reachable only via automated transitions) cause `400 VALIDATION_FAILED`.
+Static validation runs on the incoming request before saving. Any of the following returns `400 VALIDATION_FAILED` with the offending workflow / state / transition named in `detail`:
+
+- Definite infinite loops — cycles reachable only via unguarded automated transitions.
+- Empty workflow `name`, or two workflows in the same request sharing a `name`.
+- Empty `initialState`, or `initialState` not declared in `states`.
+- Empty state-map key (i.e. `"states": { "": { … } }`).
+- Empty or duplicate transition `name` within a single state.
+- Empty processor `name`.
+- Workflow / state / transition / processor names longer than 256 characters.
+- Transition `next` not declared in `states`.
+- Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
+- `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
+
+The new structural rules (state graph, name uniqueness, `executionMode` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
 Response: `200 OK`, `application/json`:
 
@@ -251,7 +264,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
-- `errors.VALIDATION_FAILED` — `400` — static cycle detection failed during workflow import
+- `errors.VALIDATION_FAILED` — `400` — workflow import validation failed; see IMPORT REQUEST above for the enumerated rules
 
 ## EXAMPLES
 

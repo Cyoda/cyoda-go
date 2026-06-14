@@ -102,9 +102,22 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		req.Workflows[i].Active = true
 	}
 
+	// Structural validation (#255) runs on the incoming request only —
+	// the new H4/H6 rules are deliberately not retroactive against
+	// legacy stored shapes. Behavioural validation (loops + flag
+	// coherence) runs on the merged result below, preserving pre-v0.8.0
+	// semantics for those specific invariants.
+	if err := validateImportRequest(req.Workflows); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
+
 	result := applyImportMode(existing, req.Workflows, mode)
 
-	// Static validation: detect definite infinite loops before saving.
+	// Behavioural validation on the merged result: definite-loop
+	// detection and StartNewTxOnDispatch coherence. A pre-existing
+	// stored workflow that violates these still surfaces here, matching
+	// pre-#255 behaviour.
 	if err := validateWorkflows(result); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return

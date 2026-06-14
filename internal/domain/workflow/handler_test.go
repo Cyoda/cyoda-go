@@ -480,6 +480,113 @@ func TestImport_UnknownModel_Returns404(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, common.ErrCodeModelNotFound)
 }
 
+// TestImport_ValidationFailures_Return400 covers issue #255: the
+// structural validator must surface through the public import HTTP path
+// with a 400 Bad Request and the offending name/state/transition in
+// the error detail. One sub-test per H6 rule serves as a regression
+// fence at the wire boundary; the unit-level coverage lives in
+// validate_import_test.go.
+func TestImport_ValidationFailures_Return400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	cases := []struct {
+		name        string
+		body        string
+		mustContain string // substring required in 400 detail
+	}{
+		{
+			name: "H6.c empty workflow name",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
+			mustContain: "name",
+		},
+		{
+			name: "H6.d duplicate workflow names in request",
+			body: `{"importMode":"REPLACE","workflows":[
+				{"version":"1","name":"dup","initialState":"S1","active":true,"states":{"S1":{}}},
+				{"version":"1","name":"dup","initialState":"S2","active":true,"states":{"S2":{}}}
+			]}`,
+			mustContain: "duplicate",
+		},
+		{
+			name: "H6.a empty initialState",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"","active":true,"states":{"S1":{}}}]}`,
+			mustContain: "initialState",
+		},
+		{
+			name: "H6.a initialState not in States",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"MISSING","active":true,"states":{"S1":{}}}]}`,
+			mustContain: "MISSING",
+		},
+		{
+			name: "H6.b transition.next not in States",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{"transitions":[{"name":"go","next":"NOWHERE","manual":true}]}}}]}`,
+			mustContain: "NOWHERE",
+		},
+		{
+			name: "H6.e duplicate transition name in state",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{
+					"S1":{"transitions":[{"name":"go","next":"S2","manual":true},{"name":"go","next":"S3","manual":true}]},
+					"S2":{},"S3":{}
+				}}]}`,
+			mustContain: "duplicate",
+		},
+		{
+			name: "H4 unknown ExecutionMode",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{"transitions":[{"name":"t","next":"S2","manual":true,"processors":[
+					{"type":"externalized","name":"p","executionMode":"ASYN_SAME_TX"}
+				]}]}, "S2":{}}}]}`,
+			mustContain: "ASYN_SAME_TX",
+		},
+		// Security-audit follow-ups M-1 + L-1 + L-2.
+		{
+			name: "M-1 empty state-map key",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{},"":{}}}]}`,
+			mustContain: "empty state name",
+		},
+		{
+			name: "L-1 empty transition name",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{"transitions":[{"name":"","next":"S2","manual":true}]}, "S2":{}}}]}`,
+			mustContain: "empty transition name",
+		},
+		{
+			name: "L-1 empty processor name",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{"transitions":[{"name":"t","next":"S2","manual":true,"processors":[
+					{"type":"externalized","name":"","executionMode":"SYNC"}
+				]}]}, "S2":{}}}]}`,
+			mustContain: "empty processor name",
+		},
+		{
+			name:        "L-2 workflow name exceeds 256 chars",
+			body:        `{"importMode":"REPLACE","workflows":[{"version":"1","name":"` + strings.Repeat("x", 257) + `","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
+			mustContain: "256-char limit",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+			}
+			commontest.ExpectErrorCode(t, resp, common.ErrCodeValidationFailed)
+			body := readJSON(t, resp)
+			detail, _ := body["detail"].(string)
+			if !strings.Contains(detail, tc.mustContain) {
+				t.Errorf("detail %q missing required substring %q", detail, tc.mustContain)
+			}
+		})
+	}
+}
+
 func TestImportDefaultMode(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)

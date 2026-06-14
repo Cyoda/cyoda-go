@@ -8732,6 +8732,8 @@ components:
             in-process subtype lands together with its schema.
         name:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Name of the processor
       required:
         - name
@@ -8748,9 +8750,13 @@ components:
       properties:
         name:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Name of the transition
         next:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Target state code for this transition
         manual:
           type: boolean
@@ -8783,12 +8789,19 @@ components:
           description: Version of the workflow configuration schema
         name:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Name of the workflow
         initialState:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Initial state for entities in this workflow
         states:
           type: object
+          propertyNames:
+            minLength: 1
+            maxLength: 256
           additionalProperties:
             $ref: "#/components/schemas/StateDefinitionDto"
           description: Map of state codes to state definitions
