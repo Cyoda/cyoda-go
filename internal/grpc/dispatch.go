@@ -65,6 +65,12 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		TransactionID: &txID,
 		Success:       true,
 	}
+	// ProcessorConfig.Context is a pass-through string surfaced verbatim in
+	// the request's parameters node. One processor implementation can serve
+	// multiple workflow roles distinguished by Context.
+	if processor.Config.Context != "" {
+		req.Parameters = processor.Config.Context
+	}
 	if processor.Config.AttachEntity {
 		versionInt := 0
 		fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
@@ -171,6 +177,9 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 				CalculationNodesTags string `json:"calculationNodesTags"`
 				AttachEntity         *bool  `json:"attachEntity"` // nil = default true
 				ResponseTimeoutMs    int64  `json:"responseTimeoutMs"`
+				// Context — pass-through string surfaced verbatim in the
+				// request's parameters node.
+				Context string `json:"context"`
 			} `json:"config"`
 		} `json:"function"`
 	}
@@ -208,6 +217,9 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 	}
 	if processorName != "" {
 		req.Processor = &events.ProcessorInfoJson{Name: processorName}
+	}
+	if parsed.Function.Config.Context != "" {
+		req.Parameters = parsed.Function.Config.Context
 	}
 	if attachEntity {
 		versionInt := 0

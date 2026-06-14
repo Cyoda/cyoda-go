@@ -172,7 +172,7 @@ An invalid `executionMode` value is treated as `SYNC` / `ASYNC_SAME_TX` (the eng
 - `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
 - `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
 - `retryPolicy` — string — retry policy name (plugin/platform-defined); empty means no retry
-- `context` — string — arbitrary string forwarded to the processor as context metadata
+- `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
 
 ## CRITERIA
 
