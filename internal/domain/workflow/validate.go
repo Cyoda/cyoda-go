@@ -48,6 +48,19 @@ var validExecutionModes = map[string]struct{}{
 	ExecutionModeCommitBeforeDispatch: {},
 }
 
+// maxIdentifierLen caps the length of workflow / state / transition /
+// processor names accepted at import time. The cap is defence-in-depth
+// against (a) log-volume amplification via huge identifiers reflected
+// into operational log lines and 4xx response bodies, and (b)
+// unbounded state-machine identifiers leaking into engine audit events.
+//
+// 256 was chosen to align with common identifier conventions and to
+// stay well above any realistic legitimate use: pre-existing OpenAPI
+// patterns in this codebase cap entity field names at 100 and free-text
+// descriptions at 1024, so 256 sits in the natural midpoint for
+// human-meaningful identifier strings.
+const maxIdentifierLen = 256
+
 // validateImportRequest enforces the per-incoming-workflow structural
 // rules added in issue #255 (audit §H4, §H6.a–e, §M4). Violations are
 // returned as plain errors that the caller wraps in a 400 with
@@ -115,14 +128,22 @@ func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 }
 
 // validateWorkflowStructure enforces the per-workflow structural rules
-// added in #255 (H6.a, H6.b, H6.c, H6.e, H4). Any violation is a 4xx
-// at import time — the engine would otherwise silently degrade at
-// runtime (park entity in an undefined state, shadow duplicate
-// transitions, coerce typo'd ExecutionMode to SYNC).
+// added in #255 (H6.a–e, H4) plus the security-audit follow-ups M-1
+// (empty state-map keys), L-1 (empty transition / processor names) and
+// L-2 (identifier length cap). Any violation is a 4xx at import time —
+// the engine would otherwise silently degrade at runtime (park entity
+// in an undefined state, shadow duplicate transitions, coerce typo'd
+// ExecutionMode to SYNC) or accept arbitrarily long identifiers into
+// operational logs and audit events.
 func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	// H6.c — Name non-empty.
 	if wf.Name == "" {
 		return fmt.Errorf("workflow with empty name is not allowed")
+	}
+	// L-2 — Name length cap.
+	if len(wf.Name) > maxIdentifierLen {
+		return fmt.Errorf("workflow name length %d exceeds the %d-char limit",
+			len(wf.Name), maxIdentifierLen)
 	}
 
 	// H6.a — InitialState non-empty and ∈ States.
@@ -133,12 +154,36 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 		return fmt.Errorf("workflow %q: initialState %q is not declared in states", wf.Name, wf.InitialState)
 	}
 
-	// H6.b — Transition.Next ∈ States.
-	// H6.e — Transition Name unique within state.
-	// H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
+	// Iterate states once and enforce:
+	//   M-1 — state-map keys must be non-empty.
+	//   L-2 — state-map keys length cap.
+	//   H6.b — Transition.Next ∈ States.
+	//   H6.e — Transition Name unique within state.
+	//   L-1 — Transition Name non-empty.
+	//   L-2 — Transition Name length cap.
+	//   L-1 — Processor Name non-empty.
+	//   L-2 — Processor Name length cap.
+	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
 	for stateName, stateDef := range wf.States {
+		if stateName == "" {
+			return fmt.Errorf("workflow %q: empty state name is not allowed in the states map",
+				wf.Name)
+		}
+		if len(stateName) > maxIdentifierLen {
+			return fmt.Errorf("workflow %q: state name length %d exceeds the %d-char limit",
+				wf.Name, len(stateName), maxIdentifierLen)
+		}
+
 		trNames := make(map[string]struct{}, len(stateDef.Transitions))
 		for _, tr := range stateDef.Transitions {
+			if tr.Name == "" {
+				return fmt.Errorf("workflow %q state %q: empty transition name is not allowed",
+					wf.Name, stateName)
+			}
+			if len(tr.Name) > maxIdentifierLen {
+				return fmt.Errorf("workflow %q state %q: transition name length %d exceeds the %d-char limit",
+					wf.Name, stateName, len(tr.Name), maxIdentifierLen)
+			}
 			if _, dup := trNames[tr.Name]; dup {
 				return fmt.Errorf("workflow %q state %q: duplicate transition name %q",
 					wf.Name, stateName, tr.Name)
@@ -151,6 +196,14 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 			}
 
 			for _, p := range tr.Processors {
+				if p.Name == "" {
+					return fmt.Errorf("workflow %q state %q transition %q: empty processor name is not allowed",
+						wf.Name, stateName, tr.Name)
+				}
+				if len(p.Name) > maxIdentifierLen {
+					return fmt.Errorf("workflow %q state %q transition %q: processor name length %d exceeds the %d-char limit",
+						wf.Name, stateName, tr.Name, len(p.Name), maxIdentifierLen)
+				}
 				if _, ok := validExecutionModes[p.ExecutionMode]; !ok {
 					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",
 						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)

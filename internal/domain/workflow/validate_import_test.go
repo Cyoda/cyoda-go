@@ -228,6 +228,182 @@ func TestValidateImportRequest_AcceptsEmptyExecutionMode(t *testing.T) {
 	}
 }
 
+// --- Security-audit follow-ups: M-1 (empty state-map keys) + L-1 (empty
+// transition / processor names) + L-2 (name-length cap). Same failure
+// class as H6.a / H6.b / H6.c / H6.e — names embedded in lookups,
+// matched against engine state machines, and reflected into operational
+// logs. Trivial-cost fences, applied uniformly.
+
+// --- M-1: empty state-map key --------------------------------------
+
+func TestValidateImportRequest_RejectsEmptyStateMapKey(t *testing.T) {
+	// H6.a says initialState must be ∈ states, and H6.b says next must
+	// be ∈ states — but neither rules out the empty string sitting in
+	// the states map itself. Without this check, an attacker can set
+	// initialState=S1, declare states={"S1": …, "": {}}, route a
+	// transition to next="" and re-create the silent-park behaviour
+	// H6.b was supposed to close.
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "wf-empty-state-key", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {},
+			"":   {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for empty state-map key, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty state name") {
+		t.Errorf("error must name the empty-state-key rule, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "wf-empty-state-key") {
+		t.Errorf("error must name the offending workflow, got: %v", err)
+	}
+}
+
+// --- L-1: empty transition name ------------------------------------
+
+func TestValidateImportRequest_RejectsEmptyTransitionName(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "wf-empty-trans-name", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "", Next: "S2", Manual: true},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for empty transition name, got nil")
+	}
+	if !strings.Contains(err.Error(), "transition") || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error must name the empty-transition-name rule, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "S1") {
+		t.Errorf("error must name the offending state, got: %v", err)
+	}
+}
+
+// --- L-1: empty processor name -------------------------------------
+
+func TestValidateImportRequest_RejectsEmptyProcessorName(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "wf-empty-proc-name", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: ProcessorTypeExternalized, Name: "", ExecutionMode: ExecutionModeSync},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for empty processor name, got nil")
+	}
+	if !strings.Contains(err.Error(), "processor") || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error must name the empty-processor-name rule, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `"t"`) {
+		t.Errorf("error must name the offending transition, got: %v", err)
+	}
+}
+
+// --- L-2: identifier length cap (defense-in-depth against log-volume
+// amplification + unbounded engine state-machine names).
+//
+// 256 is generous enough that no legitimate identifier should be
+// affected (cf. OpenAPI patterns already in the spec — entity field
+// names cap at 100, descriptions at 1024). Names appear in error
+// strings, log lines, audit events, and state lookups; bounding them
+// at validation time prevents a tenant from spamming the operational
+// log with multi-KB per error line.
+
+func TestValidateImportRequest_RejectsOverlongWorkflowName(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: strings.Repeat("x", 257), InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{"S1": {}},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for overlong workflow name (257 chars), got nil")
+	}
+	if !strings.Contains(err.Error(), "256") {
+		t.Errorf("error must mention the 256-char limit, got: %v", err)
+	}
+}
+
+func TestValidateImportRequest_AcceptsMaxLengthWorkflowName(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: strings.Repeat("x", 256), InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{"S1": {}},
+	}
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Fatalf("expected no error for exactly-256-char workflow name, got: %v", err)
+	}
+}
+
+func TestValidateImportRequest_RejectsOverlongStateName(t *testing.T) {
+	long := strings.Repeat("s", 257)
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {},
+			long: {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for overlong state name, got nil")
+	}
+	if !strings.Contains(err.Error(), "256") {
+		t.Errorf("error must mention the 256-char limit, got: %v", err)
+	}
+}
+
+func TestValidateImportRequest_RejectsOverlongTransitionName(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: strings.Repeat("t", 257), Next: "S2", Manual: true},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for overlong transition name, got nil")
+	}
+	if !strings.Contains(err.Error(), "256") {
+		t.Errorf("error must mention the 256-char limit, got: %v", err)
+	}
+}
+
+func TestValidateImportRequest_RejectsOverlongProcessorName(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
+					{Type: ProcessorTypeExternalized, Name: strings.Repeat("p", 257), ExecutionMode: ExecutionModeSync},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for overlong processor name, got nil")
+	}
+	if !strings.Contains(err.Error(), "256") {
+		t.Errorf("error must mention the 256-char limit, got: %v", err)
+	}
+}
+
 // All four named modes must be accepted.
 func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{

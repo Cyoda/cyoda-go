@@ -541,6 +541,32 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 				]}]}, "S2":{}}}]}`,
 			mustContain: "ASYN_SAME_TX",
 		},
+		// Security-audit follow-ups M-1 + L-1 + L-2.
+		{
+			name: "M-1 empty state-map key",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{},"":{}}}]}`,
+			mustContain: "empty state name",
+		},
+		{
+			name: "L-1 empty transition name",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{"transitions":[{"name":"","next":"S2","manual":true}]}, "S2":{}}}]}`,
+			mustContain: "empty transition name",
+		},
+		{
+			name: "L-1 empty processor name",
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+				"states":{"S1":{"transitions":[{"name":"t","next":"S2","manual":true,"processors":[
+					{"type":"externalized","name":"","executionMode":"SYNC"}
+				]}]}, "S2":{}}}]}`,
+			mustContain: "empty processor name",
+		},
+		{
+			name:        "L-2 workflow name exceeds 256 chars",
+			body:        `{"importMode":"REPLACE","workflows":[{"version":"1","name":"` + strings.Repeat("x", 257) + `","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
+			mustContain: "256-char limit",
+		},
 	}
 
 	for _, tc := range cases {

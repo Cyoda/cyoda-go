@@ -208,8 +208,11 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Definite infinite loops — cycles reachable only via unguarded automated transitions.
 - Empty workflow `name`, or two workflows in the same request sharing a `name`.
 - Empty `initialState`, or `initialState` not declared in `states`.
+- Empty state-map key (i.e. `"states": { "": { … } }`).
+- Empty or duplicate transition `name` within a single state.
+- Empty processor `name`.
+- Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
-- Two transitions within a single state sharing a `name`.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 
