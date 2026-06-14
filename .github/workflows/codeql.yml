@@ -25,6 +25,9 @@ permissions:
   actions: read
   contents: read
 
+env:
+  GOPRIVATE: github.com/Cyoda-platform/*
+
 jobs:
   analyze:
     name: Analyze Go

@@ -389,10 +389,12 @@ git commit -m "feat(spi): add GroupedAggregator + aggregation types (closes part
 cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi
 git push -u origin HEAD
 gh pr create --title "feat(spi): Iterable + GroupedAggregator for grouped-stats" \
-  --body "Additive SPI surface for cyoda-go #299. See cyoda-go spec docs/superpowers/specs/2026-06-14-issue-299-grouped-stats-design.md."
+  --body "Additive SPI surface for cyoda-go #299. See cyoda-go spec docs/superpowers/specs/2026-06-14-issue-299-grouped-stats-design.md.
+
+**Do not tag.** Per MAINTAINING.md \"When to tag\", the v0.8.0 SPI tag is cut at end-of-milestone once all v0.8.0-targeted SPI changes are merged."
 ```
 
-> **HUMAN GATE:** Wait for review/merge of the cyoda-go-spi PR before continuing. Once merged, capture the resulting commit SHA on `main` — we'll pin to a pseudo-version against that SHA in Task 3.
+> **HUMAN GATE:** Wait for review/merge of the cyoda-go-spi PR before continuing. Once merged, capture the resulting commit SHA on `main` — Task 3 bumps cyoda-go's pseudo-version pin to that SHA. The SPI tag is NOT cut here; it's cut at end-of-milestone (see spec D13).
 
 ---
 
@@ -400,38 +402,57 @@ gh pr create --title "feat(spi): Iterable + GroupedAggregator for grouped-stats"
 
 **Working directory for Phase 2 onwards:** `/Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/feat-299-grouped-stats` (current branch: `feat/299-grouped-stats`).
 
-### Task 3: Bump cyoda-go-spi pin
+### Task 3: Bump cyoda-go-spi pseudo-version pin (all four go.mod files)
 
 **Files:**
-- Modify: `go.mod`
-- Modify: `go.sum`
+- Modify: `go.mod`, `go.sum`
+- Modify: `plugins/memory/go.mod`, `plugins/memory/go.sum`
+- Modify: `plugins/sqlite/go.mod`, `plugins/sqlite/go.sum`
+- Modify: `plugins/postgres/go.mod`, `plugins/postgres/go.sum`
 
-- [ ] **Step 1: Update the pin**
+**Context.** cyoda-go-spi `main` HEAD now includes Task 1/2 SPI changes. We bump cyoda-go's pseudo-version pin to that SHA in **all four** go.mod files (root + three plugins) — `scripts/check-spi-pin-sync.sh` CI gate enforces alignment. The final pin bump from pseudo-version to `v0.8.0` happens at end-of-milestone once the SPI tag is cut.
 
-Run:
+`GOPRIVATE=github.com/Cyoda-platform/*` must be set in your shell (already in CONTRIBUTING.md and CI workflows). It bypasses sum.golang.org for cyoda-platform modules.
+
+- [ ] **Step 1: Capture the SPI HEAD SHA**
+
 ```bash
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/feat-299-grouped-stats
-go get github.com/cyoda-platform/cyoda-go-spi@main
-go mod tidy
+cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi
+git checkout main && git pull --ff-only
+SPI_SHA=$(git rev-parse --short=12 HEAD)
+echo "SPI HEAD short SHA: $SPI_SHA"
 ```
 
-Verify `go.mod` shows a pseudo-version newer than the previous `v0.8.0` line.
-
-- [ ] **Step 2: Run a sanity vet**
-
-Run: `go vet ./...`
-Expected: no errors (the new SPI types are unused so far; nothing should break).
-
-- [ ] **Step 3: Run existing tests to confirm nothing breaks**
-
-Run: `go test -short ./...`
-Expected: all pass.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 2: Bump root + plugins**
 
 ```bash
-git add go.mod go.sum
-git commit -m "chore: bump cyoda-go-spi pin for #299 (Iterable + GroupedAggregator)"
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/feat-299-grouped-stats
+export GOPRIVATE=github.com/Cyoda-platform/*
+go get github.com/cyoda-platform/cyoda-go-spi@$SPI_SHA && go mod tidy
+for d in plugins/memory plugins/sqlite plugins/postgres; do
+  (cd "$d" && go get github.com/cyoda-platform/cyoda-go-spi@$SPI_SHA && go mod tidy)
+done
+```
+
+- [ ] **Step 3: Verify pin-sync**
+
+```bash
+./scripts/check-spi-pin-sync.sh
+```
+Expected: `OK — all manifests pin cyoda-go-spi <pseudo-version>`.
+
+- [ ] **Step 4: Vet + short tests**
+
+```bash
+go vet ./... && go test -short ./...
+```
+Expected: clean + green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add go.mod go.sum plugins/*/go.mod plugins/*/go.sum
+git commit -m "chore: bump cyoda-go-spi pseudo-version pin (Iterable + GroupedAggregator); refs #299"
 ```
 
 ---

@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Issue | [#299](https://github.com/Cyoda-platform/cyoda-go/issues/299) |
-| Target milestone | v0.8.0 (cyoda-go), v0.8.0 (cyoda-go-spi) |
+| Target milestone | v0.8.0 (cyoda-go), v0.8.0 (cyoda-go-spi) — both released in lock-step at end of milestone |
 | Spec date | 2026-06-14 |
 | Review iterations | 4 (architecture · iterator filter-awareness · perf/memory/correctness/concurrency · cassandra-prescription removal + OSS plugin clarity) |
 | Status | Draft, pending review |
@@ -41,7 +41,7 @@ Each entry is the option chosen and the rationale in one line.
 | D10 | Stdev pushdown asymmetry handled by `ErrAggregationNotPushdownable`: a `GroupedAggregator` may decline a specific request shape, signalling fall-through to streaming-tally. | Coarse capability check; fine per-request opt-out. |
 | D11 | In-tx grouped-stats is **supported** via the streaming-tally path. Memory backend in-tx path overlays `tx.Buffer` and excludes `tx.Deletes`, matching the existing `GetAll` in-tx branch (`plugins/memory/entity_store.go:338-380`) that `/search/*` falls through to. Pushdown skipped when `spi.GetTransaction(ctx) != nil`. | RYW is what the memory plugin's tx-buffered reads already do. |
 | D12 | `groupKey` in responses is an ordered array of `{path, value}` pairs. | OpenAPI-typeable; friendly for typed clients; preserves request order. |
-| D13 | Target v0.8.0. cyoda-go-spi v0.8.0 tag not yet published; additive SPI changes fold alongside #16. | v0.8.0 is not feature-frozen. |
+| D13 | Target cyoda-go v0.8.0 and cyoda-go-spi v0.8.0 in **lock-step at end of milestone**. The cyoda-go-spi v0.8.0 tag was created prematurely (at the tx-state-sentinels commit `c301c0e`) before the rest of the v0.8.0 milestone SPI work was in; the tag was deleted from the remote on 2026-06-14, cyoda-go (the sole consumer; nobody else was pinned to it) was moved to a pseudo-version pin against cyoda-go-spi `main`, and `GOPRIVATE=github.com/Cyoda-platform/*` was wired into CI and CONTRIBUTING.md to bypass sum.golang.org for cyoda-platform modules. The v0.8.0 SPI tag will be re-cut once all v0.8.0-milestone SPI work (#299 + others) is merged; cyoda-go pin bumps from pseudo-version → v0.8.0 in one final commit. cyoda-go-spi's MAINTAINING.md was updated with an explicit "When to tag" section so this doesn't recur. | Lock-step convention preserved without violating the immutability rule going forward — the v0.8.0 retraction is a one-time controlled exception fully documented in cyoda-go-spi's CHANGELOG. |
 | D14 | `Iterable.Iterate(model, filter, opts)` takes a Filter parameter. Iterator yields entities matching the filter; plugins push what they can and apply residual inside `Next()`. | Without it, the streaming-tally path full-scans regardless of how narrow the condition is. |
 | D15 | When `search.ConditionToFilter` errors (function conditions, future operators not yet translated), the service passes a zero-value `Filter` to `Iterate` and re-applies `match.Match` per yielded entity. Otherwise the iterator's yielded set is authoritative. | One source of truth per pluggable surface. |
 | D16 | Postgres gets a new Filter→SQL translation layer as part of this change. Greedy AND / conservative OR, JSONB ops. Reusable substrate for a future postgres `Searcher`; that work is out of scope here. | Postgres has no `Searcher` today; without this layer, postgres `Iterate` would be filter-blind. |
@@ -214,7 +214,7 @@ Post-processing: heap top-N when `Limit > 0 && Limit < len(buckets)/2`; otherwis
 
 ## 5. SPI delta (cyoda-go-spi v0.8.0)
 
-Additive. No breaking changes. Lands on `cyoda-go-spi` main on top of `c301c0e`.
+Additive. No breaking changes. Lands on `cyoda-go-spi` main on top of `c301c0e` (the tx-state-sentinels commit) and ships as part of the consolidated v0.8.0 release at end of milestone. cyoda-go pins to a pseudo-version against `main` during the milestone; the final pin bump to `v0.8.0` happens once the tag is cut.
 
 ```go
 // Streaming iteration over a model's entities matching a Filter.
@@ -574,9 +574,11 @@ Strict count + Tier 1+2 in v1. Surfaces left open: `having`, `mode`/`median` (ea
 
 ## 9. Release sequencing
 
-1. **cyoda-go-spi PR** — additive: all the new types from §5. `Iterate` carries the filter parameter from the start. Folds into the v0.8.0 SPI tag alongside #16 (tx-state sentinels).
+1. **cyoda-go-spi PR(s)** — additive: all the new types from §5 (and any other in-flight v0.8.0-milestone SPI work). `Iterate` carries the filter parameter from the start. Lands on cyoda-go-spi `main` on top of `c301c0e`. **No tag is cut after this PR** — see D13.
 
-2. **cyoda-go-spi v0.8.0 tag** — once SPI scope settles. Adding both new interfaces is type-assertion-only; any plugin can pin v0.8.0 SPI without implementing either.
+2. **cyoda-go pseudo-version pin** — cyoda-go-spi `main` is pinned via `go get @main` once the PR lands; pin sync script keeps the four go.mod files aligned. CI's `GOPRIVATE=github.com/Cyoda-platform/*` makes this safe across the milestone.
+
+3. **cyoda-go-spi v0.8.0 tag (end-of-milestone)** — cut once every v0.8.0-targeted SPI change is in. Adding both new interfaces is type-assertion-only; any plugin can pin v0.8.0 SPI without implementing either. cyoda-go's final pin-bump commit upgrades pseudo-version → v0.8.0.
 
 3. **cyoda-go PR series on `release/v0.8.0`** — realistically 6–10 PRs, broken into reviewable units. Each bullet below is at least one PR; the larger ones (plugin implementations, conformance tests) may split further at writing-plans time:
    - SPI pin bump (one isolated commit).
