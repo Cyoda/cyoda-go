@@ -123,3 +123,51 @@ type AsyncSearchStatus struct {
 	CreateTime            time.Time  `json:"createTime"`
 	FinishTime            *time.Time `json:"finishTime,omitempty"`
 }
+
+// GroupedStatsBucket mirrors internal/domain/entity.GroupedStatsBucket —
+// the response shape of POST /api/entity/stats/{entityName}/{modelVersion}/query.
+//
+// The handler returns a JSON array of buckets, sorted by spec §6 D12
+// (count desc, then group-key lexicographic). Aggregations is the
+// per-alias map; the field is omitted when the request supplied no
+// aggregations (count-only request).
+type GroupedStatsBucket struct {
+	GroupKey     []GroupKeyEntry `json:"groupKey"`
+	Count        int64           `json:"count"`
+	Aggregations map[string]any  `json:"aggregations,omitempty"`
+}
+
+// GroupKeyEntry is one (path, value) pair in a bucket's group key.
+type GroupKeyEntry struct {
+	Path  string `json:"path"`
+	Value any    `json:"value"`
+}
+
+// GroupedStatsRequest is the body of POST
+// /api/entity/stats/{entityName}/{modelVersion}/query. Mirrors
+// internal/domain/entity.GroupedStatsRequest; kept in the parity
+// client to avoid pulling the domain package into the e2e import
+// graph.
+//
+// Condition is a json.RawMessage on the server side; on the client we
+// emit it as a raw string so callers can pass any JSON they like
+// without round-tripping through map[string]any.
+type GroupedStatsRequest struct {
+	GroupBy      []string            `json:"groupBy"`
+	Condition    *AggregationCond    `json:"condition,omitempty"`
+	Aggregations []AggregationExpr   `json:"aggregations,omitempty"`
+	PointInTime  *time.Time          `json:"pointInTime,omitempty"`
+	Limit        *int                `json:"limit,omitempty"`
+}
+
+// AggregationCond is a passthrough for the predicate.Condition JSON
+// shape. We model it as map[string]any so tests can build conditions
+// from Go literals without a JSON-string round trip.
+type AggregationCond map[string]any
+
+// AggregationExpr is one requested aggregation.
+type AggregationExpr struct {
+	Op    string `json:"op"`
+	Field string `json:"field"`
+	As    string `json:"as,omitempty"`
+}

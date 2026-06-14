@@ -255,29 +255,66 @@ func gjsonPath(p string) string {
 }
 
 // translateGroupBy maps the validation-layer types to the SPI types used
-// by the pushdown plugin.
+// by the pushdown plugin. The leading "$." (kept by normalizeScalarPath
+// for the wire-shape group-key Path) is stripped here because every
+// plugin's validateJSONPath rejects "$" as a disallowed character — the
+// SPI contract is a bare dotted-identifier path ("foo.bar"), and the
+// "$." prefix lives only at the public surface (response GroupKeyEntry.Path
+// and the in-process gjson lookup, which strips it via gjsonPath).
 func translateGroupBy(groups []GroupExprValidated) []spi.GroupExpr {
 	out := make([]spi.GroupExpr, len(groups))
 	for i, g := range groups {
 		if g.IsState {
 			out[i] = spi.GroupExpr{Kind: spi.GroupExprState}
 		} else {
-			out[i] = spi.GroupExpr{Kind: spi.GroupExprDataPath, Path: g.Path}
+			out[i] = spi.GroupExpr{Kind: spi.GroupExprDataPath, Path: stripJSONPathPrefix(g.Path)}
 		}
 	}
 	return out
 }
 
+// translateAggregations applies the same "$." stripping rule as
+// translateGroupBy to the aggregation field — the plugin's path
+// validator is shared between group-by and aggregation paths.
 func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr {
 	out := make([]spi.AggregateExpr, len(aggs))
 	for i, a := range aggs {
 		out[i] = spi.AggregateExpr{
 			Op:    spi.AggregateOp(a.Op),
-			Field: a.Field,
+			Field: stripJSONPathPrefix(a.Field),
 			Alias: a.Alias,
 		}
 	}
 	return out
+}
+
+// stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
+// preserves for the wire-shape group-key. Plugins (memory's match.Match,
+// sqlite/postgres's validateJSONPath) all expect bare dotted-identifier
+// paths. A path without the prefix is returned unchanged so the helper
+// is idempotent — re-applying it is safe.
+func stripJSONPathPrefix(p string) string {
+	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
+		return p[2:]
+	}
+	return p
+}
+
+// restoreJSONPathPrefix re-attaches the "$." prefix on the pushdown
+// response path so it matches the streaming-branch wire shape. We use
+// the validated request's GroupBy as the authoritative source rather
+// than re-deriving the prefix from the plugin's response: the reserved
+// token "state" never carries a "$." prefix even though it is also a
+// bare identifier; the request's IsState flag is what tells us which
+// shape to emit.
+func restoreJSONPathPrefix(pluginPath string, groups []GroupExprValidated, i int) string {
+	if i < len(groups) && groups[i].IsState {
+		return "state"
+	}
+	if len(pluginPath) >= 2 && pluginPath[0] == '$' && pluginPath[1] == '.' {
+		return pluginPath
+	}
+	return "$." + pluginPath
 }
 
 // postProcessPushdown converts the plugin's []GroupedAggregateBucket into
@@ -285,12 +322,18 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 // truncates to req.Limit. The plugin is responsible for the aggregations
 // values themselves; we only re-shape the keys, normalize missing
 // alias entries to JSON null, sort, and limit.
+//
+// The bucket's GroupKey path is rewritten from the plugin's bare-dotted
+// form ("variantId") back to the wire-shape "$." prefix form ("$.variantId")
+// so that the response matches what the streaming branch produces. The
+// reserved token "state" is preserved verbatim — IsState entries never
+// carry the "$." prefix.
 func postProcessPushdown(buckets []spi.GroupedAggregateBucket, req *ValidatedGroupedStatsRequest) []GroupedStatsBucket {
 	out := make([]GroupedStatsBucket, 0, len(buckets))
 	for _, b := range buckets {
 		keys := make([]GroupKeyEntryWire, len(b.GroupKey))
 		for i, k := range b.GroupKey {
-			keys[i] = GroupKeyEntryWire{Path: k.Path, Value: k.Value}
+			keys[i] = GroupKeyEntryWire{Path: restoreJSONPathPrefix(k.Path, req.GroupBy, i), Value: k.Value}
 		}
 		bucket := GroupedStatsBucket{
 			GroupKey: keys,
