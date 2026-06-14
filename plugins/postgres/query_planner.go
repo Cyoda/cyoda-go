@@ -217,6 +217,20 @@ func jsonbExtractText(root, path string) string {
 	return b.String()
 }
 
+// jsonbExtractJSONB returns a SQL expression that extracts the dotted path
+// as JSONB (NOT text) from a JSONB root expression — every segment uses ->.
+// Used to feed jsonb_typeof for D4 non-scalar coercion in grouped-stats
+// group-key expressions; jsonb_typeof needs a jsonb input, not text.
+func jsonbExtractJSONB(root, path string) string {
+	segments := strings.Split(path, ".")
+	var b strings.Builder
+	b.WriteString(root)
+	for _, seg := range segments {
+		fmt.Fprintf(&b, "->'%s'", seg)
+	}
+	return b.String()
+}
+
 // isNumericValue reports whether v is a Go numeric type (int*/uint*/float*).
 // Numeric values use cyoda_try_float8 + ::float8 for safe overflow-free
 // comparisons; non-numeric values use lexicographic text comparison.

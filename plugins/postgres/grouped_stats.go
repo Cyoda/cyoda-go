@@ -403,7 +403,20 @@ func groupExprToSQL(g spi.GroupExpr) (string, string, error) {
 		if err := validateJSONPath(g.Path); err != nil {
 			return "", "", err
 		}
-		return jsonbExtractText("doc", g.Path), g.Path, nil
+		// D4: a runtime object/array at a scalar JSONPath MUST coerce to
+		// null so it merges with explicit-null/missing buckets, matching
+		// the streaming-tally path (gjson.JSON → nil in
+		// buildGroupKeyFromEntity). Without this guard, postgres's
+		// doc->>'tag' returns the JSON text of an object/array verbatim
+		// and produces distinct buckets per object content.
+		//
+		// The same wrapped expression goes into both the SELECT (with
+		// `AS gk_N`) and the GROUP BY clause — caller relies on that
+		// identity, see groupExprs reuse in GroupedAggregate.
+		textExpr := jsonbExtractText("doc", g.Path)
+		typeExpr := jsonbExtractJSONB("doc", g.Path)
+		expr := fmt.Sprintf("CASE WHEN jsonb_typeof(%s) IN ('object','array') THEN NULL ELSE %s END", typeExpr, textExpr)
+		return expr, g.Path, nil
 	default:
 		return "", "", fmt.Errorf("%w: unknown kind %d", ErrInvalidGroupExpr, g.Kind)
 	}

@@ -650,33 +650,33 @@ func RunParityGroupedStats_NonNumericSkipped(t *testing.T, fixture BackendFixtur
 
 // --- Scenario 9 — missing path coerces to null group-key ---
 
-// RunParityGroupedStats_NonScalarCoercesToNull groups by a path that
-// is absent on every entity. Per spec D4 a missing path resolves to
-// nil in the group-key — every backend produces a single bucket with
-// (path, nil) accumulating all entities.
+// RunParityGroupedStats_NonScalarCoercesToNull asserts both arms of
+// spec D4's non-scalar coercion rule:
 //
-// NOTE: the original §7 matrix row "runtime non-scalar coerces to null"
-// is split into two operational paths in cyoda-go's implementation:
+//  1. Missing-path: an absent $.meta resolves to a single null bucket.
+//  2. Runtime-object: when $.meta is present but holds an object/array,
+//     the group-key MUST still resolve to null so it merges with the
+//     missing-path bucket. The streaming-tally path achieves this via
+//     gjson.JSON → nil in buildGroupKeyFromEntity; the native pushdown
+//     path achieves it via the CASE WHEN jsonb_typeof / json_type
+//     wrapper in each plugin's groupExprToSQL.
 //
-//   - streaming-tally path (memory; sqlite stdev-fallback; postgres
-//     in-tx) — gjson.JSON values coerce to nil per service.go
-//     buildGroupKeyFromEntity, so an object-typed runtime value DOES
-//     fold into the null bucket.
-//   - native pushdown path (sqlite/postgres GROUP BY) — the underlying
-//     SQL operator (sqlite json_extract, postgres ->>) returns the
-//     JSON text representation of an object/array rather than NULL.
-//     The D4 coercion is therefore not honoured on the pushdown path
-//     until the plugin's GROUP BY expression is wrapped with a
-//     CASE WHEN jsonb_typeof(...) IN ('object','array') THEN NULL ...
-//     guard. That fix lives at the plugin level and is beyond the
-//     scope of the parity-suite task (Task 16); this scenario pins
-//     only the missing-path branch, which is correctly handled on
-//     every backend today.
+// Mixed corpus design constraint: the model schema infers a single
+// DataType per JSONPath at import time (see internal/domain/model/schema)
+// and locks it. Once $.meta is an object in the imported sample doc, a
+// subsequent entity submitting $.meta as a scalar fails validation with
+// INCOMPATIBLE_TYPE. We cannot therefore submit (string-alpha,
+// string-beta, object-gamma) at the same path through the HTTP API.
 //
-// This deviation is called out in the Task 16 report's "Concerns"
-// section. When the plugins gain the D4 CASE WHEN wrappers, this
-// scenario should be extended to also include object-typed entities
-// and assert they merge into the same null bucket.
+// Instead, the scenario submits a mix of:
+//   - 2 entities OMITTING $.meta (exercises the missing-path arm)
+//   - 3 entities WITH distinct object values at $.meta (exercises the
+//     runtime-object arm — pre-fix this produced 3 distinct buckets
+//     keyed by the object's JSON text on the pushdown path; post-fix
+//     all 3 fold into the missing-path null bucket)
+//
+// The single null bucket therefore has count=5 when both arms of D4
+// hold across all backends.
 func RunParityGroupedStats_NonScalarCoercesToNull(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -685,13 +685,16 @@ func RunParityGroupedStats_NonScalarCoercesToNull(t *testing.T, fixture BackendF
 	const modelVersion = 1
 	setupStatsModel(t, c, modelName, modelVersion)
 
-	// All 3 entities omit $.meta entirely. The service layer's gjson
-	// lookup returns !Exists, which coerces to nil identically across
-	// every backend regardless of pushdown vs streaming dispatch.
 	bodies := []string{
+		// Missing-path arm (gjson !Exists → nil; SQL NULL extraction).
 		`{"variantId":"v1"}`,
 		`{"variantId":"v1"}`,
-		`{"variantId":"v1"}`,
+		// Runtime-object arm (D4 coerces object → nil regardless of
+		// content; without the D4 wrappers the pushdown path would
+		// produce 3 distinct buckets keyed by the object's JSON text).
+		`{"variantId":"v1","meta":{"source":"alpha"}}`,
+		`{"variantId":"v1","meta":{"source":"beta"}}`,
+		`{"variantId":"v1","meta":{"source":"gamma"}}`,
 	}
 	for _, b := range bodies {
 		if _, err := c.CreateEntity(t, modelName, modelVersion, b); err != nil {
@@ -708,8 +711,8 @@ func RunParityGroupedStats_NonScalarCoercesToNull(t *testing.T, fixture BackendF
 	if len(buckets) != 1 {
 		t.Fatalf("expected 1 null bucket, got %d: %+v", len(buckets), buckets)
 	}
-	if b := findBucketByGroupKey(buckets, []client.GroupKeyEntry{{Path: "$.meta", Value: nil}}); b == nil || b.Count != 3 {
-		t.Errorf("null bucket (missing-path coerced): got %+v, want count=3", b)
+	if b := findBucketByGroupKey(buckets, []client.GroupKeyEntry{{Path: "$.meta", Value: nil}}); b == nil || b.Count != 5 {
+		t.Errorf("null bucket (missing + object both coerce): got %+v, want count=5", b)
 	}
 }
 

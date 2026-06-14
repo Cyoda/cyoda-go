@@ -354,7 +354,26 @@ func groupExprToSQL(g spi.GroupExpr) (string, string, error) {
 		if err := validateJSONPath(g.Path); err != nil {
 			return "", "", err
 		}
-		return fmt.Sprintf("json_extract(data, '$.%s')", g.Path), g.Path, nil
+		// D4: a runtime object/array at a scalar JSONPath MUST coerce to
+		// null so it merges with explicit-null/missing buckets, matching
+		// the streaming-tally path (gjson.JSON → nil in
+		// buildGroupKeyFromEntity). Without this guard, sqlite's
+		// json_extract returns the JSON text '{"k":"v"}' / '[1,2,3]'
+		// verbatim and produces distinct buckets per object content.
+		//
+		// The same wrapped expression goes into both the SELECT (with
+		// `AS gk_N`) and the GROUP BY clause — caller relies on that
+		// identity, see groupExprs reuse in GroupedAggregate.
+		//
+		// Use the two-arg form `json_type(data, '$.path')` rather than
+		// `json_type(json_extract(...))` — json_type on a scalar string
+		// raises "malformed JSON" because the extracted scalar is no
+		// longer JSON-formatted, but the path form returns the type of
+		// the value at the path directly.
+		extract := fmt.Sprintf("json_extract(data, '$.%s')", g.Path)
+		typeCheck := fmt.Sprintf("json_type(data, '$.%s')", g.Path)
+		expr := fmt.Sprintf("CASE WHEN %s IN ('object','array') THEN NULL ELSE %s END", typeCheck, extract)
+		return expr, g.Path, nil
 	default:
 		return "", "", fmt.Errorf("%w: unknown kind %d", ErrInvalidGroupExpr, g.Kind)
 	}

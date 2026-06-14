@@ -499,6 +499,133 @@ func TestPostgresGroupedAggregate_MissingStateBucketsAsNil(t *testing.T) {
 	}
 }
 
+// TestPostgresGroupedAggregate_NonScalarCoercesToNull pins the D4 fix on
+// the native SQL pushdown path: when the runtime value at a scalar
+// JSONPath is actually an object or array, the group-key MUST coerce to
+// nil so it merges with explicit-null/missing buckets — matching the
+// streaming-tally path's gjson.JSON → nil behaviour.
+//
+// Pre-fix, doc->>'tag' on an object returns the JSON text '{"x":"gamma"}'
+// as a string, producing distinct buckets per object content. Post-fix,
+// the SELECT/GROUP BY wraps the extraction with a jsonb_typeof check that
+// returns NULL for object/array values.
+func TestPostgresGroupedAggregate_NonScalarCoercesToNull(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"tag": "alpha"})
+	gsSave(t, ctx, store, "b", "available", map[string]any{"tag": "beta"})
+	gsSave(t, ctx, store, "c", "available", map[string]any{"tag": map[string]any{"x": "gamma"}})
+	gsSave(t, ctx, store, "d", "available", map[string]any{"tag": map[string]any{"x": "delta"}})
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "tag"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != 3 {
+		t.Fatalf("got %d buckets, want 3 (alpha / beta / null): %+v", len(res), res)
+	}
+	counts := map[string]int64{}
+	var nullCount int64
+	for _, b := range res {
+		v := b.GroupKey[0].Value
+		if v == nil {
+			nullCount = b.Count
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			t.Errorf("non-null bucket value is %T (%v), want string", v, v)
+			continue
+		}
+		counts[s] = b.Count
+	}
+	if counts["alpha"] != 1 {
+		t.Errorf("alpha count = %d, want 1", counts["alpha"])
+	}
+	if counts["beta"] != 1 {
+		t.Errorf("beta count = %d, want 1", counts["beta"])
+	}
+	if nullCount != 2 {
+		t.Errorf("null bucket count = %d, want 2 (both objects coerce to nil)", nullCount)
+	}
+}
+
+// TestPostgresGroupedAggregate_NonScalarArrayCoercesToNull mirrors the
+// object case for arrays — both jsonb_typeof shapes ('object', 'array')
+// must coerce to nil per D4.
+func TestPostgresGroupedAggregate_NonScalarArrayCoercesToNull(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"tag": "alpha"})
+	gsSave(t, ctx, store, "b", "available", map[string]any{"tag": []any{1, 2, 3}})
+	gsSave(t, ctx, store, "c", "available", map[string]any{"tag": []any{"x", "y"}})
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "tag"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("got %d buckets, want 2 (alpha / null): %+v", len(res), res)
+	}
+	var nullCount, alphaCount int64
+	for _, b := range res {
+		if b.GroupKey[0].Value == nil {
+			nullCount = b.Count
+		} else if s, _ := b.GroupKey[0].Value.(string); s == "alpha" {
+			alphaCount = b.Count
+		}
+	}
+	if alphaCount != 1 {
+		t.Errorf("alpha count = %d, want 1", alphaCount)
+	}
+	if nullCount != 2 {
+		t.Errorf("null count = %d, want 2 (both arrays coerce to nil)", nullCount)
+	}
+}
+
+// TestPostgresGroupedAggregate_NonScalarNestedPathCoercesToNull verifies
+// the fix wraps the leaf extraction in nested-path group expressions too.
+func TestPostgresGroupedAggregate_NonScalarNestedPathCoercesToNull(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"parent": map[string]any{"child": "alpha"}})
+	gsSave(t, ctx, store, "b", "available", map[string]any{"parent": map[string]any{"child": map[string]any{"deeper": "x"}}})
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "parent.child"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("got %d buckets, want 2 (alpha / null): %+v", len(res), res)
+	}
+	var nullCount, alphaCount int64
+	for _, b := range res {
+		if b.GroupKey[0].Value == nil {
+			nullCount = b.Count
+		} else if s, _ := b.GroupKey[0].Value.(string); s == "alpha" {
+			alphaCount = b.Count
+		}
+	}
+	if alphaCount != 1 {
+		t.Errorf("alpha count = %d, want 1", alphaCount)
+	}
+	if nullCount != 1 {
+		t.Errorf("null count = %d, want 1 (object at nested path coerces to nil)", nullCount)
+	}
+}
+
 func TestPostgresGroupedAggregate_StateIdxUsed(t *testing.T) {
 	factory, store, ctx := gsNewStore(t)
 	for i := 0; i < 50; i++ {
