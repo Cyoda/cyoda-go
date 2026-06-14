@@ -36,20 +36,20 @@ Each entry is the option chosen and the rationale in one line.
 | D5 | `groupBy` accepts scalar JSONPaths only. Array projection → 400. Bracket-quoted property access normalized to dotted form. | Array fan-out is a follow-up. |
 | D6 | Add two new SPI capabilities: `Iterable` (filter-aware streaming) and `GroupedAggregator` (native GROUP BY pushdown). Both optional via type assertion. Backend implementing neither → 501 `NOT_IMPLEMENTED_BY_BACKEND`. | The streaming primitive exists because the cyoda-go service layer needs a fallback path for three cases: in-tx grouped-stats (where pushdown would miss buffered writes — D11); non-pushdownable conditions (where `ConditionToFilter` can't represent the user's `Condition` — D15); and sqlite stdev (where the SQL formula is numerically unsafe — D9). Filter-aware so the fallback path doesn't full-scan when the condition is narrowing (D14). `GroupedAggregator` exists because SQL backends can answer the whole query in one roundtrip. |
 | D7 | Path: `POST /api/entity/stats/{entityName}/{modelVersion}/query`. | More RESTful — model is the resource, `query` is the action. |
-| D8 | Aggregations Tier 1+2 in v1: `sum`, `avg`, `min`, `max`, `stdev`. Sample stdev (n−1 denominator); v1 op name is `stdev`. Mode/median deferred. | Tier 1+2 marginal cost is low; mode/median introduce unbounded intermediate state. |
+| D8 | Aggregations in v1: **Tier 1** = `sum`, `avg`, `min`, `max` (uniform pushdown across SQL backends, no per-backend special cases). **Tier 2** = `stdev` (asymmetric per D9, D10 — pushed on postgres, streaming-tally on sqlite). Sample stdev (n−1 denominator); v1 op name is `stdev`. Mode/median deferred. | Tier 1+2 marginal cost is low; mode/median introduce unbounded intermediate state. |
 | D9 | Stdev numerical contract: Welford's online algorithm on streaming-tally. Postgres pushes `STDDEV_SAMP`. Sqlite returns `ErrAggregationNotPushdownable` for stdev. Parity tolerance: relative error ≤ 1e-9 between backends. `n < 2` → `null` on both paths. | Welford and `STDDEV_SAMP` are both numerically stable but not bit-identical. |
 | D10 | Stdev pushdown asymmetry handled by `ErrAggregationNotPushdownable`: a `GroupedAggregator` may decline a specific request shape, signalling fall-through to streaming-tally. | Coarse capability check; fine per-request opt-out. |
-| D11 | In-tx grouped-stats is **supported** via the streaming-tally path. Memory backend in-tx path overlays `tx.Buffer` and excludes `tx.Deletes` (RYW-correct, matching the actual `/search/*` precedent at `internal/domain/search/service.go:118-136`). Pushdown skipped when `spi.GetTransaction(ctx) != nil`. | RYW is what the precedent actually does. |
+| D11 | In-tx grouped-stats is **supported** via the streaming-tally path. Memory backend in-tx path overlays `tx.Buffer` and excludes `tx.Deletes`, matching the existing `GetAll` in-tx branch (`plugins/memory/entity_store.go:338-380`) that `/search/*` falls through to. Pushdown skipped when `spi.GetTransaction(ctx) != nil`. | RYW is what the memory plugin's tx-buffered reads already do. |
 | D12 | `groupKey` in responses is an ordered array of `{path, value}` pairs. | OpenAPI-typeable; friendly for typed clients; preserves request order. |
 | D13 | Target v0.8.0. cyoda-go-spi v0.8.0 tag not yet published; additive SPI changes fold alongside #16. | v0.8.0 is not feature-frozen. |
 | D14 | `Iterable.Iterate(model, filter, opts)` takes a Filter parameter. Iterator yields entities matching the filter; plugins push what they can and apply residual inside `Next()`. | Without it, the streaming-tally path full-scans regardless of how narrow the condition is. |
 | D15 | When `search.ConditionToFilter` errors (function conditions, future operators not yet translated), the service passes a zero-value `Filter` to `Iterate` and re-applies `match.Match` per yielded entity. Otherwise the iterator's yielded set is authoritative. | One source of truth per pluggable surface. |
 | D16 | Postgres gets a new Filter→SQL translation layer as part of this change. Greedy AND / conservative OR, JSONB ops. Reusable substrate for a future postgres `Searcher`; that work is out of scope here. | Postgres has no `Searcher` today; without this layer, postgres `Iterate` would be filter-blind. |
 | D17 | Cardinality detection via `LIMIT MaxBuckets+1` without `ORDER BY` is correct. SQL `LIMIT N` returns `min(actual, N)` rows; rowcount == `MaxBuckets+1` ⇔ actual cardinality > `MaxBuckets`. Adding `ORDER BY` would force a full sort over the group set for no contract benefit. | Verified against postgres planner semantics. |
-| D18 | `buildGroupKey` encoding: length-prefixed byte concatenation — `len(v_0)|v_0|len(v_1)|v_1|…`. Used as a Go `string` map key. | Prevents collision under naive `strings.Join`. |
+| D18 | `buildGroupKey` encoding for the accumulator map: per entry, a sentinel byte (`0x00` = `null`, `0x01` = string value) followed by an 8-byte big-endian length prefix (only present when sentinel is `0x01`) followed by the raw value bytes. Concatenation across entries. Used as a Go `string` map key (Go strings carry arbitrary bytes). The sentinel distinguishes `null` from an empty string (the empty-string case is `0x01` + 8 zero bytes); the fixed-width length encoding avoids varint-vs-payload-byte collisions. This is purely the internal map key. Response sort and serialization use the public `[]GroupKeyEntry` (D12). | Length-prefix concatenation with naive `strings.Join` would collide (`["a|b","c"]` vs `["a","b|c"]`); varint length prefixes would collide with payload bytes; null vs empty string would collide under length-only encoding. The chosen scheme is genuinely injective. |
 | D19 | Ship one canonical postgres expression index in this PR: partial `(tenant_id, model_name, model_version, (doc->'_meta'->>'state'))` `WHERE NOT deleted`. Data-field indexes are caller responsibility. | State-based grouping/filtering is the SIOMS driving case. |
-| D20 | Memory snapshot is `[]*entityVersion` pointers (8 bytes per matching entity). Relies on the invariant that `entityVersion` fields are immutable post-publish; this PR documents the invariant in `entityVersion`'s godoc. | 1 GB vs 80 MB per-request memory at 10M entities × 100-byte payloads. |
-| D21 | Postgres `cyoda_try_float8(text)` ships as `LANGUAGE sql IMMUTABLE PARALLEL SAFE` with regex CASE WHEN + `NULLIF` on Infinity. No PL/pgSQL EXCEPTION block. | PL/pgSQL EXCEPTION opens a subtransaction per row — ~30M subtransactions on a 10M-row × 3-aggregation scan. |
+| D20 | Memory snapshot is `[]*spi.Entity` — specifically, the `entity` field of each matching `entityVersion`. 8 bytes per matching entity. `*spi.Entity` is heap-allocated (assigned by `saveUnlocked`) so the pointer is stable regardless of subsequent appends to the per-entity `[]entityVersion` slice. This PR also documents the related immutability invariant on `entityVersion` for any future code that does work with `*entityVersion` directly. | 1 GB vs 80 MB per-request memory at 10M entities × 100-byte payloads. Using `*spi.Entity` directly side-steps the slice-realloc question — even though current `entityVersion` semantics would survive realloc (old slot kept live by GC), the deeper pointer is unambiguously safe. |
+| D21 | Postgres `cyoda_try_float8(text)` ships as `LANGUAGE sql IMMUTABLE PARALLEL SAFE` with regex CASE WHEN + `NULLIF` on Infinity. Regex uses `\A` / `\Z` string-anchors (not `^` / `$`) so trailing newline / carriage-return doesn't sneak past. No PL/pgSQL EXCEPTION block. | PL/pgSQL EXCEPTION opens a subtransaction per row — ~30M subtransactions on a 10M-row × 3-aggregation scan. `^`/`$` in POSIX ARE can match before a final newline, breaking strict-numeric expectation. |
 | D22 | **Cassandra implementation is not prescribed by this spec.** The SPI surface is designed for cyoda-go-internal reasons (D6); cassandra implements it on its own schedule, with its own design choices, tracked in a follow-up issue in `cyoda-go-cassandra`. cyoda-go ships with the standard capability check: a backend implementing neither `Iterable` nor `GroupedAggregator` returns 501. | Cross-repo separation of concerns: cyoda-go defines the contract; each plugin team owns its implementation. |
 
 ## 3. API surface
@@ -182,9 +182,12 @@ for iter.Next() {
        !match.Match(req.Condition, e.Data, e.Meta) {
         continue
     }
-    k := buildGroupKey(req.GroupBy, e)
-    // Trip on the (MaxBuckets+1)th distinct key. SQL pushes LIMIT MaxBuckets+1
-    // for the same overflow detection.
+    k := buildGroupKey(req.GroupBy, e)  // internal map key per D18; the public
+                                        // GroupKey []GroupKeyEntry is built at
+                                        // materialize() time for the response (D12)
+    // Trip on the (MaxBuckets+1)th distinct key. SQL `LIMIT MaxBuckets+1` and
+    // this in-process check are different mechanisms detecting the same
+    // condition: distinct buckets > MaxBuckets.
     if !acc.has(k) && acc.len() >= maxGroupCardinality {
         return nil, ErrGroupCardinalityExceeded
     }
@@ -197,13 +200,15 @@ return s.postProcess(acc.materialize(), req), nil
 Welford recurrence per numeric sample x in a bucket:
 
 ```
-n      += 1
+n      += 1      // int64; effectively unbounded for our scale
 delta   = x - mean
-mean   += delta / n
-delta2  = x - mean                 // post-update
-m2     += delta * delta2
+mean   += delta / n           // float64
+delta2  = x - mean            // post-update
+m2     += delta * delta2      // float64
 // stdev_samp = sqrt(m2 / (n - 1))  (when n >= 2; n < 2 → null)
 ```
+
+`n` as `int64` covers any plausible bucket size. `mean` and `m2` as `float64` are stable for the variance regimes Welford was designed for — including the low-variance/high-mean valuation case where the alternative one-pass formula loses precision.
 
 Post-processing: heap top-N when `Limit > 0 && Limit < len(buckets)/2`; otherwise full sort. Backend-independent observable ordering.
 
@@ -327,11 +332,11 @@ The three plugins shipped in this repository — memory, sqlite, and postgres �
 **The naive approach is wrong.** Holding the read lock for the duration of the iteration would block every writer until the grouped-stats request completes. That's tolerable for a thousand-entity model and unacceptable for ten million. So we do *snapshot-then-iterate*:
 
 1. Acquire the read lock.
-2. Walk the tenant's entity map once, appending a pointer (`*entityVersion`) to a slice for every version that matches the requested model, isn't deleted, and is visible at the requested point-in-time.
+2. Walk the tenant's entity map once. For every version that matches the requested model, isn't deleted, and is visible at the requested point-in-time, append `version.entity` — which is `*spi.Entity`, heap-allocated by `saveUnlocked` — to a snapshot slice.
 3. Release the read lock.
 4. Hand the slice to the iterator. It walks lock-free.
 
-This works because **version records in the memory plugin are immutable once published.** Saving a new version appends to the per-entity version slice; the old version's bytes are never overwritten. So a slice of `*entityVersion` pointers stays valid for as long as we hold it: the bytes those pointers address are no longer reachable from the live map after some operations, but no one mutates them either. This PR adds explicit godoc on `entityVersion` documenting the invariant and a one-line comment in `saveUnlocked` reminding future maintainers (D20).
+Snapshotting `*spi.Entity` (the entity payload pointer) rather than `*entityVersion` (a pointer into the per-entity slice's backing array) sidesteps the question of slice realloc on subsequent `Save` calls. `*spi.Entity` is unambiguously stable — the pointed-at struct lives on the heap from the moment it was assigned, kept alive by the GC as long as we hold the pointer. The 8-bytes-per-entity cost is identical either way. The related invariant — `entityVersion` fields are immutable once published, so even consumers that do hold `*entityVersion` pointers wouldn't observe a torn read — is documented in `entityVersion`'s godoc as part of this PR (D20).
 
 **Memory cost.** The snapshot is one pointer per matching entity — 8 bytes each. For a 10-million-entity model, that's 80 MB of pointer slice during the request. The alternative (deep-copying entity payloads on capture) would be 10–100× larger.
 
@@ -341,7 +346,7 @@ For the native `GroupedAggregator` path — which memory also implements — we 
 
 **In a transaction.** Suppose a caller is mid-transaction, has called `Save` on a few new entities (their changes sit in `tx.Buffer` uncommitted), called `Delete` on others (their IDs sit in `tx.Deletes`), and then calls grouped-stats. They expect to see their own writes. This is the read-your-writes property.
 
-The memory plugin's existing `GetAll` already handles this in the `/search/*` fall-through path: it builds the base set, overlays `tx.Buffer`, and removes anything in `tx.Deletes`. Our `Iterate` in-tx implementation does the same — capture the base snapshot under the read lock, then apply the tx buffer overlay and delete-mask before constructing the lock-free iterator. Outside a transaction (the common case), none of the overlay work runs.
+The memory plugin's existing `GetAll` already handles this in its in-tx branch (`plugins/memory/entity_store.go:338-380`): it builds the base set under the read lock, overlays `tx.Buffer`, and removes anything in `tx.Deletes`. (The `/search/*` service falls through to `GetAll` when a tx is active, so this is the precedent the search endpoint already relies on — the overlay logic lives in the plugin, not in the search service dispatch.) Our `Iterate` in-tx implementation does the same — capture the base snapshot under the read lock, then apply the tx buffer overlay and delete-mask before constructing the lock-free iterator. Outside a transaction (the common case), none of the overlay work runs.
 
 The native `GroupedAggregator` path is **skipped inside a transaction** — service-layer dispatch checks `spi.GetTransaction(ctx) != nil` and routes straight to `Iterate`. This matches the actual `/search/*` precedent (`internal/domain/search/service.go:118-136`) and avoids the awkward problem of pretending an aggregation can be answered without observing the buffered writes.
 
@@ -400,7 +405,7 @@ The Go-side residual eval is the same shape `/search/*` uses today.
 
 The full-table-scan question. SQLite uses indexes when they exist and the planner picks them. The shipped schema already has indexes on `(tenant_id, model_name, model_version)` covering the WHERE-clause prefix. For hot grouping dimensions (`variantId`, etc.), callers add `CREATE INDEX entities_variantid_idx ON entities (json_extract(data, '$.variantId'))`; documented in the help topic with recipes.
 
-**In a transaction.** Inside a tx, the service layer skips the `GroupedAggregator` path and routes the call to `Iterate`. The sqlite plugin's `Iterate` selects from the `entity_versions` snapshot table with `submit_time <= tx.SnapshotTime` — the same bi-temporal pattern that the existing sqlite read paths use for transactional reads. This makes pointInTime queries work for free (the same SQL handles both): pointInTime stats select from `entity_versions WHERE submit_time <= ?`, and in-tx stats use the same query with the tx's snapshot time.
+**In a transaction.** Inside a tx, the service layer skips the `GroupedAggregator` path and routes the call to `Iterate`. The sqlite plugin's `Iterate` selects from the `entity_versions` snapshot table with `submit_time <= tx.SnapshotTime` — the same column the existing sqlite read paths use (`plugins/sqlite/entity_store.go:386` and friends). (Postgres uses a different column name — `valid_time` — in its bi-temporal table; both follow the same "snapshot at or before this instant" pattern.) This makes pointInTime queries work for free: pointInTime stats select from `entity_versions WHERE submit_time <= ?`, and in-tx stats use the same query with the tx's snapshot time.
 
 ### 6.3 Postgres plugin
 
@@ -465,9 +470,13 @@ State queries now hit the index. Data-field expression indexes (`(doc->>'variant
 
 **Memory efficiency.** SQL pushdown returns at most `MaxBuckets + 1` rows. `Iterate` uses pgx's `Rows` cursor with row-at-a-time fetch inside `Next()`. The accumulator map is bounded by `MaxBuckets`. As with sqlite, the application never holds more than one batch of rows plus the accumulator.
 
+**Snapshot semantics outside a transaction.** A non-tx pushdown query is a single statement against `entities`. Postgres runs it under one MVCC snapshot (autocommit's implicit single-statement snapshot), so the response reflects a consistent view as of statement start. Concurrent commits during the query don't bleed in. For callers who need an explicit transactional snapshot across multiple grouped-stats calls, opening a `REPEATABLE READ` transaction wraps them in one — but that path also triggers the in-tx route below.
+
 **In a transaction.** Inside a tx, the service layer skips the `GroupedAggregator` path and routes to `Iterate`. The postgres plugin's `Iterate` reads from the bi-temporal `entity_versions` table with `valid_time <= tx.SnapshotTime AND transaction_time <= CURRENT_TIMESTAMP` — the same pattern `GetAsAt` already uses. One critical addition: postgres marks deletions by inserting a new version row with `_meta.deleted = true` (rather than physically removing the row). So the pointInTime path adds `AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE` to exclude deletion-marker versions. Without that filter, point-in-time stats would count entities that were already deleted at the requested instant. (This was an explicit bug caught and fixed during review iteration 3.)
 
 The pointInTime SQL is the same shape for non-tx callers passing `pointInTime` and in-tx callers using the tx's snapshot time — different `tx.SnapshotTime` source, identical SQL pattern.
+
+**Index caveat for the in-tx path.** The new `entities_state_idx` (D19) is a partial expression index on the `entities` table (`WHERE NOT deleted`). The in-tx and pointInTime paths read from `entity_versions` instead. So the canonical state index accelerates only the non-tx pushdown path — the bulk of grouped-stats traffic, but not literally every request. The help topic documents this so an operator chasing in-tx perf doesn't assume the index covers them.
 
 ### 6.4 Other backends
 
@@ -507,7 +516,8 @@ Parity tests describe SPI-contract behavior — what any backend implementing `I
 | identical `(op, field)` aggregation pair (no `as`) | silently deduped |
 | distinct `(op, field)` pair colliding on explicit `as` | 400 `DUPLICATE_AGGREGATION_ALIAS` |
 | `limit > CYODA_STATS_GROUP_MAX` | 400 `INVALID_LIMIT` |
-| **filter pushdown observable — every backend** | narrow predicate → iterator yields ≈ matching, not model size (via counting wrapper in parity harness) |
+| **filter pushdown observable — streaming path, every backend** | narrow predicate → iterator yields ≈ matching, not model size (via counting wrapper in parity harness) |
+| **filter pushdown observable — native path, every backend with `GroupedAggregator`** | narrow predicate → SQL query log / EXPLAIN asserts the pushed `WHERE` clause; postgres `entities_state_idx` is selected for state-equality predicates |
 | non-pushdownable condition (function condition) | iterator gets match-all; service applies `match.Match`; result identical to pushdown path |
 | partial pushdown (residual filter) | iterators yield rows matching pushable part; iterator's `Next()` applies residual before yielding |
 | cardinality detection determinism | overflowing request consistently returns 422 |
@@ -516,9 +526,7 @@ Parity tests describe SPI-contract behavior — what any backend implementing `I
 | tenant isolation | tenant A's request on a model also-owned-by tenant B sees only tenant A buckets |
 | SQL-injection surface — groupBy path | `'`, `;`, `--`, `\\`, `\n`, NUL → 400 |
 | SQL-injection surface — aggregation field | same surface, same validator, same 400 |
-| iterator contract — `Err()` sticky | inject transient driver error mid-stream; `Err()` returns it; `Next()` stays false; no retry |
-| iterator contract — `Close()` idempotent | double `Close()` returns safely |
-| iterator contract — ctx cancellation observed | cancel ctx mid-stream; `Next()` returns false; `Err()` is ctx error or driver-wrapped |
+| iterator contract per §5 verified per backend | sticky `Err()` under injected transient driver error, idempotent `Close()`, ctx cancellation observed and surfaced via `Err()` |
 | `buildGroupKey` collision-free | adversarial inputs produce distinct keys (D18) |
 | concurrent writes + grouped-stats reads | snapshot consistency: stats result reflects the snapshot taken at request entry; writers do not block on the iterator |
 
@@ -546,7 +554,7 @@ Updates to the search/stats help topic:
 - Cardinality ceiling, `limit` upper bound, env var.
 - JSONPath scalar-only restriction and rationale.
 - Aggregation operators, sample-stdev semantics, `n<2` → null boundary.
-- Postgres: state grouping/filtering is index-backed out of the box (`entities_state_idx`); for hot data-field dimensions, callers add `CREATE INDEX ... ON entities ((doc->>'variantId'))`.
+- Postgres: state grouping/filtering on the non-tx pushdown path is index-backed out of the box (`entities_state_idx` on the `entities` table). In-tx and pointInTime paths read from `entity_versions` and aren't covered by this index; for those paths, callers add their own expression indexes if perf demands. For hot data-field dimensions on the non-tx path, callers add `CREATE INDEX ... ON entities ((doc->>'variantId'))`.
 - Sqlite: `CREATE INDEX` recipes for hot dimensions on the JSON path.
 - Memory: snapshot cost is `O(tenant entities)`, not `O(model entities)`.
 - In-tx behavior (routes through streaming-tally; RYW-correct on memory; pushdown skipped on sqlite/postgres).
@@ -570,14 +578,15 @@ Strict count + Tier 1+2 in v1. Surfaces left open: `having`, `mode`/`median` (ea
 
 2. **cyoda-go-spi v0.8.0 tag** — once SPI scope settles. Adding both new interfaces is type-assertion-only; any plugin can pin v0.8.0 SPI without implementing either.
 
-3. **cyoda-go PR series on `release/v0.8.0`**:
+3. **cyoda-go PR series on `release/v0.8.0`** — realistically 6–10 PRs, broken into reviewable units. Each bullet below is at least one PR; the larger ones (plugin implementations, conformance tests) may split further at writing-plans time:
    - SPI pin bump (one isolated commit).
    - Handler + DTO + validation.
-   - `internal/match.MatchFilter` + service-layer dispatch + accumulators (Welford) + post-processing.
-   - Postgres Filter→SQL translator (`plugins/postgres/query_planner.go`). Discrete PR — independently reviewable substrate.
-   - Postgres `cyoda_try_float8` + `entities_state_idx` migrations. Discrete PR — schema changes get their own review.
-   - Plugin implementations (memory + `entityVersion` immutability godoc, sqlite, postgres).
-   - Conformance and parity tests (§7).
+   - `internal/match.MatchFilter`.
+   - Service-layer dispatch + accumulators (Welford) + post-processing.
+   - Postgres Filter→SQL translator (`plugins/postgres/query_planner.go`) — discrete PR; independently reviewable substrate.
+   - Postgres `cyoda_try_float8` + `entities_state_idx` migrations — discrete PR; schema changes get their own review.
+   - Plugin implementations (memory + `entityVersion` immutability godoc; sqlite; postgres) — likely one PR per plugin.
+   - Conformance and parity tests (§7) — may split across plugins.
    - E2E test.
    - OpenAPI + help + config + COMPATIBILITY.
 
