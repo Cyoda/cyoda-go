@@ -2,6 +2,7 @@ package entity
 
 import (
 	"math"
+	"math/rand"
 	"testing"
 )
 
@@ -52,4 +53,43 @@ func TestAccumulator_StdevNBelow2IsNil(t *testing.T) {
 	if _, ok := a.result(); ok {
 		t.Fatalf("n=1 should not produce a stdev result")
 	}
+}
+
+// TestAccumulator_WelfordStability_OneMillionSamples verifies that the
+// Welford recurrence remains numerically stable at 1M samples. Existing
+// unit tests pin small-N parity (5 samples vs hand-computed reference);
+// the cross-backend parity test pins Welford ↔ STDDEV_SAMP at small
+// scale. This scale test complements both by pinning the in-process
+// accumulator at production-scale sample counts: 1M draws from N(50, 4)
+// must converge to stdev=2.0 within statistical noise.
+//
+// Tolerance: 5e-3 relative error is ~5σ on the sample-stdev estimator at
+// this N — generous to avoid flakes, tight enough to catch a regression
+// where the Welford update grows catastrophic cancellation. The seed is
+// pinned so the test is deterministic.
+func TestAccumulator_WelfordStability_OneMillionSamples(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scale test; -short skips")
+	}
+	a := newAccumulator(AggregationExprValidated{Op: AggStdev, Field: "x", Alias: "s"})
+	const (
+		n        = 1_000_000
+		wantMean = 50.0
+		wantStd  = 2.0
+		seed     = int64(20260614)
+	)
+	rng := rand.New(rand.NewSource(seed))
+	for i := 0; i < n; i++ {
+		x := rng.NormFloat64()*wantStd + wantMean
+		a.observeFloat(x)
+	}
+	got, ok := a.result()
+	if !ok {
+		t.Fatalf("expected ok result")
+	}
+	relErr := math.Abs(got-wantStd) / wantStd
+	if relErr > 0.005 {
+		t.Fatalf("stdev=%.6f want %.4f (rel err %.4e > 5e-3)", got, wantStd, relErr)
+	}
+	t.Logf("n=%d stdev=%.6f rel_err=%.4e", n, got, relErr)
 }

@@ -168,5 +168,12 @@ func normalizeScalarPath(s string) (string, error) {
 	if strings.ContainsAny(norm, "[]") {
 		return "", fmt.Errorf("array projection not supported: %s", s)
 	}
+	// A non-empty input that collapses to "" after bracket-stripping (e.g.
+	// "']" → "") is rejected — empty paths are not valid scalar paths.
+	// This keeps the entry-time empty check and normalization output
+	// consistent: any success-path output is itself a valid input.
+	if norm == "" {
+		return "", fmt.Errorf("path is empty after normalization: %s", s)
+	}
 	return norm, nil
 }

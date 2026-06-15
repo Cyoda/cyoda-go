@@ -21,6 +21,10 @@ func TestValidateGroupedStatsRequest(t *testing.T) {
 	}{
 		{"missing groupBy", entity.GroupedStatsRequest{}, 10000, "MISSING_GROUP_BY"},
 		{"empty entry", entity.GroupedStatsRequest{GroupBy: []string{""}}, 10000, "INVALID_GROUP_BY_PATH"},
+		// Inputs that bracket-strip down to "" must also be rejected. Pre-fix,
+		// normalizeScalarPath would silently return ("", nil) for "']", letting
+		// an empty path leak into the validated request. Surfaced by fuzzing.
+		{"bracket-strips to empty", entity.GroupedStatsRequest{GroupBy: []string{"']"}}, 10000, "INVALID_GROUP_BY_PATH"},
 		{"array projection", entity.GroupedStatsRequest{GroupBy: []string{"$.items[*]"}}, 10000, "INVALID_GROUP_BY_PATH"},
 		{"positional index", entity.GroupedStatsRequest{GroupBy: []string{"$.items[0]"}}, 10000, "INVALID_GROUP_BY_PATH"},
 		{"bracket scalar accepted",
