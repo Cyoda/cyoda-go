@@ -8945,6 +8945,19 @@ components:
           type: boolean
           description: Flag indicating if the workflow is active
         criterion:
+          description: |
+            Optional selection criterion evaluated against the entity to
+            decide which of several workflows applies. When a model has
+            multiple workflow definitions, the engine iterates them in
+            declaration order and picks the first one whose `active` flag
+            is true AND whose `criterion` matches the entity. A `null`
+            (absent) criterion matches unconditionally. If no active
+            workflow matches — and `active=false` workflows are skipped
+            entirely during selection — the engine falls back to the
+            embedded default workflow and emits both a body warning and
+            an operator-visible `slog.Warn` line. Workflow-level criteria
+            use the same Condition DSL as search and transition-level
+            criteria.
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
             - $ref: "#/components/schemas/FunctionConditionDto"
