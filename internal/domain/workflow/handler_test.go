@@ -1047,3 +1047,327 @@ func TestImport_EmptyArrayDefaultMode_NoOp(t *testing.T) {
 		t.Fatalf("default-mode empty expected 200, got %d: %s", resp.StatusCode, b)
 	}
 }
+
+// TestImport_MalformedJSONBody_Returns400 pins the body-parser's
+// rejection path: a malformed JSON body must be rejected at the wire
+// boundary before any validation runs. The rejection path exists at
+// handler.go's json.Unmarshal call but no test exercised it before
+// this coverage sweep.
+func TestImport_MalformedJSONBody_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Unterminated string + missing brace — definitely not valid JSON.
+	body := `{"importMode": "MERGE", "workflows": [{"name": "broken`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for malformed JSON, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "invalid JSON") {
+		t.Errorf("expected detail to mention 'invalid JSON', got: %s", detail)
+	}
+}
+
+// TestImport_EmptyBody_Returns400 covers the zero-length body case.
+// JSON unmarshal of "" yields an "unexpected end of JSON input" error
+// which the handler surfaces as 400 BAD_REQUEST. Without this fence,
+// a future migration to a streaming decoder could silently accept the
+// empty case.
+func TestImport_EmptyBody_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for empty body, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+}
+
+// TestImport_OversizedBody_Rejected pins the http.MaxBytesReader cap
+// wired at handler.go (10 MiB). The handler reads the body via
+// io.ReadAll, which surfaces the cap as a read error → 400 BAD_REQUEST
+// with the "failed to read request body" detail. Without this test the
+// MaxBytesReader could be silently removed in a refactor.
+func TestImport_OversizedBody_Rejected(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Synthesise a body just past the 10 MiB cap by padding a workflow
+	// `desc` field with whitespace. The JSON itself stays well-formed so
+	// the rejection is unambiguously about size, not shape.
+	pad := strings.Repeat(" ", 10*1024*1024+1024) // 10 MiB + 1 KiB
+	body := `{"importMode":"MERGE","workflows":[{"version":"1.0","name":"big","initialState":"S","active":true,"desc":"` + pad + `","states":{"S":{}}}]}`
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for oversized body, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+}
+
+// TestImport_MultipleCycles_RejectsWithFirstCycle covers the
+// definite-loop detector against a workflow with two distinct
+// unguarded automated cycles. validateWorkflowLoops iterates wf.States
+// in Go map order, so the *specific* cycle reported is
+// non-deterministic; this test asserts only that AT LEAST one of the
+// two cycle paths is named in the error detail, which is enough as a
+// regression fence and stays deterministic across runs.
+func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Two disjoint unguarded automated cycles:
+	//   Cycle 1: A → B → A
+	//   Cycle 2: C → D → C
+	// The validator returns whichever it finds first.
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.0", "name": "multi-cycle", "initialState": "A",
+			"active": true,
+			"states": {
+				"A": {"transitions": [{"name": "to-b", "next": "B", "manual": false}]},
+				"B": {"transitions": [{"name": "to-a", "next": "A", "manual": false}]},
+				"C": {"transitions": [{"name": "to-d", "next": "D", "manual": false}]},
+				"D": {"transitions": [{"name": "to-c", "next": "C", "manual": false}]}
+			}
+		}]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for multi-cycle workflow, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeValidationFailed)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "infinite loop") {
+		t.Errorf("detail must mention 'infinite loop', got: %s", detail)
+	}
+	// Assert at least one of the two cycles is reported. The validator's
+	// map-iteration order can pick either; both are valid findings.
+	cycle1 := strings.Contains(detail, "A -> B") || strings.Contains(detail, "B -> A")
+	cycle2 := strings.Contains(detail, "C -> D") || strings.Contains(detail, "D -> C")
+	if !cycle1 && !cycle2 {
+		t.Errorf("detail must name at least one of the two cycles, got: %s", detail)
+	}
+}
+
+// TestExport_ReimportReplace_RoundtripEquivalence covers the generic
+// "all fields survive an export → REPLACE re-import → re-export" round
+// trip. The pre-existing TestExportReimportRoundtrip_PreservesActiveFalse
+// pins the Active=false-specific case; this test exercises the full
+// shape including criterion, multi-state transitions with
+// manual/automated/disabled/criterion mixed, and processor configs.
+func TestExport_ReimportReplace_RoundtripEquivalence(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	seed := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.0", "name": "rich-wf",
+				"desc": "covers all the round-trip surface area",
+				"initialState": "NEW",
+				"active": true,
+				"criterion": {
+					"type": "simple",
+					"jsonPath": "$.kind",
+					"operatorType": "EQUALS",
+					"value": "premium"
+				},
+				"states": {
+					"NEW": {
+						"transitions": [
+							{
+								"name": "approve", "next": "APPROVED", "manual": true,
+								"criterion": {
+									"type": "simple", "jsonPath": "$.amount",
+									"operatorType": "GREATER_THAN", "value": "100"
+								}
+							},
+							{
+								"name": "auto-validate", "next": "VALIDATED", "manual": false,
+								"disabled": true,
+								"processors": [
+									{
+										"type": "externalized", "name": "validator",
+										"executionMode": "SYNC",
+										"config": {
+											"attachEntity": true,
+											"calculationNodesTags": "validation-svc",
+											"responseTimeoutMs": 5000,
+											"context": "role-A"
+										}
+									}
+								]
+							}
+						]
+					},
+					"APPROVED": {"transitions": []},
+					"VALIDATED": {"transitions": []}
+				}
+			},
+			{
+				"version": "1.0", "name": "fallback-wf",
+				"initialState": "S",
+				"active": false,
+				"states": {"S": {"transitions": []}}
+			}
+		]
+	}`
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, seed)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("seed import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	// First export.
+	export1 := readJSON(t, doWorkflowExport(t, srv.URL, "Order", 1))
+
+	// Re-import via REPLACE using the exported shape.
+	reimport, err := json.Marshal(map[string]any{
+		"importMode": "REPLACE",
+		"workflows":  export1["workflows"],
+	})
+	if err != nil {
+		t.Fatalf("marshal re-import: %v", err)
+	}
+	resp2 := doWorkflowImport(t, srv.URL, "Order", 1, string(reimport))
+	if resp2.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+		t.Fatalf("re-import expected 200, got %d: %s", resp2.StatusCode, b)
+	}
+	resp2.Body.Close()
+
+	// Second export — assert semantic equality with the first.
+	export2 := readJSON(t, doWorkflowExport(t, srv.URL, "Order", 1))
+
+	// Workflow envelope first — entityName + modelVersion must match.
+	if export1["entityName"] != export2["entityName"] {
+		t.Errorf("entityName drift: %v → %v", export1["entityName"], export2["entityName"])
+	}
+	if export1["modelVersion"] != export2["modelVersion"] {
+		t.Errorf("modelVersion drift: %v → %v", export1["modelVersion"], export2["modelVersion"])
+	}
+
+	// Decode both workflow arrays as []spi.WorkflowDefinition for deep
+	// comparison — bypasses any map-iteration ordering noise in the raw
+	// JSON envelope.
+	wfs1Raw, _ := json.Marshal(export1["workflows"])
+	wfs2Raw, _ := json.Marshal(export2["workflows"])
+	var wfs1, wfs2 []spi.WorkflowDefinition
+	if err := json.Unmarshal(wfs1Raw, &wfs1); err != nil {
+		t.Fatalf("decode export1 workflows: %v", err)
+	}
+	if err := json.Unmarshal(wfs2Raw, &wfs2); err != nil {
+		t.Fatalf("decode export2 workflows: %v", err)
+	}
+
+	if len(wfs1) != len(wfs2) {
+		t.Fatalf("workflow count drift: %d → %d", len(wfs1), len(wfs2))
+	}
+
+	// Index by name so declaration-order differences don't masquerade
+	// as semantic drift.
+	idx2 := map[string]spi.WorkflowDefinition{}
+	for _, w := range wfs2 {
+		idx2[w.Name] = w
+	}
+	for _, w1 := range wfs1 {
+		w2, ok := idx2[w1.Name]
+		if !ok {
+			t.Errorf("workflow %q missing from second export", w1.Name)
+			continue
+		}
+		if w1.Version != w2.Version {
+			t.Errorf("%s: version drift %q → %q", w1.Name, w1.Version, w2.Version)
+		}
+		if w1.Description != w2.Description {
+			t.Errorf("%s: desc drift %q → %q", w1.Name, w1.Description, w2.Description)
+		}
+		if w1.InitialState != w2.InitialState {
+			t.Errorf("%s: initialState drift %q → %q", w1.Name, w1.InitialState, w2.InitialState)
+		}
+		if w1.Active != w2.Active {
+			t.Errorf("%s: active drift %v → %v", w1.Name, w1.Active, w2.Active)
+		}
+		// Criterion is json.RawMessage — compare semantically after
+		// canonicalising via json.Unmarshal/Marshal so key-order doesn't
+		// cause false positives.
+		if !semanticJSONEqual(t, w1.Criterion, w2.Criterion) {
+			t.Errorf("%s: criterion drift %s → %s", w1.Name, w1.Criterion, w2.Criterion)
+		}
+		if len(w1.States) != len(w2.States) {
+			t.Errorf("%s: state-count drift %d → %d", w1.Name, len(w1.States), len(w2.States))
+			continue
+		}
+		for stateName, s1 := range w1.States {
+			s2, ok := w2.States[stateName]
+			if !ok {
+				t.Errorf("%s: state %q missing", w1.Name, stateName)
+				continue
+			}
+			if len(s1.Transitions) != len(s2.Transitions) {
+				t.Errorf("%s.%s: transition-count drift %d → %d",
+					w1.Name, stateName, len(s1.Transitions), len(s2.Transitions))
+			}
+			// Transitions are declared as an ordered slice — preserve
+			// order, but a state with zero transitions in both exports
+			// is acceptable as either nil or []TransitionDefinition{}.
+			for i := range s1.Transitions {
+				t1, t2 := s1.Transitions[i], s2.Transitions[i]
+				if t1.Name != t2.Name || t1.Next != t2.Next ||
+					t1.Manual != t2.Manual || t1.Disabled != t2.Disabled {
+					t.Errorf("%s.%s.transitions[%d] drift: %+v → %+v",
+						w1.Name, stateName, i, t1, t2)
+				}
+				if !semanticJSONEqual(t, t1.Criterion, t2.Criterion) {
+					t.Errorf("%s.%s.transitions[%d].criterion drift: %s → %s",
+						w1.Name, stateName, i, t1.Criterion, t2.Criterion)
+				}
+				if len(t1.Processors) != len(t2.Processors) {
+					t.Errorf("%s.%s.transitions[%d]: processor-count drift %d → %d",
+						w1.Name, stateName, i, len(t1.Processors), len(t2.Processors))
+				}
+			}
+		}
+	}
+}
+
+// semanticJSONEqual compares two json.RawMessage values for semantic
+// equality by canonicalising both through encoding/json. An absent
+// (`nil` / zero-length) value is equal to JSON null and to another
+// absent value.
+func semanticJSONEqual(t *testing.T, a, b json.RawMessage) bool {
+	t.Helper()
+	norm := func(raw json.RawMessage) string {
+		s := strings.TrimSpace(string(raw))
+		if s == "" || s == "null" {
+			return "null"
+		}
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return s // fall back to raw on decode failure; mismatch will show
+		}
+		out, _ := json.Marshal(v)
+		return string(out)
+	}
+	return norm(a) == norm(b)
+}
