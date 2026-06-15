@@ -3117,3 +3117,75 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 	// what the production handler does on a workflow error.
 	_ = txMgr.Rollback(txCtx, entryTxID)
 }
+
+// TestEngine_CascadeSkipsScheduled_RestsInState verifies that when a state has
+// ONLY a scheduled transition as its exit, the automated cascade silently skips
+// the scheduled transition and the entity rests in its source state. Until the
+// scheduled-task runtime ships (#251), scheduled transitions are invisible to
+// the cascade — they wait for their timer.
+func TestEngine_CascadeSkipsScheduled_RestsInState(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sched-rest", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "SchedRestWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "scheduledOnly", Next: "S2", Manual: false,
+					Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"S2": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("sched-rest-e1", modelRef, map[string]any{})
+
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected success=true")
+	}
+	if entity.Meta.State != "S1" {
+		t.Errorf("expected entity to rest in S1 (scheduled transitions are invisible to cascade); got %q", entity.Meta.State)
+	}
+}
+
+// TestEngine_CascadeSkipsScheduled_FiresRegularSibling verifies that when a
+// state has both a scheduled transition and a regular automated sibling, the
+// cascade silently skips the scheduled one and fires the regular sibling.
+func TestEngine_CascadeSkipsScheduled_FiresRegularSibling(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sched-sibling", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "SchedSiblingWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "scheduled", Next: "S2", Manual: false,
+					Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+				{Name: "regular", Next: "Sfinal", Manual: false},
+			}},
+			"S2":     {},
+			"Sfinal": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("sched-sibling-e1", modelRef, map[string]any{})
+
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected success=true")
+	}
+	if entity.Meta.State != "Sfinal" {
+		t.Errorf("expected entity to land in Sfinal via the regular sibling; got %q", entity.Meta.State)
+	}
+}

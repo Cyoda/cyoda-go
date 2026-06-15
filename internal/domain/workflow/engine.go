@@ -525,7 +525,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		fired := false
 		for i := range stateDef.Transitions {
 			tr := &stateDef.Transitions[i]
-			if tr.Disabled || tr.Manual {
+			if tr.Disabled || tr.Manual || tr.Schedule != nil {
 				continue
 			}
 
