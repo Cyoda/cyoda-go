@@ -2866,9 +2866,13 @@ type TransitionDefinitionDto struct {
 	// Processors List of processors to execute for this transition
 	Processors *[]TransitionDefinitionDto_Processors_Item `json:"processors,omitempty"`
 
-	// Schedule Optional scheduling configuration. Presence marks the transition as
-	// scheduled; mutually exclusive with manual=true. Runtime not yet
-	// implemented — see TransitionScheduleDto for engine behaviour.
+	// Schedule Optional scheduling configuration. Presence marks the transition
+	// as scheduled — it fires automatically `delayMs` milliseconds
+	// after the entity enters the source state. Mutually exclusive
+	// with `manual=true`. The runtime scheduler is not yet
+	// implemented; until it ships, the engine silently skips
+	// scheduled transitions during automated cascade selection, and
+	// explicit fires by name return HTTP 400 `TRANSITION_NOT_FOUND`.
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
 }
 

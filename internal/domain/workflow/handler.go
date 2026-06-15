@@ -193,8 +193,9 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		}
 		slog.WarnContext(r.Context(), "workflow import: cycle validation bypassed",
 			"pkg", "workflow",
+			"tenant", common.TenantFromContext(r.Context()),
 			"entityName", entityName,
-			"modelVersion", modelVersion,
+			"modelVersion", ref.ModelVersion,
 			"importMode", mode,
 			"workflows", workflowNames)
 	}

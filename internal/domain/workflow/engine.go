@@ -29,10 +29,18 @@ var defaultWorkflowJSON []byte
 
 // ErrTransitionNotFound is returned by ManualTransition (and surfaces from
 // Execute) when the requested transition name is absent from the entity's
-// current state — either because no such transition exists or because it is
-// disabled. Callers can discriminate this case from other engine failures via
+// current state — either because no such transition exists, it is disabled,
+// or it is scheduled and the timer runtime is not yet implemented. Callers
+// can discriminate this case from other engine failures via
 // errors.Is(err, ErrTransitionNotFound).
 var ErrTransitionNotFound = errors.New("transition not found")
+
+// scheduledNotYetImplementedReason is the human-readable cause emitted by
+// both the audit event Details and the wrapped error message when an explicit
+// fire of a scheduled transition is rejected. Extracted as a const so the
+// rewording required when the timer runtime ships only has to happen in one
+// place.
+const scheduledNotYetImplementedReason = "scheduled transitions are not yet implemented"
 
 // maxCascadeDepth is an absolute safety net for total cascade steps.
 const maxCascadeDepth = 100
@@ -455,12 +463,11 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 	if transition.Schedule != nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound,
-			fmt.Sprintf(
-				"Transition %q is scheduled; scheduled transitions are not yet implemented",
-				transitionName), nil)
+			fmt.Sprintf("Transition %q is scheduled; %s",
+				transitionName, scheduledNotYetImplementedReason), nil)
 		return ctx, txID, fmt.Errorf(
-			"transition %q in state %q is scheduled; scheduled transitions are not yet implemented: %w",
-			transitionName, entity.Meta.State, ErrTransitionNotFound)
+			"transition %q in state %q is scheduled; %s: %w",
+			transitionName, entity.Meta.State, scheduledNotYetImplementedReason, ErrTransitionNotFound)
 	}
 
 	// Evaluate transition criterion.
