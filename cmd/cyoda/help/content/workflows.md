@@ -174,6 +174,83 @@ Import-time validation rejects any `executionMode` value not in the list above (
 - `retryPolicy` — string — retry policy name (plugin/platform-defined); empty means no retry
 - `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
 
+## SCHEDULED TRANSITIONS
+
+A transition may carry an optional `schedule` object marking it as
+scheduled. Presence of `schedule` declares that the transition fires
+automatically at `scheduledTime = stateEntryTime + delayMs`. The
+`schedule` shape is:
+
+```json
+{
+  "name": "AutoClose",
+  "next": "Closed",
+  "manual": false,
+  "schedule": {
+    "delayMs": 86400000,
+    "timeoutMs": 600000
+  }
+}
+```
+
+**Fields:**
+
+- `delayMs` (integer, required) — delay between source-state entry
+  and the scheduled execution time, in milliseconds. Must be `> 0`.
+- `timeoutMs` (integer, optional) — late-tolerance window past the
+  scheduled execution time, in milliseconds. When the scheduler
+  picks the task up, if `(executionTime - scheduledTime) > timeoutMs`
+  the task is dropped and the transition is NOT attempted. Absent
+  (omitted) means no timeout — fire whenever the scheduler
+  eventually picks it up. Explicit `0` is the strictest setting —
+  drop on any lateness. Independent of `delayMs`; the two measure
+  different quantities.
+
+**Import-time validation rules:**
+
+- `manual: true` and `schedule` present are mutually exclusive
+  (`VALIDATION_FAILED`).
+- `schedule.delayMs <= 0` is rejected (`VALIDATION_FAILED`).
+- No further rule on `timeoutMs` beyond `>= 0` (enforced at the DTO
+  boundary).
+
+**Engine behaviour (runtime not yet implemented).** The scheduler
+that arms and fires scheduled transitions is not yet implemented.
+Two guards govern behaviour until it ships:
+
+- During automated cascade evaluation, scheduled transitions are
+  silently skipped — they are never selected for immediate firing.
+  Other automated/manual transitions out of the same state fire
+  normally. An entity whose only exit is scheduled rests in its
+  current state.
+- Explicitly firing a scheduled transition by name returns HTTP 400
+  `TRANSITION_NOT_FOUND` with the message `transition "X" in state
+  "Y" is scheduled; scheduled transitions are not yet implemented`.
+  Same code returned when a transition is `disabled: true` — same
+  semantic: "the transition exists but is not currently dispatchable
+  from the caller's POV." The entity remains in the source state.
+
+**Importing cyclic scheduled workflows.** A canonical scheduled-
+transition use case is a polling pattern such as `S1 →scheduled→ S2
+→scheduled→ S1`. The import-time cycle detector rejects unguarded
+automated cycles by default — including this one, because a delayed
+cycle is still a cycle. To import such a workflow, set the request-
+level field `allowCycles: true` on the import body:
+
+```json
+{
+  "importMode": "REPLACE",
+  "allowCycles": true,
+  "workflows": [ /* ... */ ]
+}
+```
+
+`allowCycles: true` bypasses only the cycle-detection check. Schedule
+shape rules (manual+schedule, delayMs) and all other validators
+remain unconditional. The runtime cascade-depth and per-state visit
+caps still catch actual runaway at fire time. Use only for workflows
+whose cyclicity is intentional.
+
 ## CRITERIA
 
 Criteria on workflows and transitions use the same `Condition` DSL as search. All four condition types are supported: `simple`, `lifecycle`, `group`, `array`. Criteria are evaluated in-memory against the entity's JSON payload and lifecycle metadata.
