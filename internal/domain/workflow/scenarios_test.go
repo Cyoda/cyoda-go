@@ -264,7 +264,7 @@ func TestScenarioStaticLoopDetection(t *testing.T) {
 		},
 	}
 
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 	if err == nil {
 		t.Fatal("expected error for infinite loop")
 	}
@@ -284,7 +284,7 @@ func TestScenarioStaticLoopDetectionSelfLoop(t *testing.T) {
 		},
 	}
 
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 	if err == nil {
 		t.Fatal("expected error for self-loop")
 	}
@@ -310,7 +310,7 @@ func TestScenarioStaticValidationPassesGuardedCycle(t *testing.T) {
 		},
 	}
 
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 	if err != nil {
 		t.Fatalf("expected no error for guarded cycle, got: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestScenarioStaticValidationPassesManualCycle(t *testing.T) {
 		},
 	}
 
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 	if err != nil {
 		t.Fatalf("expected no error for manual cycle, got: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 			"S2": {},
 		},
 	}
-	err := validateWorkflows([]spi.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -616,7 +616,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *
 			"S2": {},
 		},
 	}
-	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, false); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
@@ -638,7 +638,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
 			"S2": {},
 		},
 	}
-	if err := validateWorkflows([]spi.WorkflowDefinition{wf}); err != nil {
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, false); err != nil {
 		t.Fatalf("expected no error for nil/false flag, got: %v", err)
 	}
 }

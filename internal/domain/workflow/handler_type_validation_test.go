@@ -34,7 +34,7 @@ func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 			},
 		}
 
-		err := validateWorkflows([]spi.WorkflowDefinition{wf})
+		err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 		if err == nil {
 			t.Fatalf("expected validator to reject startNewTxOnDispatch=true with non-CBD ExecutionMode, got nil")
 		}
@@ -67,7 +67,7 @@ func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 			},
 		}
 
-		err := validateWorkflows([]spi.WorkflowDefinition{wf})
+		err := validateWorkflows([]spi.WorkflowDefinition{wf}, false)
 		if err != nil {
 			t.Fatalf("validator should pass for coherent CBD flags regardless of Type; got %v", err)
 		}

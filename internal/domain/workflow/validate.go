@@ -115,10 +115,12 @@ func validateImportRequest(workflows []spi.WorkflowDefinition) error {
 // The newer structural rules (state graph, name uniqueness,
 // ExecutionMode enum) deliberately do NOT run here — see
 // validateImportRequest for why.
-func validateWorkflows(workflows []spi.WorkflowDefinition) error {
+func validateWorkflows(workflows []spi.WorkflowDefinition, allowCycles bool) error {
 	for _, wf := range workflows {
-		if err := validateWorkflowLoops(wf); err != nil {
-			return fmt.Errorf("workflow %q: %w", wf.Name, err)
+		if !allowCycles {
+			if err := validateWorkflowLoops(wf); err != nil {
+				return fmt.Errorf("workflow %q: %w", wf.Name, err)
+			}
 		}
 		if err := validateProcessorFlags(wf); err != nil {
 			return err
