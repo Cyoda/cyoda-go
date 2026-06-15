@@ -974,6 +974,69 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	}
 }
 
+// TestProcessorEmptyExecutionMode_FiresAsSync covers the audit's case
+// 14: a processor with an empty `ExecutionMode` is dispatched through
+// the SYNC path at engine fire-time. The validator already accepts the
+// empty value (see TestValidateImportRequest_AcceptsEmptyExecutionMode)
+// — this asserts the engine-fire counterpart: failure propagates and
+// blocks state advance, which is SYNC's distinguishing semantic
+// (ASYNC_NEW_TX would warn-and-continue; COMMIT_BEFORE_DISPATCH would
+// split the transaction). engine_processors.go's switch falls through
+// to executeSyncProcessor via the default case for "" — we verify the
+// effect at the observable behaviour level.
+func TestProcessorEmptyExecutionMode_FiresAsSync(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExtProc{returnErr: fmt.Errorf("processor failed")}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "empty-mode", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "EmptyModeWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "RUN", Next: "DONE", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{
+							Type:          ProcessorTypeExternalized,
+							Name:          "empty-mode-proc",
+							ExecutionMode: "", // the unit under test
+						},
+					}},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("empty-mode-1", modelRef, map[string]any{"x": 1})
+	_, err := engine.Execute(ctx, entity, "")
+
+	// SYNC-style failure semantics: the processor error propagates AND
+	// the entity does not advance to the next state. ASYNC_NEW_TX would
+	// swallow the failure and let the entity reach DONE.
+	if err == nil {
+		t.Fatalf("expected error from failing processor (SYNC-style propagation)")
+	}
+	if entity.Meta.State == "DONE" {
+		t.Errorf("entity advanced to DONE — empty executionMode did NOT fire as SYNC")
+	}
+
+	// And the dispatcher was actually called exactly once — i.e. it
+	// wasn't silently treated as "no-op" via some unknown-mode swallow.
+	mock.mu.Lock()
+	calls := mock.dispatchProcessorCalls
+	mock.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("expected DispatchProcessor called 1 time for empty executionMode, got %d", calls)
+	}
+}
+
 func TestProcessorDispatchError(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
