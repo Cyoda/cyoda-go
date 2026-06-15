@@ -102,7 +102,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 - `version` — string — schema version tag (informational; not interpreted by the engine)
 - `name` — string — unique within the model; the primary key for MERGE mode
-- `desc` — string — optional description
+- `desc` — string — optional human-readable description. Surfaced in the import audit log line (`workflow import applied` at `INFO`, or `workflow import resulted in zero workflows` at `WARN`) as part of the per-workflow `{name, desc}` digest, and round-tripped via export when non-empty. Use it to record change intent that operators reading logs can correlate without consulting the workflow JSON
 - `initialState` — string — state assigned when the entity is first created; must exist in `states`
 - `active` — boolean — when `false`, the engine skips this workflow during selection
 - `criterion` — `Condition` JSON or `null` — evaluated against the entity at creation to select this workflow; `null` matches all entities
@@ -238,6 +238,15 @@ Response: `200 OK`, `application/json`:
 ```json
 {"success": true}
 ```
+
+### Audit log on success
+
+Every successful import emits a single structured `log/slog` line so operators can correlate workflow-config changes in their log pipeline.
+
+- **Normal path** — `level=INFO`, `msg="workflow import applied"`. Fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `importMode`, `workflowCount`, `workflows` (array of `{name, desc}`), `workflowNames` (string array).
+- **Zero-result canary** — `level=WARN`, `msg="workflow import resulted in zero workflows"`, same field shape. After `REPLACE` / `ACTIVATE` empty became a `400 VALIDATION_FAILED` (see above), the only reachable path is a `MERGE` with an empty `workflows` array against a model that has no prior workflows. The model will then silently fall back to the embedded default on the next entity execution; this canary surfaces that outcome before it shows up in entity-execution logs.
+
+The `desc` field on each workflow is surfaced verbatim in the audit log digest — use it to record change intent that log readers can correlate without consulting the workflow JSON.
 
 ## EXPORT RESPONSE
 
