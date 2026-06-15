@@ -91,3 +91,43 @@ func TestValidateGroupedStatsRequest(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateGroupedStatsRequest_SynthesizedAliasStripsJSONPathPrefix pins
+// the contract that synthesized response-object aliases do NOT embed the
+// `$.` JSONPath leader. Pre-fix, a `sum` over `$.amount` with no explicit
+// `as` produced `sum_$.amount` — ugly and breaks dotted-property access in
+// clients. The fix strips `$.` for the alias only; the validated Field
+// keeps it because downstream gjson extraction relies on the prefix.
+func TestValidateGroupedStatsRequest_SynthesizedAliasStripsJSONPathPrefix(t *testing.T) {
+	in := entity.GroupedStatsRequest{
+		GroupBy: []string{"state"},
+		Aggregations: []entity.AggregationExprWire{
+			{Op: "sum", Field: "$.amount"},                   // synthesized
+			{Op: "avg", Field: "$.nested.price"},             // synthesized, multi-segment
+			{Op: "min", Field: "$.amount", As: "min_amount"}, // explicit alias unchanged
+			{Op: "max", Field: "qty"},                        // already no $.
+		},
+	}
+	out, err := entity.ValidateGroupedStatsRequest(in, 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Aggregations) != 4 {
+		t.Fatalf("got %d aggregations, want 4", len(out.Aggregations))
+	}
+	// Aliases in order, with $. stripped from synthesized ones only.
+	want := []string{"sum_amount", "avg_nested.price", "min_amount", "max_qty"}
+	for i, w := range want {
+		if out.Aggregations[i].Alias != w {
+			t.Errorf("aggregations[%d].Alias = %q, want %q", i, out.Aggregations[i].Alias, w)
+		}
+	}
+	// Fields keep $. — gjson extraction depends on the canonical form.
+	wantField := []string{"$.amount", "$.nested.price", "$.amount", "qty"}
+	for i, w := range wantField {
+		if out.Aggregations[i].Field != w {
+			t.Errorf("aggregations[%d].Field = %q, want %q", i, out.Aggregations[i].Field, w)
+		}
+	}
+}
+

@@ -129,6 +129,17 @@ func DefaultConfig() Config {
 	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
 	metricsBearerToken := mustResolveSecretEnv("CYODA_METRICS_BEARER")
 
+	// CYODA_STATS_GROUP_MAX defends against an operator setting the cap to
+	// 0 or a negative value (e.g. via shell typo). Without the clamp the
+	// value would propagate to plugin GroupedAggregator implementations
+	// which interpret <=0 as "unbounded" (sqlite skips LIMIT, memory skips
+	// the cardinality check) — silently disabling the cardinality
+	// ceiling. Clamp to the documented default instead.
+	statsGroupMax := envInt("CYODA_STATS_GROUP_MAX", 10000)
+	if statsGroupMax <= 0 {
+		statsGroupMax = 10000
+	}
+
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
 		ContextPath:       envString("CYODA_CONTEXT_PATH", "/api"),
@@ -161,7 +172,7 @@ func DefaultConfig() Config {
 		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
-		StatsGroupMax:      envInt("CYODA_STATS_GROUP_MAX", 10000),
+		StatsGroupMax:      statsGroupMax,
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),

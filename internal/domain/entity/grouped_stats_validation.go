@@ -98,7 +98,16 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		pair := [2]string{a.Op, field}
 		alias := a.As
 		if alias == "" {
-			alias = a.Op + "_" + field
+			// Synthesized aliases must not embed the JSONPath leader: response
+			// keys like `sum_$.amount` leak punctuation into a JSON object
+			// name (cosmetic but ugly and breaks dotted access in clients).
+			// The validated Field keeps the `$.` prefix because downstream
+			// gjson extraction relies on it; only the response alias drops it.
+			aliasField := field
+			if strings.HasPrefix(aliasField, "$.") {
+				aliasField = aliasField[2:]
+			}
+			alias = a.Op + "_" + aliasField
 		}
 		if _, dup := seenPair[pair]; dup {
 			// identical (op, field) pair: silently dedupe.

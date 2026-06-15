@@ -1187,7 +1187,7 @@ paths:
                   count: 31
                   aggregations:
                     totalAmount: 12500000
-                    avg_$.amount: 403225.806
+                    avg_amount: 403225.806
                 - groupKey:
                     - path: state
                       value: AWARDED
@@ -1196,7 +1196,7 @@ paths:
                   count: 4
                   aggregations:
                     totalAmount: null
-                    avg_$.amount: null
+                    avg_amount: null
         "400":
           description: >-
             Bad request — malformed JSON body, validation failure (empty

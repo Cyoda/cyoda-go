@@ -395,7 +395,7 @@ Request fields:
 
 - `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath. Order in the request determines order in the response's `groupKey` array. Duplicate entries (after normalization) → 400 `DUPLICATE_GROUP_BY`. Array projections (`[*]`, `[0]`) → 400 `INVALID_GROUP_BY_PATH`.
 - `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`, ArrayCondition, FunctionCondition). Omitted → match-all. See the `search` topic for the full DSL.
-- `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` (for example, `sum_$.costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
+- `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` with the leading `$.` stripped from the field (for example, `field: "$.costPrice"` → alias `sum_costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
 - `pointInTime` (optional RFC 3339): historical snapshot; default = now.
 - `limit` (optional positive int): top-N. Must be `≤ CYODA_STATS_GROUP_MAX` (default 10000); `> CYODA_STATS_GROUP_MAX` → 400 `INVALID_LIMIT`. Default = unlimited (up to the cardinality ceiling).
 
@@ -409,7 +409,7 @@ Response: `200 OK`, `application/json`, array of `GroupedStatsBucket`:
       { "path": "state",       "value": "available" }
     ],
     "count": 812,
-    "aggregations": { "totalCost": 41200.00, "avg_$.costPrice": 50.74, "stdev_$.costPrice": 18.42 }
+    "aggregations": { "totalCost": 41200.00, "avg_costPrice": 50.74, "stdev_costPrice": 18.42 }
   },
   {
     "groupKey": [
@@ -417,7 +417,7 @@ Response: `200 OK`, `application/json`, array of `GroupedStatsBucket`:
       { "path": "state",       "value": "available" }
     ],
     "count": 3,
-    "aggregations": { "totalCost": null, "avg_$.costPrice": null, "stdev_$.costPrice": null }
+    "aggregations": { "totalCost": null, "avg_costPrice": null, "stdev_costPrice": null }
   }
 ]
 ```
@@ -445,7 +445,7 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 **In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via the SPI `Iterable` interface. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
 
 - **memory** — `Iterate` captures a snapshot under the read lock, overlays `tx.Buffer` (buffered saves), and masks `tx.Deletes` (buffered deletes). The iteration runs lock-free. RYW-correct.
-- **sqlite** — `Iterate` selects from the `entity_versions` snapshot table with `submit_time <= tx.SnapshotTime`. Pointer-in-time stats use the same query with `pointInTime` substituted for `tx.SnapshotTime`. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx; this is correct because uncommitted writes live in the per-tx buffer that `Iterate` overlays.
+- **sqlite** — the iterator dispatches by `(in-tx, point-in-time)`. Non-tx, non-PIT queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved). Non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx, non-PIT materializes via the same `getAllTx` overlay that `GetAll` uses inside a tx (entity_versions snapshot at `tx.SnapshotTime`, plus `tx.Buffer` overlay, minus `tx.Deletes`), then iterates the slice; RYW-correct, with buffered writes visible and buffered deletes hidden. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
 - **postgres** — `Iterate` selects from the bi-temporal `entity_versions` table with `valid_time <= tx.SnapshotTime AND transaction_time <= CURRENT_TIMESTAMP`, and adds `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE` to skip deletion-marker versions. The `GroupedAggregate` pushdown is skipped in-tx.
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.

@@ -181,6 +181,109 @@ func TestSqliteIterate_CtxCancellation(t *testing.T) {
 	}
 }
 
+// TestSqliteIterate_InTxOverlay pins the D11 RYW contract: under an
+// active transaction, the iterator MUST reflect buffered writes
+// (tx.Buffer) and MUST hide buffered deletes (tx.Deletes). Pre-fix the
+// sqlite Iterate queried the `entities` table directly and missed both,
+// silently violating the cross-backend RYW promise (memory has always
+// handled this correctly; sqlite was the regression).
+func TestSqliteIterate_InTxOverlay(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+
+	// Seed two committed entities, one of which we'll delete inside tx.
+	gsSave(t, ctx, store, "e-keep", "available", map[string]any{"x": 1})
+	gsSave(t, ctx, store, "e-delete", "available", map[string]any{"x": 2})
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	// In-tx: add a new entity (visible) and delete e-delete (hidden).
+	gsSave(t, txCtx, store, "e-new", "available", map[string]any{"x": 99})
+	if err := store.Delete(txCtx, "e-delete"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	it := store.(spi.Iterable)
+	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	defer iter.Close()
+
+	seen := map[string]bool{}
+	for iter.Next() {
+		seen[iter.Entity().Meta.ID] = true
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iter err: %v", err)
+	}
+	if !seen["e-keep"] {
+		t.Errorf("e-keep should be visible (committed, not deleted)")
+	}
+	if !seen["e-new"] {
+		t.Errorf("e-new should be visible (tx.Buffer overlay)")
+	}
+	if seen["e-delete"] {
+		t.Errorf("e-delete should be hidden (tx.Deletes)")
+	}
+}
+
+// TestSqliteGroupedAggregate_InTxBufferedWritesVisible asserts the
+// observable RYW contract from the GroupedAggregate entry-point (the
+// streaming-tally fallback the service layer takes when a tx is active).
+// Pre-fix, sqlite's Iterate ignored tx.Buffer / tx.Deletes, so the
+// streaming tally over Iterate misreported counts inside a tx.
+func TestSqliteGroupedAggregate_InTxBufferedWritesVisible(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+
+	// Seed 3 committed entities in state "committed".
+	for i := 0; i < 3; i++ {
+		gsSave(t, ctx, store, fmt.Sprintf("c-%d", i), "committed", map[string]any{"x": i})
+	}
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	// In-tx: add 2 entities in state "buffered".
+	for i := 0; i < 2; i++ {
+		gsSave(t, txCtx, store, fmt.Sprintf("b-%d", i), "buffered", map[string]any{"x": i})
+	}
+
+	// Iterate-driven tally: walk the iterator and tally by state — that's
+	// what the service-layer streaming fallback does inside a tx.
+	it := store.(spi.Iterable)
+	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	defer iter.Close()
+	counts := map[string]int{}
+	for iter.Next() {
+		counts[iter.Entity().Meta.State]++
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iter err: %v", err)
+	}
+	if counts["committed"] != 3 {
+		t.Errorf("committed count = %d, want 3 (visible from snapshot)", counts["committed"])
+	}
+	if counts["buffered"] != 2 {
+		t.Errorf("buffered count = %d, want 2 (visible from tx.Buffer overlay)", counts["buffered"])
+	}
+}
+
 func TestSqliteIterate_CloseIdempotent(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{})

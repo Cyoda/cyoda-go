@@ -52,6 +52,19 @@ var (
 //
 // PointInTime (when non-nil) walks entity_versions at the requested snapshot
 // time, matching the convention used by searchPointInTimeBase.
+//
+// In-tx semantics (D11 RYW): when a transaction is active and PointInTime
+// is NOT set, the iterator materializes via getAllTx — the same overlay
+// (entity_versions @ tx.SnapshotTime + tx.Buffer − tx.Deletes) used by
+// GetAll's in-tx branch. Without this branch, grouped-stats would query
+// the `entities` table directly and miss buffered writes / fail to mask
+// buffered deletes, violating read-your-writes promised by spec D11.
+//
+// Known limitation: in-tx + PointInTime (exotic combination) falls through
+// to the plain PIT path, which reads from entity_versions WITHOUT applying
+// the tx-buffer overlay. PIT semantics are historical-read by definition,
+// so the in-flight buffer is a tier-2 concern; documented in the
+// grouped-stats help-topic (cmd/cyoda/help/content/crud.md).
 func (s *entityStore) Iterate(
 	ctx context.Context,
 	model spi.ModelRef,
@@ -61,6 +74,26 @@ func (s *entityStore) Iterate(
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
+
+	// In-tx, non-PIT: materialize via tx-overlay then iterate the slice.
+	// Mirrors plugins/memory/grouped_stats.go's buildSnapshot pattern.
+	if tx := spi.GetTransaction(ctx); tx != nil && opts.PointInTime == nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		entities, err := s.getAllTx(ctx, tx, model)
+		if err != nil {
+			return nil, err
+		}
+		return &sqliteSliceIter{
+			ctx:      ctx,
+			snapshot: entities,
+			filter:   filter,
+		}, nil
+	}
+
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
 	// Skip planQuery — it would treat the empty Op as non-pushable and
 	// install the zero filter as a residual, breaking evaluateFilter.
@@ -99,6 +132,63 @@ func (s *entityStore) Iterate(
 		postFilter:  plan.postFilter,
 		pointInTime: pointInTime,
 	}, nil
+}
+
+// sqliteSliceIter walks a pre-built snapshot from getAllTx, applying the
+// filter inside Next() via the same evaluateFilter() the streaming path
+// uses. Used by the in-tx Iterate branch to honour D11 RYW. Per the SPI
+// iterator contract: Err() is sticky, Close() is idempotent, ctx
+// cancellation is observed.
+type sqliteSliceIter struct {
+	ctx      context.Context
+	snapshot []*spi.Entity
+	filter   spi.Filter
+	idx      int
+	cur      *spi.Entity
+	err      error
+	closed   bool
+}
+
+func (it *sqliteSliceIter) Next() bool {
+	if it.err != nil || it.closed {
+		return false
+	}
+	if err := it.ctx.Err(); err != nil {
+		it.err = err
+		return false
+	}
+	for it.idx < len(it.snapshot) {
+		e := it.snapshot[it.idx]
+		it.idx++
+		// Zero-value Filter (empty Op) matches everything — short-circuit
+		// before evaluateFilter, which expects a populated Op.
+		if it.filter.Op != "" {
+			ok, ferr := evaluateFilter(it.filter, e)
+			if ferr != nil {
+				it.err = fmt.Errorf("filter evaluation: %w", ferr)
+				return false
+			}
+			if !ok {
+				continue
+			}
+		}
+		it.cur = e
+		return true
+	}
+	return false
+}
+
+func (it *sqliteSliceIter) Entity() *spi.Entity { return it.cur }
+func (it *sqliteSliceIter) Err() error          { return it.err }
+
+func (it *sqliteSliceIter) Close() error {
+	if it.closed {
+		return nil
+	}
+	it.closed = true
+	it.snapshot = nil
+	it.cur = nil
+	return nil
 }
 
 // sqliteIter wraps sql.Rows, applying any residual filter inside Next()
