@@ -23,10 +23,27 @@ func New(factory spi.StoreFactory, engine *Engine) *Handler {
 	return &Handler{factory: factory, engine: engine}
 }
 
+// workflowImportDef mirrors spi.WorkflowDefinition but uses *bool for Active
+// so the handler can distinguish "absent" (default to true, preserves OOTB
+// contract) from explicit "false" (operator wants the workflow staged
+// inactive). The SPI type stays plain bool — this distinction is purely a
+// request-shape concern. An explicit JSON `null` decodes to (*bool)(nil)
+// and is treated the same as the field being absent — both default to
+// Active=true.
+type workflowImportDef struct {
+	Version      string                         `json:"version"`
+	Name         string                         `json:"name"`
+	Description  string                         `json:"desc,omitempty"`
+	InitialState string                         `json:"initialState"`
+	Active       *bool                          `json:"active"`
+	Criterion    json.RawMessage                `json:"criterion,omitempty"`
+	States       map[string]spi.StateDefinition `json:"states"`
+}
+
 // importRequest is the JSON body shape for workflow import.
 type importRequest struct {
-	ImportMode string                   `json:"importMode"`
-	Workflows  []spi.WorkflowDefinition `json:"workflows"`
+	ImportMode string              `json:"importMode"`
+	Workflows  []workflowImportDef `json:"workflows"`
 }
 
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
@@ -60,8 +77,8 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Verify the target model exists before applying the workflow. Without this
-	// guard, importing a workflow on a non-existent model silently succeeded
-	// (issue #131); cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND.
+	// guard, importing a workflow on a non-existent model silently succeeded;
+	// cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND.
 	modelStore, err := h.factory.ModelStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get model store", err))
@@ -97,27 +114,55 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Default imported workflows to active (Cyoda Cloud behavior).
-	for i := range req.Workflows {
-		req.Workflows[i].Active = true
+	// REPLACE / ACTIVATE with an empty workflows array would silently
+	// wipe or deactivate all stored workflows for the model; the engine
+	// fallback to the embedded default then masks the destruction behind
+	// HTTP 200. Reject explicitly. MERGE-empty stays a no-op.
+	if len(req.Workflows) == 0 && (mode == "REPLACE" || mode == "ACTIVATE") {
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest,
+			common.ErrCodeValidationFailed,
+			"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"))
+		return
 	}
 
-	// Structural validation (#255) runs on the incoming request only —
-	// the new H4/H6 rules are deliberately not retroactive against
-	// legacy stored shapes. Behavioural validation (loops + flag
-	// coherence) runs on the merged result below, preserving pre-v0.8.0
-	// semantics for those specific invariants.
-	if err := validateImportRequest(req.Workflows); err != nil {
+	// Default Active to true only when the field is absent; explicit
+	// true/false pass through unchanged. This restores export → REPLACE
+	// re-import idempotency and lets operators stage inactive workflows
+	// for blue/green rollout.
+	incoming := make([]spi.WorkflowDefinition, len(req.Workflows))
+	for i, w := range req.Workflows {
+		active := true
+		if w.Active != nil {
+			active = *w.Active
+		}
+		incoming[i] = spi.WorkflowDefinition{
+			Version:      w.Version,
+			Name:         w.Name,
+			Description:  w.Description,
+			InitialState: w.InitialState,
+			Active:       active,
+			Criterion:    w.Criterion,
+			States:       w.States,
+		}
+	}
+
+	// Structural validation runs on the incoming request only — the
+	// H4/H6 rules are deliberately not retroactive against legacy stored
+	// shapes. Behavioural validation (loops + flag coherence) runs on
+	// the merged result below, preserving pre-v0.8.0 semantics for those
+	// specific invariants.
+	if err := validateImportRequest(incoming); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
 
-	result := applyImportMode(existing, req.Workflows, mode)
+	result := applyImportMode(existing, incoming, mode)
 
 	// Behavioural validation on the merged result: definite-loop
 	// detection and StartNewTxOnDispatch coherence. A pre-existing
 	// stored workflow that violates these still surfaces here, matching
-	// pre-#255 behaviour.
+	// pre-structural-validation behaviour.
 	if err := validateWorkflows(result); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return

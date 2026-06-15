@@ -5,6 +5,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // CachingStoreFactory wraps an spi.StoreFactory so that ModelStore(ctx)
@@ -99,7 +100,7 @@ type requestScopedStore struct {
 var _ spi.ModelStore = (*requestScopedStore)(nil)
 
 func (s *requestScopedStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: tenantOf(ctx), ref: ref}
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
 	if d := s.cache.lookup(key); d != nil {
 		return d, nil
 	}
@@ -117,7 +118,7 @@ func (s *requestScopedStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.Mo
 // RefreshAndGet forces a cache miss, collapses concurrent callers via
 // the cache's singleflight group, and repopulates on success.
 func (s *requestScopedStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: tenantOf(ctx), ref: ref}
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
 	s.cache.evict(key)
 
 	v, err, _ := s.cache.flight.Do(flightKey(key), func() (any, error) {

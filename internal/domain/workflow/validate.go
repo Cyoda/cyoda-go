@@ -62,9 +62,8 @@ var validExecutionModes = map[string]struct{}{
 const maxIdentifierLen = 256
 
 // validateImportRequest enforces the per-incoming-workflow structural
-// rules added in issue #255 (audit §H4, §H6.a–e, §M4). Violations are
-// returned as plain errors that the caller wraps in a 400 with
-// ErrCodeValidationFailed.
+// rules (audit §H4, §H6.a–e, §M4). Violations are returned as plain
+// errors that the caller wraps in a 400 with ErrCodeValidationFailed.
 //
 // Rules enforced:
 //   - H6.c — workflow Name must be non-empty.
@@ -113,8 +112,9 @@ func validateImportRequest(workflows []spi.WorkflowDefinition) error {
 // cycle or incoherent flag in MERGE/ACTIVATE mode still surfaces at
 // import time (pre-v0.8.0 behaviour preserved for these checks).
 //
-// The newer structural rules added in #255 deliberately do NOT run
-// here — see validateImportRequest for why.
+// The newer structural rules (state graph, name uniqueness,
+// ExecutionMode enum) deliberately do NOT run here — see
+// validateImportRequest for why.
 func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 	for _, wf := range workflows {
 		if err := validateWorkflowLoops(wf); err != nil {
@@ -128,9 +128,9 @@ func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 }
 
 // validateWorkflowStructure enforces the per-workflow structural rules
-// added in #255 (H6.a–e, H4) plus the security-audit follow-ups M-1
-// (empty state-map keys), L-1 (empty transition / processor names) and
-// L-2 (identifier length cap). Any violation is a 4xx at import time —
+// (H6.a–e, H4) plus the security-audit follow-ups M-1 (empty state-map
+// keys), L-1 (empty transition / processor names) and L-2 (identifier
+// length cap). Any violation is a 4xx at import time —
 // the engine would otherwise silently degrade at runtime (park entity
 // in an undefined state, shadow duplicate transitions, coerce typo'd
 // ExecutionMode to SYNC) or accept arbitrarily long identifiers into
