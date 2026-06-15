@@ -114,6 +114,18 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// M3 (#256): REPLACE / ACTIVATE with an empty workflows array would
+	// silently wipe or deactivate all stored workflows for the model;
+	// engine fallback to the embedded default then masks the destruction
+	// behind HTTP 200. Reject explicitly. MERGE-empty stays a no-op.
+	if len(req.Workflows) == 0 && (mode == "REPLACE" || mode == "ACTIVATE") {
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest,
+			common.ErrCodeValidationFailed,
+			"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"))
+		return
+	}
+
 	// H2: default Active to true only when the field is absent;
 	// explicit true/false pass through unchanged. This restores
 	// export → REPLACE re-import idempotency and lets operators stage

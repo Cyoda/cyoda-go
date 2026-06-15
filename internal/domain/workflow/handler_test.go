@@ -819,3 +819,112 @@ func TestImport_ExplicitActiveNull_DefaultsToTrue(t *testing.T) {
 		t.Errorf("expected explicit null active to default to true, got Active=false")
 	}
 }
+
+func TestImport_EmptyArrayReplace_Rejected(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{"importMode":"REPLACE","workflows":[]}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+	}
+	if !strings.Contains(string(b), common.ErrCodeValidationFailed) {
+		t.Errorf("expected error code %s in body, got: %s", common.ErrCodeValidationFailed, b)
+	}
+	if !strings.Contains(string(b), "empty workflows array not allowed") {
+		t.Errorf("expected detail mentioning 'empty workflows array not allowed', got: %s", b)
+	}
+}
+
+func TestImport_EmptyArrayActivate_Rejected(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{"importMode":"ACTIVATE","workflows":[]}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+	}
+	if !strings.Contains(string(b), common.ErrCodeValidationFailed) {
+		t.Errorf("expected error code %s in body, got: %s", common.ErrCodeValidationFailed, b)
+	}
+	if !strings.Contains(string(b), "empty workflows array not allowed") {
+		t.Errorf("expected detail mentioning 'empty workflows array not allowed', got: %s", b)
+	}
+}
+
+func TestImport_MissingWorkflowsKeyReplace_Rejected(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// `workflows` key entirely absent → JSON unmarshal yields nil slice
+	// → len() == 0 → must reject equivalently to explicit []. Confirm we
+	// hit the M3 guard specifically (not, e.g., a downstream validator).
+	body := `{"importMode":"REPLACE"}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+	}
+	if !strings.Contains(string(b), common.ErrCodeValidationFailed) {
+		t.Errorf("expected error code %s in body, got: %s", common.ErrCodeValidationFailed, b)
+	}
+	if !strings.Contains(string(b), "empty workflows array not allowed") {
+		t.Errorf("expected detail mentioning 'empty workflows array not allowed', got: %s", b)
+	}
+}
+
+func TestImport_EmptyArrayMerge_NoOp(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Seed: import a workflow first.
+	seed := `{
+		"importMode": "MERGE",
+		"workflows": [
+			{
+				"version": "1.0", "name": "seed-wf", "initialState": "S",
+				"active": true,
+				"states": {"S": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, seed)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("seed import expected 200, got %d", resp.StatusCode)
+	}
+
+	// MERGE empty → 200, no change.
+	resp2 := doWorkflowImport(t, srv.URL, "Order", 1, `{"importMode":"MERGE","workflows":[]}`)
+	if resp2.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+		t.Fatalf("MERGE empty expected 200, got %d: %s", resp2.StatusCode, b)
+	}
+	resp2.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 1 || wfs[0].Name != "seed-wf" {
+		t.Errorf("expected seed-wf preserved, got %v", wfs)
+	}
+}
+
+func TestImport_EmptyArrayDefaultMode_NoOp(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// No importMode → defaults to MERGE; empty array → no-op (no existing).
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, `{"workflows":[]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("default-mode empty expected 200, got %d: %s", resp.StatusCode, b)
+	}
+}
