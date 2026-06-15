@@ -545,6 +545,93 @@ func TestValidator_ScheduleHappyPaths(t *testing.T) {
 	}
 }
 
+// --- allowCycles bypass behaviour ----------------------------------------
+
+// cyclicWorkflow builds S1 -automated, no criterion-> S2 -automated, no
+// criterion-> S1. validateWorkflowLoops rejects this by default.
+func cyclicWorkflow(t *testing.T) spi.WorkflowDefinition {
+	t.Helper()
+	return spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "cyclic",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{{Name: "to-S2", Next: "S2", Manual: false}}},
+			"S2": {Transitions: []spi.TransitionDefinition{{Name: "to-S1", Next: "S1", Manual: false}}},
+		},
+	}
+}
+
+func TestValidator_DefaultFalse_RejectsCycle(t *testing.T) {
+	wf := cyclicWorkflow(t)
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, false); err == nil {
+		t.Fatal("expected cycle rejection at default allowCycles=false")
+	}
+}
+
+func TestValidator_AllowCyclesTrue_BypassesCycleCheck(t *testing.T) {
+	wf := cyclicWorkflow(t)
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, true); err != nil {
+		t.Errorf("expected acceptance with allowCycles=true; got: %v", err)
+	}
+}
+
+func TestValidator_AllowCyclesTrue_DoesNotBypassScheduleRules(t *testing.T) {
+	tm := int64(1000)
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "cyclic_and_incoherent",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S2", Next: "S2", Manual: true, Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tm}},
+			}},
+			"S2": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S1", Next: "S1", Manual: false},
+			}},
+		},
+	}
+	// validateImportRequest catches the structural (manual+schedule) rule,
+	// regardless of allowCycles. Note this calls validateImportRequest, not
+	// validateWorkflows — the Schedule rules live in validateWorkflowStructure.
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err == nil {
+		t.Fatal("expected manual+schedule rejection even when cyclic")
+	} else if !strings.Contains(err.Error(), "manual and scheduled are mutually exclusive") {
+		t.Errorf("expected Schedule-rule error, got: %v", err)
+	}
+}
+
+func TestValidator_AllowCyclesTrue_PollingScheduledWorkflow_Accepted(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "polling",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S2", Next: "S2", Manual: false, Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"S2": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S1", Next: "S1", Manual: false, Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+		},
+	}
+	// Default (allowCycles=false) rejects (the scheduled-polling cycle).
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, false); err == nil {
+		t.Fatal("expected cycle rejection on polling workflow at allowCycles=false")
+	}
+	// allowCycles=true accepts.
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, true); err != nil {
+		t.Errorf("expected polling workflow to validate with allowCycles=true; got: %v", err)
+	}
+	// Structural validation (Schedule rules) also passes.
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Errorf("expected structural validation to pass on polling workflow; got: %v", err)
+	}
+}
+
 // All four named modes must be accepted.
 func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{
