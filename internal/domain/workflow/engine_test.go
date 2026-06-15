@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -3187,5 +3188,48 @@ func TestEngine_CascadeSkipsScheduled_FiresRegularSibling(t *testing.T) {
 	}
 	if entity.Meta.State != "Sfinal" {
 		t.Errorf("expected entity to land in Sfinal via the regular sibling; got %q", entity.Meta.State)
+	}
+}
+
+// TestEngine_AttemptTransition_Scheduled_ReturnsTransitionNotFound verifies
+// that an explicit fire by name of a scheduled transition is rejected with an
+// error wrapping ErrTransitionNotFound. Mirrors the Disabled precedent: the
+// transition exists in config but is not currently dispatchable from the
+// caller's POV. classifyWorkflowError maps the sentinel to
+// 400 TRANSITION_NOT_FOUND, identical to the Disabled and missing-by-name
+// cases. The audit event reuses SMEventTransitionNotFound; the Details string
+// distinguishes the scheduled case.
+func TestEngine_AttemptTransition_Scheduled_ReturnsTransitionNotFound(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sched-explicit", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "SchedExplicitWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "Closed", Manual: false,
+					Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"Closed": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("sched-explicit-e1", modelRef, map[string]any{})
+	entity.Meta.State = "S1"
+
+	_, err := engine.ManualTransition(ctx, entity, "AutoClose")
+	if err == nil {
+		t.Fatal("expected error firing a scheduled transition by name")
+	}
+	if !errors.Is(err, ErrTransitionNotFound) {
+		t.Errorf("expected error to wrap ErrTransitionNotFound (mirrors Disabled precedent); got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "scheduled transitions are not yet implemented") {
+		t.Errorf("expected error message to name the unavailability; got: %v", err)
+	}
+	if entity.Meta.State != "S1" {
+		t.Errorf("expected entity to stay in source state S1; got %q", entity.Meta.State)
 	}
 }

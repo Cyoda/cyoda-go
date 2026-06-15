@@ -452,6 +452,17 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 		return ctx, txID, fmt.Errorf("transition %q is disabled in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
+	if transition.Schedule != nil {
+		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+			spi.SMEventTransitionNotFound,
+			fmt.Sprintf(
+				"Transition %q is scheduled; scheduled transitions are not yet implemented",
+				transitionName), nil)
+		return ctx, txID, fmt.Errorf(
+			"transition %q in state %q is scheduled; scheduled transitions are not yet implemented: %w",
+			transitionName, entity.Meta.State, ErrTransitionNotFound)
+	}
+
 	// Evaluate transition criterion.
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
 		matched, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
