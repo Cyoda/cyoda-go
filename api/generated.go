@@ -22,6 +22,33 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 )
 
+// Defines values for AggregateOp.
+const (
+	Avg   AggregateOp = "avg"
+	Max   AggregateOp = "max"
+	Min   AggregateOp = "min"
+	Stdev AggregateOp = "stdev"
+	Sum   AggregateOp = "sum"
+)
+
+// Valid indicates whether the value is a known member of the AggregateOp enum.
+func (e AggregateOp) Valid() bool {
+	switch e {
+	case Avg:
+		return true
+	case Max:
+		return true
+	case Min:
+		return true
+	case Stdev:
+		return true
+	case Sum:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ArrayConditionDtoOperatorType.
 const (
 	ArrayConditionDtoOperatorTypeAND                 ArrayConditionDtoOperatorType = "AND"
@@ -1650,6 +1677,21 @@ type AbstractConditionDto struct {
 	Type string `json:"type"`
 }
 
+// AggregateOp Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
+type AggregateOp string
+
+// AggregationExpr One requested aggregation. `field` is a JSONPath into the entity payload. `as` is an optional alias for the result key in the bucket's `aggregations` map; when omitted, the alias defaults to `op(field)` (e.g. `sum($.amount)`).
+type AggregationExpr struct {
+	// As Optional result alias.
+	As *string `json:"as,omitempty"`
+
+	// Field JSONPath of the field to aggregate (e.g. `$.amount`).
+	Field string `json:"field"`
+
+	// Op Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
+	Op AggregateOp `json:"op"`
+}
+
 // ArrayConditionDto defines model for ArrayConditionDto.
 type ArrayConditionDto struct {
 	JsonPath     *string                        `json:"jsonPath,omitempty"`
@@ -2057,7 +2099,13 @@ type ExternalizedFunctionConfigDto struct {
 	// CalculationNodesTags Comma-separated list of calculation node tags
 	CalculationNodesTags *string `json:"calculationNodesTags,omitempty"`
 
-	// Context Additional context for the function
+	// Context Pass-through string forwarded verbatim as the `parameters` JSON
+	// node of the outgoing `EntityCriteriaCalculationRequest`. The value
+	// is encoded as a JSON string (pass-as-string); the receiver gets a
+	// JSON-quoted string in `parameters`. Empty value causes the
+	// `parameters` field to be omitted entirely. Use to distinguish
+	// multiple workflow roles served by a single externalized criterion
+	// implementation without registering a separate name per role.
 	Context *string `json:"context,omitempty"`
 
 	// ResponseTimeoutMs Response timeout in milliseconds
@@ -2092,7 +2140,13 @@ type ExternalizedProcessorConfigDto struct {
 	// CalculationNodesTags Comma-separated list of calculation node tags
 	CalculationNodesTags *string `json:"calculationNodesTags,omitempty"`
 
-	// Context Additional context for the function
+	// Context Pass-through string forwarded verbatim as the `parameters` JSON
+	// node of the outgoing `EntityProcessorCalculationRequest`. The
+	// value is encoded as a JSON string (pass-as-string); the receiver
+	// gets a JSON-quoted string in `parameters`. Empty value causes the
+	// `parameters` field to be omitted entirely. Use to distinguish
+	// multiple workflow roles served by a single externalized processor
+	// implementation without registering a separate name per role.
 	Context *string `json:"context,omitempty"`
 
 	// CrossoverToAsyncMs Crossover delay to switch to asynchronous processing (ms),
@@ -2180,6 +2234,50 @@ type GroupConditionDto_Conditions_Item struct {
 
 // GroupConditionDtoOperator defines model for GroupConditionDto.Operator.
 type GroupConditionDtoOperator string
+
+// GroupKeyEntry One (path, value) pair in a bucket's ordered group key. `path` echoes the corresponding `groupBy` dimension; `value` is the observed value (any JSON scalar) or `null` when the field is absent or non-scalar (D4 semantics).
+type GroupKeyEntry struct {
+	// Path Group-by dimension (echoes the request entry).
+	Path string `json:"path"`
+
+	// Value Observed value for this dimension, or null.
+	Value interface{} `json:"value"`
+}
+
+// GroupedStatsBucket One row of the grouped-stats result. `groupKey` is ordered to match the request's `groupBy` list. `aggregations` is omitted when the request specified no aggregations; otherwise each requested aggregation appears keyed by its alias (or `op(field)` default), with `null` for empty groups.
+type GroupedStatsBucket struct {
+	// Aggregations Per-alias aggregation results. Values are numeric or `null` (when the aggregation has no eligible inputs). Absent when the request specified no aggregations.
+	Aggregations *map[string]*float32 `json:"aggregations,omitempty"`
+
+	// Count Number of entities in this group.
+	Count int64 `json:"count"`
+
+	// GroupKey Ordered group-key entries matching the request's `groupBy`.
+	GroupKey []GroupKeyEntry `json:"groupKey"`
+}
+
+// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the literal string `state` (the workflow state) or a JSONPath expression starting with `$.` over the entity payload.
+type GroupedStatsRequest struct {
+	// Aggregations Optional per-group aggregations.
+	Aggregations *[]AggregationExpr `json:"aggregations,omitempty"`
+
+	// Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
+	Condition *GroupedStatsRequest_Condition `json:"condition,omitempty"`
+
+	// GroupBy Ordered list of group-by dimensions. Each entry is either the literal `state` or a JSONPath expression. At least one entry is required.
+	GroupBy []string `json:"groupBy"`
+
+	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding the cap are rejected with 400 `MALFORMED_REQUEST`.
+	Limit *int32 `json:"limit,omitempty"`
+
+	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Defaults to the current consistency time.
+	PointInTime *time.Time `json:"pointInTime,omitempty"`
+}
+
+// GroupedStatsRequest_Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
+type GroupedStatsRequest_Condition struct {
+	union json.RawMessage
+}
 
 // InvalidateKeyRequestDto defines model for InvalidateKeyRequestDto.
 type InvalidateKeyRequestDto struct {
@@ -2767,6 +2865,11 @@ type TransitionDefinitionDto struct {
 
 	// Processors List of processors to execute for this transition
 	Processors *[]TransitionDefinitionDto_Processors_Item `json:"processors,omitempty"`
+
+	// Schedule Optional scheduling configuration. Presence marks the transition as
+	// scheduled; mutually exclusive with manual=true. Runtime not yet
+	// implemented — see TransitionScheduleDto for engine behaviour.
+	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
 }
 
 // TransitionDefinitionDto_Criterion defines model for TransitionDefinitionDto.Criterion.
@@ -2781,6 +2884,39 @@ type TransitionDefinitionDto_Processors_Item struct {
 
 // TransitionNameList An ordered list of workflow transition names available from the entity's current state. Each entry is the name of a configured transition (e.g. "APPROVE", "REJECT") or a virtual loopback transition name. An empty array means no transitions are available from the current state.
 type TransitionNameList = []string
+
+// TransitionScheduleDto Scheduling configuration for an automatic future state transition.
+// Presence of this object marks the parent transition as scheduled.
+// The transition is scheduled to fire at `stateEntryTime + delayMs`
+// (the "scheduledTime"). When the scheduler picks the task up for
+// execution at `executionTime`, it computes `lateness = executionTime
+// - scheduledTime`; if `lateness > timeoutMs` the task is dropped
+// and the transition is NOT attempted. `timeoutMs` gives operators
+// control over how the system should handle backlog or intermittent-
+// offline conditions: short timeoutMs values prefer freshness over
+// eventual execution; absent timeoutMs always eventually fires.
+//
+// Mutually exclusive with parent transition's manual=true.
+//
+// The runtime that arms and fires the timer is not yet implemented.
+// Until it ships, the engine silently skips scheduled transitions
+// during automated cascade selection, and explicit fires by name are
+// rejected with HTTP 400 TRANSITION_NOT_FOUND.
+type TransitionScheduleDto struct {
+	// DelayMs Delay between source-state entry and the scheduled execution
+	// time, in milliseconds. Must be a positive integer (zero or
+	// negative would make this a regular automated transition).
+	DelayMs int64 `json:"delayMs"`
+
+	// TimeoutMs Late-tolerance window past the scheduled execution time, in
+	// milliseconds. When the scheduler picks the task up, if
+	// `(executionTime - scheduledTime) > timeoutMs` the task is
+	// dropped. Absent (omitted) means no timeout — the task fires
+	// whenever the scheduler eventually picks it up. Explicit zero
+	// is the strictest setting — drop on any lateness. Independent
+	// of `delayMs`; the two measure different quantities.
+	TimeoutMs *int64 `json:"timeoutMs,omitempty"`
+}
 
 // TrustedKeyResponseDto defines model for TrustedKeyResponseDto.
 type TrustedKeyResponseDto struct {
@@ -2889,7 +3025,20 @@ type ValueMapsYearMonthsMonth string
 // WorkflowConfigurationDto defines model for WorkflowConfigurationDto.
 type WorkflowConfigurationDto struct {
 	// Active Flag indicating if the workflow is active
-	Active    *bool                               `json:"active,omitempty"`
+	Active *bool `json:"active,omitempty"`
+
+	// Criterion Optional selection criterion evaluated against the entity to
+	// decide which of several workflows applies. When a model has
+	// multiple workflow definitions, the engine iterates them in
+	// declaration order and picks the first one whose `active` flag
+	// is true AND whose `criterion` matches the entity. A `null`
+	// (absent) criterion matches unconditionally. If no active
+	// workflow matches — and `active=false` workflows are skipped
+	// entirely during selection — the engine falls back to the
+	// embedded default workflow and emits both a body warning and
+	// an operator-visible `slog.Warn` line. Workflow-level criteria
+	// use the same Condition DSL as search and transition-level
+	// criteria.
 	Criterion *WorkflowConfigurationDto_Criterion `json:"criterion,omitempty"`
 
 	// Desc Description of the workflow
@@ -2908,7 +3057,18 @@ type WorkflowConfigurationDto struct {
 	Version string `json:"version"`
 }
 
-// WorkflowConfigurationDto_Criterion defines model for WorkflowConfigurationDto.Criterion.
+// WorkflowConfigurationDto_Criterion Optional selection criterion evaluated against the entity to
+// decide which of several workflows applies. When a model has
+// multiple workflow definitions, the engine iterates them in
+// declaration order and picks the first one whose `active` flag
+// is true AND whose `criterion` matches the entity. A `null`
+// (absent) criterion matches unconditionally. If no active
+// workflow matches — and `active=false` workflows are skipped
+// entirely during selection — the engine falls back to the
+// embedded default workflow and emits both a body warning and
+// an operator-visible `slog.Warn` line. Workflow-level criteria
+// use the same Condition DSL as search and transition-level
+// criteria.
 type WorkflowConfigurationDto_Criterion struct {
 	union json.RawMessage
 }
@@ -2927,14 +3087,32 @@ type WorkflowExportResponseDto struct {
 
 // WorkflowImportRequestDto Workflow configurations to import
 type WorkflowImportRequestDto struct {
-	// ImportMode Import mode for handling existing workflows
+	// AllowCycles When true, bypasses the import-time check that rejects workflows
+	// containing unguarded automated cycles (transitions with manual=false
+	// and no criterion that form a closed loop). The runtime cascade
+	// safety net — per-state visit cap and total cascade depth limit —
+	// remains in effect and catches actual runaway at fire time. Use
+	// when the cyclicity is intentional, e.g. polling patterns built on
+	// scheduled transitions. Default false preserves the pre-existing
+	// rejection behaviour exactly.
+	AllowCycles *bool `json:"allowCycles,omitempty"`
+
+	// ImportMode Import mode for handling existing workflows. Defaults to MERGE
+	// when the field is omitted or empty. Parsing is case-insensitive:
+	// "merge", "Merge", and "MERGE" are all accepted. Any value outside
+	// the documented enum (after case-folding) is rejected with
+	// 400 BAD_REQUEST.
 	ImportMode *WorkflowImportRequestDtoImportMode `json:"importMode,omitempty"`
 
 	// Workflows Array of workflow configurations to import
 	Workflows []WorkflowConfigurationDto `json:"workflows"`
 }
 
-// WorkflowImportRequestDtoImportMode Import mode for handling existing workflows
+// WorkflowImportRequestDtoImportMode Import mode for handling existing workflows. Defaults to MERGE
+// when the field is omitted or empty. Parsing is case-insensitive:
+// "merge", "Merge", and "MERGE" are all accepted. Any value outside
+// the documented enum (after case-folding) is rejected with
+// 400 BAD_REQUEST.
 type WorkflowImportRequestDtoImportMode string
 
 // WorkflowImportSuccessDto Confirmation returned when a workflow import completes successfully.
@@ -3394,6 +3572,9 @@ type SearchEntitiesParams struct {
 	TimeoutMillis *string `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
 }
 
+// QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
+type QueryGroupedEntityStatisticsForModelJSONRequestBody = GroupedStatsRequest
+
 // DeleteEntitiesJSONRequestBody defines body for DeleteEntities for application/json ContentType.
 type DeleteEntitiesJSONRequestBody = AbstractConditionDto
 
@@ -3692,6 +3873,146 @@ func (t GroupConditionDto_Conditions_Item) MarshalJSON() ([]byte, error) {
 }
 
 func (t *GroupConditionDto_Conditions_Item) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsArrayConditionDto returns the union data inside the GroupedStatsRequest_Condition as a ArrayConditionDto
+func (t GroupedStatsRequest_Condition) AsArrayConditionDto() (ArrayConditionDto, error) {
+	var body ArrayConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromArrayConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided ArrayConditionDto
+func (t *GroupedStatsRequest_Condition) FromArrayConditionDto(v ArrayConditionDto) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeArrayConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided ArrayConditionDto
+func (t *GroupedStatsRequest_Condition) MergeArrayConditionDto(v ArrayConditionDto) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsFunctionConditionDto returns the union data inside the GroupedStatsRequest_Condition as a FunctionConditionDto
+func (t GroupedStatsRequest_Condition) AsFunctionConditionDto() (FunctionConditionDto, error) {
+	var body FunctionConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromFunctionConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided FunctionConditionDto
+func (t *GroupedStatsRequest_Condition) FromFunctionConditionDto(v FunctionConditionDto) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeFunctionConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided FunctionConditionDto
+func (t *GroupedStatsRequest_Condition) MergeFunctionConditionDto(v FunctionConditionDto) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsGroupConditionDto returns the union data inside the GroupedStatsRequest_Condition as a GroupConditionDto
+func (t GroupedStatsRequest_Condition) AsGroupConditionDto() (GroupConditionDto, error) {
+	var body GroupConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromGroupConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided GroupConditionDto
+func (t *GroupedStatsRequest_Condition) FromGroupConditionDto(v GroupConditionDto) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeGroupConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided GroupConditionDto
+func (t *GroupedStatsRequest_Condition) MergeGroupConditionDto(v GroupConditionDto) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsLifecycleConditionDto returns the union data inside the GroupedStatsRequest_Condition as a LifecycleConditionDto
+func (t GroupedStatsRequest_Condition) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
+	var body LifecycleConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromLifecycleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided LifecycleConditionDto
+func (t *GroupedStatsRequest_Condition) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeLifecycleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided LifecycleConditionDto
+func (t *GroupedStatsRequest_Condition) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSimpleConditionDto returns the union data inside the GroupedStatsRequest_Condition as a SimpleConditionDto
+func (t GroupedStatsRequest_Condition) AsSimpleConditionDto() (SimpleConditionDto, error) {
+	var body SimpleConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSimpleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided SimpleConditionDto
+func (t *GroupedStatsRequest_Condition) FromSimpleConditionDto(v SimpleConditionDto) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSimpleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided SimpleConditionDto
+func (t *GroupedStatsRequest_Condition) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GroupedStatsRequest_Condition) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GroupedStatsRequest_Condition) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
@@ -4330,6 +4651,9 @@ type ServerInterface interface {
 	// Retrieve entity statistics for a specific model
 	// (GET /entity/stats/{entityName}/{modelVersion})
 	GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params GetEntityStatisticsForModelParams)
+	// Query grouped entity statistics for a specific model
+	// (POST /entity/stats/{entityName}/{modelVersion}/query)
+	QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
 	// Delete a single entity
 	// (DELETE /entity/{entityId})
 	DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID)
@@ -5027,6 +5351,47 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsForModel(w http.ResponseWr
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityStatisticsForModel(w, r, entityName, modelVersion, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// QueryGroupedEntityStatisticsForModel operation middleware
+func (siw *ServerInterfaceWrapper) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "entityName" -------------
+	var entityName string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityName", r.PathValue("entityName"), &entityName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityName", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "modelVersion" -------------
+	var modelVersion int32
+
+	err = runtime.BindStyledParameterWithOptions("simple", "modelVersion", r.PathValue("modelVersion"), &modelVersion, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int32"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "modelVersion", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7580,6 +7945,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/states", wrapper.GetEntityStatisticsByState)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/states/{entityName}/{modelVersion}", wrapper.GetEntityStatisticsByStateForModel)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/{entityName}/{modelVersion}", wrapper.GetEntityStatisticsForModel)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entity/stats/{entityName}/{modelVersion}/query", wrapper.QueryGroupedEntityStatisticsForModel)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/entity/{entityId}", wrapper.DeleteSingleEntity)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/{entityId}", wrapper.GetOneEntity)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/{entityId}/changes", wrapper.GetEntityChangesMetadata)
