@@ -330,3 +330,116 @@ func TestImport_ZeroResultAfterMerge_EmitsSlogWarn(t *testing.T) {
 		t.Errorf("importMode: expected 'MERGE', got %v", r["importMode"])
 	}
 }
+
+// cyclicWorkflowImportBody returns an import request body whose workflow
+// declares an unguarded automated cycle S1 -> S2 -> S1. validateWorkflowLoops
+// rejects this shape by default. The allowCycles flag is the operator
+// opt-in.
+func cyclicWorkflowImportBody(allowCycles bool) string {
+	var allow string
+	if allowCycles {
+		allow = `"allowCycles": true,`
+	}
+	return `{
+		"importMode": "REPLACE",
+		` + allow + `
+		"workflows": [{
+			"version": "1.0",
+			"name": "cyclic",
+			"initialState": "S1",
+			"active": true,
+			"states": {
+				"S1": {"transitions": [{"name": "to-S2", "next": "S2", "manual": false}]},
+				"S2": {"transitions": [{"name": "to-S1", "next": "S1", "manual": false}]}
+			}
+		}]
+	}`
+}
+
+// TestImport_AllowCyclesTrue_EmitsBypassWarn pins the security-relevant
+// audit log line emitted when the request-level allowCycles=true bypass
+// is exercised. Operators reviewing logs must be able to see which
+// tenant/model/import-call invoked the bypass and which workflow names
+// were admitted under it.
+//
+// Asserts:
+//   - Exactly one WARN record with msg "workflow import: cycle validation
+//     bypassed".
+//   - pkg=workflow, tenant present, entityName/modelVersion/importMode
+//     match the request, workflows lists the bypassed workflow names.
+//
+// This is the negative-space pair for TestImport_Success_EmitsSlogInfo:
+// the success log says "what changed"; this log says "with what safety
+// check bypassed".
+func TestImport_AllowCyclesTrue_EmitsBypassWarn(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Polling", 1)
+
+	getRecords := captureSlog(t, slog.LevelWarn)
+
+	resp := doWorkflowImport(t, srv.URL, "Polling", 1, cyclicWorkflowImportBody(true))
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import with allowCycles=true expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	warns := recordsByMsg(getRecords(), "workflow import: cycle validation bypassed")
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 'cycle validation bypassed' WARN record, got %d", len(warns))
+	}
+	r := warns[0]
+	if r["level"] != "WARN" {
+		t.Errorf("level: expected WARN, got %v", r["level"])
+	}
+	if r["pkg"] != "workflow" {
+		t.Errorf("pkg: expected 'workflow', got %v", r["pkg"])
+	}
+	if _, present := r["tenant"]; !present {
+		t.Errorf("tenant: field missing — bypass log must carry tenant context for multi-tenant audit")
+	}
+	if r["entityName"] != "Polling" {
+		t.Errorf("entityName: expected 'Polling', got %v", r["entityName"])
+	}
+	if r["modelVersion"] != "1" {
+		t.Errorf("modelVersion: expected '1' (string), got %v (%T)", r["modelVersion"], r["modelVersion"])
+	}
+	if r["importMode"] != "REPLACE" {
+		t.Errorf("importMode: expected 'REPLACE', got %v", r["importMode"])
+	}
+	workflows, ok := r["workflows"].([]any)
+	if !ok {
+		t.Fatalf("workflows: expected []any, got %T", r["workflows"])
+	}
+	if len(workflows) != 1 || workflows[0] != "cyclic" {
+		t.Errorf("workflows: expected ['cyclic'], got %v", workflows)
+	}
+}
+
+// TestImport_AllowCyclesAbsent_DoesNotEmitBypassWarn pins the negative
+// invariant: an import request without allowCycles=true MUST NOT emit
+// the bypass WARN line. A regression that started emitting the bypass
+// log on every import would silently elevate WARN volume and confuse
+// operators about which imports actually used the safety bypass.
+//
+// The cyclic workflow is rejected at validation time (400), so the
+// import doesn't succeed; the assertion is that no bypass-warn fired
+// regardless of the import outcome.
+func TestImport_AllowCyclesAbsent_DoesNotEmitBypassWarn(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "PollingRejected", 1)
+
+	getRecords := captureSlog(t, slog.LevelWarn)
+
+	resp := doWorkflowImport(t, srv.URL, "PollingRejected", 1, cyclicWorkflowImportBody(false))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("import without allowCycles expected 400, got %d", resp.StatusCode)
+	}
+
+	warns := recordsByMsg(getRecords(), "workflow import: cycle validation bypassed")
+	if len(warns) != 0 {
+		t.Errorf("bypass WARN must not fire when allowCycles is absent; got %d records", len(warns))
+	}
+}
