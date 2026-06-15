@@ -13,6 +13,22 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
+// descLogPreviewBytes caps the per-workflow `desc` field in the audit-log
+// digest. Description is operator-supplied free text with no upstream
+// length cap; emitting it verbatim risks unbounded log lines from a
+// multi-KB paste. 200 bytes matches the convention used by
+// logging.PayloadPreview for DEBUG-level payload previews.
+const descLogPreviewBytes = 200
+
+// truncateForLog returns s clipped to maxLen runes with a "..." suffix
+// when truncation occurred. Used for audit-log field previews.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // Handler implements the workflow import/export HTTP endpoints.
 type Handler struct {
 	factory spi.StoreFactory
@@ -175,10 +191,15 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Audit log on success: workflow configuration is a high-impact, mutable
-	// multi-tenant surface. One INFO line per import names the mode, the
-	// model, and the per-workflow {name, desc} pairs so operators can
-	// correlate change intent in logs. Description is wired through this
-	// payload as its operator-visible consumer.
+	// multi-tenant surface. One INFO line per import names the mode and the
+	// digest of THIS CALL's incoming payload — the audit subject is the
+	// change applied, not the resulting model state. `workflowCount` is the
+	// incoming size; `storedWorkflowCount` reports the model's post-merge
+	// total so operators can see both the diff and the resulting fan-out
+	// without consulting the workflow JSON. Description is wired through
+	// the per-workflow digest as its operator-visible consumer, truncated
+	// per-entry to bound log volume (Description has no upstream length
+	// cap).
 	//
 	// When the import leaves the model with zero workflows, log at WARN
 	// instead — the engine will silently fall back to the embedded default
@@ -187,11 +208,12 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// rejected upstream by the structural validator, so the only reachable
 	// path is MERGE-empty on a model with no prior workflows; the canary
 	// still defends against any future code path that lands there.
-	wfDigest := make([]map[string]string, len(result))
-	wfNames := make([]string, len(result))
-	for i, wf := range result {
-		wfDigest[i] = map[string]string{"name": wf.Name, "desc": wf.Description}
-		wfNames[i] = wf.Name
+	wfDigest := make([]map[string]string, len(incoming))
+	for i, wf := range incoming {
+		wfDigest[i] = map[string]string{
+			"name": wf.Name,
+			"desc": truncateForLog(wf.Description, descLogPreviewBytes),
+		}
 	}
 	logAttrs := []any{
 		slog.String("pkg", "workflow"),
@@ -199,9 +221,9 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		slog.String("entityName", entityName),
 		slog.String("modelVersion", ref.ModelVersion),
 		slog.String("importMode", mode),
-		slog.Int("workflowCount", len(result)),
+		slog.Int("workflowCount", len(incoming)),
+		slog.Int("storedWorkflowCount", len(result)),
 		slog.Any("workflows", wfDigest),
-		slog.Any("workflowNames", wfNames),
 	}
 	if len(result) == 0 {
 		slog.WarnContext(r.Context(), "workflow import resulted in zero workflows", logAttrs...)

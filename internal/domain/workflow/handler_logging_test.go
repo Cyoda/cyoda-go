@@ -113,8 +113,19 @@ func TestImport_Success_EmitsSlogInfo(t *testing.T) {
 		t.Errorf("modelVersion: expected '1' (string), got %v (%T)", r["modelVersion"], r["modelVersion"])
 	}
 	// JSON unmarshal turns numbers into float64.
+	// workflowCount names the size of THIS import call's incoming payload;
+	// storedWorkflowCount names the model's post-merge total. On a fresh
+	// model with two incoming workflows the two coincide; the
+	// MergeWithExisting test exercises the divergence.
 	if r["workflowCount"] != float64(2) {
-		t.Errorf("workflowCount: expected 2, got %v", r["workflowCount"])
+		t.Errorf("workflowCount: expected 2 (incoming), got %v", r["workflowCount"])
+	}
+	if r["storedWorkflowCount"] != float64(2) {
+		t.Errorf("storedWorkflowCount: expected 2 (post-merge), got %v", r["storedWorkflowCount"])
+	}
+	// workflowNames was a duplicate of workflows[].name; it must NOT appear.
+	if _, present := r["workflowNames"]; present {
+		t.Errorf("workflowNames: must not be emitted (duplicates workflows[].name)")
 	}
 
 	// workflows must list the {name, desc} pairs — this is the Description-wiring
@@ -149,6 +160,127 @@ func TestImport_Success_EmitsSlogInfo(t *testing.T) {
 	}
 	if len(expected) != 0 {
 		t.Errorf("workflows: missing expected entries: %v", expected)
+	}
+}
+
+// TestImport_MergeWithExisting_LogsIncomingNotMerged is the divergence
+// test: the audit log emits the THIS-CALL incoming payload as the
+// `workflows` digest, not the post-merge final state. workflowCount
+// reports the incoming size; storedWorkflowCount reports the post-merge
+// total. Logging the merged state under "change intent" would distort
+// what a single MERGE call actually did.
+func TestImport_MergeWithExisting_LogsIncomingNotMerged(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Seed one workflow first; this one MUST NOT appear in the audit log
+	// for the second import below.
+	seed := `{
+		"importMode": "MERGE",
+		"workflows": [
+			{
+				"version": "1.0", "name": "seed-existing", "desc": "preexisting",
+				"initialState": "S1", "active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, seed)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("seed import expected 200, got %d", resp.StatusCode)
+	}
+
+	getRecords := captureSlog(t, slog.LevelInfo)
+
+	// MERGE one new workflow; existing seed-existing stays in the store
+	// but must not be conflated with the THIS-CALL audit subject.
+	body := `{
+		"importMode": "MERGE",
+		"workflows": [
+			{
+				"version": "1.0", "name": "incoming-new", "desc": "added this call",
+				"initialState": "S1", "active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+	resp = doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("merge import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	imports := recordsByMsg(getRecords(), "workflow import applied")
+	if len(imports) != 1 {
+		t.Fatalf("expected exactly 1 'workflow import applied' INFO record, got %d", len(imports))
+	}
+	r := imports[0]
+	if r["workflowCount"] != float64(1) {
+		t.Errorf("workflowCount: expected 1 (incoming this call), got %v", r["workflowCount"])
+	}
+	if r["storedWorkflowCount"] != float64(2) {
+		t.Errorf("storedWorkflowCount: expected 2 (seed + incoming), got %v", r["storedWorkflowCount"])
+	}
+	wfs, _ := r["workflows"].([]any)
+	if len(wfs) != 1 {
+		t.Fatalf("workflows: expected 1 entry (the incoming), got %d: %v", len(wfs), wfs)
+	}
+	entry, _ := wfs[0].(map[string]any)
+	if entry["name"] != "incoming-new" {
+		t.Errorf("workflows[0].name: expected 'incoming-new' (THIS CALL), got %v", entry["name"])
+	}
+	if entry["desc"] != "added this call" {
+		t.Errorf("workflows[0].desc: expected 'added this call', got %v", entry["desc"])
+	}
+}
+
+// TestImport_LongDescription_TruncatedInLog asserts the per-workflow desc
+// is truncated to bound log volume. WorkflowDefinition.Description is
+// operator-supplied free text with no length cap upstream; emitting it
+// verbatim risks unbounded log lines from a multi-KB paste or
+// deliberately-large value.
+func TestImport_LongDescription_TruncatedInLog(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	getRecords := captureSlog(t, slog.LevelInfo)
+
+	// 1 KB description — well past any sensible audit-line budget.
+	longDesc := strings.Repeat("x", 1024)
+	body := `{
+		"importMode": "MERGE",
+		"workflows": [
+			{
+				"version": "1.0", "name": "long-desc-flow",
+				"desc": "` + longDesc + `",
+				"initialState": "S1", "active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	imports := recordsByMsg(getRecords(), "workflow import applied")
+	if len(imports) != 1 {
+		t.Fatalf("expected 1 INFO record, got %d", len(imports))
+	}
+	wfs, _ := imports[0]["workflows"].([]any)
+	entry, _ := wfs[0].(map[string]any)
+	desc, _ := entry["desc"].(string)
+	if len(desc) >= 1024 {
+		t.Errorf("desc: expected truncation below 1024 chars, got %d", len(desc))
+	}
+	if !strings.HasSuffix(desc, "...") {
+		t.Errorf("desc: expected '...' truncation marker, got tail %q", desc[max(0, len(desc)-10):])
 	}
 }
 

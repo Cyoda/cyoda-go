@@ -243,10 +243,10 @@ Response: `200 OK`, `application/json`:
 
 Every successful import emits a single structured `log/slog` line so operators can correlate workflow-config changes in their log pipeline.
 
-- **Normal path** — `level=INFO`, `msg="workflow import applied"`. Fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `importMode`, `workflowCount`, `workflows` (array of `{name, desc}`), `workflowNames` (string array).
+- **Normal path** — `level=INFO`, `msg="workflow import applied"`. Fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `importMode`, `workflowCount` (size of THIS call's incoming payload), `storedWorkflowCount` (model's post-merge total), `workflows` (array of `{name, desc}` reflecting the incoming payload — the audit subject is what was applied, not the resulting model state).
 - **Zero-result canary** — `level=WARN`, `msg="workflow import resulted in zero workflows"`, same field shape. After `REPLACE` / `ACTIVATE` empty became a `400 VALIDATION_FAILED` (see above), the only reachable path is a `MERGE` with an empty `workflows` array against a model that has no prior workflows. The model will then silently fall back to the embedded default on the next entity execution; this canary surfaces that outcome before it shows up in entity-execution logs.
 
-The `desc` field on each workflow is surfaced verbatim in the audit log digest — use it to record change intent that log readers can correlate without consulting the workflow JSON.
+The `desc` field on each workflow is surfaced in the audit log digest, truncated to 200 characters with a `...` suffix when longer — set a meaningful description to record change intent that log readers can correlate without consulting the workflow JSON.
 
 ## EXPORT RESPONSE
 
