@@ -83,6 +83,7 @@ Release builds additionally run a Trivy scan against the published GHCR image (`
 No external web frameworks. No DI frameworks. No ORM.
 
 - When bumping `cyoda-go-spi` in the root `go.mod`, bump it identically in every `plugins/*/go.mod` in the same PR. The `check-spi-pin-sync` CI gate enforces this. See [`MAINTAINING.md`](MAINTAINING.md#bumping-cyoda-go-spi) for the full procedure.
+- **Set `GOPRIVATE=github.com/Cyoda-platform/*`** in your shell environment. This tells the Go toolchain to bypass `proxy.golang.org` and `sum.golang.org` for cyoda-platform modules — required because (a) the commercial `cyoda-go-cassandra` plugin is private, and (b) during periods when a `cyoda-go-spi` tag is being re-cut at a new commit (see the v0.8.0 retraction note in cyoda-go-spi's CHANGELOG), the public checksum database would otherwise serve stale SHAs. CI workflows set this in their `env:` block; developers should add `export GOPRIVATE=github.com/Cyoda-platform/*` to their shell profile.
 
 | Dependency | Purpose |
 |------------|---------|

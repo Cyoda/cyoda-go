@@ -1445,3 +1445,56 @@ func (c *Client) ImportWorkflowRaw(t *testing.T, name string, version int, body 
 	resp.Body.Close()
 	return resp.StatusCode, raw, nil
 }
+
+// QueryGroupedStats issues POST /api/entity/stats/{name}/{version}/query
+// with the supplied request body and decodes the response into
+// []GroupedStatsBucket. Used by the grouped-stats parity scenarios to
+// drive the public surface — capability detection and pushdown vs.
+// streaming-tally selection are handled by the service layer.
+//
+// Canonical handler: internal/domain/entity/grouped_stats_handler.go.
+func (c *Client) QueryGroupedStats(t *testing.T, modelName string, modelVersion int, req GroupedStatsRequest) ([]GroupedStatsBucket, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/stats/%s/%d/query", modelName, modelVersion)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal QueryGroupedStats body: %w", err)
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, string(body))
+	if err != nil {
+		return nil, err
+	}
+	var buckets []GroupedStatsBucket
+	if err := json.Unmarshal(raw, &buckets); err != nil {
+		return nil, fmt.Errorf("decode QueryGroupedStats response: %w (body=%s)", err, string(raw))
+	}
+	return buckets, nil
+}
+
+// QueryGroupedStatsRaw is the negative-path companion to
+// QueryGroupedStats: it returns (status, body, transport-err) without
+// raising on non-2xx, used by parity scenarios that assert error
+// responses (e.g. 422 GROUP_CARDINALITY_EXCEEDED).
+func (c *Client) QueryGroupedStatsRaw(t *testing.T, modelName string, modelVersion int, req GroupedStatsRequest) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/stats/%s/%d/query", modelName, modelVersion)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("marshal QueryGroupedStats body: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}

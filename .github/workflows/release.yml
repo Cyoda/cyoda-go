@@ -10,6 +10,9 @@ permissions:
   packages: write    # GHCR push
   id-token: write    # keyless cosign via OIDC
 
+env:
+  GOPRIVATE: github.com/Cyoda-platform/*
+
 jobs:
   release:
     runs-on: ubuntu-latest

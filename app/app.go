@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -498,6 +499,36 @@ func New(cfg Config) *App {
 	// Entity transition routes (with auth, outside generated API mux)
 	mux.Handle("GET /entity/{entityId}/transitions", authMW(http.HandlerFunc(entityHandler.HandleGetTransitions)))
 	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(http.HandlerFunc(entityHandler.HandleFetchTransitions)))
+
+	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
+	// the closure can capture a.storeFactory directly — the handler needs
+	// the EntityStore as `any` (capability detection via type assertion in
+	// the service layer) and a validated ModelRef for the calling tenant.
+	// The resolver returns ok=false for spi.ErrNotFound (mapped by the
+	// handler to 400 UNKNOWN_MODEL per spec §3) and surfaces every other
+	// storage error to the 500-with-ticket path.
+	storeFactory := a.storeFactory
+	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, bool, error) {
+		ctx := r.Context()
+		modelStore, err := storeFactory.ModelStore(ctx)
+		if err != nil {
+			return nil, spi.ModelRef{}, false, err
+		}
+		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
+		if _, gerr := modelStore.Get(ctx, ref); gerr != nil {
+			if errors.Is(gerr, spi.ErrNotFound) {
+				return nil, ref, false, nil
+			}
+			return nil, ref, false, gerr
+		}
+		entityStore, err := storeFactory.EntityStore(ctx)
+		if err != nil {
+			return nil, ref, false, err
+		}
+		return entityStore, ref, true, nil
+	}
+	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
+	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(groupedStatsHandler))
 
 	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths.

@@ -1105,6 +1105,139 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/InternalServerError'
+  /entity/stats/{entityName}/{modelVersion}/query:
+    post:
+      tags:
+        - Entity Management
+      summary: Query grouped entity statistics for a specific model
+      description: >-
+        Returns statistics for entities of a specific model name and version,
+        grouped by one or more fields (workflow state or JSONPath expressions
+        over the entity payload). Optionally restricts the population by an
+        existing Condition DSL predicate and computes per-group aggregations
+        (sum, avg, min, max, stdev) over a JSONPath field.
+
+
+        Group cardinality is bounded server-side by `CYODA_STATS_GROUP_MAX`
+        (default 10000); requests exceeding the bound fail with 422
+        `GROUP_CARDINALITY_EXCEEDED`. Backends that do not implement the
+        grouped-stats SPI capability return 501 `NOT_IMPLEMENTED_BY_BACKEND`.
+
+
+        Error responses use RFC 9457 problem+json with the cyoda-go
+        `properties.errorCode` extension carrying the stable machine-readable
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `UNKNOWN_MODEL`,
+        `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
+      operationId: queryGroupedEntityStatisticsForModel
+      parameters:
+        - name: entityName
+          in: path
+          description: Name of the entity model
+          required: true
+          schema:
+            type: string
+            maxLength: 1024
+            minLength: 1
+        - name: modelVersion
+          in: path
+          description: Version number of the entity model
+          required: true
+          schema:
+            type: integer
+            format: int32
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupedStatsRequest"
+            example:
+              groupBy:
+                - state
+                - $.country
+              condition:
+                type: simple
+                jsonPath: $.year
+                operatorType: GREATER_OR_EQUAL
+                value: 2000
+              aggregations:
+                - op: sum
+                  field: $.amount
+                  as: totalAmount
+                - op: avg
+                  field: $.amount
+              pointInTime: 2035-01-01T12:00:00Z
+              limit: 5000
+      responses:
+        "200":
+          description: Grouped statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GroupedStatsBucket"
+              example:
+                - groupKey:
+                    - path: state
+                      value: AWARDED
+                    - path: $.country
+                      value: SE
+                  count: 31
+                  aggregations:
+                    totalAmount: 12500000
+                    avg_amount: 403225.806
+                - groupKey:
+                    - path: state
+                      value: AWARDED
+                    - path: $.country
+                      value: null
+                  count: 4
+                  aggregations:
+                    totalAmount: null
+                    avg_amount: null
+        "400":
+          description: >-
+            Bad request — malformed JSON body, validation failure (empty
+            `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
+            JSONPath, etc.), invalid Condition DSL predicate, or unknown
+            model for the calling tenant.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "413":
+          description: Request body exceeds the 10 MiB maximum
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: >-
+            Group cardinality exceeds the configured `CYODA_STATS_GROUP_MAX`.
+            Retry with a more selective `condition` or fewer `groupBy`
+            dimensions.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "501":
+          description: >-
+            The configured storage backend does not implement the
+            grouped-stats SPI capability.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        default:
+          $ref: '#/components/responses/InternalServerError'
+      security:
+        - bearerAuth: []
   /entity/{entityId}:
     get:
       tags:
@@ -9401,6 +9534,142 @@ components:
         - modelName
         - modelVersion
         - state
+    AggregateOp:
+      type: string
+      description: >-
+        Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply
+        to scalar numeric fields; non-numeric or missing values are skipped
+        per spec §3 (D4 semantics — see grouped-stats design doc).
+      enum:
+        - sum
+        - avg
+        - min
+        - max
+        - stdev
+    AggregationExpr:
+      type: object
+      description: >-
+        One requested aggregation. `field` is a JSONPath into the entity
+        payload. `as` is an optional alias for the result key in the
+        bucket's `aggregations` map; when omitted, the alias defaults to
+        `op(field)` (e.g. `sum($.amount)`).
+      properties:
+        op:
+          $ref: "#/components/schemas/AggregateOp"
+        field:
+          type: string
+          description: JSONPath of the field to aggregate (e.g. `$.amount`).
+          example: $.amount
+          minLength: 1
+        as:
+          type: string
+          description: Optional result alias.
+          example: totalAmount
+      required:
+        - op
+        - field
+    GroupedStatsRequest:
+      type: object
+      description: >-
+        Request body for the grouped-stats query endpoint. `groupBy`
+        dimensions may be either the literal string `state` (the workflow
+        state) or a JSONPath expression starting with `$.` over the entity
+        payload.
+      properties:
+        groupBy:
+          type: array
+          description: >-
+            Ordered list of group-by dimensions. Each entry is either the
+            literal `state` or a JSONPath expression. At least one entry
+            is required.
+          minItems: 1
+          items:
+            type: string
+            example: $.country
+        condition:
+          description: >-
+            Optional Condition DSL predicate restricting the population.
+            Uses the same union shape as the async-search endpoint.
+          oneOf:
+            - $ref: "#/components/schemas/ArrayConditionDto"
+            - $ref: "#/components/schemas/FunctionConditionDto"
+            - $ref: "#/components/schemas/GroupConditionDto"
+            - $ref: "#/components/schemas/LifecycleConditionDto"
+            - $ref: "#/components/schemas/SimpleConditionDto"
+        aggregations:
+          type: array
+          description: Optional per-group aggregations.
+          items:
+            $ref: "#/components/schemas/AggregationExpr"
+        pointInTime:
+          type: string
+          format: date-time
+          description: >-
+            Optional point-in-time for the query in ISO 8601 / RFC 3339
+            format. Defaults to the current consistency time.
+          example: 2035-01-01T12:00:00Z
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >-
+            Optional cap on the number of buckets returned. Must be
+            positive and less than or equal to the server-configured
+            `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding
+            the cap are rejected with 400 `MALFORMED_REQUEST`.
+          example: 5000
+      required:
+        - groupBy
+    GroupKeyEntry:
+      type: object
+      description: >-
+        One (path, value) pair in a bucket's ordered group key. `path`
+        echoes the corresponding `groupBy` dimension; `value` is the
+        observed value (any JSON scalar) or `null` when the field is
+        absent or non-scalar (D4 semantics).
+      properties:
+        path:
+          type: string
+          description: Group-by dimension (echoes the request entry).
+          example: $.country
+        value:
+          description: Observed value for this dimension, or null.
+          nullable: true
+          example: SE
+      required:
+        - path
+        - value
+    GroupedStatsBucket:
+      type: object
+      description: >-
+        One row of the grouped-stats result. `groupKey` is ordered to
+        match the request's `groupBy` list. `aggregations` is omitted
+        when the request specified no aggregations; otherwise each
+        requested aggregation appears keyed by its alias (or
+        `op(field)` default), with `null` for empty groups.
+      properties:
+        groupKey:
+          type: array
+          description: Ordered group-key entries matching the request's `groupBy`.
+          items:
+            $ref: "#/components/schemas/GroupKeyEntry"
+        count:
+          type: integer
+          format: int64
+          description: Number of entities in this group.
+          example: 31
+        aggregations:
+          type: object
+          description: >-
+            Per-alias aggregation results. Values are numeric or `null`
+            (when the aggregation has no eligible inputs). Absent when
+            the request specified no aggregations.
+          additionalProperties:
+            type: number
+            nullable: true
+      required:
+        - count
+        - groupKey
     TechnicalUserDto:
       type: object
       properties:

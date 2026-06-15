@@ -111,6 +111,21 @@ var allTests = []NamedTest{
 	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
+
+	// Grouped statistics — cross-backend parity matrix (spec §7).
+	// Each scenario asserts an OBSERVABLE response: every backend
+	// (memory / sqlite / postgres / out-of-tree plugins) must produce the
+	// same buckets for the same fixture corpus modulo float tolerance.
+	{"GroupedStats_CountByState", RunParityGroupedStats_CountByState},
+	{"GroupedStats_CountByDataField", RunParityGroupedStats_CountByDataField},
+	{"GroupedStats_MultiDimGroupBy", RunParityGroupedStats_MultiDimGroupBy},
+	{"GroupedStats_WithCondition", RunParityGroupedStats_WithCondition},
+	{"GroupedStats_PointInTime", RunParityGroupedStats_PointInTime},
+	{"GroupedStats_AggregationsTier1", RunParityGroupedStats_AggregationsTier1},
+	{"GroupedStats_StdevLowVarianceHighMean", RunParityGroupedStats_StdevLowVarianceHighMean},
+	{"GroupedStats_NonNumericSkipped", RunParityGroupedStats_NonNumericSkipped},
+	{"GroupedStats_NonScalarCoercesToNull", RunParityGroupedStats_NonScalarCoercesToNull},
+	{"GroupedStats_CardinalityExceeded", RunParityGroupedStats_CardinalityExceeded},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.
