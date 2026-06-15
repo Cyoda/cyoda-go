@@ -465,7 +465,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 	// short-circuit without touching the inner store. This collapses
 	// a serial flood of bad requests into one inner-store round-trip
 	// per (tenant, modelRef, path) tuple between schema events.
-	tenant := tenantFromContext(ctx)
+	tenant := common.TenantFromContext(ctx)
 	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, paths); len(cachedMissing) > 0 {
 		return invalidPathError(cachedMissing)
 	}
@@ -583,18 +583,6 @@ func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths 
 	for _, p := range paths {
 		s.pathCache.MarkPresent(tenant, ref, p)
 	}
-}
-
-// tenantFromContext mirrors the modelcache cache's tenant extractor.
-// Empty string when no UserContext is bound — that bucket is shared
-// among unauthenticated requests, which is acceptable for negative
-// caching: invalidation events name the tenant explicitly.
-func tenantFromContext(ctx context.Context) string {
-	uc := spi.GetUserContext(ctx)
-	if uc == nil {
-		return ""
-	}
-	return string(uc.Tenant.ID)
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more

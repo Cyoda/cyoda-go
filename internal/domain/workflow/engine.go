@@ -630,18 +630,6 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 	return uuid.UUID(e.uuids.NewTimeUUID()).String()
 }
 
-// tenantFromContext mirrors the helper in internal/domain/search/service.go.
-// Returns the bound tenant ID, or empty when no UserContext is on the
-// context (unauthenticated path). Kept local to this package; if a third
-// caller appears, extract to internal/common per rule-of-three.
-func tenantFromContext(ctx context.Context) string {
-	uc := spi.GetUserContext(ctx)
-	if uc == nil {
-		return ""
-	}
-	return string(uc.Tenant.ID)
-}
-
 // logDefaultFallback emits a single slog.Warn line whenever the engine
 // substitutes the embedded default workflow. Reason discriminates the four
 // call sites:
@@ -656,7 +644,7 @@ func tenantFromContext(ctx context.Context) string {
 func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
 	slog.WarnContext(ctx, "default workflow substituted",
 		slog.String("pkg", "workflow"),
-		slog.String("tenant", tenantFromContext(ctx)),
+		slog.String("tenant", common.TenantFromContext(ctx)),
 		slog.String("entityName", entity.Meta.ModelRef.EntityName),
 		slog.String("modelVersion", entity.Meta.ModelRef.ModelVersion),
 		slog.String("entityId", entity.Meta.ID),
