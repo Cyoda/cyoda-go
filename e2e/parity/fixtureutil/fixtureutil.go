@@ -413,7 +413,7 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	}
 	cyodaReadinessTimeout := opt.ReadinessTimeout
 	if cyodaReadinessTimeout == 0 {
-		cyodaReadinessTimeout = 30 * time.Second
+		cyodaReadinessTimeout = defaultCyodaReadinessTimeout
 	}
 
 	// Launch cyoda-go. Subprocess stdout/stderr flow to the test runner's
@@ -520,8 +520,13 @@ type ClusterLaunchResult struct {
 }
 
 // defaultCyodaReadinessTimeout is the default time to wait for each
-// cyoda-go node to pass its /api/health check.
-const defaultCyodaReadinessTimeout = 30 * time.Second
+// cyoda-go node to pass its /api/health check. Sized to accommodate
+// race-detector instrumentation overhead (2-10x slower) on CI runners
+// under load: the prior 30s value flaked on the multinode launch path
+// when node 2 missed its probe window. Single-node runs in the same
+// suite settle in well under 30s; the headroom is for race-instrumented
+// runs of TestMultiNode and friends.
+const defaultCyodaReadinessTimeout = 120 * time.Second
 
 // defaultComputeHealthAddrTimeout is the default time to wait for the
 // compute-test-client to print its HEALTH_ADDR line on stdout.
