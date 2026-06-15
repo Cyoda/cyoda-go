@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -398,5 +401,217 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 	}
 	if counts[nil] != 1 {
 		t.Errorf("null-bucket count = %d; want 1", counts[nil])
+	}
+}
+
+// TestMemoryGroupedStats_ConcurrentReadersDoNotStarveWriters pins the
+// snapshot-then-iterate contract from plugins/memory/grouped_stats.go:
+// Iterate / GroupedAggregate take entityMu.RLock only during the snapshot
+// capture phase, then release before iterating. Writers (Save) acquire
+// entityMu.Lock and must make progress even while readers are mid-iterate.
+//
+// The bound on worst-case Save (500ms) is a sanity check, not an SLO —
+// if a regression makes Save block for the full reader iteration phase
+// (e.g. the read lock is held across the iterate loop instead of just
+// the snapshot build), the worst-case Save explodes to multi-second
+// values. If CI flakes at 500ms, bump to a still-meaningful value
+// (e.g. 2000ms) rather than removing the assertion.
+func TestMemoryGroupedStats_ConcurrentReadersDoNotStarveWriters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("3s concurrency stress test; -short skips")
+	}
+	_, store, ctx := gsNewStore(t)
+
+	// Seed 1000 baseline entities so snapshots have work to do.
+	for i := 0; i < 1000; i++ {
+		gsSave(t, ctx, store, fmt.Sprintf("seed-%d", i), "available", map[string]any{
+			"variantId": fmt.Sprintf("v%d", i%50),
+		})
+	}
+
+	var (
+		readsDone   atomic.Int64
+		writesDone  atomic.Int64
+		writeWallNs atomic.Int64 // cumulative time spent in Save
+		maxWriteNs  atomic.Int64 // worst-case Save wall-clock
+		stop        atomic.Bool
+		wg          sync.WaitGroup
+	)
+
+	// 8 concurrent reader goroutines doing GroupedAggregate.
+	for r := 0; r < 8; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ga := store.(spi.GroupedAggregator)
+			for !stop.Load() {
+				_, err := ga.GroupedAggregate(ctx, gsModel,
+					[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "variantId"}},
+					spi.Filter{},
+					spi.GroupedAggregationsOptions{MaxBuckets: 10000},
+				)
+				if err != nil {
+					t.Errorf("reader: %v", err)
+					return
+				}
+				readsDone.Add(1)
+			}
+		}()
+	}
+
+	// 4 concurrent writer goroutines doing Save. Inline Save to avoid the
+	// gsSave helper's t.Fatalf — t.Fatalf from a non-test goroutine is
+	// documented-unsafe.
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for i := 0; !stop.Load(); i++ {
+				id := fmt.Sprintf("w%d-i%d", workerID, i)
+				// Bounded variantId domain (50 buckets) so the reader's
+				// GroupedAggregate stays under MaxBuckets — we're measuring
+				// reader/writer contention, not cardinality enforcement.
+				data, err := json.Marshal(map[string]any{
+					"variantId": fmt.Sprintf("v%d", i%50),
+				})
+				if err != nil {
+					t.Errorf("writer marshal: %v", err)
+					return
+				}
+				e := &spi.Entity{
+					Meta: spi.EntityMeta{
+						ID:       id,
+						TenantID: "t1",
+						ModelRef: gsModel,
+						State:    "available",
+					},
+					Data: data,
+				}
+				start := time.Now()
+				if _, err := store.Save(ctx, e); err != nil {
+					t.Errorf("writer save: %v", err)
+					return
+				}
+				elapsed := time.Since(start).Nanoseconds()
+				writeWallNs.Add(elapsed)
+				for {
+					cur := maxWriteNs.Load()
+					if elapsed <= cur || maxWriteNs.CompareAndSwap(cur, elapsed) {
+						break
+					}
+				}
+				writesDone.Add(1)
+			}
+		}(w)
+	}
+
+	time.Sleep(3 * time.Second)
+	stop.Store(true)
+	wg.Wait()
+
+	reads := readsDone.Load()
+	writes := writesDone.Load()
+	if reads == 0 {
+		t.Fatalf("no reads completed — readers may be blocked")
+	}
+	if writes == 0 {
+		t.Fatalf("no writes completed — writers were starved by readers")
+	}
+
+	avgWriteUs := float64(writeWallNs.Load()) / float64(writes) / 1000.0
+	maxWriteMs := float64(maxWriteNs.Load()) / 1e6
+
+	t.Logf("reads=%d writes=%d avg_write=%.1fus max_write=%.1fms", reads, writes, avgWriteUs, maxWriteMs)
+
+	// Sanity bound — see godoc above.
+	if maxWriteMs > 500 {
+		t.Errorf("worst-case write took %.1fms — writer may be blocked by reader iteration phase (snapshot-then-iterate contract broken)", maxWriteMs)
+	}
+}
+
+// TestMemoryGroupedAggregate_NearCardinalityCeiling exercises bucket counts
+// just below the default CYODA_STATS_GROUP_MAX (10000). 50k entities × 8k
+// distinct variantIds → 8000 buckets, well under the 10000 ceiling. The
+// existing CardinalityExceeded test pins the trip behaviour at 3 states;
+// this one demonstrates correctness at SIOMS-scale just under the limit.
+func TestMemoryGroupedAggregate_NearCardinalityCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scale test; -short skips")
+	}
+	_, store, ctx := gsNewStore(t)
+
+	const (
+		entities = 50_000
+		buckets  = 8_000
+	)
+	for i := 0; i < entities; i++ {
+		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{
+			"variantId": fmt.Sprintf("v%d", i%buckets),
+			"price":     float64(100 + i%100),
+		})
+	}
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "variantId"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{
+			MaxBuckets: 10_000,
+			Aggregations: []spi.AggregateExpr{
+				{Op: spi.AggSum, Field: "price", Alias: "totalPrice"},
+				{Op: spi.AggAvg, Field: "price", Alias: "avgPrice"},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != buckets {
+		t.Fatalf("buckets=%d want %d", len(res), buckets)
+	}
+
+	// Distribution is exact: entities % buckets == 0 here, so every bucket
+	// has exactly entities/buckets entries. Tolerance ±1 to absorb any
+	// future-skew shifts in the modulo distribution.
+	expectedPerBucket := entities / buckets
+	var totalCount int64
+	for _, b := range res {
+		totalCount += b.Count
+		if b.Count < int64(expectedPerBucket) || b.Count > int64(expectedPerBucket+1) {
+			t.Fatalf("bucket %v count=%d not in [%d, %d]",
+				b.GroupKey, b.Count, expectedPerBucket, expectedPerBucket+1)
+		}
+	}
+	if totalCount != int64(entities) {
+		t.Fatalf("totalCount=%d want %d (some entities lost)", totalCount, entities)
+	}
+	t.Logf("entities=%d buckets=%d totalCount=%d", entities, len(res), totalCount)
+}
+
+// TestMemoryGroupedAggregate_CardinalityCeilingExceeded_AtScale verifies
+// the cardinality ceiling fires correctly at scale: 50k entities × 20k
+// distinct values, MaxBuckets=10000 must return ErrGroupCardinalityExceeded.
+// Complements the existing 3-state CardinalityExceeded test by exercising
+// the bucket map at the boundary under realistic input volume.
+func TestMemoryGroupedAggregate_CardinalityCeilingExceeded_AtScale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scale test; -short skips")
+	}
+	_, store, ctx := gsNewStore(t)
+
+	for i := 0; i < 50_000; i++ {
+		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{
+			"variantId": fmt.Sprintf("v%d", i%20_000),
+		})
+	}
+
+	ga := store.(spi.GroupedAggregator)
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "variantId"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10_000},
+	)
+	if !errors.Is(err, spi.ErrGroupCardinalityExceeded) {
+		t.Fatalf("err=%v, want ErrGroupCardinalityExceeded", err)
 	}
 }
