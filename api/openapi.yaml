@@ -8967,7 +8967,13 @@ components:
             $ref: "#/components/schemas/WorkflowConfigurationDto"
         importMode:
           type: string
-          description: Import mode for handling existing workflows
+          description: |
+            Import mode for handling existing workflows. Defaults to MERGE
+            when the field is omitted or empty. Parsing is case-insensitive:
+            "merge", "Merge", and "MERGE" are all accepted. Any value outside
+            the documented enum (after case-folding) is rejected with
+            400 BAD_REQUEST.
+          default: MERGE
           enum:
             - REPLACE
             - ACTIVATE

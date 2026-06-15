@@ -636,6 +636,74 @@ func TestImportDefaultMode(t *testing.T) {
 	}
 }
 
+// TestImport_LowercaseImportMode covers issue #257 M5: importMode parsing is
+// case-insensitive — the handler upper-cases the incoming value before
+// dispatch. This test pins the behaviour at the wire boundary so the OpenAPI
+// description (which now declares case-insensitivity) and the implementation
+// stay aligned.
+func TestImport_LowercaseImportMode(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	cases := []string{"merge", "Merge", "replace", "Replace", "activate", "Activate"}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			body := `{
+				"importMode": "` + mode + `",
+				"workflows": [
+					{
+						"version": "1.0",
+						"name": "case-flow",
+						"initialState": "S1",
+						"active": true,
+						"states": {"S1": {"transitions": []}}
+					}
+				]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected 200 for importMode=%q, got %d: %s", mode, resp.StatusCode, b)
+			}
+		})
+	}
+}
+
+// TestImport_UnknownImportMode covers issue #257 M5: an importMode value
+// outside the documented enum must return 400 BAD_REQUEST. The existing
+// happy-path tests exercised only the success branch; the rejection branch
+// was unguarded by any test until now.
+func TestImport_UnknownImportMode(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "MIGRATE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "wf",
+				"initialState": "S1",
+				"active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for unknown importMode, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "MIGRATE") {
+		t.Errorf("expected detail to name the offending mode 'MIGRATE', got: %s", detail)
+	}
+}
+
 func TestImport_ExplicitActiveFalse_Preserved(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
