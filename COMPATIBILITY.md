@@ -32,7 +32,7 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 | `cyoda-go` | Root `go.mod` pins | In-tree plugin go.mods pin | SPI surface added in this release |
 |---|---|---|---|
-| **`v0.8.0`** _(planned)_ | `cyoda-go-spi v0.8.0` | `cyoda-go-spi v0.8.0` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch` |
+| **`v0.8.0`** _(planned)_ | `cyoda-go-spi v0.8.0` | `cyoda-go-spi v0.8.0` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`) |
 | **`v0.7.1`** _(planned)_ | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
 | **`v0.7.0`** | `cyoda-go-spi v0.7.0` | `cyoda-go-spi v0.6.1`† | `ProcessorConfig.StartNewTxOnDispatch *bool` |
 | `v0.6.3` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | — (binary-only changes) |
@@ -51,6 +51,14 @@ In practice, today: **all SPI versions `v0.5.0` … `v0.8.0` are mutually source
 ### Migration window
 
 cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugins are using. Consumers compose at runtime — the active plugin's pinned SPI version determines which SPI surface is actually exercised, and unused additions are inert. There is no requirement that the binary's SPI pin and the plugin's SPI pin match exactly.
+
+### v0.8.0 milestone — SPI pseudo-version pin
+
+During the v0.8.0 milestone the root `go.mod` and every in-tree plugin submodule pin a pseudo-version of `cyoda-go-spi` against `main` HEAD (currently `v0.7.2-0.20260614212620-3e6807cb206a`). The final pin bump to `v0.8.0` happens at end of milestone once the SPI tag is cut. The previously published `v0.8.0` tag was retracted and replaced — out-of-tree consumers using `v0.8.0` before the re-cut should refresh after the new tag lands.
+
+### Optional capability interfaces (grouped-stats)
+
+The `Iterable` and `GroupedAggregator` SPI interfaces are **type-assertion-only**. The `EntityStore` base interface is unchanged. Existing plugins keep compiling without implementing either. A plugin that implements neither causes `POST /api/entity/stats/{entityName}/{modelVersion}/query` to return 501 `NOT_IMPLEMENTED_BY_BACKEND`; every other endpoint continues to work normally. Implementing only `Iterable` is sufficient — the service layer falls back to streaming-tally when `GroupedAggregator` is absent. Implementing `GroupedAggregator` without `Iterable` is supported but loses the in-transaction code path (in-tx calls route through `Iterable` to preserve read-your-writes).
 
 ## Plugin tag history
 
