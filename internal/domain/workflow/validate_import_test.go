@@ -487,6 +487,64 @@ func TestValidator_DelayMsNegative_Rejected(t *testing.T) {
 	}
 }
 
+// --- Schedule happy paths — regression guards for TimeoutMs pointer states ------
+//
+// These four shapes MUST validate successfully. Their primary value is as a
+// regression guard against the bogus rev 1/rev 2 TimeoutMs >= DelayMs rule
+// (removed in rev 3 as nonsensical under the late-tolerance semantic).
+// No validator changes are needed — the tests document an existing acceptance
+// contract and pin that contract against future regressions.
+//
+// Semantic notes:
+//
+//   - timeoutMs absent (nil) — "no-timeout" semantic: fire indefinitely late.
+//   - timeoutMs explicit zero (&0) — "strictest" semantic: drop if any
+//     lateness is observed.
+//   - timeoutMs < delayMs (e.g. delay 1000ms, timeout 500ms) — VALID under the
+//     late-tolerance semantic. TimeoutMs is not a maximum age of the armed
+//     timer; it is the maximum lateness of actual firing vs. scheduled time.
+//     A transition armed at t=0, scheduled to fire at t=1000ms, with a
+//     timeout of 500ms, will fire at t=1000ms and be dropped only if it
+//     fires after t=1500ms.
+//   - timeoutMs > delayMs — valid under the same semantic.
+
+func TestValidator_ScheduleHappyPaths(t *testing.T) {
+	tmZero := int64(0)
+	tmSmall := int64(500)
+	tmPositive := int64(5000)
+
+	cases := []struct {
+		name string
+		sch  *spi.TransitionSchedule
+	}{
+		{"timeoutMs_absent_nil", &spi.TransitionSchedule{DelayMs: 1000}},
+		{"timeoutMs_explicit_zero", &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tmZero}},
+		{"timeoutMs_less_than_delayMs", &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tmSmall}},
+		{"timeoutMs_greater_than_delayMs", &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tmPositive}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := spi.WorkflowDefinition{
+				Version:      "1",
+				Name:         "test",
+				InitialState: "S1",
+				Active:       true,
+				States: map[string]spi.StateDefinition{
+					"S1": {
+						Transitions: []spi.TransitionDefinition{
+							{Name: "T1", Next: "S1", Manual: false, Schedule: tc.sch},
+						},
+					},
+				},
+			}
+			if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+				t.Errorf("expected acceptance for shape %q; got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
 // All four named modes must be accepted.
 func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{
