@@ -234,6 +234,72 @@ func TestSqliteIterate_InTxOverlay(t *testing.T) {
 	}
 }
 
+// TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation pins the
+// documented limitation from plugins/sqlite/grouped_stats.go: when a tx
+// is active AND PointInTime is requested, the iterator reads the
+// historical entity_versions snapshot WITHOUT applying the tx-buffer
+// overlay. The in-tx, non-PIT branch in Iterate is gated on
+// `opts.PointInTime == nil`, so the PIT path falls through to the plain
+// historical-read query.
+//
+// This is documented in the source godoc and cmd/cyoda/help/content/crud.md.
+// PIT semantics are historical-read by definition, so the in-flight
+// buffer is a tier-2 concern — but it's a real behaviour cliff and must
+// be pinned. If this test starts failing because the behaviour changed
+// (i.e. buffered writes become visible at PIT inside a tx), update both
+// the godoc and the help-topic together.
+func TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+
+	// Seed a committed entity well in the past so a PIT capture after the
+	// commit reliably observes it.
+	gsSave(t, ctx, store, "e-committed", "available", map[string]any{"x": 1})
+
+	// Sleep briefly so the PIT capture is strictly after the commit's
+	// micro-timestamp; the entity_versions search uses strict <= PIT.
+	time.Sleep(10 * time.Millisecond)
+	pit := time.Now()
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	// In-tx: save a buffered entity that would be visible under the
+	// non-PIT branch (TestSqliteIterate_InTxOverlay pins that path).
+	gsSave(t, txCtx, store, "e-buffered", "available", map[string]any{"x": 99})
+
+	it := store.(spi.Iterable)
+	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{PointInTime: &pit})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	defer iter.Close()
+
+	ids := map[string]bool{}
+	for iter.Next() {
+		ids[iter.Entity().Meta.ID] = true
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iter err: %v", err)
+	}
+
+	// Documented limitation: e-buffered must NOT surface on the in-tx + PIT
+	// path, even though it would on the non-PIT in-tx path. If this fires,
+	// the behaviour changed — keep code + docs in sync.
+	if ids["e-buffered"] {
+		t.Fatalf("buffered entity surfaced on in-tx + PIT path — documented limitation has regressed; update both code and docs together")
+	}
+	// Sanity: the committed entity is visible from the historical snapshot.
+	if !ids["e-committed"] {
+		t.Errorf("e-committed should be visible from the historical entity_versions snapshot at pit=%v", pit)
+	}
+}
+
 // TestSqliteGroupedAggregate_InTxBufferedWritesVisible asserts the
 // observable RYW contract from the GroupedAggregate entry-point (the
 // streaming-tally fallback the service layer takes when a tx is active).
