@@ -92,7 +92,7 @@ func WithMaxStateVisits(n int) EngineOption {
 //
 // State-machine audit events are recorded under entity.Meta.TransactionID so
 // that the transaction ID returned by POST /entity can be used to look up
-// workflow results via /audit/entity/{id}/workflow/{txId}/finished (issue #20).
+// workflow results via /audit/entity/{id}/workflow/{txId}/finished.
 func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.execute", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -631,12 +631,12 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 }
 
 // logDefaultFallback emits a single slog.Warn line whenever the engine
-// substitutes the embedded default workflow. Reason discriminates the four
-// call sites:
+// substitutes the embedded default workflow. The four call sites map to
+// two cause groups via the reason argument:
 //   - "no_workflows_imported": cold-path (Execute/ManualTransition/Loopback)
-//     with no stored workflows for the model.
+//     with no stored workflows for the model — three call sites.
 //   - "no_criterion_matched":  workflows exist but no criterion matched the
-//     entity (selectWorkflow tail).
+//     entity (selectWorkflow tail) — one call site.
 //
 // The body-level warning via common.AddWarning is retained at each call
 // site for client-facing surfacing; this log line is purely additive for

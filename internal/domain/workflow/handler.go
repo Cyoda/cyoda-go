@@ -29,7 +29,7 @@ func New(factory spi.StoreFactory, engine *Engine) *Handler {
 // inactive). The SPI type stays plain bool — this distinction is purely a
 // request-shape concern. An explicit JSON `null` decodes to (*bool)(nil)
 // and is treated the same as the field being absent — both default to
-// Active=true. See #256 H2.
+// Active=true.
 type workflowImportDef struct {
 	Version      string                         `json:"version"`
 	Name         string                         `json:"name"`
@@ -77,8 +77,8 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Verify the target model exists before applying the workflow. Without this
-	// guard, importing a workflow on a non-existent model silently succeeded
-	// (issue #131); cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND.
+	// guard, importing a workflow on a non-existent model silently succeeded;
+	// cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND.
 	modelStore, err := h.factory.ModelStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get model store", err))
@@ -114,10 +114,10 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// M3 (#256): REPLACE / ACTIVATE with an empty workflows array would
-	// silently wipe or deactivate all stored workflows for the model;
-	// engine fallback to the embedded default then masks the destruction
-	// behind HTTP 200. Reject explicitly. MERGE-empty stays a no-op.
+	// REPLACE / ACTIVATE with an empty workflows array would silently
+	// wipe or deactivate all stored workflows for the model; the engine
+	// fallback to the embedded default then masks the destruction behind
+	// HTTP 200. Reject explicitly. MERGE-empty stays a no-op.
 	if len(req.Workflows) == 0 && (mode == "REPLACE" || mode == "ACTIVATE") {
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
@@ -126,10 +126,10 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// H2: default Active to true only when the field is absent;
-	// explicit true/false pass through unchanged. This restores
-	// export → REPLACE re-import idempotency and lets operators stage
-	// inactive workflows for blue/green rollout.
+	// Default Active to true only when the field is absent; explicit
+	// true/false pass through unchanged. This restores export → REPLACE
+	// re-import idempotency and lets operators stage inactive workflows
+	// for blue/green rollout.
 	incoming := make([]spi.WorkflowDefinition, len(req.Workflows))
 	for i, w := range req.Workflows {
 		active := true
@@ -147,11 +147,11 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Structural validation (#255) runs on the incoming request only —
-	// the new H4/H6 rules are deliberately not retroactive against
-	// legacy stored shapes. Behavioural validation (loops + flag
-	// coherence) runs on the merged result below, preserving pre-v0.8.0
-	// semantics for those specific invariants.
+	// Structural validation runs on the incoming request only — the
+	// H4/H6 rules are deliberately not retroactive against legacy stored
+	// shapes. Behavioural validation (loops + flag coherence) runs on
+	// the merged result below, preserving pre-v0.8.0 semantics for those
+	// specific invariants.
 	if err := validateImportRequest(incoming); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
@@ -162,7 +162,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// Behavioural validation on the merged result: definite-loop
 	// detection and StartNewTxOnDispatch coherence. A pre-existing
 	// stored workflow that violates these still surfaces here, matching
-	// pre-#255 behaviour.
+	// pre-structural-validation behaviour.
 	if err := validateWorkflows(result); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
