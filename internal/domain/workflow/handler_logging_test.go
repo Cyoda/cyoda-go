@@ -47,15 +47,16 @@ func recordsByMsg(records []map[string]any, msg string) []map[string]any {
 	return out
 }
 
-// TestImport_Success_EmitsSlogInfo covers issue #257 M7: every successful
-// workflow import must emit one slog.Info record capturing pkg, mode, entity
-// model, modelVersion, workflowCount, and the per-workflow {name, desc}
-// pairs. Workflow configuration is a high-impact mutable surface and the
-// application layer was silent on the content of changes until now.
+// TestImport_Success_EmitsSlogInfo asserts every successful workflow
+// import emits one slog.Info record capturing pkg, mode, entity model,
+// modelVersion, workflowCount, and the per-workflow {name, desc} pairs.
+// Workflow configuration is a high-impact mutable surface; the
+// application-layer audit log lets operators correlate change intent
+// without consulting the workflow JSON.
 //
-// This test also pins the "wire Description" disposition (issue #257 option
-// (a) — wire it): WorkflowDefinition.Description ships through the audit
-// log so operators can correlate human-readable change intent.
+// This test also pins the WorkflowDefinition.Description disposition:
+// the field is wired through the audit log as its operator-visible
+// consumer, so a non-empty `desc` shows up in the per-workflow digest.
 func TestImport_Success_EmitsSlogInfo(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
@@ -151,17 +152,16 @@ func TestImport_Success_EmitsSlogInfo(t *testing.T) {
 	}
 }
 
-// TestImport_ZeroResultAfterMerge_EmitsSlogWarn covers the WARN half of #257
-// M7: when an import call leaves the model with zero workflows, the engine
+// TestImport_ZeroResultAfterMerge_EmitsSlogWarn asserts the WARN canary:
+// when an import call leaves the model with zero workflows, the engine
 // will silently fall back to the embedded default on every subsequent
-// execution. The handler must log the result at WARN so the
+// execution. The handler logs the result at WARN so the
 // "running-on-default" outcome is visible in operator logs.
 //
-// REPLACE/ACTIVATE with empty workflows is already rejected (issue #256
-// M3), so the only reachable path to zero-after-import is MERGE with an
-// empty incoming on a model that has no prior workflows. The destruction
-// scenario the original audit framed against REPLACE-with-empty is now
-// covered by this single canary.
+// REPLACE/ACTIVATE with empty workflows is already rejected by the
+// structural validator, so the only reachable path to zero-after-import
+// is MERGE with an empty incoming on a model that has no prior workflows.
+// The canary still defends against any future code path that lands there.
 func TestImport_ZeroResultAfterMerge_EmitsSlogWarn(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)

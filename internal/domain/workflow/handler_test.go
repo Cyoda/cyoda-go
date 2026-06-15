@@ -326,11 +326,11 @@ func TestExportEmpty_Returns404(t *testing.T) {
 	}
 }
 
-// TestExport_UnknownModel_Returns404_ModelNotFound covers issue #257 M2: the
-// export handler must distinguish "model does not exist" (MODEL_NOT_FOUND)
-// from "model exists but has no workflows" (WORKFLOW_NOT_FOUND). The import
+// TestExport_UnknownModel_Returns404_ModelNotFound asserts the export
+// handler distinguishes "model does not exist" (MODEL_NOT_FOUND) from
+// "model exists but has no workflows" (WORKFLOW_NOT_FOUND). The import
 // handler already enforces the same distinction (see
-// TestImport_UnknownModel_Returns404); export was left behind.
+// TestImport_UnknownModel_Returns404); export now mirrors it.
 func TestExport_UnknownModel_Returns404_ModelNotFound(t *testing.T) {
 	srv := newTestServer(t)
 	// NOTE: deliberately do NOT call importModel — the model "Ghost" does not exist.
@@ -636,10 +636,10 @@ func TestImportDefaultMode(t *testing.T) {
 	}
 }
 
-// TestImport_LowercaseImportMode covers issue #257 M5: importMode parsing is
+// TestImport_LowercaseImportMode asserts importMode parsing is
 // case-insensitive — the handler upper-cases the incoming value before
 // dispatch. This test pins the behaviour at the wire boundary so the OpenAPI
-// description (which now declares case-insensitivity) and the implementation
+// description (which declares case-insensitivity) and the implementation
 // stay aligned.
 func TestImport_LowercaseImportMode(t *testing.T) {
 	srv := newTestServer(t)
@@ -670,10 +670,10 @@ func TestImport_LowercaseImportMode(t *testing.T) {
 	}
 }
 
-// TestImport_UnknownImportMode covers issue #257 M5: an importMode value
-// outside the documented enum must return 400 BAD_REQUEST. The existing
-// happy-path tests exercised only the success branch; the rejection branch
-// was unguarded by any test until now.
+// TestImport_UnknownImportMode asserts an importMode value outside the
+// documented enum returns 400 BAD_REQUEST. Pre-existing happy-path tests
+// exercised only the success branch; the rejection branch needs its own
+// regression fence.
 func TestImport_UnknownImportMode(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)

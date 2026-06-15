@@ -175,19 +175,18 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Audit log on success: workflow configuration is a high-impact, mutable
-	// multi-tenant surface, and the application layer was silent on the
-	// content of changes before #257 M7. One INFO line per import names the
-	// mode, the model, and the per-workflow {name, desc} pairs so operators
-	// can correlate change intent in logs. Description is wired through this
-	// payload per the #257 disposition (option a: wire it).
+	// multi-tenant surface. One INFO line per import names the mode, the
+	// model, and the per-workflow {name, desc} pairs so operators can
+	// correlate change intent in logs. Description is wired through this
+	// payload as its operator-visible consumer.
 	//
 	// When the import leaves the model with zero workflows, log at WARN
 	// instead — the engine will silently fall back to the embedded default
 	// on every subsequent execution, and that "running on default" outcome
 	// must be visible in operator logs. REPLACE/ACTIVATE empty is already
-	// rejected (#256 M3), so the only reachable path is MERGE-empty on a
-	// model with no prior workflows; the canary still defends against any
-	// future code path that lands there.
+	// rejected upstream by the structural validator, so the only reachable
+	// path is MERGE-empty on a model with no prior workflows; the canary
+	// still defends against any future code path that lands there.
 	wfDigest := make([]map[string]string, len(result))
 	wfNames := make([]string, len(result))
 	for i, wf := range result {
@@ -224,7 +223,7 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// guard, exports against a non-existent model returned the same
 	// WORKFLOW_NOT_FOUND as an existing-but-empty model, conflating two
 	// distinct failure modes. The import handler enforces the same
-	// distinction; export now mirrors it (closes #257 M2).
+	// distinction; export now mirrors it.
 	modelStore, err := h.factory.ModelStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get model store", err))
