@@ -5,12 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
+
+// descLogPreviewBytes caps the per-workflow `desc` field in the audit-log
+// digest. Description is operator-supplied free text with no upstream
+// length cap; emitting it verbatim risks unbounded log lines from a
+// multi-KB paste. 200 bytes matches the convention used by
+// logging.PayloadPreview for DEBUG-level payload previews.
+const descLogPreviewBytes = 200
+
+// truncateForLog returns s clipped to maxLen runes with a "..." suffix
+// when truncation occurred. Used for audit-log field previews.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
 
 // Handler implements the workflow import/export HTTP endpoints.
 type Handler struct {
@@ -173,6 +190,47 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Audit log on success: workflow configuration is a high-impact, mutable
+	// multi-tenant surface. One INFO line per import names the mode and the
+	// digest of THIS CALL's incoming payload — the audit subject is the
+	// change applied, not the resulting model state. `workflowCount` is the
+	// incoming size; `storedWorkflowCount` reports the model's post-merge
+	// total so operators can see both the diff and the resulting fan-out
+	// without consulting the workflow JSON. Description is wired through
+	// the per-workflow digest as its operator-visible consumer, truncated
+	// per-entry to bound log volume (Description has no upstream length
+	// cap).
+	//
+	// When the import leaves the model with zero workflows, log at WARN
+	// instead — the engine will silently fall back to the embedded default
+	// on every subsequent execution, and that "running on default" outcome
+	// must be visible in operator logs. REPLACE/ACTIVATE empty is already
+	// rejected upstream by the structural validator, so the only reachable
+	// path is MERGE-empty on a model with no prior workflows; the canary
+	// still defends against any future code path that lands there.
+	wfDigest := make([]map[string]string, len(incoming))
+	for i, wf := range incoming {
+		wfDigest[i] = map[string]string{
+			"name": wf.Name,
+			"desc": truncateForLog(wf.Description, descLogPreviewBytes),
+		}
+	}
+	logAttrs := []any{
+		slog.String("pkg", "workflow"),
+		slog.String("tenant", common.TenantFromContext(r.Context())),
+		slog.String("entityName", entityName),
+		slog.String("modelVersion", ref.ModelVersion),
+		slog.String("importMode", mode),
+		slog.Int("workflowCount", len(incoming)),
+		slog.Int("storedWorkflowCount", len(result)),
+		slog.Any("workflows", wfDigest),
+	}
+	if len(result) == 0 {
+		slog.WarnContext(r.Context(), "workflow import resulted in zero workflows", logAttrs...)
+	} else {
+		slog.InfoContext(r.Context(), "workflow import applied", logAttrs...)
+	}
+
 	common.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
@@ -181,6 +239,31 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
+	}
+
+	// Verify the model exists before reporting on its workflows. Without this
+	// guard, exports against a non-existent model returned the same
+	// WORKFLOW_NOT_FOUND as an existing-but-empty model, conflating two
+	// distinct failure modes. The import handler enforces the same
+	// distinction; export now mirrors it.
+	modelStore, err := h.factory.ModelStore(r.Context())
+	if err != nil {
+		common.WriteError(w, r, common.Internal("failed to get model store", err))
+		return
+	}
+	if _, err := modelStore.Get(r.Context(), ref); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			appErr := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%d", entityName, modelVersion))
+			appErr.Props = map[string]any{
+				"entityName":    entityName,
+				"entityVersion": modelVersion,
+			}
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("failed to load model", err))
+		return
 	}
 
 	wfStore, err := h.factory.WorkflowStore(r.Context())

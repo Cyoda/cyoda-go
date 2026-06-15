@@ -326,6 +326,24 @@ func TestExportEmpty_Returns404(t *testing.T) {
 	}
 }
 
+// TestExport_UnknownModel_Returns404_ModelNotFound asserts the export
+// handler distinguishes "model does not exist" (MODEL_NOT_FOUND) from
+// "model exists but has no workflows" (WORKFLOW_NOT_FOUND). The import
+// handler already enforces the same distinction (see
+// TestImport_UnknownModel_Returns404); export now mirrors it.
+func TestExport_UnknownModel_Returns404_ModelNotFound(t *testing.T) {
+	srv := newTestServer(t)
+	// NOTE: deliberately do NOT call importModel — the model "Ghost" does not exist.
+
+	resp := doWorkflowExport(t, srv.URL, "Ghost", 1)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 404 for export against unknown model, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeModelNotFound)
+}
+
 func TestImportFullWorkflow(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "PaymentRequest", 1)
@@ -615,6 +633,107 @@ func TestImportDefaultMode(t *testing.T) {
 	}
 	if wfs[0].Name != "wf-default" {
 		t.Errorf("expected wf-default, got %s", wfs[0].Name)
+	}
+}
+
+// TestImport_LowercaseImportMode asserts importMode parsing is
+// case-insensitive — the handler upper-cases the incoming value before
+// dispatch. This test pins the behaviour at the wire boundary so the OpenAPI
+// description (which declares case-insensitivity) and the implementation
+// stay aligned.
+func TestImport_LowercaseImportMode(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	cases := []string{"merge", "Merge", "replace", "Replace", "activate", "Activate"}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			body := `{
+				"importMode": "` + mode + `",
+				"workflows": [
+					{
+						"version": "1.0",
+						"name": "case-flow",
+						"initialState": "S1",
+						"active": true,
+						"states": {"S1": {"transitions": []}}
+					}
+				]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected 200 for importMode=%q, got %d: %s", mode, resp.StatusCode, b)
+			}
+		})
+	}
+}
+
+// TestImport_EmptyImportMode_DefaultsToMerge asserts an explicit empty
+// string defaults to MERGE — the omitted-field path is covered by
+// TestImportDefaultMode; this pins the explicit-empty half of the
+// OpenAPI claim ("Defaults to MERGE when the field is omitted or empty").
+func TestImport_EmptyImportMode_DefaultsToMerge(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "empty-mode-flow",
+				"initialState": "S1",
+				"active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for empty importMode, got %d: %s", resp.StatusCode, b)
+	}
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 1 || wfs[0].Name != "empty-mode-flow" {
+		t.Errorf("expected empty-mode-flow stored after MERGE default, got %v", wfs)
+	}
+}
+
+// TestImport_UnknownImportMode asserts an importMode value outside the
+// documented enum returns 400 BAD_REQUEST. Pre-existing happy-path tests
+// exercised only the success branch; the rejection branch needs its own
+// regression fence.
+func TestImport_UnknownImportMode(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "MIGRATE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "wf",
+				"initialState": "S1",
+				"active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for unknown importMode, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "MIGRATE") {
+		t.Errorf("expected detail to name the offending mode 'MIGRATE', got: %s", detail)
 	}
 }
 

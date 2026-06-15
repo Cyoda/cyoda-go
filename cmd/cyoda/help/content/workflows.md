@@ -102,7 +102,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 - `version` — string — schema version tag (informational; not interpreted by the engine)
 - `name` — string — unique within the model; the primary key for MERGE mode
-- `desc` — string — optional description
+- `desc` — string — optional human-readable description. Surfaced in the import audit log line (`workflow import applied` at `INFO`, or `workflow import resulted in zero workflows` at `WARN`) as part of the per-workflow `{name, desc}` digest, and round-tripped via export when non-empty. Use it to record change intent that operators reading logs can correlate without consulting the workflow JSON
 - `initialState` — string — state assigned when the entity is first created; must exist in `states`
 - `active` — boolean — when `false`, the engine skips this workflow during selection
 - `criterion` — `Condition` JSON or `null` — evaluated against the entity at creation to select this workflow; `null` matches all entities
@@ -182,6 +182,20 @@ Criteria on workflows and transitions use the same `Condition` DSL as search. Al
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 
+### Workflow-level selection
+
+When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on every `Execute` / `ManualTransition` / `Loopback` (no caching across calls):
+
+1. Iterate workflows in their stored declaration order. (Storage preserves the order from the most recent import; MERGE inserts new workflows at the tail.)
+2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
+3. For each active workflow, evaluate `criterion` against the entity payload and lifecycle metadata. A `null` (absent) criterion matches unconditionally — the workflow is selected immediately.
+4. The first active workflow whose criterion matches is selected. Subsequent workflows in the array are not consulted.
+5. If no active workflow matches — which includes the case where every active workflow has a criterion and none of them passes — the engine falls back to the embedded **default workflow**. The substitution surfaces on two channels: a body warning via `AddWarning` and an operator-visible `slog.Warn` line (`reason=no_criterion_matched`).
+
+Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
+
+Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
+
 ## IMPORT REQUEST
 
 **POST /api/model/{entityName}/{modelVersion}/workflow/import**
@@ -200,7 +214,7 @@ Request body (`application/json`):
 }
 ```
 
-- `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`. `REPLACE` / `ACTIVATE` reject an empty `workflows` array (or a missing `workflows` key) with `400 VALIDATION_FAILED` — once a model has imported workflows it always carries ≥1; the built-in default workflow is only used when no workflow has ever been imported. `MERGE` with an empty `workflows` array is allowed as a no-op.
+- `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`. `REPLACE` / `ACTIVATE` reject an empty `workflows` array (or a missing `workflows` key) with `400 VALIDATION_FAILED` — once a model has imported workflows it always carries ≥1; the built-in default workflow is only used when no workflow has ever been imported. `MERGE` with an empty `workflows` array is allowed as a no-op. The field defaults to `MERGE` when omitted or empty. Parsing is **case-insensitive**: `"merge"`, `"Merge"`, and `"MERGE"` are equivalent. Any value outside the documented enum (after case-folding) is rejected with `400 BAD_REQUEST`.
 - `workflows` — array of `WorkflowDefinition`. The `active` flag on each incoming workflow is preserved as supplied; the server never overrides it. If the field is absent (or explicitly `null`), it defaults to `true`. Controlling which workflows are active is entirely up to the importer.
 
 Static validation runs on the incoming request before saving. Any of the following returns `400 VALIDATION_FAILED` with the offending workflow / state / transition named in `detail`:
@@ -224,6 +238,15 @@ Response: `200 OK`, `application/json`:
 ```json
 {"success": true}
 ```
+
+### Audit log on success
+
+Every successful import emits a single structured `log/slog` line so operators can correlate workflow-config changes in their log pipeline.
+
+- **Normal path** — `level=INFO`, `msg="workflow import applied"`. Fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `importMode`, `workflowCount` (size of THIS call's incoming payload), `storedWorkflowCount` (model's post-merge total), `workflows` (array of `{name, desc}` reflecting the incoming payload — the audit subject is what was applied, not the resulting model state).
+- **Zero-result canary** — `level=WARN`, `msg="workflow import resulted in zero workflows"`, same field shape. After `REPLACE` / `ACTIVATE` empty became a `400 VALIDATION_FAILED` (see above), the only reachable path is a `MERGE` with an empty `workflows` array against a model that has no prior workflows. The model will then silently fall back to the embedded default on the next entity execution; this canary surfaces that outcome before it shows up in entity-execution logs.
+
+The `desc` field on each workflow is surfaced in the audit log digest, truncated to 200 characters with a `...` suffix when longer — set a meaningful description to record change intent that log readers can correlate without consulting the workflow JSON.
 
 ## EXPORT RESPONSE
 
