@@ -435,6 +435,58 @@ func TestValidator_ManualAndSchedule_Rejected(t *testing.T) {
 	}
 }
 
+// --- Schedule.DelayMs must be > 0 -------------------------------------------
+
+func TestValidator_DelayMsZero_Rejected(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{
+						Name:     "T1",
+						Next:     "S1",
+						Manual:   false,
+						Schedule: &spi.TransitionSchedule{DelayMs: 0},
+					},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "delayMs must be > 0") {
+		t.Errorf("expected delayMs error, got: %v", err)
+	}
+}
+
+func TestValidator_DelayMsNegative_Rejected(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{
+						Name:     "T1",
+						Next:     "S1",
+						Manual:   false,
+						Schedule: &spi.TransitionSchedule{DelayMs: -100},
+					},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "delayMs must be > 0") {
+		t.Errorf("expected delayMs error, got: %v", err)
+	}
+}
+
 // All four named modes must be accepted.
 func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{

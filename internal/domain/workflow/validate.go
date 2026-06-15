@@ -200,6 +200,11 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					"workflow %q state %q transition %q: manual and scheduled are mutually exclusive",
 					wf.Name, stateName, tr.Name)
 			}
+			if tr.Schedule != nil && tr.Schedule.DelayMs <= 0 {
+				return fmt.Errorf(
+					"workflow %q state %q transition %q: schedule.delayMs must be > 0 (got %d)",
+					wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
+			}
 
 			for _, p := range tr.Processors {
 				if p.Name == "" {
