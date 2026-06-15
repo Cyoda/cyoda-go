@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -123,9 +124,11 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
 
-	// No workflows defined → use default workflow.
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
@@ -225,9 +228,11 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
 
-	// No workflows defined → use default workflow.
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
@@ -307,9 +312,11 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
 
-	// No workflows defined → use default workflow.
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
@@ -383,9 +390,11 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name), nil)
 	}
 
-	// No imported workflow matched — fall back to the default workflow.
+	// No imported workflow matched the entity — fall back to the embedded
+	// default. Both channels (body warning + slog.Warn) fire.
 	if len(e.defaultWorkflows) > 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_criterion_matched")
 		defaultWF := &e.defaultWorkflows[0]
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
@@ -619,6 +628,39 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 		return entity.Meta.TransactionID
 	}
 	return uuid.UUID(e.uuids.NewTimeUUID()).String()
+}
+
+// tenantFromContext mirrors the helper in internal/domain/search/service.go.
+// Returns the bound tenant ID, or empty when no UserContext is on the
+// context (unauthenticated path). Kept local to this package; if a third
+// caller appears, extract to internal/common per rule-of-three.
+func tenantFromContext(ctx context.Context) string {
+	uc := spi.GetUserContext(ctx)
+	if uc == nil {
+		return ""
+	}
+	return string(uc.Tenant.ID)
+}
+
+// logDefaultFallback emits a single slog.Warn line whenever the engine
+// substitutes the embedded default workflow. Reason discriminates the four
+// call sites:
+//   - "no_workflows_imported": cold-path (Execute/ManualTransition/Loopback)
+//     with no stored workflows for the model.
+//   - "no_criterion_matched":  workflows exist but no criterion matched the
+//     entity (selectWorkflow tail).
+//
+// The body-level warning via common.AddWarning is retained at each call
+// site for client-facing surfacing; this log line is purely additive for
+// operational observability.
+func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
+	slog.WarnContext(ctx, "default workflow substituted",
+		slog.String("pkg", "workflow"),
+		slog.String("tenant", tenantFromContext(ctx)),
+		slog.String("entityName", entity.Meta.ModelRef.EntityName),
+		slog.String("modelVersion", entity.Meta.ModelRef.ModelVersion),
+		slog.String("entityId", entity.Meta.ID),
+		slog.String("reason", reason))
 }
 
 // recordEvent records a single audit event.
