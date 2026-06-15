@@ -404,6 +404,37 @@ func TestValidateImportRequest_RejectsOverlongProcessorName(t *testing.T) {
 	}
 }
 
+// --- Manual + Schedule mutual exclusion -----------------------------------
+
+func TestValidator_ManualAndSchedule_Rejected(t *testing.T) {
+	tm := int64(1000)
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{
+						Name:     "T1",
+						Next:     "S1",
+						Manual:   true,
+						Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tm},
+					},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected validation error for manual=true + schedule, got nil")
+	}
+	if !strings.Contains(err.Error(), "manual and scheduled are mutually exclusive") {
+		t.Errorf("error message missing expected substring; got: %v", err)
+	}
+}
+
 // All four named modes must be accepted.
 func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{

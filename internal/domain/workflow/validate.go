@@ -195,6 +195,12 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					wf.Name, stateName, tr.Name, tr.Next)
 			}
 
+			if tr.Manual && tr.Schedule != nil {
+				return fmt.Errorf(
+					"workflow %q state %q transition %q: manual and scheduled are mutually exclusive",
+					wf.Name, stateName, tr.Name)
+			}
+
 			for _, p := range tr.Processors {
 				if p.Name == "" {
 					return fmt.Errorf("workflow %q state %q transition %q: empty processor name is not allowed",
