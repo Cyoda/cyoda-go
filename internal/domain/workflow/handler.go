@@ -23,10 +23,27 @@ func New(factory spi.StoreFactory, engine *Engine) *Handler {
 	return &Handler{factory: factory, engine: engine}
 }
 
+// workflowImportDef mirrors spi.WorkflowDefinition but uses *bool for Active
+// so the handler can distinguish "absent" (default to true, preserves OOTB
+// contract) from explicit "false" (operator wants the workflow staged
+// inactive). The SPI type stays plain bool — this distinction is purely a
+// request-shape concern. An explicit JSON `null` decodes to (*bool)(nil)
+// and is treated the same as the field being absent — both default to
+// Active=true. See #256 H2.
+type workflowImportDef struct {
+	Version      string                         `json:"version"`
+	Name         string                         `json:"name"`
+	Description  string                         `json:"desc,omitempty"`
+	InitialState string                         `json:"initialState"`
+	Active       *bool                          `json:"active"`
+	Criterion    json.RawMessage                `json:"criterion,omitempty"`
+	States       map[string]spi.StateDefinition `json:"states"`
+}
+
 // importRequest is the JSON body shape for workflow import.
 type importRequest struct {
-	ImportMode string                   `json:"importMode"`
-	Workflows  []spi.WorkflowDefinition `json:"workflows"`
+	ImportMode string              `json:"importMode"`
+	Workflows  []workflowImportDef `json:"workflows"`
 }
 
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
@@ -97,9 +114,25 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Default imported workflows to active (Cyoda Cloud behavior).
-	for i := range req.Workflows {
-		req.Workflows[i].Active = true
+	// H2: default Active to true only when the field is absent;
+	// explicit true/false pass through unchanged. This restores
+	// export → REPLACE re-import idempotency and lets operators stage
+	// inactive workflows for blue/green rollout.
+	incoming := make([]spi.WorkflowDefinition, len(req.Workflows))
+	for i, w := range req.Workflows {
+		active := true
+		if w.Active != nil {
+			active = *w.Active
+		}
+		incoming[i] = spi.WorkflowDefinition{
+			Version:      w.Version,
+			Name:         w.Name,
+			Description:  w.Description,
+			InitialState: w.InitialState,
+			Active:       active,
+			Criterion:    w.Criterion,
+			States:       w.States,
+		}
 	}
 
 	// Structural validation (#255) runs on the incoming request only —
@@ -107,12 +140,12 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// legacy stored shapes. Behavioural validation (loops + flag
 	// coherence) runs on the merged result below, preserving pre-v0.8.0
 	// semantics for those specific invariants.
-	if err := validateImportRequest(req.Workflows); err != nil {
+	if err := validateImportRequest(incoming); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
 
-	result := applyImportMode(existing, req.Workflows, mode)
+	result := applyImportMode(existing, incoming, mode)
 
 	// Behavioural validation on the merged result: definite-loop
 	// detection and StartNewTxOnDispatch coherence. A pre-existing

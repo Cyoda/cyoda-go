@@ -617,3 +617,205 @@ func TestImportDefaultMode(t *testing.T) {
 		t.Errorf("expected wf-default, got %s", wfs[0].Name)
 	}
 }
+
+func TestImport_ExplicitActiveFalse_Preserved(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "staged-flow",
+				"initialState": "NEW",
+				"active": false,
+				"states": {"NEW": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(wfs))
+	}
+	if wfs[0].Active {
+		t.Errorf("expected Active=false to be preserved, got Active=true")
+	}
+}
+
+func TestImport_ActiveAbsent_DefaultsToTrue(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "default-active-flow",
+				"initialState": "NEW",
+				"states": {"NEW": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(wfs))
+	}
+	if !wfs[0].Active {
+		t.Errorf("expected absent active to default to true, got Active=false")
+	}
+}
+
+func TestImport_ExplicitActiveTrue_Preserved(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "explicit-true-flow",
+				"initialState": "NEW",
+				"active": true,
+				"states": {"NEW": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if !wfs[0].Active {
+		t.Errorf("expected Active=true to be preserved")
+	}
+}
+
+func TestExportReimportRoundtrip_PreservesActiveFalse(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// First import: REPLACE with two workflows, one with active=false.
+	seed := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.0", "name": "alpha", "initialState": "S",
+				"active": true,
+				"states": {"S": {"transitions": []}}
+			},
+			{
+				"version": "1.0", "name": "beta", "initialState": "S",
+				"active": false,
+				"states": {"S": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, seed)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("seed import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	// Export.
+	exportResp := doWorkflowExport(t, srv.URL, "Order", 1)
+	if exportResp.StatusCode != http.StatusOK {
+		t.Fatalf("export expected 200, got %d", exportResp.StatusCode)
+	}
+	exportedBody := readJSON(t, exportResp)
+	// Build a re-import body from the export shape.
+	reimportRaw, err := json.Marshal(map[string]any{
+		"importMode": "REPLACE",
+		"workflows":  exportedBody["workflows"],
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal re-import body: %v", err)
+	}
+
+	// Re-import.
+	resp2 := doWorkflowImport(t, srv.URL, "Order", 1, string(reimportRaw))
+	if resp2.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+		t.Fatalf("re-import expected 200, got %d: %s", resp2.StatusCode, b)
+	}
+	resp2.Body.Close()
+
+	// Re-export and verify beta is still Active=false.
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 2 {
+		t.Fatalf("expected 2 workflows, got %d", len(wfs))
+	}
+	var beta *spi.WorkflowDefinition
+	for i := range wfs {
+		if wfs[i].Name == "beta" {
+			beta = &wfs[i]
+			break
+		}
+	}
+	if beta == nil {
+		t.Fatalf("workflow 'beta' missing from re-export")
+	}
+	if beta.Active {
+		t.Errorf("expected beta to remain Active=false after export+REPLACE re-import round-trip")
+	}
+}
+
+func TestImport_ExplicitActiveNull_DefaultsToTrue(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Explicit JSON null on `active` decodes to (*bool)(nil), which the
+	// handler defaults to true — same as the field being absent.
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "null-active-flow",
+				"initialState": "NEW",
+				"active": null,
+				"states": {"NEW": {"transitions": []}}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(wfs))
+	}
+	if !wfs[0].Active {
+		t.Errorf("expected explicit null active to default to true, got Active=false")
+	}
+}
