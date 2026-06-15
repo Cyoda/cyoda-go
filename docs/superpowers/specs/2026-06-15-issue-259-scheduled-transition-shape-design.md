@@ -10,6 +10,27 @@
 > **Revision history**
 >
 > - **Revision 1 (2026-06-15):** initial spec.
+> - **Revision 2 (2026-06-15):** incorporated independent design review.
+>   Six load-bearing / medium defects fixed: (L1) parity-scenario slot
+>   collision — `wf-import/04` was already populated, switched to
+>   `wf-import/07`; (L2) explicit acknowledgement that acceptance bullet 5's
+>   "link to #251" wording is satisfied by self-contained "not yet
+>   implemented" phrasing per project policy on no issue IDs in shipped
+>   artefacts; (L3) §8 risk bullet 1 rewritten to separate wire-decoded
+>   from in-process-construction paths; (L4) cycle-detector behaviour kept
+>   unchanged (rev 1's reasoning was inverted but the rejection IS correct
+>   — once #251 lands, a scheduled-only cycle IS an infinite loop), and a
+>   new request-level `allowCycles` escape hatch added so polling-pattern
+>   workflows have a documented bypass; (M1) help-text heading lifted to
+>   `## SCHEDULED TRANSITIONS` (level 2) to match `## PROCESSORS` /
+>   `## CRITERIA`; (M2) version label dropped from the heading; (M6)
+>   round-trip test 8 switched from byte-exact substring match to
+>   `json_equals_normalized`; (M7) one-line clarification that the
+>   Schedule rules sit in `validateWorkflowStructure` (incoming-only) by
+>   design; (O1) conditional note on the bundled #250 docstring (drop if
+>   #260 lands first); (O2, O3) editorial trim. M3 (audit-event choice
+>   for explicit-fire reject) and M4 (TimeoutMs scope) preserved at rev 1
+>   pending owner review.
 
 ---
 
@@ -77,6 +98,17 @@ unavailability of the feature in self-contained terms.
 - Update the help topic `cmd/cyoda/help/content/workflows.md` to document
   the shape, the validator rules, and the v0.8.0 behavioural status. No
   issue IDs.
+- Add a request-level `allowCycles` boolean to the workflow import body
+  as an escape hatch for unguarded automated cycles (the canonical
+  scheduled-transition use case is a polling pattern `S1 →scheduled→ S2
+  →scheduled→ S1` which the existing `validateWorkflowLoops` rejects).
+  The flag bypasses only `validateWorkflowLoops`; all other validators
+  (the three new Schedule rules, processor flags, structural checks)
+  remain unconditional. Request-level (not workflow-level) — each
+  import re-asserts intent; the durable schema does not carry a
+  "skip safety check" knob. Runtime safety net (`maxStateVisits`,
+  `maxCascadeDepth`) is unchanged and catches actual runaway at fire
+  time.
 
 ## 3. Non-goals
 
@@ -109,6 +141,9 @@ unavailability of the feature in self-contained terms.
 | SPI tagging | **None forced.** Bundled into v0.8.0's end-of-milestone tag per `MAINTAINING.md` "Coordinated release" cadence. cyoda-go pseudo-version-pins to SPI `main` HEAD across all four `go.mod` files per memory `project_v0_8_0_milestone_state`. |
 | Cassandra plugin | **Untouched in this PR.** Additive SPI fields are non-breaking; courtesy refresh via the end-of-milestone tag, not from this PR (memory `feedback_courtesy_pr_scope`). |
 | Source of truth for field names | **OpenAPI and SPI agreed on lowercase camelCase wire form** (`schedule`, `delayMs`, `timeoutMs`). Go-side: `Schedule`, `DelayMs`, `TimeoutMs`. |
+| `allowCycles` escape hatch (added rev 2) | **Request-level `bool` on the import body envelope**, default `false`. Bypasses only `validateWorkflowLoops`. Default-false behaviour is byte-identical to today; the flag is purely opt-in. Composes with `importMode`. Not persisted on `WorkflowDefinition`. |
+| `allowCycles` operator signal | **One `slog.Warn`** per import call when `allowCycles=true` is observed, naming the workflow(s) whose cycles were bypassed. No audit event (audit is for entity lifecycle, not import-time config). |
+| Acceptance bullet 5's "link to #251" | **Deliberately satisfied by self-contained wording.** The shipped error / help text / OpenAPI description carry the phrase `"scheduled transitions are not yet implemented"` (no issue ID). Issue IDs are referenced only in the spec doc, PR body, and commit message per memory `feedback_no_issue_ids_in_code`. |
 
 ## 5. Detailed design
 
@@ -163,6 +198,28 @@ schedule:
 
 The `schedule` property is **not added to `required`**. Its absence
 denotes a regular transition.
+
+**Workflow-import request body** — add an optional `allowCycles` field
+to the existing import-request schema (the exact name depends on the
+current OpenAPI generator output; the schema is the request body of the
+`POST /model/{name}/{version}/workflow/import` operation):
+
+```yaml
+allowCycles:
+  type: boolean
+  default: false
+  description: |
+    When true, bypasses the import-time check that rejects workflows
+    containing unguarded automated cycles (transitions with manual=false
+    and no criterion that form a closed loop). The runtime cascade
+    safety net — per-state visit cap and total cascade depth limit —
+    remains in effect and catches actual runaway at fire time. Use
+    when the cyclicity is intentional, e.g. polling patterns built on
+    scheduled transitions. Default false preserves the pre-v0.8.0
+    rejection behaviour exactly.
+```
+
+The field is not added to `required`; absence is equivalent to `false`.
 
 ### 5.2 Generated DTOs (`api/generated.go`)
 
@@ -313,18 +370,100 @@ All three errors propagate through the existing import handler to a
 `400 VALIDATION_FAILED` response (`handler.go:65-90` import path; the
 specific error code is set by the boundary classification).
 
+**Placement rationale (M7).** The three Schedule rules sit in
+`validateWorkflowStructure`, which is invoked by `validateImportRequest`
+on the incoming workflow set only — not on the merged-after-importMode
+result. This matches `validateImportRequest`'s scope: structural shape
+is a property of an individual workflow definition, asserted on what the
+client sends. Cross-workflow concerns (cycle detection, name collisions
+post-merge) sit in `validateWorkflows`, which runs on the merged result.
+Schedule coherence is per-transition, so the incoming-only placement is
+correct.
+
 `validateProcessorFlags` is **unchanged.** It still enforces only
 `StartNewTxOnDispatch` / `ExecutionMode` coherence.
 
-`validateWorkflowLoops` (`validate.go:242-295`) is **unchanged.** DFS
-cycle detection skips `Manual` and `Disabled` transitions today; per
-§5.5 cascade semantics, scheduled transitions are similarly never fired
-automatically in v0.8.0. The cycle detector's role is to prevent
-infinite cascade — adding scheduled to its skip filter is unnecessary
-because the engine cascade skip already removes them from consideration,
-and adding the skip in the validator would falsely allow workflows that
-become cycle-unsafe once #251 lands. Leaving the cycle detector intact
-preserves a forward-compatible safety property.
+**`validateWorkflowLoops` behaviour for scheduled transitions.** The
+DFS today treats a `Manual=false, Disabled=false, Criterion=null`
+transition as an unguarded automated edge — that includes any scheduled
+transition with no criterion. A workflow `S1 →scheduled→ S2 →scheduled
+→ S1` is rejected today and continues to be rejected by default after
+this PR.
+
+This is the correct default. Once #251 lands and the timer runtime
+arms scheduled transitions, a delayed cycle becomes an actual infinite
+loop — identical to today's unguarded automated cascade hazard, just
+slowed by `DelayMs`. The cycle detector's job is to catch that. The
+v0.8.0 cascade silent-skip (§5.5(a)) is a stopgap that hides the cycle
+at runtime; the validator preserves the design-time invariant.
+
+**`allowCycles` escape hatch.** Polling-pattern workflows
+(`S1 →scheduled→ S2 →scheduled→ S1` with `S2`'s scheduled transition
+gated on entity state, or unconditionally cyclic by author intent) are
+a legitimate use case the cycle detector cannot distinguish from
+accidental runaway. The import request grows an optional boolean
+`AllowCycles` field that, when true, bypasses `validateWorkflowLoops`
+for the duration of that import call only.
+
+```go
+// handler.go:32-46 (import request envelope)
+type importRequest struct {
+    ImportMode  string                   `json:"importMode"`
+    AllowCycles bool                     `json:"allowCycles,omitempty"`
+    Workflows   []spi.WorkflowDefinition `json:"workflows"`
+}
+
+// validate.go (signature change to validateWorkflows)
+func validateWorkflows(workflows []spi.WorkflowDefinition, allowCycles bool) error {
+    for _, wf := range workflows {
+        if !allowCycles {
+            if err := validateWorkflowLoops(wf); err != nil {
+                return err
+            }
+        }
+        if err := validateProcessorFlags(wf); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+The handler's import path threads `req.AllowCycles` into the
+`validateWorkflows` call (the existing call site in `handler.go`
+around the post-merge validation step).
+
+Other validators — `validateImportRequest` /
+`validateWorkflowStructure` (including the three Schedule rules
+above), `validateProcessorFlags` — remain **unconditional**. The flag
+is specifically a cycle-detection bypass, not a general validation
+override. A workflow with both an unguarded cycle and a
+`Manual=true, Schedule!=nil` transition still gets rejected on the
+Schedule rule with `AllowCycles=true`.
+
+**Operator signal.** When `req.AllowCycles == true`, the handler emits
+a single `slog.Warn` line per import call:
+
+```go
+slog.WarnContext(ctx, "workflow import: cycle validation bypassed",
+    "pkg", "workflow",
+    "entityName", entityName,
+    "modelVersion", modelVersion,
+    "importMode", req.ImportMode,
+    "workflows", workflowNames)  // []string of req.Workflows[i].Name
+```
+
+One log line per import call — not per workflow — keeps audit volume
+bounded. No SPI audit event (audit covers entity-lifecycle, not
+import-time config). No log emission when `AllowCycles=false` or omitted.
+
+**Runtime safety net unchanged.** `cascadeAutomated`'s `maxStateVisits`
+(engine.go:513) and `maxCascadeDepth` (line 510) limits remain in
+effect. A cyclic workflow that was force-imported and whose cycle
+actually fires at runtime still aborts at the visit cap with the
+existing `SMEventCancelled "state machine aborted: state X visited N
+times"` event. The `allowCycles` flag only opens the import gate; it
+does not weaken runtime runaway protection.
 
 ### 5.5 Engine guards (`internal/domain/workflow/engine.go`)
 
@@ -405,14 +544,15 @@ and the absence of an implementation; it does not link to a tracker.
 
 ### 5.6 Help text (`cmd/cyoda/help/content/workflows.md`)
 
-Add a new subsection after the existing per-transition field listing
-(after the closing of the `processors[]` discussion around line 175).
-Suggested heading: `### Scheduled transitions (v0.8.0: shape only)`.
+Add a new top-level subsection after the existing `## PROCESSORS`
+discussion (before `## CRITERIA`). The heading level matches the
+sibling sections `## PROCESSORS` and `## CRITERIA` — level 2, not
+level 3, so the content is not visually orphaned under `## PROCESSORS`.
 
 Content:
 
-```markdown
-### Scheduled transitions (shape only — runtime not yet implemented)
+````markdown
+## SCHEDULED TRANSITIONS
 
 A transition may carry an optional `schedule` object marking it as
 scheduled. Presence of `schedule` declares that the transition fires
@@ -447,9 +587,9 @@ source state. The `schedule` shape is:
 - `schedule.timeoutMs > 0 && schedule.timeoutMs < schedule.delayMs` is
   rejected (`VALIDATION_FAILED`).
 
-**v0.8.0 engine behaviour.** The timer runtime that arms and fires
-scheduled transitions is not yet implemented. Two guards govern
-behaviour until it ships:
+**Engine behaviour (runtime not yet implemented).** The timer runtime
+that arms and fires scheduled transitions is not yet implemented. Two
+guards govern behaviour until it ships:
 
 - During automated cascade evaluation, scheduled transitions are
   silently skipped — they are never selected for immediate firing.
@@ -460,23 +600,57 @@ behaviour until it ships:
   `WORKFLOW_FAILED` with the message `transition "X" in state "Y" is
   scheduled; scheduled transitions are not yet implemented`. The
   entity remains in the source state.
+
+**Importing cyclic scheduled workflows.** A canonical scheduled-
+transition use case is a polling pattern such as `S1 →scheduled→ S2
+→scheduled→ S1`. The import-time cycle detector rejects unguarded
+automated cycles by default — including this one, because a delayed
+cycle is still a cycle. To import such a workflow, set the request-
+level field `allowCycles: true` on the import body:
+
+```json
+{
+  "importMode": "REPLACE",
+  "allowCycles": true,
+  "workflows": [ /* ... */ ]
+}
 ```
+
+`allowCycles: true` bypasses only the cycle-detection check. Schedule
+shape rules (manual+schedule, delayMs, timeoutMs) and all other
+validators remain unconditional. The runtime cascade-depth and per-
+state visit caps still catch actual runaway at fire time. Use only
+for workflows whose cyclicity is intentional.
+````
 
 ### 5.7 Parity scenario (`e2e/externalapi/scenarios/08-workflow-import-export.yaml`)
 
-Add a new test entry (`wf-import/04` or next free slot) exercising
-round-trip of a transition with `schedule`. Two import payloads:
+Slots `wf-import/01..06` are already populated. Add new entries at the
+next free slots. Three new scenarios:
 
-1. **Round-trip preservation.** A workflow with one regular and one
-   scheduled transition. Assert `json_equals_normalized` round-trip
-   equality on import + export.
-2. **Validator rejection.** Three sub-cases (`manual: true + schedule`,
-   `delayMs: 0`, `timeoutMs < delayMs`) — each asserts HTTP 400 with
-   `VALIDATION_FAILED` and the rule-specific error substring.
+- **`wf-import/07-scheduled-transition-roundtrip`** — round-trip
+  preservation. A workflow with one regular and one scheduled
+  transition (`Schedule: {DelayMs: 86400000, TimeoutMs: 90000000}` and
+  another with `Schedule: {DelayMs: 1000}` to exercise the
+  `TimeoutMs:0` omitempty path). Assert `json_equals_normalized`
+  round-trip equality on import + export.
+- **`wf-import/08-scheduled-transition-rejects`** — validator rejection
+  matrix. Three sub-cases per the validator rules (`manual: true +
+  schedule`, `delayMs: 0`, `timeoutMs < delayMs`); each asserts
+  HTTP 400 `VALIDATION_FAILED` with the rule-specific error substring.
+- **`wf-import/09-allowcycles-bypass`** — request-level cycle bypass.
+  Workflow `S1 →scheduled→ S2 →scheduled→ S1`. Without
+  `allowCycles: true` import returns `400 VALIDATION_FAILED` with the
+  cycle error. With `allowCycles: true` import returns `200 OK` and
+  round-trip preserves the workflow. The `allowCycles` field itself
+  is request-only and does not appear in the exported workflow set.
 
 The existing `wf-import/03` test (the post-#250 group-criterion +
-function-criterion + externalized-processor case) is **unchanged.** No
-follow-up edit there.
+function-criterion + externalized-processor case) and `wf-import/01..06`
+are **unchanged.** No follow-up edits to the existing entries. (Free
+slot enumeration confirmed at spec-write time; re-verify at
+implementation time and pick the next-free integer prefix if the file
+has gained entries since.)
 
 ### 5.8 Docs hygiene & test-fixture sweep (Gate 4 + Gate 6)
 
@@ -492,24 +666,12 @@ follow-up edit there.
 - **`docs/WORKFLOW_IMPORT_EXPORT_AUDIT.md`** — §H1 already references
   #259 as the carve-out. After this PR merges, the audit's tracking is
   accurate; no edit required.
-- **Test-fixture sweep (`internal/domain/workflow/*_test.go`).** Grep
-  for `schedule`, `delayMs`, `timeoutMs`, `Schedule`:
-  ```bash
-  grep -rn 'schedule\|delayMs\|timeoutMs' --include="*_test.go" \
-       internal/domain/workflow/
-  ```
-  Expected matches (intentional, leave as-is):
-  - `engine_processors_type_test.go:147` — comment annotating
-    `"scheduled"` as a legacy value removed by #250.
-  - `engine_processors_type_test.go:152` — `"scheduled"` string in
-    `TestType_UnknownValues_FallThrough`.
-  - `engine_processors_type_test.go:308-313` — comment + test fixture
-    for `"scheduled"` as an unknown-Type round-trip value.
-
-  These are #250's intentional fall-through coverage — they prove that
-  the SPI's free-string `Type` accepts a legacy `"scheduled"` value
-  without rejection. New tests added by §6.1 cover the new
-  `Schedule` field and do not regress these.
+- **Test-fixture sweep (`internal/domain/workflow/*_test.go`).** A grep
+  for `schedule|delayMs|timeoutMs|Schedule` returns only #250's
+  intentional fall-through coverage at `engine_processors_type_test.go`
+  (lines 147, 152, 308-313, 313 — `"scheduled"` as a legacy-value
+  unknown-Type round-trip fixture). Leave as-is; new tests added by
+  §6.1 cover the `TransitionDefinition.Schedule` field.
 
 ## 6. Test plan (TDD)
 
@@ -562,12 +724,12 @@ authored first, run to confirm RED, then driven GREEN.
 
 8. **Round-trip preservation.** Import a workflow with a transition
    carrying `Schedule: {DelayMs: 86400000, TimeoutMs: 90000000}`,
-   export, assert the exported JSON contains
-   `"schedule":{"delayMs":86400000,"timeoutMs":90000000}` byte-for-byte
-   on the round-trip. Variant: `Schedule: {DelayMs: 1000}` (no
-   TimeoutMs) — assert exported JSON contains
-   `"schedule":{"delayMs":1000}` (omitempty drops the zero
-   `timeoutMs`).
+   export, assert `json_equals_normalized` round-trip equality (parse
+   both JSONs, compare structurally — robust against future field-
+   ordering refactors of `TransitionDefinition`). Variant: `Schedule:
+   {DelayMs: 1000}` (no TimeoutMs) — assert exported JSON's `schedule`
+   object has `delayMs: 1000` and no `timeoutMs` key (the `omitempty`
+   contract on the zero `TimeoutMs`).
 
 9. **E2E — explicit fire of scheduled transition returns 400.**
    Integration test in `internal/e2e/` mirroring #250's test 8 shape:
@@ -586,7 +748,47 @@ authored first, run to confirm RED, then driven GREEN.
    5. `GET /entity/X/<id>` returns the entity in the initial state
       (cascade rested there; explicit fire rejected).
 
-10. **Parity — scenario 08/wf-import/04 round-trip passes.** Per §5.7.
+10. **Parity — scenarios `wf-import/07..09` pass.** Per §5.7.
+
+11. **`allowCycles` default-false rejects unguarded automated cycle.**
+    Import payload `{importMode: "REPLACE", workflows: [<cyclic
+    workflow>]}` — `allowCycles` omitted (default false). Workflow is
+    `S1 →automated, no criterion→ S2 →automated, no criterion→ S1`
+    (regular non-scheduled transitions). Assert `400 VALIDATION_FAILED`
+    with cycle-detection error from `validateWorkflowLoops`.
+
+12. **`allowCycles: true` bypasses the cycle rejection.** Same workflow
+    as test 11, with `{importMode: "REPLACE", allowCycles: true,
+    workflows: [...]}`. Assert `200 OK`; the workflow persists; round-
+    trip preserves shape (the exported workflow set does not carry the
+    `allowCycles` flag — it's request-only). Assert a `slog.Warn` line
+    matching `"workflow import: cycle validation bypassed"` is emitted
+    exactly once via a test log handler.
+
+13. **`allowCycles: true` on polling scheduled-transition workflow
+    succeeds.** Workflow `S1 →scheduled→ S2 →scheduled→ S1` (both
+    transitions have `Manual: false, Schedule: {DelayMs: 1000}`,
+    no criterion). Assert without `allowCycles`: `400 VALIDATION_FAILED`
+    cycle error. With `allowCycles: true`: `200 OK`. Create an entity
+    via `POST /entity/X`; assert entity lands in initial state and
+    rests there (cascade silently skips both scheduled transitions, no
+    cycle fires).
+
+14. **`allowCycles: true` does NOT bypass Schedule-coherence rules.**
+    Workflow with a cyclic shape AND a `Manual: true, Schedule:
+    {DelayMs: 1000}` transition. Import with `allowCycles: true`.
+    Assert `400 VALIDATION_FAILED` with the manual+schedule error —
+    not the cycle error. Demonstrates that the bypass is scoped to
+    `validateWorkflowLoops` only.
+
+15. **Runtime safety net unchanged.** Import with `allowCycles: true`
+    a cyclic regular (non-scheduled) workflow whose cycle actually
+    fires at runtime (`S1 →automated→ S2 →automated→ S1`, no criteria,
+    no schedule). Create an entity. Assert the cascade aborts at the
+    per-state visit cap with `SMEventCancelled "state machine aborted:
+    state ... visited ... times"`. (May piggyback an existing cascade-
+    limit test rather than add a new one — the assertion is that the
+    runtime guard still fires when the import-time guard is bypassed.)
 
 ### 6.2 Coverage gaps explicitly NOT closed in #259
 
@@ -598,12 +800,18 @@ authored first, run to confirm RED, then driven GREEN.
   transitions coexist in the same state with overlapping firing
   windows. (#251 scope — currently moot because v0.8.0 silently skips
   scheduled transitions.)
-- Cycle detection awareness of scheduled transitions. The DFS in
-  `validateWorkflowLoops` does not skip scheduled transitions; the
-  conservative choice is to preserve cycle detection's existing
-  reachability assumption so workflows that would become cycle-unsafe
-  once #251 lands are caught at v0.8.0 import time. (Documented in
-  §5.4.)
+- Per-workflow `AllowCycles` field on `WorkflowDefinition` (persistent
+  escape hatch). Request-level was chosen deliberately so the durable
+  schema does not carry a "skip safety check" knob. Revisit if
+  operators need set-and-forget cyclicity declarations.
+- Initial-state-with-only-scheduled-exits special-case. Covered
+  incidentally by tests 6 and 9 (the entity simply rests in the
+  initial state after create); no dedicated test.
+- Scheduled transition with a non-null `criterion`. Spec accepts the
+  combination (criterion is uninterpreted by v0.8.0 cascade because
+  Schedule!=nil already takes precedence in the skip filter); a
+  dedicated test is omitted for brevity, but reviewers may add one
+  if the semantics warrant pinning.
 
 ## 7. Backwards compatibility
 
@@ -614,6 +822,8 @@ authored first, run to confirm RED, then driven GREEN.
 | `TransitionDefinitionDto.schedule: {delayMs: 0}` | Silently dropped | **Rejected at import** with `VALIDATION_FAILED`. |
 | `TransitionDefinitionDto` with `manual: true, schedule: {...}` | Silently dropped (schedule lost) | **Rejected at import** with `VALIDATION_FAILED`. |
 | Legacy `processors[]` with `{type: "scheduled", config: {delayMs, transition, timeoutMs}}` (raw-JSON path; pre-#250 shape) | After #250: SPI's free-string `Type` accepts; scheduled config fields silently dropped by `ProcessorConfig` unmarshal; dispatched as externalized | **Same as post-#250.** The new `TransitionDefinition.Schedule` field does not interact with `Processors[].Type` or `ProcessorConfig`. Carried-over technical debt from §H1's silent-drop. |
+| Import request body with `allowCycles` field | Field unknown to importRequest struct; silently dropped by `json.Unmarshal` (Go default behaviour) | **Read as a bool;** when true, bypasses `validateWorkflowLoops` for that request. When false / omitted: byte-identical pre-#259 behaviour. |
+| Import request body with cyclic workflow, no `allowCycles` flag | Rejected at import with `VALIDATION_FAILED` (cycle detection) | **Same** — default `allowCycles: false` preserves the rejection. |
 
 The wire surface is **strictly wider** in exactly one place
 (`TransitionDefinitionDto.schedule` is a new optional field on a
@@ -632,37 +842,64 @@ shape is now well-defined) and become inert at runtime per §5.5.
 
 ## 8. Risks
 
-- **`*TransitionSchedule` pointer JSON edge case.** A pointer with all
-  fields zero-valued (`&TransitionSchedule{}`) marshals as
-  `"schedule":{"delayMs":0,"timeoutMs":0}` (omitempty drops the
-  `timeoutMs:0` but not the empty struct itself). If callers construct
-  such a value, the validator catches it via the `DelayMs <= 0` rule.
-  No silent acceptance.
+- **`*TransitionSchedule` zero-value pointer handling — wire vs.
+  in-process paths.** Two distinct concerns are sometimes conflated.
+  (a) **Wire path.** A client POSTing `"schedule":{}` (empty object)
+  unmarshals into `&TransitionSchedule{DelayMs: 0, TimeoutMs: 0}` —
+  the validator's `DelayMs <= 0` rule catches this with
+  `VALIDATION_FAILED`. Same for `"schedule":{"delayMs":0}`. No silent
+  acceptance from any wire payload. (b) **In-process construction.**
+  A direct Go-code construction of `&TransitionSchedule{}` in a test
+  fixture or a future SPI consumer is a fixture-author concern, not a
+  wire risk — fixture code is reviewed and tested directly. The
+  validator catches it only if `validateImportRequest` runs on that
+  path, which is the standard import handler path but not necessarily
+  every internal code path. Author-discipline matter; not a system
+  vulnerability.
 - **OpenAPI generator behaviour for the new `schedule` field.** Some
   `oapi-codegen` versions emit `*TransitionScheduleDto` (pointer) for
   optional non-required object fields, matching the SPI pointer choice.
   Verify in the regeneration spike (§5.2). If a value-type is emitted,
   there is no behavioural divergence (zero-value still goes through
   validator), but the generated code may need a manual nudge.
-- **Cycle-detector blind spot.** `validateWorkflowLoops` does not
-  account for scheduled transitions. Once #251 ships, a workflow with
-  `S1 --scheduled--> S2 --scheduled--> S1` becomes a delayed-cycle.
-  The cycle detector today treats both edges as eligible and rejects.
-  This is the conservative choice (preserve detection); revisit when
-  #251 lands.
+- **Cycle-detector blind spot (resolved via `allowCycles`).** A
+  workflow `S1 --scheduled--> S2 --scheduled--> S1` is rejected by
+  `validateWorkflowLoops` today; once #251 ships and the timer arms
+  scheduled transitions, that's an actual infinite loop, so the
+  rejection is correct (delayed cycle = cycle). The request-level
+  `allowCycles` escape hatch (§5.4) gives operators a documented path
+  to import intentionally-cyclic workflows. No code change in
+  `validateWorkflowLoops` itself.
+- **`allowCycles: true` footgun.** Operators who set the flag bypass
+  the import-time cycle check; a buggy workflow with an unintended
+  unguarded cycle can be imported. Mitigations: (a) the runtime
+  cascade safety net (`maxStateVisits`, `maxCascadeDepth`) catches
+  actual runaway at fire time and emits `SMEventCancelled`; (b) one
+  `slog.Warn` per import call surfaces the bypass to operators
+  reviewing logs; (c) the flag is request-level only — each import
+  re-asserts intent; the durable schema does not carry the bypass.
 - **`*int64` vs `int64` for `TimeoutMs` round-trip.** Choosing `int64`
   with `omitempty` (per §5.3) means the JSON omits `timeoutMs` only
   when the Go value is exactly 0. A client that explicitly sets
   `timeoutMs: 0` in import JSON, exports, and gets back JSON without
   `timeoutMs` is technically a lossy round-trip — but the SPI and
   OpenAPI both document `0 == no timeout`, so this is semantically
-  equivalent. Round-trip preservation test 8 (§6.1) pins the
-  byte-exact shape for non-zero values; the zero-value case is
-  semantically equivalent both directions.
+  equivalent. Round-trip preservation test 8 (§6.1) uses
+  `json_equals_normalized` rather than byte-exact substring matching,
+  so this case is asserted to be semantically equivalent both
+  directions.
 - **SPI tag coupling.** #259 bundles the deferred #250 docstring; if
   this PR is reverted, #250's docstring is also lost from SPI main.
   Acceptable because the bundling is intentional per #250 spec §5.3,
   and a revert would similarly carry the new shape work.
+- **#260 racing #259 on the docstring (O1).** If #260's SPI PR lands
+  before #259's, #260 picks up #250's docstring under its own banner
+  and #259's §5.3(c) becomes a no-op. The implementer of #259 should
+  check SPI `main` immediately before opening the SPI PR; if the
+  docstring is already present, drop §5.3(c) from #259's SPI commit
+  set and update the CHANGELOG `[Unreleased]` entry to remove the
+  "Changed" subsection. The substantive shape work (5.3(a), 5.3(b))
+  is unaffected.
 
 ## 9. Out of scope (sanity check)
 
@@ -678,6 +915,13 @@ shape is now well-defined) and become inert at runtime per §5.5.
 - Vendored upstream OpenAPI copies under `docs/cyoda/`.
 - Cassandra plugin coordination — additive SPI; refresh via end-of-milestone
   tag bump, not from this PR.
+- Per-workflow `AllowCycles` field on `WorkflowDefinition` (persistent
+  / round-tripped escape hatch). #259 lands request-level only.
+- Per-transition cycle-allowance markers. Same reason.
+- A general-purpose validation-bypass mechanism (e.g. an `unsafe: true`
+  flag that disables all validators). `allowCycles` is deliberately
+  cycle-specific; structural rules (Schedule coherence, processor
+  flags, name uniqueness) remain unconditional.
 
 ## 10. Cross-repo coordination
 
@@ -727,13 +971,14 @@ repos":
 | `cyoda-go-spi/CHANGELOG.md` (sibling repo) | Add `[Unreleased]` Added + Changed entries per §5.3. |
 | `api/openapi.yaml` | Add `TransitionScheduleDto` schema; add optional `schedule` property to `TransitionDefinitionDto`. |
 | `api/generated.go` | Regenerated from above. |
-| `internal/domain/workflow/validate.go` | Add three Schedule-coherence checks in `validateWorkflowStructure` per-transition loop (between lines 193 and 198). |
+| `internal/domain/workflow/validate.go` | Add three Schedule-coherence checks in `validateWorkflowStructure` per-transition loop (between lines 193 and 198); add `allowCycles bool` parameter to `validateWorkflows` and short-circuit `validateWorkflowLoops` when true. |
+| `internal/domain/workflow/handler.go` | Add `AllowCycles bool` field to `importRequest` struct (lines 32-46); thread `req.AllowCycles` into the `validateWorkflows` call; emit `slog.Warn "workflow import: cycle validation bypassed"` when `req.AllowCycles == true`. |
 | `internal/domain/workflow/engine.go` | Cascade-skip filter at line 528 (one-line addition); explicit-fire reject branch in `attemptTransition` after the `Disabled` check (between lines 453 and 455). |
-| `internal/domain/workflow/validate_test.go` (or sibling) | TDD tests per §6.1 items 1–4. |
+| `internal/domain/workflow/validate_test.go` (or sibling) | TDD tests per §6.1 items 1–4, 11–15. |
 | `internal/domain/workflow/engine_test.go` (or sibling) | TDD tests per §6.1 items 5–8. |
-| `internal/e2e/` | E2E test per §6.1 item 9. |
-| `cmd/cyoda/help/content/workflows.md` | New `### Scheduled transitions` subsection per §5.6. |
-| `e2e/externalapi/scenarios/08-workflow-import-export.yaml` | Add `wf-import/04` round-trip + reject scenario per §5.7. |
+| `internal/e2e/` | E2E test per §6.1 item 9; additional E2E for `allowCycles` if not covered by the unit tests at items 11–15. |
+| `cmd/cyoda/help/content/workflows.md` | New `## SCHEDULED TRANSITIONS` section per §5.6 (level 2, mirroring `## PROCESSORS` / `## CRITERIA`). |
+| `e2e/externalapi/scenarios/08-workflow-import-export.yaml` | Add `wf-import/07..09` (round-trip, validator rejects, `allowCycles` bypass) per §5.7. |
 | `README.md`, `CLAUDE.md`, `COMPATIBILITY.md`, `docs/PROCESSOR_EXECUTION_MODES.md` | Untouched. Re-grep as Gate 4 hygiene. |
 | `docs/cyoda/openapi.yml` and vendored copies | Out of scope. |
 | `go.mod` (root + `plugins/memory|sqlite|postgres`) | Bump pseudo-version pin to cyoda-go-spi `main` HEAD post-SPI-PR-merge. |
@@ -753,7 +998,6 @@ Per `superpowers:verification-before-completion`:
   `.claude/rules/race-testing.md`.
 - `make test-all` — covers root + `plugins/memory|sqlite|postgres` per
   CLAUDE.md.
-- `make todos` — no new TODOs introduced.
 
 ## Appendix C: Out-of-tree plugin impact
 
