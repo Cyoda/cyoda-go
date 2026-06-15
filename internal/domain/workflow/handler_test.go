@@ -326,6 +326,24 @@ func TestExportEmpty_Returns404(t *testing.T) {
 	}
 }
 
+// TestExport_UnknownModel_Returns404_ModelNotFound covers issue #257 M2: the
+// export handler must distinguish "model does not exist" (MODEL_NOT_FOUND)
+// from "model exists but has no workflows" (WORKFLOW_NOT_FOUND). The import
+// handler already enforces the same distinction (see
+// TestImport_UnknownModel_Returns404); export was left behind.
+func TestExport_UnknownModel_Returns404_ModelNotFound(t *testing.T) {
+	srv := newTestServer(t)
+	// NOTE: deliberately do NOT call importModel — the model "Ghost" does not exist.
+
+	resp := doWorkflowExport(t, srv.URL, "Ghost", 1)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 404 for export against unknown model, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeModelNotFound)
+}
+
 func TestImportFullWorkflow(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "PaymentRequest", 1)
