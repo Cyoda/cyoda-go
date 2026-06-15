@@ -10,6 +10,29 @@
 > **Revision history**
 >
 > - **Revision 1 (2026-06-15):** initial spec.
+> - **Revision 3 (2026-06-15):** resolved M3 and M4 from the rev 2 review.
+>   **M3** — explicit-fire rejection mirrors the `Disabled` precedent
+>   exactly: emit `SMEventTransitionNotFound`, wrap `ErrTransitionNotFound`,
+>   surface as `400 TRANSITION_NOT_FOUND`. Per project lead: TRANSITION_NOT_FOUND
+>   is the right code when "the transition does not exist or is not currently
+>   dispatchable from the caller's POV" — which is exactly the scheduled-but-
+>   runtime-not-yet-implemented case. The criterion-rejection event type
+>   (`SMEventTransitionCriterionNoMatch`) remains untouched. **M4** —
+>   `TimeoutMs` semantic clarified by project lead: it is the late-tolerance
+>   window past the scheduled-time, NOT a max-age-of-armed-timer.
+>   `scheduledTime = stateEntryTime + delayMs`; at execution time the
+>   scheduler checks `lateness = executionTime - scheduledTime`; if
+>   `lateness > timeoutMs` the task is dropped. The rev 1 / rev 2 validator
+>   rule `TimeoutMs >= DelayMs` is bogus under this semantic (the two
+>   measure different quantities) and is removed. `TimeoutMs` becomes a
+>   `*int64` pointer (precedent: `ProcessorConfig.StartNewTxOnDispatch
+>   *bool`) so that `nil` (no timeout — fire whenever the scheduler
+>   eventually picks it up), `&0` (strictest — drop if any lateness), and
+>   `&N` (drop if late > N ms) are all distinguishable on the wire and
+>   round-trip cleanly. Forward-context note from project lead: scheduled
+>   transitions are one instance of a generic ScheduledTask abstraction;
+>   timeoutMs is the same lateness-tolerance concept across all variants.
+>   #251 owns the generalisation.
 > - **Revision 2 (2026-06-15):** incorporated independent design review.
 >   Six load-bearing / medium defects fixed: (L1) parity-scenario slot
 >   collision — `wf-import/04` was already populated, switched to
@@ -81,17 +104,19 @@ unavailability of the feature in self-contained terms.
   `TransitionDefinitionDto`.
 - Land import-time validator rules for the shape's internal coherence:
   `Manual=true && Schedule!=nil` is rejected (structurally incoherent);
-  `Schedule!=nil && DelayMs<=0` is rejected; `Schedule!=nil &&
-  TimeoutMs>0 && TimeoutMs<DelayMs` is rejected.
+  `Schedule!=nil && DelayMs<=0` is rejected. (`TimeoutMs` has no
+  cross-field rule beyond `>= 0` — see §5.4.)
 - Land two-pronged engine guards:
   - The cascade-automatic loop silently treats `Schedule!=nil` as ineligible
     (mirroring how it already treats `Disabled` and `Manual`). No audit
     signal; entity progress through other automated/manual transitions out
     of the same state is unaffected.
   - The explicit-fire-by-name path (`attemptTransition`) rejects any
-    transition with `Schedule!=nil` with `WORKFLOW_FAILED 400` and a
-    self-contained error message. Mirrors #250's pattern for `Type:
-    internalized` rejection.
+    transition with `Schedule!=nil` with `TRANSITION_NOT_FOUND 400` —
+    same code the existing `Disabled` branch returns — and a
+    self-contained error message. Mirrors the `Disabled` precedent at
+    `engine.go:449-453` exactly: emit `SMEventTransitionNotFound`,
+    return error wrapping `ErrTransitionNotFound`.
 - Bundle #250's deferred `ProcessorDefinition.Type` docstring update into
   the same SPI PR — per #250 spec §5.3 the docstring was intentionally
   held back for the first carve-out that needs a substantive SPI change.
@@ -103,7 +128,7 @@ unavailability of the feature in self-contained terms.
   scheduled-transition use case is a polling pattern `S1 →scheduled→ S2
   →scheduled→ S1` which the existing `validateWorkflowLoops` rejects).
   The flag bypasses only `validateWorkflowLoops`; all other validators
-  (the three new Schedule rules, processor flags, structural checks)
+  (the two new Schedule rules, processor flags, structural checks)
   remain unconditional. Request-level (not workflow-level) — each
   import re-asserts intent; the durable schema does not carry a
   "skip safety check" knob. Runtime safety net (`maxStateVisits`,
@@ -131,11 +156,12 @@ unavailability of the feature in self-contained terms.
 |---|---|
 | Where does scheduling data live? | **Optional `Schedule *TransitionSchedule` field on `TransitionDefinition`.** Presence marks the transition as scheduled. One declaration encodes both "what fires" and "when". Engine state-entry hook (in #251) reads `tr.Schedule` to arm a timer. |
 | Cascade semantics for `Schedule!=nil` (`cascadeAutomated`, `engine.go:528`) | **Silent skip.** Add `\|\| tr.Schedule != nil` to the existing `Disabled \|\| Manual` skip filter. No audit event. An entity whose only exit is scheduled rests in the source state. |
-| Explicit-fire semantics for `Schedule!=nil` (`attemptTransition`, `engine.go:443-453`) | **Reject with `WORKFLOW_FAILED 400`.** Free-string error → `classifyWorkflowError` default branch returns `Operational(400, WORKFLOW_FAILED, msg)`. Entity stays in source state. Single `SMEventStateProcessResult{success:false}` audit row. |
-| Validator coherence (`validate.go:178-211`) | **Three new rules** inside the existing per-transition loop, placed between the Next-state check (line 193) and the processor loop (line 198): (a) `Manual && Schedule != nil` → reject; (b) `Schedule != nil && DelayMs <= 0` → reject; (c) `Schedule != nil && TimeoutMs > 0 && TimeoutMs < DelayMs` → reject. All `VALIDATION_FAILED 400`. |
-| `TimeoutMs == 0` semantics | **"No timeout."** Documented in SPI docstring and OpenAPI description. Allowed by the validator (the `TimeoutMs > 0` guard). |
+| Explicit-fire semantics for `Schedule!=nil` (`attemptTransition`, mirror of `Disabled` precedent at `engine.go:449-453`) | **Reject with `TRANSITION_NOT_FOUND 400`.** Emit `SMEventTransitionNotFound`; return error wrapping `ErrTransitionNotFound`; `classifyWorkflowError` maps the sentinel to `Operational(400, ErrCodeTransitionNotFound, msg)`. Entity stays in source state. Single audit row. Per project lead: TRANSITION_NOT_FOUND is the correct code for "transition exists but is not currently dispatchable from the caller's POV" — exactly the scheduled-but-runtime-not-yet-implemented case; same code Disabled returns. (Rev 1 / rev 2 chose `WORKFLOW_FAILED` + `SMEventStateProcessResult` — wrong by analogy to processor-failure paths. Rev 3 fix.) |
+| Validator coherence (`validate.go:178-211`) | **Two new rules** inside the existing per-transition loop, placed between the Next-state check (line 193) and the processor loop (line 198): (a) `Manual && Schedule != nil` → reject; (b) `Schedule != nil && DelayMs <= 0` → reject. All `VALIDATION_FAILED 400`. (Rev 1's third rule `TimeoutMs >= DelayMs` was removed in rev 3 — bogus under the late-tolerance semantic.) |
+| `TimeoutMs` semantic | **Late-tolerance window past scheduled time.** `scheduledTime = stateEntryTime + delayMs`. At actual execution time the scheduler computes `lateness = executionTime - scheduledTime`; if `lateness > timeoutMs` the task is dropped (the transition is NOT attempted). Gives operators control over backlog / intermittent-offline behaviour. **Not** a max execution time, **not** a max age of the armed timer, **not** a hard wall-clock deadline. |
+| `TimeoutMs` shape | **`*int64` pointer** (`omitempty`). `nil` → no timeout, always fire whenever the scheduler eventually picks it up. `&0` → strictest, drop if any lateness. `&N` (N>0) → drop if lateness > N ms. Precedent: `ProcessorConfig.StartNewTxOnDispatch *bool`. |
 | OpenAPI surface | New `TransitionScheduleDto` schema with `delayMs` (required, `minimum: 1`) and `timeoutMs` (optional, `minimum: 0`). New optional `schedule: $ref` field on `TransitionDefinitionDto`. Regenerate `api/generated.go`. |
-| Audit-event shape for explicit-fire reject | **Single `SMEventStateProcessResult{success:false}`** with a Details string naming the transition and the rejection cause. Reuses the existing event type (no new SPI events). |
+| Audit-event shape for explicit-fire reject | **Single `SMEventTransitionNotFound`** with a Details string naming the transition and rejection cause. Reuses the existing event type that already covers "named-transition-not-found" AND "Disabled-and-thus-not-dispatchable" cases. No new SPI events. |
 | Error wording | **Self-contained**, no issue ID. Validator messages name the rule violated; engine error names the transition, source state, and rejection cause. |
 | SPI PR bundling | **One SPI PR** combining (a) deferred `ProcessorDefinition.Type` docstring from #250, (b) new `TransitionSchedule` type, (c) new `Schedule` field on `TransitionDefinition`. CHANGELOG `[Unreleased]` entry covers all three. |
 | SPI tagging | **None forced.** Bundled into v0.8.0's end-of-milestone tag per `MAINTAINING.md` "Coordinated release" cadence. cyoda-go pseudo-version-pins to SPI `main` HEAD across all four `go.mod` files per memory `project_v0_8_0_milestone_state`. |
@@ -157,30 +183,43 @@ TransitionScheduleDto:
   type: object
   description: |
     Scheduling configuration for an automatic future state transition.
-    Presence of this object marks the parent transition as scheduled —
-    it fires automatically delayMs milliseconds after the entity enters
-    the source state. Mutually exclusive with parent transition's
-    manual=true.
+    Presence of this object marks the parent transition as scheduled.
+    The transition is scheduled to fire at `stateEntryTime + delayMs`
+    (the "scheduledTime"). When the scheduler picks the task up for
+    execution at `executionTime`, it computes `lateness = executionTime
+    - scheduledTime`; if `lateness > timeoutMs` the task is dropped
+    and the transition is NOT attempted. `timeoutMs` gives operators
+    control over how the system should handle backlog or intermittent-
+    offline conditions: short timeoutMs values prefer freshness over
+    eventual execution; absent timeoutMs always eventually fires.
+
+    Mutually exclusive with parent transition's manual=true.
 
     The runtime that arms and fires the timer is not yet implemented.
     Until it ships, the engine silently skips scheduled transitions
     during automated cascade selection, and explicit fires by name are
-    rejected with HTTP 400 WORKFLOW_FAILED.
+    rejected with HTTP 400 TRANSITION_NOT_FOUND.
   properties:
     delayMs:
       type: integer
       format: int64
       minimum: 1
       description: |
-        Delay before firing, in milliseconds. Must be a positive integer.
+        Delay between source-state entry and the scheduled execution
+        time, in milliseconds. Must be a positive integer (zero or
+        negative would make this a regular automated transition).
     timeoutMs:
       type: integer
       format: int64
       minimum: 0
       description: |
-        Maximum age of the armed timer before abandonment, in
-        milliseconds. 0 (default) means no timeout. When non-zero, must
-        be greater than or equal to delayMs.
+        Late-tolerance window past the scheduled execution time, in
+        milliseconds. When the scheduler picks the task up, if
+        `(executionTime - scheduledTime) > timeoutMs` the task is
+        dropped. Absent (omitted) means no timeout — the task fires
+        whenever the scheduler eventually picks it up. Explicit zero
+        is the strictest setting — drop on any lateness. Independent
+        of `delayMs`; the two measure different quantities.
   required:
     - delayMs
 ```
@@ -226,7 +265,9 @@ The field is not added to `required`; absence is equivalent to `false`.
 Regenerated from the updated `openapi.yaml`. New entries:
 
 - `type TransitionScheduleDto struct { ... }` with fields `DelayMs int64`
-  and `TimeoutMs *int64` (pointer because non-required).
+  (required) and `TimeoutMs *int64` (pointer because non-required, and
+  the absent-vs-zero distinction is semantically meaningful per §4 and
+  §5.3 below).
 - `TransitionDefinitionDto.Schedule *TransitionScheduleDto`.
 
 Validation spike (per `make generate`):
@@ -249,25 +290,45 @@ workflow types (after `TransitionDefinition`, before the
 ```go
 // TransitionSchedule configures automatic firing of a future state
 // transition. Presence of this struct on a TransitionDefinition marks
-// the transition as scheduled: the engine arms a timer when the entity
-// enters the source state, and the transition fires automatically after
-// DelayMs milliseconds.
+// the transition as scheduled.
+//
+// Semantics. The scheduled execution time of the transition is
+// scheduledTime = stateEntryTime + DelayMs. When the scheduler picks
+// the task up at executionTime, it computes
+// lateness = executionTime - scheduledTime.
+//   - If TimeoutMs is nil, the task is always attempted (no timeout).
+//   - If TimeoutMs is non-nil and lateness > *TimeoutMs, the task is
+//     dropped and the transition is NOT attempted.
+//   - If TimeoutMs is non-nil and lateness <= *TimeoutMs (including
+//     *TimeoutMs == 0 when lateness is 0), the transition fires.
+//
+// TimeoutMs gives operators control over how the system handles
+// backlog and intermittent-offline conditions. Short positive values
+// prefer freshness — stale tasks are discarded rather than fired
+// against a possibly-changed entity. Nil prefers eventual execution.
 //
 // Scheduled transitions are mutually exclusive with Manual=true.
 //
-// The runtime that arms and fires the timer is not yet implemented.
-// Engine behaviour in the absence of that runtime is defined by the
-// cyoda-go engine package: scheduled transitions are silently skipped
-// during automated cascade selection, and explicit fires by name are
-// rejected with HTTP 400.
+// Scheduled transitions are a special case of a generic ScheduledTask
+// abstraction. The lateness-tolerance concept (TimeoutMs) applies
+// uniformly across all ScheduledTask variants. The generic
+// abstraction and the runtime that implements it ship in a later
+// release; the v0.8.0 engine silently skips scheduled transitions
+// during automated cascade selection, and rejects explicit fires by
+// name with HTTP 400 TRANSITION_NOT_FOUND.
 type TransitionSchedule struct {
-    // DelayMs is the delay before firing, in milliseconds. Must be > 0.
+    // DelayMs is the delay between source-state entry and the
+    // scheduled execution time, in milliseconds. Must be > 0.
     DelayMs int64 `json:"delayMs"`
 
-    // TimeoutMs is the maximum age of the armed timer before abandonment,
-    // in milliseconds. 0 means no timeout. When non-zero, must be >=
-    // DelayMs.
-    TimeoutMs int64 `json:"timeoutMs,omitempty"`
+    // TimeoutMs is the late-tolerance window past the scheduled
+    // execution time, in milliseconds. Nil means no timeout — the
+    // task fires whenever the scheduler eventually picks it up.
+    // Non-nil zero is the strictest setting — drop on any lateness.
+    // Non-nil positive N drops the task if it picks up more than N
+    // milliseconds after scheduledTime. Independent of DelayMs; the
+    // two measure different quantities.
+    TimeoutMs *int64 `json:"timeoutMs,omitempty"`
 }
 ```
 
@@ -340,7 +401,7 @@ milestone flight).
 
 ### 5.4 Validator (`internal/domain/workflow/validate.go`)
 
-Three new checks inside the existing per-transition loop in
+Two new checks inside the existing per-transition loop in
 `validateWorkflowStructure` (lines 178–211 today). Insertion point is
 between the Next-state check (line 193–196) and the processor loop
 (line 198).
@@ -352,25 +413,26 @@ if tr.Manual && tr.Schedule != nil {
         "workflow %q state %q transition %q: manual and scheduled are mutually exclusive",
         wf.Name, stateName, tr.Name)
 }
-if tr.Schedule != nil {
-    if tr.Schedule.DelayMs <= 0 {
-        return fmt.Errorf(
-            "workflow %q state %q transition %q: schedule.delayMs must be > 0 (got %d)",
-            wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
-    }
-    if tr.Schedule.TimeoutMs > 0 && tr.Schedule.TimeoutMs < tr.Schedule.DelayMs {
-        return fmt.Errorf(
-            "workflow %q state %q transition %q: schedule.timeoutMs (%d) must be >= schedule.delayMs (%d)",
-            wf.Name, stateName, tr.Name, tr.Schedule.TimeoutMs, tr.Schedule.DelayMs)
-    }
+if tr.Schedule != nil && tr.Schedule.DelayMs <= 0 {
+    return fmt.Errorf(
+        "workflow %q state %q transition %q: schedule.delayMs must be > 0 (got %d)",
+        wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
 }
 ```
 
-All three errors propagate through the existing import handler to a
+No `TimeoutMs` validator rule beyond what OpenAPI's `minimum: 0`
+enforces at the DTO boundary. The rev 1 / rev 2 rule `TimeoutMs >=
+DelayMs` was removed in rev 3: under the late-tolerance semantic
+(§5.3), `DelayMs` and `TimeoutMs` measure unrelated quantities, so
+the rule was bogus. A workflow with `DelayMs: 60000, TimeoutMs: &500`
+is coherent (fire 60s after entry; drop if the scheduler is more than
+500ms late picking it up).
+
+Both errors propagate through the existing import handler to a
 `400 VALIDATION_FAILED` response (`handler.go:65-90` import path; the
 specific error code is set by the boundary classification).
 
-**Placement rationale (M7).** The three Schedule rules sit in
+**Placement rationale (M7).** The two Schedule rules sit in
 `validateWorkflowStructure`, which is invoked by `validateImportRequest`
 on the incoming workflow set only — not on the merged-after-importMode
 result. This matches `validateImportRequest`'s scope: structural shape
@@ -434,7 +496,7 @@ The handler's import path threads `req.AllowCycles` into the
 around the post-merge validation step).
 
 Other validators — `validateImportRequest` /
-`validateWorkflowStructure` (including the three Schedule rules
+`validateWorkflowStructure` (including the two Schedule rules
 above), `validateProcessorFlags` — remain **unconditional**. The flag
 is specifically a cycle-detection bypass, not a general validation
 override. A workflow with both an unguarded cycle and a
@@ -489,55 +551,78 @@ definition not eligible for immediate automated firing — they wait for
 their timer. Until the timer runtime ships, they remain ineligible
 forever, which is the correct degenerate behaviour for v0.8.0.
 
-**(b) Explicit-fire reject** at `engine.go:443-453` precedent. New
-branch immediately after the `Disabled` check (currently the rejection
-for `transition.Disabled` at lines 449-453), before criterion evaluation:
+**(b) Explicit-fire reject** — mirror of the `Disabled` precedent at
+`engine.go:449-453`. New branch immediately after the existing
+`Disabled` check, before criterion evaluation. The shape is byte-for-
+byte structurally identical to the `Disabled` branch, differing only
+in the trigger predicate and the Details substring:
 
 ```go
+// Reference: existing Disabled branch at engine.go:449-453.
+//
+//     if transition.Disabled {
+//         e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+//             spi.SMEventTransitionNotFound,
+//             fmt.Sprintf("Transition %q is disabled", transitionName), nil)
+//         return ctx, txID, fmt.Errorf("transition %q is disabled in state %q: %w",
+//             transitionName, entity.Meta.State, ErrTransitionNotFound)
+//     }
+
 if transition.Schedule != nil {
     e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-        spi.SMEventStateProcessResult,
+        spi.SMEventTransitionNotFound,
         fmt.Sprintf(
-            "Transition %q in state %q is scheduled; scheduled transitions are not yet implemented",
-            transitionName, entity.Meta.State),
-        map[string]any{"success": false})
+            "Transition %q is scheduled; scheduled transitions are not yet implemented",
+            transitionName), nil)
     return ctx, txID, fmt.Errorf(
-        "transition %q in state %q is scheduled; scheduled transitions are not yet implemented",
-        transitionName, entity.Meta.State)
+        "transition %q in state %q is scheduled; scheduled transitions are not yet implemented: %w",
+        transitionName, entity.Meta.State, ErrTransitionNotFound)
 }
 ```
 
-**Failure surface.** The wrapped error wraps no specific sentinel.
-`classifyWorkflowError` (`internal/domain/entity/service.go:1449-1457`
-per #250 spec §5.4) falls through to its default branch and returns
-`common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
-err.Error())`. HTTP response: `400 WORKFLOW_FAILED`. Entity stays in
-source state because the function returns before line 486
+**Failure surface.** The wrapped error carries `ErrTransitionNotFound`
+as its sentinel. `classifyWorkflowError`
+(`internal/domain/entity/service.go:1449-1457`) maps this sentinel to
+`common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound,
+err.Error())`. HTTP response: `400 TRANSITION_NOT_FOUND`. Same code
+the `Disabled` branch returns today. Entity stays in source state
+because the function returns before line 486
 (`entity.Meta.State = transition.Next`).
 
-**Audit-event shape.** The explicit-fire reject emits one
-`SMEventStateProcessResult` with `Data: {success: false}` and a Details
-string naming the transition, source state, and rejection cause.
-Reusing the existing event type (no new SPI event constants) is the
-deliberate choice — the rejection is fundamentally a "transition could
-not complete" failure mode, structurally identical to the post-#250
-internalized-processor failure path that also emits
-`SMEventStateProcessResult{success:false}`. An audit consumer searching
-for failure events does not need a new event-type vocabulary; the
-Details substring `"scheduled transitions are not yet implemented"` is
-the unique fingerprint. The calling handler's failure path
-(`engine.go:474-477` for manual, `:562-566` for cascade) emits its own
-follow-up `SMEventStateProcessResult` per the existing two-event
-shape — but it is **never reached** for this rejection because the new
-branch sits earlier in `attemptTransition` (before
-`executeProcessors`), and the cascade path silently skips and never
-calls `attemptTransition` on a `Schedule!=nil` entry. Net audit trail
-for the explicit-fire reject: **one** `SMEventStateProcessResult` row.
+**Why TRANSITION_NOT_FOUND, not WORKFLOW_FAILED.** Per project lead:
+TRANSITION_NOT_FOUND is the correct code for "the named transition
+exists in the workflow definition but is not currently dispatchable
+from the caller's POV." That's exactly the Disabled semantics; that's
+exactly the scheduled-but-runtime-not-yet-implemented semantics. The
+criterion-rejection case (`SMEventTransitionCriterionNoMatch`) is
+intentionally NOT covered by TRANSITION_NOT_FOUND because criterion
+mismatch is a runtime decision based on entity state, not a static
+"this can't be dispatched" property. Rev 1 / rev 2 incorrectly chose
+WORKFLOW_FAILED + SMEventStateProcessResult by analogy to processor-
+failure paths — but no processor is involved here; the rejection
+happens before `executeProcessors` is reached.
 
-**Operator-side slog.** No `slog.Warn`. Consistent with #250 spec §5.4:
-fatal failure paths write the audit event and the API error; they do
-not duplicate to slog. The `WORKFLOW_FAILED 400` response is sufficient
-operator-facing signal.
+**Audit-event shape.** Single `SMEventTransitionNotFound` row with
+Details `Transition "<name>" is scheduled; scheduled transitions are
+not yet implemented`. Reuses the event type the existing
+`TransitionNotFound`-via-name and `Disabled` branches both emit. No
+new SPI event constants needed. An audit consumer searching for
+"transition not currently dispatchable" failure events sees a
+uniform shape across all three reasons (missing name, disabled,
+scheduled); the Details substring distinguishes them.
+
+The caller-level failure emit at `engine.go:474-477` (manual) /
+`:562-566` (cascade) targets `SMEventStateProcessResult` and only
+fires after `executeProcessors` returns an error. Our new branch
+returns before `executeProcessors`, so the caller-level emit is
+never reached for this rejection. Net audit trail for the explicit-
+fire reject: one `SMEventTransitionNotFound` row.
+
+**Operator-side slog.** No `slog.Warn`. Consistent with the existing
+`Disabled` branch's silence and #250 spec §5.4: predictable 4xx
+rejection paths write the audit event and the API error; they do
+not duplicate to slog. The `400 TRANSITION_NOT_FOUND` response is
+sufficient operator-facing signal.
 
 **No issue IDs in the error message.** The message names the transition
 and the absence of an implementation; it does not link to a tracker.
@@ -556,8 +641,8 @@ Content:
 
 A transition may carry an optional `schedule` object marking it as
 scheduled. Presence of `schedule` declares that the transition fires
-automatically `delayMs` milliseconds after the entity enters the
-source state. The `schedule` shape is:
+automatically at `scheduledTime = stateEntryTime + delayMs`. The
+`schedule` shape is:
 
 ```json
 {
@@ -566,30 +651,35 @@ source state. The `schedule` shape is:
   "manual": false,
   "schedule": {
     "delayMs": 86400000,
-    "timeoutMs": 90000000
+    "timeoutMs": 600000
   }
 }
 ```
 
 **Fields:**
 
-- `delayMs` (integer, required) — delay before firing, in milliseconds.
-  Must be `> 0`.
-- `timeoutMs` (integer, optional) — maximum age of the armed timer
-  before abandonment, in milliseconds. `0` (default) means no timeout.
-  When non-zero, must be `>= delayMs`.
+- `delayMs` (integer, required) — delay between source-state entry
+  and the scheduled execution time, in milliseconds. Must be `> 0`.
+- `timeoutMs` (integer, optional) — late-tolerance window past the
+  scheduled execution time, in milliseconds. When the scheduler
+  picks the task up, if `(executionTime - scheduledTime) > timeoutMs`
+  the task is dropped and the transition is NOT attempted. Absent
+  (omitted) means no timeout — fire whenever the scheduler
+  eventually picks it up. Explicit `0` is the strictest setting —
+  drop on any lateness. Independent of `delayMs`; the two measure
+  different quantities.
 
 **Import-time validation rules:**
 
 - `manual: true` and `schedule` present are mutually exclusive
   (`VALIDATION_FAILED`).
 - `schedule.delayMs <= 0` is rejected (`VALIDATION_FAILED`).
-- `schedule.timeoutMs > 0 && schedule.timeoutMs < schedule.delayMs` is
-  rejected (`VALIDATION_FAILED`).
+- No further rule on `timeoutMs` beyond `>= 0` (enforced at the DTO
+  boundary).
 
-**Engine behaviour (runtime not yet implemented).** The timer runtime
-that arms and fires scheduled transitions is not yet implemented. Two
-guards govern behaviour until it ships:
+**Engine behaviour (runtime not yet implemented).** The scheduler
+that arms and fires scheduled transitions is not yet implemented.
+Two guards govern behaviour until it ships:
 
 - During automated cascade evaluation, scheduled transitions are
   silently skipped — they are never selected for immediate firing.
@@ -597,9 +687,11 @@ guards govern behaviour until it ships:
   normally. An entity whose only exit is scheduled rests in its
   current state.
 - Explicitly firing a scheduled transition by name returns HTTP 400
-  `WORKFLOW_FAILED` with the message `transition "X" in state "Y" is
-  scheduled; scheduled transitions are not yet implemented`. The
-  entity remains in the source state.
+  `TRANSITION_NOT_FOUND` with the message `transition "X" in state
+  "Y" is scheduled; scheduled transitions are not yet implemented`.
+  Same code returned when a transition is `disabled: true` — same
+  semantic: "the transition exists but is not currently dispatchable
+  from the caller's POV." The entity remains in the source state.
 
 **Importing cyclic scheduled workflows.** A canonical scheduled-
 transition use case is a polling pattern such as `S1 →scheduled→ S2
@@ -629,15 +721,19 @@ Slots `wf-import/01..06` are already populated. Add new entries at the
 next free slots. Three new scenarios:
 
 - **`wf-import/07-scheduled-transition-roundtrip`** — round-trip
-  preservation. A workflow with one regular and one scheduled
-  transition (`Schedule: {DelayMs: 86400000, TimeoutMs: 90000000}` and
-  another with `Schedule: {DelayMs: 1000}` to exercise the
-  `TimeoutMs:0` omitempty path). Assert `json_equals_normalized`
-  round-trip equality on import + export.
+  preservation across the three `TimeoutMs` pointer states. A workflow
+  with three scheduled transitions: one with `TimeoutMs: 90000000`
+  (non-nil positive), one with `TimeoutMs: 0` (non-nil zero — must
+  survive the pointer's `omitempty`), one with `TimeoutMs` absent
+  (`nil`). Assert `json_equals_normalized` round-trip equality on
+  import + export; assert byte-level the absent case stays absent,
+  the explicit-zero case stays as `"timeoutMs": 0`, and the positive
+  case stays as `"timeoutMs": 90000000`.
 - **`wf-import/08-scheduled-transition-rejects`** — validator rejection
-  matrix. Three sub-cases per the validator rules (`manual: true +
-  schedule`, `delayMs: 0`, `timeoutMs < delayMs`); each asserts
-  HTTP 400 `VALIDATION_FAILED` with the rule-specific error substring.
+  matrix. Two sub-cases per the rev 3 validator rules (`manual: true +
+  schedule`, `delayMs: 0`); each asserts HTTP 400 `VALIDATION_FAILED`
+  with the rule-specific error substring. (Rev 1's third
+  `timeoutMs < delayMs` rule was removed in rev 3 as bogus.)
 - **`wf-import/09-allowcycles-bypass`** — request-level cycle bypass.
   Workflow `S1 →scheduled→ S2 →scheduled→ S1`. Without
   `allowCycles: true` import returns `400 VALIDATION_FAILED` with the
@@ -689,15 +785,22 @@ authored first, run to confirm RED, then driven GREEN.
    {DelayMs: 0}` and another with `DelayMs: -100`. Both assert
    `400 VALIDATION_FAILED`, error substring `"delayMs must be > 0"`.
 
-3. **Validator — TimeoutMs < DelayMs (non-zero).** Import payload with
-   `Schedule: {DelayMs: 1000, TimeoutMs: 500}`. Assert
-   `400 VALIDATION_FAILED`, error substring
-   `"timeoutMs (500) must be >= delayMs (1000)"`.
-
-4. **Validator — happy paths.** Three sub-cases that must pass import:
-   - `Schedule: {DelayMs: 1000}` (TimeoutMs omitted)
-   - `Schedule: {DelayMs: 1000, TimeoutMs: 0}` (TimeoutMs explicit zero)
+3. **Validator — happy paths across `TimeoutMs` pointer states.** Four
+   sub-cases that must all pass import (no `TimeoutMs` rule beyond
+   `>= 0`):
+   - `Schedule: {DelayMs: 1000}` (TimeoutMs absent → `nil` in Go → no
+     timeout semantic)
+   - `Schedule: {DelayMs: 1000, TimeoutMs: 0}` (TimeoutMs explicit zero
+     → `&0` in Go → strictest semantic)
+   - `Schedule: {DelayMs: 1000, TimeoutMs: 500}` (TimeoutMs < DelayMs
+     — perfectly coherent under late-tolerance semantic; rev 1's
+     rejection rule was bogus)
    - `Schedule: {DelayMs: 1000, TimeoutMs: 5000}` (TimeoutMs > DelayMs)
+
+4. **(Removed in rev 3.)** Rev 1's `TimeoutMs >= DelayMs` validator
+   rule was bogus under the late-tolerance semantic; no test replaces
+   it. Test numbering preserved for cross-reference continuity with
+   rev 1/rev 2.
 
 5. **Cascade — silent skip.** Workflow with state `S` containing two
    automated transitions: `Tsched` (scheduled, declared first) and
@@ -714,22 +817,33 @@ authored first, run to confirm RED, then driven GREEN.
 
 7. **Explicit-fire reject — manual=false + Schedule.** Workflow as test
    5 but the scheduled transition is fired by name. Assert:
-   - HTTP `400 WORKFLOW_FAILED`.
+   - HTTP `400 TRANSITION_NOT_FOUND` (same code Disabled returns).
    - Error body contains `"scheduled transitions are not yet implemented"`.
+   - The returned error wraps `ErrTransitionNotFound` (use `errors.Is`).
    - Entity in source state (`Get` returns unchanged state).
-   - Audit trail contains exactly one `SMEventStateProcessResult` with
-     `Data.success == false` and Details matching the rejection
-     substring. No `SMEventTransitionMade`, no
+   - Audit trail contains exactly one `SMEventTransitionNotFound` row
+     with Details matching the rejection substring. No
+     `SMEventTransitionMade`, no `SMEventStateProcessResult`, no
      `SMEventStateMachineFinish`.
 
-8. **Round-trip preservation.** Import a workflow with a transition
-   carrying `Schedule: {DelayMs: 86400000, TimeoutMs: 90000000}`,
-   export, assert `json_equals_normalized` round-trip equality (parse
-   both JSONs, compare structurally — robust against future field-
-   ordering refactors of `TransitionDefinition`). Variant: `Schedule:
-   {DelayMs: 1000}` (no TimeoutMs) — assert exported JSON's `schedule`
-   object has `delayMs: 1000` and no `timeoutMs` key (the `omitempty`
-   contract on the zero `TimeoutMs`).
+8. **Round-trip preservation across the three TimeoutMs pointer states.**
+   For each of:
+   - `Schedule: {DelayMs: 86400000, TimeoutMs: &90000000}` (non-nil
+     positive)
+   - `Schedule: {DelayMs: 86400000, TimeoutMs: &0}` (non-nil zero,
+     strictest)
+   - `Schedule: {DelayMs: 86400000, TimeoutMs: nil}` (absent, no
+     timeout)
+
+   import, export, assert `json_equals_normalized` round-trip equality
+   (parse both JSONs, compare structurally — robust against future
+   field-ordering refactors of `TransitionDefinition`). Additional
+   byte-level assertions:
+   - Non-nil positive case: exported JSON has `"timeoutMs": 90000000`.
+   - Non-nil zero case: exported JSON has `"timeoutMs": 0` (the
+     pointer-with-zero must survive `omitempty`; this is the
+     `*int64`-pattern's whole point).
+   - Nil case: exported JSON has no `timeoutMs` key under `schedule`.
 
 9. **E2E — explicit fire of scheduled transition returns 400.**
    Integration test in `internal/e2e/` mirroring #250's test 8 shape:
@@ -743,7 +857,8 @@ authored first, run to confirm RED, then driven GREEN.
       initial state because the cascade silently skips the scheduled
       transition and finds no other automated exit.
    4. `POST /entity/X/<id>/transition/AutoClose` — assert HTTP 400
-      with error code `WORKFLOW_FAILED` and message substring
+      with error code `TRANSITION_NOT_FOUND` (same code Disabled
+      returns) and message substring
       `scheduled transitions are not yet implemented`.
    5. `GET /entity/X/<id>` returns the entity in the initial state
       (cascade rested there; explicit fire rejected).
@@ -818,7 +933,7 @@ authored first, run to confirm RED, then driven GREEN.
 | Inbound payload shape | Behaviour before #259 | Behaviour after #259 |
 |---|---|---|
 | `TransitionDefinitionDto` with no `schedule` | Accepted, fired normally | Same |
-| `TransitionDefinitionDto.schedule: {delayMs: N>0}` | Field unknown to OpenAPI; silently dropped by `json.Unmarshal` into `spi.TransitionDefinition`; transition behaves as a regular one | **Accepted, stored, round-tripped.** Validator enforces the three coherence rules. Cascade silently skips; explicit-fire returns 400. |
+| `TransitionDefinitionDto.schedule: {delayMs: N>0}` | Field unknown to OpenAPI; silently dropped by `json.Unmarshal` into `spi.TransitionDefinition`; transition behaves as a regular one | **Accepted, stored, round-tripped.** Validator enforces the two coherence rules. Cascade silently skips; explicit-fire returns `400 TRANSITION_NOT_FOUND`. |
 | `TransitionDefinitionDto.schedule: {delayMs: 0}` | Silently dropped | **Rejected at import** with `VALIDATION_FAILED`. |
 | `TransitionDefinitionDto` with `manual: true, schedule: {...}` | Silently dropped (schedule lost) | **Rejected at import** with `VALIDATION_FAILED`. |
 | Legacy `processors[]` with `{type: "scheduled", config: {delayMs, transition, timeoutMs}}` (raw-JSON path; pre-#250 shape) | After #250: SPI's free-string `Type` accepts; scheduled config fields silently dropped by `ProcessorConfig` unmarshal; dispatched as externalized | **Same as post-#250.** The new `TransitionDefinition.Schedule` field does not interact with `Processors[].Type` or `ProcessorConfig`. Carried-over technical debt from §H1's silent-drop. |
@@ -878,16 +993,15 @@ shape is now well-defined) and become inert at runtime per §5.5.
   `slog.Warn` per import call surfaces the bypass to operators
   reviewing logs; (c) the flag is request-level only — each import
   re-asserts intent; the durable schema does not carry the bypass.
-- **`*int64` vs `int64` for `TimeoutMs` round-trip.** Choosing `int64`
-  with `omitempty` (per §5.3) means the JSON omits `timeoutMs` only
-  when the Go value is exactly 0. A client that explicitly sets
-  `timeoutMs: 0` in import JSON, exports, and gets back JSON without
-  `timeoutMs` is technically a lossy round-trip — but the SPI and
-  OpenAPI both document `0 == no timeout`, so this is semantically
-  equivalent. Round-trip preservation test 8 (§6.1) uses
-  `json_equals_normalized` rather than byte-exact substring matching,
-  so this case is asserted to be semantically equivalent both
-  directions.
+- **`*int64` pointer for `TimeoutMs` (rev 3).** Chose pointer over
+  value to disambiguate three meaningful states (nil = no timeout,
+  &0 = strictest, &N = N-ms tolerance) on the wire. With `*int64+omitempty`
+  Go's standard `encoding/json` correctly emits absent for nil,
+  `"timeoutMs":0` for `&0`, and `"timeoutMs":N` for `&N` — all three
+  round-trip byte-equivalent. Precedent: `ProcessorConfig.StartNewTxOnDispatch
+  *bool` (same pattern, same rationale). The earlier rev 2 risk-bullet
+  about "explicit zero exporting as absent" no longer applies once
+  the pointer is used.
 - **SPI tag coupling.** #259 bundles the deferred #250 docstring; if
   this PR is reverted, #250's docstring is also lost from SPI main.
   Acceptable because the bundling is intentional per #250 spec §5.3,
@@ -971,9 +1085,9 @@ repos":
 | `cyoda-go-spi/CHANGELOG.md` (sibling repo) | Add `[Unreleased]` Added + Changed entries per §5.3. |
 | `api/openapi.yaml` | Add `TransitionScheduleDto` schema; add optional `schedule` property to `TransitionDefinitionDto`. |
 | `api/generated.go` | Regenerated from above. |
-| `internal/domain/workflow/validate.go` | Add three Schedule-coherence checks in `validateWorkflowStructure` per-transition loop (between lines 193 and 198); add `allowCycles bool` parameter to `validateWorkflows` and short-circuit `validateWorkflowLoops` when true. |
+| `internal/domain/workflow/validate.go` | Add two Schedule-coherence checks (manual+schedule exclusion, DelayMs > 0) in `validateWorkflowStructure` per-transition loop (between lines 193 and 198); add `allowCycles bool` parameter to `validateWorkflows` and short-circuit `validateWorkflowLoops` when true. |
 | `internal/domain/workflow/handler.go` | Add `AllowCycles bool` field to `importRequest` struct (lines 32-46); thread `req.AllowCycles` into the `validateWorkflows` call; emit `slog.Warn "workflow import: cycle validation bypassed"` when `req.AllowCycles == true`. |
-| `internal/domain/workflow/engine.go` | Cascade-skip filter at line 528 (one-line addition); explicit-fire reject branch in `attemptTransition` after the `Disabled` check (between lines 453 and 455). |
+| `internal/domain/workflow/engine.go` | Cascade-skip filter at line 528 (one-line addition); explicit-fire reject branch in `attemptTransition` immediately after the `Disabled` check at lines 449-453 (mirrors `Disabled` exactly: emits `SMEventTransitionNotFound`, returns error wrapping `ErrTransitionNotFound` → `400 TRANSITION_NOT_FOUND`). |
 | `internal/domain/workflow/validate_test.go` (or sibling) | TDD tests per §6.1 items 1–4, 11–15. |
 | `internal/domain/workflow/engine_test.go` (or sibling) | TDD tests per §6.1 items 5–8. |
 | `internal/e2e/` | E2E test per §6.1 item 9; additional E2E for `allowCycles` if not covered by the unit tests at items 11–15. |
