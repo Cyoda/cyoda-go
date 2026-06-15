@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -171,6 +172,42 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	if err := wfStore.Save(r.Context(), ref, result); err != nil {
 		common.WriteError(w, r, common.Internal("failed to save workflows", err))
 		return
+	}
+
+	// Audit log on success: workflow configuration is a high-impact, mutable
+	// multi-tenant surface, and the application layer was silent on the
+	// content of changes before #257 M7. One INFO line per import names the
+	// mode, the model, and the per-workflow {name, desc} pairs so operators
+	// can correlate change intent in logs. Description is wired through this
+	// payload per the #257 disposition (option a: wire it).
+	//
+	// When the import leaves the model with zero workflows, log at WARN
+	// instead — the engine will silently fall back to the embedded default
+	// on every subsequent execution, and that "running on default" outcome
+	// must be visible in operator logs. REPLACE/ACTIVATE empty is already
+	// rejected (#256 M3), so the only reachable path is MERGE-empty on a
+	// model with no prior workflows; the canary still defends against any
+	// future code path that lands there.
+	wfDigest := make([]map[string]string, len(result))
+	wfNames := make([]string, len(result))
+	for i, wf := range result {
+		wfDigest[i] = map[string]string{"name": wf.Name, "desc": wf.Description}
+		wfNames[i] = wf.Name
+	}
+	logAttrs := []any{
+		slog.String("pkg", "workflow"),
+		slog.String("tenant", common.TenantFromContext(r.Context())),
+		slog.String("entityName", entityName),
+		slog.String("modelVersion", ref.ModelVersion),
+		slog.String("importMode", mode),
+		slog.Int("workflowCount", len(result)),
+		slog.Any("workflows", wfDigest),
+		slog.Any("workflowNames", wfNames),
+	}
+	if len(result) == 0 {
+		slog.WarnContext(r.Context(), "workflow import resulted in zero workflows", logAttrs...)
+	} else {
+		slog.InfoContext(r.Context(), "workflow import applied", logAttrs...)
 	}
 
 	common.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
