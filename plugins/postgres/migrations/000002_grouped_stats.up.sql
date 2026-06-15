@@ -1,4 +1,5 @@
--- Grouped entity statistics — supporting objects for #299.
+-- Grouped entity statistics — supporting objects for the
+-- POST /api/entity/stats/{name}/{version}/query endpoint.
 --
 -- D21 (revised): PL/pgSQL try-cast for float8 with a regex pre-filter fast path
 -- and a narrow EXCEPTION safety net.

@@ -1452,7 +1452,7 @@ func (c *Client) ImportWorkflowRaw(t *testing.T, name string, version int, body 
 // drive the public surface — capability detection and pushdown vs.
 // streaming-tally selection are handled by the service layer.
 //
-// Canonical: issue #299, internal/domain/entity/grouped_stats_handler.go.
+// Canonical handler: internal/domain/entity/grouped_stats_handler.go.
 func (c *Client) QueryGroupedStats(t *testing.T, modelName string, modelVersion int, req GroupedStatsRequest) ([]GroupedStatsBucket, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/stats/%s/%d/query", modelName, modelVersion)

@@ -15,8 +15,9 @@ import (
 )
 
 // This file implements spi.Iterable and spi.GroupedAggregator on
-// *EntityStore for issue #299 (grouped entity statistics query). The
-// design follows spec §6.1 (decisions D11, D14, D18, D20):
+// *EntityStore for the grouped entity statistics query endpoint
+// (POST /api/entity/stats/{name}/{version}/query). The design follows
+// spec §6.1 (decisions D11, D14, D18, D20):
 //
 //   - D20: the snapshot is []*spi.Entity (the .entity field of each matching
 //     entityVersion), NOT []*entityVersion. The pointers are heap-stable —

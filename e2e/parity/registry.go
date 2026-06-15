@@ -112,7 +112,7 @@ var allTests = []NamedTest{
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 
-	// Grouped statistics — issue #299, cross-backend parity matrix (spec §7).
+	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the
 	// same buckets for the same fixture corpus modulo float tolerance.

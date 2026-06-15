@@ -14,7 +14,8 @@ import (
 )
 
 // This file implements spi.Iterable and spi.GroupedAggregator on
-// *entityStore for issue #299 (grouped entity statistics query).
+// *entityStore for the grouped entity statistics query endpoint
+// (POST /api/entity/stats/{name}/{version}/query).
 //
 // Design (spec §6.2, postgres variant):
 //   - Iterate reuses the planQuery() WHERE-pushdown machinery from

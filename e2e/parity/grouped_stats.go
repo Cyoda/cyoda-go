@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// Issue #299 — grouped-stats cross-backend parity suite.
+// Grouped-stats cross-backend parity suite.
 //
 // These scenarios pin the OBSERVABLE behaviour of POST
 // /api/entity/stats/{name}/{version}/query across every storage backend

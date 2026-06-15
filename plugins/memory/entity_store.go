@@ -15,7 +15,7 @@ import (
 // slice and the write lock is released, its fields are NEVER mutated. Iterators
 // and snapshots may hold *entityVersion or *spi.Entity (via the .entity field)
 // pointers and read them lock-free after releasing the read lock. This invariant
-// is load-bearing for the snapshot-then-iterate pattern in grouped-stats #299.
+// is load-bearing for the snapshot-then-iterate pattern in Iterable / GroupedAggregator.
 //
 // If you add a code path that mutates a published entityVersion, fix the
 // invariant doc here AND audit the memory plugin's Iterable/GroupedAggregator

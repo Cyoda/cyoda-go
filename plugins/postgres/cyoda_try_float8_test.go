@@ -9,7 +9,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-// TestCyodaTryFloat8 covers the D21 truth table from the #299 spec §6.3.
+// TestCyodaTryFloat8 covers the D21 truth table from the grouped-stats design spec §6.3.
 // The helper must:
 //   - return NULL for empty, non-numeric, NaN, ±Infinity, and inputs with
 //     trailing whitespace (the \A/\Z anchors reject any leading/trailing

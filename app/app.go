@@ -500,7 +500,7 @@ func New(cfg Config) *App {
 	mux.Handle("GET /entity/{entityId}/transitions", authMW(http.HandlerFunc(entityHandler.HandleGetTransitions)))
 	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(http.HandlerFunc(entityHandler.HandleFetchTransitions)))
 
-	// Grouped-stats route (issue #299). Wired here (not via openapi.yaml) so
+	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
 	// the EntityStore as `any` (capability detection via type assertion in
 	// the service layer) and a validated ModelRef for the calling tenant.

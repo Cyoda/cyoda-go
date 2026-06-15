@@ -12,8 +12,7 @@ import (
 // postFilter is the residual filter that must be evaluated in Go.
 //
 // This mirrors the sqlite plugin's sqlPlan in shape so that cross-backend
-// parity tests can assert identical pushable/residual splits — see #299
-// Task 16 (parity registry).
+// parity tests in e2e/parity/ can assert identical pushable/residual splits.
 type sqlPlan struct {
 	where      string
 	args       []any
@@ -120,7 +119,7 @@ func isFullyPushable(f spi.Filter) bool {
 //
 // IMPORTANT: this set MUST match sqlite's isPushable exactly. Adding or
 // removing an op here without doing the same in sqlite breaks the parity
-// invariant relied on by cross-backend tests (Task 16, #299).
+// invariant relied on by the cross-backend tests in e2e/parity/.
 func isPushable(op spi.FilterOp) bool {
 	switch op {
 	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterLt,

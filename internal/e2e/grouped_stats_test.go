@@ -1,6 +1,6 @@
 package e2e_test
 
-// grouped_stats_test.go — Task 17 of issue #299: ONE in-process e2e test for
+// grouped_stats_test.go — ONE in-process e2e test for
 // POST /api/entity/stats/{entityName}/{modelVersion}/query. The parity suite
 // (e2e/parity/grouped_stats.go) exhaustively covers cross-backend behavioural
 // agreement via subprocess-launched fixtures; this test narrowly verifies the
