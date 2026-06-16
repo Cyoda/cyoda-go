@@ -32,6 +32,16 @@ func TestAsyncResult_RoundTrip_PointerStates(t *testing.T) {
 			cfg:        spi.ProcessorConfig{AsyncResult: &ff},
 			wantInJSON: `"asyncResult":false`,
 		},
+		{
+			// Symmetric counterpart for CrossoverToAsyncMs. The validator
+			// rejects all non-nil values, so nil is the only observable
+			// state in the import→store→export path. Pinning the omission
+			// keeps a future tag-loss regression (e.g. dropping omitempty)
+			// from silently emitting `"crossoverToAsyncMs":0` on export.
+			name:          "crossover_nil_omitted",
+			cfg:           spi.ProcessorConfig{},
+			wantNotInJSON: "crossoverToAsyncMs",
+		},
 	}
 
 	for _, tc := range cases {

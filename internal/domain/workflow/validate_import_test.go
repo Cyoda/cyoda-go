@@ -731,7 +731,7 @@ func TestValidator_CrossoverOrphan_Rejected(t *testing.T) {
 	}
 }
 
-func TestValidator_CrossoverZero_Rejected(t *testing.T) {
+func TestValidator_CrossoverNonNilZero_Rejected(t *testing.T) {
 	cv := int64(0)
 	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
 		c.CrossoverToAsyncMs = &cv

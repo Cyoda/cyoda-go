@@ -232,7 +232,11 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 				// any non-nil value has no honourable home. Defence in
 				// depth — covers both the orphan (no asyncResult=true)
 				// and the paired cases that the AsyncResult rule above
-				// would have rejected first.
+				// would have rejected first. The paired-case branch is
+				// unreachable today (the AsyncResult rule early-returns
+				// before we get here); if these rules are ever refactored
+				// into a deferred-collection pattern, the branch will
+				// start firing operationally.
 				if p.Config.CrossoverToAsyncMs != nil {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: crossoverToAsyncMs is not supported on this backend (async/crossover semantics are not implemented)",
