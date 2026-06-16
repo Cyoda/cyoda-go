@@ -338,7 +338,7 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 	store := auth.NewInMemoryM2MClientStore()
 
 	// Create
-	secret, err := store.Create("client-1", "tenant-abc", "user-1", []string{"admin", "reader"})
+	secret, err := store.Create("client-1", spi.TenantID("tenant-abc"), "user-1", []string{"admin", "reader"})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if client.ClientID != "client-1" || client.TenantID != "tenant-abc" || client.UserID != "user-1" {
+	if client.ClientID != "client-1" || client.TenantID != spi.TenantID("tenant-abc") || client.UserID != "user-1" {
 		t.Errorf("unexpected client: %+v", client)
 	}
 	if len(client.Roles) != 2 || client.Roles[0] != "admin" || client.Roles[1] != "reader" {
@@ -365,7 +365,7 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 	}
 
 	// Create second client
-	_, err = store.Create("client-2", "tenant-xyz", "user-2", []string{"reader"})
+	_, err = store.Create("client-2", spi.TenantID("tenant-xyz"), "user-2", []string{"reader"})
 	if err != nil {
 		t.Fatalf("Create client-2 failed: %v", err)
 	}
@@ -721,4 +721,79 @@ func TestTrustedKeyStore_Reactivate_RequiresFreshWindow(t *testing.T) {
 	if err := s.Reactivate(tID, "e", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
+}
+
+// --- M2MClient timestamp + type tests ---
+
+func TestInMemoryM2MClientStore_Create_StampsCreatedAndUpdatedAt(t *testing.T) {
+	store := auth.NewInMemoryM2MClientStore()
+	before := time.Now()
+	_, err := store.Create("client-a", spi.TenantID("tenant-a"), "user-a", []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	after := time.Now()
+
+	c, err := store.Get("client-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if c.CreatedAt.Before(before) || c.CreatedAt.After(after) {
+		t.Errorf("CreatedAt %v outside [%v, %v]", c.CreatedAt, before, after)
+	}
+	if !c.UpdatedAt.Equal(c.CreatedAt) {
+		t.Errorf("Create: UpdatedAt (%v) should equal CreatedAt (%v) on fresh create", c.UpdatedAt, c.CreatedAt)
+	}
+}
+
+func TestInMemoryM2MClientStore_CreateWithSecret_StampsCreatedAndUpdatedAt(t *testing.T) {
+	store := auth.NewInMemoryM2MClientStore()
+	before := time.Now()
+	err := store.CreateWithSecret("client-b", spi.TenantID("tenant-b"), "user-b", "secret-b", []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("CreateWithSecret: %v", err)
+	}
+	after := time.Now()
+
+	c, err := store.Get("client-b")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if c.CreatedAt.Before(before) || c.CreatedAt.After(after) {
+		t.Errorf("CreatedAt %v outside [%v, %v]", c.CreatedAt, before, after)
+	}
+	if !c.UpdatedAt.Equal(c.CreatedAt) {
+		t.Errorf("CreateWithSecret: UpdatedAt should equal CreatedAt on fresh create")
+	}
+}
+
+func TestInMemoryM2MClientStore_ResetSecret_AdvancesUpdatedAt(t *testing.T) {
+	store := auth.NewInMemoryM2MClientStore()
+	if _, err := store.Create("client-c", spi.TenantID("tenant-c"), "user-c", []string{"ROLE_M2M"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	c0, err := store.Get("client-c")
+	if err != nil {
+		t.Fatalf("Get c0: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // guarantee monotonic distance
+	if _, err := store.ResetSecret("client-c"); err != nil {
+		t.Fatalf("ResetSecret: %v", err)
+	}
+	c1, err := store.Get("client-c")
+	if err != nil {
+		t.Fatalf("Get c1: %v", err)
+	}
+
+	if !c1.UpdatedAt.After(c0.UpdatedAt) {
+		t.Errorf("ResetSecret: UpdatedAt did not advance (%v -> %v)", c0.UpdatedAt, c1.UpdatedAt)
+	}
+	if !c1.CreatedAt.Equal(c0.CreatedAt) {
+		t.Errorf("ResetSecret: CreatedAt must not change (%v -> %v)", c0.CreatedAt, c1.CreatedAt)
+	}
+}
+
+func TestM2MClient_TenantIDIsSpiType(t *testing.T) {
+	var c auth.M2MClient
+	var _ spi.TenantID = c.TenantID // compile-time check: field must be assignable from spi.TenantID
 }

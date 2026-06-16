@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // --- Request/Response types ---
@@ -92,7 +94,7 @@ func (h *M2MHandler) handleList(w http.ResponseWriter) {
 	for _, c := range clients {
 		resp = append(resp, m2mClientInfoResponse{
 			ClientID: c.ClientID,
-			TenantID: c.TenantID,
+			TenantID: string(c.TenantID),
 			UserID:   c.UserID,
 			Roles:    c.Roles,
 		})
@@ -121,7 +123,7 @@ func (h *M2MHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientID := uuid.NewString()
-	secret, err := h.m2mStore.Create(clientID, req.TenantID, req.UserID, req.Roles)
+	secret, err := h.m2mStore.Create(clientID, spi.TenantID(req.TenantID), req.UserID, req.Roles)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create m2m client"}`, http.StatusInternalServerError)
 		return

@@ -75,7 +75,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		t.Fatalf("failed to register trusted key: %v", err)
 	}
 	clientID := "test-m2m-client"
-	clientSecret, err := m2mStore.Create(clientID, tenantID, "user-123", []string{"admin", "reader"})
+	clientSecret, err := m2mStore.Create(clientID, spi.TenantID(tenantID), "user-123", []string{"admin", "reader"})
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}

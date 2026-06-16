@@ -200,7 +200,9 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
 		return
 	}
-	if client.TenantID != subOrgID {
+	// Domain-type tenant compared against raw JWT claim string at the security
+	// boundary; subOrgID is the untyped JWT "caas_org_id" claim asserted to string.
+	if string(client.TenantID) != subOrgID {
 		writeTokenError(w, http.StatusForbidden, "access_denied", "tenant mismatch")
 		return
 	}

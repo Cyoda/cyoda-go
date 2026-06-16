@@ -265,7 +265,7 @@ func New(cfg Config) *App {
 			}
 			if err := authSvc.M2MClientStore().CreateWithSecret(
 				cfg.Bootstrap.ClientID,
-				cfg.Bootstrap.TenantID,
+				spi.TenantID(cfg.Bootstrap.TenantID),
 				cfg.Bootstrap.UserID,
 				cfg.Bootstrap.ClientSecret,
 				roles,

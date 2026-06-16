@@ -52,9 +52,11 @@ type RotateOptions struct {
 type M2MClient struct {
 	ClientID     string
 	HashedSecret string
-	TenantID     string
+	TenantID     spi.TenantID
 	UserID       string
 	Roles        []string
+	CreatedAt    time.Time // set at Create/CreateWithSecret, never advanced
+	UpdatedAt    time.Time // advanced on ResetSecret; equal to CreatedAt on fresh create
 }
 
 // --- Store Interfaces ---
@@ -84,8 +86,8 @@ type TrustedKeyStore interface {
 
 // M2MClientStore manages machine-to-machine clients.
 type M2MClientStore interface {
-	Create(clientID, tenantID, userID string, roles []string) (string, error)
-	CreateWithSecret(clientID, tenantID, userID, secret string, roles []string) error
+	Create(clientID string, tenantID spi.TenantID, userID string, roles []string) (string, error)
+	CreateWithSecret(clientID string, tenantID spi.TenantID, userID, secret string, roles []string) error
 	Get(clientID string) (*M2MClient, error)
 	List() []*M2MClient
 	Delete(clientID string) error
@@ -455,7 +457,7 @@ func NewInMemoryM2MClientStore() *InMemoryM2MClientStore {
 
 // Create adds an M2M client, hashing the provided plaintext secret with bcrypt.
 // Returns the plaintext secret for the caller to deliver to the client.
-func (s *InMemoryM2MClientStore) Create(clientID, tenantID, userID string, roles []string) (string, error) {
+func (s *InMemoryM2MClientStore) Create(clientID string, tenantID spi.TenantID, userID string, roles []string) (string, error) {
 	secret, err := GenerateSecret()
 	if err != nil {
 		return "", fmt.Errorf("failed to generate secret: %w", err)
@@ -469,6 +471,7 @@ func (s *InMemoryM2MClientStore) Create(clientID, tenantID, userID string, roles
 	rolesCopy := make([]string, len(roles))
 	copy(rolesCopy, roles)
 
+	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[clientID] = &M2MClient{
@@ -477,12 +480,14 @@ func (s *InMemoryM2MClientStore) Create(clientID, tenantID, userID string, roles
 		TenantID:     tenantID,
 		UserID:       userID,
 		Roles:        rolesCopy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	return secret, nil
 }
 
 // CreateWithSecret adds an M2M client with a caller-provided plaintext secret.
-func (s *InMemoryM2MClientStore) CreateWithSecret(clientID, tenantID, userID, secret string, roles []string) error {
+func (s *InMemoryM2MClientStore) CreateWithSecret(clientID string, tenantID spi.TenantID, userID, secret string, roles []string) error {
 	hashed, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash secret: %w", err)
@@ -491,6 +496,7 @@ func (s *InMemoryM2MClientStore) CreateWithSecret(clientID, tenantID, userID, se
 	rolesCopy := make([]string, len(roles))
 	copy(rolesCopy, roles)
 
+	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[clientID] = &M2MClient{
@@ -499,6 +505,8 @@ func (s *InMemoryM2MClientStore) CreateWithSecret(clientID, tenantID, userID, se
 		TenantID:     tenantID,
 		UserID:       userID,
 		Roles:        rolesCopy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	return nil
 }
@@ -554,6 +562,7 @@ func (s *InMemoryM2MClientStore) ResetSecret(clientID string) (string, error) {
 		return "", fmt.Errorf("failed to hash secret: %w", err)
 	}
 
+	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.clients[clientID]
@@ -561,6 +570,7 @@ func (s *InMemoryM2MClientStore) ResetSecret(clientID string) (string, error) {
 		return "", fmt.Errorf("m2m client not found: %s", clientID)
 	}
 	c.HashedSecret = string(hashed)
+	c.UpdatedAt = now
 	return secret, nil
 }
 
