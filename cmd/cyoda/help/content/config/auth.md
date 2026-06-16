@@ -78,11 +78,16 @@ cyoda can provision a machine-to-machine client at startup for automation and CI
 
 ### IAM features
 
-These environment variables tune the IAM admin endpoints under `/oauth/keys/*`.
+These environment variables tune the IAM admin endpoints under `/oauth/keys/*` and `/clients`.
 
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` — gates all 5 endpoints under
   `/oauth/keys/trusted/*`. When `false`, every trusted-key endpoint returns
   `404 FEATURE_DISABLED`. (default: `false`)
+- `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` — gates the `withAdminRole=true`
+  query parameter on `POST /clients`. When `false` (default), that request
+  shape returns `404` with error code `FEATURE_DISABLED` and no client is
+  created. When `true`, the created M2M client receives both `ROLE_M2M`
+  and `ROLE_ADMIN`. Toggling does not affect existing clients. (default: `false`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on registered
   trusted keys. Counts only currently-valid keys (active and not past
   `validTo`). `0` means unbounded. (default: `10`)
@@ -162,6 +167,12 @@ CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M
 ```
 CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true
 CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT=10
+```
+
+**With M2M admin-role grants enabled:**
+
+```
+CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true
 ```
 
 ## SEE ALSO

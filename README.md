@@ -110,6 +110,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/account
 
 The `/api/account` response confirms the bootstrap client's tenant and roles. From here, follow the **Build an app** link below to register an entity model and start creating entities.
 
+**Optional IAM feature flags** (all default `false`):
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
+| `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.
