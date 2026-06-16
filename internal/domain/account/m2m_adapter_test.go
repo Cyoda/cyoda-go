@@ -470,3 +470,123 @@ func TestDeleteTechnicalUser_NonAdmin_Returns403(t *testing.T) {
 		t.Fatalf("status: got %d want 403", rr.Code)
 	}
 }
+
+// --- Case 19: Reset, admin, owned ---
+
+func TestResetTechnicalUserSecret_AdminOwned_Returns200AndRotatesSecret(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	plaintextOld, err := h.m2mClientStore.Create("CLIENTR", spi.TenantID(tenantA), "CLIENTR", []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENTR/secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.ResetTechnicalUserSecret(rr, req, "CLIENTR")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var creds genapi.TechnicalUserCredentialsDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if creds.ClientId != "CLIENTR" {
+		t.Errorf("client_id: got %q want CLIENTR", creds.ClientId)
+	}
+	if creds.ClientSecret == plaintextOld {
+		t.Error("new client_secret equals old (reset did not rotate)")
+	}
+	// VerifySecret accepts the new and rejects the old.
+	okNew, _ := h.m2mClientStore.VerifySecret("CLIENTR", creds.ClientSecret)
+	if !okNew {
+		t.Error("new secret does not verify against store")
+	}
+	okOld, _ := h.m2mClientStore.VerifySecret("CLIENTR", plaintextOld)
+	if okOld {
+		t.Error("old secret still verifies after reset")
+	}
+	// UpdatedAt advanced.
+	stored, _ := h.m2mClientStore.Get("CLIENTR")
+	if !stored.UpdatedAt.After(stored.CreatedAt) {
+		t.Errorf("UpdatedAt did not advance past CreatedAt (created=%v updated=%v)", stored.CreatedAt, stored.UpdatedAt)
+	}
+}
+
+// --- Case 20: Reset, cross-tenant ---
+
+func TestResetTechnicalUserSecret_AdminCrossTenant_Returns404AndPreservesSecret(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	plaintextB, _ := h.m2mClientStore.Create("CLIENTB", spi.TenantID(tenantB), "CLIENTB", []string{"ROLE_M2M"})
+
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENTB/secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.ResetTechnicalUserSecret(rr, req, "CLIENTB")
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", rr.Code)
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeM2MClientNotFound {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeM2MClientNotFound)
+	}
+	okB, _ := h.m2mClientStore.VerifySecret("CLIENTB", plaintextB)
+	if !okB {
+		t.Error("tenant B's secret was rotated by cross-tenant reset")
+	}
+}
+
+// --- Case 21: Reset, unknown id ---
+
+func TestResetTechnicalUserSecret_AdminUnknown_Returns404(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/UNKNOWN/secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.ResetTechnicalUserSecret(rr, req, "UNKNOWN")
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", rr.Code)
+	}
+}
+
+// --- Case 22: Reset, malformed id ---
+
+func TestResetTechnicalUserSecret_AdminMalformedId_Returns400(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/bad-id/secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.ResetTechnicalUserSecret(rr, req, "bad-id")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rr.Code)
+	}
+}
+
+// --- Case 23: Reset, empty id ---
+
+func TestResetTechnicalUserSecret_AdminEmptyId_Returns400(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients//secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.ResetTechnicalUserSecret(rr, req, "")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rr.Code)
+	}
+}
+
+// --- Case 24: Reset, non-admin → 403 ---
+
+func TestResetTechnicalUserSecret_NonAdmin_Returns403(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	_, _ = h.m2mClientStore.Create("CLIENT1", spi.TenantID(tenantA), "CLIENT1", []string{"ROLE_M2M"})
+
+	req := withTenantNonAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENT1/secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.ResetTechnicalUserSecret(rr, req, "CLIENT1")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403", rr.Code)
+	}
+}

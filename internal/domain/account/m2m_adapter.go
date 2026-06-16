@@ -223,6 +223,41 @@ func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, cl
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// ResetTechnicalUserSecret implements PUT /clients/{clientId}/secret.
+func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request, clientID string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireM2MStore(w, r) {
+		return
+	}
+	if !validateClientID(w, r, clientID) {
+		return
+	}
+
+	tID := tenantFromCtx(r)
+	existing, err := h.m2mClientStore.Get(clientID)
+	if err != nil || !clientBelongsToTenant(existing, tID) {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound,
+			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+		return
+	}
+	secret, err := h.m2mClientStore.ResetSecret(clientID)
+	if err != nil {
+		// Race with concurrent delete: 404. Other failures: 500.
+		if strings.Contains(err.Error(), "not found") {
+			common.WriteError(w, r, common.Operational(http.StatusNotFound,
+				common.ErrCodeM2MClientNotFound, "M2M client not found"))
+			return
+		}
+		common.WriteError(w, r, common.Internal("m2mClientStore.ResetSecret", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, existing.Roles))
+}
+
 // ListTechnicalUsers implements GET /clients.
 func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 	if !auth.RequireAdmin(w, r) {
