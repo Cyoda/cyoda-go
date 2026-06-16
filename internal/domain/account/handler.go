@@ -17,16 +17,19 @@ type Handler struct {
 	authzSvc        contract.AuthorizationService
 	keyStore        auth.KeyStore
 	trustedKeyStore auth.TrustedKeyStore
+	m2mClientStore  auth.M2MClientStore
 	iam             auth.IAMFeatures
 }
 
 func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService,
-	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, iam auth.IAMFeatures) *Handler {
+	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, m2mClientStore auth.M2MClientStore,
+	iam auth.IAMFeatures) *Handler {
 	return &Handler{
 		authSvc:         authSvc,
 		authzSvc:        authzSvc,
 		keyStore:        keyStore,
 		trustedKeyStore: trustedKeyStore,
+		m2mClientStore:  m2mClientStore,
 		iam:             iam,
 	}
 }

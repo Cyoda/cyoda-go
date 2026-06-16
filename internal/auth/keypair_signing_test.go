@@ -20,7 +20,7 @@ func TestAdapter_AlgorithmEnum_Coverage(t *testing.T) {
 	for _, alg := range rejected {
 		alg := alg
 		t.Run(alg, func(t *testing.T) {
-			h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), auth.DefaultIAMFeatures())
+			h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), nil, auth.DefaultIAMFeatures())
 			body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: genapi.IssueJwtKeyPairRequestDtoAlgorithm(alg), Audience: "client"})
 			req := httptest.NewRequest("POST", "/oauth/keys/keypair", bytes.NewReader(body))
 			req = req.WithContext(spi.WithUserContext(req.Context(), uc))
@@ -36,7 +36,7 @@ func TestAdapter_AlgorithmEnum_Coverage(t *testing.T) {
 
 func TestAdapter_AlgorithmEnum_RS256_HappyPath(t *testing.T) {
 	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"ROLE_ADMIN"}}
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), auth.DefaultIAMFeatures())
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), nil, auth.DefaultIAMFeatures())
 	body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: "RS256", Audience: "client"})
 	req := httptest.NewRequest("POST", "/oauth/keys/keypair", bytes.NewReader(body))
 	req = req.WithContext(spi.WithUserContext(req.Context(), uc))

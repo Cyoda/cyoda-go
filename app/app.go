@@ -445,11 +445,13 @@ func New(cfg Config) *App {
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore
 	var accountTrustedKeyStore auth.TrustedKeyStore
+	var accountM2MStore auth.M2MClientStore
 	if authSvc != nil {
 		accountKeyStore = authSvc.KeyStore()
 		accountTrustedKeyStore = authSvc.TrustedKeyStore()
+		accountM2MStore = authSvc.M2MClientStore()
 	}
-	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, cfg.IAM.AuthIAMFeatures())
+	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
 
 	// Build HTTP handler
 	mux := http.NewServeMux()

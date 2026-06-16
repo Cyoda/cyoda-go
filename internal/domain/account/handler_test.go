@@ -15,14 +15,14 @@ import (
 )
 
 func TestNewHandler(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
 }
 
 func TestAccountGet(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 
 	uc := &spi.UserContext{
 		UserID:   "user-1",
@@ -60,7 +60,7 @@ func TestAccountGet(t *testing.T) {
 }
 
 func TestAccountGetNoAuth(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/account", nil)
 	h.AccountGet(w, r)
@@ -70,7 +70,7 @@ func TestAccountGetNoAuth(t *testing.T) {
 }
 
 func TestHandlerReturns501(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 
 	tests := []struct {
 		name string
