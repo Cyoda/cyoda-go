@@ -32,7 +32,7 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 | `cyoda-go` | Root `go.mod` pins | In-tree plugin go.mods pin | SPI surface added in this release |
 |---|---|---|---|
-| **`v0.8.0`** _(planned)_ | `cyoda-go-spi v0.8.0` | `cyoda-go-spi v0.8.0` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`) |
+| **`v0.8.0`** _(planned)_ | `cyoda-go-spi v0.8.0` | `cyoda-go-spi v0.8.0` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`); scheduled-transition shape: `TransitionDefinition.Schedule *TransitionSchedule` (`DelayMs`, `TimeoutMs *int64`); async-result shape: `ProcessorConfig.AsyncResult *bool`, `ProcessorConfig.CrossoverToAsyncMs *int64` |
 | **`v0.7.1`** _(planned)_ | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
 | **`v0.7.0`** | `cyoda-go-spi v0.7.0` | `cyoda-go-spi v0.6.1`† | `ProcessorConfig.StartNewTxOnDispatch *bool` |
 | `v0.6.3` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | — (binary-only changes) |

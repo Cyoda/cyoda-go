@@ -217,6 +217,31 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					return fmt.Errorf("workflow %q state %q transition %q: processor name length %d exceeds the %d-char limit",
 						wf.Name, stateName, tr.Name, len(p.Name), maxIdentifierLen)
 				}
+				// M6 (audit) — asyncResult=true requests a runtime semantic
+				// this backend does not implement; reject rather than
+				// silently degrade to sync dispatch. Consuming engines that
+				// cannot honour async-result semantics must reject at the
+				// configuration-import boundary.
+				if p.Config.AsyncResult != nil && *p.Config.AsyncResult {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q processor %q: asyncResult=true is not supported on this backend (async/crossover semantics are not implemented)",
+						wf.Name, stateName, tr.Name, p.Name)
+				}
+				// M6 (audit) — crossoverToAsyncMs is a tuner for the
+				// asyncResult semantic. With that semantic unsupported,
+				// any non-nil value has no honourable home. Defence in
+				// depth — covers both the orphan (no asyncResult=true)
+				// and the paired cases that the AsyncResult rule above
+				// would have rejected first. The paired-case branch is
+				// unreachable today (the AsyncResult rule early-returns
+				// before we get here); if these rules are ever refactored
+				// into a deferred-collection pattern, the branch will
+				// start firing operationally.
+				if p.Config.CrossoverToAsyncMs != nil {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q processor %q: crossoverToAsyncMs is not supported on this backend (async/crossover semantics are not implemented)",
+						wf.Name, stateName, tr.Name, p.Name)
+				}
 				if _, ok := validExecutionModes[p.ExecutionMode]; !ok {
 					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",
 						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)

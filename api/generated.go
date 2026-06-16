@@ -2131,7 +2131,11 @@ type ExternalizedProcessorConfigDto struct {
 	// AsyncResult Whether to await the result asynchronously, outside of the
 	// transaction. Behavior is storage-engine-plugin dependent — not
 	// every plugin implements crossover semantics; consult the runtime
-	// plugin's documentation for the supported behavior.
+	// plugin's documentation for the supported behavior. This backend
+	// does not implement async/crossover semantics; imports that set
+	// asyncResult=true are rejected with HTTP 400 VALIDATION_FAILED.
+	// The field is round-tripped for nil (absent) and the explicit-
+	// false case.
 	AsyncResult *bool `json:"asyncResult,omitempty"`
 
 	// AttachEntity Whether to attach entity data to the function call
@@ -2151,7 +2155,10 @@ type ExternalizedProcessorConfigDto struct {
 
 	// CrossoverToAsyncMs Crossover delay to switch to asynchronous processing (ms),
 	// effective only when asyncResult is true. Behavior is
-	// storage-engine-plugin dependent — see asyncResult.
+	// storage-engine-plugin dependent — see asyncResult. This
+	// backend does not implement async/crossover semantics; imports
+	// that set any value for crossoverToAsyncMs are rejected with
+	// HTTP 400 VALIDATION_FAILED.
 	CrossoverToAsyncMs *int64 `json:"crossoverToAsyncMs,omitempty"`
 
 	// ResponseTimeoutMs Response timeout in milliseconds
