@@ -29,6 +29,12 @@ Returned by trusted-key endpoints when `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABL
 
 Enable by setting the env var and restarting. Keypair endpoints (`/oauth/keys/keypair/*`) are unaffected.
 
+Also returned by `POST /clients?withAdminRole=true` when
+`CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=false` (the default). Enable by
+setting the env var and restarting. Other `/clients` operations
+(list, create-without-withAdminRole, delete, reset-secret) are
+unaffected.
+
 ## SEE ALSO
 
 - errors

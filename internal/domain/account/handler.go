@@ -1,6 +1,8 @@
 package account
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -17,16 +19,19 @@ type Handler struct {
 	authzSvc        contract.AuthorizationService
 	keyStore        auth.KeyStore
 	trustedKeyStore auth.TrustedKeyStore
+	m2mClientStore  auth.M2MClientStore
 	iam             auth.IAMFeatures
 }
 
 func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService,
-	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, iam auth.IAMFeatures) *Handler {
+	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, m2mClientStore auth.M2MClientStore,
+	iam auth.IAMFeatures) *Handler {
 	return &Handler{
 		authSvc:         authSvc,
 		authzSvc:        authzSvc,
 		keyStore:        keyStore,
 		trustedKeyStore: trustedKeyStore,
+		m2mClientStore:  m2mClientStore,
 		iam:             iam,
 	}
 }
@@ -73,24 +78,18 @@ func (h *Handler) AccountSubscriptionsGet(w http.ResponseWriter, r *http.Request
 	h.stub(w, r)
 }
 
-func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
-	h.stub(w, r)
-}
-
-func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, params genapi.CreateTechnicalUserParams) {
-	h.stub(w, r)
-}
-
-func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, clientId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request, clientId string) {
-	h.stub(w, r)
-}
-
+// GetTechnicalUserToken — defensive interface-satisfaction stub for
+// POST /oauth/token. The real handler is the auth-service token handler
+// mounted on the public mux at app/app.go (the POST /oauth/token entry),
+// which intercepts before the chi router can reach this method. Arriving
+// here means a routing regression — log + 500.
 func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
-	h.stub(w, r)
+	slog.WarnContext(r.Context(),
+		"chi /oauth/token reached — should be intercepted by public mux; routing regression?",
+		"method", r.Method, "path", r.URL.Path)
+	common.WriteError(w, r,
+		common.Internal("getTechnicalUserToken-unreachable",
+			errors.New("routing regression: chi served POST /oauth/token")))
 }
 
 func (h *Handler) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {

@@ -13,24 +13,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
-
-// testAdminMW wraps an admin handler with a UserContext carrying ROLE_ADMIN.
-// In production this context is established by the real auth middleware;
-// body-size integration tests that hit the handler over real HTTP need an
-// equivalent stand-in so the requireAdmin guard lets the request reach the
-// MaxBytesReader under test.
-func testAdminMW(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := spi.WithUserContext(r.Context(), &spi.UserContext{
-			UserID: "test-admin",
-			Roles:  []string{"ROLE_ADMIN"},
-		})
-		h.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
 
 func generateTestPEM(t *testing.T) string {
 	t.Helper()
@@ -257,28 +241,6 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 		defer resp.Body.Close()
 
 		// http.MaxBytesReader triggers 413 Request Entity Too Large
-		if resp.StatusCode != http.StatusRequestEntityTooLarge && resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected 413 or 400, got %d", resp.StatusCode)
-		}
-	})
-
-	// Admin endpoints are served on a separate handler; wrap with a test
-	// middleware that supplies an admin UserContext so requireAdmin admits
-	// the request and the body-size limit is the observable behaviour.
-	adminSrv := httptest.NewServer(testAdminMW(svc.AdminHandler()))
-	defer adminSrv.Close()
-
-	t.Run("m2m create endpoint rejects oversized body", func(t *testing.T) {
-		oversized := strings.Repeat("x", 1<<20+1)
-		req, _ := http.NewRequest("POST", adminSrv.URL+"/account/m2m", strings.NewReader(oversized))
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("POST /account/m2m: %v", err)
-		}
-		defer resp.Body.Close()
-
 		if resp.StatusCode != http.StatusRequestEntityTooLarge && resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("expected 413 or 400, got %d", resp.StatusCode)
 		}

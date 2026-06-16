@@ -23,11 +23,7 @@ import (
 // conformance-audit.md captures the full disposition for each.
 var knownUncoveredOps = map[string]bool{
 	// Stub IAM/account ops — implementation tracked in #194.
-	"accountSubscriptionsGet":  true,
-	"createTechnicalUser":      true,
-	"deleteTechnicalUser":      true,
-	"listTechnicalUsers":       true,
-	"resetTechnicalUserSecret": true,
+	"accountSubscriptionsGet": true,
 	// OIDC provider ops — implementation tracked in #194.
 	"deleteOidcProvider":     true,
 	"invalidateOidcProvider": true,

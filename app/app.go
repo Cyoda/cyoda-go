@@ -51,6 +51,7 @@ type App struct {
 	transactionManager spi.TransactionManager
 	authService        contract.AuthenticationService
 	authzService       contract.AuthorizationService
+	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
 	searchService      *search.SearchService
 	auditService       contract.AuditService
@@ -254,6 +255,7 @@ func New(cfg Config) *App {
 			validator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
 		a.authService = auth.NewDelegatingAuthenticator(validator)
+		a.authSvc = authSvc
 
 		// Bootstrap M2M client if configured.
 		// validateBootstrapConfig (called above) guarantees that in jwt mode,
@@ -265,7 +267,7 @@ func New(cfg Config) *App {
 			}
 			if err := authSvc.M2MClientStore().CreateWithSecret(
 				cfg.Bootstrap.ClientID,
-				cfg.Bootstrap.TenantID,
+				spi.TenantID(cfg.Bootstrap.TenantID),
 				cfg.Bootstrap.UserID,
 				cfg.Bootstrap.ClientSecret,
 				roles,
@@ -445,11 +447,13 @@ func New(cfg Config) *App {
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore
 	var accountTrustedKeyStore auth.TrustedKeyStore
+	var accountM2MStore auth.M2MClientStore
 	if authSvc != nil {
 		accountKeyStore = authSvc.KeyStore()
 		accountTrustedKeyStore = authSvc.TrustedKeyStore()
+		accountM2MStore = authSvc.M2MClientStore()
 	}
-	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, cfg.IAM.AuthIAMFeatures())
+	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
@@ -467,12 +471,9 @@ func New(cfg Config) *App {
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
 	//     and must be reachable by unauthenticated callers by protocol.
 	//
-	//   ADMIN (authMW + ROLE_ADMIN): /account/m2m, /account/m2m/*.
-	//     Two-layer enforcement: middleware.Auth populates UserContext (or
-	//     rejects with 401), then the handlers in internal/auth/ call the
-	//     requireAdmin guard which enforces ROLE_ADMIN (or rejects with 403).
-	//     Both layers are required — authMW alone would let any
-	//     authenticated caller manage M2M clients.
+	//   ADMIN (authMW + ROLE_ADMIN): served via the chi router (account
+	//     handler). The /account/m2m* legacy mux entries were retired
+	//     when /clients chi adapters landed; see m2m_adapter.go.
 
 	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
@@ -483,14 +484,6 @@ func New(cfg Config) *App {
 	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	// Admin auth endpoints: key management, M2M clients, trusted keys.
-	// The handler-side requireAdmin guard enforces ROLE_ADMIN; authMW here
-	// guarantees the UserContext is populated so the guard has something
-	// to check.
-	if authSvc != nil {
-		mux.Handle("/account/m2m/", authMW(authSvc.AdminHandler()))
-		mux.Handle("/account/m2m", authMW(authSvc.AdminHandler()))
-	}
 	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleGetLogLevel)))
 	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleSetLogLevel)))
 	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
@@ -609,6 +602,11 @@ func (a *App) TransactionManager() spi.TransactionManager { return a.transaction
 func (a *App) AuthenticationService() contract.AuthenticationService {
 	return a.authService
 }
+
+// AuthService returns the underlying *auth.AuthService when JWT IAM mode is
+// active, or nil when running in mock IAM mode. Exposed for test-mode seeding
+// of M2M clients across tenants without going through the public HTTP surface.
+func (a *App) AuthService() *auth.AuthService { return a.authSvc }
 func (a *App) AuthorizationService() contract.AuthorizationService {
 	return a.authzService
 }

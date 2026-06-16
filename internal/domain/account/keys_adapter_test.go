@@ -48,7 +48,7 @@ func newHandler(t *testing.T) (*account.Handler, auth.KeyStore, auth.TrustedKeyS
 	t.Helper()
 	ks := auth.NewInMemoryKeyStore()
 	ts := auth.NewInMemoryTrustedKeyStore()
-	h := account.New(nil, nil, ks, ts, auth.DefaultIAMFeatures())
+	h := account.New(nil, nil, ks, ts, nil, auth.DefaultIAMFeatures())
 	return h, ks, ts
 }
 
@@ -275,7 +275,7 @@ func TestRegression_StrictValidation_ValidToBeforeValidFrom(t *testing.T) {
 // permanently on the first admin request. All 5 keypair handlers are covered so
 // an accidental removal of the requireKeyStore guard is caught per-handler.
 func TestKeysAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.DefaultIAMFeatures())
+	h := account.New(nil, nil, nil, nil, nil, auth.DefaultIAMFeatures())
 	cases := []struct {
 		name string
 		call func(w http.ResponseWriter)

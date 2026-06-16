@@ -84,13 +84,19 @@ type IAMConfig struct {
 	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
 	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 
-	// NEW: IAM feature surface for /oauth/keys/* — passed through to auth.IAMFeatures.
+	// IAM feature-flag fields — passed through to auth.IAMFeatures via AuthIAMFeatures().
+	// Individual fields document their own purpose; this block covers both
+	// /oauth/keys/* (TrustedKey* + KeypairDefault*) and /clients (M2MAdminRoleEnabled).
 	TrustedKeyRegistrationEnabled bool
 	TrustedKeyMaxPerTenant        int
 	TrustedKeyMaxValidityDays     int
 	TrustedKeyMaxJWKProperties    int
 	KeypairDefaultValidityDays    int
 	BootstrapAudience             string
+
+	// M2MAdminRoleEnabled — see auth.IAMFeatures.M2MAdminRoleEnabled.
+	// env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
+	M2MAdminRoleEnabled bool
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -198,6 +204,7 @@ func DefaultConfig() Config {
 			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
 			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
 			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
+			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
 		},
 		Cluster: cluster.Config{
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
@@ -503,5 +510,6 @@ func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
 		TrustedKeyMaxJWKProperties:    c.TrustedKeyMaxJWKProperties,
 		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
 		BootstrapAudience:             c.BootstrapAudience,
+		M2MAdminRoleEnabled:           c.M2MAdminRoleEnabled,
 	}
 }

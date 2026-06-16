@@ -436,6 +436,42 @@ func (e ErrorResponseDtoError) Valid() bool {
 	}
 }
 
+// Defines values for ExternalizedFunctionConfigDtoRetryPolicy.
+const (
+	ExternalizedFunctionConfigDtoRetryPolicyFIXED ExternalizedFunctionConfigDtoRetryPolicy = "FIXED"
+	ExternalizedFunctionConfigDtoRetryPolicyNONE  ExternalizedFunctionConfigDtoRetryPolicy = "NONE"
+)
+
+// Valid indicates whether the value is a known member of the ExternalizedFunctionConfigDtoRetryPolicy enum.
+func (e ExternalizedFunctionConfigDtoRetryPolicy) Valid() bool {
+	switch e {
+	case ExternalizedFunctionConfigDtoRetryPolicyFIXED:
+		return true
+	case ExternalizedFunctionConfigDtoRetryPolicyNONE:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExternalizedProcessorConfigDtoRetryPolicy.
+const (
+	ExternalizedProcessorConfigDtoRetryPolicyFIXED ExternalizedProcessorConfigDtoRetryPolicy = "FIXED"
+	ExternalizedProcessorConfigDtoRetryPolicyNONE  ExternalizedProcessorConfigDtoRetryPolicy = "NONE"
+)
+
+// Valid indicates whether the value is a known member of the ExternalizedProcessorConfigDtoRetryPolicy enum.
+func (e ExternalizedProcessorConfigDtoRetryPolicy) Valid() bool {
+	switch e {
+	case ExternalizedProcessorConfigDtoRetryPolicyFIXED:
+		return true
+	case ExternalizedProcessorConfigDtoRetryPolicyNONE:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ExternalizedProcessorDefinitionDtoExecutionMode.
 const (
 	ASYNCNEWTX           ExternalizedProcessorDefinitionDtoExecutionMode = "ASYNC_NEW_TX"
@@ -2111,9 +2147,20 @@ type ExternalizedFunctionConfigDto struct {
 	// ResponseTimeoutMs Response timeout in milliseconds
 	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
 
-	// RetryPolicy Retry policy for the function
-	RetryPolicy *string `json:"retryPolicy,omitempty"`
+	// RetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
+	// up to N additional attempts with fixed delay between tries
+	// (N and delay are server-configured). When omitted, defaults
+	// to FIXED at engine fire. Import-time validation rejects any
+	// other value.
+	RetryPolicy *ExternalizedFunctionConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
 }
+
+// ExternalizedFunctionConfigDtoRetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
+// up to N additional attempts with fixed delay between tries
+// (N and delay are server-configured). When omitted, defaults
+// to FIXED at engine fire. Import-time validation rejects any
+// other value.
+type ExternalizedFunctionConfigDtoRetryPolicy string
 
 // ExternalizedFunctionDto defines model for ExternalizedFunctionDto.
 type ExternalizedFunctionDto struct {
@@ -2164,9 +2211,20 @@ type ExternalizedProcessorConfigDto struct {
 	// ResponseTimeoutMs Response timeout in milliseconds
 	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
 
-	// RetryPolicy Retry policy for the function
-	RetryPolicy *string `json:"retryPolicy,omitempty"`
+	// RetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
+	// up to N additional attempts with fixed delay between tries
+	// (N and delay are server-configured). When omitted, defaults
+	// to FIXED at engine fire. Import-time validation rejects any
+	// other value.
+	RetryPolicy *ExternalizedProcessorConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
 }
+
+// ExternalizedProcessorConfigDtoRetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
+// up to N additional attempts with fixed delay between tries
+// (N and delay are server-configured). When omitted, defaults
+// to FIXED at engine fire. Import-time validation rejects any
+// other value.
+type ExternalizedProcessorConfigDtoRetryPolicy string
 
 // ExternalizedProcessorDefinitionDto defines model for ExternalizedProcessorDefinitionDto.
 type ExternalizedProcessorDefinitionDto struct {
@@ -3183,7 +3241,7 @@ type SearchEntityAuditEventsParamsSeverity string
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
 	// WithAdminRole When true, the created M2M client will additionally receive the ADMIN role. Requires the M2M admin role feature flag to be enabled.
-	WithAdminRole *string `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
+	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
 }
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
@@ -5067,7 +5125,7 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 
 	// ------------- Optional query parameter "withAdminRole" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "withAdminRole", r.URL.Query(), &params.WithAdminRole, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "withAdminRole", r.URL.Query(), &params.WithAdminRole, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {

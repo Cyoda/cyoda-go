@@ -15,14 +15,14 @@ import (
 )
 
 func TestNewHandler(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
 }
 
 func TestAccountGet(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 
 	uc := &spi.UserContext{
 		UserID:   "user-1",
@@ -60,7 +60,7 @@ func TestAccountGet(t *testing.T) {
 }
 
 func TestAccountGetNoAuth(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/account", nil)
 	h.AccountGet(w, r)
@@ -70,7 +70,7 @@ func TestAccountGetNoAuth(t *testing.T) {
 }
 
 func TestHandlerReturns501(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
 
 	tests := []struct {
 		name string
@@ -78,21 +78,6 @@ func TestHandlerReturns501(t *testing.T) {
 	}{
 		{"AccountSubscriptionsGet", func(w http.ResponseWriter, r *http.Request) {
 			h.AccountSubscriptionsGet(w, r)
-		}},
-		{"ListTechnicalUsers", func(w http.ResponseWriter, r *http.Request) {
-			h.ListTechnicalUsers(w, r)
-		}},
-		{"CreateTechnicalUser", func(w http.ResponseWriter, r *http.Request) {
-			h.CreateTechnicalUser(w, r, genapi.CreateTechnicalUserParams{})
-		}},
-		{"DeleteTechnicalUser", func(w http.ResponseWriter, r *http.Request) {
-			h.DeleteTechnicalUser(w, r, "client-1")
-		}},
-		{"ResetTechnicalUserSecret", func(w http.ResponseWriter, r *http.Request) {
-			h.ResetTechnicalUserSecret(w, r, "client-1")
-		}},
-		{"GetTechnicalUserToken", func(w http.ResponseWriter, r *http.Request) {
-			h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
 		}},
 		{"ListOidcProviders", func(w http.ResponseWriter, r *http.Request) {
 			h.ListOidcProviders(w, r, genapi.ListOidcProvidersParams{})
@@ -126,5 +111,18 @@ func TestHandlerReturns501(t *testing.T) {
 				t.Errorf("expected 501, got %d", w.Code)
 			}
 		})
+	}
+}
+
+// TestGetTechnicalUserToken_Returns500_RoutingRegression verifies that the
+// defensive stub returns 500 (not 501): arriving here means the public mux
+// failed to intercept POST /oauth/token before chi could dispatch it.
+func TestGetTechnicalUserToken_Returns500_RoutingRegression(t *testing.T) {
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/oauth/token", nil)
+	h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d; body: %s", w.Code, w.Body.String())
 	}
 }

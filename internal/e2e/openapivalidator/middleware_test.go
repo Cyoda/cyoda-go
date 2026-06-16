@@ -67,10 +67,10 @@ func TestMiddleware_RecordsMismatchOnDriftedResponse(t *testing.T) {
 // non-spec operational/admin paths (health checks, docs UI, admin endpoints,
 // OAuth discovery) are not recorded as mismatches.
 //
-// Note: /api/oauth/keys/ and /api/account/m2m are NOT in this list — those
-// paths ARE declared in the spec (with 501 responses for #194 stubs) and must
-// pass through the validator. knownUncoveredOps in zzz_openapi_conformance_test.go
-// is the single source of "intentionally uncovered" for spec-declared operations.
+// Note: /api/oauth/keys/ is NOT in this list — those paths ARE declared in the
+// spec (with 501 responses for #194 stubs) and must pass through the validator.
+// knownUncoveredOps in zzz_openapi_conformance_test.go is the single source of
+// "intentionally uncovered" for spec-declared operations.
 func TestMiddleware_SkipsOperationalPaths(t *testing.T) {
 	v := newFixtureValidator(t)
 	defaultCollector = newCollector()

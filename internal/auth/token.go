@@ -200,7 +200,9 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
 		return
 	}
-	if client.TenantID != subOrgID {
+	// Domain-type tenant compared against raw JWT claim string at the security
+	// boundary; subOrgID is the untyped JWT "caas_org_id" claim asserted to string.
+	if string(client.TenantID) != subOrgID {
 		writeTokenError(w, http.StatusForbidden, "access_denied", "tenant mismatch")
 		return
 	}
@@ -269,9 +271,13 @@ func parseBasicAuth(r *http.Request) (clientID, secret string, ok bool) {
 
 func writeTokenError(w http.ResponseWriter, status int, errCode, description string) {
 	resp := map[string]string{"error": errCode}
-	if description != "" {
-		resp["error_description"] = description
+	if description == "" {
+		// OpenAPI declares error_description as a required field on the 401
+		// response. Fall back to the OAuth2 error code so the wire shape always
+		// satisfies the spec without leaking internal state.
+		description = errCode
 	}
+	resp["error_description"] = description
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(resp)

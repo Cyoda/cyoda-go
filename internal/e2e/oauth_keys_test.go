@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
@@ -21,7 +24,7 @@ import (
 // The path must start with "/" and is appended to serverURL+"/api".
 func adminRequest(t *testing.T, method, path string, body []byte) *http.Response {
 	t.Helper()
-	token := getToken(t, "test-client", "test-secret")
+	token := getToken(t, "testclient", "testsecret")
 	var br io.Reader
 	if body != nil {
 		br = bytes.NewReader(body)
@@ -408,7 +411,7 @@ func TestE2E_KeypairBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
 	oversized := fmt.Sprintf(`{"algorithm":"RS256","audience":"client","_padding":"%s"}`, padding)
 
-	token := getToken(t, "test-client", "test-secret")
+	token := getToken(t, "testclient", "testsecret")
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/keypair", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -433,7 +436,7 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
 	oversized := fmt.Sprintf(`{"keyId":"e2e-size","audience":"human","_padding":"%s"}`, padding)
 
-	token := getToken(t, "test-client", "test-secret")
+	token := getToken(t, "testclient", "testsecret")
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/trusted", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -456,42 +459,37 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 // Cross-tenant isolation + deferred cases
 // ─────────────────────────────────────────────────────────────────────────────
 
-// createM2MClient provisions a new M2M client via POST /api/account/m2m.
-// Returns (clientID, clientSecret). The bootstrap admin token authorises the call.
+// createM2MClient provisions a new M2M client by reaching into the M2M store
+// directly. The legacy POST /api/account/m2m HTTP surface was retired in favour
+// of /clients; /clients derives tenant from the caller's auth context, so seeding
+// cross-tenant clients requires bypassing HTTP.
+// Returns (clientID, clientSecret).
 func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (string, string) {
 	t.Helper()
-	body := mustJSON(t, map[string]any{
-		"tenantId": tenantID,
-		"userId":   userID,
-		"roles":    roles,
-	})
-	token := getToken(t, "test-client", "test-secret")
-	req, err := e2eNewRequest(t, "POST", serverURL+"/api/account/m2m", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
+	authSvc := testApp.AuthService()
+	if authSvc == nil {
+		t.Fatal("createM2MClient requires JWT IAM mode (testApp.AuthService() returned nil)")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do POST /account/m2m: %v", err)
+
+	// Generate clientID + secret with crypto/rand so the test creates a unique
+	// record per call (mirrors the 16-char alphanumeric shape used by /clients).
+	randBytes := make([]byte, 12)
+	if _, err := rand.Read(randBytes); err != nil {
+		t.Fatalf("rand: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("create m2m client: got %d: %s", resp.StatusCode, raw)
+	clientID := "e2etest" + hex.EncodeToString(randBytes[:6])
+	clientSecret := hex.EncodeToString(randBytes[6:])
+
+	if err := authSvc.M2MClientStore().CreateWithSecret(
+		clientID,
+		spi.TenantID(tenantID),
+		userID,
+		clientSecret,
+		roles,
+	); err != nil {
+		t.Fatalf("M2MClientStore.CreateWithSecret: %v", err)
 	}
-	var r struct {
-		ClientID     string `json:"clientId"`
-		ClientSecret string `json:"clientSecret"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		t.Fatalf("decode m2m create response: %v", err)
-	}
-	if r.ClientID == "" || r.ClientSecret == "" {
-		t.Fatal("empty clientId or clientSecret in m2m create response")
-	}
-	return r.ClientID, r.ClientSecret
+	return clientID, clientSecret
 }
 
 // adminRequestAs issues an authenticated request using a specific M2M client's token.

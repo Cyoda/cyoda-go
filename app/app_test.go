@@ -195,9 +195,10 @@ func TestAuthAdminEndpointsRequireAuth(t *testing.T) {
 		{"DELETE", "/oauth/keys/keypair/some-kid"},
 		{"POST", "/oauth/keys/keypair/some-kid/invalidate"},
 		{"POST", "/oauth/keys/trusted"},
-		{"POST", "/account/m2m"},
-		{"DELETE", "/account/m2m/some-client"},
-		{"POST", "/account/m2m/some-client/secret/reset"},
+		{"GET", "/clients"},
+		{"POST", "/clients"},
+		{"DELETE", "/clients/some-client"},
+		{"PUT", "/clients/some-client/secret"},
 	}
 
 	for _, ep := range adminEndpoints {

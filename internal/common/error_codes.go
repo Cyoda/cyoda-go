@@ -33,6 +33,7 @@ const (
 	ErrCodeKeypairNotFound           = "KEYPAIR_NOT_FOUND"
 	ErrCodeTrustedKeyCapReached      = "TRUSTED_KEY_CAP_REACHED"
 	ErrCodeTrustedKeyNotFound        = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeM2MClientNotFound         = "M2M_CLIENT_NOT_FOUND"
 	ErrCodeUnsupportedAlgorithm      = "UNSUPPORTED_ALGORITHM"
 	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
 	ErrCodeServerError               = "SERVER_ERROR"

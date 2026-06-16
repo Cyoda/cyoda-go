@@ -9,8 +9,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Added
 
 - `/oauth/keys/keypair/*` and `/oauth/keys/trusted/*` — 10 admin endpoints now conform to the OpenAPI surface via chi-routed adapters in `internal/domain/account/`. ([#281](https://github.com/Cyoda-platform/cyoda-go/issues/281), sub-issue of [#194](https://github.com/Cyoda-platform/cyoda-go/issues/194))
+- `/clients` OpenAPI surface — `GET /clients`, `POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret`. M2M client management is now reachable at the spec-conformant paths with the spec-conformant DTOs.
 - 6 new error codes: `FEATURE_DISABLED`, `KEY_OWNED_BY_DIFFERENT_TENANT`, `KEYPAIR_NOT_FOUND`, `TRUSTED_KEY_CAP_REACHED`, `UNSUPPORTED_ALGORITHM`, `UNSUPPORTED_KEY_TYPE`.
+- Error code `M2M_CLIENT_NOT_FOUND` (HTTP 404) emitted by the `/clients` admin operations on unknown or cross-tenant `clientId`.
 - 5 new env vars: `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`, `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT`, `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS`, `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES`, `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS`. Plus `CYODA_JWT_BOOTSTRAP_AUDIENCE`.
+- `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env (default `false`) gates the `withAdminRole=true` query parameter on `POST /clients`. When off the request returns `404` with error code `FEATURE_DISABLED`.
 
 ### Changed
 
@@ -18,10 +21,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - JWKS endpoint (`/.well-known/jwks.json`) now publishes grace-period-invalidated keys until their `validTo` passes.
 - `KVTrustedKeyStore` KV-key encoding within the `trusted-keys` namespace changed from `<kid>` to `<tenantID>:<kid>`. Tenant isolation is now enforced at the storage layer.
 - Trusted-key per-tenant cap counts only currently-valid keys (matches Cyoda Cloud).
+- `withAdminRole` query parameter on `POST /clients` tightened from `string` to `boolean` in `api/openapi.yaml`. This is a deliberate divergence from the upstream Cyoda Cloud OpenAPI declaration.
+- `auth.M2MClient.TenantID` promoted from `string` to `spi.TenantID`. `M2MClient` now carries `CreatedAt` and `UpdatedAt` timestamps.
 - Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now rejects structurally broken workflows with `400 VALIDATION_FAILED` instead of accepting them and degrading silently at runtime. New rules: empty workflow name, duplicate workflow names within a single request, empty `initialState`, `initialState` not declared in `states`, empty state-map key, transition `next` not declared in `states`, empty or duplicate transition names within a state, empty processor name, workflow / state / transition / processor name length > 256 chars, and unknown `executionMode` values. OpenAPI schema updated with matching `minLength: 1` + `maxLength: 256` on identifier fields and `propertyNames` on the `states` map. See ⚠️ Breaking changes below. ([#255](https://github.com/Cyoda-platform/cyoda-go/issues/255))
 - Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now honours an explicit `"active": false` on each incoming `WorkflowDefinition`. The handler previously force-overrode every incoming `active` to `true`; it now defaults to `true` only when the field is absent (or explicitly `null`) and passes explicit `true` / `false` through unchanged. This restores export → REPLACE re-import idempotency and lets operators stage inactive workflows. See ⚠️ Breaking changes below. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
 - Workflow engine: substitution of the embedded default workflow now emits a `slog.Warn` line in addition to the existing response-body warning. Log fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason` ∈ {`no_workflows_imported`, `no_criterion_matched`}. The body warning text is corrected per cause — `"no workflows imported for model — using default workflow"` for the cold paths in `Execute` / `ManualTransition` / `Loopback`, `"no imported workflow matched entity — using default workflow"` for `selectWorkflow`. Operators driving large fleets can now detect models silently running on the embedded default. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
 - Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now decodes the request body with `DisallowUnknownFields`. Unknown fields — at the top level *or* nested in the workflow / state / transition / processor sub-shapes — are rejected with `400 BAD_REQUEST` and the offending field name surfaced in the response detail (Go's decoder emits `json: unknown field "X"`). Typos like `"transitionn"` for `"transitions"` no longer silently import as a no-op. See ⚠️ Breaking changes below. The broader `DisallowUnknownFields` sweep across entity / cluster / auth boundaries remains in [#145](https://github.com/Cyoda-platform/cyoda-go/issues/145). ([#264](https://github.com/Cyoda-platform/cyoda-go/issues/264))
+
+### Removed
+
+- Private `/account/m2m*` HTTP surface and its `internal/auth/m2m.go` handler. M2M client management is exclusively at `/clients` going forward. `/account/m2m*` was never OpenAPI-declared.
+- `501 NOT_IMPLEMENTED` response declarations on `listTechnicalUsers`, `createTechnicalUser`, `deleteTechnicalUser`, `resetTechnicalUserSecret`, `getTechnicalUserToken` in `api/openapi.yaml`.
 
 ### ⚠️ Breaking changes
 
@@ -44,6 +54,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Runtime-issued signing keypairs are lost on process restart.** The bootstrap key survives (its KID is deterministic per PEM). Persistent signing-key storage is tracked in a v0.8.x follow-up.
 - **Pre-v0.8.0 KV trusted-key entries are orphaned.** Within the `trusted-keys` namespace, entries are now keyed `<tenantID>:<kid>` (was bare `<kid>`). v0.8.0 does not query the old shape; affected entries are left in place but not loaded. Operators must re-register affected keys. To audit, look for entries in the `trusted-keys` namespace whose key contains no `:` separator (the exact query depends on the KV backend; for the SQLite plugin: `SELECT key FROM kv_store WHERE namespace='trusted-keys' AND key NOT LIKE '%:%'`).
 - **v0.8.0 → pre-v0.8.0 rollback hazard.** Trusted keys created under v0.8.0 are visible to pre-v0.8.0 binaries as mangled-kid entries (`<tenantID>:<kid>` treated as the kid). Purge out-of-band before rollback if visibility matters.
+- **M2M clients created via `POST /clients` are held in-memory by the default `InMemoryM2MClientStore` and do not survive a server restart.** Customers running with the in-memory IAM mode must re-create their clients on every restart. A persistence follow-up tracking storage-SPI backing is on the roadmap; see the v0.8.0 milestone discussion.
 
 ---
 
