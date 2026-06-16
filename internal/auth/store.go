@@ -448,6 +448,25 @@ func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, 
 // Adapters should use errors.Is for classification.
 var ErrM2MClientNotFound = errors.New("m2m client not found")
 
+// ErrM2MClientExists is returned by M2MClientStore.Create / .CreateWithSecret
+// when the clientID is already present. The adapter's collision-retry loop
+// in CreateTechnicalUser detects this via errors.Is and regenerates.
+var ErrM2MClientExists = errors.New("m2m client already exists")
+
+// dummyHash is a constant-time fallback compared against any unknown
+// clientID so VerifySecret takes ~100ms in both the unknown-clientID
+// and wrong-secret paths. Without this, response-time analysis on
+// POST /oauth/token would reveal whether a given clientID exists.
+// Generated once at init; the plaintext "dummy" is never referenced
+// outside this comparison and never leaves the function.
+var dummyHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("dummy-constant-time-pad"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(fmt.Errorf("bcrypt dummy hash init: %w", err))
+	}
+	return h
+}()
+
 // InMemoryM2MClientStore stores M2M clients in memory.
 type InMemoryM2MClientStore struct {
 	mu      sync.RWMutex
@@ -480,6 +499,9 @@ func (s *InMemoryM2MClientStore) Create(clientID string, tenantID spi.TenantID, 
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.clients[clientID]; exists {
+		return "", fmt.Errorf("%w: %s", ErrM2MClientExists, clientID)
+	}
 	s.clients[clientID] = &M2MClient{
 		ClientID:     clientID,
 		HashedSecret: string(hashed),
@@ -505,6 +527,9 @@ func (s *InMemoryM2MClientStore) CreateWithSecret(clientID string, tenantID spi.
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.clients[clientID]; exists {
+		return fmt.Errorf("%w: %s", ErrM2MClientExists, clientID)
+	}
 	s.clients[clientID] = &M2MClient{
 		ClientID:     clientID,
 		HashedSecret: string(hashed),
@@ -580,14 +605,32 @@ func (s *InMemoryM2MClientStore) ResetSecret(clientID string) (string, error) {
 	return secret, nil
 }
 
-// VerifySecret checks whether the plaintext secret matches the stored hash.
+// VerifySecret reports whether plaintext matches the stored bcrypt hash
+// for clientID. Returns (false, ErrM2MClientNotFound) when the client
+// does not exist; the comparison still runs against a dummy hash so the
+// timing profile matches the wrong-secret case and clientID existence
+// cannot be inferred from response latency.
 func (s *InMemoryM2MClientStore) VerifySecret(clientID, plaintext string) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	c, ok := s.clients[clientID]
-	if !ok {
+	var hashCopy []byte
+	var found bool
+	func() {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if c, ok := s.clients[clientID]; ok {
+			// Copy the hash so we can release the lock before the slow bcrypt
+			// call — otherwise concurrent writes (ResetSecret, Delete, Create)
+			// wait ~100ms on every token request.
+			hashCopy = []byte(c.HashedSecret)
+			found = true
+		}
+	}()
+
+	if !found {
+		// Constant-time compare against the dummy hash to match the
+		// existing-client timing. Discard the result.
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(plaintext))
 		return false, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
-	err := bcrypt.CompareHashAndPassword([]byte(c.HashedSecret), []byte(plaintext))
+	err := bcrypt.CompareHashAndPassword(hashCopy, []byte(plaintext))
 	return err == nil, nil
 }

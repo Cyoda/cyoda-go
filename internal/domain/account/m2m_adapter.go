@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -125,19 +126,36 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
-	// Generate clientId with one collision retry.
+	tID := tenantFromCtx(r)
+	roles := []string{"ROLE_M2M"}
+	if withAdmin {
+		roles = append(roles, "ROLE_ADMIN")
+	}
+
+	// Generate clientID and Create atomically — Store rejects collisions
+	// via ErrM2MClientExists. Retry once on the astronomical (~1 in 2^80)
+	// collision; a second collision is a defect (signals broken entropy
+	// source) and returns 500.
 	var clientID string
+	var secret string
 	for attempt := 0; attempt < 2; attempt++ {
 		cid, err := generateClientID()
 		if err != nil {
 			common.WriteError(w, r, common.Internal("generateClientID", err))
 			return
 		}
-		if _, getErr := h.m2mClientStore.Get(cid); getErr != nil {
+		sec, createErr := h.m2mClientStore.Create(cid, tID, cid, roles)
+		if createErr == nil {
 			clientID = cid
+			secret = sec
 			break
 		}
-		// Collision (astronomical at 80 bits). Loop once more.
+		if errors.Is(createErr, auth.ErrM2MClientExists) {
+			// Astronomical-probability collision; loop once more.
+			continue
+		}
+		common.WriteError(w, r, common.Internal("m2mClientStore.Create", createErr))
+		return
 	}
 	if clientID == "" {
 		common.WriteError(w, r, common.Internal("generateClientID-collision",
@@ -145,18 +163,12 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
-	tID := tenantFromCtx(r)
-	roles := []string{"ROLE_M2M"}
-	if withAdmin {
-		roles = append(roles, "ROLE_ADMIN")
-	}
-
-	secret, err := h.m2mClientStore.Create(clientID, tID, clientID, roles)
-	if err != nil {
-		common.WriteError(w, r, common.Internal("m2mClientStore.Create", err))
-		return
-	}
-
+	slog.InfoContext(r.Context(), "M2M client created",
+		"pkg", "account",
+		"tenantId", tID,
+		"clientId", clientID,
+		"roles", roles,
+	)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, roles))
 }
@@ -197,6 +209,11 @@ func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 
+	slog.InfoContext(r.Context(), "M2M client deleted",
+		"pkg", "account",
+		"tenantId", tID,
+		"clientId", clientID,
+	)
 	resp := genapi.DeleteTechnicalUser200ResponseDto{
 		Message:  "M2M client deleted successfully",
 		ClientId: clientID,
@@ -236,6 +253,11 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	slog.InfoContext(r.Context(), "M2M client secret rotated",
+		"pkg", "account",
+		"tenantId", tID,
+		"clientId", clientID,
+	)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, existing.Roles))
 }
