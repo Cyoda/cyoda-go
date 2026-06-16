@@ -79,18 +79,6 @@ func TestHandlerReturns501(t *testing.T) {
 		{"AccountSubscriptionsGet", func(w http.ResponseWriter, r *http.Request) {
 			h.AccountSubscriptionsGet(w, r)
 		}},
-		{"ListTechnicalUsers", func(w http.ResponseWriter, r *http.Request) {
-			h.ListTechnicalUsers(w, r)
-		}},
-		{"CreateTechnicalUser", func(w http.ResponseWriter, r *http.Request) {
-			h.CreateTechnicalUser(w, r, genapi.CreateTechnicalUserParams{})
-		}},
-		{"DeleteTechnicalUser", func(w http.ResponseWriter, r *http.Request) {
-			h.DeleteTechnicalUser(w, r, "client-1")
-		}},
-		{"ResetTechnicalUserSecret", func(w http.ResponseWriter, r *http.Request) {
-			h.ResetTechnicalUserSecret(w, r, "client-1")
-		}},
 		{"GetTechnicalUserToken", func(w http.ResponseWriter, r *http.Request) {
 			h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
 		}},

@@ -3,12 +3,11 @@ package account
 import (
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
@@ -110,7 +109,24 @@ func clientBelongsToTenant(c *auth.M2MClient, callerTenant spi.TenantID) bool {
 	return c.TenantID == callerTenant
 }
 
-// Placeholders consume slog + time so the import block stays stable until
-// the operation methods (Tasks 6-9) reference them directly.
-var _ = slog.LevelInfo
-var _ = time.Now
+
+// ListTechnicalUsers implements GET /clients.
+func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireM2MStore(w, r) {
+		return
+	}
+	tID := tenantFromCtx(r)
+	all := h.m2mClientStore.List()
+	out := make([]genapi.TechnicalUserDto, 0, len(all))
+	for _, c := range all {
+		if !clientBelongsToTenant(c, tID) {
+			continue
+		}
+		out = append(out, toTechnicalUserDto(c))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}

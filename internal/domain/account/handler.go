@@ -76,22 +76,6 @@ func (h *Handler) AccountSubscriptionsGet(w http.ResponseWriter, r *http.Request
 	h.stub(w, r)
 }
 
-func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
-	h.stub(w, r)
-}
-
-func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, params genapi.CreateTechnicalUserParams) {
-	h.stub(w, r)
-}
-
-func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, clientId string) {
-	h.stub(w, r)
-}
-
-func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request, clientId string) {
-	h.stub(w, r)
-}
-
 func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
 	h.stub(w, r)
 }
