@@ -314,7 +314,7 @@ From the issue body:
       validator tests above.
 - [x] **`ProcessingResponse.Retryable` populated from the inbound CloudEvent;
       test asserts a member-returned `retryable=false` reaches the field.** →
-      Slice 2 + `TestHandleProcessorResponse_PropagatesRetryableFalse`.
+      Slice 2 + `TestStreaming_ProcessorResponse_PropagatesRetryableFalse`.
 - [x] **No behaviour change to the dispatch path itself (single-shot
       retained).** → Zero edits to `internal/grpc/dispatch.go`; verified by
       the existing dispatch tests staying green without modification.
