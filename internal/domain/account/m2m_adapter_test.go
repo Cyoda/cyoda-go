@@ -351,3 +351,122 @@ func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 		t.Errorf("store size: got %d want %d (some Create silently overwrote?)", len(h.m2mClientStore.List()), n)
 	}
 }
+
+// --- Case 13: Delete, admin, owned ---
+
+func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	if _, err := h.m2mClientStore.Create("CLIENT1", spi.TenantID(tenantA), "CLIENT1", []string{"ROLE_M2M"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENT1", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.DeleteTechnicalUser(rr, req, "CLIENT1")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp genapi.DeleteTechnicalUser200ResponseDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ClientId != "CLIENT1" {
+		t.Errorf("clientId: got %q want CLIENT1", resp.ClientId)
+	}
+	if resp.Message == "" {
+		t.Error("message empty")
+	}
+	if _, err := h.m2mClientStore.Get("CLIENT1"); err == nil {
+		t.Error("store record still present after Delete")
+	}
+}
+
+// --- Case 14: Delete, admin, cross-tenant target ---
+
+func TestDeleteTechnicalUser_AdminCrossTenant_Returns404AndPreservesRecord(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	if _, err := h.m2mClientStore.Create("CLIENTB", spi.TenantID(tenantB), "CLIENTB", []string{"ROLE_M2M"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENTB", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.DeleteTechnicalUser(rr, req, "CLIENTB")
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", rr.Code)
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeM2MClientNotFound {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeM2MClientNotFound)
+	}
+	// Tenant B's record must remain untouched.
+	if _, err := h.m2mClientStore.Get("CLIENTB"); err != nil {
+		t.Errorf("tenant B record removed by cross-tenant DELETE: %v", err)
+	}
+}
+
+// --- Case 15: Delete, admin, unknown id ---
+
+func TestDeleteTechnicalUser_AdminUnknown_Returns404(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/UNKNOWN", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.DeleteTechnicalUser(rr, req, "UNKNOWN")
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", rr.Code)
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeM2MClientNotFound {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeM2MClientNotFound)
+	}
+}
+
+// --- Case 16: Delete, admin, malformed id (hyphen) ---
+
+func TestDeleteTechnicalUser_AdminMalformedId_Returns400(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/bad-id", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.DeleteTechnicalUser(rr, req, "bad-id")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rr.Code)
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeBadRequest {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeBadRequest)
+	}
+}
+
+// --- Case 17: Delete, admin, empty id (trailing slash) ---
+
+func TestDeleteTechnicalUser_AdminEmptyId_Returns400(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.DeleteTechnicalUser(rr, req, "")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rr.Code)
+	}
+}
+
+// --- Case 18: Delete, non-admin → 403 ---
+
+func TestDeleteTechnicalUser_NonAdmin_Returns403(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	if _, err := h.m2mClientStore.Create("CLIENT1", spi.TenantID(tenantA), "CLIENT1", []string{"ROLE_M2M"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	req := withTenantNonAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENT1", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.DeleteTechnicalUser(rr, req, "CLIENT1")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403", rr.Code)
+	}
+}

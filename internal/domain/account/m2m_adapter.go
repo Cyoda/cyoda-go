@@ -187,6 +187,42 @@ func parseWithAdminRole(p *string) (bool, bool) {
 	}
 }
 
+// DeleteTechnicalUser implements DELETE /clients/{clientId}.
+func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, clientID string) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireM2MStore(w, r) {
+		return
+	}
+	if !validateClientID(w, r, clientID) {
+		return
+	}
+
+	tID := tenantFromCtx(r)
+	existing, err := h.m2mClientStore.Get(clientID)
+	if err != nil || !clientBelongsToTenant(existing, tID) {
+		// Identical 404 for "no such client" and "owned by another tenant"
+		// — no cross-tenant existence oracle (Gate 3).
+		common.WriteError(w, r, common.Operational(http.StatusNotFound,
+			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+		return
+	}
+	if err := h.m2mClientStore.Delete(clientID); err != nil {
+		// Race with concurrent delete: same 404 shape.
+		common.WriteError(w, r, common.Operational(http.StatusNotFound,
+			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+		return
+	}
+
+	resp := genapi.DeleteTechnicalUser200ResponseDto{
+		Message:  "M2M client deleted successfully",
+		ClientId: clientID,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // ListTechnicalUsers implements GET /clients.
 func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 	if !auth.RequireAdmin(w, r) {
