@@ -1073,6 +1073,111 @@ func TestImport_MalformedJSONBody_Returns400(t *testing.T) {
 	}
 }
 
+// TestImport_UnknownField_TopLevel_Returns400 covers the strict-decoder
+// boundary: unknown fields at the top of the import-request body (e.g.
+// forward-compat extras, typos) must be rejected at the wire boundary
+// with 400 BAD_REQUEST. Without DisallowUnknownFields the field is
+// silently dropped and the request proceeds, hiding shape errors from
+// the client.
+func TestImport_UnknownField_TopLevel_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{"importMode":"MERGE","futureField":"unexpected","workflows":[]}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for unknown top-level field, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	// Go's decoder emits `json: unknown field "futureField"` — the field
+	// name in the detail is what makes the error actionable to the caller.
+	if !strings.Contains(detail, "futureField") {
+		t.Errorf("expected detail to name the unknown field 'futureField', got: %s", detail)
+	}
+}
+
+// TestImport_UnknownField_Typo_Returns400 covers the typo-detection
+// motivation: a misspelled nested field (here `transitionn` instead of
+// `transitions`) was previously silently dropped, so the workflow
+// imported with zero transitions and the typo was never reported. The
+// strict decoder now flags it.
+func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// `transitionn` (extra n) inside a StateDefinition — the typo means
+	// the intended transitions list never reaches the engine.
+	body := `{
+		"importMode":"REPLACE",
+		"workflows":[{
+			"version":"1.0","name":"typo-wf","initialState":"S1","active":true,
+			"states":{"S1":{"transitionn":[{"name":"go","next":"S2","manual":true}]},"S2":{}}
+		}]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for typo'd nested field, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "transitionn") {
+		t.Errorf("expected detail to name the typo'd field 'transitionn', got: %s", detail)
+	}
+}
+
+// TestImport_KnownSPIFields_StillAccepted is the coordination fence for
+// the strict-decoder switch: SPI fields that legitimately exist on
+// ProcessorConfig (asyncResult, crossoverToAsyncMs, retryPolicy,
+// context, calculationNodesTags, ...) must NOT be rejected as unknown.
+// If a future SPI tag drops or renames any of these on the wire, this
+// test fails loudly instead of silently breaking import for clients
+// sending the fields.
+func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// asyncResult=false + crossoverToAsyncMs omitted is the validator-
+	// accepted combination (see validate_import_test.go); both live on
+	// ProcessorConfig (the processor's `config` sub-shape). Other
+	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags
+	// — are exercised here at their valid defaults so the strict decoder
+	// must pass them through unchanged.
+	body := `{
+		"importMode":"REPLACE",
+		"workflows":[{
+			"version":"1.0","name":"spi-fields-wf","initialState":"S1","active":true,
+			"states":{
+				"S1":{"transitions":[{
+					"name":"go","next":"S2","manual":true,
+					"processors":[{
+						"type":"externalized","name":"p","executionMode":"SYNC",
+						"config":{
+							"asyncResult":false,
+							"retryPolicy":"NONE",
+							"context":"tenant-scoped",
+							"calculationNodesTags":"workers"
+						}
+					}]
+				}]},
+				"S2":{}
+			}
+		}]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for known SPI fields, got %d: %s", resp.StatusCode, b)
+	}
+}
+
 // TestImport_EmptyBody_Returns400 covers the zero-length body case.
 // JSON unmarshal of "" yields an "unexpected end of JSON input" error
 // which the handler surfaces as 400 BAD_REQUEST. Without this fence,

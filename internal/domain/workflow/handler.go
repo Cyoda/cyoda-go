@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,8 +75,17 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Strict-decoder boundary: unknown fields in the import-request body —
+	// top-level or nested in the workflow / state / transition / processor
+	// sub-shapes — are rejected with 400 BAD_REQUEST rather than silently
+	// dropped. This catches forward-compat extras and typos (e.g.
+	// `transitionn` for `transitions`) that previously imported as no-op
+	// workflows. Go's decoder emits `json: unknown field "X"` which names
+	// the offending field directly in the response detail.
 	var req importRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
 		return
 	}
