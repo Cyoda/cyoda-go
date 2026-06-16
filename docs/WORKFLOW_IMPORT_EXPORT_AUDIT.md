@@ -328,7 +328,7 @@ Verified via repository-wide grep of non-test code:
 
 | Field | OpenAPI / SPI | Consumed? |
 |---|---|---|
-| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8126`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import (#262).** Rejected at import unless ∈ {NONE, FIXED, ""}. Dispatcher still single-shot; full retry loop deferred to #254. |
+| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8128`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import (#262).** Rejected at import unless ∈ {NONE, FIXED, ""}. Dispatcher still single-shot; full retry loop deferred to #254. |
 | `ProcessorConfig.Context` | `api/openapi.yaml:8622–8624`, `types.go:153` | **Resolved in v0.8.0.** Wired as a pass-through string into the dispatch `parameters` JSON node at `internal/grpc/dispatch.go:71, 221`. Historical analysis below retained for context. |
 | `ProcessorDefinition.Type` | `api/openapi.yaml:8674–8679`, `types.go:141` | **No.** Discriminator carried for parity, no engine branch uses it. |
 

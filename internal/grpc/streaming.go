@@ -246,7 +246,7 @@ func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payloa
 		Success   bool   `json:"success"`
 		Error     *struct {
 			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable,omitempty"`
+			Retryable *bool  `json:"retryable"`
 		} `json:"error"`
 		Warnings []string        `json:"warnings"`
 		Payload  json.RawMessage `json:"payload"`
@@ -285,7 +285,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Matches   bool   `json:"matches"`
 		Error     *struct {
 			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable,omitempty"`
+			Retryable *bool  `json:"retryable"`
 		} `json:"error"`
 		Warnings []string `json:"warnings"`
 	}
