@@ -658,3 +658,154 @@ func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 		})
 	}
 }
+
+// --- AsyncResult + CrossoverToAsyncMs reject-at-import (#261) ------------
+
+// asyncResultRejectFixture builds a minimal valid two-state workflow with
+// one externalized SYNC processor on the only transition, then lets the
+// caller mutate the processor's ProcessorConfig before validation.
+func asyncResultRejectFixture(mutate func(*spi.ProcessorConfig)) spi.WorkflowDefinition {
+	wf := spi.WorkflowDefinition{
+		Version: "1", Name: "wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: false, Processors: []spi.ProcessorDefinition{
+					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: ExecutionModeSync},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	if mutate != nil {
+		mutate(&wf.States["S1"].Transitions[0].Processors[0].Config)
+	}
+	return wf
+}
+
+func TestValidator_AsyncResultTrue_Rejected(t *testing.T) {
+	tt := true
+	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
+		c.AsyncResult = &tt
+	})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for asyncResult=true, got nil")
+	}
+	for _, want := range []string{`workflow "wf"`, `state "S1"`, `transition "t"`, `processor "p"`, "asyncResult=true is not supported"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message must contain %q; got: %v", want, err)
+		}
+	}
+}
+
+func TestValidator_AsyncResultFalse_Accepted(t *testing.T) {
+	ff := false
+	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
+		c.AsyncResult = &ff
+	})
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Errorf("explicit asyncResult=false must be accepted; got: %v", err)
+	}
+}
+
+func TestValidator_AsyncResultAbsent_Accepted(t *testing.T) {
+	wf := asyncResultRejectFixture(nil)
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Errorf("absent asyncResult must be accepted; got: %v", err)
+	}
+}
+
+func TestValidator_CrossoverOrphan_Rejected(t *testing.T) {
+	cv := int64(5000)
+	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
+		c.CrossoverToAsyncMs = &cv
+	})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for orphan crossoverToAsyncMs, got nil")
+	}
+	for _, want := range []string{`processor "p"`, "crossoverToAsyncMs is not supported"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message must contain %q; got: %v", want, err)
+		}
+	}
+}
+
+func TestValidator_CrossoverZero_Rejected(t *testing.T) {
+	cv := int64(0)
+	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
+		c.CrossoverToAsyncMs = &cv
+	})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for crossoverToAsyncMs=&0 (non-nil zero), got nil")
+	}
+	if !strings.Contains(err.Error(), "crossoverToAsyncMs is not supported") {
+		t.Errorf("error must name the crossover rule; got: %v", err)
+	}
+}
+
+func TestValidator_AsyncTrueAndCrossover_AsyncRuleFiresFirst(t *testing.T) {
+	tt := true
+	cv := int64(5000)
+	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
+		c.AsyncResult = &tt
+		c.CrossoverToAsyncMs = &cv
+	})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for asyncResult=true + crossoverToAsyncMs, got nil")
+	}
+	// Async rule fires first per documented ordering (spec §4).
+	if !strings.Contains(err.Error(), "asyncResult=true is not supported") {
+		t.Errorf("expected asyncResult message (ordering: async-rule-first); got: %v", err)
+	}
+	if strings.Contains(err.Error(), "crossoverToAsyncMs is not supported") {
+		t.Errorf("crossover message should not surface when async rule fires first; got: %v", err)
+	}
+}
+
+func TestValidator_AsyncFalseAndCrossover_CrossoverRuleFires(t *testing.T) {
+	ff := false
+	cv := int64(5000)
+	wf := asyncResultRejectFixture(func(c *spi.ProcessorConfig) {
+		c.AsyncResult = &ff
+		c.CrossoverToAsyncMs = &cv
+	})
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for asyncResult=&false + crossoverToAsyncMs, got nil")
+	}
+	if !strings.Contains(err.Error(), "crossoverToAsyncMs is not supported") {
+		t.Errorf("expected crossover message when async is false; got: %v", err)
+	}
+}
+
+func TestValidator_MultiProcessor_OnlyOneBad_Rejected(t *testing.T) {
+	tt := true
+	// Transition with three processors; the SECOND has the bad field.
+	wf := spi.WorkflowDefinition{
+		Version: "1", Name: "wf", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: false, Processors: []spi.ProcessorDefinition{
+					{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
+					{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: ExecutionModeSync,
+						Config: spi.ProcessorConfig{AsyncResult: &tt}},
+					{Type: ProcessorTypeExternalized, Name: "p3", ExecutionMode: ExecutionModeSync},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error naming p2, got nil")
+	}
+	if !strings.Contains(err.Error(), `processor "p2"`) {
+		t.Errorf("error must name the offending processor p2 specifically; got: %v", err)
+	}
+	if strings.Contains(err.Error(), `processor "p1"`) || strings.Contains(err.Error(), `processor "p3"`) {
+		t.Errorf("error must not name unrelated processors; got: %v", err)
+	}
+}
