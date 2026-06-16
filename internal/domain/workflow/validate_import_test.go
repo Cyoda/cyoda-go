@@ -659,6 +659,72 @@ func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	}
 }
 
+// --- M1 — RetryPolicy enum check (audit §M1) -------------------------------
+
+// retryPolicyFixture builds a minimal valid two-state workflow with one
+// externalized SYNC processor on the only transition, then sets the
+// processor's RetryPolicy. Mirrors asyncResultRejectFixture so the
+// retry-policy tests stay structurally identical to their sibling tests.
+func retryPolicyFixture(retryPolicy string) spi.WorkflowDefinition {
+	return spi.WorkflowDefinition{
+		Version: "1", Name: "wf-rp", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "t", Next: "S2", Manual: false, Processors: []spi.ProcessorDefinition{
+					{
+						Type:          ProcessorTypeExternalized,
+						Name:          "p",
+						ExecutionMode: ExecutionModeSync,
+						Config:        spi.ProcessorConfig{RetryPolicy: retryPolicy},
+					},
+				}},
+			}},
+			"S2": {},
+		},
+	}
+}
+
+func TestValidateImportRequest_RejectsUnknownRetryPolicy(t *testing.T) {
+	wf := retryPolicyFixture("LINEAR_BACKOFF")
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatalf("expected error for unknown retryPolicy, got nil")
+	}
+	for _, want := range []string{
+		`workflow "wf-rp"`, `state "S1"`, `transition "t"`, `processor "p"`,
+		"unknown retryPolicy",
+		`"LINEAR_BACKOFF"`,
+		"NONE, FIXED, or empty",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message must contain %q; got: %v", want, err)
+		}
+	}
+}
+
+// Empty RetryPolicy must remain valid — the server defaults to FIXED.
+func TestValidateImportRequest_AcceptsEmptyRetryPolicy(t *testing.T) {
+	wf := retryPolicyFixture("")
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Fatalf("expected no error for empty retryPolicy, got: %v", err)
+	}
+}
+
+// Both named policies must be accepted.
+func TestValidateImportRequest_AcceptsAllKnownRetryPolicies(t *testing.T) {
+	for _, policy := range []string{
+		RetryPolicyNone,
+		RetryPolicyFixed,
+	} {
+		t.Run(policy, func(t *testing.T) {
+			wf := retryPolicyFixture(policy)
+			if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+				t.Fatalf("expected no error for retryPolicy=%q, got: %v", policy, err)
+			}
+		})
+	}
+}
+
 // --- AsyncResult + CrossoverToAsyncMs reject-at-import (audit §M6) ------------
 
 // asyncResultRejectFixture builds a minimal valid two-state workflow with
