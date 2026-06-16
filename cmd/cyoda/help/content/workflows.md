@@ -171,7 +171,14 @@ Import-time validation rejects any `executionMode` value not in the list above (
 - `attachEntity` — boolean — when `true`, the full entity payload is sent to the processor
 - `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
 - `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
-- `retryPolicy` — string — retry policy name (plugin/platform-defined); empty means no retry
+- `retryPolicy` — string — selects the server-resolved retry strategy.
+  Valid values: `NONE` (single attempt, no retry), `FIXED` (up to N
+  additional attempts with fixed delay between tries, where N and delay
+  are server-configured). When omitted, defaults to `FIXED` at engine
+  fire. Import-time validation rejects any other value with `400
+  VALIDATION_FAILED`. **cyoda-go status:** captured but not consumed —
+  the dispatcher is single-shot regardless of policy; the full retry
+  loop ships in a later release. Cloud honours both policies.
 - `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
 - `asyncResult` — boolean (pointer; nil-default) — declared in the
   OpenAPI for Cloud parity; the runtime does **not** implement
@@ -316,6 +323,7 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
+- Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
 
