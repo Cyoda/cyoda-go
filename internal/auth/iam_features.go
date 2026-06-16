@@ -13,6 +13,11 @@ type IAMFeatures struct {
 	TrustedKeyMaxJWKProperties    int    // env CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES, default 20
 	KeypairDefaultValidityDays    int    // env CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS, default 365
 	BootstrapAudience             string // env CYODA_JWT_BOOTSTRAP_AUDIENCE, default "client"
+
+	// M2MAdminRoleEnabled gates POST /clients?withAdminRole=true. When false
+	// (the secure default) the endpoint returns 404 FEATURE_DISABLED on that
+	// request shape. env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
+	M2MAdminRoleEnabled bool
 }
 
 func DefaultIAMFeatures() IAMFeatures {
