@@ -469,12 +469,9 @@ func New(cfg Config) *App {
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
 	//     and must be reachable by unauthenticated callers by protocol.
 	//
-	//   ADMIN (authMW + ROLE_ADMIN): /account/m2m, /account/m2m/*.
-	//     Two-layer enforcement: middleware.Auth populates UserContext (or
-	//     rejects with 401), then the handlers in internal/auth/ call the
-	//     requireAdmin guard which enforces ROLE_ADMIN (or rejects with 403).
-	//     Both layers are required — authMW alone would let any
-	//     authenticated caller manage M2M clients.
+	//   ADMIN (authMW + ROLE_ADMIN): served via the chi router (account
+	//     handler). The /account/m2m* legacy mux entries were retired
+	//     when /clients chi adapters landed; see m2m_adapter.go.
 
 	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
@@ -485,14 +482,6 @@ func New(cfg Config) *App {
 	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	// Admin auth endpoints: key management, M2M clients, trusted keys.
-	// The handler-side requireAdmin guard enforces ROLE_ADMIN; authMW here
-	// guarantees the UserContext is populated so the guard has something
-	// to check.
-	if authSvc != nil {
-		mux.Handle("/account/m2m/", authMW(authSvc.AdminHandler()))
-		mux.Handle("/account/m2m", authMW(authSvc.AdminHandler()))
-	}
 	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleGetLogLevel)))
 	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleSetLogLevel)))
 	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
