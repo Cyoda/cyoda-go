@@ -574,7 +574,7 @@ paths:
         and available for authentication.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: listTechnicalUsers
       responses:
         "200":
@@ -603,8 +603,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -626,13 +624,13 @@ paths:
         granting it full access to all ADMIN-level endpoints (e.g., trusted key
         registration).
 
-        This requires the `cyoda.security.web.jwt.m2m.admin-role-enabled`
-        feature flag to be enabled;
+        This requires the `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env
+        flag to be set to `true`;
 
-        otherwise, a 401 Unauthorized response is returned.
+        otherwise, a `404` response with error code `FEATURE_DISABLED` is returned.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: createTechnicalUser
       parameters:
         - name: withAdminRole
@@ -642,7 +640,7 @@ paths:
             "
           required: false
           schema:
-            type: string
+            type: boolean
       responses:
         "200":
           description: M2M client created successfully
@@ -668,8 +666,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -688,7 +684,7 @@ paths:
         new credentials.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: deleteTechnicalUser
       parameters:
         - name: clientId
@@ -737,8 +733,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -757,7 +751,7 @@ paths:
         new credentials.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: resetTechnicalUserSecret
       parameters:
         - name: clientId
@@ -806,8 +800,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /entity/stats:

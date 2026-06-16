@@ -121,12 +121,7 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
-	withAdmin, ok := parseWithAdminRole(params.WithAdminRole)
-	if !ok {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
-			common.ErrCodeBadRequest, "invalid withAdminRole; expected true or false"))
-		return
-	}
+	withAdmin := parseWithAdminRole(params.WithAdminRole)
 	if withAdmin && !h.gateM2MAdminRole(w, r) {
 		return
 	}
@@ -167,24 +162,12 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, roles))
 }
 
-// parseWithAdminRole handles the transitional *string shape generated for the
-// withAdminRole query param. Once Task 12 tightens the OpenAPI to type:
-// boolean, this becomes a one-line bool deref.
-//
-// Returns (false, true) for nil/absent. Returns (true, true) for "true",
-// (false, true) for "false". Returns (_, false) for anything else.
-func parseWithAdminRole(p *string) (bool, bool) {
+// parseWithAdminRole reads the *bool query param. nil/absent → false.
+func parseWithAdminRole(p *bool) bool {
 	if p == nil {
-		return false, true
+		return false
 	}
-	switch *p {
-	case "true":
-		return true, true
-	case "false":
-		return false, true
-	default:
-		return false, false
-	}
+	return *p
 }
 
 // DeleteTechnicalUser implements DELETE /clients/{clientId}.

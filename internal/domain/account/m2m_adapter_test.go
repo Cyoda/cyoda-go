@@ -221,11 +221,11 @@ func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T)
 
 func TestCreateTechnicalUser_AdminWithAdminRoleFlagOn_AddsAdminRole(t *testing.T) {
 	h := newM2MAdapterFixture(t, true)
-	val := "true"
+	trueVal := true
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=true", nil), tenantA)
 	rr := httptest.NewRecorder()
 
-	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &trueVal})
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
@@ -254,11 +254,11 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOn_AddsAdminRole(t *testing.T
 
 func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	val := "true"
+	trueVal := true
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=true", nil), tenantA)
 	rr := httptest.NewRecorder()
 
-	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &trueVal})
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status: got %d want 404", rr.Code)
@@ -276,11 +276,11 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled
 
 func TestCreateTechnicalUser_AdminWithAdminRoleFalse_NoAdminRole(t *testing.T) {
 	h := newM2MAdapterFixture(t, true)
-	val := "false"
+	falseVal := false
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=false", nil), tenantA)
 	rr := httptest.NewRecorder()
 
-	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &falseVal})
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200", rr.Code)
@@ -306,24 +306,6 @@ func TestCreateTechnicalUser_NonAdmin_Returns403Forbidden(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403", rr.Code)
-	}
-}
-
-// --- Case 11: Invalid withAdminRole value (string mode, transitional) ---
-
-func TestCreateTechnicalUser_InvalidWithAdminRoleValue_Returns400BadRequest(t *testing.T) {
-	h := newM2MAdapterFixture(t, true)
-	val := "yes" // not "true"/"false"
-	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=yes", nil), tenantA)
-	rr := httptest.NewRecorder()
-
-	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d want 400", rr.Code)
-	}
-	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeBadRequest {
-		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeBadRequest)
 	}
 }
 
