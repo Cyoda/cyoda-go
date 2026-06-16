@@ -590,3 +590,61 @@ func TestResetTechnicalUserSecret_NonAdmin_Returns403(t *testing.T) {
 		t.Fatalf("status: got %d want 403", rr.Code)
 	}
 }
+
+// --- Case 25: Response field hygiene ---
+// Ensures no Create/Reset/List/Delete response surface ever serialises
+// HashedSecret or any other private store field.
+
+func TestM2MAdapter_ResponseFieldHygiene_NeverLeaksHashedSecret(t *testing.T) {
+	h := newM2MAdapterFixture(t, true)
+
+	// Create
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Create: status %d", rr.Code)
+	}
+	assertNoHashedSecretLeak(t, "Create", rr.Body.Bytes())
+
+	var creds genapi.TechnicalUserCredentialsDto
+	_ = json.Unmarshal(rr.Body.Bytes(), &creds)
+	clientID := creds.ClientId
+
+	// Reset
+	req = withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/"+clientID+"/secret", nil), tenantA)
+	rr = httptest.NewRecorder()
+	h.ResetTechnicalUserSecret(rr, req, clientID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Reset: status %d", rr.Code)
+	}
+	assertNoHashedSecretLeak(t, "Reset", rr.Body.Bytes())
+
+	// List
+	req = withTenantAdminCtx(httptest.NewRequest(http.MethodGet, "/clients", nil), tenantA)
+	rr = httptest.NewRecorder()
+	h.ListTechnicalUsers(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("List: status %d", rr.Code)
+	}
+	assertNoHashedSecretLeak(t, "List", rr.Body.Bytes())
+
+	// Delete
+	req = withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/"+clientID, nil), tenantA)
+	rr = httptest.NewRecorder()
+	h.DeleteTechnicalUser(rr, req, clientID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Delete: status %d", rr.Code)
+	}
+	assertNoHashedSecretLeak(t, "Delete", rr.Body.Bytes())
+}
+
+func assertNoHashedSecretLeak(t *testing.T, op string, body []byte) {
+	t.Helper()
+	s := strings.ToLower(string(body))
+	for _, bad := range []string{"hashedsecret", "hashed_secret", "hashed-secret", "bcrypt", "$2a$", "$2b$"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("%s response contains forbidden token %q: %s", op, bad, body)
+		}
+	}
+}

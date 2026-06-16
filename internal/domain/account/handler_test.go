@@ -79,9 +79,6 @@ func TestHandlerReturns501(t *testing.T) {
 		{"AccountSubscriptionsGet", func(w http.ResponseWriter, r *http.Request) {
 			h.AccountSubscriptionsGet(w, r)
 		}},
-		{"GetTechnicalUserToken", func(w http.ResponseWriter, r *http.Request) {
-			h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
-		}},
 		{"ListOidcProviders", func(w http.ResponseWriter, r *http.Request) {
 			h.ListOidcProviders(w, r, genapi.ListOidcProvidersParams{})
 		}},
@@ -114,5 +111,18 @@ func TestHandlerReturns501(t *testing.T) {
 				t.Errorf("expected 501, got %d", w.Code)
 			}
 		})
+	}
+}
+
+// TestGetTechnicalUserToken_Returns500_RoutingRegression verifies that the
+// defensive stub returns 500 (not 501): arriving here means the public mux
+// failed to intercept POST /oauth/token before chi could dispatch it.
+func TestGetTechnicalUserToken_Returns500_RoutingRegression(t *testing.T) {
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/oauth/token", nil)
+	h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d; body: %s", w.Code, w.Body.String())
 	}
 }
