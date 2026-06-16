@@ -8119,7 +8119,13 @@ components:
           description: Response timeout in milliseconds
         retryPolicy:
           type: string
-          description: Retry policy for the function
+          enum: [NONE, FIXED]
+          description: |
+            Retry policy selector. NONE → single attempt, no retry. FIXED →
+            up to N additional attempts with fixed delay between tries
+            (N and delay are server-configured). When omitted, defaults
+            to FIXED at engine fire. Import-time validation rejects any
+            other value.
         context:
           type: string
           description: |
@@ -8784,7 +8790,13 @@ components:
           description: Response timeout in milliseconds
         retryPolicy:
           type: string
-          description: Retry policy for the function
+          enum: [NONE, FIXED]
+          description: |
+            Retry policy selector. NONE → single attempt, no retry. FIXED →
+            up to N additional attempts with fixed delay between tries
+            (N and delay are server-configured). When omitted, defaults
+            to FIXED at engine fire. Import-time validation rejects any
+            other value.
         context:
           type: string
           description: |

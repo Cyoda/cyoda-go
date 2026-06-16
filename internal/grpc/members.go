@@ -27,6 +27,14 @@ type ProcessingResponse struct {
 	Error    string
 	Matches  *bool    // for criteria responses (nil for processor responses)
 	Warnings []string // warnings from processor/criteria, propagated to client
+	// Retryable carries the member-supplied retryable flag from the inbound
+	// CloudEvent error shape (api/grpc/events/types.go: every *EventJsonError
+	// variant declares Retryable *bool). The pointer is nil when the wire
+	// omitted the key or when no error was present, distinguishing "wire
+	// said so" from "wire didn't say". Captured here for the future retry
+	// loop; the current dispatcher is single-shot and does not consult
+	// this field.
+	Retryable *bool
 }
 
 // Member represents a connected calculation member.
