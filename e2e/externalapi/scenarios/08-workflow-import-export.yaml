@@ -214,3 +214,172 @@ scenarios:
       - type: length
         target: "exp.workflows[name=Initial Workflow].states.pending.transitions"
         expected: 1
+
+  - id: wf-import/07-scheduled-transition-roundtrip
+    name: Scheduled transition — round-trip preservation across the three TimeoutMs pointer states
+    description: |
+      A scheduled transition (manual=false, schedule.delayMs > 0) is a
+      sibling primitive on TransitionDefinition, distinct from processors[].
+      Schedule.TimeoutMs is a *pointer* on the wire so the three semantic
+      states are distinguishable through import/export:
+        - non-nil positive ("fire by deadline; drop if late")
+        - non-nil zero     ("strictest; drop the moment we are late")
+        - absent / nil     ("no timeout; fire indefinitely late")
+      All three states must round-trip exactly — non-nil zero must be
+      preserved in the exported JSON (key present with value 0), and the
+      nil case must have no `timeoutMs` key at all.
+    data:
+      model: { name: wfSchedRT, version: 1 }
+      import_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Scheduled Round-Trip Workflow",
+          "desc":"Three scheduled transitions covering the TimeoutMs pointer states",
+          "initialState":"start","active":true,
+          "states":{
+            "start":{"transitions":[
+              {"name":"WithPositiveTimeout","next":"a","manual":false,
+               "schedule":{"delayMs":1000,"timeoutMs":90000000}},
+              {"name":"WithZeroTimeout","next":"b","manual":false,
+               "schedule":{"delayMs":1000,"timeoutMs":0}},
+              {"name":"WithoutTimeout","next":"c","manual":false,
+               "schedule":{"delayMs":1000}}
+            ]},
+            "a":{"transitions":[]},
+            "b":{"transitions":[]},
+            "c":{"transitions":[]}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfSchedRT/1/workflow/import }, body_ref: data.import_body }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfSchedRT/1/workflow/export }, capture: exp }
+    assertions:
+      - type: json_equals_normalized
+        target: exp.workflows
+        expected_ref: data.import_body.workflows
+      - type: field_equals
+        target: "exp.workflows[0].states.start.transitions[name=WithPositiveTimeout].schedule.timeoutMs"
+        expected: 90000000
+      - type: field_equals
+        target: "exp.workflows[0].states.start.transitions[name=WithZeroTimeout].schedule.timeoutMs"
+        expected: 0
+      - type: field_absent
+        target: "exp.workflows[0].states.start.transitions[name=WithoutTimeout].schedule.timeoutMs"
+
+  - id: wf-import/08-scheduled-transition-rejects
+    name: Scheduled transition — validator rejection matrix
+    description: |
+      Validator rules covering the two structural invariants on
+      TransitionSchedule:
+        1. `manual` and `schedule` are mutually exclusive — a transition
+           cannot be both human-driven and scheduled.
+        2. `schedule.delayMs` must be strictly greater than zero — zero
+           or negative delays are rejected as a configuration error
+           (an instant scheduled transition is meaningless).
+      Both sub-cases return HTTP 400 with a `VALIDATION_FAILED` error
+      class and a message substring identifying the broken rule.
+    data:
+      model: { name: wfSchedRej, version: 1 }
+      manual_plus_schedule_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Manual Plus Schedule",
+          "initialState":"start","active":true,
+          "states":{
+            "start":{"transitions":[{
+              "name":"BadManualScheduled","next":"end","manual":true,
+              "schedule":{"delayMs":1000}
+            }]},
+            "end":{"transitions":[]}
+          }
+        }]}
+      zero_delay_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Zero Delay Schedule",
+          "initialState":"start","active":true,
+          "states":{
+            "start":{"transitions":[{
+              "name":"BadZeroDelay","next":"end","manual":false,
+              "schedule":{"delayMs":0}
+            }]},
+            "end":{"transitions":[]}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfSchedRej/1/workflow/import }, body_ref: data.manual_plus_schedule_body, capture: respManual }
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfSchedRej/1/workflow/import }, body_ref: data.zero_delay_body, capture: respZero }
+    assertions:
+      - type: http_status
+        target: respManual
+        expected: 400
+      - type: error_class
+        target: respManual
+        expected: VALIDATION_FAILED
+      - type: error_message_contains
+        target: respManual
+        expected: "manual and scheduled are mutually exclusive"
+      - type: http_status
+        target: respZero
+        expected: 400
+      - type: error_class
+        target: respZero
+        expected: VALIDATION_FAILED
+      - type: error_message_contains
+        target: respZero
+        expected: "delayMs must be > 0"
+
+  - id: wf-import/09-allowcycles-bypass
+    name: Scheduled polling workflow — allowCycles=true bypasses cycle rejection
+    description: |
+      The validator rejects unguarded cycles in automated transitions to
+      prevent FSM runaway loops. A scheduled-polling pattern (S1 -fires
+      after delay-> S2 -fires after delay-> S1) is structurally a cycle,
+      but is a legitimate idiom because each hop is rate-limited by
+      `schedule.delayMs`. The import envelope therefore carries an
+      `allowCycles` flag (default false) that opts in to permitting such
+      cycles when they are intentional.
+      Default `allowCycles=false` (omitted) must reject the polling
+      workflow with HTTP 400 / VALIDATION_FAILED. Explicit
+      `allowCycles=true` must accept the same workflow.
+    data:
+      model: { name: wfAllowCycles, version: 1 }
+      polling_body_default: |
+        {"workflows":[{
+          "version":"1.0","name":"Polling Scheduled Workflow",
+          "initialState":"S1","active":true,
+          "states":{
+            "S1":{"transitions":[{"name":"to-S2","next":"S2","manual":false,
+                                  "schedule":{"delayMs":1000}}]},
+            "S2":{"transitions":[{"name":"to-S1","next":"S1","manual":false,
+                                  "schedule":{"delayMs":1000}}]}
+          }
+        }]}
+      polling_body_allow: |
+        {"allowCycles":true,"workflows":[{
+          "version":"1.0","name":"Polling Scheduled Workflow",
+          "initialState":"S1","active":true,
+          "states":{
+            "S1":{"transitions":[{"name":"to-S2","next":"S2","manual":false,
+                                  "schedule":{"delayMs":1000}}]},
+            "S2":{"transitions":[{"name":"to-S1","next":"S1","manual":false,
+                                  "schedule":{"delayMs":1000}}]}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfAllowCycles/1/workflow/import }, body_ref: data.polling_body_default, capture: respReject }
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfAllowCycles/1/workflow/import }, body_ref: data.polling_body_allow,   capture: respAccept }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfAllowCycles/1/workflow/export }, capture: exp }
+    assertions:
+      - type: http_status
+        target: respReject
+        expected: 400
+      - type: error_class
+        target: respReject
+        expected: VALIDATION_FAILED
+      - type: http_status
+        target: respAccept
+        expected: 200
+      - type: length
+        target: exp.workflows
+        expected: 1
+      - type: field_equals
+        target: "exp.workflows[0].name"
+        expected: "Polling Scheduled Workflow"

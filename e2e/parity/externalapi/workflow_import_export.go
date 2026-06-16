@@ -16,10 +16,12 @@ package externalapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 )
 
@@ -31,6 +33,9 @@ func init() {
 		parity.NamedTest{Name: "ExternalAPI_08_04_StrategyReplace", Fn: RunExternalAPI_08_04_StrategyReplace},
 		parity.NamedTest{Name: "ExternalAPI_08_05_StrategyActivate", Fn: RunExternalAPI_08_05_StrategyActivate},
 		parity.NamedTest{Name: "ExternalAPI_08_06_StrategyMerge", Fn: RunExternalAPI_08_06_StrategyMerge},
+		parity.NamedTest{Name: "ExternalAPI_08_07_ScheduledTransitionRoundtrip", Fn: RunExternalAPI_08_07_ScheduledTransitionRoundtrip},
+		parity.NamedTest{Name: "ExternalAPI_08_08_ScheduledTransitionRejects", Fn: RunExternalAPI_08_08_ScheduledTransitionRejects},
+		parity.NamedTest{Name: "ExternalAPI_08_09_AllowCyclesBypass", Fn: RunExternalAPI_08_09_AllowCyclesBypass},
 	)
 }
 
@@ -325,5 +330,265 @@ func RunExternalAPI_08_06_StrategyMerge(t *testing.T, fixture parity.BackendFixt
 		if !strings.Contains(string(raw), `"`+name+`"`) {
 			t.Errorf("MERGE missing %s workflow in export: %s", name, string(raw))
 		}
+	}
+}
+
+// rfc9457Detail extracts the "detail" string from an RFC 9457 Problem
+// Details body. Returns "" if the body is empty or doesn't parse.
+// Used by negative-path scenarios 08/08 and 08/09 to assert on the
+// human-readable validator message.
+func rfc9457Detail(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var p struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ""
+	}
+	return p.Detail
+}
+
+// RunExternalAPI_08_07_ScheduledTransitionRoundtrip — dictionary 08/07.
+// A scheduled transition (manual=false, schedule.delayMs > 0) is a
+// sibling primitive on TransitionDefinition, distinct from processors[].
+// Schedule.TimeoutMs is a pointer on the wire so the three semantic
+// states are distinguishable through import/export:
+//   - non-nil positive ("fire by deadline; drop if late")
+//   - non-nil zero     ("strictest; drop the moment we are late")
+//   - absent / nil     ("no timeout; fire indefinitely late")
+//
+// All three states must round-trip exactly — non-nil zero must be
+// preserved in the exported JSON (key present with value 0), and the
+// nil case must have no `timeoutMs` key at all.
+func RunExternalAPI_08_07_ScheduledTransitionRoundtrip(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	d := driver.NewInProcess(t, fixture)
+
+	if err := d.CreateModelFromSample("wfSchedRT", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+
+	body := `{"workflows":[{
+		"version":"1.0","name":"Scheduled Round-Trip Workflow",
+		"desc":"Three scheduled transitions covering the TimeoutMs pointer states",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[
+				{"name":"WithPositiveTimeout","next":"a","manual":false,
+				 "schedule":{"delayMs":1000,"timeoutMs":90000000}},
+				{"name":"WithZeroTimeout","next":"b","manual":false,
+				 "schedule":{"delayMs":1000,"timeoutMs":0}},
+				{"name":"WithoutTimeout","next":"c","manual":false,
+				 "schedule":{"delayMs":1000}}
+			]},
+			"a":{"transitions":[]},
+			"b":{"transitions":[]},
+			"c":{"transitions":[]}
+		}
+	}]}`
+
+	if err := d.ImportWorkflow("wfSchedRT", 1, body); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+
+	raw, err := d.ExportWorkflow("wfSchedRT", 1)
+	if err != nil {
+		t.Fatalf("ExportWorkflow: %v", err)
+	}
+
+	// Parse the exported workflow and verify the three pointer states preserved.
+	var doc struct {
+		Workflows []struct {
+			States map[string]struct {
+				Transitions []struct {
+					Name     string                 `json:"name"`
+					Schedule map[string]interface{} `json:"schedule"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse exported workflow: %v\nraw: %s", err, raw)
+	}
+	if len(doc.Workflows) == 0 {
+		t.Fatalf("export missing workflows: %s", raw)
+	}
+	startState, ok := doc.Workflows[0].States["start"]
+	if !ok {
+		t.Fatalf("export missing 'start' state: %s", raw)
+	}
+	byName := make(map[string]map[string]interface{}, 3)
+	for _, tr := range startState.Transitions {
+		byName[tr.Name] = tr.Schedule
+	}
+
+	// WithPositiveTimeout: non-nil positive → "timeoutMs": 90000000 must be present.
+	posSched := byName["WithPositiveTimeout"]
+	if posSched == nil {
+		t.Fatal("WithPositiveTimeout schedule missing from export")
+	}
+	if v, ok := posSched["timeoutMs"]; !ok {
+		t.Errorf("WithPositiveTimeout: expected timeoutMs field present; got schedule=%v", posSched)
+	} else if f, _ := v.(float64); int64(f) != 90000000 {
+		t.Errorf("WithPositiveTimeout: expected timeoutMs=90000000; got %v", v)
+	}
+
+	// WithZeroTimeout: non-nil zero → "timeoutMs": 0 must be present (NOT omitted).
+	zeroSched := byName["WithZeroTimeout"]
+	if zeroSched == nil {
+		t.Fatal("WithZeroTimeout schedule missing from export")
+	}
+	if v, ok := zeroSched["timeoutMs"]; !ok {
+		t.Errorf("WithZeroTimeout: expected timeoutMs=0 present (non-nil zero must survive omitempty); got missing in %v", zeroSched)
+	} else if f, _ := v.(float64); int64(f) != 0 {
+		t.Errorf("WithZeroTimeout: expected timeoutMs=0; got %v", v)
+	}
+
+	// WithoutTimeout: nil → no timeoutMs key.
+	withoutSched := byName["WithoutTimeout"]
+	if withoutSched == nil {
+		t.Fatal("WithoutTimeout schedule missing from export")
+	}
+	if v, ok := withoutSched["timeoutMs"]; ok {
+		t.Errorf("WithoutTimeout: expected no timeoutMs key (nil pointer should be omitted); got %v", v)
+	}
+}
+
+// RunExternalAPI_08_08_ScheduledTransitionRejects — dictionary 08/08.
+// Validator rejection matrix:
+//  1. manual+schedule mutually exclusive — HTTP 400 + VALIDATION_FAILED
+//     with "manual and scheduled are mutually exclusive" in the detail.
+//  2. schedule.delayMs <= 0 — HTTP 400 + VALIDATION_FAILED with
+//     "delayMs must be > 0" in the detail.
+func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	d := driver.NewInProcess(t, fixture)
+
+	if err := d.CreateModelFromSample("wfSchedRej", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+
+	// Sub-case 1: manual+schedule.
+	manualPlusSchedule := `{"workflows":[{
+		"version":"1.0","name":"Manual Plus Schedule",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[{
+				"name":"BadManualScheduled","next":"end","manual":true,
+				"schedule":{"delayMs":1000}
+			}]},
+			"end":{"transitions":[]}
+		}
+	}]}`
+	status, body, err := d.ImportWorkflowRaw("wfSchedRej", 1, manualPlusSchedule)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw (manual+schedule): %v", err)
+	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+	if detail := rfc9457Detail(body); !strings.Contains(detail, "manual and scheduled are mutually exclusive") {
+		t.Errorf("manual+schedule: expected detail substring 'manual and scheduled are mutually exclusive'; got %q (body=%s)", detail, string(body))
+	}
+
+	// Sub-case 2: delayMs:0.
+	zeroDelay := `{"workflows":[{
+		"version":"1.0","name":"Zero Delay Schedule",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[{
+				"name":"BadZeroDelay","next":"end","manual":false,
+				"schedule":{"delayMs":0}
+			}]},
+			"end":{"transitions":[]}
+		}
+	}]}`
+	status, body, err = d.ImportWorkflowRaw("wfSchedRej", 1, zeroDelay)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw (zero delay): %v", err)
+	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+	if detail := rfc9457Detail(body); !strings.Contains(detail, "delayMs must be > 0") {
+		t.Errorf("zero-delay: expected detail substring 'delayMs must be > 0'; got %q (body=%s)", detail, string(body))
+	}
+}
+
+// RunExternalAPI_08_09_AllowCyclesBypass — dictionary 08/09.
+// The validator rejects unguarded cycles in automated transitions to
+// prevent FSM runaway loops. A scheduled-polling pattern (S1 -> S2 -> S1)
+// is structurally a cycle but legitimate because each hop is rate-limited
+// by schedule.delayMs. The import envelope carries an `allowCycles` flag
+// (default false) that opts in to permitting such cycles.
+//
+// Default allowCycles=false (omitted) must reject the polling workflow
+// with HTTP 400 + VALIDATION_FAILED. Explicit allowCycles=true must
+// accept the same workflow.
+func RunExternalAPI_08_09_AllowCyclesBypass(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	d := driver.NewInProcess(t, fixture)
+
+	if err := d.CreateModelFromSample("wfAllowCycles", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+
+	// Sub-case 1: WITHOUT allowCycles → cycle rejection.
+	defaultBody := `{"workflows":[{
+		"version":"1.0","name":"Polling Scheduled Workflow",
+		"initialState":"S1","active":true,
+		"states":{
+			"S1":{"transitions":[{"name":"to-S2","next":"S2","manual":false,
+			                      "schedule":{"delayMs":1000}}]},
+			"S2":{"transitions":[{"name":"to-S1","next":"S1","manual":false,
+			                      "schedule":{"delayMs":1000}}]}
+		}
+	}]}`
+	status, body, err := d.ImportWorkflowRaw("wfAllowCycles", 1, defaultBody)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw (default): %v", err)
+	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+
+	// Sub-case 2: WITH allowCycles=true → accept. Driver's ImportWorkflow
+	// passes the body verbatim, so allowCycles slots in as a top-level
+	// envelope field.
+	allowBody := `{"allowCycles":true,"workflows":[{
+		"version":"1.0","name":"Polling Scheduled Workflow",
+		"initialState":"S1","active":true,
+		"states":{
+			"S1":{"transitions":[{"name":"to-S2","next":"S2","manual":false,
+			                      "schedule":{"delayMs":1000}}]},
+			"S2":{"transitions":[{"name":"to-S1","next":"S1","manual":false,
+			                      "schedule":{"delayMs":1000}}]}
+		}
+	}]}`
+	if err := d.ImportWorkflow("wfAllowCycles", 1, allowBody); err != nil {
+		t.Fatalf("ImportWorkflow (allowCycles=true): expected acceptance; got: %v", err)
+	}
+
+	raw, err := d.ExportWorkflow("wfAllowCycles", 1)
+	if err != nil {
+		t.Fatalf("ExportWorkflow: %v", err)
+	}
+	var exp struct {
+		Workflows []struct {
+			Name string `json:"name"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &exp); err != nil {
+		t.Fatalf("parse export: %v\nraw: %s", err, raw)
+	}
+	if len(exp.Workflows) != 1 {
+		t.Errorf("expected 1 workflow in export; got %d (raw=%s)", len(exp.Workflows), raw)
+	} else if exp.Workflows[0].Name != "Polling Scheduled Workflow" {
+		t.Errorf("expected workflow name 'Polling Scheduled Workflow'; got %q", exp.Workflows[0].Name)
 	}
 }

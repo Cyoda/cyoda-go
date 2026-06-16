@@ -404,6 +404,234 @@ func TestValidateImportRequest_RejectsOverlongProcessorName(t *testing.T) {
 	}
 }
 
+// --- Manual + Schedule mutual exclusion -----------------------------------
+
+func TestValidator_ManualAndSchedule_Rejected(t *testing.T) {
+	tm := int64(1000)
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{
+						Name:     "T1",
+						Next:     "S1",
+						Manual:   true,
+						Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tm},
+					},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected validation error for manual=true + schedule, got nil")
+	}
+	if !strings.Contains(err.Error(), "manual and scheduled are mutually exclusive") {
+		t.Errorf("error message missing expected substring; got: %v", err)
+	}
+}
+
+// --- Schedule.DelayMs must be > 0 -------------------------------------------
+
+func TestValidator_DelayMsZero_Rejected(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{
+						Name:     "T1",
+						Next:     "S1",
+						Manual:   false,
+						Schedule: &spi.TransitionSchedule{DelayMs: 0},
+					},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "delayMs must be > 0") {
+		t.Errorf("expected delayMs error, got: %v", err)
+	}
+}
+
+func TestValidator_DelayMsNegative_Rejected(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{
+						Name:     "T1",
+						Next:     "S1",
+						Manual:   false,
+						Schedule: &spi.TransitionSchedule{DelayMs: -100},
+					},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "delayMs must be > 0") {
+		t.Errorf("expected delayMs error, got: %v", err)
+	}
+}
+
+// --- Schedule happy paths — regression guards for TimeoutMs pointer states ------
+//
+// These four shapes MUST validate successfully. Their primary value is as a
+// regression guard against the bogus rev 1/rev 2 TimeoutMs >= DelayMs rule
+// (removed in rev 3 as nonsensical under the late-tolerance semantic).
+// No validator changes are needed — the tests document an existing acceptance
+// contract and pin that contract against future regressions.
+//
+// Semantic notes:
+//
+//   - timeoutMs absent (nil) — "no-timeout" semantic: fire indefinitely late.
+//   - timeoutMs explicit zero (&0) — "strictest" semantic: drop if any
+//     lateness is observed.
+//   - timeoutMs < delayMs (e.g. delay 1000ms, timeout 500ms) — VALID under the
+//     late-tolerance semantic. TimeoutMs is not a maximum age of the armed
+//     timer; it is the maximum lateness of actual firing vs. scheduled time.
+//     A transition armed at t=0, scheduled to fire at t=1000ms, with a
+//     timeout of 500ms, will fire at t=1000ms and be dropped only if it
+//     fires after t=1500ms.
+//   - timeoutMs > delayMs — valid under the same semantic.
+
+func TestValidator_ScheduleHappyPaths(t *testing.T) {
+	tmZero := int64(0)
+	tmSmall := int64(500)
+	tmPositive := int64(5000)
+
+	cases := []struct {
+		name string
+		sch  *spi.TransitionSchedule
+	}{
+		{"timeoutMs_absent_nil", &spi.TransitionSchedule{DelayMs: 1000}},
+		{"timeoutMs_explicit_zero", &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tmZero}},
+		{"timeoutMs_less_than_delayMs", &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tmSmall}},
+		{"timeoutMs_greater_than_delayMs", &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tmPositive}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := spi.WorkflowDefinition{
+				Version:      "1",
+				Name:         "test",
+				InitialState: "S1",
+				Active:       true,
+				States: map[string]spi.StateDefinition{
+					"S1": {
+						Transitions: []spi.TransitionDefinition{
+							{Name: "T1", Next: "S1", Manual: false, Schedule: tc.sch},
+						},
+					},
+				},
+			}
+			if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+				t.Errorf("expected acceptance for shape %q; got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// --- allowCycles bypass behaviour ----------------------------------------
+
+// cyclicWorkflow builds S1 -automated, no criterion-> S2 -automated, no
+// criterion-> S1. validateWorkflowLoops rejects this by default.
+func cyclicWorkflow(t *testing.T) spi.WorkflowDefinition {
+	t.Helper()
+	return spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "cyclic",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{{Name: "to-S2", Next: "S2", Manual: false}}},
+			"S2": {Transitions: []spi.TransitionDefinition{{Name: "to-S1", Next: "S1", Manual: false}}},
+		},
+	}
+}
+
+func TestValidator_DefaultFalse_RejectsCycle(t *testing.T) {
+	wf := cyclicWorkflow(t)
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, false); err == nil {
+		t.Fatal("expected cycle rejection at default allowCycles=false")
+	}
+}
+
+func TestValidator_AllowCyclesTrue_BypassesCycleCheck(t *testing.T) {
+	wf := cyclicWorkflow(t)
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, true); err != nil {
+		t.Errorf("expected acceptance with allowCycles=true; got: %v", err)
+	}
+}
+
+func TestValidator_AllowCyclesTrue_DoesNotBypassScheduleRules(t *testing.T) {
+	tm := int64(1000)
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "cyclic_and_incoherent",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S2", Next: "S2", Manual: true, Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tm}},
+			}},
+			"S2": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S1", Next: "S1", Manual: false},
+			}},
+		},
+	}
+	// validateImportRequest catches the structural (manual+schedule) rule,
+	// regardless of allowCycles. Note this calls validateImportRequest, not
+	// validateWorkflows — the Schedule rules live in validateWorkflowStructure.
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err == nil {
+		t.Fatal("expected manual+schedule rejection even when cyclic")
+	} else if !strings.Contains(err.Error(), "manual and scheduled are mutually exclusive") {
+		t.Errorf("expected Schedule-rule error, got: %v", err)
+	}
+}
+
+func TestValidator_AllowCyclesTrue_PollingScheduledWorkflow_Accepted(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "polling",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S2", Next: "S2", Manual: false, Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"S2": {Transitions: []spi.TransitionDefinition{
+				{Name: "to-S1", Next: "S1", Manual: false, Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+		},
+	}
+	// Default (allowCycles=false) rejects (the scheduled-polling cycle).
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, false); err == nil {
+		t.Fatal("expected cycle rejection on polling workflow at allowCycles=false")
+	}
+	// allowCycles=true accepts.
+	if err := validateWorkflows([]spi.WorkflowDefinition{wf}, true); err != nil {
+		t.Errorf("expected polling workflow to validate with allowCycles=true; got: %v", err)
+	}
+	// Structural validation (Schedule rules) also passes.
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Errorf("expected structural validation to pass on polling workflow; got: %v", err)
+	}
+}
+
 // All four named modes must be accepted.
 func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	for _, mode := range []string{

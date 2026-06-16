@@ -8903,6 +8903,16 @@ components:
           items:
             oneOf:
               - $ref: "#/components/schemas/ExternalizedProcessorDefinitionDto"
+        schedule:
+          $ref: "#/components/schemas/TransitionScheduleDto"
+          description: |
+            Optional scheduling configuration. Presence marks the transition
+            as scheduled — it fires automatically `delayMs` milliseconds
+            after the entity enters the source state. Mutually exclusive
+            with `manual=true`. The runtime scheduler is not yet
+            implemented; until it ships, the engine silently skips
+            scheduled transitions during automated cascade selection, and
+            explicit fires by name return HTTP 400 `TRANSITION_NOT_FOUND`.
         criterion:
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
@@ -8914,6 +8924,49 @@ components:
         - manual
         - name
         - next
+    TransitionScheduleDto:
+      type: object
+      description: |
+        Scheduling configuration for an automatic future state transition.
+        Presence of this object marks the parent transition as scheduled.
+        The transition is scheduled to fire at `stateEntryTime + delayMs`
+        (the "scheduledTime"). When the scheduler picks the task up for
+        execution at `executionTime`, it computes `lateness = executionTime
+        - scheduledTime`; if `lateness > timeoutMs` the task is dropped
+        and the transition is NOT attempted. `timeoutMs` gives operators
+        control over how the system should handle backlog or intermittent-
+        offline conditions: short timeoutMs values prefer freshness over
+        eventual execution; absent timeoutMs always eventually fires.
+
+        Mutually exclusive with parent transition's manual=true.
+
+        The runtime that arms and fires the timer is not yet implemented.
+        Until it ships, the engine silently skips scheduled transitions
+        during automated cascade selection, and explicit fires by name are
+        rejected with HTTP 400 TRANSITION_NOT_FOUND.
+      properties:
+        delayMs:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            Delay between source-state entry and the scheduled execution
+            time, in milliseconds. Must be a positive integer (zero or
+            negative would make this a regular automated transition).
+        timeoutMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Late-tolerance window past the scheduled execution time, in
+            milliseconds. When the scheduler picks the task up, if
+            `(executionTime - scheduledTime) > timeoutMs` the task is
+            dropped. Absent (omitted) means no timeout — the task fires
+            whenever the scheduler eventually picks it up. Explicit zero
+            is the strictest setting — drop on any lateness. Independent
+            of `delayMs`; the two measure different quantities.
+      required:
+        - delayMs
     WorkflowConfigurationDto:
       type: object
       properties:
@@ -8991,6 +9044,18 @@ components:
             - REPLACE
             - ACTIVATE
             - MERGE
+        allowCycles:
+          type: boolean
+          default: false
+          description: |
+            When true, bypasses the import-time check that rejects workflows
+            containing unguarded automated cycles (transitions with manual=false
+            and no criterion that form a closed loop). The runtime cascade
+            safety net — per-state visit cap and total cascade depth limit —
+            remains in effect and catches actual runaway at fire time. Use
+            when the cyclicity is intentional, e.g. polling patterns built on
+            scheduled transitions. Default false preserves the pre-existing
+            rejection behaviour exactly.
       required:
         - workflows
     UpdateOidcProviderRequestDto:

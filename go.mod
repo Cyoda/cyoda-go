@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.7.2-0.20260615003314-ee4b5c35693a
+	github.com/cyoda-platform/cyoda-go-spi v0.7.2-0.20260615212244-6e7ec98c210b
 	github.com/getkin/kin-openapi v0.139.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/google/uuid v1.6.0
@@ -100,9 +100,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.7.1
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.7.1
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.7.1
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.7.2-0.20260615153318-6e8c833632f7
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.7.2-0.20260615153318-6e8c833632f7
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.7.2-0.20260615153318-6e8c833632f7
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect

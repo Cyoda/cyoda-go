@@ -59,8 +59,9 @@ type workflowImportDef struct {
 
 // importRequest is the JSON body shape for workflow import.
 type importRequest struct {
-	ImportMode string              `json:"importMode"`
-	Workflows  []workflowImportDef `json:"workflows"`
+	ImportMode  string              `json:"importMode"`
+	AllowCycles bool                `json:"allowCycles,omitempty"`
+	Workflows   []workflowImportDef `json:"workflows"`
 }
 
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
@@ -180,9 +181,23 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// detection and StartNewTxOnDispatch coherence. A pre-existing
 	// stored workflow that violates these still surfaces here, matching
 	// pre-structural-validation behaviour.
-	if err := validateWorkflows(result); err != nil {
+	if err := validateWorkflows(result, req.AllowCycles); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
+	}
+
+	if req.AllowCycles {
+		workflowNames := make([]string, len(result))
+		for i, wf := range result {
+			workflowNames[i] = wf.Name
+		}
+		slog.WarnContext(r.Context(), "workflow import: cycle validation bypassed",
+			"pkg", "workflow",
+			"tenant", common.TenantFromContext(r.Context()),
+			"entityName", entityName,
+			"modelVersion", ref.ModelVersion,
+			"importMode", mode,
+			"workflows", workflowNames)
 	}
 
 	if err := wfStore.Save(r.Context(), ref, result); err != nil {

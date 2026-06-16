@@ -115,10 +115,12 @@ func validateImportRequest(workflows []spi.WorkflowDefinition) error {
 // The newer structural rules (state graph, name uniqueness,
 // ExecutionMode enum) deliberately do NOT run here — see
 // validateImportRequest for why.
-func validateWorkflows(workflows []spi.WorkflowDefinition) error {
+func validateWorkflows(workflows []spi.WorkflowDefinition, allowCycles bool) error {
 	for _, wf := range workflows {
-		if err := validateWorkflowLoops(wf); err != nil {
-			return fmt.Errorf("workflow %q: %w", wf.Name, err)
+		if !allowCycles {
+			if err := validateWorkflowLoops(wf); err != nil {
+				return fmt.Errorf("workflow %q: %w", wf.Name, err)
+			}
 		}
 		if err := validateProcessorFlags(wf); err != nil {
 			return err
@@ -193,6 +195,17 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 			if _, ok := wf.States[tr.Next]; !ok {
 				return fmt.Errorf("workflow %q state %q transition %q: next state %q is not declared in states",
 					wf.Name, stateName, tr.Name, tr.Next)
+			}
+
+			if tr.Manual && tr.Schedule != nil {
+				return fmt.Errorf(
+					"workflow %q state %q transition %q: manual and scheduled are mutually exclusive",
+					wf.Name, stateName, tr.Name)
+			}
+			if tr.Schedule != nil && tr.Schedule.DelayMs <= 0 {
+				return fmt.Errorf(
+					"workflow %q state %q transition %q: schedule.delayMs must be > 0 (got %d)",
+					wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
 			}
 
 			for _, p := range tr.Processors {
