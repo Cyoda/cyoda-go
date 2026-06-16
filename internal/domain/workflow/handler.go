@@ -82,11 +82,20 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// `transitionn` for `transitions`) that previously imported as no-op
 	// workflows. Go's decoder emits `json: unknown field "X"` which names
 	// the offending field directly in the response detail.
+	//
+	// Decode consumes exactly one JSON value, so anything after the first
+	// object's closing brace is silently ignored unless we explicitly
+	// check. dec.More() fences that trailing-garbage case — same class of
+	// "client got the shape wrong" failure as an unknown field.
 	var req importRequest
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
+		return
+	}
+	if dec.More() {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
 		return
 	}
 

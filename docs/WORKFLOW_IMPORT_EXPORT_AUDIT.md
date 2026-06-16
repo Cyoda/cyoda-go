@@ -516,7 +516,11 @@ processor sub-shapes are rejected with `400 BAD_REQUEST` and the field
 name surfaced verbatim in the response detail (Go's decoder emits
 `json: unknown field "X"`). Typos in processor config
 (e.g. `"responseTimeoutsMs"`) and forward-compat extras at the workflow
-boundary no longer vanish on import.
+boundary no longer vanish on import. The handler additionally checks
+`Decoder.More()` after `Decode` to reject trailing JSON content after
+the first object — `Decode` consumes exactly one value, so without the
+tail check a body like `{...valid request...}{junk}` would accept
+silently.
 
 The `asyncResult` / `crossoverToAsyncMs` pair — which the OpenAPI
 advertised but the SPI did not previously carry — was added to the SPI

@@ -1073,6 +1073,33 @@ func TestImport_MalformedJSONBody_Returns400(t *testing.T) {
 	}
 }
 
+// TestImport_TrailingData_Returns400 fences the json.Decoder gotcha:
+// Decode consumes exactly one JSON value and would otherwise silently
+// drop anything after the first object's closing brace. Same class of
+// "client shape mistake" as an unknown field — and the strict-decoder
+// boundary needs to surface it loudly rather than hide it behind a 200.
+func TestImport_TrailingData_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Valid request object followed by trailing JSON garbage. The first
+	// object would decode cleanly; the trailing `{"junk":1}` must trip
+	// the post-decode tail check.
+	body := `{"importMode":"MERGE","workflows":[]}{"junk":1}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for trailing JSON content, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "trailing") {
+		t.Errorf("expected detail to mention 'trailing', got: %s", detail)
+	}
+}
+
 // TestImport_UnknownField_TopLevel_Returns400 covers the strict-decoder
 // boundary: unknown fields at the top of the import-request body (e.g.
 // forward-compat extras, typos) must be rejected at the wire boundary
@@ -1134,11 +1161,18 @@ func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
 
 // TestImport_KnownSPIFields_StillAccepted is the coordination fence for
 // the strict-decoder switch: SPI fields that legitimately exist on
-// ProcessorConfig (asyncResult, crossoverToAsyncMs, retryPolicy,
-// context, calculationNodesTags, ...) must NOT be rejected as unknown.
-// If a future SPI tag drops or renames any of these on the wire, this
-// test fails loudly instead of silently breaking import for clients
-// sending the fields.
+// ProcessorConfig (asyncResult, retryPolicy, context,
+// calculationNodesTags, startNewTxOnDispatch, ...) must NOT be rejected
+// as unknown. If a future SPI tag drops or renames any of these on the
+// wire, this test fails loudly instead of silently breaking import for
+// clients sending the fields.
+//
+// crossoverToAsyncMs is exercised in the reject-at-import e2e tests
+// (TestE2E_CrossoverToAsyncMsRejectedAtImport in async_result_import_reject_test.go);
+// asyncResult=true similarly. Those would also start failing on
+// BAD_REQUEST instead of VALIDATION_FAILED if the SPI dropped either
+// field — the secondary fence — so the two fields the validator
+// rejects unconditionally still have decoder coverage.
 func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
@@ -1146,9 +1180,11 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 	// asyncResult=false + crossoverToAsyncMs omitted is the validator-
 	// accepted combination (see validate_import_test.go); both live on
 	// ProcessorConfig (the processor's `config` sub-shape). Other
-	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags
-	// — are exercised here at their valid defaults so the strict decoder
-	// must pass them through unchanged.
+	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags,
+	// startNewTxOnDispatch — are exercised here at their valid defaults
+	// (startNewTxOnDispatch=true requires COMMIT_BEFORE_DISPATCH, so the
+	// fence uses false with SYNC) so the strict decoder must pass them
+	// through unchanged.
 	body := `{
 		"importMode":"REPLACE",
 		"workflows":[{
@@ -1162,7 +1198,8 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 							"asyncResult":false,
 							"retryPolicy":"NONE",
 							"context":"tenant-scoped",
-							"calculationNodesTags":"workers"
+							"calculationNodesTags":"workers",
+							"startNewTxOnDispatch":false
 						}
 					}]
 				}]},
