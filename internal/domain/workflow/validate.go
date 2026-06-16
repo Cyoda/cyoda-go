@@ -219,8 +219,9 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 				}
 				// M6 (audit) — asyncResult=true requests a runtime semantic
 				// this backend does not implement; reject rather than
-				// silently degrade to sync dispatch. Spec §5.4 of
-				// docs/superpowers/specs/2026-06-15-issue-261-...
+				// silently degrade to sync dispatch. Consuming engines that
+				// cannot honour async-result semantics must reject at the
+				// configuration-import boundary.
 				if p.Config.AsyncResult != nil && *p.Config.AsyncResult {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: asyncResult=true is not supported on this backend (async/crossover semantics are not implemented)",
@@ -228,8 +229,10 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 				}
 				// M6 (audit) — crossoverToAsyncMs is a tuner for the
 				// asyncResult semantic. With that semantic unsupported,
-				// any non-nil value has no honourable home. Includes the
-				// orphan (no asyncResult=true) and the paired cases.
+				// any non-nil value has no honourable home. Defence in
+				// depth — covers both the orphan (no asyncResult=true)
+				// and the paired cases that the AsyncResult rule above
+				// would have rejected first.
 				if p.Config.CrossoverToAsyncMs != nil {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: crossoverToAsyncMs is not supported on this backend (async/crossover semantics are not implemented)",

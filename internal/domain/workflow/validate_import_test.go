@@ -7,9 +7,9 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Tests for the structural validator rules added in issue #255 (audit
-// §H4, §H6, §M4). Each sub-test pins a single rule so a regression is
-// localised to the rule it breaks.
+// Tests for the structural validator rules covering audit §H4, §H6, and
+// §M4. Each sub-test pins a single rule so a regression is localised to
+// the rule it breaks.
 //
 // Conventions:
 //   - All "good" baselines use distinct state names so a single-rule
@@ -659,7 +659,7 @@ func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	}
 }
 
-// --- AsyncResult + CrossoverToAsyncMs reject-at-import (#261) ------------
+// --- AsyncResult + CrossoverToAsyncMs reject-at-import (audit §M6) ------------
 
 // asyncResultRejectFixture builds a minimal valid two-state workflow with
 // one externalized SYNC processor on the only transition, then lets the
@@ -778,6 +778,9 @@ func TestValidator_AsyncFalseAndCrossover_CrossoverRuleFires(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "crossoverToAsyncMs is not supported") {
 		t.Errorf("expected crossover message when async is false; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "asyncResult") {
+		t.Errorf("async-related message should not surface when asyncResult=false; got: %v", err)
 	}
 }
 
