@@ -64,7 +64,7 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 // authRequest creates an authenticated HTTP request.
 func authRequest(t *testing.T, method, path string, body io.Reader) *http.Request {
 	t.Helper()
-	token := getToken(t, "test-client", "test-secret")
+	token := getToken(t, "testclient", "testsecret")
 	req, err := e2eNewRequest(t, method, serverURL+path, body)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)

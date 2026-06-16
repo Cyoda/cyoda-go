@@ -51,6 +51,7 @@ type App struct {
 	transactionManager spi.TransactionManager
 	authService        contract.AuthenticationService
 	authzService       contract.AuthorizationService
+	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
 	searchService      *search.SearchService
 	auditService       contract.AuditService
@@ -254,6 +255,7 @@ func New(cfg Config) *App {
 			validator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
 		a.authService = auth.NewDelegatingAuthenticator(validator)
+		a.authSvc = authSvc
 
 		// Bootstrap M2M client if configured.
 		// validateBootstrapConfig (called above) guarantees that in jwt mode,
@@ -600,6 +602,11 @@ func (a *App) TransactionManager() spi.TransactionManager { return a.transaction
 func (a *App) AuthenticationService() contract.AuthenticationService {
 	return a.authService
 }
+
+// AuthService returns the underlying *auth.AuthService when JWT IAM mode is
+// active, or nil when running in mock IAM mode. Exposed for test-mode seeding
+// of M2M clients across tenants without going through the public HTTP surface.
+func (a *App) AuthService() *auth.AuthService { return a.authSvc }
 func (a *App) AuthorizationService() contract.AuthorizationService {
 	return a.authzService
 }

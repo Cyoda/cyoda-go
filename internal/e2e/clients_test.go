@@ -13,7 +13,7 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
-// --- Test cases for the /clients OpenAPI surface (issue #282 sub-issue) ---
+// --- Test cases for the /clients OpenAPI surface ---
 //
 // All requests go through the chi router via adminRequest (bootstrap
 // admin token). The M2M-admin-role feature flag is enabled in TestMain
@@ -33,16 +33,16 @@ func TestE2E_Clients_ListEmpty(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// The bootstrap client `test-client` should appear with roles
+	// The bootstrap client `testclient` should appear with roles
 	// including ROLE_ADMIN (set in TestMain via CYODA_BOOTSTRAP_ROLES default).
 	found := false
 	for _, c := range list {
-		if c.ClientId == "test-client" {
+		if c.ClientId == "testclient" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("bootstrap client test-client missing from list: %+v", list)
+		t.Errorf("bootstrap client testclient missing from list: %+v", list)
 	}
 }
 

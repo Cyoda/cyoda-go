@@ -271,9 +271,13 @@ func parseBasicAuth(r *http.Request) (clientID, secret string, ok bool) {
 
 func writeTokenError(w http.ResponseWriter, status int, errCode, description string) {
 	resp := map[string]string{"error": errCode}
-	if description != "" {
-		resp["error_description"] = description
+	if description == "" {
+		// OpenAPI declares error_description as a required field on the 401
+		// response. Fall back to the OAuth2 error code so the wire shape always
+		// satisfies the spec without leaking internal state.
+		description = errCode
 	}
+	resp["error_description"] = description
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(resp)

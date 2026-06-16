@@ -33,6 +33,7 @@ var (
 	dbPool          *pgxpool.Pool                     // direct DB access for verification queries
 	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
+	testApp         *app.App // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
 )
 
 func TestMain(m *testing.M) {
@@ -106,8 +107,8 @@ func TestMain(m *testing.M) {
 	cfg.IAM.JWTIssuer = "cyoda-test"
 	cfg.IAM.JWTExpiry = 3600
 	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientID:     "testclient",
+		ClientSecret: "testsecret",
 		TenantID:     "test-tenant",
 		UserID:       "test-admin",
 		Roles:        "ROLE_ADMIN,ROLE_M2M",
@@ -134,7 +135,7 @@ func TestMain(m *testing.M) {
 	srvPort := srv.Listener.Addr().(*net.TCPAddr).Port
 	cfg.HTTPPort = srvPort
 
-	a := app.New(cfg)
+	testApp = app.New(cfg)
 
 	// Build the conformance validator from the embedded spec. Wraps the
 	// production handler; failures collected end-to-end and reported by
@@ -154,7 +155,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("build validator: %v", err)
 	}
-	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(a.Handler())
+	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(testApp.Handler())
 
 	// Capture the full operationId set so the conformance test can compute
 	// the uncovered list at end-of-suite.
