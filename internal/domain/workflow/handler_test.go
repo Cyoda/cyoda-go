@@ -1259,11 +1259,12 @@ func TestImport_OversizedBody_Rejected(t *testing.T) {
 
 // TestImport_MultipleCycles_RejectsWithFirstCycle covers the
 // definite-loop detector against a workflow with two distinct
-// unguarded automated cycles. validateWorkflowLoops iterates wf.States
-// in Go map order, so the *specific* cycle reported is
-// non-deterministic; this test asserts only that AT LEAST one of the
-// two cycle paths is named in the error detail, which is enough as a
-// regression fence and stays deterministic across runs.
+// unguarded automated cycles. validateWorkflowLoops sorts state names
+// before iteration, so the reported cycle is deterministic — the
+// lexicographically-first cycle (A → B → A) is always reported.
+// TestValidateWorkflowLoops_DeterministicReporting in
+// validate_import_test.go is the dedicated determinism fence; this
+// test asserts the end-to-end HTTP rendering of the same property.
 func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
@@ -1271,7 +1272,8 @@ func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	// Two disjoint unguarded automated cycles:
 	//   Cycle 1: A → B → A
 	//   Cycle 2: C → D → C
-	// The validator returns whichever it finds first.
+	// The validator sorts state names before iteration, so the
+	// lexicographically-first cycle (A → B → A) is always returned.
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
@@ -1297,12 +1299,15 @@ func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	if !strings.Contains(detail, "infinite loop") {
 		t.Errorf("detail must mention 'infinite loop', got: %s", detail)
 	}
-	// Assert at least one of the two cycles is reported. The validator's
-	// map-iteration order can pick either; both are valid findings.
-	cycle1 := strings.Contains(detail, "A -> B") || strings.Contains(detail, "B -> A")
-	cycle2 := strings.Contains(detail, "C -> D") || strings.Contains(detail, "D -> C")
-	if !cycle1 && !cycle2 {
-		t.Errorf("detail must name at least one of the two cycles, got: %s", detail)
+	// Tightened post-determinism-fix: the validator now sorts state
+	// names before DFS, so the lexicographically-first cycle (A → B → A)
+	// is always reported. The C/D cycle would only be returned if A/B
+	// were absent.
+	if !strings.Contains(detail, "A -> B -> A") {
+		t.Errorf("detail must report the lexicographically-first cycle 'A -> B -> A', got: %s", detail)
+	}
+	if strings.Contains(detail, "C -> D") || strings.Contains(detail, "D -> C") {
+		t.Errorf("detail must not name the C/D cycle (A/B comes first lexicographically); got: %s", detail)
 	}
 }
 

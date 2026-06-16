@@ -14,20 +14,43 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// descLogPreviewBytes caps the per-workflow `desc` field in the audit-log
+// descLogPreviewRunes caps the per-workflow `desc` field in the audit-log
 // digest. Description is operator-supplied free text with no upstream
 // length cap; emitting it verbatim risks unbounded log lines from a
-// multi-KB paste. 200 bytes matches the convention used by
+// multi-KB paste. 200 runes matches the convention used by
 // logging.PayloadPreview for DEBUG-level payload previews.
-const descLogPreviewBytes = 200
+const descLogPreviewRunes = 200
 
-// truncateForLog returns s clipped to maxLen runes with a "..." suffix
-// when truncation occurred. Used for audit-log field previews.
-func truncateForLog(s string, maxLen int) string {
-	if len(s) <= maxLen {
+// truncateForLog returns s clipped to maxRunes runes (not bytes) with a
+// "..." suffix when truncation occurred. Used for audit-log field
+// previews. Rune-aware so multi-byte UTF-8 characters (CJK, emoji,
+// accented Latin) are never split mid-codepoint — slicing a UTF-8 string
+// at a byte offset that falls inside a multi-byte sequence produces
+// invalid UTF-8, which downstream slog handlers or log viewers may
+// reject or mangle.
+func truncateForLog(s string, maxRunes int) string {
+	// Fast path: byte length is a cheap upper bound on rune count
+	// (every rune is at least one byte). When len(s) ≤ maxRunes the
+	// rune count is also ≤ maxRunes, so no truncation is needed.
+	if len(s) <= maxRunes {
 		return s
 	}
-	return s[:maxLen] + "..."
+	// Walk runes. for ... range s yields the byte offset of each rune
+	// start; once we've seen maxRunes runes, slicing at the next start
+	// gives exactly maxRunes runes worth of bytes and the cut sits on
+	// a valid UTF-8 boundary.
+	count := 0
+	for i := range s {
+		if count == maxRunes {
+			return s[:i] + "..."
+		}
+		count++
+	}
+	// Total rune count ≤ maxRunes despite len(s) > maxRunes — only
+	// possible if the byte-length fast path didn't apply but the string
+	// contained multi-byte runes that pushed bytes above the limit
+	// while keeping runes at or below it.
+	return s
 }
 
 // Handler implements the workflow import/export HTTP endpoints.
@@ -246,7 +269,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	for i, wf := range incoming {
 		wfDigest[i] = map[string]string{
 			"name": wf.Name,
-			"desc": truncateForLog(wf.Description, descLogPreviewBytes),
+			"desc": truncateForLog(wf.Description, descLogPreviewRunes),
 		}
 	}
 	logAttrs := []any{

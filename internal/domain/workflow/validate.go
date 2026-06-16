@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -357,7 +358,17 @@ func validateWorkflowLoops(wf spi.WorkflowDefinition) error {
 		return nil
 	}
 
+	// Sort state names before iteration so the cycle reported by the
+	// detector is deterministic across runs. Go map iteration is
+	// randomised per process, which previously made the reported cycle
+	// vary across CI runs on a workflow with multiple disjoint cycles.
+	// Lexicographic order is an arbitrary but stable choice.
+	stateNames := make([]string, 0, len(wf.States))
 	for stateName := range wf.States {
+		stateNames = append(stateNames, stateName)
+	}
+	sort.Strings(stateNames)
+	for _, stateName := range stateNames {
 		if color[stateName] == white {
 			if err := dfs(stateName); err != nil {
 				return err
