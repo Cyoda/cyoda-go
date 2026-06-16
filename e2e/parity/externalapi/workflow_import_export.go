@@ -36,6 +36,8 @@ func init() {
 		parity.NamedTest{Name: "ExternalAPI_08_07_ScheduledTransitionRoundtrip", Fn: RunExternalAPI_08_07_ScheduledTransitionRoundtrip},
 		parity.NamedTest{Name: "ExternalAPI_08_08_ScheduledTransitionRejects", Fn: RunExternalAPI_08_08_ScheduledTransitionRejects},
 		parity.NamedTest{Name: "ExternalAPI_08_09_AllowCyclesBypass", Fn: RunExternalAPI_08_09_AllowCyclesBypass},
+		parity.NamedTest{Name: "ExternalAPI_08_10_AsyncResultTrueRejects", Fn: RunExternalAPI_08_10_AsyncResultTrueRejects},
+		parity.NamedTest{Name: "ExternalAPI_08_11_CrossoverOrphanRejects", Fn: RunExternalAPI_08_11_CrossoverOrphanRejects},
 	)
 }
 
@@ -590,5 +592,81 @@ func RunExternalAPI_08_09_AllowCyclesBypass(t *testing.T, fixture parity.Backend
 		t.Errorf("expected 1 workflow in export; got %d (raw=%s)", len(exp.Workflows), raw)
 	} else if exp.Workflows[0].Name != "Polling Scheduled Workflow" {
 		t.Errorf("expected workflow name 'Polling Scheduled Workflow'; got %q", exp.Workflows[0].Name)
+	}
+}
+
+// RunExternalAPI_08_10_AsyncResultTrueRejects — dictionary 08/10.
+// Workflow import with asyncResult=true on a processor config is
+// rejected with HTTP 400 + VALIDATION_FAILED and a detail containing
+// "asyncResult=true is not supported".
+func RunExternalAPI_08_10_AsyncResultTrueRejects(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	d := driver.NewInProcess(t, fixture)
+
+	if err := d.CreateModelFromSample("wfAsyncRej", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+
+	body := `{"workflows":[{
+		"version":"1.0","name":"Async True Reject",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[{
+				"name":"bad","next":"end","manual":false,
+				"processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+					"config":{"asyncResult":true}}]
+			}]},
+			"end":{"transitions":[]}
+		}
+	}]}`
+
+	status, respBody, err := d.ImportWorkflowRaw("wfAsyncRej", 1, body)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw: %v", err)
+	}
+	errorcontract.Match(t, status, respBody, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+	if detail := rfc9457Detail(respBody); !strings.Contains(detail, "asyncResult=true is not supported") {
+		t.Errorf("asyncResult=true: expected detail substring 'asyncResult=true is not supported'; got %q (body=%s)", detail, string(respBody))
+	}
+}
+
+// RunExternalAPI_08_11_CrossoverOrphanRejects — dictionary 08/11.
+// Workflow import with crossoverToAsyncMs set without asyncResult=true
+// is rejected with HTTP 400 + VALIDATION_FAILED and a detail containing
+// "crossoverToAsyncMs is not supported".
+func RunExternalAPI_08_11_CrossoverOrphanRejects(t *testing.T, fixture parity.BackendFixture) {
+	t.Helper()
+	d := driver.NewInProcess(t, fixture)
+
+	if err := d.CreateModelFromSample("wfCrossOrphanRej", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+
+	body := `{"workflows":[{
+		"version":"1.0","name":"Crossover Orphan Reject",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[{
+				"name":"bad","next":"end","manual":false,
+				"processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+					"config":{"crossoverToAsyncMs":5000}}]
+			}]},
+			"end":{"transitions":[]}
+		}
+	}]}`
+
+	status, respBody, err := d.ImportWorkflowRaw("wfCrossOrphanRej", 1, body)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw: %v", err)
+	}
+	errorcontract.Match(t, status, respBody, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+	if detail := rfc9457Detail(respBody); !strings.Contains(detail, "crossoverToAsyncMs is not supported") {
+		t.Errorf("crossover-orphan: expected detail substring 'crossoverToAsyncMs is not supported'; got %q (body=%s)", detail, string(respBody))
 	}
 }

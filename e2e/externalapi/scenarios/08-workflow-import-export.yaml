@@ -383,3 +383,77 @@ scenarios:
       - type: field_equals
         target: "exp.workflows[0].name"
         expected: "Polling Scheduled Workflow"
+
+  - id: wf-import/10-asyncresult-true-rejects
+    name: asyncResult=true — rejected at import
+    description: |
+      The async-result semantic (suspend cascade transaction, resume on
+      deferred async-result delivery, optional crossover timer) is gated
+      on storage-engine work-recovery primitives this backend does not
+      provide. Workflow import rejects any processor that sets
+      `asyncResult=true` with HTTP 400 and a `VALIDATION_FAILED` error
+      class. The error message names the offending workflow / state /
+      transition / processor and the rule violated.
+    data:
+      model: { name: wfAsyncRej, version: 1 }
+      async_true_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Async True Reject",
+          "initialState":"start","active":true,
+          "states":{
+            "start":{"transitions":[{
+              "name":"bad","next":"end","manual":false,
+              "processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+                "config":{"asyncResult":true}}]
+            }]},
+            "end":{"transitions":[]}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfAsyncRej/1/workflow/import }, body_ref: data.async_true_body, capture: respAsync }
+    assertions:
+      - type: http_status
+        target: respAsync
+        expected: 400
+      - type: error_class
+        target: respAsync
+        expected: VALIDATION_FAILED
+      - type: error_message_contains
+        target: respAsync
+        expected: "asyncResult=true is not supported"
+
+  - id: wf-import/11-crossover-orphan-rejects
+    name: crossoverToAsyncMs without asyncResult=true — rejected at import
+    description: |
+      `crossoverToAsyncMs` is a tuner for the async-result semantic. With
+      that semantic unsupported on this backend, any non-nil
+      `crossoverToAsyncMs` (including zero, including the orphan case
+      where `asyncResult` is absent or false) is rejected with HTTP 400
+      `VALIDATION_FAILED`.
+    data:
+      model: { name: wfCrossOrphanRej, version: 1 }
+      crossover_orphan_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Crossover Orphan Reject",
+          "initialState":"start","active":true,
+          "states":{
+            "start":{"transitions":[{
+              "name":"bad","next":"end","manual":false,
+              "processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+                "config":{"crossoverToAsyncMs":5000}}]
+            }]},
+            "end":{"transitions":[]}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfCrossOrphanRej/1/workflow/import }, body_ref: data.crossover_orphan_body, capture: respCrossover }
+    assertions:
+      - type: http_status
+        target: respCrossover
+        expected: 400
+      - type: error_class
+        target: respCrossover
+        expected: VALIDATION_FAILED
+      - type: error_message_contains
+        target: respCrossover
+        expected: "crossoverToAsyncMs is not supported"
