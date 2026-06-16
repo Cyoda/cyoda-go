@@ -271,12 +271,9 @@ func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tID := tenantFromCtx(r)
-	all := h.m2mClientStore.List()
-	out := make([]genapi.TechnicalUserDto, 0, len(all))
-	for _, c := range all {
-		if !clientBelongsToTenant(c, tID) {
-			continue
-		}
+	clients := h.m2mClientStore.List(tID)
+	out := make([]genapi.TechnicalUserDto, 0, len(clients))
+	for _, c := range clients {
 		out = append(out, toTechnicalUserDto(c))
 	}
 	w.Header().Set("Content-Type", "application/json")

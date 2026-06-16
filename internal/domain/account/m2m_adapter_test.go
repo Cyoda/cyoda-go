@@ -315,8 +315,8 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeFeatureDisabled)
 	}
 	// No store record should have been created.
-	if len(h.m2mClientStore.List()) != 0 {
-		t.Errorf("store should remain empty on FEATURE_DISABLED, got %d records", len(h.m2mClientStore.List()))
+	if len(h.m2mClientStore.List(spi.TenantID(tenantA))) != 0 {
+		t.Errorf("store should remain empty on FEATURE_DISABLED, got %d records", len(h.m2mClientStore.List(spi.TenantID(tenantA))))
 	}
 }
 
@@ -384,8 +384,8 @@ func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 		}
 		seen[creds.ClientId] = true
 	}
-	if len(h.m2mClientStore.List()) != n {
-		t.Errorf("store size: got %d want %d (some Create silently overwrote?)", len(h.m2mClientStore.List()), n)
+	if len(h.m2mClientStore.List(spi.TenantID(tenantA))) != n {
+		t.Errorf("store size: got %d want %d (some Create silently overwrote?)", len(h.m2mClientStore.List(spi.TenantID(tenantA))), n)
 	}
 }
 

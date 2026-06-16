@@ -90,7 +90,11 @@ type M2MClientStore interface {
 	Create(clientID string, tenantID spi.TenantID, userID string, roles []string) (string, error)
 	CreateWithSecret(clientID string, tenantID spi.TenantID, userID, secret string, roles []string) error
 	Get(clientID string) (*M2MClient, error)
-	List() []*M2MClient
+	// List returns all M2M clients within the given tenant. The store is
+	// responsible for filtering — future persistent implementations can
+	// push this down to the backend, avoiding loading the whole cluster
+	// into memory for what the caller already knows is a per-tenant query.
+	List(tenantID spi.TenantID) []*M2MClient
 	Delete(clientID string) error
 	ResetSecret(clientID string) (string, error)
 	VerifySecret(clientID, plaintext string) (bool, error)
@@ -556,12 +560,15 @@ func (s *InMemoryM2MClientStore) Get(clientID string) (*M2MClient, error) {
 	return &copied, nil
 }
 
-// List returns all M2M clients.
-func (s *InMemoryM2MClientStore) List() []*M2MClient {
+// List returns all M2M clients belonging to tenantID.
+func (s *InMemoryM2MClientStore) List(tenantID spi.TenantID) []*M2MClient {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*M2MClient, 0, len(s.clients))
 	for _, c := range s.clients {
+		if c.TenantID != tenantID {
+			continue
+		}
 		copied := *c
 		copied.Roles = make([]string, len(c.Roles))
 		copy(copied.Roles, c.Roles)

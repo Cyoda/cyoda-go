@@ -370,10 +370,14 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 		t.Fatalf("Create client-2 failed: %v", err)
 	}
 
-	// List
-	all := store.List()
-	if len(all) != 2 {
-		t.Errorf("expected 2 clients, got %d", len(all))
+	// List — scoped per tenant; each tenant sees only its own client.
+	listA := store.List(spi.TenantID("tenant-abc"))
+	if len(listA) != 1 || listA[0].ClientID != "client-1" {
+		t.Errorf("tenant-abc: expected [client-1], got %v", listA)
+	}
+	listXYZ := store.List(spi.TenantID("tenant-xyz"))
+	if len(listXYZ) != 1 || listXYZ[0].ClientID != "client-2" {
+		t.Errorf("tenant-xyz: expected [client-2], got %v", listXYZ)
 	}
 
 	// VerifySecret — correct
@@ -435,9 +439,12 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 	if err == nil {
 		t.Fatal("expected error after Delete, got nil")
 	}
-	all = store.List()
-	if len(all) != 1 {
-		t.Errorf("expected 1 client after delete, got %d", len(all))
+	// After deleting client-1 (tenant-abc), that tenant is empty; tenant-xyz is unchanged.
+	if got := store.List(spi.TenantID("tenant-abc")); len(got) != 0 {
+		t.Errorf("tenant-abc: expected 0 clients after delete, got %d", len(got))
+	}
+	if got := store.List(spi.TenantID("tenant-xyz")); len(got) != 1 {
+		t.Errorf("tenant-xyz: expected 1 client after delete, got %d", len(got))
 	}
 
 	// Delete not found
