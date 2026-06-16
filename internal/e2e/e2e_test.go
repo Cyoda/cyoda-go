@@ -115,6 +115,7 @@ func TestMain(m *testing.M) {
 	// Enable trusted-key feature for E2E coverage. The KV store backing the
 	// trusted-key store is wired in app.New, so this must be set before that call.
 	cfg.IAM.TrustedKeyRegistrationEnabled = true
+	cfg.IAM.M2MAdminRoleEnabled = true
 
 	// In-process processor/criteria service for workflow E2E tests.
 	procSvc = localproc.New()
