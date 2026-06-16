@@ -173,6 +173,17 @@ Import-time validation rejects any `executionMode` value not in the list above (
 - `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
 - `retryPolicy` — string — retry policy name (plugin/platform-defined); empty means no retry
 - `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
+- `asyncResult` — boolean (pointer; nil-default) — declared in the
+  OpenAPI for Cloud parity; the runtime does **not** implement
+  async-result semantics on this backend. Imports that set
+  `asyncResult: true` are rejected with `400 VALIDATION_FAILED`. The
+  explicit `asyncResult: false` and absent cases are accepted and
+  round-tripped.
+- `crossoverToAsyncMs` — int64 (pointer; nil-default) — crossover
+  delay (ms) for the async-result semantic; declared in the OpenAPI
+  for Cloud parity; the runtime does **not** implement it. Imports
+  that set any non-nil value are rejected with `400 VALIDATION_FAILED`,
+  including the orphan case where `asyncResult` is absent or false.
 
 ## SCHEDULED TRANSITIONS
 
