@@ -58,7 +58,7 @@ func decodeErrCode(t *testing.T, body []byte) string {
 	return code
 }
 
-// --- Case 1: List, admin, empty store ---
+// --- List, admin, empty store ---
 
 func TestListTechnicalUsers_AdminEmpty_Returns200EmptyArray(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -76,7 +76,7 @@ func TestListTechnicalUsers_AdminEmpty_Returns200EmptyArray(t *testing.T) {
 	}
 }
 
-// --- Case 2: List, admin, mixed-tenant store, returns caller's tenant only ---
+// --- List, admin, mixed-tenant store, returns caller's tenant only ---
 
 func TestListTechnicalUsers_AdminMixedTenant_FiltersOnCallerTenant(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -120,7 +120,7 @@ func TestListTechnicalUsers_AdminMixedTenant_FiltersOnCallerTenant(t *testing.T)
 	}
 }
 
-// --- Case 3: List, non-admin → 403 FORBIDDEN ---
+// --- List, non-admin → 403 FORBIDDEN ---
 
 func TestListTechnicalUsers_NonAdmin_Returns403Forbidden(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -137,7 +137,7 @@ func TestListTechnicalUsers_NonAdmin_Returns403Forbidden(t *testing.T) {
 	}
 }
 
-// --- Case 4: List, no user context → 401 UNAUTHORIZED ---
+// --- List, no user context → 401 UNAUTHORIZED ---
 
 func TestListTechnicalUsers_NoUserContext_Returns401Unauthorized(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -154,7 +154,7 @@ func TestListTechnicalUsers_NoUserContext_Returns401Unauthorized(t *testing.T) {
 	}
 }
 
-// --- Case 5: List, nil store → 501 NOT_IMPLEMENTED ---
+// --- List, nil store → 501 NOT_IMPLEMENTED ---
 
 func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
@@ -172,7 +172,7 @@ func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 	}
 }
 
-// --- Case 6: Create, admin, withAdminRole absent ---
+// --- Create, admin, withAdminRole absent ---
 
 func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -217,7 +217,7 @@ func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T)
 	}
 }
 
-// --- Case 7: Create, admin, withAdminRole=true, flag on ---
+// --- Create, admin, withAdminRole=true, flag on ---
 
 func TestCreateTechnicalUser_AdminWithAdminRoleFlagOn_AddsAdminRole(t *testing.T) {
 	h := newM2MAdapterFixture(t, true)
@@ -250,7 +250,7 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOn_AddsAdminRole(t *testing.T
 	}
 }
 
-// --- Case 8: Create, admin, withAdminRole=true, flag OFF ---
+// --- Create, admin, withAdminRole=true, flag OFF ---
 
 func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -272,7 +272,7 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled
 	}
 }
 
-// --- Case 9: Create, admin, withAdminRole=false (explicit) ---
+// --- Create, admin, withAdminRole=false (explicit) ---
 
 func TestCreateTechnicalUser_AdminWithAdminRoleFalse_NoAdminRole(t *testing.T) {
 	h := newM2MAdapterFixture(t, true)
@@ -295,7 +295,7 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFalse_NoAdminRole(t *testing.T) {
 	}
 }
 
-// --- Case 10: Create, non-admin → 403 FORBIDDEN ---
+// --- Create, non-admin → 403 FORBIDDEN ---
 
 func TestCreateTechnicalUser_NonAdmin_Returns403Forbidden(t *testing.T) {
 	h := newM2MAdapterFixture(t, true)
@@ -309,8 +309,15 @@ func TestCreateTechnicalUser_NonAdmin_Returns403Forbidden(t *testing.T) {
 	}
 }
 
-// --- Case 12: Repeated creates produce 100 distinct clientIds ---
+// --- Repeated creates produce 100 distinct clientIds ---
 
+// Note: the collision retry branch inside CreateTechnicalUser is not
+// directly exercised here — crypto/rand cannot be mocked from a black-box
+// test without restructuring the adapter. This probe gives a softer
+// assertion: 100 sequential creates produce 100 distinct stored clientIds
+// with no silent overwrites. If the retry logic regresses (e.g., a
+// `for attempt := 0; attempt < 0; ...` typo), this catches it via the
+// final store-size check rather than via observation of the branch.
 func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
 	seen := map[string]bool{}
@@ -334,7 +341,7 @@ func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 	}
 }
 
-// --- Case 13: Delete, admin, owned ---
+// --- Delete, admin, owned ---
 
 func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -364,7 +371,7 @@ func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
 	}
 }
 
-// --- Case 14: Delete, admin, cross-tenant target ---
+// --- Delete, admin, cross-tenant target ---
 
 func TestDeleteTechnicalUser_AdminCrossTenant_Returns404AndPreservesRecord(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -388,7 +395,7 @@ func TestDeleteTechnicalUser_AdminCrossTenant_Returns404AndPreservesRecord(t *te
 	}
 }
 
-// --- Case 15: Delete, admin, unknown id ---
+// --- Delete, admin, unknown id ---
 
 func TestDeleteTechnicalUser_AdminUnknown_Returns404(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -405,7 +412,7 @@ func TestDeleteTechnicalUser_AdminUnknown_Returns404(t *testing.T) {
 	}
 }
 
-// --- Case 16: Delete, admin, malformed id (hyphen) ---
+// --- Delete, admin, malformed id (hyphen) ---
 
 func TestDeleteTechnicalUser_AdminMalformedId_Returns400(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -422,7 +429,7 @@ func TestDeleteTechnicalUser_AdminMalformedId_Returns400(t *testing.T) {
 	}
 }
 
-// --- Case 17: Delete, admin, empty id (trailing slash) ---
+// --- Delete, admin, empty id (trailing slash) ---
 
 func TestDeleteTechnicalUser_AdminEmptyId_Returns400(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -436,7 +443,7 @@ func TestDeleteTechnicalUser_AdminEmptyId_Returns400(t *testing.T) {
 	}
 }
 
-// --- Case 18: Delete, non-admin → 403 ---
+// --- Delete, non-admin → 403 ---
 
 func TestDeleteTechnicalUser_NonAdmin_Returns403(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -453,7 +460,7 @@ func TestDeleteTechnicalUser_NonAdmin_Returns403(t *testing.T) {
 	}
 }
 
-// --- Case 19: Reset, admin, owned ---
+// --- Reset, admin, owned ---
 
 func TestResetTechnicalUserSecret_AdminOwned_Returns200AndRotatesSecret(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -496,7 +503,7 @@ func TestResetTechnicalUserSecret_AdminOwned_Returns200AndRotatesSecret(t *testi
 	}
 }
 
-// --- Case 20: Reset, cross-tenant ---
+// --- Reset, cross-tenant ---
 
 func TestResetTechnicalUserSecret_AdminCrossTenant_Returns404AndPreservesSecret(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -519,7 +526,7 @@ func TestResetTechnicalUserSecret_AdminCrossTenant_Returns404AndPreservesSecret(
 	}
 }
 
-// --- Case 21: Reset, unknown id ---
+// --- Reset, unknown id ---
 
 func TestResetTechnicalUserSecret_AdminUnknown_Returns404(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -532,7 +539,7 @@ func TestResetTechnicalUserSecret_AdminUnknown_Returns404(t *testing.T) {
 	}
 }
 
-// --- Case 22: Reset, malformed id ---
+// --- Reset, malformed id ---
 
 func TestResetTechnicalUserSecret_AdminMalformedId_Returns400(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -545,7 +552,7 @@ func TestResetTechnicalUserSecret_AdminMalformedId_Returns400(t *testing.T) {
 	}
 }
 
-// --- Case 23: Reset, empty id ---
+// --- Reset, empty id ---
 
 func TestResetTechnicalUserSecret_AdminEmptyId_Returns400(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -558,7 +565,7 @@ func TestResetTechnicalUserSecret_AdminEmptyId_Returns400(t *testing.T) {
 	}
 }
 
-// --- Case 24: Reset, non-admin → 403 ---
+// --- Reset, non-admin → 403 ---
 
 func TestResetTechnicalUserSecret_NonAdmin_Returns403(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
@@ -573,7 +580,7 @@ func TestResetTechnicalUserSecret_NonAdmin_Returns403(t *testing.T) {
 	}
 }
 
-// --- Case 25: Response field hygiene ---
+// --- Response field hygiene ---
 // Ensures no Create/Reset/List/Delete response surface ever serialises
 // HashedSecret or any other private store field.
 

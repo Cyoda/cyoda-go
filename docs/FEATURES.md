@@ -111,7 +111,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 | **Audit** | `GET /audit/entity/{entityId}`, workflow finished event |
 | **Messaging** | `POST/GET/DELETE /message/...` |
 | **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key + trusted-key management |
-| **M2M Clients** | `GET/POST /account/m2m`, `DELETE /account/m2m/{clientId}`, `POST /account/m2m/{clientId}/secret/reset` |
+| **M2M Clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` |
 | **Account** | `GET /account`, subscriptions |
 | **Admin** | `GET/POST /admin/log-level`, `GET/POST /admin/trace-sampler` |
 
