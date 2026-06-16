@@ -1073,6 +1073,148 @@ func TestImport_MalformedJSONBody_Returns400(t *testing.T) {
 	}
 }
 
+// TestImport_TrailingData_Returns400 fences the json.Decoder gotcha:
+// Decode consumes exactly one JSON value and would otherwise silently
+// drop anything after the first object's closing brace. Same class of
+// "client shape mistake" as an unknown field — and the strict-decoder
+// boundary needs to surface it loudly rather than hide it behind a 200.
+func TestImport_TrailingData_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// Valid request object followed by trailing JSON garbage. The first
+	// object would decode cleanly; the trailing `{"junk":1}` must trip
+	// the post-decode tail check.
+	body := `{"importMode":"MERGE","workflows":[]}{"junk":1}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for trailing JSON content, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "trailing") {
+		t.Errorf("expected detail to mention 'trailing', got: %s", detail)
+	}
+}
+
+// TestImport_UnknownField_TopLevel_Returns400 covers the strict-decoder
+// boundary: unknown fields at the top of the import-request body (e.g.
+// forward-compat extras, typos) must be rejected at the wire boundary
+// with 400 BAD_REQUEST. Without DisallowUnknownFields the field is
+// silently dropped and the request proceeds, hiding shape errors from
+// the client.
+func TestImport_UnknownField_TopLevel_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{"importMode":"MERGE","futureField":"unexpected","workflows":[]}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for unknown top-level field, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	// Go's decoder emits `json: unknown field "futureField"` — the field
+	// name in the detail is what makes the error actionable to the caller.
+	if !strings.Contains(detail, "futureField") {
+		t.Errorf("expected detail to name the unknown field 'futureField', got: %s", detail)
+	}
+}
+
+// TestImport_UnknownField_Typo_Returns400 covers the typo-detection
+// motivation: a misspelled nested field (here `transitionn` instead of
+// `transitions`) was previously silently dropped, so the workflow
+// imported with zero transitions and the typo was never reported. The
+// strict decoder now flags it.
+func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// `transitionn` (extra n) inside a StateDefinition — the typo means
+	// the intended transitions list never reaches the engine.
+	body := `{
+		"importMode":"REPLACE",
+		"workflows":[{
+			"version":"1.0","name":"typo-wf","initialState":"S1","active":true,
+			"states":{"S1":{"transitionn":[{"name":"go","next":"S2","manual":true}]},"S2":{}}
+		}]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for typo'd nested field, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
+	respBody := readJSON(t, resp)
+	detail, _ := respBody["detail"].(string)
+	if !strings.Contains(detail, "transitionn") {
+		t.Errorf("expected detail to name the typo'd field 'transitionn', got: %s", detail)
+	}
+}
+
+// TestImport_KnownSPIFields_StillAccepted is the coordination fence for
+// the strict-decoder switch: SPI fields that legitimately exist on
+// ProcessorConfig (asyncResult, retryPolicy, context,
+// calculationNodesTags, startNewTxOnDispatch, ...) must NOT be rejected
+// as unknown. If a future SPI tag drops or renames any of these on the
+// wire, this test fails loudly instead of silently breaking import for
+// clients sending the fields.
+//
+// crossoverToAsyncMs is exercised in the reject-at-import e2e tests
+// (TestE2E_CrossoverToAsyncMsRejectedAtImport in async_result_import_reject_test.go);
+// asyncResult=true similarly. Those would also start failing on
+// BAD_REQUEST instead of VALIDATION_FAILED if the SPI dropped either
+// field — the secondary fence — so the two fields the validator
+// rejects unconditionally still have decoder coverage.
+func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	// asyncResult=false + crossoverToAsyncMs omitted is the validator-
+	// accepted combination (see validate_import_test.go); both live on
+	// ProcessorConfig (the processor's `config` sub-shape). Other
+	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags,
+	// startNewTxOnDispatch — are exercised here at their valid defaults
+	// (startNewTxOnDispatch=true requires COMMIT_BEFORE_DISPATCH, so the
+	// fence uses false with SYNC) so the strict decoder must pass them
+	// through unchanged.
+	body := `{
+		"importMode":"REPLACE",
+		"workflows":[{
+			"version":"1.0","name":"spi-fields-wf","initialState":"S1","active":true,
+			"states":{
+				"S1":{"transitions":[{
+					"name":"go","next":"S2","manual":true,
+					"processors":[{
+						"type":"externalized","name":"p","executionMode":"SYNC",
+						"config":{
+							"asyncResult":false,
+							"retryPolicy":"NONE",
+							"context":"tenant-scoped",
+							"calculationNodesTags":"workers",
+							"startNewTxOnDispatch":false
+						}
+					}]
+				}]},
+				"S2":{}
+			}
+		}]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for known SPI fields, got %d: %s", resp.StatusCode, b)
+	}
+}
+
 // TestImport_EmptyBody_Returns400 covers the zero-length body case.
 // JSON unmarshal of "" yields an "unexpected end of JSON input" error
 // which the handler surfaces as 400 BAD_REQUEST. Without this fence,
@@ -1117,11 +1259,12 @@ func TestImport_OversizedBody_Rejected(t *testing.T) {
 
 // TestImport_MultipleCycles_RejectsWithFirstCycle covers the
 // definite-loop detector against a workflow with two distinct
-// unguarded automated cycles. validateWorkflowLoops iterates wf.States
-// in Go map order, so the *specific* cycle reported is
-// non-deterministic; this test asserts only that AT LEAST one of the
-// two cycle paths is named in the error detail, which is enough as a
-// regression fence and stays deterministic across runs.
+// unguarded automated cycles. validateWorkflowLoops sorts state names
+// before iteration, so the reported cycle is deterministic — the
+// lexicographically-first cycle (A → B → A) is always reported.
+// TestValidateWorkflowLoops_DeterministicReporting in
+// validate_import_test.go is the dedicated determinism fence; this
+// test asserts the end-to-end HTTP rendering of the same property.
 func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
@@ -1129,7 +1272,8 @@ func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	// Two disjoint unguarded automated cycles:
 	//   Cycle 1: A → B → A
 	//   Cycle 2: C → D → C
-	// The validator returns whichever it finds first.
+	// The validator sorts state names before iteration, so the
+	// lexicographically-first cycle (A → B → A) is always returned.
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
@@ -1155,12 +1299,15 @@ func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	if !strings.Contains(detail, "infinite loop") {
 		t.Errorf("detail must mention 'infinite loop', got: %s", detail)
 	}
-	// Assert at least one of the two cycles is reported. The validator's
-	// map-iteration order can pick either; both are valid findings.
-	cycle1 := strings.Contains(detail, "A -> B") || strings.Contains(detail, "B -> A")
-	cycle2 := strings.Contains(detail, "C -> D") || strings.Contains(detail, "D -> C")
-	if !cycle1 && !cycle2 {
-		t.Errorf("detail must name at least one of the two cycles, got: %s", detail)
+	// Tightened post-determinism-fix: the validator now sorts state
+	// names before DFS, so the lexicographically-first cycle (A → B → A)
+	// is always reported. The C/D cycle would only be returned if A/B
+	// were absent.
+	if !strings.Contains(detail, "A -> B -> A") {
+		t.Errorf("detail must report the lexicographically-first cycle 'A -> B -> A', got: %s", detail)
+	}
+	if strings.Contains(detail, "C -> D") || strings.Contains(detail, "D -> C") {
+		t.Errorf("detail must not name the C/D cycle (A/B comes first lexicographically); got: %s", detail)
 	}
 }
 

@@ -878,3 +878,54 @@ func TestValidator_MultiProcessor_OnlyOneBad_Rejected(t *testing.T) {
 		t.Errorf("error must not name unrelated processors; got: %v", err)
 	}
 }
+
+// TestValidateWorkflowLoops_DeterministicReporting fences the
+// cycle-detection iteration order. The detector walked `wf.States`
+// in Go map order, which is randomised per process — a workflow with
+// two disjoint cycles produced a different "infinite loop detected:
+// X -> Y -> X" message on different runs. The fix sorts the state
+// names before iteration so the lexicographically-first cycle is
+// always reported. This test runs the detector 50 times on a
+// two-cycle input and asserts every run produces the same error
+// string.
+//
+// Without the fix the test fails with very high probability
+// (1 - 0.5^49 ≈ 99.9999999%).
+func TestValidateWorkflowLoops_DeterministicReporting(t *testing.T) {
+	// Two disjoint unguarded automated cycles. Lexicographic-first
+	// start state is "A", so the reported cycle must be A→B→A.
+	wf := spi.WorkflowDefinition{
+		Version: "1", Name: "wf", InitialState: "A", Active: true,
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{{Name: "to-b", Next: "B"}}},
+			"B": {Transitions: []spi.TransitionDefinition{{Name: "to-a", Next: "A"}}},
+			"C": {Transitions: []spi.TransitionDefinition{{Name: "to-d", Next: "D"}}},
+			"D": {Transitions: []spi.TransitionDefinition{{Name: "to-c", Next: "C"}}},
+		},
+	}
+
+	first := validateWorkflowLoops(wf)
+	if first == nil {
+		t.Fatal("expected cycle error, got nil")
+	}
+	for i := 0; i < 49; i++ {
+		err := validateWorkflowLoops(wf)
+		if err == nil {
+			t.Fatalf("iteration %d: expected cycle error, got nil", i)
+		}
+		if err.Error() != first.Error() {
+			t.Fatalf("non-deterministic cycle reporting:\n  first: %v\n  iter %d: %v",
+				first, i, err)
+		}
+	}
+	// Sanity: the reported cycle must start at the lexicographically-first
+	// state ("A"), not the runtime-random one. The error format is
+	// "infinite loop detected: A -> B -> A via …" — assert the A→B→A path
+	// is present and the C/D alternative is not.
+	if !strings.Contains(first.Error(), "A -> B -> A") {
+		t.Errorf("expected reported cycle 'A -> B -> A'; got: %v", first)
+	}
+	if strings.Contains(first.Error(), "C -> D -> C") || strings.Contains(first.Error(), "D -> C -> D") {
+		t.Errorf("expected lexicographically-first cycle (A→B→A); got the C/D cycle: %v", first)
+	}
+}

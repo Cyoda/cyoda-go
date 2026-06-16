@@ -36,7 +36,7 @@ date.
 | M3 — empty `workflows` array silently destructive in REPLACE/ACTIVATE | **Tracked** | #256 | Bundled with H2/H5. |
 | M4 — MERGE silently coalesces duplicate / empty workflow names | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects duplicate or empty workflow names within a request. |
 | M5 — `importMode` default + case-insensitivity undocumented | **Tracked** | #257 | |
-| M6 — JSON unmarshal silently drops unknown fields; `asyncResult` / `crossoverToAsyncMs` not implemented | **Tracked** | #145 (amended 2026-05-19 to include workflow handler scope), #223 (asyncResult + crossoverToAsyncMs Cloud-parity) | |
+| M6 — JSON unmarshal silently drops unknown fields; `asyncResult` / `crossoverToAsyncMs` not implemented | **Resolved in v0.8.0** (workflow boundary), **Tracked** (other boundaries) | #264 (workflow handler — closed), #261 (asyncResult + crossoverToAsyncMs SPI shape — closed), #145 (other boundaries: entity / dispatch / auth — deferred) | Workflow handler now uses `DisallowUnknownFields` per #264. `asyncResult` / `crossoverToAsyncMs` exist in the SPI per #261. Other input boundaries remain in #145. |
 | M7 — no audit logging on successful import | **Tracked** | #257 | |
 | M8 — workflow-level `Criterion` is honoured but under-documented | **Tracked** | #257 | |
 | M9 — test coverage gaps (18 enumerated) | **Tracked** | #258 (workflow import/export test-coverage sweep) | Sequenced with #255 / #256 per #258's plan. |
@@ -507,31 +507,36 @@ the rejection path exists at `handler.go:52–54`.
 
 ### M6. JSON unmarshal silently drops unknown fields
 
-**Issues:** **Partially tracked.** #145 (adopt `DisallowUnknownFields` at
-JSON input boundaries) names `internal/domain/entity`,
-`internal/cluster/dispatch`, and `internal/auth/validator.go` as the in-scope
-boundaries — but **the workflow import handler at
-`internal/domain/workflow/handler.go:43` is not in #145's named scope** and
-should be added before #145 closes, otherwise this finding will survive the
-issue. Separately, #223 covers the missing `asyncResult` /
-`crossoverToAsyncMs` semantics with a planned WARN-on-import path — but the
-workflow handler must actually inspect these fields for #223's WARN to fire,
-which it cannot do today because the unmarshal silently drops them.
+**Issues:** **Resolved at the workflow boundary in v0.8.0 (#264); other
+boundaries deferred (#145).** The workflow import handler at
+`internal/domain/workflow/handler.go` now decodes the request body via a
+`json.Decoder` with `DisallowUnknownFields()` set. Unknown fields at the
+top level *and* nested anywhere in the workflow / state / transition /
+processor sub-shapes are rejected with `400 BAD_REQUEST` and the field
+name surfaced verbatim in the response detail (Go's decoder emits
+`json: unknown field "X"`). Typos in processor config
+(e.g. `"responseTimeoutsMs"`) and forward-compat extras at the workflow
+boundary no longer vanish on import. The handler additionally checks
+`Decoder.More()` after `Decode` to reject trailing JSON content after
+the first object — `Decode` consumes exactly one value, so without the
+tail check a body like `{...valid request...}{junk}` would accept
+silently.
 
-`handler.go:43` uses `json.Unmarshal(data, &req)` without
-`decoder.DisallowUnknownFields()`. Forward-incompatible fields, typos in
-processor config (e.g. `"responseTimeoutsMs"`), and the
-`asyncResult` / `crossoverToAsyncMs` fields that **are** in the OpenAPI
-`ExternalizedProcessorConfigDto` (`api/openapi.yaml:8625–8638`) but **not** in
-the SPI `ProcessorConfig` all vanish on import. The client gets 200 and the
-configuration is lost.
+The `asyncResult` / `crossoverToAsyncMs` pair — which the OpenAPI
+advertised but the SPI did not previously carry — was added to the SPI
+in #261 with strict validator rejection of unsupported combinations.
+The strict-decoder boundary lands *after* the SPI shape carve so
+legitimate Cloud-parity fields are accepted; the validator then enforces
+the runtime constraints.
 
-The `asyncResult` / `crossoverToAsyncMs` pair is the same shape as H1: the
-OpenAPI advertises behaviour the SPI does not carry. The OpenAPI description
-even calls them out as "storage-engine-plugin dependent", but in cyoda-go's
-SPI the fields simply do not exist.
+#145 — the broader `DisallowUnknownFields` sweep across
+`internal/domain/entity`, `internal/cluster/dispatch`, and
+`internal/auth/validator.go` — remains open. Those boundaries have larger
+client surfaces and need a coordinated migration plan; the workflow
+boundary's small client base allowed a strict-from-day-one switch.
 
-**Severity:** MEDIUM.
+**Severity:** MEDIUM. **Status:** workflow boundary resolved; remaining
+boundaries tracked in #145.
 
 ### M7. No audit logging on a successful import
 
@@ -790,7 +795,7 @@ plan.
 | M3 | **Untracked — open issue needed** | Treat empty incoming as a 400 in REPLACE/ACTIVATE, or add an explicit `force: true` opt-in. |
 | M4 | **Untracked — open issue needed** | Add a duplicate-name + empty-name validation in `validateWorkflows`. |
 | M5 | **Untracked — open issue needed** | Document the default mode and case-insensitivity in OpenAPI, and add the missing tests. |
-| M6 | #145, #223 (partial) | Extend #145's scope to include `internal/domain/workflow/handler.go:43`. Decide via #223 whether `asyncResult` / `crossoverToAsyncMs` belong in the SPI; if not, drop them from the OpenAPI. |
+| M6 | #264 (workflow boundary — closed), #261 (asyncResult/crossover SPI — closed), #145 (other boundaries — deferred) | Workflow boundary uses `DisallowUnknownFields` via #264. `asyncResult` / `crossoverToAsyncMs` carved into the SPI via #261. Remaining input boundaries (entity / dispatch / auth) still in #145. |
 | M7 | **Untracked — open issue needed** | Emit one `slog.Info` per successful import including mode, workflow names, and result count. |
 | M8 | **Untracked — open issue needed** | Document the workflow-level criterion selection rule in `cmd/cyoda/help/content/workflows.md` and the OpenAPI `criterion` description. |
 | M9 | #25, #122 (adjacent only) | The 18 cases in §M9 are not in either issue's scope. **New issue needed** to enumerate the cases as a single test-coverage sweep. |
