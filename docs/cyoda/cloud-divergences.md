@@ -4,8 +4,7 @@ cyoda-go is the digital twin of Cyoda Cloud. Most of the API surface
 matches one-for-one. This page tracks the **deliberate, known
 divergences** — fields cyoda-go declares for spec parity but does not
 yet implement, behavior that intentionally differs, or
-enterprise-tier features that live only in the closed-source
-Cassandra plugin.
+enterprise-tier features that live only in the commercial backend.
 
 This is the canonical place for "I see this in the OpenAPI spec but
 cyoda-go silently ignores it" entries. Add new rows here whenever a
