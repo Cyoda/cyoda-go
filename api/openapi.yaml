@@ -660,6 +660,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "404":
+          description: Feature is disabled — M2M admin-role grants are not enabled
+            via `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:

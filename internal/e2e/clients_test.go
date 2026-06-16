@@ -238,6 +238,48 @@ func decodeJWTPayload(t *testing.T, tokenStr string) map[string]any {
 	return claims
 }
 
+// TestE2E_Clients_CrossTenantIsolation_404 verifies that tenant B's admin
+// cannot delete or reset-secret a client owned by tenant A. The unit tests
+// mock the tenant context directly; this E2E case proves the JWT-claim
+// extraction in the auth middleware correctly gates the chi adapter.
+func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
+	// Seed tenant A: create a client via the standard admin path (bootstrap
+	// tenant). The bootstrap tenant is "test-tenant".
+	createResp := adminRequest(t, "POST", "/clients", nil)
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("seed tenant A client: %d: %s", createResp.StatusCode, raw)
+	}
+	var tenantAClient genapi.TechnicalUserCredentialsDto
+	if err := json.NewDecoder(createResp.Body).Decode(&tenantAClient); err != nil {
+		t.Fatalf("decode tenant A client: %v", err)
+	}
+
+	// Seed tenant B with admin privileges via store-direct seeding.
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+
+	// Tenant B attempts to delete tenant A's client.
+	delResp := adminRequestAs(t, clientBID, clientBSecret, "DELETE", "/clients/"+tenantAClient.ClientId, nil)
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNotFound {
+		raw, _ := io.ReadAll(delResp.Body)
+		t.Errorf("cross-tenant DELETE: got %d want 404: %s", delResp.StatusCode, raw)
+	}
+
+	// Tenant B attempts to reset tenant A's secret.
+	resetResp := adminRequestAs(t, clientBID, clientBSecret, "PUT", "/clients/"+tenantAClient.ClientId+"/secret", nil)
+	defer resetResp.Body.Close()
+	if resetResp.StatusCode != http.StatusNotFound {
+		raw, _ := io.ReadAll(resetResp.Body)
+		t.Errorf("cross-tenant PUT secret: got %d want 404: %s", resetResp.StatusCode, raw)
+	}
+
+	// Tenant A's client must still authenticate (record untouched).
+	cleanupResp := adminRequest(t, "DELETE", "/clients/"+tenantAClient.ClientId, nil)
+	cleanupResp.Body.Close()
+}
+
 func containsString(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {

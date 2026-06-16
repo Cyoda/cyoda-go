@@ -172,6 +172,54 @@ func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 	}
 }
 
+// TestM2MAdapter_NilStoreReturns501_AllHandlers asserts that every chi-routed
+// /clients adapter short-circuits with 501 when the M2M store is nil (mock
+// IAM mode). Without this guard, a regression dropping requireM2MStore on
+// any one adapter would surface as a nil-pointer panic — and the recovery
+// middleware would flip healthFlag to false permanently on the first request.
+func TestM2MAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
+	feats := auth.DefaultIAMFeatures()
+	h := New(nil, nil, nil, nil, nil, feats) // explicit nil store
+
+	cases := []struct {
+		name string
+		do   func(rr *httptest.ResponseRecorder, req *http.Request)
+	}{
+		{
+			name: "CreateTechnicalUser",
+			do: func(rr *httptest.ResponseRecorder, req *http.Request) {
+				h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{})
+			},
+		},
+		{
+			name: "DeleteTechnicalUser",
+			do: func(rr *httptest.ResponseRecorder, req *http.Request) {
+				h.DeleteTechnicalUser(rr, req, "ANYID")
+			},
+		},
+		{
+			name: "ResetTechnicalUserSecret",
+			do: func(rr *httptest.ResponseRecorder, req *http.Request) {
+				h.ResetTechnicalUserSecret(rr, req, "ANYID")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := withTenantAdminCtx(httptest.NewRequest(http.MethodGet, "/clients", nil), tenantA)
+			rr := httptest.NewRecorder()
+			tc.do(rr, req)
+			if rr.Code != http.StatusNotImplemented {
+				t.Fatalf("%s: got %d want 501", tc.name, rr.Code)
+			}
+			if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeNotImplemented {
+				t.Errorf("%s: errorCode got %q want %q", tc.name, code, common.ErrCodeNotImplemented)
+			}
+		})
+	}
+}
+
 // --- Create, admin, withAdminRole absent ---
 
 func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T) {

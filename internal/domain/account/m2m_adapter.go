@@ -109,7 +109,6 @@ func clientBelongsToTenant(c *auth.M2MClient, callerTenant spi.TenantID) bool {
 	return c.TenantID == callerTenant
 }
 
-
 // CreateTechnicalUser implements POST /clients?withAdminRole=<bool>.
 // Generates a 16-char base32-hex clientId and returns the freshly issued
 // plaintext secret exactly once.
@@ -228,7 +227,7 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 	secret, err := h.m2mClientStore.ResetSecret(clientID)
 	if err != nil {
 		// Race with concurrent delete: 404. Other failures: 500.
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, auth.ErrM2MClientNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound,
 				common.ErrCodeM2MClientNotFound, "M2M client not found"))
 			return

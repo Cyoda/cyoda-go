@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -442,6 +443,11 @@ func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, 
 
 // --- InMemoryM2MClientStore ---
 
+// ErrM2MClientNotFound is returned by InMemoryM2MClientStore.Get / .Delete /
+// .ResetSecret / .VerifySecret when the requested clientID is not present.
+// Adapters should use errors.Is for classification.
+var ErrM2MClientNotFound = errors.New("m2m client not found")
+
 // InMemoryM2MClientStore stores M2M clients in memory.
 type InMemoryM2MClientStore struct {
 	mu      sync.RWMutex
@@ -517,7 +523,7 @@ func (s *InMemoryM2MClientStore) Get(clientID string) (*M2MClient, error) {
 	defer s.mu.RUnlock()
 	c, ok := s.clients[clientID]
 	if !ok {
-		return nil, fmt.Errorf("m2m client not found: %s", clientID)
+		return nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
 	copied := *c
 	copied.Roles = make([]string, len(c.Roles))
@@ -544,7 +550,7 @@ func (s *InMemoryM2MClientStore) Delete(clientID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.clients[clientID]; !ok {
-		return fmt.Errorf("m2m client not found: %s", clientID)
+		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
 	delete(s.clients, clientID)
 	return nil
@@ -567,7 +573,7 @@ func (s *InMemoryM2MClientStore) ResetSecret(clientID string) (string, error) {
 	defer s.mu.Unlock()
 	c, ok := s.clients[clientID]
 	if !ok {
-		return "", fmt.Errorf("m2m client not found: %s", clientID)
+		return "", fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
 	c.HashedSecret = string(hashed)
 	c.UpdatedAt = now
@@ -580,7 +586,7 @@ func (s *InMemoryM2MClientStore) VerifySecret(clientID, plaintext string) (bool,
 	defer s.mu.RUnlock()
 	c, ok := s.clients[clientID]
 	if !ok {
-		return false, fmt.Errorf("m2m client not found: %s", clientID)
+		return false, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
 	err := bcrypt.CompareHashAndPassword([]byte(c.HashedSecret), []byte(plaintext))
 	return err == nil, nil
