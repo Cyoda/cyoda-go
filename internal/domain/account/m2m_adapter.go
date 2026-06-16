@@ -110,6 +110,83 @@ func clientBelongsToTenant(c *auth.M2MClient, callerTenant spi.TenantID) bool {
 }
 
 
+// CreateTechnicalUser implements POST /clients?withAdminRole=<bool>.
+// Generates a 16-char base32-hex clientId and returns the freshly issued
+// plaintext secret exactly once.
+func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, params genapi.CreateTechnicalUserParams) {
+	if !auth.RequireAdmin(w, r) {
+		return
+	}
+	if !h.requireM2MStore(w, r) {
+		return
+	}
+
+	withAdmin, ok := parseWithAdminRole(params.WithAdminRole)
+	if !ok {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "invalid withAdminRole; expected true or false"))
+		return
+	}
+	if withAdmin && !h.gateM2MAdminRole(w, r) {
+		return
+	}
+
+	// Generate clientId with one collision retry.
+	var clientID string
+	for attempt := 0; attempt < 2; attempt++ {
+		cid, err := generateClientID()
+		if err != nil {
+			common.WriteError(w, r, common.Internal("generateClientID", err))
+			return
+		}
+		if _, getErr := h.m2mClientStore.Get(cid); getErr != nil {
+			clientID = cid
+			break
+		}
+		// Collision (astronomical at 80 bits). Loop once more.
+	}
+	if clientID == "" {
+		common.WriteError(w, r, common.Internal("generateClientID-collision",
+			errors.New("clientId collision after retry")))
+		return
+	}
+
+	tID := tenantFromCtx(r)
+	roles := []string{"ROLE_M2M"}
+	if withAdmin {
+		roles = append(roles, "ROLE_ADMIN")
+	}
+
+	secret, err := h.m2mClientStore.Create(clientID, tID, clientID, roles)
+	if err != nil {
+		common.WriteError(w, r, common.Internal("m2mClientStore.Create", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, roles))
+}
+
+// parseWithAdminRole handles the transitional *string shape generated for the
+// withAdminRole query param. Once Task 12 tightens the OpenAPI to type:
+// boolean, this becomes a one-line bool deref.
+//
+// Returns (false, true) for nil/absent. Returns (true, true) for "true",
+// (false, true) for "false". Returns (_, false) for anything else.
+func parseWithAdminRole(p *string) (bool, bool) {
+	if p == nil {
+		return false, true
+	}
+	switch *p {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 // ListTechnicalUsers implements GET /clients.
 func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 	if !auth.RequireAdmin(w, r) {

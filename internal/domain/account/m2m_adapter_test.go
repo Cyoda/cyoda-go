@@ -171,3 +171,183 @@ func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeNotImplemented)
 	}
 }
+
+// --- Case 6: Create, admin, withAdminRole absent ---
+
+func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var creds genapi.TechnicalUserCredentialsDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !clientIDPattern.MatchString(creds.ClientId) || len(creds.ClientId) != 16 {
+		t.Errorf("clientId %q: want 16-char [A-Za-z0-9]", creds.ClientId)
+	}
+	if creds.ClientSecret == "" {
+		t.Error("client_secret empty")
+	}
+	if string(creds.GrantType) != "client_credentials" {
+		t.Errorf("grant_type: got %q want client_credentials", creds.GrantType)
+	}
+	if creds.ClientSecretExpiresAt != 0 {
+		t.Errorf("client_secret_expires_at: got %d want 0", creds.ClientSecretExpiresAt)
+	}
+
+	// Store side: roles == ["ROLE_M2M"], CreatedAt == UpdatedAt, tenant == caller.
+	stored, err := h.m2mClientStore.Get(creds.ClientId)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", creds.ClientId, err)
+	}
+	if len(stored.Roles) != 1 || stored.Roles[0] != "ROLE_M2M" {
+		t.Errorf("stored roles: got %v want [ROLE_M2M]", stored.Roles)
+	}
+	if stored.TenantID != spi.TenantID(tenantA) {
+		t.Errorf("stored tenant: got %q want %q", stored.TenantID, tenantA)
+	}
+	if !stored.CreatedAt.Equal(stored.UpdatedAt) {
+		t.Errorf("CreatedAt (%v) != UpdatedAt (%v)", stored.CreatedAt, stored.UpdatedAt)
+	}
+}
+
+// --- Case 7: Create, admin, withAdminRole=true, flag on ---
+
+func TestCreateTechnicalUser_AdminWithAdminRoleFlagOn_AddsAdminRole(t *testing.T) {
+	h := newM2MAdapterFixture(t, true)
+	val := "true"
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=true", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var creds genapi.TechnicalUserCredentialsDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stored, err := h.m2mClientStore.Get(creds.ClientId)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := map[string]bool{"ROLE_M2M": true, "ROLE_ADMIN": true}
+	got := map[string]bool{}
+	for _, r := range stored.Roles {
+		got[r] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("stored roles missing %q: %v", k, stored.Roles)
+		}
+	}
+}
+
+// --- Case 8: Create, admin, withAdminRole=true, flag OFF ---
+
+func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	val := "true"
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=true", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", rr.Code)
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeFeatureDisabled {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeFeatureDisabled)
+	}
+	// No store record should have been created.
+	if len(h.m2mClientStore.List()) != 0 {
+		t.Errorf("store should remain empty on FEATURE_DISABLED, got %d records", len(h.m2mClientStore.List()))
+	}
+}
+
+// --- Case 9: Create, admin, withAdminRole=false (explicit) ---
+
+func TestCreateTechnicalUser_AdminWithAdminRoleFalse_NoAdminRole(t *testing.T) {
+	h := newM2MAdapterFixture(t, true)
+	val := "false"
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=false", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rr.Code)
+	}
+	var creds genapi.TechnicalUserCredentialsDto
+	_ = json.Unmarshal(rr.Body.Bytes(), &creds)
+	stored, _ := h.m2mClientStore.Get(creds.ClientId)
+	for _, r := range stored.Roles {
+		if r == "ROLE_ADMIN" {
+			t.Errorf("ROLE_ADMIN must NOT be present when withAdminRole=false; got %v", stored.Roles)
+		}
+	}
+}
+
+// --- Case 10: Create, non-admin → 403 FORBIDDEN ---
+
+func TestCreateTechnicalUser_NonAdmin_Returns403Forbidden(t *testing.T) {
+	h := newM2MAdapterFixture(t, true)
+	req := withTenantNonAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{})
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403", rr.Code)
+	}
+}
+
+// --- Case 11: Invalid withAdminRole value (string mode, transitional) ---
+
+func TestCreateTechnicalUser_InvalidWithAdminRoleValue_Returns400BadRequest(t *testing.T) {
+	h := newM2MAdapterFixture(t, true)
+	val := "yes" // not "true"/"false"
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients?withAdminRole=yes", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{WithAdminRole: &val})
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rr.Code)
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeBadRequest {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeBadRequest)
+	}
+}
+
+// --- Case 12: Repeated creates produce 100 distinct clientIds ---
+
+func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	seen := map[string]bool{}
+	const n = 100
+	for i := 0; i < n; i++ {
+		req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+		rr := httptest.NewRecorder()
+		h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("iter %d: status %d, body=%s", i, rr.Code, rr.Body.String())
+		}
+		var creds genapi.TechnicalUserCredentialsDto
+		_ = json.Unmarshal(rr.Body.Bytes(), &creds)
+		if seen[creds.ClientId] {
+			t.Fatalf("clientId collision at iter %d: %q reused", i, creds.ClientId)
+		}
+		seen[creds.ClientId] = true
+	}
+	if len(h.m2mClientStore.List()) != n {
+		t.Errorf("store size: got %d want %d (some Create silently overwrote?)", len(h.m2mClientStore.List()), n)
+	}
+}
