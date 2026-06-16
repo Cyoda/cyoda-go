@@ -328,7 +328,7 @@ Verified via repository-wide grep of non-test code:
 
 | Field | OpenAPI / SPI | Consumed? |
 |---|---|---|
-| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8619–8621`, `cyoda-go-spi@v0.7.1/types.go:152` | **No.** Only references are the generated DTO and the SPI struct. |
+| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8126`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import (#262).** Rejected at import unless ∈ {NONE, FIXED, ""}. Dispatcher still single-shot; full retry loop deferred to #254. |
 | `ProcessorConfig.Context` | `api/openapi.yaml:8622–8624`, `types.go:153` | **Resolved in v0.8.0.** Wired as a pass-through string into the dispatch `parameters` JSON node at `internal/grpc/dispatch.go:71, 221`. Historical analysis below retained for context. |
 | `ProcessorDefinition.Type` | `api/openapi.yaml:8674–8679`, `types.go:141` | **No.** Discriminator carried for parity, no engine branch uses it. |
 
@@ -406,20 +406,17 @@ ctx.Done — and any failure propagates immediately. There is no retry, no
 member-exclusion set, no aggregated-failure mode, and no honouring of the
 member's `retryable` flag. The wire types **do** already carry the flag:
 `api/grpc/events/types.go:36, 111, 189, 261, 473, 551, 641, 754, 862, 992`
-each declare `Retryable *bool` on the inbound error shape. But the
-flag is not surfaced into `ProcessingResponse`
-(`internal/grpc/members.go:24` — the struct exposes `Success`, `Error`,
-`Matches`, `Warnings` only), so the dispatcher could not consult it today
-even if it tried.
+each declare `Retryable *bool` on the inbound error shape.
+The flag is surfaced into `ProcessingResponse.Retryable` as a `*bool`
+(`internal/grpc/members.go:24` — captured by both processor and criteria
+response handlers since #262), but the dispatcher does not yet consult it
+— that wiring is deferred to #254.
 
-`processor.Config.RetryPolicy` (`string` at SPI level) is consequently dead
-in cyoda-go, but the deadness is symmetric to `Context`: the field is
-*meant* to do work, the surrounding scaffolding exists, the wire format
-already carries the per-response veto signal, and the implementation is
-absent. This is a Cloud-parity gap, not a spec/docs cleanup. It deserves
-its own issue with the scope spelled out (see §9), and because
-`asyncResult=true` is a documented suppressor, the issue depends on #223 to
-settle async semantics first.
+`processor.Config.RetryPolicy` (`string` at SPI level) is now import-validated
+(#262), but the dispatch consumer is still absent: the field is *meant* to
+drive a retry loop, the surrounding scaffolding exists, and the wire format
+already carries the per-response veto signal — the implementation is deferred
+to #254. This is a Cloud-parity gap, not a spec/docs cleanup.
 
 Of the remaining members of this finding, only `WorkflowDefinition.Version`
 and `WorkflowDefinition.Description` are genuinely dormant with no known
@@ -726,7 +723,7 @@ and the OpenAPI-generated DTO reference the field.
 | `ProcessorConfig.AttachEntity` | USED (dispatcher) | `internal/grpc/dispatch.go:68, 183` |
 | `ProcessorConfig.CalculationNodesTags` | USED (dispatcher) | `internal/grpc/dispatch.go:47, 187`; `internal/cluster/dispatch/cluster_dispatcher.go:65` |
 | `ProcessorConfig.ResponseTimeoutMs` | USED (dispatcher) | `internal/grpc/dispatch.go:104, 248` (defaults to 30 s) |
-| `ProcessorConfig.RetryPolicy` | DEAD | no consumer |
+| `ProcessorConfig.RetryPolicy` | IMPORT-VALIDATED | rejected at import unless ∈ {NONE, FIXED, ""} (validate.go); no dispatch consumer yet — see #254 |
 | `ProcessorConfig.Context` | USED (dispatcher) | `internal/grpc/dispatch.go:71, 221` — pass-through string forwarded as `parameters` JSON node; resolved in v0.8.0 |
 | `ProcessorConfig.StartNewTxOnDispatch` | USED | `engine_processors.go:205` (only when COMMIT_BEFORE_DISPATCH; validated by `validate.go:51`) |
 
@@ -734,9 +731,9 @@ The dispatcher consumption matters: every claim about a "dead" config field
 was checked outside the engine package as well. Of the boundary-accepted
 fields with no consumer:
 
-- `ProcessorConfig.Context` and `ProcessorConfig.RetryPolicy` are
-  **implementation gaps**, not contract artefacts — see the special-case
-  subsections in §M1 above.
+- `ProcessorConfig.RetryPolicy` is import-validated (#262) but the
+  dispatcher does not yet consume it — the full retry loop is deferred
+  to #254. (`ProcessorConfig.Context` was resolved in v0.8.0 by #253.)
 - `WorkflowDefinition.Version` is **reserved as a schema-version
   discriminator** for future config-shape evolution; not inert by intent.
 - `WorkflowDefinition.Description` and `ProcessorDefinition.Type` are the
