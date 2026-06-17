@@ -41,6 +41,7 @@ type ParityFixtureIdP struct {
 	keys          map[string]*rsa.PrivateKey // kid → private key
 	revoked       map[string]bool            // kids excluded from JWKS responses
 	discoveryHits int                        // count of /.well-known/openid-configuration requests
+	jwksDown      bool                       // when true, /jwks returns 503 (SetJWKSFailMode)
 }
 
 // parityJWKEntry is the JWK wire format for an RSA public key (RFC 7517 + 7518).
@@ -109,6 +110,11 @@ func (f *ParityFixtureIdP) serveDiscovery(w http.ResponseWriter, _ *http.Request
 func (f *ParityFixtureIdP) serveJWKS(w http.ResponseWriter, _ *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.jwksDown {
+		http.Error(w, "jwks unavailable (simulated failure)", http.StatusServiceUnavailable)
+		return
+	}
 
 	var keys []parityJWKEntry
 	for kid, priv := range f.keys {
@@ -291,4 +297,79 @@ func (f *ParityFixtureIdP) AddSharedKidEntry(t *testing.T, kid string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.keys[kid] = newKey
+}
+
+// MintJWTWithAud signs a JWT with an explicit aud claim. All other claims
+// match MintTenantJWT. Used by D20 audience-check tests.
+func (f *ParityFixtureIdP) MintJWTWithAud(t *testing.T, kid, tenantID string, aud any) string {
+	t.Helper()
+	now := time.Now()
+	return f.SignJWT(t, kid, map[string]any{
+		"sub":          "oidc-aud-" + tenantID[:8],
+		"iss":          f.Issuer,
+		"caas_user_id": "oidc-aud-" + tenantID[:8],
+		"caas_org_id":  tenantID,
+		"scopes":       []string{"ROLE_ADMIN"},
+		"caas_tier":    "unlimited",
+		"aud":          aud,
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          now.Unix(),
+	})
+}
+
+// MintJWTWithSub signs a JWT with an explicit sub claim. All other claims
+// match MintTenantJWT. Used by D23 sub-validation tests.
+func (f *ParityFixtureIdP) MintJWTWithSub(t *testing.T, kid, tenantID, sub string) string {
+	t.Helper()
+	now := time.Now()
+	return f.SignJWT(t, kid, map[string]any{
+		"sub":          sub,
+		"iss":          f.Issuer,
+		"caas_user_id": "oidc-sub-" + tenantID[:8],
+		"caas_org_id":  tenantID,
+		"scopes":       []string{"ROLE_ADMIN"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          now.Unix(),
+	})
+}
+
+// MintJWTWithRolesClaim signs a JWT with custom roles claims. The extraClaims
+// map is merged with the standard claims (extraClaims wins on key collision).
+// Used by D23 roles-claim tests.
+func (f *ParityFixtureIdP) MintJWTWithRolesClaim(t *testing.T, kid, tenantID string, extraClaims map[string]any) string {
+	t.Helper()
+	now := time.Now()
+	base := map[string]any{
+		"sub":          "oidc-roles-" + tenantID[:8],
+		"iss":          f.Issuer,
+		"caas_user_id": "oidc-roles-" + tenantID[:8],
+		"caas_org_id":  tenantID,
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          now.Unix(),
+	}
+	for k, v := range extraClaims {
+		base[k] = v
+	}
+	return f.SignJWT(t, kid, base)
+}
+
+// SetJWKSFailMode puts the JWKS endpoint into a failure mode: it responds with
+// a 503 status for all subsequent /jwks requests. This simulates an upstream
+// JWKS endpoint going down for D19 "failed upstream preserves cache" tests.
+// Call ResumeJWKS to restore normal operation.
+func (f *ParityFixtureIdP) SetJWKSFailMode(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksDown = true
+}
+
+// ResumeJWKS restores normal JWKS endpoint operation after SetJWKSFailMode.
+func (f *ParityFixtureIdP) ResumeJWKS(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksDown = false
 }

@@ -2,10 +2,13 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 109
+// Total parity scenarios: 133
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
-// + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences + grouped stats).
+// + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
+// + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E + grouped stats).
+// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/
+// are additional to this count.
 //
 // Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
 // model extension, transaction stress tests, workflow failure paths,
@@ -186,6 +189,40 @@ var allTests = []NamedTest{
 	{"OidcD18_SingleflightDebounce", RunOidcD18_SingleflightDebounce},
 	{"OidcD18_ReloadInvalidateSerializeLocally", RunOidcD18_ReloadInvalidateSerializeLocally},
 	{"OidcD18_ReloadAllSerializesWithReloadOne", RunOidcD18_ReloadAllSerializesWithReloadOne},
+
+	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68) (#284)
+	// D10 SSRF (rows 47-49).
+	{"OidcD10_SSRF_FetchTimeDNSRebind", RunOidcD10_SSRF_FetchTimeDNSRebind},
+	{"OidcD10_SSRF_IPv6BlockedRanges", RunOidcD10_SSRF_IPv6BlockedRanges},
+	{"OidcD10_SSRF_NoRedirectFollowing", RunOidcD10_SSRF_NoRedirectFollowing},
+	// D19 reactivate (rows 50-51).
+	{"OidcD19_ReactivateSuccessPath", RunOidcD19_ReactivateSuccessPath},
+	{"OidcD19_ReactivateWithFailedUpstreamPreservesCache", RunOidcD19_ReactivateWithFailedUpstreamPreservesCache},
+	// D20 audience (rows 52-53).
+	{"OidcD20_AudienceMismatchRejected", RunOidcD20_AudienceMismatchRejected},
+	{"OidcD20_EmptyExpectedAudiencesAcceptsAny", RunOidcD20_EmptyExpectedAudiencesAcceptsAny},
+	// D23 UserContext (rows 54-56).
+	{"OidcD23_CrossIdPSubCollisionDistinctUserIDs", RunOidcD23_CrossIdPSubCollisionDistinctUserIDs},
+	{"OidcD23_PerProviderRolesClaim", RunOidcD23_PerProviderRolesClaim},
+	{"OidcD23_RolesParsingMultiFormat", RunOidcD23_RolesParsingMultiFormat},
+	// D23 sub bounds (rows 57-59).
+	{"OidcD23_SubControlCharRejected", RunOidcD23_SubControlCharRejected},
+	{"OidcD23_SubTooLong", RunOidcD23_SubTooLong},
+	{"OidcD23_SubContainingColonAccepted", RunOidcD23_SubContainingColonAccepted},
+	// D25 ownership transition (rows 60-62).
+	{"OidcD25_CrossTenantRegisterEmitsAuditLog", RunOidcD25_CrossTenantRegisterEmitsAuditLog},
+	{"OidcD25_RestartSurvivesInKV", RunOidcD25_RestartSurvivesInKV},
+	{"OidcD25_ReceivingNodeDoesNotReEmitAudit", RunOidcD25_ReceivingNodeDoesNotReEmitAudit},
+	// D21 list authz (row 63).
+	{"OidcD21_NonAdminTenantMemberCanList", RunOidcD21_NonAdminTenantMemberCanList},
+	// I9 broadcast (row 64).
+	{"OidcI9_BroadcastForUnknownProviderHandledGracefully", RunOidcI9_BroadcastForUnknownProviderHandledGracefully},
+	// State transitions (rows 65-66).
+	{"OidcStateTransitions_ActiveInvalidatedDeleted", RunOidcStateTransitions_ActiveInvalidatedDeleted},
+	{"OidcStateTransitions_InvalidatedReactivatedInvalidated", RunOidcStateTransitions_InvalidatedReactivatedInvalidated},
+	// E2E coverage (rows 67-68).
+	{"OidcE2E_TokenValidation", RunOidcE2E_TokenValidation},
+	{"OidcE2E_MultiNodeEviction", RunOidcE2E_MultiNodeEviction},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
