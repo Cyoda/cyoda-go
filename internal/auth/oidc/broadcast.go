@@ -19,6 +19,13 @@ type broadcastEnvelope struct {
 
 // handleBroadcast is the registry's Subscribe callback. Runs on the
 // broadcaster's receive goroutine — must be non-blocking and panic-safe.
+//
+// Panic safety has two layers:
+//  1. The synchronous path (json.Unmarshal + switch dispatch) is guarded by
+//     the recover() in the defer below.
+//  2. Each goroutine spawned by singleflight.Dispatch is wrapped via
+//     safeDispatch so that panics inside reloadOne / invalidateOne / ReloadAll
+//     are also caught and counted rather than crashing the process.
 func (r *Registry) handleBroadcast(payload []byte) {
 	start := time.Now()
 	defer func() {
@@ -38,19 +45,35 @@ func (r *Registry) handleBroadcast(payload []byte) {
 
 	switch env.Op {
 	case "reload":
-		r.singleflight.Dispatch(env.TenantID+":"+env.URI, func() {
+		r.singleflight.Dispatch(env.TenantID+":"+env.URI, r.safeDispatch(func() {
 			r.reloadOne(context.Background(), spi.TenantID(env.TenantID), env.URI)
-		})
+		}))
 	case "invalidate":
-		r.singleflight.Dispatch(env.TenantID+":"+env.URI, func() {
+		r.singleflight.Dispatch(env.TenantID+":"+env.URI, r.safeDispatch(func() {
 			r.invalidateOne(spi.TenantID(env.TenantID), env.URI)
-		})
+		}))
 	case "reload_all":
-		r.singleflight.Dispatch("_reload_all", func() {
+		r.singleflight.Dispatch("_reload_all", r.safeDispatch(func() {
 			_ = r.ReloadAll(context.Background())
-		})
+		}))
 	default:
 		r.logger.Debug("oidc broadcast: unknown op", "pkg", "oidc", "op", env.Op)
+	}
+}
+
+// safeDispatch wraps fn with a recover() so that panics inside goroutines
+// spawned by singleflight.Dispatch are caught and counted rather than crashing
+// the process. This is the second panic-safety layer required by the D7 spec.
+func (r *Registry) safeDispatch(fn func()) func() {
+	return func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.logger.Error("oidc broadcast dispatch panic",
+					"pkg", "oidc", "panic", rec)
+				r.metrics.IncBroadcastPanic()
+			}
+		}()
+		fn()
 	}
 }
 
