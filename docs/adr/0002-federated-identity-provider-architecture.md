@@ -38,10 +38,18 @@ OIDC providers are owned by a legal entity. Management API scopes by
 validation iterates providers across all tenants — tokens carry no
 tenant claim — but the resolving provider's `OwnerLegalEntityID`
 determines the user context's tenant, **subject to two routing
-guards**: tokens with `iat` predating the provider's `CreatedAt` are
-rejected, and `iss` validation is mandatory at resolution time
-(`provider.Issuers` if set, else `DiscoveryDoc.Issuer` exact match).
-The token's own `tid`/`tenant`/`org` claims are ignored.
+guards** and one **honest scope limit**: tokens with `iat` predating
+the provider's `CreatedAt` (with 30s clock skew) are rejected, and
+`iss` validation is mandatory at resolution time (`provider.Issuers`
+if set, else `DiscoveryDoc.Issuer` exact match — or fall through if
+the discovery doc has not been fetched yet). These guards close the
+**accidental** cross-tenant spillover case (a long-lived legitimate
+JWT surviving an ownership handover). They do not close the
+**adversarial** case (the IdP operator mints a fresh token with
+`iat = now` after observing the handover). The mitigation for the
+adversarial case is **D25 ownership-transition audit logging** —
+operational observability, not a security property of the validator.
+The token's own `tid`/`tenant`/`org` claims are ignored regardless.
 
 ### D2. KeyValueStore-backed persistence, single namespace, composite keys
 
@@ -65,11 +73,18 @@ error)`) replaces the implicit single-validator contract.
 `ErrIssuerMismatch`, `ErrSignatureFailure`, `ErrClaimsFailure` —
 hard-fail without consulting subsequent validators. Plus
 `ErrTokenPreTransition` (D1 iat-binding) and `ErrJWKSUnavailable`
-(transient JWKS-fetch failure → 503). The existing `JWKSValidator`
-joins the chain unchanged in behaviour: today's untyped
-"untrusted token issuer" becomes `ErrIssuerMismatch`, today's
-untyped "failed to resolve key for kid" becomes `ErrUnknownKID`. The
-new `oidc.OIDCValidator` returns the same sentinels.
+(transient JWKS-fetch failure → 503).
+
+The existing `JWKSValidator` already produces the correct hard-fail
+behaviour today (`validator.go:82-84` returns "untrusted token
+issuer" after signature verification succeeds at line 73). This is
+**not behaviour we are adding** — it is behaviour we are
+**preserving** under chaining. A single-sentinel design would have
+*promoted* the existing hard-fail iss-mismatch case to chain-fall-
+through, creating a new escalation path that the current
+single-validator code does not have. Four sentinels make the cases
+mechanically distinct and preserve the current correctness under
+the chain.
 
 ## Consequences
 
@@ -103,39 +118,54 @@ new `oidc.OIDCValidator` returns the same sentinels.
   Closed at correctness by re-reading the index after `Put`: the
   loser deletes its own blob and surfaces 409. The window is
   observable but harmless.
-- **Broadcast failure semantics diverge from cyoda-cloud.** The SPI's
-  `ClusterBroadcaster.Broadcast` is fire-and-forget; cyoda-cloud's
-  `notifyAllNodes(awaitResult=true)` ack semantics are not portable.
-  A `Broadcast` error from the SPI surfaces as HTTP 500 + ticket
-  UUID on the management call. Receiver-side broadcast handlers are
-  bounded per-op single-flight with `defer recover()` so a panic in
-  the OIDC handler cannot kill delivery of other subsystems'
-  invalidations on the same memberlist node.
+- **Broadcast failure cannot be surfaced.** The SPI's
+  `ClusterBroadcaster.Broadcast` returns nothing — fire-and-forget by
+  contract. The management API ignores delivery state; if broadcast
+  enqueueing fails silently, peers re-converge via subsequent
+  `reload_all` and via D11 read-time validation. Misconfiguration
+  (`broadcaster == nil`) is a startup invariant; `os.Exit(1)` if
+  missing. Receiver-side broadcast handlers are single-flight per
+  `(tenantID, uri)` with `defer recover()` so a panic in the OIDC
+  handler cannot kill delivery of other subsystems' invalidations on
+  the same memberlist node.
+- **Cold-start window for OIDC tokens.** Phase-2 (async JWKS fetch)
+  runs after the listener binds; tokens arriving for a not-yet-warmed
+  provider get `ErrUnknownKID` → 401. This is a documented
+  operational characteristic — the alternative (block listener on
+  JWKS fetch for all tenants) is a startup outage waiting to happen
+  at scale.
 
 ### New risks
 
 - **Provider-ownership transitions are security-relevant events.**
-  When tenant A deletes a provider and tenant B registers the same
-  `wellKnownConfigUri`, the `iat`-binding guard rejects A's
-  pre-deletion tokens — but only if their `iat` claim is honest. An
-  attacker who can forge `iat` defeats the guard. Mitigation
-  follow-up: log the ownership transition at INFO with provider
-  UUID + tenant transition; operators monitor for unexpected
-  transitions.
+  D1's `iat`-binding rejects pre-transition tokens by `iat` —
+  but `iat` is set by the IdP. An attacker controlling the IdP after
+  the ownership transition can mint tokens with current `iat` that
+  the validator accepts. The mitigation is D25 INFO-level audit
+  logging on every ownership transition (Register-after-Delete-from-
+  different-tenant) with `{from_tenant, to_tenant,
+  wellknown_uri_hash, new_provider_uuid}` fields. This is operational
+  observability, not a security property of the validator. Operators
+  must monitor; the spec calls this out honestly rather than claiming
+  defence-in-validator.
 - **The chain's order is semantically meaningful.** `JWKSValidator`
   runs before `OIDCValidator`. A misconfiguration that put the OIDC
   validator first would cause first-party tokens with a known `kid`
   to be checked against the OIDC registry first, returning
   `ErrUnknownKID` (cheap), then the JWKS validator (cheap). No
   correctness bug under the four-sentinel rule, but unnecessary work.
-  An admin introspection endpoint (`GET /api/admin/validators`)
-  surfaces the chain order at runtime for debugging.
 - **`kid`-namespace collisions across tenants.** Two tenants registering
   IdPs that share signing infrastructure (e.g., both AWS Cognito in
   `us-east-1`) can publish overlapping `kid` values. The `iss`-
   mandatory routing guard (D1) closes the correctness gap; the self-
   healing kidIndex closes the cache-poisoning gap. Both are mandatory,
   not optional.
+- **Cross-IdP `sub`-collision.** External IdPs' `sub` values are
+  opaque per-IdP and not globally unique. The spec namespaces
+  `UserContext.UserID` as `oidc:<providerUUID>:<sub>` to prevent
+  collision into a shared UserID space. Per-IdP role-claim names
+  (Auth0 / Cognito / Keycloak vary) are honoured via a per-provider
+  `RolesClaim` field falling back to a global default.
 
 ### Neutral
 
@@ -212,24 +242,62 @@ Extend `ClusterBroadcaster` with an acked-broadcast method to
 faithfully port cyoda-cloud's "broadcaster failure → 500" semantic.
 **Rejected** per the project-memory principle that the engine does
 not claim consistency rights existing primitives do not already give.
-The SPI's fire-and-forget contract is the contract; the parity test
-is rewritten to match.
+The SPI's fire-and-forget contract is the contract; rev. 2 of the
+spec briefly tried to handle broadcast failure as a 500 + KV
+rollback — that path is mechanically impossible (no failure surface
+exists) and the rollback would have been wrong (peers may have
+received the broadcast). rev. 3 deletes the path entirely; the
+cyoda-cloud "intercom failure" test simply does not port.
 
 ### Single error sentinel (`ErrUnknownIssuer`)
 
 rev. 1 of the spec defined one sentinel that the chain interpreted
-as "fall through". **Rejected during fresh-context review.** Today
-`JWKSValidator` verifies signature **before** the iss-check, so the
-"untrusted token issuer" error covers two materially different cases:
-(a) kid was resolvable and signature was first-party but iss is
-wrong, (b) kid was unresolvable. Conflating these makes
-(a) — which is unambiguously iss-mismatch and must hard-fail — a
-chain-fall-through case, creating a brittle escalation path. Four
-sentinels make the cases mechanically distinct.
+as "fall through". **Rejected during the first fresh-context review.**
+Today `JWKSValidator` verifies signature **before** the iss-check
+(`validator.go:73` vs `:82`), so the "untrusted token issuer" error
+covers a token whose signature was already first-party-verified —
+that is unambiguously iss-mismatch and must hard-fail. A single
+sentinel would have promoted this existing hard-fail to chain-fall-
+through, creating an escalation path the current single-validator
+code does not have. Four sentinels are not new behaviour — they
+**preserve** existing behaviour under chaining.
+
+### Cross-op single-flight by `(op, tenantID, uri)`
+
+rev. 2 of the spec keyed the broadcast-handler single-flight by
+`(op, tenantID, uri)`. **Rejected during the second fresh-context
+review.** A reload and an invalidate for the same provider arrived
+under different keys, ran in parallel, and the local end-state
+depended on which finished last. Memberlist's unordered gossip then
+made the inter-node states diverge. rev. 3 keys by `(tenantID, uri)`
+only — all operations for the same provider serialize through one
+worker locally. Inter-node convergence is provided by periodic
+`reload_all` and by D11 read-time validation.
+
+### Per-tenant Prometheus gauge label
+
+rev. 2 specified `oidc_registry_providers{tenant=...}` for per-tenant
+provider counts. **Rejected during the second fresh-context review.**
+At 1K+ tenants this is a Prometheus cardinality footgun. rev. 3
+aggregates: `oidc_registry_providers` with no tenant label. Per-
+tenant counts go via admin API if/when needed, not via Prometheus
+labels.
+
+### Admin chain-introspection endpoint (`GET /api/admin/validators`)
+
+rev. 2 added a read-only endpoint dumping the validator chain order
+for debugging. **Rejected during the second fresh-context review for
+v0.8.0.** The chain is exactly two validators (JWKS + OIDC) in
+v0.8.0; composition is invariant per-deployment and known at startup
+from logs. No current consumer; deferring is reversible (add when
+the third validator lands and there is a debugging need). Per
+`feedback_gate6_no_followups`, this is the *correct* deferral — the
+decision is "add when there is a use case," not "we'll get to it."
 
 ### `KeyValueStore.PutBatch` SPI extension for atomic (index, blob) writes
 
-Would close the rev. 2 D11 register-race window at the SPI level.
-**Rejected** by the project lead during review: no SPI changes in
-this PR. The read-after-write index validation in D11 is sufficient
-for correctness; the write-race remains observable but harmless.
+Would close the D11 register-race window at the SPI level.
+**Rejected** by the project lead during the first review: no SPI
+changes in this PR. The read-after-write index validation in D11 is
+sufficient for correctness; the write-race remains observable but
+harmless.
