@@ -561,6 +561,34 @@ func (r *Registry) reloadOne(ctx context.Context, tenant spi.TenantID, uri strin
 		return
 	}
 
+	// E2 fetch-time pin enforcement: when the admin has pinned Issuers, the
+	// discovery doc's issuer field MUST be in that list. An IdP returning a
+	// mismatching issuer is either misconfigured or attacker-controlled; in
+	// either case, refuse to install the source. The provider remains in
+	// Phase-2-pending state — ResolveKey returns ErrUnknownKID until the admin
+	// reconciles. Raw issuer strings are never logged (A1+B1 lessons); only
+	// SHA-256 hashes and counts are emitted.
+	if len(prov.Issuers) > 0 {
+		issMatchesPin := false
+		for _, allowed := range prov.Issuers {
+			if allowed == doc.Issuer {
+				issMatchesPin = true
+				break
+			}
+		}
+		if !issMatchesPin {
+			r.logger.Warn("oidc: discovery doc issuer mismatch with pinned Issuers — refusing to install source",
+				"pkg", "oidc",
+				"tenant", string(tenant),
+				"uri_hash", sha256Hex(uri),
+				"doc_issuer_hash", sha256Hex(doc.Issuer),
+				"pinned_count", len(prov.Issuers),
+			)
+			r.metrics.IncJWKSFetchError("issuer_pin_mismatch")
+			return
+		}
+	}
+
 	// Wrap with lifecycle gate. The isActive closure is called by disposeCandidates
 	// which already holds r.mu (RLock on the hot path, Lock on the cold path).
 	// Re-acquiring r.mu inside the closure would deadlock (Go's sync.RWMutex is

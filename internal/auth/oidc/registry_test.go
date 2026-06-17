@@ -479,3 +479,160 @@ func TestResolveKey_DeterministicSortColdPath(t *testing.T) {
 		t.Errorf("cold path non-deterministic: first=%v second=%v", res1.Provider.ID, res2.Provider.ID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Audit fix E2: fetch-time pin enforcement for pinned Issuers (#284)
+// ---------------------------------------------------------------------------
+
+// outcomeRecordingMetrics extends recordingMetrics to capture the last
+// IncJWKSFetchError outcome label — needed to verify the issuer_pin_mismatch
+// metric path without coupling tests to atomic counter ordering.
+type outcomeRecordingMetrics struct {
+	NopMetrics
+	lastOutcome string
+	jwksErrors  int64
+}
+
+func (m *outcomeRecordingMetrics) IncJWKSFetchError(outcome string) {
+	atomic.AddInt64(&m.jwksErrors, 1)
+	m.lastOutcome = outcome
+}
+
+// TestRegistry_ReloadOne_RefusesSourceWhenDiscoveryIssuerNotInPinnedList
+// verifies E2 defence-in-depth: when a provider has a non-empty Issuers list
+// and the discovery doc returns an Issuer value that is NOT in that list,
+// reloadOne MUST refuse to install the providerSource.
+// The provider remains in Phase-2-pending state (source nil); subsequent
+// ResolveKey calls return ErrUnknownKID.
+func TestRegistry_ReloadOne_RefusesSourceWhenDiscoveryIssuerNotInPinnedList(t *testing.T) {
+	const providerURI = "https://legit.example/.well-known/openid-configuration"
+
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			providerURI: {
+				// Attacker-controlled discovery doc claims a different issuer.
+				Issuer:  "https://attacker.example",
+				JWKSURI: "https://attacker.example/jwks",
+			},
+		},
+	}
+	m := &outcomeRecordingMetrics{}
+	r := NewRegistry(newTestStore(t), disc, nil, m, nil, true)
+
+	p := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: providerURI,
+		Issuers:            []string{"https://legit.example"},
+		CreatedAt:          time.Now(),
+		OwnerLegalEntityID: uuid.New(),
+	}
+	r.addToProviderMap(p)
+
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+	r.reloadOne(context.Background(), tenant, providerURI)
+
+	// Source must NOT be installed.
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenant]; byURI != nil {
+			if src := byURI[providerURI]; src != nil {
+				t.Error("source was installed despite issuer mismatch with pinned Issuers — E2 not enforced")
+			}
+		}
+	}()
+
+	// Metric must have been incremented with the expected outcome.
+	if atomic.LoadInt64(&m.jwksErrors) == 0 {
+		t.Error("IncJWKSFetchError was not called on issuer pin mismatch")
+	}
+	if m.lastOutcome != "issuer_pin_mismatch" {
+		t.Errorf("IncJWKSFetchError outcome = %q, want %q", m.lastOutcome, "issuer_pin_mismatch")
+	}
+}
+
+// TestRegistry_ReloadOne_AcceptsWhenDiscoveryIssuerInPinnedList verifies that
+// reloadOne installs the source when the discovery doc's Issuer is in the
+// provider's pinned Issuers list.
+func TestRegistry_ReloadOne_AcceptsWhenDiscoveryIssuerInPinnedList(t *testing.T) {
+	const providerURI = "https://legit.example/.well-known/openid-configuration"
+
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			providerURI: {
+				Issuer:  "https://legit.example",
+				JWKSURI: "https://legit.example/jwks",
+			},
+		},
+	}
+	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, true)
+
+	p := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: providerURI,
+		Issuers:            []string{"https://legit.example", "https://legit2.example"},
+		CreatedAt:          time.Now(),
+		OwnerLegalEntityID: uuid.New(),
+	}
+	r.addToProviderMap(p)
+
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+	r.reloadOne(context.Background(), tenant, providerURI)
+
+	// Source MUST be installed.
+	var installed bool
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenant]; byURI != nil {
+			installed = byURI[providerURI] != nil
+		}
+	}()
+	if !installed {
+		t.Error("source was not installed when discovery doc issuer matches pinned Issuers")
+	}
+}
+
+// TestRegistry_ReloadOne_AcceptsAnyDiscoveryIssuerWhenIssuersEmpty verifies
+// that when provider.Issuers is empty (nil), reloadOne does not perform
+// fetch-time pin enforcement and installs the source for any discovery issuer.
+// This preserves spec D17's fallback: empty Issuers → doc.Issuer is used at
+// resolution time.
+func TestRegistry_ReloadOne_AcceptsAnyDiscoveryIssuerWhenIssuersEmpty(t *testing.T) {
+	const providerURI = "https://idp.example/.well-known/openid-configuration"
+
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			providerURI: {
+				Issuer:  "https://anything.example",
+				JWKSURI: "https://anything.example/jwks",
+			},
+		},
+	}
+	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, true)
+
+	p := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: providerURI,
+		Issuers:            nil, // empty — no pin
+		CreatedAt:          time.Now(),
+		OwnerLegalEntityID: uuid.New(),
+	}
+	r.addToProviderMap(p)
+
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+	r.reloadOne(context.Background(), tenant, providerURI)
+
+	// Source MUST be installed (no pin enforcement when Issuers is empty).
+	var installed bool
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenant]; byURI != nil {
+			installed = byURI[providerURI] != nil
+		}
+	}()
+	if !installed {
+		t.Error("source was not installed for provider with empty Issuers list — D17 fallback broken")
+	}
+}
