@@ -147,12 +147,19 @@ func (a *oidcAdapter) RegisterOidcProvider(w http.ResponseWriter, r *http.Reques
 
 	tenantID := tenantFromCtx(r)
 
-	// OwnerLegalEntityID: parse tenantID (UUID-formatted string) as uuid.UUID.
-	// If the tenant ID is not a valid UUID, use uuid.Nil so bootstrap/dev tenants
-	// don't panic — the service layer records this for audit only.
+	// OwnerLegalEntityID: the data model types this field as uuid.UUID (matching
+	// cyoda-cloud's JWKOIDCEntity.ownerLegalEntityId). Non-UUID tenant IDs (e.g.
+	// the bootstrap convenience string "default-tenant") must be rejected — silent
+	// coercion to uuid.Nil would collide in KV storage across all non-UUID tenants
+	// and produce a synthetic "nil tenant" identity at token-validation time.
 	ownerID, parseErr := uuid.Parse(string(tenantID))
 	if parseErr != nil {
-		ownerID = uuid.Nil
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest,
+			common.ErrCodeOidcInvalidTenant,
+			"oidc provider registration requires a uuid-shaped tenant identifier; bootstrap deployments using the literal 'default-tenant' string must migrate to real tenant uuids",
+		))
+		return
 	}
 
 	in := oidc.RegisterInput{

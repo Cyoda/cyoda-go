@@ -174,6 +174,27 @@ func TestExtractRoles_HandlesAllInputForms(t *testing.T) {
 	}
 }
 
+// TestBuildOIDCUserContext_NilOwnerLegalEntityIDRejected verifies the
+// defence-in-depth guard: if a provider was somehow persisted with
+// OwnerLegalEntityID == uuid.Nil (bypassing the adapter's UUID check),
+// buildOIDCUserContext refuses to build a UserContext.
+//
+// Background: the synthetic "nil tenant" (00000000-...) would silently merge
+// users from distinct non-UUID tenants into a shared identity downstream.
+func TestBuildOIDCUserContext_NilOwnerLegalEntityIDRejected(t *testing.T) {
+	p := &OidcProvider{
+		ID:                 uuid.MustParse("11111111-2222-3333-4444-555555555555"),
+		OwnerLegalEntityID: uuid.Nil,
+	}
+	_, err := buildOIDCUserContext(p, map[string]any{"sub": "alice"}, "roles")
+	if err == nil {
+		t.Fatal("expected error for nil OwnerLegalEntityID, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil OwnerLegalEntityID") {
+		t.Errorf("error should mention nil OwnerLegalEntityID: %v", err)
+	}
+}
+
 func TestBuildOIDCUserContext_SubContainingColonAccepted(t *testing.T) {
 	// `:` is a legitimate sub character (Auth0 uses e.g. `auth0|abc123`,
 	// but other IdPs may use `:`). UserID is opaque downstream per D23.

@@ -2820,6 +2820,24 @@ func RunOidcE2E_MultiNodeEviction(t *testing.T, _ BackendFixture) {
 	t.Skip("documented limitation: multi-node JWT cache eviction requires a multi-process gossip ring not available in the single-subprocess parity fixture; covered by internal/auth/oidc/ and internal/multinode unit tests")
 }
 
+// RunOidcInvalidTenantUUIDRejected_Skip documents the unit-level coverage for
+// the non-UUID tenant rejection on OIDC provider registration (Critical-2 fix).
+//
+// Covered by: internal/domain/account unit test
+// TestOidcAdapter_NonUUIDTenantRejected — that test constructs a request with a
+// non-UUID tenant context ("default-tenant"), calls RegisterOidcProvider, and
+// asserts 400 + OIDC_INVALID_TENANT.
+//
+// Why skipped here: the parity fixture's NewTenant always returns UUID-shaped
+// tenant IDs (the parity HTTP server requires valid JWTs, which carry a UUID
+// caas_org_id). Injecting a non-UUID tenant context at the HTTP level requires
+// bypassing JWT auth entirely — possible only at the unit-test level where the
+// context can be set directly. The unit test is the correct and sufficient layer
+// for this assertion.
+func RunOidcInvalidTenantUUIDRejected_Skip(t *testing.T, _ BackendFixture) {
+	t.Skip("requires non-UUID tenant fixture support not available at the parity level; covered by internal/domain/account unit test TestOidcAdapter_NonUUIDTenantRejected")
+}
+
 // RunOidcD10_MaliciousDiscoveryJWKSURI_Skip documents the unit-level coverage
 // for the fetch-time SSRF defence on the jwks_uri returned by a discovery doc.
 //

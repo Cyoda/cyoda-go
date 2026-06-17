@@ -779,6 +779,43 @@ func TestHandler_OidcStub_Returns501_WhenAdapterNil(t *testing.T) {
 	}
 }
 
+// ---------- Non-UUID tenant rejection (Critical-2 fix) ----------
+
+// withNonUUIDTenantAdminCtx puts a non-UUID tenant admin user in the request
+// context. This mimics a bootstrap deployment where CYODA_BOOTSTRAP_TENANT_ID
+// is set to the literal "default-tenant" string.
+func withNonUUIDTenantAdminCtx(req *http.Request) *http.Request {
+	return req.WithContext(spi.WithUserContext(req.Context(), &spi.UserContext{
+		UserID:   "admin-user",
+		UserName: "Admin User",
+		Tenant:   spi.Tenant{ID: "default-tenant", Name: "default-tenant"},
+		Roles:    []string{"ROLE_ADMIN"},
+	}))
+}
+
+// TestOidcAdapter_NonUUIDTenantRejected verifies that RegisterOidcProvider
+// returns 400 with code OIDC_INVALID_TENANT (not silently coercing to uuid.Nil)
+// when the calling tenant's ID is not a valid UUID.
+//
+// Background: OwnerLegalEntityID is a uuid.UUID. Coercing a non-UUID tenant to
+// uuid.Nil would collide in KV storage across all non-UUID tenants and produce
+// a synthetic "nil tenant" identity at token validation time.
+func TestOidcAdapter_NonUUIDTenantRejected(t *testing.T) {
+	h := newOidcAdapterFixture(t)
+	body := rawBody(`{"wellKnownConfigUri":"https://idp.example/.well-known/openid-configuration"}`)
+	req := withNonUUIDTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers", body))
+	rr := httptest.NewRecorder()
+
+	h.RegisterOidcProvider(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400 (non-UUID tenant must be rejected), body=%s", rr.Code, rr.Body.String())
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeOidcInvalidTenant {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeOidcInvalidTenant)
+	}
+}
+
 // ---------- Content-Type hygiene ----------
 
 func TestRegisterOidcProvider_ResponseContentType_IsApplicationJSON(t *testing.T) {

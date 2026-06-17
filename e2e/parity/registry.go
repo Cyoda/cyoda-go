@@ -197,6 +197,8 @@ var allTests = []NamedTest{
 	{"OidcD10_SSRF_NoRedirectFollowing", RunOidcD10_SSRF_NoRedirectFollowing},
 	// D10 malicious jwks_uri in discovery doc (unit-level coverage; skipped at parity level).
 	{"OidcD10_MaliciousDiscoveryJWKSURI_Skip", RunOidcD10_MaliciousDiscoveryJWKSURI_Skip},
+	// Critical-2 fix — non-UUID tenant rejection (unit-level coverage; skipped at parity level).
+	{"OidcInvalidTenantUUIDRejected_Skip", RunOidcInvalidTenantUUIDRejected_Skip},
 	// D19 reactivate (rows 50-51).
 	{"OidcD19_ReactivateSuccessPath", RunOidcD19_ReactivateSuccessPath},
 	{"OidcD19_ReactivateWithFailedUpstreamPreservesCache", RunOidcD19_ReactivateWithFailedUpstreamPreservesCache},

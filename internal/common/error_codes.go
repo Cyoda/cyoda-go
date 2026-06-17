@@ -81,6 +81,13 @@ const (
 
 // OIDC provider management
 const (
+	// ErrCodeOidcInvalidTenant is returned when an OIDC provider registration
+	// is attempted from a tenant context whose ID is not a valid UUID.
+	// OIDC provider ownership requires UUID-shaped legal entity identifiers
+	// (matching the cyoda data model). Bootstrap deployments using the literal
+	// "default-tenant" string must migrate to real tenant UUIDs before
+	// registering OIDC providers.
+	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
 	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
 	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
 	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"

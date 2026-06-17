@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/google/uuid"
 )
 
 const maxSubLength = 255
@@ -29,6 +30,14 @@ var subValidationSentinel = fmt.Errorf("oidc: sub validation failed")
 // control characters (\x00-\x1f, \x7f). Violations return an error wrapping
 // subValidationSentinel with subcode `missing_sub` or `invalid_sub`.
 func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesClaim string) (*spi.UserContext, error) {
+	// Defence-in-depth: if the provider somehow got persisted with a nil
+	// OwnerLegalEntityID (bypassing the adapter's UUID check), refuse to build
+	// a UserContext. The synthetic "nil tenant" (00000000-...) would silently
+	// merge users from distinct non-UUID tenants into a shared identity downstream.
+	if p.OwnerLegalEntityID == uuid.Nil {
+		return nil, fmt.Errorf("%w: nil OwnerLegalEntityID (registration bug — adapter should have rejected this)", subValidationSentinel)
+	}
+
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		return nil, fmt.Errorf("%w: missing_sub", subValidationSentinel)

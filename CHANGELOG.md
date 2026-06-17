@@ -24,6 +24,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- OIDC provider registration now requires the calling tenant to be UUID-shaped.
+  Bootstrap deployments using the literal `default-tenant` string for
+  `CYODA_BOOTSTRAP_TENANT_ID` must migrate to a real tenant UUID before
+  registering OIDC providers. Returns `400 BAD_REQUEST` with code
+  `OIDC_INVALID_TENANT` otherwise.
 - Seven `/oauth/oidc/providers/*` endpoints previously returned `501 NOT_IMPLEMENTED`; they now return real responses. Clients that special-cased the 501 status on these paths should update their error handling.
 - Legacy `/oauth/keys/` prefix mux entry removed from `app/app.go`; chi router now owns all `/oauth/keys/*` paths.
 - JWKS endpoint (`/.well-known/jwks.json`) now publishes grace-period-invalidated keys until their `validTo` passes.
