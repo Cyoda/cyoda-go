@@ -54,15 +54,20 @@ The token's own `tid`/`tenant`/`org` claims are ignored regardless.
 ### D2. KeyValueStore-backed persistence, single namespace, composite keys
 
 The provider registry uses the generic `spi.KeyValueStore` SPI with
-**one namespace `oidc-providers`** and composite keys
-(`<tenantID>:<provider-uuid>` for blobs, `<tenantID>:uri:<sha256(uri)>`
-for the uniqueness index). The store runs under the system tenant
-context, mirroring `KVTrustedKeyStore`. **No SPI changes.** The
-read-after-write race window is left observable; correctness is
-preserved by re-reading the index after `Put` (loser deletes its
-own blob and returns 409) and by stale-index defence on every read
-(`Get` verifies the blob exists and its `OwnerLegalEntityID` matches
-the index-key tenant prefix).
+**one namespace `oidc-providers`** and three composite-key shapes:
+provider blobs (`<tenantID>:<provider-uuid>`), per-tenant URI
+uniqueness index (`<tenantID>:uri:<sha256(uri)>`), and **cross-tenant
+URI ownership history (`_history:<sha256(uri)>`)** for the D25 audit
+signal. All three live in the system tenant's partition (the store
+runs under system context, mirroring `KVTrustedKeyStore`); the
+leading `_` on the history key disambiguates from tenant-UUID-
+prefixed keys (UUIDs are hex+dashes, never start with `_`). **No
+SPI changes.** The read-after-write race window is left observable;
+correctness is preserved by re-reading the index after `Put` (loser
+deletes its own blob and returns 409) and by stale-index defence on
+every read. The ownership-history entry persists indefinitely
+per URI — bounded by the number of distinct registrations that URI
+has ever had — and is restart-survivable and cluster-consistent.
 
 ### D3. Chained validator composition with four distinct error sentinels
 
@@ -96,10 +101,12 @@ the chain.
   invalidates, and reactivates its own providers without involving a
   system administrator. Tenant A's IdP misconfiguration cannot break
   Tenant B's shared validation surface.
-- **Plugin parity.** OIDC ships across memory / sqlite / postgres /
-  cassandra simultaneously because the persistence path is the
-  generic KV SPI with no new ops. The trusted-key precedent is
-  battle-tested.
+- **Plugin parity.** OIDC ships across in-tree plugins (memory,
+  sqlite, postgres) at v0.8.0; cassandra inherits at its next pin
+  update without code changes. The persistence path is the generic
+  KV SPI with no new ops; the trusted-key precedent is battle-tested.
+  Cassandra acceptance verification belongs to the cassandra repo's
+  PR, not this one.
 - **Reasoning about token validation.** Four sentinels make the
   cases mechanically distinct: "I don't know this kid" (chain
   fall-through) versus "I know this kid but iss is wrong" (hard
@@ -108,10 +115,16 @@ the chain.
 ### Harder
 
 - **Token validation iterates `O(active providers)` in the worst
-  case.** Mitigated by a self-healing `kid`-indexed fast path. The
-  cold path (kid never seen before, or after rotation) remains a
-  linear scan. At ≥10K active providers across all tenants, persisting
-  the kid index across restarts becomes worthwhile; v0.8.0 does not.
+  case.** Mitigated by a `kid`-indexed fast path. The cold path is
+  load-bearing and is responsible for populating `kidIndex` at
+  resolution time (before the caller verifies signatures); self-heal
+  on signature failure is the *primary* correctness mechanism for
+  cross-tenant `kid` collisions, not a safety net layered on top of
+  a primary mechanism. Misunderstanding either half — failing to
+  populate at resolve, or failing to evict at verify-fail — produces
+  wrong behaviour. The two-part contract is explicit in the spec.
+  At ≥10K active providers across all tenants, persisting the kid
+  index across restarts becomes worthwhile; v0.8.0 does not.
 - **The (index, blob) write pair on `Register` races under load.**
   The window is bounded by the slower node's write latency between
   read and second write — potentially seconds, not microseconds.
@@ -127,7 +140,10 @@ the chain.
   missing. Receiver-side broadcast handlers are single-flight per
   `(tenantID, uri)` with `defer recover()` so a panic in the OIDC
   handler cannot kill delivery of other subsystems' invalidations on
-  the same memberlist node.
+  the same memberlist node. `reload_all` is the cluster's anti-
+  entropy convergence operation and takes the registry write lock
+  for the rebuild duration — a brief stop-the-world on the OIDC
+  registry only, intentional for correctness over throughput.
 - **Cold-start window for OIDC tokens.** Phase-2 (async JWKS fetch)
   runs after the listener binds; tokens arriving for a not-yet-warmed
   provider get `ErrUnknownKID` → 401. This is a documented
@@ -163,9 +179,18 @@ the chain.
 - **Cross-IdP `sub`-collision.** External IdPs' `sub` values are
   opaque per-IdP and not globally unique. The spec namespaces
   `UserContext.UserID` as `oidc:<providerUUID>:<sub>` to prevent
-  collision into a shared UserID space. Per-IdP role-claim names
-  (Auth0 / Cognito / Keycloak vary) are honoured via a per-provider
-  `RolesClaim` field falling back to a global default.
+  collision into a shared UserID space. **The composite `UserID` is
+  opaque** — no downstream component may parse it. `sub` is bounded
+  (≤255 chars, no ASCII control characters) to prevent parser /
+  log-injection footguns from IdPs with permissive `sub` formats.
+  Per-IdP role-claim names (Auth0 / Cognito / Keycloak vary) are
+  honoured via a per-provider `RolesClaim` field falling back to a
+  global default.
+- **`iss` comparison is bytewise per OIDC Core 1.0 §2.** IdPs that
+  serve discovery `issuer` and JWT `iss` with inconsistent trailing
+  slashes are non-compliant; operators must populate the provider's
+  `Issuers` pin-list with the JWT iss form. URL normalization is
+  itself a new attack surface and is not performed.
 
 ### Neutral
 
@@ -301,3 +326,55 @@ Would close the D11 register-race window at the SPI level.
 changes in this PR. The read-after-write index validation in D11 is
 sufficient for correctness; the write-race remains observable but
 harmless.
+
+### In-memory per-node `previousOwners` cache for D25
+
+rev. 3 of the spec used an in-memory cache (built at warmup, updated
+on Register) to detect cross-tenant URI re-registration. **Rejected
+during the third fresh-context review.** The cache was not cluster-
+consistent (each node had its own), not restart-survivable, and
+risked unbounded memory growth. rev. 4 replaces it with a KV-backed
+`_history:<sha256(uri)>` entry in the system-tenant partition —
+restart-survivable, cluster-consistent, naturally bounded by the
+number of distinct registrations per URI.
+
+### Cross-op single-flight key `(op, tenantID, uri)` and reload_all key `*` racing
+
+rev. 2 keyed single-flight by `(op, T, uri)` — a reload and an
+invalidate for the same provider ran in parallel under different
+keys. rev. 3 re-keyed to `(T, uri)` for reload/invalidate but kept
+`*` for reload_all, leaving reload_all racing with reload(T, uri)
+on the same provider. **Rejected during the third fresh-context
+review.** rev. 4 makes `Registry.ReloadAll` acquire `mu.Lock()` for
+the rebuild duration, which serializes with all per-(T, uri) work
+because the per-(T, uri) handlers hold read or write locks
+themselves. Brief stop-the-world on reload_all is acceptable on
+what is already an infrequent anti-entropy convergence operation.
+
+### URL-normalized `iss` comparison
+
+OIDC Core 1.0 §2 mandates strict bytewise equality between the
+JWT `iss` claim and the discovery doc's `issuer` field. We
+considered relaxing to URL canonical form (trailing-slash tolerance,
+default-port normalization, scheme case folding) to accommodate
+non-compliant IdPs. **Rejected.** URL normalization is itself a new
+attack surface; bytewise is the spec-compliant answer. IdPs with
+inconsistent trailing-slash behaviour use the explicit `Issuers`
+pin-list to accept the actual JWT iss form. Recorded as an
+operational gap in the spec, not a defect.
+
+### Separate `audit.go` file for D25 emission
+
+rev. 3 specified a separate `internal/auth/oidc/audit.go` file for
+the one-call `slog.Info` emitter. **Rejected during the third
+review** as premature decomposition. rev. 4 inlines the emission
+into `service.go` near the call site.
+
+### `OIDC_*` error-code prefix vs `AUTH_OIDC_*`
+
+The second-review reviewer suggested an `AUTH_OIDC_*` namespace for
+token-validation-time codes to distinguish them from management-API
+codes. **Rejected.** Existing precedent (`KEYPAIR_NOT_FOUND`,
+`TRUSTED_KEY_NOT_FOUND`, `M2M_CLIENT_NOT_FOUND`) is subsystem-prefix
+without a layer wrapper. `OIDC_*` follows the precedent; the prefix
+identifies the subsystem, not the architectural layer.
