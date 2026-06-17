@@ -134,6 +134,40 @@ func GenerateJWTKeySet() (*JWTKeySet, error) {
 	}, nil
 }
 
+// MintNonAdminTenantJWT creates a fresh tenant JWT with no ROLE_ADMIN scope.
+// Use this to test endpoints that require ROLE_ADMIN — the request should
+// be rejected with 403 FORBIDDEN. The returned tenant has the same shape as
+// MintTenantJWT but carries only ROLE_M2M so that the request authenticates
+// successfully while failing the admin authorization gate.
+func MintNonAdminTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
+	t.Helper()
+
+	tenantID := uuid.NewString()
+	now := time.Now()
+
+	claims := map[string]any{
+		"sub":          "test-nonadmin-" + tenantID[:8],
+		"iss":          ks.Issuer,
+		"caas_user_id": "test-nonadmin-" + tenantID[:8],
+		"caas_org_id":  tenantID,
+		"scopes":       []string{"ROLE_M2M"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}
+
+	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	if err != nil {
+		t.Fatalf("failed to mint non-admin tenant JWT: %v", err)
+	}
+
+	return parity.Tenant{
+		ID:    tenantID,
+		Token: token,
+	}
+}
+
 // MintTenantJWT creates a fresh tenant JWT for use in parity tests.
 func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()
@@ -326,6 +360,12 @@ func ParseHealthAddr(r io.Reader, timeout time.Duration) (string, error) {
 // CyodaEnv returns the base environment variables needed by every
 // cyoda-go fixture. Callers append backend-specific vars (e.g.
 // CYODA_POSTGRES_URL for postgres).
+//
+// OIDC network-level overrides are set here for test isolation:
+//   - CYODA_OIDC_REQUIRE_HTTPS=false — parity tests register providers
+//     with http:// URIs (fake hostnames) so no external TLS is needed.
+//   - CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true — skips DNS-based SSRF
+//     checks so tests can use arbitrary hostnames without network I/O.
 func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 	return append(os.Environ(),
 		fmt.Sprintf("CYODA_HTTP_PORT=%d", httpPort),
@@ -340,6 +380,9 @@ func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 		"CYODA_BOOTSTRAP_TENANT_ID=system-tenant",
 		"CYODA_BOOTSTRAP_USER_ID=compute-admin",
 		"CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M",
+		// OIDC test overrides — allow http:// and skip SSRF DNS checks.
+		"CYODA_OIDC_REQUIRE_HTTPS=false",
+		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true",
 	)
 }
 

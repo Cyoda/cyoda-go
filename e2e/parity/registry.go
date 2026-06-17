@@ -112,6 +112,27 @@ var allTests = []NamedTest{
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 
+	// Phase 9.2 — OIDC CRUD + authz (#284)
+	// Rows 1-6: CRUD happy-path.
+	{"OidcRegister", RunOidcRegister},
+	{"OidcListAll", RunOidcListAll},
+	{"OidcListActiveOnly", RunOidcListActiveOnly},
+	{"OidcUpdateIssuers", RunOidcUpdateIssuers},
+	{"OidcInvalidate", RunOidcInvalidate},
+	{"OidcDelete", RunOidcDelete},
+	// Rows 7-10: CRUD negative (404 / duplicate).
+	{"OidcUpdateNonExistent", RunOidcUpdateNonExistent},
+	{"OidcInvalidateNonExistent", RunOidcInvalidateNonExistent},
+	{"OidcReactivateNonExistent", RunOidcReactivateNonExistent},
+	{"OidcDuplicateRegister", RunOidcDuplicateRegister},
+	// Rows 11-16: Authz negative — non-admin token → 403 FORBIDDEN.
+	{"OidcNonAdminRegister", RunOidcNonAdminRegister},
+	{"OidcNonAdminUpdate", RunOidcNonAdminUpdate},
+	{"OidcNonAdminInvalidate", RunOidcNonAdminInvalidate},
+	{"OidcNonAdminReactivate", RunOidcNonAdminReactivate},
+	{"OidcNonAdminDelete", RunOidcNonAdminDelete},
+	{"OidcNonAdminReload", RunOidcNonAdminReload},
+
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the
