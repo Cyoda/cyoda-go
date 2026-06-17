@@ -4766,7 +4766,7 @@ paths:
       summary: List all registered OIDC providers
       description: >
         Retrieves a list of all registered OIDC providers, including both active
-        and inactive providers.
+        and inactive providers. Accessible by any authenticated tenant member.
       operationId: listOidcProviders
       parameters:
         - name: activeOnly
@@ -4802,8 +4802,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -4816,6 +4814,8 @@ paths:
 
         discovered from the well-known configuration endpoint and used to
         validate JWT tokens.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: registerOidcProvider
       requestBody:
         content:
@@ -4860,8 +4860,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -4892,6 +4890,8 @@ paths:
         latest OIDC provider
 
         configurations and that any revoked keys are no longer trusted.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: reloadOidcProviders
       responses:
         "200":
@@ -4915,8 +4915,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -4929,6 +4927,8 @@ paths:
 
         The provider will first be invalidated (if not already) and then removed
         from storage.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: deleteOidcProvider
       parameters:
         - name: id
@@ -4966,8 +4966,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     patch:
@@ -4988,6 +4986,8 @@ paths:
         endpoint with the
 
         new issuer configuration when they are next needed for JWT validation.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: updateOidcProvider
       parameters:
         - name: id
@@ -5040,8 +5040,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -5057,6 +5055,8 @@ paths:
         but will no longer be
 
         used for JWT validation.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: invalidateOidcProvider
       parameters:
         - name: id
@@ -5094,8 +5094,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -5111,6 +5109,8 @@ paths:
 
         This operation is idempotent - if the provider is already active, it
         returns the current state.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: reactivateOidcProvider
       parameters:
         - name: id
@@ -5156,8 +5156,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/token:
@@ -8512,12 +8510,31 @@ components:
           example: 2025-11-01T10:00:00.000Z
         issuers:
           type: array
-          description: "List of allowed issuer URIs from this OIDC provider. When present
-            and non-empty, JWT validation requires the 'iss' claim to match one
-            of these values. "
+          description: "List of allowed `iss` claim values for tokens from this provider.
+            When present and non-empty, the JWT `iss` claim must match one of
+            these values bytewise. When absent or empty, the `iss` claim must
+            match the provider's discovery-document `issuer` field bytewise per
+            OIDC Core 1.0 §2."
           example: "[https://oidc-domain.local/]"
           items:
             type: string
+        expectedAudiences:
+          type: array
+          description: "Optional list of audiences accepted in the JWT `aud` claim for
+            this provider. When omitted, null, or empty array, the audience claim
+            is not checked (issuer-binding is the trust anchor)."
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 10
+        rolesClaim:
+          type: string
+          maxLength: 100
+          description: "Optional override for the JWT claim that carries roles for tokens
+            from this provider. When omitted or null, falls back to the global
+            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
+            override accommodates IdP variation (e.g., Cognito uses
+            `cognito:groups`, Keycloak uses `realm_access.roles`)."
       required:
         - active
         - createdAt
@@ -8533,15 +8550,32 @@ components:
           example: https://oidc-domain.local/.well-known/openid-configuration
         issuers:
           type: array
-          description: "Optional but highly recommended list of allowed issuer URIs from
-            this OIDC provider. When present, JWT validation will require the
-            'iss' claim to match one of these values. When set to null or empty
-            array, the 'iss' claim validation is skipped. "
+          description: "Optional list of allowed `iss` claim values for tokens from this
+            provider. When present, the JWT `iss` claim must match one of these
+            values bytewise. When omitted, null, or empty array, the `iss` claim
+            must match the provider's discovery-document `issuer` field bytewise
+            per OIDC Core 1.0 §2."
           example: "[https://oidc-domain.local/]"
           items:
             type: string
           maxItems: 2147483647
-          minItems: 1
+        expectedAudiences:
+          type: array
+          description: "Optional list of audiences accepted in the JWT `aud` claim for
+            this provider. When omitted, null, or empty array, the audience claim
+            is not checked (issuer-binding is the trust anchor)."
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 10
+        rolesClaim:
+          type: string
+          maxLength: 100
+          description: "Optional override for the JWT claim that carries roles for tokens
+            from this provider. When omitted or null, falls back to the global
+            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
+            override accommodates IdP variation (e.g., Cognito uses
+            `cognito:groups`, Keycloak uses `realm_access.roles`)."
       required:
         - wellKnownConfigUri
     ReactivateOidcProviderRequestDto:
@@ -9081,15 +9115,32 @@ components:
       properties:
         issuers:
           type: array
-          description: "Optional but highly recommended list of allowed issuer URIs from
-            this OIDC provider. When present, JWT validation will require the
-            'iss' claim to match one of these values. When set to null or empty
-            array, the 'iss' claim validation is skipped. "
+          description: "Optional list of allowed `iss` claim values for tokens from this
+            provider. When present, the JWT `iss` claim must match one of these
+            values bytewise. When omitted, null, or empty array, the `iss` claim
+            must match the provider's discovery-document `issuer` field bytewise
+            per OIDC Core 1.0 §2."
           example: "[https://oidc-domain.local/, https://oidc-domain.local/tenant1]"
           items:
             type: string
           maxItems: 2147483647
-          minItems: 1
+        expectedAudiences:
+          type: array
+          description: "Optional list of audiences accepted in the JWT `aud` claim for
+            this provider. When omitted, null, or empty array, the audience claim
+            is not checked (issuer-binding is the trust anchor)."
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 10
+        rolesClaim:
+          type: string
+          maxLength: 100
+          description: "Optional override for the JWT claim that carries roles for tokens
+            from this provider. When omitted or null, falls back to the global
+            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
+            override accommodates IdP variation (e.g., Cognito uses
+            `cognito:groups`, Keycloak uses `realm_access.roles`)."
     PageMetadataDto:
       type: object
       properties:
