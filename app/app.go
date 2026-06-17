@@ -271,7 +271,7 @@ func New(cfg Config) *App {
 		if gossipReg != nil {
 			oidcBroadcaster = gossipReg
 		}
-		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidc.NopMetrics{}, slog.Default())
+		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidc.NopMetrics{}, slog.Default(), cfg.IAM.OIDC.AllowPrivateNetworks)
 
 		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
 			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())

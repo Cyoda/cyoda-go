@@ -2819,3 +2819,22 @@ func RunOidcE2E_TokenValidation(t *testing.T, fix BackendFixture) {
 func RunOidcE2E_MultiNodeEviction(t *testing.T, _ BackendFixture) {
 	t.Skip("documented limitation: multi-node JWT cache eviction requires a multi-process gossip ring not available in the single-subprocess parity fixture; covered by internal/auth/oidc/ and internal/multinode unit tests")
 }
+
+// RunOidcD10_MaliciousDiscoveryJWKSURI_Skip documents the unit-level coverage
+// for the fetch-time SSRF defence on the jwks_uri returned by a discovery doc.
+//
+// Covered by: internal/auth/oidc unit test
+// TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked — that test constructs a
+// Registry with allowPrivate=false, uses a fakeDiscovery that returns a doc
+// pointing at a 127.0.0.1 URL as jwks_uri, calls reloadOne, and asserts the
+// malicious endpoint is never reached.
+//
+// Why skipped here: the parity subprocess runs with
+// CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true so that the ParityFixtureIdP (also on
+// 127.0.0.1) can be registered and its JWKS fetched. That flag disables the
+// blocklist check, meaning any parity-level test of the block would be a false
+// negative. The unit test controls allowPrivate directly and is the correct
+// layer for this assertion.
+func RunOidcD10_MaliciousDiscoveryJWKSURI_Skip(t *testing.T, _ BackendFixture) {
+	t.Skip("covered by internal/auth/oidc unit test TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked — parity subprocess has CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true which would bypass the safeDialContext blocklist check")
+}

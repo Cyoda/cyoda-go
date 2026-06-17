@@ -48,7 +48,7 @@ func newOidcTestService(t *testing.T) *oidc.Service {
 	if err != nil {
 		t.Fatalf("NewKVProviderStore: %v", err)
 	}
-	reg := oidc.NewRegistry(store, &oidcFakeDiscovery{}, nil, oidc.NopMetrics{}, nil)
+	reg := oidc.NewRegistry(store, &oidcFakeDiscovery{}, nil, oidc.NopMetrics{}, nil, true /* allowPrivate: tests bind to httptest.Server on 127.0.0.1 */)
 	return oidc.NewService(store, reg, nil)
 }
 

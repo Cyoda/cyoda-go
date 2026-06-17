@@ -18,7 +18,7 @@ import (
 func newTestService(t *testing.T) *Service {
 	t.Helper()
 	store := newTestStore(t)
-	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, nil)
+	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, nil, true /* allowPrivate: tests bind to httptest.Server on 127.0.0.1 */)
 	return NewService(store, r, nil)
 }
 
@@ -28,7 +28,7 @@ func newTestServiceWithLogger(t *testing.T) (*Service, *bytes.Buffer) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	store := newTestStore(t)
-	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, logger)
+	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, logger, true /* allowPrivate: tests bind to httptest.Server on 127.0.0.1 */)
 	return NewService(store, r, logger), &buf
 }
 

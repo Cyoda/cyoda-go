@@ -3,8 +3,10 @@ package oidc
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/tls"
 	"errors"
 	"log/slog"
+	"net/http"
 	"runtime"
 	"sync"
 	"time"
@@ -49,24 +51,31 @@ type Registry struct {
 	sources   map[spi.TenantID]map[string]*providerSource
 	kidIndex  map[string][]providerRef // kid → candidate refs
 
-	store        OidcProviderStore
-	discovery    Discovery
-	broadcast    spi.ClusterBroadcaster
-	singleflight *singleflightDebouncer
-	clock        func() time.Time
-	metrics      Metrics
-	logger       *slog.Logger
+	store         OidcProviderStore
+	discovery     Discovery
+	broadcast     spi.ClusterBroadcaster
+	singleflight  *singleflightDebouncer
+	clock         func() time.Time
+	metrics       Metrics
+	logger        *slog.Logger
+	allowPrivate  bool // mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS; gates SSRF dial check on JWKS fetch
 }
 
 // NewRegistry constructs the registry. broadcast may be nil in tests or
 // single-node deployments; the production startup hook validates non-nil
 // when cluster mode is enabled.
+//
+// allowPrivate mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS: when false, JWKS
+// fetches are subject to the same safeDialContext blocklist used at
+// register-time (D10). Set to true only for test/dev environments where the
+// IdP runs on a loopback address.
 func NewRegistry(
 	store OidcProviderStore,
 	disc Discovery,
 	broadcast spi.ClusterBroadcaster,
 	metrics Metrics,
 	logger *slog.Logger,
+	allowPrivate bool,
 ) *Registry {
 	if logger == nil {
 		logger = slog.Default()
@@ -85,6 +94,7 @@ func NewRegistry(
 		clock:        time.Now,
 		metrics:      metrics,
 		logger:       logger,
+		allowPrivate: allowPrivate,
 	}
 	if broadcast != nil {
 		broadcast.Subscribe(topicOidcProviders, r.handleBroadcast)
@@ -376,8 +386,29 @@ func (r *Registry) reloadOne(ctx context.Context, tenant spi.TenantID, uri strin
 		return
 	}
 
+	// Build a safeDialContext-backed transport for the JWKS fetch so that
+	// fetch-time SSRF defence (D10) applies even when the discovery doc's
+	// jwks_uri differs from the originally-validated wellKnownConfigUri
+	// (e.g. an attacker-controlled server returns a doc with
+	// jwks_uri: http://169.254.169.254/...).
+	//
+	// TLS 1.3 is preserved: the MinVersion pin is set on TLSClientConfig,
+	// not on the DialContext, so both constraints apply independently.
+	//
+	// Note: if the underlying HTTP client follows redirects, the per-dial
+	// safeDialContext still catches internal-range targets on every new
+	// connection because the dialer is re-invoked for each TCP dial
+	// regardless of whether the request originated from a redirect.
+	jwksTransport := &http.Transport{
+		DialContext:           safeDialContext(r.allowPrivate),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13},
+	}
+
 	// Build the per-provider key source before taking any lock.
-	inner := auth.NewHTTPJWKSSource(doc.JWKSURI, doc.Issuer, 5*time.Minute)
+	inner := auth.NewHTTPJWKSSource(doc.JWKSURI, doc.Issuer, 5*time.Minute,
+		auth.WithJWKSTransport(jwksTransport))
 
 	// I9: check that the provider exists before installing the source.
 	var prov *OidcProvider

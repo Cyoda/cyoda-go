@@ -5,6 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +54,7 @@ func newTestRegistry(t *testing.T) *Registry {
 		nil,
 		NopMetrics{},
 		nil,
+		true, // allowPrivate: tests bind to httptest.Server on 127.0.0.1
 	)
 }
 
@@ -239,5 +244,57 @@ func TestRegistry_ResolveKey_HotPathFromKidIndex(t *testing.T) {
 	}
 	if res.Provider.ID != p.ID {
 		t.Errorf("hot-path Provider mismatch")
+	}
+}
+
+// TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked verifies that when a
+// discovery document names a loopback jwks_uri, reloadOne refuses to fetch it
+// (D10 fetch-time SSRF defence). The malicious endpoint must never receive a
+// GET even though the provider itself exists in the registry.
+//
+// Design: we bypass HTTPDiscovery entirely by using fakeDiscovery, so the
+// discovery server (also on 127.0.0.1) is never contacted over HTTP — only
+// the JWKS fetch is exercised. allowPrivate=false causes safeDialContext to
+// block the loopback JWKS URL.
+func TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked(t *testing.T) {
+	// Stand up a "malicious internal" server that records any incoming hits.
+	var internalHit atomic.Bool
+	malicious := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		internalHit.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"keys":[]}`)
+	}))
+	defer malicious.Close()
+
+	// fakeDiscovery returns a doc whose jwks_uri points at the malicious server.
+	// This simulates an attacker-controlled discovery doc that redirects the
+	// JWKS fetch to an internal endpoint.
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			"https://example.test/.well-known/openid-configuration": {
+				Issuer:  "https://idp.example.test",
+				JWKSURI: malicious.URL + "/jwks",
+			},
+		},
+	}
+
+	// allowPrivate=false: the safeDialContext for the JWKS transport must block
+	// 127.0.0.1 (malicious.URL host).
+	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, false /* allowPrivate */)
+
+	p := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://example.test/.well-known/openid-configuration",
+		Issuers:            []string{"https://idp.example.test"},
+		OwnerLegalEntityID: uuid.New(),
+		CreatedAt:          time.Now(),
+	}
+	r.addToProviderMap(p)
+
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+	r.reloadOne(context.Background(), tenant, p.WellKnownConfigURI)
+
+	if internalHit.Load() {
+		t.Fatal("malicious internal JWKS endpoint received a GET — SSRF defence FAILED for JWKS fetch")
 	}
 }

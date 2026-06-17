@@ -195,6 +195,8 @@ var allTests = []NamedTest{
 	{"OidcD10_SSRF_FetchTimeDNSRebind", RunOidcD10_SSRF_FetchTimeDNSRebind},
 	{"OidcD10_SSRF_IPv6BlockedRanges", RunOidcD10_SSRF_IPv6BlockedRanges},
 	{"OidcD10_SSRF_NoRedirectFollowing", RunOidcD10_SSRF_NoRedirectFollowing},
+	// D10 malicious jwks_uri in discovery doc (unit-level coverage; skipped at parity level).
+	{"OidcD10_MaliciousDiscoveryJWKSURI_Skip", RunOidcD10_MaliciousDiscoveryJWKSURI_Skip},
 	// D19 reactivate (rows 50-51).
 	{"OidcD19_ReactivateSuccessPath", RunOidcD19_ReactivateSuccessPath},
 	{"OidcD19_ReactivateWithFailedUpstreamPreservesCache", RunOidcD19_ReactivateWithFailedUpstreamPreservesCache},
