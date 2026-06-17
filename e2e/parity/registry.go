@@ -234,6 +234,10 @@ var allTests = []NamedTest{
 	{"OidcCriticalAuditFix_AudienceDisambiguatesSharedIdP", RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP},
 	{"OidcCriticalAuditFix_AmbiguousProviderRejected_Skip", RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip},
 
+	// Phase 9.7 — Audit fixes round 2 (#284)
+	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
+	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
+
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the

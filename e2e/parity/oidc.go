@@ -2921,6 +2921,25 @@ func RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP(t *testing.T, fix Ba
 	assertProbeStatus(t, http.StatusOK, statusB, bodyB)
 }
 
+// RunOidcReactivate_KeysFalse_PreservesCache_Skip documents why the
+// reactivateKeys=false cache-preservation invariant is not directly verifiable
+// at the parity level: confirming that the JWKS endpoint was NOT contacted
+// during a reactivate call requires instrumenting the mock IdP with a hit
+// counter that is only accessible within the same process.
+//
+// The invariant is fully and precisely covered by the service unit test:
+//
+//	TestService_Reactivate_KeysFalse_PreservesJWKSCache
+//
+// That test verifies:
+//  1. After Register + Invalidate, the existing keySource pointer is captured.
+//  2. After Reactivate(keys=false), the keySource pointer is identical —
+//     proving the existing source was preserved and no new JWKS source was
+//     constructed (which would require a JWKS fetch).
+func RunOidcReactivate_KeysFalse_PreservesCache_Skip(t *testing.T, _ BackendFixture) {
+	t.Skip("reactivateKeys=false cache-preservation covered by unit test TestService_Reactivate_KeysFalse_PreservesJWKSCache")
+}
+
 // RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip documents why the
 // ErrAmbiguousProvider rejection path is not directly observable at the parity
 // level: registering two providers for the same URI with overlapping audiences

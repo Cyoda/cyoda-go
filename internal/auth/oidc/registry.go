@@ -43,6 +43,26 @@ type providerSource struct {
 	discoveryDoc *DiscoveryDoc
 }
 
+// RegistryConfig holds the tunable parameters for a Registry instance. It
+// consolidates what would otherwise be a long, growing positional argument list
+// on NewRegistry.
+type RegistryConfig struct {
+	// AllowPrivateNetworks mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS: when
+	// false, JWKS fetches are subject to the safeDialContext blocklist that
+	// also applies at register-time (D10). Set to true only in test/dev
+	// environments where the IdP runs on a loopback address.
+	AllowPrivateNetworks bool
+
+	// ConnectTimeout is applied as the TLSHandshakeTimeout on the JWKS-fetch
+	// transport. Zero or negative values default to 5 s (matching the
+	// DiscoveryConfig default in discovery.go).
+	ConnectTimeout time.Duration
+
+	// SocketTimeout is applied as the ResponseHeaderTimeout on the JWKS-fetch
+	// transport. Zero or negative values default to 5 s.
+	SocketTimeout time.Duration
+}
+
 // Registry is the per-process OIDC provider cache. It implements the read
 // path for OIDCValidator (ResolveKey) and the cluster-broadcast receive path
 // (handleBroadcast — wired in broadcast.go).
@@ -58,30 +78,31 @@ type Registry struct {
 	singleflight *singleflightDebouncer
 	metrics      Metrics
 	logger       *slog.Logger
-	allowPrivate bool // mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS; gates SSRF dial check on JWKS fetch
+	cfg          RegistryConfig
 }
 
 // NewRegistry constructs the registry. broadcast may be nil in tests or
 // single-node deployments; the production startup hook validates non-nil
 // when cluster mode is enabled.
-//
-// allowPrivate mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS: when false, JWKS
-// fetches are subject to the same safeDialContext blocklist used at
-// register-time (D10). Set to true only for test/dev environments where the
-// IdP runs on a loopback address.
 func NewRegistry(
 	store OidcProviderStore,
 	disc Discovery,
 	broadcast spi.ClusterBroadcaster,
 	metrics Metrics,
 	logger *slog.Logger,
-	allowPrivate bool,
+	cfg RegistryConfig,
 ) *Registry {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if metrics == nil {
 		metrics = NopMetrics{}
+	}
+	if cfg.ConnectTimeout <= 0 {
+		cfg.ConnectTimeout = 5 * time.Second
+	}
+	if cfg.SocketTimeout <= 0 {
+		cfg.SocketTimeout = 5 * time.Second
 	}
 	r := &Registry{
 		providers:    map[spi.TenantID]map[string]*OidcProvider{},
@@ -93,7 +114,7 @@ func NewRegistry(
 		singleflight: newSingleflightDebouncer(),
 		metrics:      metrics,
 		logger:       logger,
-		allowPrivate: allowPrivate,
+		cfg:          cfg,
 	}
 	if broadcast != nil {
 		broadcast.Subscribe(topicOidcProviders, r.handleBroadcast)
@@ -512,6 +533,27 @@ func (r *Registry) WarmJWKSAsync(ctx context.Context) {
 // I9: if the provider is not present in r.providers at lookup time, log
 // INFO + increment counter + return. Do NOT auto-create a provider entry.
 func (r *Registry) reloadOne(ctx context.Context, tenant spi.TenantID, uri string) {
+	r.reloadOneInternal(ctx, tenant, uri, true /* syncKeys */)
+}
+
+// reloadDiscoveryOnly re-fetches the discovery document for (tenant, uri) and
+// updates the cached discoveryDoc WITHOUT replacing the existing keySource.
+// Previously-cached JWKS keys remain in service. Used by Service.Reactivate
+// when ReactivateKeys=false (D19 §2 spec: discovery-only reload).
+func (r *Registry) reloadDiscoveryOnly(ctx context.Context, tenant spi.TenantID, uri string) {
+	r.reloadOneInternal(ctx, tenant, uri, false /* syncKeys */)
+}
+
+// reloadOneInternal is the shared body for reloadOne and reloadDiscoveryOnly.
+//
+// When syncKeys=true (default): a fresh JWKS-backed keySource is constructed
+// and installed together with the new discovery doc — replacing both.
+//
+// When syncKeys=false: the discovery doc is refreshed (I9 guard + pin check
+// still apply) but the existing keySource is preserved. If no source is
+// currently installed (Phase-2-pending), keySource remains nil; ResolveKey
+// will return ErrUnknownKID until a full reloadOne is triggered.
+func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, uri string, syncKeys bool) {
 	doc, err := r.discovery.Fetch(ctx, uri)
 	if err != nil {
 		r.logger.Warn("oidc: discovery fetch failed",
@@ -520,30 +562,6 @@ func (r *Registry) reloadOne(ctx context.Context, tenant spi.TenantID, uri strin
 		r.metrics.IncJWKSFetchError("discovery")
 		return
 	}
-
-	// Build a safeDialContext-backed transport for the JWKS fetch so that
-	// fetch-time SSRF defence (D10) applies even when the discovery doc's
-	// jwks_uri differs from the originally-validated wellKnownConfigUri
-	// (e.g. an attacker-controlled server returns a doc with
-	// jwks_uri: http://169.254.169.254/...).
-	//
-	// TLS 1.3 is preserved: the MinVersion pin is set on TLSClientConfig,
-	// not on the DialContext, so both constraints apply independently.
-	//
-	// Note: if the underlying HTTP client follows redirects, the per-dial
-	// safeDialContext still catches internal-range targets on every new
-	// connection because the dialer is re-invoked for each TCP dial
-	// regardless of whether the request originated from a redirect.
-	jwksTransport := &http.Transport{
-		DialContext:           safeDialContext(r.allowPrivate),
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13},
-	}
-
-	// Build the per-provider key source before taking any lock.
-	inner := auth.NewHTTPJWKSSource(doc.JWKSURI, doc.Issuer, 5*time.Minute,
-		auth.WithJWKSTransport(jwksTransport))
 
 	// I9: check that the provider exists before installing the source.
 	var prov *OidcProvider
@@ -589,26 +607,73 @@ func (r *Registry) reloadOne(ctx context.Context, tenant spi.TenantID, uri strin
 		}
 	}
 
-	// Wrap with lifecycle gate. The isActive closure is called by disposeCandidates
-	// which already holds r.mu (RLock on the hot path, Lock on the cold path).
-	// Re-acquiring r.mu inside the closure would deadlock (Go's sync.RWMutex is
-	// not re-entrant). Instead, we rely on disposeCandidates' own prov.Active()
-	// check at line 208, which guards the GetKey call before it is ever reached.
-	// The closure here is a defence-in-depth no-op wrapper that keeps the
-	// providerKeySource contract intact for callers that do not hold the lock.
-	localProv := prov
-	ks := newProviderKeySource(inner, func() bool {
-		return localProv.Active()
-	})
-
-	func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if r.sources[tenant] == nil {
-			r.sources[tenant] = map[string]*providerSource{}
+	if syncKeys {
+		// Build a safeDialContext-backed transport for the JWKS fetch so that
+		// fetch-time SSRF defence (D10) applies even when the discovery doc's
+		// jwks_uri differs from the originally-validated wellKnownConfigUri
+		// (e.g. an attacker-controlled server returns a doc with
+		// jwks_uri: http://169.254.169.254/...).
+		//
+		// TLS 1.3 is preserved: the MinVersion pin is set on TLSClientConfig,
+		// not on the DialContext, so both constraints apply independently.
+		//
+		// Note: if the underlying HTTP client follows redirects, the per-dial
+		// safeDialContext still catches internal-range targets on every new
+		// connection because the dialer is re-invoked for each TCP dial
+		// regardless of whether the request originated from a redirect.
+		//
+		// Timeouts are threaded from RegistryConfig so the JWKS transport is
+		// consistent with the discovery transport configured in DiscoveryConfig
+		// (M-4 fix).
+		jwksTransport := &http.Transport{
+			DialContext:           safeDialContext(r.cfg.AllowPrivateNetworks),
+			TLSHandshakeTimeout:   r.cfg.ConnectTimeout,
+			ResponseHeaderTimeout: r.cfg.SocketTimeout,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13},
 		}
-		r.sources[tenant][uri] = &providerSource{keySource: ks, discoveryDoc: doc}
-	}()
+
+		// Build the per-provider key source before taking any lock.
+		inner := auth.NewHTTPJWKSSource(doc.JWKSURI, doc.Issuer, 5*time.Minute,
+			auth.WithJWKSTransport(jwksTransport))
+
+		// Wrap with lifecycle gate. The isActive closure is called by disposeCandidates
+		// which already holds r.mu (RLock on the hot path, Lock on the cold path).
+		// Re-acquiring r.mu inside the closure would deadlock (Go's sync.RWMutex is
+		// not re-entrant). Instead, we rely on disposeCandidates' own prov.Active()
+		// check, which guards the GetKey call before it is ever reached.
+		// The closure here is a defence-in-depth no-op wrapper that keeps the
+		// providerKeySource contract intact for callers that do not hold the lock.
+		localProv := prov
+		ks := newProviderKeySource(inner, func() bool {
+			return localProv.Active()
+		})
+
+		func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.sources[tenant] == nil {
+				r.sources[tenant] = map[string]*providerSource{}
+			}
+			r.sources[tenant][uri] = &providerSource{keySource: ks, discoveryDoc: doc}
+		}()
+	} else {
+		// syncKeys=false: refresh the discovery doc only. The existing keySource
+		// is preserved so previously-cached JWKS keys remain in service.
+		// If no source exists yet (Phase-2-pending), keySource stays nil.
+		func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.sources[tenant] == nil {
+				r.sources[tenant] = map[string]*providerSource{}
+			}
+			existing := r.sources[tenant][uri]
+			var prevKS auth.KeySource
+			if existing != nil {
+				prevKS = existing.keySource
+			}
+			r.sources[tenant][uri] = &providerSource{keySource: prevKS, discoveryDoc: doc}
+		}()
+	}
 }
 
 // invalidateOne drops the provider entry + its source and evicts all

@@ -56,7 +56,8 @@ func (c *countingDiscovery) Fetch(_ context.Context, _ string) (*DiscoveryDoc, e
 
 func newTestRegistryWithMetrics(t *testing.T, disc Discovery, metrics Metrics) *Registry {
 	t.Helper()
-	return NewRegistry(newTestStore(t), disc, nil, metrics, nil, true /* allowPrivate: tests bind to httptest.Server on 127.0.0.1 */)
+	return NewRegistry(newTestStore(t), disc, nil, metrics, nil,
+		RegistryConfig{AllowPrivateNetworks: true}) // tests bind to httptest.Server on 127.0.0.1
 }
 
 // pollUntil waits up to 1 s for cond to return true, polling every 10 ms.

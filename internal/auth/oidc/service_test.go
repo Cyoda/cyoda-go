@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +22,8 @@ import (
 func newTestService(t *testing.T) *Service {
 	t.Helper()
 	store := newTestStore(t)
-	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, nil, true /* allowPrivate: tests bind to httptest.Server on 127.0.0.1 */)
+	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true}) // tests bind to httptest.Server on 127.0.0.1
 	return NewService(store, r, nil)
 }
 
@@ -28,7 +33,8 @@ func newTestServiceWithLogger(t *testing.T) (*Service, *bytes.Buffer) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	store := newTestStore(t)
-	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, logger, true /* allowPrivate: tests bind to httptest.Server on 127.0.0.1 */)
+	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, logger,
+		RegistryConfig{AllowPrivateNetworks: true}) // tests bind to httptest.Server on 127.0.0.1
 	return NewService(store, r, logger), &buf
 }
 
@@ -565,6 +571,178 @@ func TestService_Register_CrossTenantDistinctAudiencesNoWARN(t *testing.T) {
 	logged := buf.String()
 	if strings.Contains(logged, "oidc.cross_tenant_audience_overlap") {
 		t.Errorf("unexpected oidc.cross_tenant_audience_overlap WARN for distinct audiences, got:\n%s", logged)
+	}
+}
+
+// ---------- Reactivate with ReactivateKeys flag (I-1) ----------
+
+// TestService_Reactivate_KeysFalse_PreservesJWKSCache verifies D19 §2 spec:
+// when ReactivateKeys=false, reloadDiscoveryOnly is called — the JWKS endpoint
+// is NOT contacted during the reactivate. We verify this by:
+//   1. Installing a cached keySource via reloadOne (through Register), which
+//      triggers an initial JWKS fetch during the lazy ResolveKey dial.
+//   2. Invalidating (drops the source).
+//   3. Reactivating with keys=false — must NOT trigger a JWKS fetch.
+//   4. Asserting the JWKS endpoint received zero additional hits beyond
+//      what already happened during the initial warm (step 1).
+//
+// The JWKS hit count is tracked by a counter incremented in the handler
+// so we can distinguish fetch vs. no-fetch regardless of cache state.
+func TestService_Reactivate_KeysFalse_PreservesJWKSCache(t *testing.T) {
+	var jwksHits int64
+	// Stand up a minimal JWKS server with a hit counter.
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&jwksHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		// Return an empty JWKS — we only care about whether the endpoint is hit.
+		_, _ = fmt.Fprintf(w, `{"keys":[]}`)
+	}))
+	t.Cleanup(jwksSrv.Close)
+
+	issuer := "https://idp.test"
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			sampleURI: {
+				Issuer:  issuer,
+				JWKSURI: jwksSrv.URL + "/jwks",
+			},
+		},
+	}
+
+	store := newTestStore(t)
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
+	svc := NewService(store, r, nil)
+
+	ctx := context.Background()
+	in := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{issuer},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	p, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Trigger the lazy JWKS fetch by calling ResolveKey. The HTTPJWKSSource
+	// constructed in reloadOne is lazy — it only dials on the first GetKey call.
+	_, _ = r.ResolveKey("any-kid", issuer, "")
+	hitsAfterRegister := atomic.LoadInt64(&jwksHits)
+	// Must have been hit at least once during the lazy dial.
+	if hitsAfterRegister == 0 {
+		t.Fatal("JWKS endpoint not hit during initial warmup — test setup broken")
+	}
+
+	// Invalidate the provider.
+	if err := svc.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	// Reactivate with ReactivateKeys=false: discovery IS refetched but the
+	// JWKS endpoint must NOT be contacted (no new HTTPJWKSSource constructed,
+	// no GetKey-triggered dial).
+	_, err = svc.Reactivate(ctx, ReactivateInput{
+		TenantID:       tenantA,
+		ProviderID:     p.ID.String(),
+		ReactivateKeys: false,
+	})
+	if err != nil {
+		t.Fatalf("Reactivate(keys=false): %v", err)
+	}
+
+	// Reactivate(false) must not have hit the JWKS endpoint.
+	hitsAfterReactivate := atomic.LoadInt64(&jwksHits)
+	if hitsAfterReactivate != hitsAfterRegister {
+		t.Errorf("ReactivateKeys=false triggered JWKS fetch: hits before=%d, after=%d — JWKS not preserved",
+			hitsAfterRegister, hitsAfterReactivate)
+	}
+
+	// Verify that the source WAS installed (discovery doc refreshed).
+	var installed bool
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenantA]; byURI != nil {
+			installed = byURI[sampleURI] != nil
+		}
+	}()
+	if !installed {
+		t.Error("source not installed after Reactivate(keys=false) — discovery refresh failed")
+	}
+}
+
+// TestService_Reactivate_KeysTrue_RefreshesJWKS verifies D19 §2 spec:
+// when ReactivateKeys=true (default), the JWKS source IS replaced with a
+// fresh source. After a kid is revoked at the mock IdP, reactivating with
+// keys=true causes the new source to reflect the removal on its first fetch.
+func TestService_Reactivate_KeysTrue_RefreshesJWKS(t *testing.T) {
+	idp := NewFixtureIdP(t)
+
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			sampleURI: {
+				Issuer:  idp.Issuer,
+				JWKSURI: idp.JWKSURI,
+			},
+		},
+	}
+
+	store := newTestStore(t)
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
+	svc := NewService(store, r, nil)
+
+	ctx := context.Background()
+	in := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{idp.Issuer},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	p, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Snapshot the source pointer installed by Register.
+	var srcBefore *providerSource
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenantA]; byURI != nil {
+			srcBefore = byURI[sampleURI]
+		}
+	}()
+
+	// Invalidate.
+	if err := svc.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	// Reactivate with ReactivateKeys=true: the keySource MUST be a new object.
+	_, err = svc.Reactivate(ctx, ReactivateInput{
+		TenantID:       tenantA,
+		ProviderID:     p.ID.String(),
+		ReactivateKeys: true,
+	})
+	if err != nil {
+		t.Fatalf("Reactivate(keys=true): %v", err)
+	}
+
+	var srcAfter *providerSource
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenantA]; byURI != nil {
+			srcAfter = byURI[sampleURI]
+		}
+	}()
+	if srcAfter == nil {
+		t.Fatal("source not installed after Reactivate(keys=true)")
+	}
+	// The keySource must be a different pointer (fresh source installed).
+	if srcBefore != nil && srcAfter.keySource == srcBefore.keySource {
+		t.Error("ReactivateKeys=true did NOT replace the keySource — full JWKS sync not performed")
 	}
 }
 

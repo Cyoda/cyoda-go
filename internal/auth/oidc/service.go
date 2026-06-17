@@ -205,13 +205,23 @@ func (s *Service) Reactivate(ctx context.Context, in ReactivateInput) (*OidcProv
 	if err := s.store.Update(ctx, p); err != nil {
 		return nil, fmt.Errorf("oidc: reactivate store: %w", err)
 	}
-	// D19: try reloadOne which fetches discovery + JWKS. Failure is WARN-logged
-	// inside reloadOne; InvalidatedAt is cleared regardless.
-	// addToProviderMap re-installs the reactivated provider into r.providers
-	// (invalidateOne removed it when the provider was invalidated) so that
-	// reloadOne's I9 guard does not silently skip it.
+	// D19 conditional sync: addToProviderMap re-installs the reactivated
+	// provider into r.providers (invalidateOne removed it when the provider was
+	// invalidated) so that the I9 guard in reloadOneInternal does not skip it.
+	//
+	// ReactivateKeys=true (default): full reload — re-fetches both discovery
+	// and JWKS, replacing the cached keySource with a fresh source. Any keys
+	// that the upstream IdP has removed are dropped from the local cache.
+	//
+	// ReactivateKeys=false: discovery-only reload — the discovery doc is
+	// refreshed (pin check applies) but the existing keySource is preserved.
+	// Previously-cached JWKS keys remain in service without a JWKS fetch.
 	s.registry.addToProviderMap(p)
-	s.registry.reloadOne(ctx, in.TenantID, p.WellKnownConfigURI)
+	if in.ReactivateKeys {
+		s.registry.reloadOne(ctx, in.TenantID, p.WellKnownConfigURI)
+	} else {
+		s.registry.reloadDiscoveryOnly(ctx, in.TenantID, p.WellKnownConfigURI)
+	}
 	s.registry.broadcastOp("reload", string(in.TenantID), p.WellKnownConfigURI)
 	return p, nil
 }

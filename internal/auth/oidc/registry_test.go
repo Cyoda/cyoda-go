@@ -54,7 +54,7 @@ func newTestRegistry(t *testing.T) *Registry {
 		nil,
 		NopMetrics{},
 		nil,
-		true, // allowPrivate: tests bind to httptest.Server on 127.0.0.1
+		RegistryConfig{AllowPrivateNetworks: true}, // tests bind to httptest.Server on 127.0.0.1
 	)
 }
 
@@ -278,9 +278,9 @@ func TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked(t *testing.T) {
 		},
 	}
 
-	// allowPrivate=false: the safeDialContext for the JWKS transport must block
+	// AllowPrivateNetworks=false: the safeDialContext for the JWKS transport must block
 	// 127.0.0.1 (malicious.URL host).
-	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, false /* allowPrivate */)
+	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: false})
 
 	p := &OidcProvider{
 		ID:                 uuid.New(),
@@ -294,6 +294,14 @@ func TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked(t *testing.T) {
 	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
 	r.reloadOne(context.Background(), tenant, p.WellKnownConfigURI)
 
+	// Trigger the lazy JWKS fetch: reloadOne only constructs the HTTPJWKSSource;
+	// the HTTP GET to jwks_uri happens on the first call to GetKey (inside
+	// ResolveKey's disposeCandidates). Without this call, the malicious URL would
+	// never be dialed — making the test a false-pass even if safeDialContext was
+	// removed from the JWKS transport.
+	_, _ = r.ResolveKey("test-kid", "https://idp.example.test", "")
+
+	// THE ACTUAL ASSERTION: the malicious server received NO hits.
 	if internalHit.Load() {
 		t.Fatal("malicious internal JWKS endpoint received a GET — SSRF defence FAILED for JWKS fetch")
 	}
@@ -517,7 +525,7 @@ func TestRegistry_ReloadOne_RefusesSourceWhenDiscoveryIssuerNotInPinnedList(t *t
 		},
 	}
 	m := &outcomeRecordingMetrics{}
-	r := NewRegistry(newTestStore(t), disc, nil, m, nil, true)
+	r := NewRegistry(newTestStore(t), disc, nil, m, nil, RegistryConfig{AllowPrivateNetworks: true})
 
 	p := &OidcProvider{
 		ID:                 uuid.New(),
@@ -565,7 +573,7 @@ func TestRegistry_ReloadOne_AcceptsWhenDiscoveryIssuerInPinnedList(t *testing.T)
 			},
 		},
 	}
-	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, true)
+	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
 
 	p := &OidcProvider{
 		ID:                 uuid.New(),
@@ -609,7 +617,7 @@ func TestRegistry_ReloadOne_AcceptsAnyDiscoveryIssuerWhenIssuersEmpty(t *testing
 			},
 		},
 	}
-	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, true)
+	r := NewRegistry(newTestStore(t), disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
 
 	p := &OidcProvider{
 		ID:                 uuid.New(),
