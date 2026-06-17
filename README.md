@@ -117,6 +117,42 @@ The `/api/account` response confirms the bootstrap client's tenant and roles. Fr
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 
+### Federated OIDC providers
+
+cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, Keycloak, or any spec-compliant issuer — alongside its own first-party tokens. Each tenant registers its own providers; tokens are validated against the provider's JWKS endpoint.
+
+**Validation order:** cyoda-go tries the built-in JWKSValidator first (trusted keys registered via `/oauth/keys/trusted/*`), then the OIDCValidator. The first validator that recognises the issuer wins.
+
+**Management endpoints** (JWT mode, `CYODA_IAM_MODE=jwt`):
+
+| Method | Path | Auth |
+|--------|------|------|
+| `POST` | `/oauth/oidc/providers` | `ROLE_ADMIN` |
+| `GET` | `/oauth/oidc/providers` | any authenticated tenant member |
+| `PATCH` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
+| `POST` | `/oauth/oidc/providers/{id}/invalidate` | `ROLE_ADMIN` |
+| `POST` | `/oauth/oidc/providers/{id}/reactivate` | `ROLE_ADMIN` |
+| `DELETE` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
+| `POST` | `/oauth/oidc/providers/reload` | `ROLE_ADMIN` |
+
+The `reload` endpoint flushes the in-memory JWKS cache and re-fetches keys from every active provider for the tenant — useful after a key rotation at the IdP.
+
+**Register a provider:**
+
+```bash
+curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-auth0",
+    "wellKnownConfigUri": "https://example.auth0.com/.well-known/openid-configuration",
+    "audienceClaim": "https://api.example.com",
+    "rolesClaim": "https://example.com/roles"
+  }'
+```
+
+**Configuration:** see `cyoda help config.auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.

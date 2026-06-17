@@ -250,6 +250,37 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 }
 
+// TestOIDCSubsystemWired verifies that app.New succeeds with the full OIDC
+// subsystem wired in JWT IAM mode. It confirms startup hooks do not crash and
+// that the chained validator is active by sending a request with an invalid
+// token — if the chain is working, the response is 401 (not 500 or 404).
+func TestOIDCSubsystemWired(t *testing.T) {
+	a := jwtApp(t)
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	// Confirm the app started without panic (jwtApp would os.Exit on failure).
+	if a.AuthenticationService() == nil {
+		t.Fatal("AuthenticationService is nil — OIDC wiring failed")
+	}
+
+	// A request with a syntactically valid but unrecognised Bearer token should
+	// return 401 (chained validator falls through all validators → auth failure).
+	// 500 would indicate a panic in the chain; 404 would mean the route is
+	// missing entirely.
+	req, _ := http.NewRequest("GET", srv.URL+"/account", nil)
+	req.Header.Set("Authorization", "Bearer not.a.real.token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("want 401 for invalid token with OIDC chain, got %d", resp.StatusCode)
+	}
+}
+
 func ctxWithTenant(tid spi.TenantID) context.Context {
 	uc := &spi.UserContext{
 		UserID: "test-user",

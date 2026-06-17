@@ -97,6 +97,25 @@ type IAMConfig struct {
 	// M2MAdminRoleEnabled — see auth.IAMFeatures.M2MAdminRoleEnabled.
 	// env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
 	M2MAdminRoleEnabled bool
+
+	// OIDC holds the OIDC provider subsystem configuration.
+	// See OIDCConfig for per-field documentation.
+	OIDC OIDCConfig
+}
+
+// OIDCConfig holds the OIDC provider subsystem's configuration per spec §7.
+// All four timeouts are positive Durations; zero values inherit the 5s default
+// applied inside oidc.NewHTTPDiscovery. DefaultRolesClaim is the global default
+// for the roles claim name (per-provider override available via provider.RolesClaim).
+// AllowPrivateNetworks is a test/dev override of the SSRF blocklist; production
+// deployments leave it false.
+type OIDCConfig struct {
+	RequireHTTPS             bool
+	ConnectTimeout           time.Duration
+	SocketTimeout            time.Duration
+	ConnectionRequestTimeout time.Duration
+	AllowPrivateNetworks     bool
+	DefaultRolesClaim        string
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -205,6 +224,14 @@ func DefaultConfig() Config {
 			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
 			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
 			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
+			OIDC: OIDCConfig{
+				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
+				ConnectTimeout:           envMillis("CYODA_OIDC_CONNECT_TIMEOUT_MS", 5*time.Second),
+				SocketTimeout:            envMillis("CYODA_OIDC_SOCKET_TIMEOUT_MS", 5*time.Second),
+				ConnectionRequestTimeout: envMillis("CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", 5*time.Second),
+				AllowPrivateNetworks:     envBool("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", false),
+				DefaultRolesClaim:        envString("CYODA_OIDC_ROLES_CLAIM", "roles"),
+			},
 		},
 		Cluster: cluster.Config{
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
@@ -289,6 +316,21 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// envMillis parses an env var as an integer number of milliseconds and returns
+// it as a time.Duration. Falls back to def if the variable is unset or not a
+// valid integer.
+func envMillis(name string, def time.Duration) time.Duration {
+	s := os.Getenv(name)
+	if s == "" {
+		return def
+	}
+	ms, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // mockRolesFromEnv parses CYODA_IAM_MOCK_ROLES and falls back to the

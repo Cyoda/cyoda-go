@@ -8,6 +8,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- OIDC provider per-tenant registry with 7 REST endpoints under `/oauth/oidc/providers` (register, list, get, update, invalidate, reactivate, delete, reload). Closes [#284](https://github.com/Cyoda-platform/cyoda-go/issues/284).
+- Chained multi-issuer JWT validator: `JWKSValidator` (local issuer) first, `OIDCValidator` (registered OIDC providers) second — per ADR 0002 decision D3.
+- Per-provider configurable fields: `issuers` (accepted `iss` values), `expectedAudiences`, `rolesClaim` (overrides the global default per-provider).
+- Cluster broadcast for OIDC cache eviction: when a provider record is mutated or reloaded, a fire-and-forget message on `oidc-providers.invalidate` evicts the JWKS cache on every peer node — consistent with the model-cache invalidation pattern (single topic, no ACK required per ADR 0002 D7).
+- 6 new env vars: `CYODA_OIDC_REQUIRE_HTTPS`, `CYODA_OIDC_CONNECT_TIMEOUT_MS`, `CYODA_OIDC_SOCKET_TIMEOUT_MS`, `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS`, `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`, `CYODA_OIDC_ROLES_CLAIM`.
+- 4 new error codes: `OIDC_PROVIDER_DUPLICATE`, `OIDC_PROVIDER_NOT_FOUND`, `OIDC_PROVIDER_INACTIVE`, `OIDC_SSRF_BLOCKED`. (5 additional error codes are wire-stubbed for future bearer-auth translation.)
+- ADR 0002 — Federated Identity Provider Architecture (`docs/adr/0002-federated-identity-provider-architecture.md`).
 - `/oauth/keys/keypair/*` and `/oauth/keys/trusted/*` — 10 admin endpoints now conform to the OpenAPI surface via chi-routed adapters in `internal/domain/account/`. ([#281](https://github.com/Cyoda-platform/cyoda-go/issues/281), sub-issue of [#194](https://github.com/Cyoda-platform/cyoda-go/issues/194))
 - `/clients` OpenAPI surface — `GET /clients`, `POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret`. M2M client management is now reachable at the spec-conformant paths with the spec-conformant DTOs.
 - 6 new error codes: `FEATURE_DISABLED`, `KEY_OWNED_BY_DIFFERENT_TENANT`, `KEYPAIR_NOT_FOUND`, `TRUSTED_KEY_CAP_REACHED`, `UNSUPPORTED_ALGORITHM`, `UNSUPPORTED_KEY_TYPE`.
@@ -17,6 +24,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **Cross-tenant OIDC routing is now deterministic and safe.** When two tenants register the same `wellKnownConfigUri` (same physical IdP), tokens are no longer routed non-deterministically via Go's randomized map iteration. Resolution now uses a two-layer disambiguation: (1) audience-based routing — if the JWT's `aud` claim uniquely matches one tenant's `ExpectedAudiences`, that provider is selected; (2) if no unique audience match exists (both providers have empty or overlapping `ExpectedAudiences`), the token is rejected with `401 UNAUTHORIZED` (`ErrAmbiguousProvider`). Operators sharing an IdP across tenants MUST set distinct `expectedAudiences` on each registration. A `WARN` log (`oidc.cross_tenant_audience_overlap`) is emitted at Register-time when audience overlap is detected. ([#284](https://github.com/Cyoda-platform/cyoda-go/issues/284))
+- **OIDC pinned `issuers` are now enforced at discovery-fetch time.** When a provider's `issuers` list is non-empty, the discovery document's `issuer` field must match one of the pinned values; a mismatch refuses to install the provider source (logged at `WARN` with SHA-256 hashes of the issuer values, never raw strings) and the provider remains in the Phase-2-pending state until the admin reconciles. This is defence-in-depth: the runtime `issMatches` already enforces the pin at token-resolution time, but enforcing it at fetch time prevents the registry from caching an attacker-controlled `discoveryDoc.Issuer` value that could be silently trusted by future diagnostics or metrics code. ([#284](https://github.com/Cyoda-platform/cyoda-go/issues/284))
+- OIDC provider registration now requires the calling tenant to be UUID-shaped.
+  Bootstrap deployments using the literal `default-tenant` string for
+  `CYODA_BOOTSTRAP_TENANT_ID` must migrate to a real tenant UUID before
+  registering OIDC providers. Returns `400 BAD_REQUEST` with code
+  `OIDC_INVALID_TENANT` otherwise.
+- Seven `/oauth/oidc/providers/*` endpoints previously returned `501 NOT_IMPLEMENTED`; they now return real responses. Clients that special-cased the 501 status on these paths should update their error handling.
 - Legacy `/oauth/keys/` prefix mux entry removed from `app/app.go`; chi router now owns all `/oauth/keys/*` paths.
 - JWKS endpoint (`/.well-known/jwks.json`) now publishes grace-period-invalidated keys until their `validTo` passes.
 - `KVTrustedKeyStore` KV-key encoding within the `trusted-keys` namespace changed from `<kid>` to `<tenantID>:<kid>`. Tenant isolation is now enforced at the storage layer.

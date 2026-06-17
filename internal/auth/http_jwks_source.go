@@ -40,11 +40,30 @@ type jwksCacheKey struct {
 	kid    string
 }
 
+// HTTPJWKSSourceOption is a functional option for NewHTTPJWKSSource.
+type HTTPJWKSSourceOption func(*httpJWKSSource)
+
+// WithJWKSTransport replaces the default JWKS-fetch http.Transport entirely.
+// Callers MUST re-set TLS 1.3 MinVersion on the supplied transport — this
+// option does NOT layer additional constraints on top of the default; it
+// substitutes the whole transport. Used to inject a safedialer'd transport
+// that closes the JWKS-side SSRF gap and to apply OIDC-config-driven timeouts.
+func WithJWKSTransport(t http.RoundTripper) HTTPJWKSSourceOption {
+	return func(s *httpJWKSSource) { s.client.Transport = t }
+}
+
 // NewHTTPJWKSSource returns a KeySource that fetches JWKS from the given URL.
 // The client pins TLS 1.3 and validates Content-Type on each response.
-// The issuer argument binds cache entries to that issuer (issue #97).
-func NewHTTPJWKSSource(jwksURL, issuer string, cacheTTL time.Duration) KeySource {
-	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, defaultJWKSTransport())
+// The issuer argument binds cache entries to that issuer.
+// Optional opts (e.g. WithJWKSTransport) are applied after the default transport
+// is installed. Note that WithJWKSTransport substitutes the entire transport;
+// see its documentation for the TLS 1.3 obligation.
+func NewHTTPJWKSSource(jwksURL, issuer string, cacheTTL time.Duration, opts ...HTTPJWKSSourceOption) KeySource {
+	s := newHTTPJWKSSource(jwksURL, issuer, cacheTTL, defaultJWKSTransport())
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // NewHTTPJWKSSourceWithTransportForTesting returns a KeySource with a

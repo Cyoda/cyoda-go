@@ -40,6 +40,13 @@ func (f *postgresFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
+// fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
+func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
+}
+
 // IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The
 // postgres backend writes audit events into the same SQL transaction as
 // the entity writes, so a rolled-back entity-update transaction also
