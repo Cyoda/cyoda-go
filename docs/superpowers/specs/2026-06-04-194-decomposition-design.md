@@ -1,9 +1,13 @@
 # Issue #194 — decomposition design
 
-**Status:** approved
+**Status:** approved (amended 2026-06-16)
 **Date:** 2026-06-04
 **Scope:** Replace the umbrella issue [#194 — implement stub OAuth keys / OIDC providers / technical user management endpoints](https://github.com/Cyoda-platform/cyoda-go/issues/194) with four self-contained sub-issues plus one infrastructure follow-up. Close #194 with references.
 **Outcome:** four scheduled work items with no bi-directional coupling, each independently brainstorm/spec/plan/implement-able. Avoids a single milestone-blocking monolith and matches the project rule that release-branch PRs stay reviewable.
+
+## Amendments
+
+- **2026-06-16 — OIDC pulled into v0.8.0.** The original decision (§2 row 3, §3.4) deferred sub-issue D (OIDC providers) to v0.9.0+ on multi-week-design-cycle grounds. That decision is overridden: OIDC is now in-scope for v0.8.0 as the milestone's headline IAM deliverable. The release is held until #284 lands. Sister issue #123 (the digital-twin parity port with the full data model, REST table, service-behaviour port, and 28 test scenarios) has been closed as a duplicate; its content is consolidated into the #284 issue body and treated as authoritative input for the implementation spec.
 
 ---
 
@@ -28,7 +32,7 @@ The three differences between subsystems (already-built vs greenfield, persisten
 |---|---|---|
 | Number of replacement issues | Four sub-issues (#194-A, #194-B, #194-C, #194-D) plus **two** persistence follow-ups (one per store; rationale in §3.5/§3.6 below). Close #194. | Each sub-issue maps to a single coherent storage/handler shape. None depends on another for correctness; ordering between them is a convenience, not a constraint. |
 | Group keypair + trusted under one sub-issue (#194-A) | Yes. | Both live behind the same `/oauth/keys/` prefix mux entry that gets removed once OpenAPI routing takes over. Splitting them creates an ordering requirement (whoever lands second removes the legacy mux entry) without simplifying review. |
-| OIDC providers in v0.8.0? | No. Sub-issue D ships in a later release. | Greenfield subsystem (~7 endpoints + validator extension + JWKS-per-provider source) deserves its own brainstorm/spec/plan and dedicated review cycle. Releasing it in v0.8.0 would block the release on a multi-week design. |
+| OIDC providers in v0.8.0? | ~~No. Sub-issue D ships in a later release.~~ **Amended 2026-06-16: Yes — in scope for v0.8.0.** Sub-issue D (#284) ships in v0.8.0; the release branch stays open until it lands. | Original rationale (greenfield ~7 endpoints + validator extension + JWKS-per-provider source needing its own brainstorm/spec/plan cycle) remains technically accurate, but the project lead has classified OIDC as the v0.8.0 milestone's headline IAM deliverable and accepts the schedule slip. The work is non-trivial — design via the normal brainstorm → spec → plan gates, expect a multi-week implementation window. |
 | Persistence for in-memory stores | Two separate follow-ups — one for signing-key storage (§3.5), one for M2M-client persistence (§3.6) — not in-scope for #194-A or #194-B. Reference each follow-up from its corresponding sub-issue. | The two stores have very different secret-material profiles. `InMemoryKeyStore` holds raw RSA private keys; naïve disk persistence is the exact risk that drives KMS/HSM/Vault designs, so its follow-up is a secrets-management interface design. `InMemoryM2MClientStore` holds bcrypt-hashed secrets; persisting those is the conventional pattern every web app uses, so its follow-up is a straightforward storage-SPI change. Conflating them would force the easier one through the harder design discussion. |
 | Role-name reconciliation (`SUPER_USER` vs `ROLE_ADMIN`) | Per sub-issue. Each adapter keeps the existing `requireAdmin` (ROLE_ADMIN) gate; OpenAPI prose is updated to match the wire reality. | The OpenAPI spec descriptions say "SUPER_USER" but the security scheme is just `bearerAuth: []`; the role name is implementation-level. Aligning prose to code (rather than the reverse) is the smaller, less risky change. If we later want a project-wide role rename, that's a tiny separate issue. |
 
@@ -122,16 +126,17 @@ Each subsection below is the seed for the GitHub issue body. Implementation spec
 
 - `listOidcProviders`, `registerOidcProvider`, `updateOidcProvider`, `deleteOidcProvider`, `invalidateOidcProvider`, `reactivateOidcProvider`, `reloadOidcProviders`
 
-**Approach (sketch only — full design happens in the sub-issue's own brainstorm).**
+**Approach (sketch only — full implementation requirements live in the #284 issue body after the 2026-06-16 #123 consolidation; brainstorm/spec land under `docs/superpowers/specs/`).**
 
-- New `OidcProviderStore` interface + in-memory default (persistence can ride the same follow-up as keys/M2M, or be decided per the sub-issue's brainstorm).
+- New `OidcProviderStore` interface + per-plugin implementations across memory / sqlite / postgres / cassandra. The cyoda-cloud reference (`JWKOIDCEntity`) is the data-model port target.
 - Per-provider JWKS source wired into a multi-issuer extension of `KeySource` / `validator.go`. Today `JWKSValidator.issuer` is a single string; OIDC providers require it to become a registry indexed by `iss` claim. This is the one-way dependency from OIDC into the validator; no other sub-issue is affected.
 - Provider lifecycle (`active` / `invalidated`) honoured by the validator: tokens from invalidated providers reject.
-- `reloadOidcProviders` semantics: clear and refetch JWKS caches for all active providers.
-- E2E with a fixture IdP (httptest.Server-backed).
-- Remove 501 declarations from these 7 paths.
+- `reloadOidcProviders` semantics: clear and refetch JWKS caches for all active providers; new `spi.ClusterBroadcaster` message types (`oidc.provider.reload`, `oidc.provider.invalidate`, `oidc.provider.reload_all`) for cross-node cache invalidation, modelled on `JWKOIDCCacheIntercom`.
+- E2E parity coverage (28 scenarios ported from cyoda-cloud's `OIDCProviderControllerIT.kt`) with a fixture IdP (httptest.Server-backed).
+- New env vars `CYODA_OIDC_REQUIRE_HTTPS`, `_CONNECT_TIMEOUT_MS`, `_SOCKET_TIMEOUT_MS`, `_CONNECTION_REQUEST_TIMEOUT_MS` documented in `cmd/cyoda/help/content/config/` per Gate 4.
+- Remove 501 declarations from these 7 paths in `api/openapi.yaml`.
 
-**Milestone:** v0.9.0 or later. Not blocking v0.8.0.
+**Milestone:** v0.8.0 (amended 2026-06-16; was v0.9.0+).
 
 ---
 
