@@ -2485,11 +2485,17 @@ type OidcProviderResponseDto struct {
 	// CreatedAt When this OIDC provider was registered
 	CreatedAt time.Time `json:"createdAt"`
 
+	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
+	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
+
 	// Id ID for this OIDC provider entity
 	Id openapi_types.UUID `json:"id"`
 
-	// Issuers List of allowed issuer URIs from this OIDC provider. When present and non-empty, JWT validation requires the 'iss' claim to match one of these values.
+	// Issuers List of allowed `iss` claim values for tokens from this provider. When present and non-empty, the JWT `iss` claim must match one of these values bytewise. When absent or empty, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
 	Issuers *[]string `json:"issuers,omitempty"`
+
+	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
+	RolesClaim *string `json:"rolesClaim,omitempty"`
 
 	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
 	WellKnownConfigUri string `json:"wellKnownConfigUri"`
@@ -2609,8 +2615,14 @@ type ReactivateOidcProviderRequestDto struct {
 
 // RegisterOidcProviderRequestDto defines model for RegisterOidcProviderRequestDto.
 type RegisterOidcProviderRequestDto struct {
-	// Issuers Optional but highly recommended list of allowed issuer URIs from this OIDC provider. When present, JWT validation will require the 'iss' claim to match one of these values. When set to null or empty array, the 'iss' claim validation is skipped.
+	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
+	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
+
+	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
 	Issuers *[]string `json:"issuers,omitempty"`
+
+	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
+	RolesClaim *string `json:"rolesClaim,omitempty"`
 
 	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
 	WellKnownConfigUri string `json:"wellKnownConfigUri"`
@@ -3015,8 +3027,14 @@ type TrustedKeyResponseDtoAudience string
 
 // UpdateOidcProviderRequestDto defines model for UpdateOidcProviderRequestDto.
 type UpdateOidcProviderRequestDto struct {
-	// Issuers Optional but highly recommended list of allowed issuer URIs from this OIDC provider. When present, JWT validation will require the 'iss' claim to match one of these values. When set to null or empty array, the 'iss' claim validation is skipped.
+	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
+	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
+
+	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
 	Issuers *[]string `json:"issuers,omitempty"`
+
+	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
+	RolesClaim *string `json:"rolesClaim,omitempty"`
 }
 
 // UserAccountInfoDto defines model for UserAccountInfoDto.
