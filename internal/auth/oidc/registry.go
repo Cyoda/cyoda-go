@@ -607,47 +607,46 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 		}
 	}
 
-	if syncKeys {
-		// Build a safeDialContext-backed transport for the JWKS fetch so that
-		// fetch-time SSRF defence (D10) applies even when the discovery doc's
-		// jwks_uri differs from the originally-validated wellKnownConfigUri
-		// (e.g. an attacker-controlled server returns a doc with
-		// jwks_uri: http://169.254.169.254/...).
-		//
-		// TLS 1.3 is preserved: the MinVersion pin is set on TLSClientConfig,
-		// not on the DialContext, so both constraints apply independently.
-		//
-		// Note: if the underlying HTTP client follows redirects, the per-dial
-		// safeDialContext still catches internal-range targets on every new
-		// connection because the dialer is re-invoked for each TCP dial
-		// regardless of whether the request originated from a redirect.
-		//
-		// Timeouts are threaded from RegistryConfig so the JWKS transport is
-		// consistent with the discovery transport configured in DiscoveryConfig
-		// (M-4 fix).
+	// buildFreshKeySource constructs a new safeDialContext-backed lazy JWKS
+	// source for the discovery doc. Hoisted into a closure so both the
+	// syncKeys=true path and the syncKeys=false fallback (no existing source)
+	// share identical SSRF/TLS/timeout configuration.
+	//
+	// SSRF defence (D10): the per-dial safeDialContext applies even when the
+	// discovery doc's jwks_uri differs from the originally-validated
+	// wellKnownConfigUri (e.g. an attacker-controlled server returns a doc
+	// with jwks_uri: http://169.254.169.254/...). If the HTTP client follows
+	// redirects, the dialer is re-invoked for each TCP dial regardless of
+	// origin. TLS 1.3 is preserved: the MinVersion pin is set on
+	// TLSClientConfig, not on the DialContext, so both constraints apply
+	// independently. Timeouts are threaded from RegistryConfig so the JWKS
+	// transport is consistent with the discovery transport.
+	//
+	// The returned source is wrapped with a lifecycle gate. The isActive
+	// closure is called by disposeCandidates which already holds r.mu (RLock
+	// on the hot path, Lock on the cold path); re-acquiring r.mu inside the
+	// closure would deadlock (Go's sync.RWMutex is not re-entrant). Instead,
+	// we rely on disposeCandidates' own prov.Active() check, which guards
+	// the GetKey call before it is ever reached. The closure here is a
+	// defence-in-depth no-op wrapper that keeps the providerKeySource
+	// contract intact for callers that do not hold the lock.
+	buildFreshKeySource := func() auth.KeySource {
 		jwksTransport := &http.Transport{
 			DialContext:           safeDialContext(r.cfg.AllowPrivateNetworks),
 			TLSHandshakeTimeout:   r.cfg.ConnectTimeout,
 			ResponseHeaderTimeout: r.cfg.SocketTimeout,
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13},
 		}
-
-		// Build the per-provider key source before taking any lock.
 		inner := auth.NewHTTPJWKSSource(doc.JWKSURI, doc.Issuer, 5*time.Minute,
 			auth.WithJWKSTransport(jwksTransport))
-
-		// Wrap with lifecycle gate. The isActive closure is called by disposeCandidates
-		// which already holds r.mu (RLock on the hot path, Lock on the cold path).
-		// Re-acquiring r.mu inside the closure would deadlock (Go's sync.RWMutex is
-		// not re-entrant). Instead, we rely on disposeCandidates' own prov.Active()
-		// check, which guards the GetKey call before it is ever reached.
-		// The closure here is a defence-in-depth no-op wrapper that keeps the
-		// providerKeySource contract intact for callers that do not hold the lock.
 		localProv := prov
-		ks := newProviderKeySource(inner, func() bool {
+		return newProviderKeySource(inner, func() bool {
 			return localProv.Active()
 		})
+	}
 
+	if syncKeys {
+		ks := buildFreshKeySource()
 		func() {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -656,24 +655,31 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 			}
 			r.sources[tenant][uri] = &providerSource{keySource: ks, discoveryDoc: doc}
 		}()
-	} else {
-		// syncKeys=false: refresh the discovery doc only. The existing keySource
-		// is preserved so previously-cached JWKS keys remain in service.
-		// If no source exists yet (Phase-2-pending), keySource stays nil.
-		func() {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			if r.sources[tenant] == nil {
-				r.sources[tenant] = map[string]*providerSource{}
-			}
-			existing := r.sources[tenant][uri]
-			var prevKS auth.KeySource
-			if existing != nil {
-				prevKS = existing.keySource
-			}
-			r.sources[tenant][uri] = &providerSource{keySource: prevKS, discoveryDoc: doc}
-		}()
+		return
 	}
+
+	// syncKeys=false: refresh the discovery doc only. If an existing source
+	// is installed, its keySource is preserved so previously-cached JWKS keys
+	// remain in service without a JWKS fetch. If no source exists (e.g. after
+	// Invalidate dropped it), fall back to building a fresh lazy source —
+	// "preserve existing keys" degrades to "build empty cache" when there is
+	// nothing to preserve, which is behaviourally identical. Installing nil
+	// would later panic in disposeCandidates' GetKey call.
+	func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.sources[tenant] == nil {
+			r.sources[tenant] = map[string]*providerSource{}
+		}
+		existing := r.sources[tenant][uri]
+		var ks auth.KeySource
+		if existing != nil && existing.keySource != nil {
+			ks = existing.keySource
+		} else {
+			ks = buildFreshKeySource()
+		}
+		r.sources[tenant][uri] = &providerSource{keySource: ks, discoveryDoc: doc}
+	}()
 }
 
 // invalidateOne drops the provider entry + its source and evicts all

@@ -672,6 +672,72 @@ func TestService_Reactivate_KeysFalse_PreservesJWKSCache(t *testing.T) {
 	}
 }
 
+// TestService_Reactivate_KeysFalse_AfterInvalidate_ResolveKeyDoesNotPanic is a
+// regression test for the bug where Invalidate drops the cached source and a
+// subsequent Reactivate(keys=false) installs a providerSource with a nil
+// keySource. The next ResolveKey then dereferenced the nil keySource and
+// panicked inside disposeCandidates, surfacing as a 500 instead of 401.
+//
+// Expected behaviour: Reactivate(keys=false) post-invalidate must install a
+// fresh lazy JWKS source (the "preserve existing keys" semantic degrades
+// gracefully when there are no keys to preserve), and ResolveKey must return
+// a sentinel error without panicking.
+func TestService_Reactivate_KeysFalse_AfterInvalidate_ResolveKeyDoesNotPanic(t *testing.T) {
+	// JWKS server returns an empty keys list — ResolveKey will get ErrKeyNotFound
+	// per source, eventually returning ErrUnknownKID. We only care that no panic.
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"keys":[]}`)
+	}))
+	t.Cleanup(jwksSrv.Close)
+
+	issuer := "https://idp.test"
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			sampleURI: {Issuer: issuer, JWKSURI: jwksSrv.URL + "/jwks"},
+		},
+	}
+
+	store := newTestStore(t)
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true})
+	svc := NewService(store, r, nil)
+
+	ctx := context.Background()
+	in := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{issuer},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	p, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := svc.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	if _, err := svc.Reactivate(ctx, ReactivateInput{
+		TenantID:       tenantA,
+		ProviderID:     p.ID.String(),
+		ReactivateKeys: false,
+	}); err != nil {
+		t.Fatalf("Reactivate(keys=false): %v", err)
+	}
+
+	// Must not panic. The returned error is expected (no matching kid in JWKS).
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("ResolveKey panicked: %v", rec)
+		}
+	}()
+	if _, err := r.ResolveKey("any-kid", issuer, ""); err == nil {
+		t.Error("ResolveKey returned nil error for unknown kid — expected sentinel")
+	}
+}
+
 // TestService_Reactivate_KeysTrue_RefreshesJWKS verifies D19 §2 spec:
 // when ReactivateKeys=true (default), the JWKS source IS replaced with a
 // fresh source. After a kid is revoked at the mock IdP, reactivating with
