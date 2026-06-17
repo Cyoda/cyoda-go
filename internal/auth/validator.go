@@ -62,25 +62,25 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 
 	kid, ok := parsed.Header["kid"].(string)
 	if !ok || kid == "" {
-		return nil, fmt.Errorf("missing kid in token header")
+		return nil, fmt.Errorf("%w: missing kid in token header", ErrClaimsFailure)
 	}
 
 	publicKey, err := v.source.GetKey(kid)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve key for kid %q: %w", kid, err)
+		return nil, fmt.Errorf("%w: kid %q: %w", ErrUnknownKID, kid, err)
 	}
 
 	if err := Verify(parsed.SigningInput, parsed.Signature, publicKey); err != nil {
-		return nil, fmt.Errorf("signature verification failed: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrSignatureFailure, err)
 	}
 
 	if err := ValidateClaims(parsed.Claims, 30*time.Second); err != nil {
-		return nil, fmt.Errorf("claims validation failed: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrClaimsFailure, err)
 	}
 
 	iss, _ := parsed.Claims["iss"].(string)
 	if iss != v.issuer {
-		return nil, fmt.Errorf("untrusted token issuer")
+		return nil, fmt.Errorf("%w: token iss=%q, expected %q", ErrIssuerMismatch, iss, v.issuer)
 	}
 
 	v.mu.RLock()
@@ -88,7 +88,7 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	v.mu.RUnlock()
 	if audience != "" {
 		if err := checkAudience(parsed.Claims["aud"], audience); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrClaimsFailure, err)
 		}
 	}
 
