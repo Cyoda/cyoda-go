@@ -74,9 +74,15 @@ func (v *OIDCValidator) Validate(tokenString string) (*spi.UserContext, error) {
 
 	iss, _ := claims["iss"].(string)
 
+	// Extract aud for cross-tenant disambiguation (Layer 1, Critical audit fix #284).
+	// For the resolver we use the first audience string found (single string or
+	// first element of array). The full audience check at Step 8 uses matchAudience
+	// which handles the complete array form — this extract is only for routing.
+	audRaw := audPrimaryString(claims["aud"])
+
 	// Step 4: Registry resolution. Propagate sentinels unchanged so the
 	// ChainedValidator receives them with their original identity.
-	resolution, err := v.registry.ResolveKey(kid, iss)
+	resolution, err := v.registry.ResolveKey(kid, iss, audRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +186,25 @@ func matchAudience(audClaim any, expected []string) bool {
 		}
 	}
 	return false
+}
+
+// audPrimaryString extracts the primary audience string from the raw aud claim
+// value (RFC 7519 §4.1.3). Returns the single string if aud is a string, or
+// the first element if aud is an array, or "" if absent or not a string/array.
+// This is used only for cross-tenant routing disambiguation in ResolveKey; the
+// full audience validation (Step 8) uses matchAudience which handles all forms.
+func audPrimaryString(audClaim any) string {
+	switch v := audClaim.(type) {
+	case string:
+		return v
+	case []any:
+		if len(v) > 0 {
+			if s, ok := v[0].(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // verifyRS256 verifies a RSASSA-PKCS1-v1.5 / SHA-256 signature over the JWT

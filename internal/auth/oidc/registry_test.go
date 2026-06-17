@@ -72,7 +72,7 @@ func TestRegistry_ResolveKey_ColdPathPopulatesKidIndex(t *testing.T) {
 	r.installForTest(p, &fakeKeySource{kid: "k1", key: &priv.PublicKey},
 		&DiscoveryDoc{Issuer: "https://idp.example", JWKSURI: "https://idp.example/jwks"})
 
-	res, err := r.ResolveKey("k1", "https://idp.example")
+	res, err := r.ResolveKey("k1", "https://idp.example", "")
 	if err != nil {
 		t.Fatalf("ResolveKey: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRegistry_ResolveKey_IssMismatchReturnsErrIssuerMismatch(t *testing.T) {
 	r.installForTest(p, &fakeKeySource{kid: "k1", key: &priv.PublicKey},
 		&DiscoveryDoc{Issuer: "https://idp.example", JWKSURI: "https://idp.example/jwks"})
 
-	_, err := r.ResolveKey("k1", "https://evil.example")
+	_, err := r.ResolveKey("k1", "https://evil.example", "")
 	if !errors.Is(err, auth.ErrIssuerMismatch) {
 		t.Errorf("err = %v, want ErrIssuerMismatch", err)
 	}
@@ -108,7 +108,7 @@ func TestRegistry_ResolveKey_IssMismatchReturnsErrIssuerMismatch(t *testing.T) {
 
 func TestRegistry_ResolveKey_UnknownKidFallsThrough(t *testing.T) {
 	r := newTestRegistry(t)
-	_, err := r.ResolveKey("never-seen", "any")
+	_, err := r.ResolveKey("never-seen", "any", "")
 	if !errors.Is(err, auth.ErrUnknownKID) {
 		t.Errorf("err = %v, want ErrUnknownKID", err)
 	}
@@ -128,7 +128,7 @@ func TestRegistry_ResolveKey_Phase2PendingReturnsErrUnknownKID(t *testing.T) {
 	}
 	r.installForTest(p, &fakeKeySource{kid: "k1", key: &priv.PublicKey}, nil /* discoveryDoc nil */)
 
-	_, err := r.ResolveKey("k1", "https://idp.example")
+	_, err := r.ResolveKey("k1", "https://idp.example", "")
 	if !errors.Is(err, auth.ErrUnknownKID) {
 		t.Errorf("err = %v, want ErrUnknownKID (Phase-2-pending case)", err)
 	}
@@ -148,7 +148,7 @@ func TestRegistry_EvictKidEntry_SelfHeal(t *testing.T) {
 	r.installForTest(p, &fakeKeySource{kid: "k1", key: &priv.PublicKey},
 		&DiscoveryDoc{Issuer: "https://idp.example", JWKSURI: "x"})
 
-	_, _ = r.ResolveKey("k1", "https://idp.example") // populates kidIndex
+	_, _ = r.ResolveKey("k1", "https://idp.example", "") // populates kidIndex
 
 	ref := providerRef{tenant: spi.TenantID(p.OwnerLegalEntityID.String()), uri: p.WellKnownConfigURI}
 	r.EvictKidEntry("k1", ref)
@@ -232,13 +232,13 @@ func TestRegistry_ResolveKey_HotPathFromKidIndex(t *testing.T) {
 		&DiscoveryDoc{Issuer: "https://idp.example", JWKSURI: "x"})
 
 	// First call — cold path.
-	_, err := r.ResolveKey("k1", "https://idp.example")
+	_, err := r.ResolveKey("k1", "https://idp.example", "")
 	if err != nil {
 		t.Fatalf("first ResolveKey: %v", err)
 	}
 
 	// Second call — hot path via kidIndex.
-	res, err := r.ResolveKey("k1", "https://idp.example")
+	res, err := r.ResolveKey("k1", "https://idp.example", "")
 	if err != nil {
 		t.Fatalf("second ResolveKey: %v", err)
 	}
@@ -296,5 +296,186 @@ func TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked(t *testing.T) {
 
 	if internalHit.Load() {
 		t.Fatal("malicious internal JWKS endpoint received a GET — SSRF defence FAILED for JWKS fetch")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Audit fix: cross-tenant resolution with audience disambiguation (#284)
+// ---------------------------------------------------------------------------
+
+// TestResolveKey_TwoTenantsSameURIDistinctAudiences_RoutesByAud verifies
+// Layer 1 of the Critical audit fix: when two tenants register the same
+// wellKnownConfigUri with distinct ExpectedAudiences, ResolveKey routes
+// deterministically by aud claim to the correct tenant's provider.
+func TestResolveKey_TwoTenantsSameURIDistinctAudiences_RoutesByAud(t *testing.T) {
+	r := newTestRegistry(t)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	tenantAUUID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	tenantBUUID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+
+	pA := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  []string{"app-a"},
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantAUUID,
+	}
+	pB := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  []string{"app-b"},
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantBUUID,
+	}
+	doc := &DiscoveryDoc{Issuer: "https://shared-idp.example", JWKSURI: "https://shared-idp.example/jwks"}
+	// Both share the same key (simulating same physical IdP).
+	ks := &fakeKeySource{kid: "k1", key: &priv.PublicKey}
+	r.installForTest(pA, ks, doc)
+	r.installForTest(pB, ks, doc)
+
+	// JWT with aud="app-a" must resolve to provider A.
+	res, err := r.ResolveKey("k1", "https://shared-idp.example", "app-a")
+	if err != nil {
+		t.Fatalf("ResolveKey(aud=app-a): %v", err)
+	}
+	if res.Provider.ID != pA.ID {
+		t.Errorf("aud=app-a: got provider %v, want provider A (%v)", res.Provider.ID, pA.ID)
+	}
+
+	// JWT with aud="app-b" must resolve to provider B.
+	res, err = r.ResolveKey("k1", "https://shared-idp.example", "app-b")
+	if err != nil {
+		t.Fatalf("ResolveKey(aud=app-b): %v", err)
+	}
+	if res.Provider.ID != pB.ID {
+		t.Errorf("aud=app-b: got provider %v, want provider B (%v)", res.Provider.ID, pB.ID)
+	}
+}
+
+// TestResolveKey_TwoTenantsSameURIOverlappingAudiences_ErrAmbiguous verifies
+// that when two providers share an aud in their ExpectedAudiences, ResolveKey
+// returns ErrAmbiguousProvider (wrapped in ErrUnknownKID).
+func TestResolveKey_TwoTenantsSameURIOverlappingAudiences_ErrAmbiguous(t *testing.T) {
+	r := newTestRegistry(t)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	tenantAUUID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	tenantBUUID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+
+	pA := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  []string{"shared-aud"},
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantAUUID,
+	}
+	pB := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  []string{"shared-aud"},
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantBUUID,
+	}
+	doc := &DiscoveryDoc{Issuer: "https://shared-idp.example", JWKSURI: "https://shared-idp.example/jwks"}
+	ks := &fakeKeySource{kid: "k1", key: &priv.PublicKey}
+	r.installForTest(pA, ks, doc)
+	r.installForTest(pB, ks, doc)
+
+	_, err := r.ResolveKey("k1", "https://shared-idp.example", "shared-aud")
+	if err == nil {
+		t.Fatal("ResolveKey with overlapping audiences: expected error, got nil")
+	}
+	if !errors.Is(err, ErrAmbiguousProvider) {
+		t.Errorf("err = %v, want ErrAmbiguousProvider", err)
+	}
+	if !errors.Is(err, auth.ErrUnknownKID) {
+		t.Errorf("err = %v, must wrap auth.ErrUnknownKID (chain fall-through sentinel)", err)
+	}
+}
+
+// TestResolveKey_TwoTenantsSameURIEmptyAudiences_ErrAmbiguous verifies that
+// when both providers have empty ExpectedAudiences (and the same iss/sig),
+// ResolveKey rejects with ErrAmbiguousProvider rather than routing randomly.
+func TestResolveKey_TwoTenantsSameURIEmptyAudiences_ErrAmbiguous(t *testing.T) {
+	r := newTestRegistry(t)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	tenantAUUID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	tenantBUUID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+
+	pA := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  nil, // empty
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantAUUID,
+	}
+	pB := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  nil, // empty
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantBUUID,
+	}
+	doc := &DiscoveryDoc{Issuer: "https://shared-idp.example", JWKSURI: "https://shared-idp.example/jwks"}
+	ks := &fakeKeySource{kid: "k1", key: &priv.PublicKey}
+	r.installForTest(pA, ks, doc)
+	r.installForTest(pB, ks, doc)
+
+	_, err := r.ResolveKey("k1", "https://shared-idp.example", "any-aud")
+	if err == nil {
+		t.Fatal("ResolveKey with two providers and empty audiences: expected error, got nil")
+	}
+	if !errors.Is(err, ErrAmbiguousProvider) {
+		t.Errorf("err = %v, want ErrAmbiguousProvider", err)
+	}
+	if !errors.Is(err, auth.ErrUnknownKID) {
+		t.Errorf("err = %v, must wrap auth.ErrUnknownKID (chain fall-through sentinel)", err)
+	}
+}
+
+// TestResolveKey_DeterministicSortColdPath verifies that the cold path iterates
+// providers in deterministic tenant+uri lexicographic order across multiple calls,
+// so kidIndex population order is reproducible regardless of Go's map iteration.
+func TestResolveKey_DeterministicSortColdPath(t *testing.T) {
+	r := newTestRegistry(t)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	// Install a single provider so ResolveKey succeeds. The sort is load-bearing
+	// for the multi-provider ambiguity case; here we verify the cold path
+	// completes deterministically by running it twice with the same result.
+	p := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://idp.example",
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"my-app"},
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+	}
+	doc := &DiscoveryDoc{Issuer: "https://idp.example", JWKSURI: "https://idp.example/jwks"}
+	r.installForTest(p, &fakeKeySource{kid: "k1", key: &priv.PublicKey}, doc)
+
+	// First cold-path call.
+	res1, err := r.ResolveKey("k1", "https://idp.example", "my-app")
+	if err != nil {
+		t.Fatalf("first ResolveKey: %v", err)
+	}
+
+	// Evict and retry (cold path again).
+	r.EvictKidEntry("k1", res1.ProviderRef)
+	res2, err := r.ResolveKey("k1", "https://idp.example", "my-app")
+	if err != nil {
+		t.Fatalf("second ResolveKey: %v", err)
+	}
+
+	if res1.Provider.ID != res2.Provider.ID {
+		t.Errorf("cold path non-deterministic: first=%v second=%v", res1.Provider.ID, res2.Provider.ID)
 	}
 }

@@ -281,6 +281,13 @@ func (s *Service) emitOwnershipTransitionAndUpdateHistory(ctx context.Context, p
 			"wellknown_uri_hash", uriHash,
 			"new_provider_uuid", p.ID.String(),
 		)
+
+		// Layer 3 — Cross-tenant audience-overlap WARN (#284 Critical audit fix).
+		// If the registering provider and any prior/concurrent provider share an
+		// empty or overlapping ExpectedAudiences set, tokens will be rejected as
+		// ErrAmbiguousProvider at validation time. Emit a WARN so operators can
+		// fix the misconfiguration before it causes user-facing 401s.
+		s.warnIfAudienceOverlap(ctx, p, history, uriHash)
 	}
 
 	if history == nil {
@@ -330,6 +337,73 @@ func (s *Service) markOwnershipDeletedInHistory(ctx context.Context, uri string,
 		s.logger.Error("oidc: put URI history on delete",
 			"pkg", "oidc", "uri_hash", uriHash, "error", err.Error())
 	}
+}
+
+// warnIfAudienceOverlap emits a WARN log if the registering provider p shares
+// an empty or overlapping ExpectedAudiences with any prior/concurrent owner of
+// the same URI. Called only when priors is non-empty (cross-tenant case).
+//
+// Logic: if two providers both have empty ExpectedAudiences (any-aud accepted),
+// or if their ExpectedAudiences sets have a non-empty intersection, they are
+// ambiguous and tokens will be rejected with ErrAmbiguousProvider. Operators
+// must set DISTINCT ExpectedAudiences on each tenant's provider.
+//
+// We read each prior provider from the store under the system context to
+// discover their ExpectedAudiences. Failures to read are non-fatal (WARN log
+// is a best-effort signal, not a correctness gate).
+func (s *Service) warnIfAudienceOverlap(ctx context.Context, p *OidcProvider, history *UriOwnershipHistory, uriHash string) {
+	if history == nil {
+		return
+	}
+	// Collect all active owners from history (CurrentOwner + Past without DeletedAt).
+	var owners []Owner
+	if history.CurrentOwner != nil {
+		owners = append(owners, *history.CurrentOwner)
+	}
+	for _, past := range history.Past {
+		if past.DeletedAt == nil {
+			owners = append(owners, past)
+		}
+	}
+
+	for _, owner := range owners {
+		if owner.ProviderUUID == p.ID.String() {
+			// Skip self (the newly registering provider).
+			continue
+		}
+		prior, err := s.store.Get(ctx, spi.TenantID(owner.TenantID), owner.ProviderUUID)
+		if err != nil {
+			// Non-fatal — cannot read prior provider's audiences; skip.
+			continue
+		}
+		if audienceSetsOverlap(p.ExpectedAudiences, prior.ExpectedAudiences) {
+			s.logger.Warn("oidc.cross_tenant_audience_overlap",
+				"pkg", "oidc",
+				"registering_tenant", p.OwnerLegalEntityID.String(),
+				"prior_tenant", owner.TenantID,
+				"prior_provider_uuid", owner.ProviderUUID,
+				"wellknown_uri_hash", uriHash,
+				"action_required", "set distinct expectedAudiences on each tenant's provider to avoid ErrAmbiguousProvider at validation time",
+			)
+		}
+	}
+}
+
+// audienceSetsOverlap returns true if the two audience slices have a non-empty
+// intersection, or if EITHER slice is empty (which means "accept any audience" —
+// an implicit overlap with everything).
+func audienceSetsOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	for _, ea := range a {
+		for _, eb := range b {
+			if ea == eb {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // containsStr is a small string-slice helper for the audit-log priors list.

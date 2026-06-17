@@ -11,6 +11,7 @@
 - **rev. 1** — initial design.
 - **rev. 2** — first fresh-context review: dropped a misguided SPI extension, introduced four error sentinels, added `iat`-binding, mandatory `iss` validation, two-phase warmup, fetch-time SSRF, explicit register-race semantics, per-provider audience, observability, admin chain-introspection.
 - **rev. 3** — second fresh-context review: dropped broadcast-failure handling entirely (mechanically impossible against the SPI contract); specified OIDC `UserContext` extraction with namespaced `UserID` + configurable roles claim; specified `map[string]json.RawMessage` decode for tri-state PATCH; honest scope for `iat`-binding (closes accidental, not adversarial); fixed cold-start contradiction; dropped per-tenant Prometheus label (cardinality footgun); fixed OpenAPI prose contradicting D17; re-keyed broadcast single-flight by `(tenantID, uri)`; specified 30s `iat` skew; dropped the rev. 2 admin chain-introspection endpoint as forward-engineering with no v0.8.0 consumer.
+- **rev. 5** — Critical audit fix: non-deterministic cross-tenant routing in `Registry.ResolveKey` cold path. Added audience-based disambiguation in `disposeCandidates` (Layer 1), deterministic `sort.Slice` on cold-path candidate iteration (Layer 2), and WARN log on audience-overlap at Register-time (Layer 3). New sentinel `ErrAmbiguousProvider` wraps `ErrUnknownKID`. `ResolveKey` signature gains `aud string` parameter. Cold path now populates kidIndex with ALL key-eligible refs (not just the winner) so hot-path subsequent calls with different aud can disambiguate. §4.1 updated with the new 5-outcome disposition matrix. §3.4 sentinel table updated with `ErrAmbiguousProvider`.
 - **rev. 4** — third fresh-context review: (C1) made the `kidIndex` populate-at-resolution-time invariant explicit — self-heal is the *primary* correctness mechanism, not a safety net; (C2) reload_all now acquires the registry write lock around its rebuild so it actually serializes with concurrent `reload(T, uri)`; (I1) `iss` comparison is bytewise per OIDC Core 1.0 §2; (I2) bounded `sub` claim (≤255 chars, no ASCII control chars); `UserContext.UserID` is opaque (no downstream parsing); (I3+I4) replaced the in-memory per-node `previousOwners` cache with a KV-backed cross-tenant `_history:<sha256>` ownership-history entry — cluster-consistent, restart-survivable; (I5) renamed config field to `DefaultRolesClaim` for consistency; (I6) corrected scenario count throughout the spec; (I7) chain order `(JWKSValidator, OIDCValidator)` is now normative; (I8) split the concurrent-Register test into a parity-safe deterministic path and a cyoda-go-specific fault-injection race path; (I9) added scenario + behaviour for broadcast arriving at a node that does not have the (T, uri) in its registry; (I10) split the reactivate-with-keys row into success-with-remote-removal-sync and idempotency; (W1) softened the ADR plugin-parity claim; (W2) inlined the audit emitter into `service.go`; (W3) added `OIDC_CLAIMS_INVALID` parent code for claims-validation subcodes (9 error codes total); (W4) **pushback** — `internal/auth/http_jwks_source.go:93-121` refetches unconditionally on cache miss, so the "self-heal stalls validation until source TTL expires" gotcha doesn't fire; one-line clarifying note added in §4.1 rather than a structural change; (W5) §10 explicitly notes the cassandra-row acceptance gate is verified in the sibling repo's PR. Decision-table preserves stable D1/D2/D3 labels (ADR cross-references); other D-numbers preserved across rev. 3 → rev. 4.
 
 **Scope:** Land a per-tenant OIDC provider registry, the seven REST handlers currently stubbed at HTTP 501 (`internal/domain/account/handler.go:95-121`), a chained multi-issuer JWT validator with four distinct error sentinels, single-topic cluster broadcast for cross-node cache eviction, six `CYODA_OIDC_*` configuration env vars, telemetry, and a 64-scenario parity test suite (§11 is authoritative). Zero changes to any SPI surface. Zero `h.stub` calls remain on the OIDC path; the seven `NotImplemented` declarations come off `api/openapi.yaml`.
@@ -259,7 +260,8 @@ Token-validation-time errors:
 
 | Sentinel | Wire | Meaning |
 |---|---|---|
-| `ErrUnknownKID` | 401 (after chain exhaustion) | Neither validator recognised the `kid`. Includes Phase-2-pending cold-start (D8). |
+| `ErrUnknownKID` | 401 (after chain exhaustion) | Neither validator recognised the `kid`. Includes Phase-2-pending cold-start (D8). Also wraps `ErrAmbiguousProvider`. |
+| `ErrAmbiguousProvider` | 401 (wraps `ErrUnknownKID`) | Multiple tenants are iss-eligible and sig-verifying for the same JWT with no unique audience disambiguator. Admins must set distinct `ExpectedAudiences` per tenant (Critical audit fix, rev. 5). |
 | `ErrIssuerMismatch` | 401 + code in `OIDC_*` family | A KeySource resolved `kid` but `iss` did not match (bytewise per D17). |
 | `ErrSignatureFailure` | 401 | Signature verification failed. Triggers `kidIndex` self-heal (D6). |
 | `ErrClaimsFailure` | 401 + subcode mapped to `OIDC_CLAIMS_INVALID` or `OIDC_AUDIENCE_MISMATCH` | `exp` / `nbf` / `aud` / `sub` / alg failure. Subcodes: `expired`, `nbf`, `audience` (→ `OIDC_AUDIENCE_MISMATCH`), `missing_sub`, `invalid_sub`, `unsupported_alg` (all → `OIDC_CLAIMS_INVALID`). |
@@ -308,19 +310,26 @@ func (r *Registry) EvictKidEntry(kid string, ref providerRef)  // D6 self-heal
 func (r *Registry) ReloadAll(ctx context.Context) error        // D18: takes mu.Lock for rebuild
 ```
 
-`ResolveKey` semantics — explicit error-disposition matrix:
+`ResolveKey(kid, iss, aud string)` semantics — explicit error-disposition matrix (rev. 5):
+
+`aud` is the token's primary audience string (first element of an array or the single string; empty if absent). Used only in the multi-candidate step (see step 3b below).
 
 1. Hot path: under `r.mu.RLock`, look up `kidIndex[kid]` → candidate refs. Release the read lock before any work that may need the write lock (per Go-mutex-discipline).
 2. For each candidate ref → look up provider. If provider's `sources[T][uri].discoveryDoc == nil` (Phase-2-pending), this candidate contributes nothing; continue. Otherwise apply the iss-validation rule (D17, **strict bytewise**):
    - If `provider.Issuers` non-empty and `iss ∈ Issuers` → iss-eligible candidate.
    - If `provider.Issuers` empty and `iss == providerSource.discoveryDoc.Issuer` → iss-eligible candidate.
    - Otherwise → candidate not iss-eligible.
-3. **Disposition (hot path):**
-   - At least one iss-eligible candidate whose `source.GetKey(kid)` returns a key → return `KeyResolution` with `ProviderRef` populated. **Caller MUST call `EvictKidEntry(kid, ref)` on subsequent `ErrSignatureFailure` (D6 contract).**
-   - At least one iss-eligible candidate but all sources return transient errors → `ErrJWKSUnavailable`.
-   - No iss-eligible candidates after iterating all kidIndex entries → fall through to cold path (the candidates may be stale; the cold path may find new ones).
-4. Cold path: under `r.mu.Lock`, iterate all providers globally. Apply the same iss-eligibility rule. On finding a successful resolution (source returned key, iss-eligible), **append `(tenant, uri)` to `kidIndex[kid]` before returning the `KeyResolution`**. This is D6's load-bearing populate-at-resolution invariant — the cold path cannot know if the caller's subsequent signature verification will succeed; it populates optimistically and the caller's `EvictKidEntry` corrects on failure.
-5. Cold-path miss (no providers iss-eligible OR all iss-eligible candidates had Phase-2-pending discovery docs) → `ErrUnknownKID`.
+3. **Disposition (five outcomes):**
+   - a. Exactly one key-eligible candidate (source returned key AND iss-eligible): return `KeyResolution`. **Caller MUST call `EvictKidEntry(kid, ref)` on subsequent `ErrSignatureFailure` (D6 contract).**
+   - b. Multiple key-eligible candidates (cross-tenant shared IdP): disambiguate by `aud`. Collect `audMatched` = those whose `ExpectedAudiences` is non-empty AND contains `aud`.
+     - Exactly one `audMatched` → return it.
+     - Zero or multiple `audMatched` → **`ErrAmbiguousProvider`** (wraps `ErrUnknownKID` — chain fall-through). Prevents silent cross-tenant routing. Operators must set distinct `ExpectedAudiences` per tenant.
+   - c. At least one iss-eligible candidate but all sources return transient errors → `ErrJWKSUnavailable`.
+   - d. No iss-eligible candidates, some kid-matched candidates were rejected by iss → `ErrIssuerMismatch`.
+   - e. No candidates match at all → `ErrUnknownKID`.
+4. Hot path miss: fall through to cold path (stale kidIndex; cold path iterates all providers globally).
+5. Cold path: under `r.mu.Lock`, iterate all providers in deterministic `(tenant, uri)` lexicographic order (Layer 2, defense-in-depth). Apply steps 2–3. On success, **populate kidIndex with ALL key-eligible refs** (not just the winner), then return the selected `KeyResolution`. Populating all key-eligible refs allows subsequent hot-path calls with a different `aud` to see all candidates and apply step 3b correctly.
+6. Cold-path miss → `ErrUnknownKID`.
 
 The source's `GetKey(kid)` refetches the JWKS endpoint unconditionally on cache miss (`internal/auth/http_jwks_source.go:93-121`), so a self-heal eviction followed by a new token for the same `kid` triggers a fresh fetch via the source rather than serving stale data. No separate refetch-trigger machinery is needed.
 

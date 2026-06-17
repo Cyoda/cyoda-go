@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -148,15 +149,22 @@ func (r *Registry) kidIndexContains(kid, tenant, uri string) bool {
 
 // ResolveKey implements the §4.1 disposition matrix.
 //
+// aud is the token's audience claim (single string or first element extracted
+// by the caller). It is used only in the multi-candidate disambiguation step
+// (Layer 1 of the Critical audit fix, #284): when multiple providers are
+// simultaneously iss-eligible and sig-verifying, ExpectedAudiences is used
+// to route to the correct tenant. Pass an empty string when aud is absent.
+//
 // Hot path (RLock): if kidIndex has candidates for kid, run disposeCandidates
 // immediately.
 //
-// Cold path (Lock, mutates kidIndex): iterate all providers globally,
+// Cold path (Lock, mutates kidIndex): iterate all providers globally in
+// deterministic (tenant, uri) lexicographic order (Layer 2 — defense-in-depth),
 // run disposeCandidates, and on success populate kidIndex for the next call.
 //
 // D6 invariant: kidIndex is populated BEFORE the caller verifies the
 // signature. The caller MUST call EvictKidEntry on ErrSignatureFailure.
-func (r *Registry) ResolveKey(kid, iss string) (*KeyResolution, error) {
+func (r *Registry) ResolveKey(kid, iss, aud string) (*KeyResolution, error) {
 	// Hot path under RLock.
 	var candidates []providerRef
 	var res *KeyResolution
@@ -170,13 +178,16 @@ func (r *Registry) ResolveKey(kid, iss string) (*KeyResolution, error) {
 		} else {
 			r.metrics.IncKidCacheMiss()
 		}
-		res, err = r.disposeCandidates(candidates, kid, iss)
+		res, err = r.disposeCandidates(candidates, kid, iss, aud)
 	}()
 	if err == nil || !errors.Is(err, auth.ErrUnknownKID) {
 		return res, err
 	}
 
 	// Cold path under Lock for kidIndex mutation — re-iterate everything.
+	// Layer 2: sort deterministically by (tenant, uri) so kidIndex population
+	// order is reproducible across nodes and Go's randomized map iteration
+	// cannot affect which candidate is appended first.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var allRefs []providerRef
@@ -185,29 +196,89 @@ func (r *Registry) ResolveKey(kid, iss string) (*KeyResolution, error) {
 			allRefs = append(allRefs, providerRef{tenant: tenant, uri: uri})
 		}
 	}
-	res, err = r.disposeCandidates(allRefs, kid, iss)
+	sort.Slice(allRefs, func(i, j int) bool {
+		if allRefs[i].tenant != allRefs[j].tenant {
+			return allRefs[i].tenant < allRefs[j].tenant
+		}
+		return allRefs[i].uri < allRefs[j].uri
+	})
+	res, err = r.disposeCandidates(allRefs, kid, iss, aud)
 	if err == nil && res != nil {
 		// D6: populate kidIndex at resolution time, before sig check.
-		// Dedup: concurrent cold-path goroutines for the same kid could
-		// each resolve the same ref; skip the append if already present.
+		//
+		// When multiple providers across tenants share the same kid (same physical
+		// IdP), we populate ALL key-eligible refs into kidIndex, not just the
+		// winner. This ensures that subsequent hot-path calls for a DIFFERENT aud
+		// see all candidates and can apply audience disambiguation correctly —
+		// preventing permanent wrong-tenant routing after the first resolution.
+		//
+		// Dedup: concurrent cold-path goroutines for the same kid could each
+		// resolve the same ref; skip appends for refs already present.
+		keyRefs := r.collectKeyEligibleRefs(allRefs, kid, iss)
 		existing := r.kidIndex[kid]
-		already := false
-		for _, e := range existing {
-			if e == res.ProviderRef {
-				already = true
-				break
+		for _, ref := range keyRefs {
+			already := false
+			for _, e := range existing {
+				if e == ref {
+					already = true
+					break
+				}
+			}
+			if !already {
+				existing = append(existing, ref)
 			}
 		}
-		if !already {
-			r.kidIndex[kid] = append(existing, res.ProviderRef)
-		}
+		r.kidIndex[kid] = existing
 	}
 	return res, err
+}
+
+// collectKeyEligibleRefs returns the set of providerRefs from candidates that
+// are iss-eligible AND whose keySource returns a key for kid. Used by the cold
+// path to populate kidIndex with ALL matching refs so subsequent hot-path calls
+// with different aud values can apply audience disambiguation without re-walking
+// all providers. Caller must hold the write lock.
+func (r *Registry) collectKeyEligibleRefs(candidates []providerRef, kid, iss string) []providerRef {
+	var out []providerRef
+	for _, ref := range candidates {
+		prov, ok := r.providers[ref.tenant][ref.uri]
+		if !ok || !prov.Active() {
+			continue
+		}
+		src, ok := r.sources[ref.tenant][ref.uri]
+		if !ok || src.discoveryDoc == nil {
+			continue
+		}
+		if !issMatches(prov, src.discoveryDoc, iss) {
+			continue
+		}
+		_, err := src.keySource.GetKey(kid)
+		if err != nil {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
 }
 
 // disposeCandidates walks the candidate set and applies the iss-validation
 // rule, then attempts source.GetKey on every iss-eligible candidate. Caller
 // must hold the appropriate lock (RLock for hot path, Lock for cold path).
+//
+// aud is the token's primary audience claim (empty string if absent). When
+// multiple candidates are key-eligible, audience disambiguation is applied:
+//
+//  1. Collect all iss-eligible candidates.
+//  2. For each, attempt GetKey. Collect those that return a key (keyEligible).
+//  3. If exactly one keyEligible: return it (single-match path unchanged).
+//  4. If multiple keyEligible: disambiguate by aud.
+//     - Collect audMatched = those whose ExpectedAudiences is non-empty AND
+//       contains aud.
+//     - Exactly one audMatched → return it.
+//     - Zero or multiple audMatched → ErrAmbiguousProvider (wraps
+//       ErrUnknownKID so the chain falls through). This prevents silent
+//       cross-tenant routing when two tenants share an IdP without setting
+//       distinct ExpectedAudiences (Critical audit fix, #284).
 //
 // Return semantics:
 //   - success → KeyResolution with ProviderRef populated
@@ -215,14 +286,23 @@ func (r *Registry) ResolveKey(kid, iss string) (*KeyResolution, error) {
 //     errors → ErrJWKSUnavailable
 //   - no iss-eligible candidates but at least one kid-matched candidate was
 //     rejected by iss → ErrIssuerMismatch
+//   - ambiguous (multiple key-eligible, no unique aud match) → ErrAmbiguousProvider
 //   - otherwise → ErrUnknownKID
-func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss string) (*KeyResolution, error) {
+func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss, aud string) (*KeyResolution, error) {
 	if len(candidates) == 0 {
 		return nil, auth.ErrUnknownKID
 	}
-	var hadIssEligible bool
 	var hadIssRejected bool
 	var lastTransientErr error
+
+	// Phase 1: collect iss-eligible candidates.
+	type keyEligibleEntry struct {
+		ref  providerRef
+		prov *OidcProvider
+		pub  *rsa.PublicKey
+	}
+	var keyEligible []keyEligibleEntry
+
 	for _, ref := range candidates {
 		prov, ok := r.providers[ref.tenant][ref.uri]
 		if !ok || !prov.Active() {
@@ -239,7 +319,6 @@ func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss string) 
 			hadIssRejected = true
 			continue
 		}
-		hadIssEligible = true
 		pub, err := src.keySource.GetKey(kid)
 		if err != nil {
 			if errors.Is(err, auth.ErrKeyNotFound) {
@@ -250,25 +329,71 @@ func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss string) 
 			lastTransientErr = err
 			continue
 		}
-		return &KeyResolution{
-			PublicKey:          pub,
-			Provider:           prov,
-			WellKnownConfigURI: ref.uri,
-			ProviderRef:        ref,
-		}, nil
+		keyEligible = append(keyEligible, keyEligibleEntry{ref: ref, prov: prov, pub: pub})
 	}
-	if lastTransientErr != nil {
+
+	if lastTransientErr != nil && len(keyEligible) == 0 {
 		return nil, auth.ErrJWKSUnavailable
 	}
-	if hadIssEligible {
-		// Had iss-eligible candidates but all returned ErrKeyNotFound.
+
+	switch len(keyEligible) {
+	case 0:
+		if lastTransientErr != nil {
+			return nil, auth.ErrJWKSUnavailable
+		}
+		if hadIssRejected {
+			// Had kid-matched candidates but all were rejected by iss check.
+			return nil, auth.ErrIssuerMismatch
+		}
 		return nil, auth.ErrUnknownKID
+
+	case 1:
+		// Single match — return immediately (common path).
+		e := keyEligible[0]
+		return &KeyResolution{
+			PublicKey:          e.pub,
+			Provider:           e.prov,
+			WellKnownConfigURI: e.ref.uri,
+			ProviderRef:        e.ref,
+		}, nil
+
+	default:
+		// Multiple key-eligible candidates across tenants. Disambiguate by aud.
+		// Layer 1 of Critical audit fix (#284): prevents non-deterministic
+		// cross-tenant routing when two tenants register the same IdP URL.
+		var audMatched []keyEligibleEntry
+		for _, e := range keyEligible {
+			if len(e.prov.ExpectedAudiences) > 0 && audienceContains(e.prov.ExpectedAudiences, aud) {
+				audMatched = append(audMatched, e)
+			}
+		}
+		if len(audMatched) == 1 {
+			e := audMatched[0]
+			return &KeyResolution{
+				PublicKey:          e.pub,
+				Provider:           e.prov,
+				WellKnownConfigURI: e.ref.uri,
+				ProviderRef:        e.ref,
+			}, nil
+		}
+		// Zero or multiple audMatched: reject to prevent silent cross-tenant routing.
+		// Operators must set distinct ExpectedAudiences on each tenant's provider
+		// to allow shared-IdP deployments.
+		return nil, ErrAmbiguousProvider
 	}
-	if hadIssRejected {
-		// Had kid-matched candidates but all were rejected by iss check.
-		return nil, auth.ErrIssuerMismatch
+}
+
+// audienceContains reports whether aud is a member of the expected slice.
+// aud is the single-string audience extracted from the token (the caller is
+// responsible for flattening []aud → first-match string before calling here;
+// for the resolver path we compare against the raw aud string).
+func audienceContains(expected []string, aud string) bool {
+	for _, e := range expected {
+		if e == aud {
+			return true
+		}
 	}
-	return nil, auth.ErrUnknownKID
+	return false
 }
 
 // issMatches applies D17's strict bytewise iss-comparison rule.

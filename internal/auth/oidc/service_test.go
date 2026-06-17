@@ -491,6 +491,83 @@ func TestService_ListByTenant_ReturnsAll(t *testing.T) {
 	}
 }
 
+// TestService_Register_CrossTenantSameAudienceWARNs verifies Layer 3 of the
+// Critical audit fix (D25): when a second tenant registers the same URI with
+// overlapping ExpectedAudiences, the service emits a WARN log identifying the
+// audience-overlap misconfiguration.
+func TestService_Register_CrossTenantSameAudienceWARNs(t *testing.T) {
+	s, buf := newTestServiceWithLogger(t)
+	ctx := context.Background()
+
+	// Register provider A with expectedAudiences=["shared"].
+	inA := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"shared"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	if _, err := s.Register(ctx, inA); err != nil {
+		t.Fatalf("Register tenantA: %v", err)
+	}
+
+	// Register provider B (different tenant) with overlapping expectedAudiences=["shared"].
+	inB := RegisterInput{
+		TenantID:           tenantB,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"shared"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantB)),
+	}
+	if _, err := s.Register(ctx, inB); err != nil {
+		t.Fatalf("Register tenantB: %v", err)
+	}
+
+	// Verify that a WARN was emitted about the audience overlap.
+	logged := buf.String()
+	if !strings.Contains(logged, "WARN") {
+		t.Errorf("expected WARN log for cross-tenant audience overlap, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, "oidc.cross_tenant_audience_overlap") {
+		t.Errorf("expected oidc.cross_tenant_audience_overlap in log, got:\n%s", logged)
+	}
+}
+
+// TestService_Register_CrossTenantDistinctAudiencesNoWARN verifies that
+// when two tenants register the same URI with DISTINCT ExpectedAudiences,
+// no audience-overlap WARN is emitted (only the existing cross-tenant INFO).
+func TestService_Register_CrossTenantDistinctAudiencesNoWARN(t *testing.T) {
+	s, buf := newTestServiceWithLogger(t)
+	ctx := context.Background()
+
+	inA := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"app-a"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	if _, err := s.Register(ctx, inA); err != nil {
+		t.Fatalf("Register tenantA: %v", err)
+	}
+
+	inB := RegisterInput{
+		TenantID:           tenantB,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"app-b"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantB)),
+	}
+	if _, err := s.Register(ctx, inB); err != nil {
+		t.Fatalf("Register tenantB: %v", err)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "oidc.cross_tenant_audience_overlap") {
+		t.Errorf("unexpected oidc.cross_tenant_audience_overlap WARN for distinct audiences, got:\n%s", logged)
+	}
+}
+
 func TestService_ListByTenant_FiltersActive(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()

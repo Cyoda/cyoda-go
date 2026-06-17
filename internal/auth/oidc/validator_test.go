@@ -281,6 +281,59 @@ func TestOIDCValidator_PropagatesUnknownKID(t *testing.T) {
 	}
 }
 
+// TestOIDCValidator_AmbiguousProvider_RejectsAsUnknownKID verifies that when
+// two providers are iss+sig-eligible for the same token with no audience
+// disambiguator, the validator returns an error wrapping auth.ErrUnknownKID
+// (so the chain can fall through) rather than routing non-deterministically.
+func TestOIDCValidator_AmbiguousProvider_RejectsAsUnknownKID(t *testing.T) {
+	reg := newTestRegistry(t)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	tenantAUUID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	tenantBUUID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+
+	// Two providers — same URI, same iss, same key — no ExpectedAudiences to disambiguate.
+	pA := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  nil,
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantAUUID,
+	}
+	pB := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: "https://shared-idp.example",
+		Issuers:            []string{"https://shared-idp.example"},
+		ExpectedAudiences:  nil,
+		CreatedAt:          time.Now().Add(-time.Hour),
+		OwnerLegalEntityID: tenantBUUID,
+	}
+	doc := &DiscoveryDoc{Issuer: "https://shared-idp.example", JWKSURI: "https://shared-idp.example/jwks"}
+	ks := &fakeKeySource{kid: "k1", key: &priv.PublicKey}
+	reg.installForTest(pA, ks, doc)
+	reg.installForTest(pB, ks, doc)
+
+	v := NewValidator(reg, "roles")
+	now := time.Now()
+	claims := map[string]any{
+		"sub": "alice",
+		"iss": "https://shared-idp.example",
+		"aud": "some-aud",
+		"iat": float64(now.Unix()),
+		"exp": float64(now.Add(5 * time.Minute).Unix()),
+	}
+	token := signRS256ForOIDCTest(t, "k1", priv, claims)
+
+	_, err := v.Validate(token)
+	if err == nil {
+		t.Fatal("Validate with ambiguous providers: expected error, got nil")
+	}
+	if !errors.Is(err, auth.ErrUnknownKID) {
+		t.Errorf("err = %v, want error wrapping auth.ErrUnknownKID (chain fall-through)", err)
+	}
+}
+
 // assertContains fails the test if s does not contain sub.
 func assertContains(t *testing.T, s, sub string) {
 	t.Helper()

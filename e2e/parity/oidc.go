@@ -2856,3 +2856,88 @@ func RunOidcInvalidTenantUUIDRejected_Skip(t *testing.T, _ BackendFixture) {
 func RunOidcD10_MaliciousDiscoveryJWKSURI_Skip(t *testing.T, _ BackendFixture) {
 	t.Skip("covered by internal/auth/oidc unit test TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked — parity subprocess has CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true which would bypass the safeDialContext blocklist check")
 }
+
+// --- Phase 9.6 — Audit fixes (#284) ---
+
+// RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP verifies the Critical
+// audit fix (#284): two tenants register the same IdP URI with distinct
+// ExpectedAudiences; tokens route to the correct tenant deterministically.
+//
+// Scenario:
+//  1. Admin tenant A registers the shared mock IdP with expectedAudiences=["app-a"].
+//  2. Admin tenant B registers the SAME IdP URI with expectedAudiences=["app-b"].
+//  3. JWT minted with aud="app-a" (by the shared mock) is accepted and
+//     reaches the probe endpoint as tenant A.
+//  4. JWT minted with aud="app-b" is accepted and reaches the probe as tenant B.
+//
+// The parity test can only verify that both tokens are accepted (200) —
+// verifying that each lands in the correct tenant context would require a
+// probe endpoint that returns UserContext.Tenant.ID, which is not available
+// on the current wire surface. The unit tests
+// TestResolveKey_TwoTenantsSameURIDistinctAudiences_RoutesByAud and
+// TestOIDCValidator_AmbiguousProvider_RejectsAsUnknownKID give precise
+// coverage of the routing and rejection paths respectively.
+func RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP(t *testing.T, fix BackendFixture) {
+	adminA := fix.NewTenant(t)
+	adminB := fix.NewTenant(t)
+
+	// Spin up a single shared mock IdP serving both tenants.
+	idp := NewParityFixtureIdP(t)
+
+	// Register the same URI for tenant A with expectedAudiences=["app-a"].
+	adminAClient := client.NewClient(fix.BaseURL(), adminA.Token)
+	if _, err := adminAClient.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+		"expectedAudiences":  []string{"app-a"},
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider tenantA: %v", err)
+	}
+
+	// Register the SAME URI for tenant B with expectedAudiences=["app-b"].
+	adminBClient := client.NewClient(fix.BaseURL(), adminB.Token)
+	if _, err := adminBClient.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+		"expectedAudiences":  []string{"app-b"},
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider tenantB: %v", err)
+	}
+
+	// JWT with aud="app-a" → accepted (routes to tenant A).
+	tokenA := idp.MintJWTWithAud(t, idp.DefaultKid, adminA.ID, "app-a")
+	probeA := client.NewClient(fix.BaseURL(), tokenA)
+	statusA, bodyA, err := probeA.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("probeA transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, statusA, bodyA)
+
+	// JWT with aud="app-b" → accepted (routes to tenant B).
+	tokenB := idp.MintJWTWithAud(t, idp.DefaultKid, adminB.ID, "app-b")
+	probeB := client.NewClient(fix.BaseURL(), tokenB)
+	statusB, bodyB, err := probeB.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("probeB transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, statusB, bodyB)
+}
+
+// RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip documents why the
+// ErrAmbiguousProvider rejection path is not directly observable at the parity
+// level: registering two providers for the same URI with overlapping audiences
+// is allowed at the CRUD layer (D25 emits WARN), but verifying that the resulting
+// token validation returns 401 requires a client token signed by the shared IdP —
+// which would be accepted by the first provider registered and only fail
+// disambiguation at the registry layer in the same process.
+//
+// The rejection path is fully and precisely covered by the unit tests:
+//   - TestResolveKey_TwoTenantsSameURIOverlappingAudiences_ErrAmbiguous
+//   - TestResolveKey_TwoTenantsSameURIEmptyAudiences_ErrAmbiguous
+//   - TestOIDCValidator_AmbiguousProvider_RejectsAsUnknownKID
+//
+// An E2E test would require two tenants sharing an IdP URL with overlapping
+// audiences AND an endpoint to trigger validation against that specific
+// cross-tenant state, which is not reachable from the current wire surface
+// without injecting an artificial provider pairing.
+func RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip(t *testing.T, _ BackendFixture) {
+	t.Skip("ErrAmbiguousProvider rejection path covered by unit tests: TestResolveKey_TwoTenantsSameURIOverlappingAudiences_ErrAmbiguous, TestResolveKey_TwoTenantsSameURIEmptyAudiences_ErrAmbiguous, TestOIDCValidator_AmbiguousProvider_RejectsAsUnknownKID")
+}

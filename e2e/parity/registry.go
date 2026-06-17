@@ -2,11 +2,12 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 133
+// Total parity scenarios: 135
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
-// + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E + grouped stats).
+// + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
+// + Phase 9.6 Audit fixes + grouped stats).
 // ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/
 // are additional to this count.
 //
@@ -227,6 +228,11 @@ var allTests = []NamedTest{
 	// E2E coverage (rows 67-68).
 	{"OidcE2E_TokenValidation", RunOidcE2E_TokenValidation},
 	{"OidcE2E_MultiNodeEviction", RunOidcE2E_MultiNodeEviction},
+
+	// Phase 9.6 — Audit fixes (#284)
+	// Critical: non-deterministic cross-tenant routing fix (audience disambiguation).
+	{"OidcCriticalAuditFix_AudienceDisambiguatesSharedIdP", RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP},
+	{"OidcCriticalAuditFix_AmbiguousProviderRejected_Skip", RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend

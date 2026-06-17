@@ -7,8 +7,10 @@ package oidc
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/google/uuid"
 )
 
@@ -54,4 +56,16 @@ var (
 	ErrProviderInactive  = errors.New("oidc: provider is invalidated")
 	ErrSSRFBlocked       = errors.New("oidc: wellKnownConfigUri resolves to a blocked address range")
 	ErrDiscoveryFailed   = errors.New("oidc: failed to fetch discovery document")
+
+	// ErrAmbiguousProvider indicates that multiple OIDC providers across distinct
+	// tenants are simultaneously iss-eligible and sig-verifying for the same JWT,
+	// and cyoda-go cannot determine which tenant's user-context to assign without
+	// an unambiguous audience disambiguator. The token is rejected to prevent
+	// silent cross-tenant routing. Admins must set distinct ExpectedAudiences on
+	// each tenant's provider to allow shared-IdP deployments.
+	//
+	// Wrapping auth.ErrUnknownKID makes this a chain-fall-through (the next
+	// validator is JWKSValidator, which won't match either). The bearer-auth
+	// middleware surfaces it as 401.
+	ErrAmbiguousProvider = fmt.Errorf("%w: ambiguous provider — multiple tenants iss-eligible for same JWT", auth.ErrUnknownKID)
 )
