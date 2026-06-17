@@ -62,7 +62,7 @@ func isBlockedIP(ip net.IP) bool {
 	return false
 }
 
-// validateRegisterURI performs register-time SSRF + scheme checks per D10.
+// ValidateRegisterURI performs register-time SSRF + scheme checks per D10.
 // This is a UX layer — the security boundary is safeDialContext, which re-checks
 // at fetch time on every dial.
 //
@@ -71,6 +71,12 @@ func isBlockedIP(ip net.IP) bool {
 //     by CYODA_OIDC_ALLOW_PRIVATE_NETWORKS).
 //
 // Returns ErrSSRFBlocked for blocklist hits, plain error for malformed/scheme.
+func ValidateRegisterURI(rawURI string, requireHTTPS, allowPrivate bool) error {
+	return validateRegisterURI(rawURI, requireHTTPS, allowPrivate)
+}
+
+// validateRegisterURI is the unexported core implementation shared by
+// ValidateRegisterURI (adapter layer) and safeDialContext tests.
 func validateRegisterURI(rawURI string, requireHTTPS, allowPrivate bool) error {
 	u, err := url.Parse(rawURI)
 	if err != nil {

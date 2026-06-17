@@ -78,3 +78,11 @@ const (
 const (
 	ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
 )
+
+// OIDC provider management
+const (
+	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
+	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
+	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"
+	ErrCodeOIDCSSRFBlocked       = "OIDC_SSRF_BLOCKED"
+)

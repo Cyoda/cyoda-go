@@ -101,6 +101,23 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   `POST /oauth/keys/keypair`. The startup banner emits a `WARN` if the
   active bootstrap key expires within 30 days. (default: `365`)
 
+### Federated OIDC providers (`POST /oauth/oidc/providers`)
+
+These variables control the federated OIDC provider registration behaviour
+(JWT mode only). They apply to all tenants at the process level.
+
+- `CYODA_OIDC_REQUIRE_HTTPS` — when `true`, `POST /oauth/oidc/providers` rejects
+  any `wellKnownConfigUri` whose scheme is not `https`. Set to `true` in
+  production to prevent accidental registration of plaintext-HTTP providers.
+  (default: `false`)
+- `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` — when `true`, the SSRF blocklist check is
+  bypassed so private-network OIDC providers (e.g. `https://127.0.0.1/...`) can
+  be registered. Intended for integration tests and local development only.
+  Never set in production. (default: `false`)
+- `CYODA_OIDC_ROLES_CLAIM` — the JWT claim name from which role values are read
+  for tokens issued by a federated OIDC provider. Overrideable per-provider via
+  the `rolesClaim` field on the registration or update API. (default: `roles`)
+
 ### JWT signing keypair rotation
 
 The bootstrap signing key derived from `CYODA_JWT_SIGNING_KEY` (or
@@ -173,6 +190,13 @@ CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT=10
 
 ```
 CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true
+```
+
+**With federated OIDC providers (JWT mode):**
+
+```
+CYODA_OIDC_REQUIRE_HTTPS=true
+CYODA_OIDC_ROLES_CLAIM=roles
 ```
 
 ## SEE ALSO
