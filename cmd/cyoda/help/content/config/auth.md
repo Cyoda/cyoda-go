@@ -109,7 +109,7 @@ These variables control the federated OIDC provider registration behaviour
 - `CYODA_OIDC_REQUIRE_HTTPS` — when `true`, `POST /oauth/oidc/providers` rejects
   any `wellKnownConfigUri` whose scheme is not `https`. Set to `true` in
   production to prevent accidental registration of plaintext-HTTP providers.
-  (default: `false`)
+  (default: `true`)
 - `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` — when `true`, the SSRF blocklist check is
   bypassed so private-network OIDC providers (e.g. `https://127.0.0.1/...`) can
   be registered. Intended for integration tests and local development only.
@@ -117,6 +117,12 @@ These variables control the federated OIDC provider registration behaviour
 - `CYODA_OIDC_ROLES_CLAIM` — the JWT claim name from which role values are read
   for tokens issued by a federated OIDC provider. Overrideable per-provider via
   the `rolesClaim` field on the registration or update API. (default: `roles`)
+- `CYODA_OIDC_CONNECT_TIMEOUT_MS` — TCP connect timeout in milliseconds for
+  OIDC discovery and JWKS endpoint fetches. (default: `5000`)
+- `CYODA_OIDC_SOCKET_TIMEOUT_MS` — HTTP read timeout in milliseconds for
+  OIDC discovery and JWKS endpoint fetches. (default: `5000`)
+- `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` — connection-pool request timeout
+  in milliseconds for OIDC discovery and JWKS endpoint fetches. (default: `5000`)
 
 ### JWT signing keypair rotation
 
