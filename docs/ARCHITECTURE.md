@@ -19,6 +19,11 @@ For product-level context, see the [PRD](PRD.md).
 5. [Workflow Engine](#5-workflow-engine)
 6. [gRPC & Externalized Processing](#6-grpc--externalized-processing)
 7. [Authentication & Authorization](#7-authentication--authorization)
+   - 7.1 [Mock Mode](#71-mock-mode-default)
+   - 7.2 [JWT Mode](#72-jwt-mode)
+   - 7.3 [OIDC Provider Registry](#73-oidc-provider-registry)
+   - 7.4 [Authorization](#74-authorization)
+   - 7.5 [Admin listener authentication](#75-admin-listener-authentication)
 8. [Error Model](#8-error-model)
 9. [Configuration Reference](#9-configuration-reference)
 10. [Deployment Architecture](#10-deployment-architecture)
@@ -1130,11 +1135,36 @@ client is created at startup and can be used to mint access tokens. In
 `mock` mode, both variables are ignored. The Helm chart provisions the
 secret via a chart-managed Kubernetes Secret with a GitOps-safety guard.
 
-### 7.3 Authorization
+### 7.3 OIDC Provider Registry
+
+When `CYODA_IAM_MODE=jwt` is active, tenants can register external Identity Providers (IdPs) that issue JWTs which cyoda-go should accept alongside its own locally-issued tokens. Each provider record is stored in the KV store under a single namespace (`oidc-providers`) with composite keys of the form `<tenantID>:<providerID>`, giving per-tenant isolation without a separate table.
+
+**Chained multi-issuer validation.** The `DelegatingAuthenticator` from §7.2 becomes the outer shell; inside it the request's `iss` claim determines which validator handles the token:
+
+1. **`JWKSValidator` (first)** — checks locally-issued tokens whose issuer matches `CYODA_JWT_ISSUER`. As before.
+2. **`OIDCValidator` (second)** — if the `JWKSValidator` rejects the issuer, the authenticator looks up a registered OIDC provider whose `issuers` list contains the token's `iss`. On a match it fetches the provider's JWKS (sourced from the discovery document at `<providerURL>/.well-known/openid-configuration`), validates the signature and standard claims, then maps the token's roles claim to cyoda roles. If no provider matches, the token is rejected as unauthorized.
+
+**Per-provider configuration** (stored per-record, not global):
+
+| Field | Purpose |
+|-------|---------|
+| `issuers` | Whitelist of accepted `iss` values from this IdP |
+| `expectedAudiences` | Audience values the token must carry (`aud` claim) |
+| `rolesClaim` | JWT claim name to extract roles from (overrides `CYODA_OIDC_ROLES_CLAIM` per-provider) |
+
+**JWKS caching and cache eviction.** Each node caches the JWKS response for a provider. When a provider record is updated, deleted, or reloaded via the REST API, the owning node evicts its local cache entry and broadcasts an invalidation message on the `oidc-providers.invalidate` topic via `spi.ClusterBroadcaster` so all peer nodes evict their copy in the same fire-and-forget manner as the model-cache decorator (§4.1). A provider whose JWKS URL is unreachable at validation time is treated as an auth failure, not a 5xx.
+
+**REST API.** Seven endpoints under `/oauth/oidc/providers` implement the full lifecycle: register, list, get, update, invalidate (suspend without delete), reactivate, delete, and reload-cache. These endpoints require `ROLE_ADMIN` and are documented in the OpenAPI spec.
+
+**Security controls.** The JWKS fetch URL is validated at registration time against SSRF rules: HTTPS is required by default (`CYODA_OIDC_REQUIRE_HTTPS`), and private/loopback/link-local network ranges are blocked by default (`CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`). Violations surface as `400 OIDC_SSRF_BLOCKED`. See §9 for the six `CYODA_OIDC_*` env vars.
+
+**Design rationale.** See [docs/adr/0002-federated-identity-provider-architecture.md](adr/0002-federated-identity-provider-architecture.md) for the full decision record including alternatives considered for storage layout, chaining order, and cache-eviction strategy.
+
+### 7.4 Authorization
 
 Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC streaming endpoint enforces `ROLE_M2M` for calculation members.
 
-### 7.4 Admin listener authentication
+### 7.5 Admin listener authentication
 
 The admin listener (`/livez`, `/readyz`, `/metrics` on
 `CYODA_ADMIN_PORT`, default `9091`) is served separately from the
@@ -1277,7 +1307,7 @@ credentials from Secrets into the process without exposing them in
 | `CYODA_METRICS_REQUIRE_AUTH` | `false` | Coupled predicate: if `true` and `CYODA_METRICS_BEARER` is empty, startup fails. |
 | `CYODA_METRICS_BEARER` (with `_FILE` variant) | (none) | Bearer token required on `/metrics` when non-empty. Constant-time compare. |
 
-See §7.4 for the authentication policy on admin endpoints.
+See §7.5 for the authentication policy on admin endpoints.
 
 ### Observability
 
@@ -1334,6 +1364,19 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token expiry in seconds |
 | `CYODA_REQUIRE_JWT` | `false` | Production safety floor: when `true`, the binary refuses to start unless `CYODA_IAM_MODE=jwt` AND `CYODA_JWT_SIGNING_KEY` is set. Protects against silently shipping a mock-auth deployment. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles attached to the default mock user (mock mode only). |
+
+### OIDC Provider Registry
+
+These variables apply globally to all tenant-registered OIDC providers. Per-provider overrides (`rolesClaim`, `issuers`, `expectedAudiences`) are stored per-record in KV, not as env vars. See §7.3.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_OIDC_REQUIRE_HTTPS` | `true` | Reject OIDC provider URLs that do not use `https://`. Disable only in isolated test environments. |
+| `CYODA_OIDC_CONNECT_TIMEOUT_MS` | `5000` | TCP connection timeout (ms) for JWKS discovery and fetch requests. |
+| `CYODA_OIDC_SOCKET_TIMEOUT_MS` | `5000` | Socket read timeout (ms) for JWKS responses. |
+| `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` | `3000` | Timeout (ms) to acquire a connection from the HTTP client pool for OIDC requests. |
+| `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` | `false` | Allow OIDC provider URLs that resolve to private/loopback/link-local addresses. When `false`, registering such a URL returns `400 OIDC_SSRF_BLOCKED`. |
+| `CYODA_OIDC_ROLES_CLAIM` | `roles` | Default JWT claim name to extract roles from for externally-issued tokens. Overridable per-provider at registration time. |
 
 ### Bootstrap
 

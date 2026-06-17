@@ -76,6 +76,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - M2M technical user management (create, delete, reset secret)
 - JWT key pair management (issue, invalidate, reactivate, delete)
 - Trusted external key registration (persistent across restarts)
+- OIDC provider per-tenant registry (register, list, get, update, invalidate, reactivate, delete, reload). External-IdP JWT validation via chained multi-issuer validator. Cross-node cache eviction via cluster broadcast.
 - Mock mode for zero-setup development
 
 ### Multi-Tenancy

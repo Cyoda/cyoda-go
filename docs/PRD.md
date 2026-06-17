@@ -537,15 +537,46 @@ Processor callbacks (CRUD operations performed by the processor) carry the trans
 
 ```
 
+### Per-Tenant OIDC Provider Registry
+
+In JWT mode, each tenant can register one or more external Identity Providers (IdPs) whose JWTs cyoda-go will accept alongside its own locally-issued tokens. This enables single-sign-on scenarios where users authenticate through an external IdP (e.g. Okta, Keycloak, Azure AD) and present those tokens directly to cyoda-go — no token exchange required.
+
+**What you can do with OIDC providers:**
+
+- **Register** a provider by supplying its URL, accepted issuer values, expected audiences, and (optionally) a custom roles claim name.
+- **List, get, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints, `ROLE_ADMIN` required).
+- **Invalidate** a provider to suspend JWT acceptance without removing the record; **reactivate** to restore it.
+- **Reload** to force a fresh JWKS fetch and evict the node-local cache — useful after an IdP rotates its signing keys outside the normal TTL window.
+
+Provider records are per-tenant; a tenant's OIDC configuration is invisible to other tenants.
+
+**Validation chain.** When a JWT arrives, cyoda-go first checks whether the `iss` claim matches the locally-configured issuer (`CYODA_JWT_ISSUER`). If not, it searches the requesting tenant's registered providers for one whose `issuers` list matches. A match triggers external JWKS validation; no match rejects the token.
+
+**External-issuer token structure.** Tokens from a registered OIDC provider follow the standard JWT format. The roles claim name is configurable per-provider (defaults to `CYODA_OIDC_ROLES_CLAIM`):
+
+```json
+{
+  "iss": "https://auth.example.com",
+  "sub": "user@example.com",
+  "aud": ["cyoda-api"],
+  "iat": 1750000000,
+  "exp": 1750003600,
+  "roles": ["ROLE_ADMIN"]
+}
+```
+
+Cyoda-go maps the extracted roles to its standard `ROLE_ADMIN` / `ROLE_M2M` role set. The `caas_org_id` tenant claim required for local tokens is not required from external issuers — tenant affinity is determined by which tenant registered the matching provider.
+
 ### Delegating Authenticator
 
 The authenticator routes by `iss` (issuer) claim:
-- **Local tokens** (issuer matches configured `CYODA_JWT_ISSUER`): Extract roles from `scopes` claim
-- **External tokens** (issuer is a trusted external key): Extract roles from `user_roles` claim
+- **Local tokens** (issuer matches configured `CYODA_JWT_ISSUER`): Extract roles from `scopes` claim.
+- **Registered OIDC provider tokens** (issuer matches a provider in the requesting tenant's OIDC registry): Validate via the provider's JWKS endpoint; extract roles from the provider's configured `rolesClaim`.
+- **Trusted external key tokens** (legacy path; see Trusted Keys above): Extract roles from `user_roles` claim.
 
 ### gRPC Authentication
 
-gRPC calls authenticate via `Authorization` metadata. The same JWT validation applies. Calculation members must authenticate with `ROLE_M2M` tokens.
+gRPC calls authenticate via `Authorization` metadata. The same JWT validation applies, including the OIDC provider chain. Calculation members must authenticate with `ROLE_M2M` tokens.
 
 ---
 
