@@ -3,8 +3,12 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -37,6 +41,7 @@ type DiscoveryConfig struct {
 // time SSRF defence (safeDialContext) and redirect following disabled.
 type HTTPDiscovery struct {
 	client *http.Client
+	logger *slog.Logger
 }
 
 // NewHTTPDiscovery constructs an HTTPDiscovery with the given config.
@@ -64,35 +69,85 @@ func NewHTTPDiscovery(cfg DiscoveryConfig) *HTTPDiscovery {
 			return http.ErrUseLastResponse
 		},
 	}
-	return &HTTPDiscovery{client: client}
+	return &HTTPDiscovery{client: client, logger: slog.Default()}
 }
 
 // Fetch retrieves and validates the OIDC discovery document at uri.
 // It returns ErrDiscoveryFailed (wrapped) for any HTTP, parse, or validation
 // failure. The caller's ctx deadline is honoured.
+//
+// Security: all error paths that wrap network or upstream-response details are
+// sanitized here. The public error string exposes class-only information (error
+// category + HTTP status code where applicable). Verbose detail is captured in a
+// DEBUG log using classifyHTTPError so operators can triage failures without
+// exposing raw addresses or OS-level strings to callers — which may surface them
+// in logs at higher levels or in HTTP response bodies under verbose error mode.
 func (d *HTTPDiscovery) Fetch(ctx context.Context, uri string) (*DiscoveryDoc, error) {
+	uriHash := sha256Hex(uri)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: build request: %w", ErrDiscoveryFailed, err)
+		// build-request errors contain the raw URI (which may expose internal
+		// targets); log the class only and return a sanitized error.
+		d.logger.Debug("oidc discovery: build request failed",
+			"pkg", "oidc", "uri_hash", uriHash,
+			"error_class", classifyHTTPError(err))
+		return nil, fmt.Errorf("%w: build request failed", ErrDiscoveryFailed)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrDiscoveryFailed, err)
+		// Network errors (DNS, TCP connect, TLS, timeout) are logged at DEBUG
+		// with a class-only classifier. The public error carries no upstream
+		// address or OS string. HTTP status codes are NOT included here (this
+		// path covers transport-layer failures, not HTTP-level errors).
+		d.logger.Debug("oidc discovery: http request failed",
+			"pkg", "oidc", "uri_hash", uriHash,
+			"error_class", classifyHTTPError(err))
+		return nil, fmt.Errorf("%w: http request failed", ErrDiscoveryFailed)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
+		// HTTP status codes are operational (non-sensitive): administrators
+		// need them to diagnose IdP-side problems (5xx, misrouting, etc.).
 		return nil, fmt.Errorf("%w: HTTP %d (redirects disabled)", ErrDiscoveryFailed, resp.StatusCode)
 	}
 
 	var doc DiscoveryDoc
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return nil, fmt.Errorf("%w: malformed JSON: %w", ErrDiscoveryFailed, err)
+		// JSON decode errors can contain fragments of the upstream response body;
+		// log class only and return a sanitized error.
+		d.logger.Debug("oidc discovery: json decode failed",
+			"pkg", "oidc", "uri_hash", uriHash,
+			"error_class", fmt.Sprintf("%T", err))
+		return nil, fmt.Errorf("%w: malformed json in discovery document", ErrDiscoveryFailed)
 	}
 	if doc.Issuer == "" || doc.JWKSURI == "" {
 		return nil, fmt.Errorf("%w: discovery doc missing issuer or jwks_uri", ErrDiscoveryFailed)
 	}
 	return &doc, nil
+}
+
+// classifyHTTPError returns a short, safe string describing the category of an
+// HTTP-transport-level error without exposing IP addresses, hostnames, ports, or
+// OS-level error strings. It is used in DEBUG logs so operators can triage
+// failures while the public error string remains sanitized.
+func classifyHTTPError(err error) string {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		// Op is safe to expose: "dial", "read", "write", etc.
+		return "net:" + opErr.Op
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		// Op is safe: "Get", "Post", etc.
+		return "url:" + urlErr.Op
+	}
+	return fmt.Sprintf("%T", err)
 }

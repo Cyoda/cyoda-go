@@ -109,3 +109,91 @@ func TestHTTPDiscovery_ServerError(t *testing.T) {
 		t.Errorf("expected error mentioning 500, got %v", err)
 	}
 }
+
+// TestHTTPDiscovery_FetchError_DoesNotLeakUpstreamDetails verifies that network
+// errors (connection refused, DNS failure, etc.) are sanitized at the Fetch
+// boundary. The returned error must not contain:
+//   - raw OS error strings like "connection refused"
+//   - IP addresses or hostnames
+//   - port numbers from the upstream target
+//
+// This is the A1+B1 audit finding: without sanitization the raw net.Error
+// propagates through the chain and can reach HTTP response bodies (verbose mode)
+// or log entries at WARN level.
+func TestHTTPDiscovery_FetchError_DoesNotLeakUpstreamDetails(t *testing.T) {
+	// Start and immediately close a server to get a guaranteed "connection
+	// refused" target on a real ephemeral port so the test is deterministic.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	targetURL := srv.URL
+	srv.Close() // close before Fetch so the dial will fail
+
+	d := NewHTTPDiscovery(DiscoveryConfig{AllowPrivateNetworks: true})
+	_, err := d.Fetch(context.Background(), targetURL)
+	if err == nil {
+		t.Fatal("expected an error for closed server, got nil")
+	}
+
+	msg := err.Error()
+
+	// The public error must NOT contain raw OS-level error strings.
+	leaked := []string{
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"i/o timeout",
+		"EOF",
+	}
+	for _, s := range leaked {
+		if strings.Contains(strings.ToLower(msg), strings.ToLower(s)) {
+			t.Errorf("error leaks upstream detail %q: %q", s, msg)
+		}
+	}
+
+	// Must still identify as a discovery failure.
+	if !strings.Contains(msg, "discovery") && !strings.Contains(msg, "failed") {
+		t.Errorf("error should contain discovery class wording, got: %q", msg)
+	}
+}
+
+// TestHTTPDiscovery_FetchHTTPStatus_StatusInError verifies that HTTP status
+// codes (which are non-sensitive operational information) are preserved in the
+// public error so administrators can diagnose IdP-side problems.
+func TestHTTPDiscovery_FetchHTTPStatus_StatusInError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway) // 502
+		_, _ = w.Write([]byte("bad gateway"))
+	}))
+	defer srv.Close()
+
+	d := NewHTTPDiscovery(DiscoveryConfig{AllowPrivateNetworks: true})
+	_, err := d.Fetch(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("expected error for 502, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error should contain HTTP status code 502, got: %q", err.Error())
+	}
+}
+
+// TestHTTPDiscovery_BuildRequestError_DoesNotLeakRawError verifies that an
+// invalid URI (which triggers http.NewRequestWithContext failure) is sanitized.
+// The error must not expose the raw url.Error detail string.
+func TestHTTPDiscovery_BuildRequestError_DoesNotLeakRawError(t *testing.T) {
+	d := NewHTTPDiscovery(DiscoveryConfig{AllowPrivateNetworks: true})
+	// A URL with a control character is rejected by NewRequestWithContext.
+	_, err := d.Fetch(context.Background(), "http://\x00bad")
+	if err == nil {
+		t.Fatal("expected error for invalid URI, got nil")
+	}
+
+	msg := err.Error()
+	// Must not expose the raw url.Error() string which contains the invalid
+	// URI verbatim. The sanitized message should only contain class wording.
+	if strings.Contains(msg, "\x00") {
+		t.Errorf("error leaks control character from URI: %q", msg)
+	}
+	if !strings.Contains(msg, "discovery") && !strings.Contains(msg, "failed") {
+		t.Errorf("error should contain discovery class wording, got: %q", msg)
+	}
+}
