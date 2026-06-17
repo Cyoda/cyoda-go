@@ -19,13 +19,18 @@ func newSingleflightDebouncer() *singleflightDebouncer {
 // Dispatch returns true if a goroutine was spawned to run fn, false if the
 // call was dropped because another for the same key is in flight.
 func (s *singleflightDebouncer) Dispatch(key string, fn func()) bool {
-	s.mu.Lock()
-	if _, busy := s.inFlight[key]; busy {
-		s.mu.Unlock()
+	busy := func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if _, b := s.inFlight[key]; b {
+			return true
+		}
+		s.inFlight[key] = struct{}{}
+		return false
+	}()
+	if busy {
 		return false
 	}
-	s.inFlight[key] = struct{}{}
-	s.mu.Unlock()
 
 	go func() {
 		defer func() {

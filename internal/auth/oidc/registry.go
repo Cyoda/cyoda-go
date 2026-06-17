@@ -51,14 +51,13 @@ type Registry struct {
 	sources   map[spi.TenantID]map[string]*providerSource
 	kidIndex  map[string][]providerRef // kid → candidate refs
 
-	store         OidcProviderStore
-	discovery     Discovery
-	broadcast     spi.ClusterBroadcaster
-	singleflight  *singleflightDebouncer
-	clock         func() time.Time
-	metrics       Metrics
-	logger        *slog.Logger
-	allowPrivate  bool // mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS; gates SSRF dial check on JWKS fetch
+	store        OidcProviderStore
+	discovery    Discovery
+	broadcast    spi.ClusterBroadcaster
+	singleflight *singleflightDebouncer
+	metrics      Metrics
+	logger       *slog.Logger
+	allowPrivate bool // mirrors CYODA_OIDC_ALLOW_PRIVATE_NETWORKS; gates SSRF dial check on JWKS fetch
 }
 
 // NewRegistry constructs the registry. broadcast may be nil in tests or
@@ -91,7 +90,6 @@ func NewRegistry(
 		discovery:    disc,
 		broadcast:    broadcast,
 		singleflight: newSingleflightDebouncer(),
-		clock:        time.Now,
 		metrics:      metrics,
 		logger:       logger,
 		allowPrivate: allowPrivate,
@@ -190,7 +188,19 @@ func (r *Registry) ResolveKey(kid, iss string) (*KeyResolution, error) {
 	res, err = r.disposeCandidates(allRefs, kid, iss)
 	if err == nil && res != nil {
 		// D6: populate kidIndex at resolution time, before sig check.
-		r.kidIndex[kid] = append(r.kidIndex[kid], res.ProviderRef)
+		// Dedup: concurrent cold-path goroutines for the same kid could
+		// each resolve the same ref; skip the append if already present.
+		existing := r.kidIndex[kid]
+		already := false
+		for _, e := range existing {
+			if e == res.ProviderRef {
+				already = true
+				break
+			}
+		}
+		if !already {
+			r.kidIndex[kid] = append(existing, res.ProviderRef)
+		}
 	}
 	return res, err
 }

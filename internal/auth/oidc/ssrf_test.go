@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -99,5 +100,76 @@ func TestValidateRegisterURI_MissingHostRejects(t *testing.T) {
 	err := validateRegisterURI("https:///path", true, false)
 	if err == nil {
 		t.Error("expected error for missing host, got nil")
+	}
+}
+
+// newLocalListener returns a net.Listener bound to a random loopback port.
+func newLocalListener(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	return l
+}
+
+func TestSafeDialContext_BlocksLoopback(t *testing.T) {
+	dial := safeDialContext(false /* allowPrivate */)
+	_, err := dial(context.Background(), "tcp", "127.0.0.1:54321")
+	if err == nil {
+		t.Fatal("expected error dialing loopback with allowPrivate=false, got nil")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("got %v, want errors.Is(err, ErrSSRFBlocked)", err)
+	}
+}
+
+func TestSafeDialContext_AllowsPrivateWhenAllowPrivate(t *testing.T) {
+	srv := newLocalListener(t)
+	defer srv.Close()
+	addr := srv.Addr().String()
+
+	dial := safeDialContext(true /* allowPrivate */)
+	conn, err := dial(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("expected dial to succeed with allowPrivate=true, got %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestSafeDialContext_PrivateRanges(t *testing.T) {
+	cases := []struct {
+		name string
+		addr string
+	}{
+		{"link-local-metadata", "169.254.169.254:80"},
+		{"rfc1918-10", "10.0.0.1:80"},
+		{"rfc1918-192", "192.168.1.1:80"},
+		{"ipv6-loopback", "[::1]:80"},
+		{"ipv6-link-local", "[fe80::1]:80"},
+		{"ipv6-ula", "[fc00::1]:80"},
+	}
+	dial := safeDialContext(false)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := dial(context.Background(), "tcp", c.addr)
+			if err == nil {
+				t.Errorf("expected SSRF block for %s, got nil", c.addr)
+			}
+			if !errors.Is(err, ErrSSRFBlocked) {
+				t.Errorf("got %v, want errors.Is(err, ErrSSRFBlocked) for %s", err, c.addr)
+			}
+		})
+	}
+}
+
+func TestSafeDialContext_MalformedAddrErrors(t *testing.T) {
+	dial := safeDialContext(false)
+	_, err := dial(context.Background(), "tcp", "not-a-valid-addr")
+	if err == nil {
+		t.Fatal("expected error for malformed addr, got nil")
+	}
+	if !strings.Contains(err.Error(), "safedialer") {
+		t.Errorf("got %v, want error mentioning safedialer", err)
 	}
 }
