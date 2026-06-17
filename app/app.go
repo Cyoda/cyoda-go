@@ -22,6 +22,7 @@ import (
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
@@ -205,6 +206,12 @@ func New(cfg Config) *App {
 	}
 
 	// Auth service: JWT or mock mode
+	//
+	// pendingOIDCAdapter and pendingWarmJWKS are populated inside the JWT block
+	// and consumed after server.Account is constructed. They remain nil in mock
+	// IAM mode (OIDC requires real token validation).
+	var pendingOIDCAdapter *account.OidcAdapter
+	var pendingWarmJWKS func()
 	var authSvc *auth.AuthService
 	if cfg.IAM.Mode == "jwt" {
 		if cfg.IAM.JWTSigningKey == "" {
@@ -234,6 +241,52 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
+
+		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
+		// enabled. Checked here (after KVTrustedKeyStore bootstrap, before OIDC
+		// subsystem init) so the OIDC registry is never constructed with a
+		// missing broadcaster in cluster mode.
+		if cfg.Cluster.Enabled && gossipReg == nil {
+			slog.Error("startup failure", "phase", "oidc-broadcaster-missing")
+			os.Exit(1)
+		}
+
+		// Phase 1: synchronous OIDC bootstrap — blocks until KV load completes.
+		// The HTTP listener must NOT bind before this phase finishes (D8).
+		oidcStore, err := oidc.NewKVProviderStore(systemCtx, kvStore)
+		if err != nil {
+			slog.Error("startup failure", "phase", "oidc-store-bootstrap", "error", err.Error())
+			os.Exit(1)
+		}
+
+		oidcDiscovery := oidc.NewHTTPDiscovery(oidc.DiscoveryConfig{
+			ConnectTimeout:           cfg.IAM.OIDC.ConnectTimeout,
+			SocketTimeout:            cfg.IAM.OIDC.SocketTimeout,
+			ConnectionRequestTimeout: cfg.IAM.OIDC.ConnectionRequestTimeout,
+			AllowPrivateNetworks:     cfg.IAM.OIDC.AllowPrivateNetworks,
+		})
+
+		// NopMetrics for v0.8.0; real instrumentation lands in a future milestone.
+		var oidcBroadcaster spi.ClusterBroadcaster
+		if gossipReg != nil {
+			oidcBroadcaster = gossipReg
+		}
+		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidc.NopMetrics{}, slog.Default())
+
+		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
+			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())
+			os.Exit(1)
+		}
+
+		oidcSvc := oidc.NewService(oidcStore, oidcRegistry, slog.Default())
+		pendingOIDCAdapter = account.NewOidcAdapter(
+			oidcSvc,
+			cfg.IAM.OIDC.DefaultRolesClaim,
+			cfg.IAM.OIDC.RequireHTTPS,
+			cfg.IAM.OIDC.AllowPrivateNetworks,
+		)
+		pendingWarmJWKS = func() { oidcRegistry.WarmJWKSAsync(systemCtx) }
+
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
 			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
 			Issuer:          cfg.IAM.JWTIssuer,
@@ -250,11 +303,18 @@ func New(cfg Config) *App {
 		// The built-in IAM holds its signing keys in-process, so the validator
 		// reads public keys directly from the local key store. No loopback JWKS
 		// fetch, no HTTP client, no attack surface on that path.
-		validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
+		jwksValidator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
 		if cfg.IAM.JWTAudience != "" {
-			validator.SetExpectedAudience(cfg.IAM.JWTAudience)
+			jwksValidator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
-		a.authService = auth.NewDelegatingAuthenticator(validator)
+		// Build the OIDC validator and chain it after the first-party JWKS
+		// validator. Chain order is normative per spec D3 and §11 row 36:
+		// JWKSValidator FIRST, OIDCValidator SECOND. Reversing would cause a
+		// first-party kid with a foreign iss to reach OIDCValidator before
+		// JWKSValidator has a chance to hard-fail with ErrIssuerMismatch.
+		oidcValidator := oidc.NewValidator(oidcRegistry, cfg.IAM.OIDC.DefaultRolesClaim)
+		chainedValidator := auth.NewChainedValidator(jwksValidator, oidcValidator)
+		a.authService = auth.NewDelegatingAuthenticator(chainedValidator)
 		a.authSvc = authSvc
 
 		// Bootstrap M2M client if configured.
@@ -453,7 +513,22 @@ func New(cfg Config) *App {
 		accountTrustedKeyStore = authSvc.TrustedKeyStore()
 		accountM2MStore = authSvc.M2MClientStore()
 	}
-	server.Account = account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
+	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
+	// Wire the OIDC HTTP adapter if the OIDC subsystem was bootstrapped (JWT
+	// IAM mode only). nil is safe — WithOIDCAdapter tolerates nil and leaves
+	// the 7 OIDC stub paths returning 501.
+	if pendingOIDCAdapter != nil {
+		accountHandler.WithOIDCAdapter(pendingOIDCAdapter)
+	}
+	server.Account = accountHandler
+
+	// Phase 2: asynchronous OIDC warmup launched after all synchronous wiring
+	// is complete (D8). The goroutine fetches discovery + JWKS for every
+	// provider loaded in Phase 1. Tokens for not-yet-warmed providers fall
+	// through the chain as ErrUnknownKID → 401 during the cold-start window.
+	if pendingWarmJWKS != nil {
+		go pendingWarmJWKS()
+	}
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
