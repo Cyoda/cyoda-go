@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ type recordingMetrics struct {
 	jwksErrors        int64
 	registryGauge     int64
 	observeCount      int64
+
+	dropsMu sync.Mutex
+	drops   map[string]int64
 }
 
 func (m *recordingMetrics) IncKidCacheHit()                        { atomic.AddInt64(&m.hits, 1) }
@@ -29,9 +33,25 @@ func (m *recordingMetrics) IncKidCacheMiss()                       { atomic.AddI
 func (m *recordingMetrics) IncKidCacheEvict()                      { atomic.AddInt64(&m.evicts, 1) }
 func (m *recordingMetrics) IncJWKSFetchError(outcome string)       { atomic.AddInt64(&m.jwksErrors, 1) }
 func (m *recordingMetrics) IncBroadcastPanic()                     { atomic.AddInt64(&m.panics, 1) }
+func (m *recordingMetrics) IncBroadcastDrop(reason string) {
+	m.dropsMu.Lock()
+	defer m.dropsMu.Unlock()
+	if m.drops == nil {
+		m.drops = make(map[string]int64)
+	}
+	m.drops[reason]++
+}
 func (m *recordingMetrics) IncUnknownProviderBroadcast()           { atomic.AddInt64(&m.unknownBroadcasts, 1) }
 func (m *recordingMetrics) ObserveBroadcastReceive(seconds float64) { atomic.AddInt64(&m.observeCount, 1) }
 func (m *recordingMetrics) SetRegistryProviders(n int)             { atomic.StoreInt64(&m.registryGauge, int64(n)) }
+
+// DropsForReason returns the number of times IncBroadcastDrop was called with
+// the given reason label.
+func (m *recordingMetrics) DropsForReason(reason string) int64 {
+	m.dropsMu.Lock()
+	defer m.dropsMu.Unlock()
+	return m.drops[reason]
+}
 
 // compile-time guard: recordingMetrics must satisfy Metrics.
 var _ Metrics = (*recordingMetrics)(nil)
@@ -119,6 +139,9 @@ func TestHandleBroadcast_MalformedEnvelopeIgnored(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
 		t.Errorf("BroadcastPanic count = %d, want 0", got)
+	}
+	if got := metrics.DropsForReason("malformed_envelope"); got != 1 {
+		t.Errorf("IncBroadcastDrop(malformed_envelope) = %d, want 1", got)
 	}
 }
 
@@ -391,6 +414,9 @@ func TestHandleBroadcast_DropsOversizedOp(t *testing.T) {
 	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
 		t.Errorf("BroadcastPanic = %d, want 0", got)
 	}
+	if got := metrics.DropsForReason("oversized_op"); got != 1 {
+		t.Errorf("IncBroadcastDrop(oversized_op) = %d, want 1", got)
+	}
 }
 
 // TestHandleBroadcast_DropsOversizedTenantID verifies that an envelope whose
@@ -412,6 +438,9 @@ func TestHandleBroadcast_DropsOversizedTenantID(t *testing.T) {
 	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
 		t.Errorf("BroadcastPanic = %d, want 0", got)
 	}
+	if got := metrics.DropsForReason("oversized_tenantid"); got != 1 {
+		t.Errorf("IncBroadcastDrop(oversized_tenantid) = %d, want 1", got)
+	}
 }
 
 // TestHandleBroadcast_DropsOversizedURI verifies that an envelope whose URI
@@ -432,6 +461,9 @@ func TestHandleBroadcast_DropsOversizedURI(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
 		t.Errorf("BroadcastPanic = %d, want 0", got)
+	}
+	if got := metrics.DropsForReason("oversized_uri"); got != 1 {
+		t.Errorf("IncBroadcastDrop(oversized_uri) = %d, want 1", got)
 	}
 }
 

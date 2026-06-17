@@ -24,6 +24,15 @@ func (s *singleflightDebouncer) inFlightCount() int {
 	return len(s.inFlight)
 }
 
+// finish removes key from the inFlight map once the dispatched goroutine
+// completes. It is the single cleanup path so that the lock discipline
+// (Lock immediately followed by defer Unlock) is satisfied in one place.
+func (s *singleflightDebouncer) finish(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.inFlight, key)
+}
+
 // Dispatch returns true if a goroutine was spawned to run fn, false if the
 // call was dropped because another for the same key is in flight.
 func (s *singleflightDebouncer) Dispatch(key string, fn func()) bool {
@@ -41,11 +50,7 @@ func (s *singleflightDebouncer) Dispatch(key string, fn func()) bool {
 	}
 
 	go func() {
-		defer func() {
-			s.mu.Lock()
-			delete(s.inFlight, key)
-			s.mu.Unlock()
-		}()
+		defer s.finish(key)
 		fn()
 	}()
 	return true

@@ -11,6 +11,7 @@ type Metrics interface {
 	IncKidCacheEvict()
 	IncJWKSFetchError(outcome string)
 	IncBroadcastPanic()
+	IncBroadcastDrop(reason string)
 	IncUnknownProviderBroadcast()
 	ObserveBroadcastReceive(seconds float64)
 	SetRegistryProviders(n int)
@@ -25,6 +26,7 @@ func (NopMetrics) IncKidCacheMiss()                       {}
 func (NopMetrics) IncKidCacheEvict()                      {}
 func (NopMetrics) IncJWKSFetchError(outcome string)       {}
 func (NopMetrics) IncBroadcastPanic()                     {}
+func (NopMetrics) IncBroadcastDrop(reason string)         {}
 func (NopMetrics) IncUnknownProviderBroadcast()           {}
 func (NopMetrics) ObserveBroadcastReceive(seconds float64) {}
 func (NopMetrics) SetRegistryProviders(n int)             {}

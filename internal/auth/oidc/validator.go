@@ -188,11 +188,26 @@ func matchAudience(audClaim any, expected []string) bool {
 	return false
 }
 
-// audPrimaryString extracts the primary audience string from the raw aud claim
-// value (RFC 7519 §4.1.3). Returns the single string if aud is a string, or
-// the first element if aud is an array, or "" if absent or not a string/array.
-// This is used only for cross-tenant routing disambiguation in ResolveKey; the
-// full audience validation (Step 8) uses matchAudience which handles all forms.
+// audPrimaryString extracts the routing-disambiguation audience from a parsed
+// claims map. If the JWT's `aud` claim is a JSON array (RFC 7519 §4.1.3
+// permits both string and array forms), this returns element [0] — the IdP
+// determines the array order, so the same JWT can in principle route to
+// different providers across IdP versions if the IdP changes its ordering.
+//
+// LIMITATION: this helper's chosen value is used ONLY for cross-tenant
+// resolution disambiguation in disposeCandidates. The full audience-set
+// match against provider.ExpectedAudiences happens later (in Validate
+// step 8) and considers all array elements. So a token with aud=["A","B"]
+// for two providers expecting "A" and "B" respectively routes via [0] but
+// must still pass the full-set check against the chosen provider's expected
+// audiences. The misroute risk is bounded to the case where the chosen
+// tenant's ExpectedAudiences contains the WRONG element of a multi-aud
+// token — in that case, the validator still accepts but assigns the wrong
+// tenant context.
+//
+// Operators in multi-tenant deployments should pin a single audience per
+// tenant's ExpectedAudiences to eliminate this attack surface, and IdPs
+// should issue single-audience tokens where possible.
 func audPrimaryString(audClaim any) string {
 	switch v := audClaim.(type) {
 	case string:

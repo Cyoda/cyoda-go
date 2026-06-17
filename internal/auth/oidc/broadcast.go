@@ -51,18 +51,29 @@ func (r *Registry) handleBroadcast(payload []byte) {
 	var env broadcastEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
 		r.logger.Debug("oidc broadcast: malformed envelope", "pkg", "oidc", "error", err.Error())
+		r.metrics.IncBroadcastDrop("malformed_envelope")
 		return
 	}
 
 	// Drop envelopes with overlong fields to prevent singleflight-key amplification.
 	// Log lengths only — never the strings themselves (audit finding C1).
-	if len(env.Op) > maxBroadcastOpLen || len(env.TenantID) > maxBroadcastTenantIDLen || len(env.URI) > maxBroadcastURILen {
+	var dropReason string
+	switch {
+	case len(env.Op) > maxBroadcastOpLen:
+		dropReason = "oversized_op"
+	case len(env.TenantID) > maxBroadcastTenantIDLen:
+		dropReason = "oversized_tenantid"
+	case len(env.URI) > maxBroadcastURILen:
+		dropReason = "oversized_uri"
+	}
+	if dropReason != "" {
 		r.logger.Debug("oidc broadcast: envelope field length exceeded",
 			"pkg", "oidc",
 			"op_len", len(env.Op),
 			"tenant_len", len(env.TenantID),
 			"uri_len", len(env.URI),
 		)
+		r.metrics.IncBroadcastDrop(dropReason)
 		return
 	}
 
