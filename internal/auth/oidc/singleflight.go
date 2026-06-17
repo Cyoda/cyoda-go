@@ -16,6 +16,14 @@ func newSingleflightDebouncer() *singleflightDebouncer {
 	return &singleflightDebouncer{inFlight: make(map[string]struct{})}
 }
 
+// inFlightCount returns the number of keys currently in the inFlight map.
+// It is package-private and used only by tests.
+func (s *singleflightDebouncer) inFlightCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.inFlight)
+}
+
 // Dispatch returns true if a goroutine was spawned to run fn, false if the
 // call was dropped because another for the same key is in flight.
 func (s *singleflightDebouncer) Dispatch(key string, fn func()) bool {

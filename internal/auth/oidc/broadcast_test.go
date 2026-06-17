@@ -368,3 +368,93 @@ type discoveryFunc func(ctx context.Context, uri string) (*DiscoveryDoc, error)
 func (f discoveryFunc) Fetch(ctx context.Context, uri string) (*DiscoveryDoc, error) {
 	return f(ctx, uri)
 }
+
+// ---------- Audit C1: field-length cap tests ----------
+
+// TestHandleBroadcast_DropsOversizedOp verifies that an envelope whose Op
+// field exceeds maxBroadcastOpLen is silently dropped — no work dispatched.
+func TestHandleBroadcast_DropsOversizedOp(t *testing.T) {
+	metrics := &recordingMetrics{}
+	r := newTestRegistryWithMetrics(t, &fakeDiscovery{}, metrics)
+
+	payload, _ := json.Marshal(broadcastEnvelope{
+		Op:       strings.Repeat("X", maxBroadcastOpLen+1),
+		TenantID: "00000000-0000-0000-0000-000000000001",
+		URI:      "https://idp.example",
+	})
+	r.handleBroadcast(payload)
+
+	if got := r.singleflight.inFlightCount(); got != 0 {
+		t.Errorf("inFlightCount = %d, want 0 (oversized Op must not dispatch)", got)
+	}
+	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
+		t.Errorf("BroadcastPanic = %d, want 0", got)
+	}
+}
+
+// TestHandleBroadcast_DropsOversizedTenantID verifies that an envelope whose
+// TenantID field exceeds maxBroadcastTenantIDLen is silently dropped.
+func TestHandleBroadcast_DropsOversizedTenantID(t *testing.T) {
+	metrics := &recordingMetrics{}
+	r := newTestRegistryWithMetrics(t, &fakeDiscovery{}, metrics)
+
+	payload, _ := json.Marshal(broadcastEnvelope{
+		Op:       "reload",
+		TenantID: strings.Repeat("0", maxBroadcastTenantIDLen+1),
+		URI:      "https://idp.example",
+	})
+	r.handleBroadcast(payload)
+
+	if got := r.singleflight.inFlightCount(); got != 0 {
+		t.Errorf("inFlightCount = %d, want 0 (oversized TenantID must not dispatch)", got)
+	}
+	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
+		t.Errorf("BroadcastPanic = %d, want 0", got)
+	}
+}
+
+// TestHandleBroadcast_DropsOversizedURI verifies that an envelope whose URI
+// field exceeds maxBroadcastURILen is silently dropped.
+func TestHandleBroadcast_DropsOversizedURI(t *testing.T) {
+	metrics := &recordingMetrics{}
+	r := newTestRegistryWithMetrics(t, &fakeDiscovery{}, metrics)
+
+	payload, _ := json.Marshal(broadcastEnvelope{
+		Op:       "reload",
+		TenantID: "00000000-0000-0000-0000-000000000001",
+		URI:      "https://idp.example/" + strings.Repeat("x", maxBroadcastURILen),
+	})
+	r.handleBroadcast(payload)
+
+	if got := r.singleflight.inFlightCount(); got != 0 {
+		t.Errorf("inFlightCount = %d, want 0 (oversized URI must not dispatch)", got)
+	}
+	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
+		t.Errorf("BroadcastPanic = %d, want 0", got)
+	}
+}
+
+// TestHandleBroadcast_AcceptsBoundaryLengths verifies that envelopes at exactly
+// the field length limits are accepted (not dropped). We use an unknown op so
+// the envelope flows through the length check but dispatches no goroutine —
+// the assertion is simply that no panic fired.
+func TestHandleBroadcast_AcceptsBoundaryLengths(t *testing.T) {
+	metrics := &recordingMetrics{}
+	r := newTestRegistryWithMetrics(t, &fakeDiscovery{}, metrics)
+
+	// Op exactly at limit: fill to maxBroadcastOpLen chars. Using a non-recognised
+	// op routes to the unknown-op DEBUG log path, which does no dispatching.
+	payload, _ := json.Marshal(broadcastEnvelope{
+		Op:       strings.Repeat("Z", maxBroadcastOpLen),
+		TenantID: strings.Repeat("0", maxBroadcastTenantIDLen),
+		URI:      strings.Repeat("u", maxBroadcastURILen),
+	})
+	r.handleBroadcast(payload)
+
+	if got := atomic.LoadInt64(&metrics.panics); got != 0 {
+		t.Errorf("BroadcastPanic = %d, want 0 (boundary-length envelope must not panic)", got)
+	}
+	if got := atomic.LoadInt64(&metrics.observeCount); got != 1 {
+		t.Errorf("ObserveBroadcastReceive = %d, want 1", got)
+	}
+}

@@ -10,6 +10,17 @@ import (
 
 const topicOidcProviders = "oidc.providers"
 
+// Field-length caps for broadcast envelopes. Values exceeding these limits
+// are dropped to prevent amplification attacks: a malicious cluster peer
+// could otherwise craft envelopes whose concatenated fields persist as
+// megabyte-scale keys in singleflightDebouncer.inFlight for the duration of
+// the dispatched work (audit finding C1).
+const (
+	maxBroadcastOpLen       = 50   // longest known op is "reload_all" (10 chars); 50 gives headroom
+	maxBroadcastTenantIDLen = 36   // UUID canonical form is exactly 36 chars
+	maxBroadcastURILen      = 2048 // doubled from wellKnownConfigUri spec cap of 1000 chars
+)
+
 // broadcastEnvelope is the wire format for cluster-wide OIDC provider events.
 type broadcastEnvelope struct {
 	Op       string `json:"op"`           // "reload" | "invalidate" | "reload_all"
@@ -40,6 +51,18 @@ func (r *Registry) handleBroadcast(payload []byte) {
 	var env broadcastEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
 		r.logger.Debug("oidc broadcast: malformed envelope", "pkg", "oidc", "error", err.Error())
+		return
+	}
+
+	// Drop envelopes with overlong fields to prevent singleflight-key amplification.
+	// Log lengths only — never the strings themselves (audit finding C1).
+	if len(env.Op) > maxBroadcastOpLen || len(env.TenantID) > maxBroadcastTenantIDLen || len(env.URI) > maxBroadcastURILen {
+		r.logger.Debug("oidc broadcast: envelope field length exceeded",
+			"pkg", "oidc",
+			"op_len", len(env.Op),
+			"tenant_len", len(env.TenantID),
+			"uri_len", len(env.URI),
+		)
 		return
 	}
 
