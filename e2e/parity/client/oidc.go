@@ -172,3 +172,20 @@ func (c *Client) ProbeAuthRaw(t *testing.T) (int, []byte, error) {
 	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/oauth/oidc/providers", nil)
 }
 
+// GetOidcProviderRaw issues PATCH /api/oauth/oidc/providers/{id} with an empty
+// patch body to probe whether the provider is accessible to the caller. Returns
+// the HTTP status code and raw body without raising on non-2xx. Used by
+// cross-tenant management-isolation tests that need to assert 404 when a
+// caller from tenant B tries to reach tenant A's provider ID (D1 stale-index
+// defence treats the ID as not found, returning 404 rather than 403).
+//
+// An empty PATCH is used as the probe because the API has no GET-by-ID
+// endpoint; PATCH with no fields is a no-op when the provider exists and
+// returns OIDC_PROVIDER_NOT_FOUND (404) when it does not — identical to what
+// a cross-tenant caller would see.
+func (c *Client) GetOidcProviderRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/oauth/oidc/providers/%s", id.String())
+	return c.DoJSONBodyRaw(t, http.MethodPatch, path, map[string]any{})
+}
+

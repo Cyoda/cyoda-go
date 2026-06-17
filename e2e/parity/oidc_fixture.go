@@ -37,9 +37,10 @@ type ParityFixtureIdP struct {
 	JWKSURI    string
 	DefaultKid string // the auto-generated kid used for the initial key
 
-	mu      sync.Mutex
-	keys    map[string]*rsa.PrivateKey // kid → private key
-	revoked map[string]bool            // kids excluded from JWKS responses
+	mu            sync.Mutex
+	keys          map[string]*rsa.PrivateKey // kid → private key
+	revoked       map[string]bool            // kids excluded from JWKS responses
+	discoveryHits int                        // count of /.well-known/openid-configuration requests
 }
 
 // parityJWKEntry is the JWK wire format for an RSA public key (RFC 7517 + 7518).
@@ -93,6 +94,10 @@ func NewParityFixtureIdP(t *testing.T) *ParityFixtureIdP {
 }
 
 func (f *ParityFixtureIdP) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	f.discoveryHits++
+	f.mu.Unlock()
+
 	doc := map[string]string{
 		"issuer":   f.Issuer,
 		"jwks_uri": f.JWKSURI,
@@ -238,4 +243,52 @@ func (f *ParityFixtureIdP) RevokeKey(t *testing.T, kid string) {
 // WellKnownURI returns the discovery endpoint URL for this mock IdP.
 func (f *ParityFixtureIdP) WellKnownURI() string {
 	return f.Server.URL + "/.well-known/openid-configuration"
+}
+
+// DiscoveryHitCount returns the number of times the discovery endpoint has
+// been requested since this IdP was created. Used by chain-order tests that
+// want to assert that a validator was (or was not) reached during token
+// validation — JWKS endpoint is fetched after discovery, so zero discovery
+// hits implies the OIDCValidator cold path was not entered.
+func (f *ParityFixtureIdP) DiscoveryHitCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.discoveryHits
+}
+
+// MintJWTWithIat signs a JWT with an explicit iat timestamp. All other claims
+// match MintTenantJWT. Used by D17 iat-binding tests that need precise control
+// over when the token is considered to have been issued.
+func (f *ParityFixtureIdP) MintJWTWithIat(t *testing.T, kid, tenantID string, iat time.Time) string {
+	t.Helper()
+	now := time.Now()
+	return f.SignJWT(t, kid, map[string]any{
+		"sub":          "oidc-iat-" + tenantID[:8],
+		"iss":          f.Issuer,
+		"caas_user_id": "oidc-iat-" + tenantID[:8],
+		"caas_org_id":  tenantID,
+		"scopes":       []string{"ROLE_ADMIN"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          iat.Unix(),
+	})
+}
+
+// SetJWKSForKid adds (or replaces) a JWK entry for a specific kid, using a
+// new RSA key pair that shares the kid string with an EXISTING key in this IdP
+// OR uses the provided private key. This is used by D6/D11 scenarios that need
+// two IdPs publishing the same kid to simulate a cross-tenant kid collision.
+//
+// AddSharedKidEntry creates a fresh RSA key, stores it under the given kid
+// (evicting any previous mapping), and returns the new kid. The JWKS endpoint
+// will serve this new public key for the given kid.
+func (f *ParityFixtureIdP) AddSharedKidEntry(t *testing.T, kid string) {
+	t.Helper()
+	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("ParityFixtureIdP.AddSharedKidEntry: generate key: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keys[kid] = newKey
 }

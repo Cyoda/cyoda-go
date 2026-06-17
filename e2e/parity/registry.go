@@ -2,10 +2,10 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 90
+// Total parity scenarios: 109
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
-// + Phase 9.3 OIDC JWT validation + grouped stats).
+// + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences + grouped stats).
 //
 // Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
 // model extension, transaction stress tests, workflow failure paths,
@@ -153,6 +153,39 @@ var allTests = []NamedTest{
 	{"OidcReactivate_RemoteKeysPreservedSync", RunOidcReactivate_RemoteKeysPreservedSync},
 	// Multi-provider isolation (row 27).
 	{"OidcMultiProvider_Isolation", RunOidcMultiProvider_Isolation},
+
+	// Phase 9.4 — OIDC divergences (rows 28-46) (#284)
+	// D5 inactive-update (row 28).
+	{"OidcInactiveUpdate_Returns409Conflict", RunOidcInactiveUpdate_Returns409Conflict},
+	// Tenant isolation (rows 29-30).
+	{"OidcCrossTenantManagementIsolation", RunOidcCrossTenantManagementIsolation},
+	{"OidcTenantBindingViaOwnerLegalEntityID", RunOidcTenantBindingViaOwnerLegalEntityID},
+	// D17 iat-binding accidental (row 31).
+	{"OidcD17_IatBindingPreTransition", RunOidcD17_IatBindingPreTransition},
+	// D17 mandatory iss-validation (rows 32-33).
+	{"OidcD17_KidCollisionRoutesByIss", RunOidcD17_KidCollisionRoutesByIss},
+	{"OidcD17_EmptyIssuersUsesDiscoveryDoc", RunOidcD17_EmptyIssuersUsesDiscoveryDoc},
+	// D17 iat skew (rows 34-35).
+	{"OidcD17_IatWithinSkewAccepted", RunOidcD17_IatWithinSkewAccepted},
+	{"OidcD17_IatOutsideSkewRejected", RunOidcD17_IatOutsideSkewRejected},
+	// D3 chain order (row 36).
+	{"OidcD3_ChainOrderJWKSValidatorFirst", RunOidcD3_ChainOrderJWKSValidatorFirst},
+	// D6 self-heal (rows 37, 37b).
+	{"OidcD6_MaliciousTenantPublishesFirstPartyKid", RunOidcD6_MaliciousTenantPublishesFirstPartyKid},
+	{"OidcD6_ColdPathTwoIssEligibleCandidates", RunOidcD6_ColdPathTwoIssEligibleCandidates},
+	// D11 register race (rows 38a, 38b, 39).
+	{"OidcD11_SequentialRegisterDeterministic", RunOidcD11_SequentialRegisterDeterministic},
+	{"OidcD11_ConcurrentRegisterFaultInjected", RunOidcD11_ConcurrentRegisterFaultInjected},
+	{"OidcD11_OrphanIndexCleanup", RunOidcD11_OrphanIndexCleanup},
+	// D8 two-phase warmup (rows 40-42).
+	{"OidcD8_ListenerBindsBeforeWarmup", RunOidcD8_ListenerBindsBeforeWarmup},
+	{"OidcD8_Phase2FailureNonFatal", RunOidcD8_Phase2FailureNonFatal},
+	{"OidcD8_Phase2PendingFallsThroughToErrUnknownKID", RunOidcD8_Phase2PendingFallsThroughToErrUnknownKID},
+	// D18 broadcast (rows 43-46).
+	{"OidcD18_HandlerPanicIsolation", RunOidcD18_HandlerPanicIsolation},
+	{"OidcD18_SingleflightDebounce", RunOidcD18_SingleflightDebounce},
+	{"OidcD18_ReloadInvalidateSerializeLocally", RunOidcD18_ReloadInvalidateSerializeLocally},
+	{"OidcD18_ReloadAllSerializesWithReloadOne", RunOidcD18_ReloadAllSerializesWithReloadOne},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
