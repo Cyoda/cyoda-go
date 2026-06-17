@@ -481,3 +481,586 @@ func RunOidcNonAdminReload(t *testing.T, fix BackendFixture) {
 	}
 	assertErrCode(t, raw, "FORBIDDEN")
 }
+
+// --- JWT validation integration (rows 17-20) ---
+//
+// These scenarios spin up an in-process mock IdP (ParityFixtureIdP on a
+// random localhost port), register it as an OIDC provider, and then verify
+// that JWTs signed by the mock are accepted or rejected as expected.
+//
+// The parity test subprocess runs with CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true
+// and CYODA_OIDC_REQUIRE_HTTPS=false so the 127.0.0.1 discovery URL passes
+// the SSRF check without external network I/O.
+//
+// For token validation probing we use GET /api/oauth/oidc/providers, which
+// is the lightest authenticated endpoint — it requires a valid JWT but no
+// specific role, and returns 200 on success / 401 on auth failure.
+//
+// Tenant isolation note: when an OIDC-signed JWT is accepted, the
+// UserContext.Tenant.ID is set to the provider's OwnerLegalEntityID (the
+// admin tenant that registered the provider), NOT to any claim in the JWT.
+// The probe therefore lists providers for the admin tenant, which is correct.
+
+// assertProbeStatus asserts that the given probe response matches the expected
+// HTTP status code. It is used by JWT validation parity tests.
+func assertProbeStatus(t *testing.T, wantStatus, gotStatus int, body []byte) {
+	t.Helper()
+	if gotStatus != wantStatus {
+		t.Errorf("probe status: got %d, want %d (body: %s)", gotStatus, wantStatus, string(body))
+	}
+}
+
+// RunOidcJWTValidation_RegisterAndAccept verifies the end-to-end happy path:
+// register a mock IdP provider, sign a JWT with the mock, assert GET
+// /api/oauth/oidc/providers returns 200 with that JWT (row 17).
+func RunOidcJWTValidation_RegisterAndAccept(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("ProbeAuthRaw transport: %v", err)
+	}
+	_ = p
+	assertProbeStatus(t, http.StatusOK, status, body)
+}
+
+// RunOidcJWTValidation_InvalidateRejects verifies that invalidating a provider
+// causes subsequent JWT validation to fail with 401 (row 18).
+func RunOidcJWTValidation_InvalidateRejects(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Baseline: accepted.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("baseline ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Invalidate the provider.
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+
+	// Now the same token must be rejected.
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("post-invalidate ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// RunOidcJWTValidation_ReactivateRecovers verifies that reactivating a
+// previously invalidated provider restores JWT acceptance (row 19).
+func RunOidcJWTValidation_ReactivateRecovers(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Step 1: token accepted.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step1 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Step 2: invalidate → rejected.
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step2 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+
+	// Step 3: reactivate → accepted again.
+	if _, err := adminC.ReactivateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("ReactivateOidcProvider: %v", err)
+	}
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step3 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+}
+
+// RunOidcJWTValidation_DeletePermanent verifies that deleting a provider
+// permanently rejects its JWTs even after the same URI is not re-registered
+// (row 20).
+func RunOidcJWTValidation_DeletePermanent(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Baseline: accepted.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("baseline ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Delete the provider permanently.
+	if err := adminC.DeleteOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("DeleteOidcProvider: %v", err)
+	}
+
+	// JWT must now be permanently rejected.
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("post-delete ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// --- Issuer-list update affects validation (row 21) ---
+
+// RunOidcJWTValidation_IssuerListUpdate verifies that updating a provider's
+// issuers pin list rejects previously-valid JWTs whose iss no longer matches
+// (row 21).
+//
+// Sequence:
+//  1. Register with no issuers pin (accepts any iss == discovery doc's issuer).
+//  2. Sign JWT with iss = mock IdP's issuer → accepted.
+//  3. Update issuers to a different value that does NOT match the mock's issuer.
+//  4. Same JWT → rejected (401) because iss no longer matches the pin list.
+func RunOidcJWTValidation_IssuerListUpdate(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Step 1: no issuer pin → accepted.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step1 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Step 2: pin issuers to a value that does NOT match the mock's issuer.
+	// The mock's issuer is idp.Issuer (e.g. "http://127.0.0.1:NNNNN").
+	// We set issuers to a different value so the existing token's iss claim
+	// no longer matches.
+	if _, err := adminC.UpdateOidcProvider(t, p.ID, map[string]any{
+		"issuers": []string{"https://other-issuer.example.test"},
+	}); err != nil {
+		t.Fatalf("UpdateOidcProvider (set issuers): %v", err)
+	}
+
+	// After the issuers pin changes, the registry must reload the provider.
+	// Invalidate + reactivate forces the discovery/JWKS path to re-run so
+	// the updated provider config is reflected in the in-memory cache.
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+	if _, err := adminC.ReactivateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("ReactivateOidcProvider: %v", err)
+	}
+
+	// Step 3: same token → rejected because iss no longer in pin list.
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step3 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// --- Key rotation/revocation (rows 22-26b) ---
+
+// RunOidcKeyRotation_NewKidAccepted verifies that after a key rotation at the
+// mock IdP (new kid added to JWKS), a JWT signed with the new kid is accepted
+// (row 22). The registry fetches the updated JWKS on the cold path when it
+// encounters an unseen kid.
+func RunOidcKeyRotation_NewKidAccepted(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	// Rotate: add a new key (does NOT remove the old one).
+	newKid := idp.RotateKey(t)
+
+	// Sign JWT with the new kid — it is NOT yet cached by the registry.
+	token := idp.MintTenantJWT(t, newKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Cold path: registry iterates all providers, calls GetKey(newKid),
+	// HTTPJWKSSource cache-miss → refreshCache() → new kid found → 200.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+}
+
+// RunOidcKeyRotation_OldKidStillAccepted verifies that the old kid continues
+// to work after a key rotation (new kid added, old key not revoked) (row 23).
+func RunOidcKeyRotation_OldKidStillAccepted(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	// Rotate: new kid added, old DefaultKid remains in JWKS.
+	_ = idp.RotateKey(t)
+
+	// Sign JWT with the original DefaultKid.
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// DefaultKid is still in JWKS → 200.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+}
+
+// RunOidcKeyRevocation_RevokedKidRejected verifies that after a kid is revoked
+// at the mock IdP and the provider cache is cleared (via invalidate+reactivate),
+// JWTs signed with the revoked kid are rejected with 401 (row 24).
+//
+// Revocation is modelled as removing the kid from the JWKS endpoint. The
+// local cache is cleared by invalidating and reactivating the provider, which
+// causes the registry to create a fresh HTTPJWKSSource with an empty cache.
+// The first GetKey call after reactivation fetches the updated JWKS, which no
+// longer includes the revoked kid → ErrKeyNotFound → 401.
+func RunOidcKeyRevocation_RevokedKidRejected(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Baseline: accepted (warms the JWKS cache with DefaultKid).
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("baseline ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Revoke DefaultKid at the mock IdP (removes it from future JWKS responses).
+	idp.RevokeKey(t, idp.DefaultKid)
+
+	// Invalidate the provider (drops the cached source from the registry).
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+
+	// Reactivate (creates a fresh HTTPJWKSSource with empty cache).
+	// Use reactivateKeys=false to avoid a JWKS sync that could populate the cache
+	// with the (now-revoked) kid from a stale server response. The cache is
+	// already empty because the source was just created.
+	if _, err := adminC.ReactivateOidcProviderWithKeys(t, p.ID, false); err != nil {
+		t.Fatalf("ReactivateOidcProviderWithKeys: %v", err)
+	}
+
+	// Now the JWKS cache is empty. The next GetKey call fetches the updated
+	// JWKS, which does NOT contain DefaultKid → 401.
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("post-revocation ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// RunOidcKeyRotation_ColdStartReturnsErrUnknownKID verifies that a JWT
+// whose kid is not present in any registered provider's JWKS is rejected
+// with 401 (row 25).
+//
+// The scenario uses a JWT whose kid header names a key that the mock IdP
+// has never published (the JWT is structurally valid but signed by a key
+// the registry has no way to verify). The cold path iterates all providers,
+// calls GetKey for the unknown kid, finds nothing → ErrUnknownKID → chain
+// falls through → 401.
+func RunOidcKeyRotation_ColdStartReturnsErrUnknownKID(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	// The "known" IdP is registered — its JWKS has knownIdP.DefaultKid.
+	knownIdP := NewParityFixtureIdP(t)
+	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": knownIdP.WellKnownURI(),
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	// Create a second (unregistered) IdP that signs with its own key. We sign a
+	// JWT whose iss matches the registered provider but whose kid is from the
+	// unregistered IdP's key pair — the registry will not find this kid in any
+	// JWKS endpoint it knows about.
+	unknownIdP := NewParityFixtureIdP(t)
+
+	// Mint a JWT with the unknown IdP's signing key but claim the known IdP's
+	// issuer so the registry attempts resolution via the known provider's JWKS.
+	// RotateKey generates a fresh kid guaranteed to be absent from knownIdP's JWKS
+	// → cold path finds nothing → ErrUnknownKID → 401.
+	foreignKid := unknownIdP.RotateKey(t)
+	token := unknownIdP.MintTenantJWTWithIssuer(t, foreignKid, admin.ID, knownIdP.Issuer)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Cold path: kid not in any JWKS → 401.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// RunOidcReactivate_RemoteRemovalSync verifies D19's conditional JWKS sync:
+// when reactivating with reactivateKeys=true and the upstream has removed a
+// kid, the local cache drops that kid (row 26a).
+//
+// Sequence:
+//  1. Register mock IdP; warm the JWKS cache (first probe succeeds).
+//  2. Invalidate the provider (drops source from registry).
+//  3. Revoke DefaultKid at the mock IdP.
+//  4. Reactivate with reactivateKeys=true.
+//  5. JWT with DefaultKid is now rejected.
+func RunOidcReactivate_RemoteRemovalSync(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Warm JWKS cache — accepted.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step1 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Invalidate the provider.
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+
+	// Revoke DefaultKid at the mock IdP so future JWKS responses omit it.
+	idp.RevokeKey(t, idp.DefaultKid)
+
+	// Reactivate with reactivateKeys=true: D19 sync fetches updated JWKS and
+	// drops the revoked kid from the local cache.
+	if _, err := adminC.ReactivateOidcProviderWithKeys(t, p.ID, true); err != nil {
+		t.Fatalf("ReactivateOidcProviderWithKeys(true): %v", err)
+	}
+
+	// JWT with DefaultKid rejected (kid not in updated JWKS).
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step5 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// RunOidcReactivate_RemoteKeysPreservedSync verifies D19's idempotency: when
+// reactivating with reactivateKeys=true and the upstream JWKS is unchanged,
+// previously-valid JWTs continue to be accepted (row 26b).
+//
+// Sequence:
+//  1. Register mock IdP; warm the JWKS cache (first probe succeeds).
+//  2. Invalidate the provider.
+//  3. Reactivate with reactivateKeys=true — JWKS unchanged, so DefaultKid
+//     is still present after the sync.
+//  4. JWT with DefaultKid still accepted.
+func RunOidcReactivate_RemoteKeysPreservedSync(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Warm JWKS cache.
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step1 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Invalidate.
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+
+	// Reactivate with reactivateKeys=true — JWKS unchanged, DefaultKid still there.
+	if _, err := adminC.ReactivateOidcProviderWithKeys(t, p.ID, true); err != nil {
+		t.Fatalf("ReactivateOidcProviderWithKeys(true): %v", err)
+	}
+
+	// JWT with DefaultKid still accepted (JWKS unchanged).
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("step4 ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+}
+
+// --- Multi-provider isolation (row 27) ---
+
+// RunOidcMultiProvider_Isolation verifies that two OIDC providers for the
+// same tenant validate only their own JWTs — cross-signing (JWT signed by
+// provider A's key but claiming provider B's issuer) must be rejected (row 27).
+//
+// Sequence:
+//  1. Register two mock IdPs (A and B) for the same tenant.
+//  2. JWT signed by A's key, iss=A.Issuer → accepted.
+//  3. JWT signed by B's key, iss=B.Issuer → accepted.
+//  4. JWT signed by A's key, iss=B.Issuer (cross-sign) → rejected (401)
+//     because A's public key does not verify a signature made by B.
+//
+// This test pins the chain's iss-based routing: each provider is only
+// eligible for tokens whose iss matches its discovery-doc issuer (or pin
+// list). Provider A's source has A's public key; provider B's source has
+// B's public key. A JWT claiming B's iss is routed to B's source, which
+// then fails to verify A's signature.
+func RunOidcMultiProvider_Isolation(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idpA := NewParityFixtureIdP(t)
+	idpB := NewParityFixtureIdP(t)
+
+	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idpA.WellKnownURI(),
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider A: %v", err)
+	}
+	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idpB.WellKnownURI(),
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider B: %v", err)
+	}
+
+	// Step 1: JWT from A → accepted.
+	tokenA := idpA.MintTenantJWT(t, idpA.DefaultKid, admin.ID)
+	probeA := client.NewClient(fix.BaseURL(), tokenA)
+	status, body, err := probeA.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("probeA transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Step 2: JWT from B → accepted.
+	tokenB := idpB.MintTenantJWT(t, idpB.DefaultKid, admin.ID)
+	probeB := client.NewClient(fix.BaseURL(), tokenB)
+	status, body, err = probeB.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("probeB transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Step 3: cross-sign — signed by A's key, claims B's issuer → rejected.
+	// The registry routes the token to B's provider (because iss=B.Issuer),
+	// then tries B's public key against A's signature → verification fails.
+	crossToken := idpA.MintTenantJWTWithIssuer(t, idpA.DefaultKid, admin.ID, idpB.Issuer)
+	probeCross := client.NewClient(fix.BaseURL(), crossToken)
+	status, body, err = probeCross.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("probeCross transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}
+
+// assertErrCodeOptional logs an error code mismatch as a note without
+// failing the test — used in JWT-validation scenarios where the error body
+// shape is not the primary assertion (status code is sufficient).
+func assertErrCodeOptional(t *testing.T, raw []byte, wantCode string) {
+	t.Helper()
+	var envelope struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		// 401 responses from the auth middleware may not be Problem Detail format.
+		return
+	}
+	if envelope.Properties.ErrorCode != "" && envelope.Properties.ErrorCode != wantCode {
+		t.Logf("note: properties.errorCode got %q, expected %q (non-fatal)", envelope.Properties.ErrorCode, wantCode)
+	}
+}

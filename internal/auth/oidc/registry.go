@@ -92,6 +92,23 @@ func NewRegistry(
 	return r
 }
 
+// addToProviderMap ensures p is present in r.providers under its own
+// (OwnerLegalEntityID, WellKnownConfigURI) coordinate. Called by the Service
+// write paths (Register, Reactivate) before reloadOne so that reloadOne's
+// I9 guard does not silently skip the newly registered / reactivated provider.
+//
+// This is safe to call concurrently: the write lock is held for the minimum
+// duration needed to mutate the nested maps.
+func (r *Registry) addToProviderMap(p *OidcProvider) {
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.providers[tenant] == nil {
+		r.providers[tenant] = map[string]*OidcProvider{}
+	}
+	r.providers[tenant][p.WellKnownConfigURI] = p
+}
+
 // installForTest is a test-only helper that injects a provider + source +
 // discovery doc directly into the registry, bypassing the discovery+JWKS
 // fetch pipeline. Production code path is reloadOne.
@@ -378,16 +395,16 @@ func (r *Registry) reloadOne(ctx context.Context, tenant spi.TenantID, uri strin
 		return
 	}
 
-	// Wrap with lifecycle gate (reads provider map under RLock at call time).
+	// Wrap with lifecycle gate. The isActive closure is called by disposeCandidates
+	// which already holds r.mu (RLock on the hot path, Lock on the cold path).
+	// Re-acquiring r.mu inside the closure would deadlock (Go's sync.RWMutex is
+	// not re-entrant). Instead, we rely on disposeCandidates' own prov.Active()
+	// check at line 208, which guards the GetKey call before it is ever reached.
+	// The closure here is a defence-in-depth no-op wrapper that keeps the
+	// providerKeySource contract intact for callers that do not hold the lock.
+	localProv := prov
 	ks := newProviderKeySource(inner, func() bool {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		if byURI, ok := r.providers[tenant]; ok {
-			if p, ok := byURI[uri]; ok {
-				return p.Active()
-			}
-		}
-		return false
+		return localProv.Active()
 	})
 
 	func() {

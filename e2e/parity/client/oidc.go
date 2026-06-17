@@ -1,11 +1,8 @@
 package client
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +38,7 @@ func (c *Client) RegisterOidcProvider(t *testing.T, body map[string]any) (OidcPr
 // negative-path tests that assert on the error envelope.
 func (c *Client) RegisterOidcProviderRaw(t *testing.T, body map[string]any) (int, []byte, error) {
 	t.Helper()
-	return c.doJSONBodyRaw(t, http.MethodPost, "/api/oauth/oidc/providers", body)
+	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/oidc/providers", body)
 }
 
 // ListOidcProviders issues GET /api/oauth/oidc/providers with an optional
@@ -76,7 +73,7 @@ func (c *Client) UpdateOidcProvider(t *testing.T, id uuid.UUID, patch map[string
 func (c *Client) UpdateOidcProviderRaw(t *testing.T, id uuid.UUID, patch map[string]any) (int, []byte, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/oauth/oidc/providers/%s", id.String())
-	return c.doJSONBodyRaw(t, http.MethodPatch, path, patch)
+	return c.DoJSONBodyRaw(t, http.MethodPatch, path, patch)
 }
 
 // InvalidateOidcProvider issues POST /api/oauth/oidc/providers/{id}/invalidate.
@@ -93,7 +90,7 @@ func (c *Client) InvalidateOidcProvider(t *testing.T, id uuid.UUID) error {
 func (c *Client) InvalidateOidcProviderRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/oauth/oidc/providers/%s/invalidate", id.String())
-	return c.doJSONBodyRaw(t, http.MethodPost, path, nil)
+	return c.DoJSONBodyRaw(t, http.MethodPost, path, nil)
 }
 
 // ReactivateOidcProvider issues POST /api/oauth/oidc/providers/{id}/reactivate.
@@ -113,7 +110,7 @@ func (c *Client) ReactivateOidcProvider(t *testing.T, id uuid.UUID) (OidcProvide
 func (c *Client) ReactivateOidcProviderRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/oauth/oidc/providers/%s/reactivate", id.String())
-	return c.doJSONBodyRaw(t, http.MethodPost, path, nil)
+	return c.DoJSONBodyRaw(t, http.MethodPost, path, nil)
 }
 
 // DeleteOidcProvider issues DELETE /api/oauth/oidc/providers/{id}.
@@ -130,7 +127,23 @@ func (c *Client) DeleteOidcProvider(t *testing.T, id uuid.UUID) error {
 func (c *Client) DeleteOidcProviderRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/oauth/oidc/providers/%s", id.String())
-	return c.doJSONBodyRaw(t, http.MethodDelete, path, nil)
+	return c.DoJSONBodyRaw(t, http.MethodDelete, path, nil)
+}
+
+// ReactivateOidcProviderWithKeys issues
+// POST /api/oauth/oidc/providers/{id}/reactivate with an explicit
+// reactivateKeys payload. When reactivateKeys=true the service syncs the
+// cached JWKS against the upstream (D19); false skips the sync.
+// Returns the updated provider on success or an error on non-2xx.
+func (c *Client) ReactivateOidcProviderWithKeys(t *testing.T, id uuid.UUID, reactivateKeys bool) (OidcProviderResponse, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/oauth/oidc/providers/%s/reactivate", id.String())
+	body := map[string]any{"reactivateKeys": reactivateKeys}
+	var resp OidcProviderResponse
+	if _, err := c.doJSON(t, http.MethodPost, path, body, &resp); err != nil {
+		return OidcProviderResponse{}, err
+	}
+	return resp, nil
 }
 
 // ReloadOidcProviders issues POST /api/oauth/oidc/providers/reload.
@@ -145,44 +158,17 @@ func (c *Client) ReloadOidcProviders(t *testing.T) error {
 // and returns the HTTP status code and raw body without raising on non-2xx.
 func (c *Client) ReloadOidcProvidersRaw(t *testing.T) (int, []byte, error) {
 	t.Helper()
-	return c.doJSONBodyRaw(t, http.MethodPost, "/api/oauth/oidc/providers/reload", nil)
+	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/oidc/providers/reload", nil)
 }
 
-// doJSONBodyRaw issues an HTTP request with an optional JSON-marshalled body
-// and returns (status, body, transport-error) without raising on non-2xx.
-// This is the negative-path companion to doJSON, following the *Raw naming
-// convention established by the rest of the parity client.
-func (c *Client) doJSONBodyRaw(t *testing.T, method, path string, body any) (int, []byte, error) {
+// ProbeAuthRaw issues GET /api/oauth/oidc/providers and returns the raw
+// HTTP status code without raising on non-2xx. Used by JWT-validation
+// parity scenarios to verify that a given bearer token is accepted
+// (200) or rejected (401) by the server. The endpoint requires only a
+// valid JWT — no specific role — so it is the lightest authenticated
+// surface available.
+func (c *Client) ProbeAuthRaw(t *testing.T) (int, []byte, error) {
 	t.Helper()
-
-	var bodyReader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, fmt.Errorf("marshal request body: %w", err)
-		}
-		bodyReader = strings.NewReader(string(raw))
-	} else {
-		bodyReader = strings.NewReader("")
-	}
-
-	req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, bodyReader)
-	if err != nil {
-		return 0, nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("transport: %w", err)
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	return resp.StatusCode, raw, nil
+	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/oauth/oidc/providers", nil)
 }
+

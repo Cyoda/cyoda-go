@@ -87,6 +87,11 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*OidcProvider
 	s.emitOwnershipTransitionAndUpdateHistory(ctx, p, in.TenantID)
 
 	// Step 6: registry warm-up (sync; failures are non-fatal).
+	// addToProviderMap ensures the new provider is in r.providers BEFORE
+	// reloadOne checks for it (reloadOne's I9 guard silently skips providers
+	// that are absent from the in-memory map). This is the local-node
+	// equivalent of what ReloadAll does globally.
+	s.registry.addToProviderMap(p)
 	s.registry.reloadOne(ctx, in.TenantID, in.WellKnownConfigURI)
 
 	// Step 7: broadcast fire-and-forget per D7.
@@ -134,7 +139,10 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*OidcProvider, er
 	if err := s.store.Update(ctx, p); err != nil {
 		return nil, fmt.Errorf("oidc: store update: %w", err)
 	}
-	// Re-fetch discovery + JWKS to pick up any iss/jwks_uri changes.
+	// addToProviderMap refreshes the in-memory provider struct (e.g. updated
+	// Issuers) so that disposeCandidates uses the current Issuers list for iss
+	// matching. Re-fetch discovery + JWKS to pick up any jwks_uri changes.
+	s.registry.addToProviderMap(p)
 	s.registry.reloadOne(ctx, in.TenantID, p.WellKnownConfigURI)
 	s.registry.broadcastOp("reload", string(in.TenantID), p.WellKnownConfigURI)
 	return p, nil
@@ -199,6 +207,10 @@ func (s *Service) Reactivate(ctx context.Context, in ReactivateInput) (*OidcProv
 	}
 	// D19: try reloadOne which fetches discovery + JWKS. Failure is WARN-logged
 	// inside reloadOne; InvalidatedAt is cleared regardless.
+	// addToProviderMap re-installs the reactivated provider into r.providers
+	// (invalidateOne removed it when the provider was invalidated) so that
+	// reloadOne's I9 guard does not silently skip it.
+	s.registry.addToProviderMap(p)
 	s.registry.reloadOne(ctx, in.TenantID, p.WellKnownConfigURI)
 	s.registry.broadcastOp("reload", string(in.TenantID), p.WellKnownConfigURI)
 	return p, nil

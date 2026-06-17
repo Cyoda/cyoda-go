@@ -2,8 +2,10 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 34 (Phase 1 smoke + Phase 4a CRUD/persistence +
-// Phase 4b workflow/compute + distributed-safety contracts).
+// Total parity scenarios: 90
+// (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
+// distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
+// + Phase 9.3 OIDC JWT validation + grouped stats).
 //
 // Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
 // model extension, transaction stress tests, workflow failure paths,
@@ -132,6 +134,25 @@ var allTests = []NamedTest{
 	{"OidcNonAdminReactivate", RunOidcNonAdminReactivate},
 	{"OidcNonAdminDelete", RunOidcNonAdminDelete},
 	{"OidcNonAdminReload", RunOidcNonAdminReload},
+
+	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27) (#284)
+	// JWT validation integration (rows 17-20): register mock IdP, sign JWT,
+	// assert accept/reject across lifecycle state changes.
+	{"OidcJWTValidation_RegisterAndAccept", RunOidcJWTValidation_RegisterAndAccept},
+	{"OidcJWTValidation_InvalidateRejects", RunOidcJWTValidation_InvalidateRejects},
+	{"OidcJWTValidation_ReactivateRecovers", RunOidcJWTValidation_ReactivateRecovers},
+	{"OidcJWTValidation_DeletePermanent", RunOidcJWTValidation_DeletePermanent},
+	// Issuer-list update affects validation (row 21).
+	{"OidcJWTValidation_IssuerListUpdate", RunOidcJWTValidation_IssuerListUpdate},
+	// Key rotation/revocation (rows 22-26b).
+	{"OidcKeyRotation_NewKidAccepted", RunOidcKeyRotation_NewKidAccepted},
+	{"OidcKeyRotation_OldKidStillAccepted", RunOidcKeyRotation_OldKidStillAccepted},
+	{"OidcKeyRevocation_RevokedKidRejected", RunOidcKeyRevocation_RevokedKidRejected},
+	{"OidcKeyRotation_ColdStartReturnsErrUnknownKID", RunOidcKeyRotation_ColdStartReturnsErrUnknownKID},
+	{"OidcReactivate_RemoteRemovalSync", RunOidcReactivate_RemoteRemovalSync},
+	{"OidcReactivate_RemoteKeysPreservedSync", RunOidcReactivate_RemoteKeysPreservedSync},
+	// Multi-provider isolation (row 27).
+	{"OidcMultiProvider_Isolation", RunOidcMultiProvider_Isolation},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend

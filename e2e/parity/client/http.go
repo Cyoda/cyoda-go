@@ -1471,6 +1471,47 @@ func (c *Client) QueryGroupedStats(t *testing.T, modelName string, modelVersion 
 	return buckets, nil
 }
 
+// DoJSONBodyRaw issues an HTTP request with an optional JSON-marshalled body
+// and returns (status, body, transport-error) without raising on non-2xx.
+// This is the general-purpose negative-path companion to doJSON, following
+// the *Raw naming convention established by the rest of the parity client.
+// OIDC helpers (and any future domain client) call this instead of duplicating
+// the pattern. The body argument may be nil for methods that send no payload.
+func (c *Client) DoJSONBodyRaw(t *testing.T, method, path string, body any) (int, []byte, error) {
+	t.Helper()
+
+	var bodyReader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("marshal request body: %w", err)
+		}
+		bodyReader = strings.NewReader(string(raw))
+	} else {
+		bodyReader = strings.NewReader("")
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, bodyReader)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // QueryGroupedStatsRaw is the negative-path companion to
 // QueryGroupedStats: it returns (status, body, transport-err) without
 // raising on non-2xx, used by parity scenarios that assert error
