@@ -397,8 +397,9 @@ func (a *oidcAdapter) ReloadOidcProviders(w http.ResponseWriter, r *http.Request
 }
 
 // toOidcProviderResponseDto maps a domain OidcProvider to the wire DTO.
-// Fields not yet in the generated DTO (expectedAudiences, rolesClaim) are
-// skipped until Task 8.1 adds them to the OpenAPI spec.
+// Every field declared in the OpenAPI OidcProviderResponseDto schema is
+// populated. Slice fields are defensively copied so the response is
+// independent of the caller's view of the domain object.
 func toOidcProviderResponseDto(p *oidc.OidcProvider) genapi.OidcProviderResponseDto {
 	dto := genapi.OidcProviderResponseDto{
 		Id:                 p.ID,
@@ -410,6 +411,15 @@ func toOidcProviderResponseDto(p *oidc.OidcProvider) genapi.OidcProviderResponse
 		issuers := make([]string, len(p.Issuers))
 		copy(issuers, p.Issuers)
 		dto.Issuers = &issuers
+	}
+	if len(p.ExpectedAudiences) > 0 {
+		audiences := make([]string, len(p.ExpectedAudiences))
+		copy(audiences, p.ExpectedAudiences)
+		dto.ExpectedAudiences = &audiences
+	}
+	if p.RolesClaim != nil {
+		s := *p.RolesClaim
+		dto.RolesClaim = &s
 	}
 	return dto
 }

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2959,4 +2960,160 @@ func RunOidcReactivate_KeysFalse_PreservesCache_Skip(t *testing.T, _ BackendFixt
 // without injecting an artificial provider pairing.
 func RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip(t *testing.T, _ BackendFixture) {
 	t.Skip("ErrAmbiguousProvider rejection path covered by unit tests: TestResolveKey_TwoTenantsSameURIOverlappingAudiences_ErrAmbiguous, TestResolveKey_TwoTenantsSameURIEmptyAudiences_ErrAmbiguous, TestOIDCValidator_AmbiguousProvider_RejectsAsUnknownKID")
+}
+
+// --- Audiences + rolesClaim round-trip (D7) ---
+//
+// Each of these scenarios provides non-empty expectedAudiences and a
+// non-default rolesClaim at the relevant write path, then asserts the
+// response carries those fields. The mapper toOidcProviderResponseDto
+// previously dropped both fields silently — these scenarios are the
+// regression guard.
+
+// RunOidcRegisterAudiencesRoundTrip verifies POST /oauth/oidc/providers
+// returns expectedAudiences and rolesClaim in the response when supplied
+// at registration.
+func RunOidcRegisterAudiencesRoundTrip(t *testing.T, fix BackendFixture) {
+	tenant := fix.NewTenant(t)
+	c := client.NewClient(fix.BaseURL(), tenant.Token)
+
+	uri := oidcWellKnownURI(tenant.ID, "register-aud-roles")
+	wantAud := []string{"aud-a", "aud-b"}
+	wantRoles := "cognito:groups"
+
+	p, err := c.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": uri,
+		"expectedAudiences":  wantAud,
+		"rolesClaim":         wantRoles,
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	if p.ExpectedAudiences == nil {
+		t.Fatal("expectedAudiences must be present in response (was nil)")
+	}
+	if !reflect.DeepEqual(*p.ExpectedAudiences, wantAud) {
+		t.Errorf("expectedAudiences: got %v, want %v", *p.ExpectedAudiences, wantAud)
+	}
+	if p.RolesClaim == nil {
+		t.Fatal("rolesClaim must be present in response (was nil)")
+	}
+	if *p.RolesClaim != wantRoles {
+		t.Errorf("rolesClaim: got %q, want %q", *p.RolesClaim, wantRoles)
+	}
+}
+
+// RunOidcListAudiencesRoundTrip verifies GET /oauth/oidc/providers
+// surfaces expectedAudiences and rolesClaim on every listed provider.
+func RunOidcListAudiencesRoundTrip(t *testing.T, fix BackendFixture) {
+	tenant := fix.NewTenant(t)
+	c := client.NewClient(fix.BaseURL(), tenant.Token)
+
+	uri := oidcWellKnownURI(tenant.ID, "list-aud-roles")
+	wantAud := []string{"aud-list"}
+	wantRoles := "realm_access.roles"
+
+	registered, err := c.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": uri,
+		"expectedAudiences":  wantAud,
+		"rolesClaim":         wantRoles,
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	providers, err := c.ListOidcProviders(t, false)
+	if err != nil {
+		t.Fatalf("ListOidcProviders: %v", err)
+	}
+
+	var found *client.OidcProviderResponse
+	for i := range providers {
+		if providers[i].ID == registered.ID {
+			found = &providers[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("registered provider %s missing from list", registered.ID)
+	}
+	if found.ExpectedAudiences == nil || !reflect.DeepEqual(*found.ExpectedAudiences, wantAud) {
+		t.Errorf("expectedAudiences in list: got %v, want %v", found.ExpectedAudiences, wantAud)
+	}
+	if found.RolesClaim == nil || *found.RolesClaim != wantRoles {
+		t.Errorf("rolesClaim in list: got %v, want %q", found.RolesClaim, wantRoles)
+	}
+}
+
+// RunOidcUpdateAudiencesRoundTrip verifies PATCH /oauth/oidc/providers/{id}
+// surfaces updated expectedAudiences and rolesClaim in the response.
+func RunOidcUpdateAudiencesRoundTrip(t *testing.T, fix BackendFixture) {
+	tenant := fix.NewTenant(t)
+	c := client.NewClient(fix.BaseURL(), tenant.Token)
+
+	uri := oidcWellKnownURI(tenant.ID, "update-aud-roles")
+	initial, err := c.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": uri,
+		"expectedAudiences":  []string{"aud-initial"},
+		"rolesClaim":         "roles-initial",
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	wantAud := []string{"aud-updated-a", "aud-updated-b"}
+	wantRoles := "groups"
+	updated, err := c.UpdateOidcProvider(t, initial.ID, map[string]any{
+		"expectedAudiences": wantAud,
+		"rolesClaim":        wantRoles,
+	})
+	if err != nil {
+		t.Fatalf("UpdateOidcProvider: %v", err)
+	}
+
+	if updated.ExpectedAudiences == nil || !reflect.DeepEqual(*updated.ExpectedAudiences, wantAud) {
+		t.Errorf("expectedAudiences after update: got %v, want %v", updated.ExpectedAudiences, wantAud)
+	}
+	if updated.RolesClaim == nil || *updated.RolesClaim != wantRoles {
+		t.Errorf("rolesClaim after update: got %v, want %q", updated.RolesClaim, wantRoles)
+	}
+}
+
+// RunOidcReactivateAudiencesRoundTrip verifies POST
+// /oauth/oidc/providers/{id}/reactivate surfaces expectedAudiences and
+// rolesClaim in the response. The provider is registered with both
+// fields, invalidated, then reactivated.
+func RunOidcReactivateAudiencesRoundTrip(t *testing.T, fix BackendFixture) {
+	tenant := fix.NewTenant(t)
+	c := client.NewClient(fix.BaseURL(), tenant.Token)
+
+	uri := oidcWellKnownURI(tenant.ID, "reactivate-aud-roles")
+	wantAud := []string{"aud-react"}
+	wantRoles := "roles-react"
+
+	registered, err := c.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": uri,
+		"expectedAudiences":  wantAud,
+		"rolesClaim":         wantRoles,
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	if err := c.InvalidateOidcProvider(t, registered.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+
+	reactivated, err := c.ReactivateOidcProvider(t, registered.ID)
+	if err != nil {
+		t.Fatalf("ReactivateOidcProvider: %v", err)
+	}
+
+	if reactivated.ExpectedAudiences == nil || !reflect.DeepEqual(*reactivated.ExpectedAudiences, wantAud) {
+		t.Errorf("expectedAudiences after reactivate: got %v, want %v", reactivated.ExpectedAudiences, wantAud)
+	}
+	if reactivated.RolesClaim == nil || *reactivated.RolesClaim != wantRoles {
+		t.Errorf("rolesClaim after reactivate: got %v, want %q", reactivated.RolesClaim, wantRoles)
+	}
 }
