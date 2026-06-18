@@ -491,7 +491,9 @@ cp -r "$UPSTREAM"/* docs/cyoda/api/
 ## What this directory is not
 
 - **Not** the spec cyoda-go serves. That is `api/openapi.yaml` at repo
-  root, embedded via `//go:embed` and exposed at `/api/v3/api-docs`.
+  root, embedded via `//go:embed` in `api/spec.go` and exposed at
+  `/openapi.json` (Scalar UI at `/docs`), both under the configured
+  context path (default `/api`).
 - **Not** a binding contract. cyoda-go deliberately diverges from
   Cloud in specific places — see `cloud-divergences.md` for the
   canonical list.
