@@ -7,16 +7,12 @@ see_also:
   - auth
   - auth.tokens
   - config.auth
-  - errors.OIDC_DISCOVERY_FAILED
-  - errors.OIDC_JWKS_UNAVAILABLE
+  - errors.OIDC_INVALID_TENANT
   - errors.OIDC_PROVIDER_DUPLICATE
   - errors.OIDC_PROVIDER_NOT_FOUND
   - errors.OIDC_PROVIDER_INACTIVE
   - errors.OIDC_SSRF_BLOCKED
-  - errors.OIDC_INVALID_TENANT
-  - errors.OIDC_AUDIENCE_MISMATCH
-  - errors.OIDC_CLAIMS_INVALID
-  - errors.OIDC_TOKEN_PRE_TRANSITION
+  - errors.UNAUTHORIZED
 ---
 
 # auth.oidc
@@ -76,6 +72,8 @@ Response (`200 OK`) carries the full provider DTO:
   "rolesClaim":         "cognito:groups"
 }
 ```
+
+Registration succeeds even when the IdP's discovery / JWKS endpoints are unreachable — cyoda warms them asynchronously after the response. Tokens issued by an un-warmed provider fail with `401 UNAUTHORIZED` until the next warmup cycle (or an explicit `/reload`). See **DIAGNOSTICS** below for the operator path.
 
 Behaviour on `expectedAudiences`:
 
@@ -159,31 +157,31 @@ Cyoda does not re-mint federated tokens — they are validated and trusted direc
 
 ## DIAGNOSTICS
 
-### "I get 401 but my token looks valid"
+**Every token-validation failure surfaces as `401 UNAUTHORIZED` with a uniform problem-detail body. No precise error code distinguishes audience mismatch, expired token, unknown `kid`, JWKS-unreachable, claims-invalid, or ambiguous-tenant routing.** A precise wire code would enumerate IdP / tenant / kid / claim-shape recognition to an unauthenticated caller, so the wire stays uniform by design.
 
-When two tenants register the **same IdP** with overlapping or empty `expectedAudiences`, cyoda cannot deterministically route an inbound token to one tenant rather than the other. Internally this is `ErrAmbiguousProvider` (in `internal/auth/oidc/registry.go`), but it is wrapped in `ErrUnknownKID` and surfaces as a generic `401 UNAUTHORIZED` — *not* a dedicated error code.
+The diagnostic path for every failure mode is **server-side logs**, not the HTTP response. Look at `oidc.registry` (KID resolution), `oidc.validator` (claims + signature), and `oidc.discovery` / `oidc.jwks` (transport) events. The bearer-auth middleware emits one structured WARN per failed request with the failure reason slug.
 
-This is deliberate: a precise "two tenants claim your IdP" error would leak provider-routing topology across the tenant boundary. The diagnostic path is server-side logs (look for `oidc.registry` resolve events identifying the conflict), not the HTTP response.
+Symptom → cause map for the common cases:
 
-To resolve: pick **disjoint** `expectedAudiences` for the same IdP across tenants, or accept that one tenant must register and the other federate through it.
+- **"I get 401 but my token looks valid":** check `oidc.registry` resolve logs. The most common cause is the provider's JWKS hasn't warmed yet (registration succeeds before discovery completes); force-warm via `/oauth/oidc/providers/reload`.
+- **"After re-registering, valid tokens are rejected":** the second-most-common case — two tenants registered the same IdP with overlapping or empty `expectedAudiences`. Internally `ErrAmbiguousProvider` (`internal/auth/oidc/registry.go`) wraps to `ErrUnknownKID`. To resolve, pick disjoint `expectedAudiences` per tenant.
+- **"Tokens reject for the right tenant but the IdP is up":** verify the JWT `iss` claim matches either an explicit `issuers` entry or the discovery document's `issuer` byte-for-byte. Trailing slashes count.
 
-### "JWKS warmup window"
-
-After registering a provider, cyoda warms JWKS asynchronously. During the cold-start window (typically <1s), tokens whose `kid` is not yet cached fall through to `ErrUnknownKID` → 401. Retry; or force-warm with the `/reload` endpoint above.
+Registration-time failures (these DO carry precise codes — see ERRORS) are SSRF, duplicate URI per tenant, malformed tenant UUID, and provider-not-found / invalid-state for lifecycle ops. Registration succeeds even when the IdP itself is unreachable — discovery failures don't fail the response; they delay the warmup.
 
 ## ERRORS
 
-- `errors.OIDC_DISCOVERY_FAILED` (`502`) — `wellKnownConfigUri` unreachable or returned malformed JSON.
-- `errors.OIDC_JWKS_UNAVAILABLE` (`502`) — discovery succeeded but the JWKS endpoint did not.
+Registration / lifecycle (precise codes — admin-facing surface):
+
+- `errors.OIDC_INVALID_TENANT` (`400`) — caller's tenant ID is not UUID-shaped (commonly: bootstrap `default-tenant` literal).
 - `errors.OIDC_SSRF_BLOCKED` (`400`) — `wellKnownConfigUri` resolves to a blocked address range (set `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true` for dev).
 - `errors.OIDC_PROVIDER_DUPLICATE` (`400`) — same `wellKnownConfigUri` already registered for this tenant.
 - `errors.OIDC_PROVIDER_NOT_FOUND` (`404`) — referenced provider ID absent in this tenant.
 - `errors.OIDC_PROVIDER_INACTIVE` (`409`) — update or operation attempted on an invalidated provider; reactivate first.
-- `errors.OIDC_INVALID_TENANT` (`400`) — caller's tenant ID is not UUID-shaped (commonly: bootstrap `default-tenant` literal).
-- `errors.OIDC_AUDIENCE_MISMATCH` (`401`) — token `aud` does not match any `expectedAudiences`.
-- `errors.OIDC_CLAIMS_INVALID` (`401`) — required claim missing or malformed.
-- `errors.OIDC_TOKEN_PRE_TRANSITION` (`401`) — token `iat` precedes the most recent provider reactivation; mint a fresh one.
-- `errors.UNAUTHORIZED` (`401`) — generic fallback (includes the ambiguous-routing case described in DIAGNOSTICS).
+
+Token validation (always opaque — see DIAGNOSTICS):
+
+- `errors.UNAUTHORIZED` (`401`) — every token-validation failure path. The wire body never distinguishes audience mismatch, expired token, unknown `kid`, JWKS-unreachable, claims-invalid, or ambiguous-tenant routing.
 
 ## SEE ALSO
 

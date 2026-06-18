@@ -92,26 +92,18 @@ const (
 	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
 	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"
 	ErrCodeOIDCSSRFBlocked       = "OIDC_SSRF_BLOCKED"
-	// ErrCodeOIDCAudienceMismatch is the intended wire code (401) when a JWT
-	// aud claim does not match any value in the provider's ExpectedAudiences
-	// (D20). Currently the bearer-auth middleware translates this to generic
-	// UNAUTHORIZED; specific translation is tracked as a follow-up.
-	ErrCodeOIDCAudienceMismatch = "OIDC_AUDIENCE_MISMATCH"
-	// ErrCodeOIDCTokenPreTransition is the intended wire code (401) when a
-	// token's iat predates the provider's CreatedAt by more than the 30s
-	// skew window (D17). Currently translates to generic UNAUTHORIZED.
-	ErrCodeOIDCTokenPreTransition = "OIDC_TOKEN_PRE_TRANSITION"
-	// ErrCodeOIDCDiscoveryFailed is the intended wire code (500 + ticket) when
-	// the server cannot fetch .well-known/openid-configuration for a registered
-	// provider. SSRF-blocked URIs surface as OIDC_SSRF_BLOCKED instead.
-	// Currently translates to generic SERVER_ERROR.
-	ErrCodeOIDCDiscoveryFailed = "OIDC_DISCOVERY_FAILED"
-	// ErrCodeOIDCJWKSUnavailable is the intended wire code (503 + Retry-After)
-	// when a transient JWKS-endpoint failure occurs during key resolution.
-	// Currently translates to generic UNAUTHORIZED.
-	ErrCodeOIDCJWKSUnavailable = "OIDC_JWKS_UNAVAILABLE"
-	// ErrCodeOIDCClaimsInvalid is the intended wire code (401) for token
-	// claims validation failures: missing_sub, invalid_sub, unsupported_alg.
-	// Currently translates to generic UNAUTHORIZED.
-	ErrCodeOIDCClaimsInvalid = "OIDC_CLAIMS_INVALID"
 )
+
+// Token-validation failures (audience mismatch, claims invalid, iat
+// pre-transition, KID unknown, JWKS unavailable during key resolution) carry
+// no precise OIDC_* code. The bearer-auth middleware uniformly returns a
+// problem-detail body with code UNAUTHORIZED and no per-cause distinction; a
+// precise code would enumerate IdP / audience / kid / claim-shape recognition
+// to an unauthenticated caller.
+//
+// Discovery failures at registration time also carry no precise code.
+// Registry warm-up is non-fatal: the provider stays registered, discovery
+// errors log internally, and tokens 401 until the IdP becomes reachable.
+//
+// The per-cause diagnostic path is the server-side log stream — see the
+// auth.oidc help topic.
