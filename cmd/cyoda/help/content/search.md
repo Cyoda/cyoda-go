@@ -19,7 +19,7 @@ see_also:
 
 ## NAME
 
-search — entity search API: synchronous direct search, asynchronous snapshot search, and entity statistics.
+search — entity search API: synchronous direct search and asynchronous snapshot search. Entity statistics endpoints (`/api/entity/stats/...`) are documented in the `crud` topic.
 
 ## SYNOPSIS
 
