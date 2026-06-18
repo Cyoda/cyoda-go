@@ -809,7 +809,7 @@ Use this path when you control both the service and its cyoda registration. For 
 
 **Client (you) needs:**
 
-- An `Authorization: Bearer …` token with `ROLE_ADMIN` to create or delete clients. (`GET /clients` requires only `ROLE_M2M`.)
+- An `Authorization: Bearer …` token with `ROLE_ADMIN`. Every `/clients` endpoint (list, create, delete) requires admin role today.
 - A target tenant ID — the client is scoped to the caller's tenant.
 
 ## REQUEST FLOW
@@ -864,7 +864,7 @@ Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `
 
 ## ERRORS
 
-- `errors.FORBIDDEN` (`403`) — caller lacks `ROLE_ADMIN` for create/delete; `ROLE_M2M` is required for list.
+- `errors.FORBIDDEN` (`403`) — caller lacks `ROLE_ADMIN` (required for list, create, and delete).
 - `errors.M2M_CLIENT_NOT_FOUND` (`404`) — referenced `clientId` does not exist or belongs to a different tenant.
 - `errors.FEATURE_DISABLED` (`404`) — `withAdminRole=true` requested with `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=false`.
 - `errors.BAD_REQUEST` (`400`) — request body shape invalid.
@@ -1259,7 +1259,7 @@ Use this path when token minting must work even when cyoda's `/oauth/token` is u
 - `CYODA_IAM_MODE=jwt`.
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` (gate; see callout above).
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on currently-valid trusted keys. Counts active + within-validity entries only.
-- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `90`) — default validity for trusted keys when not specified at registration.
+- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`) — default validity for trusted keys when not specified at registration.
 
 **Client (you) needs:**
 
