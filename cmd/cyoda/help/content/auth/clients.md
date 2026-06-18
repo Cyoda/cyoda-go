@@ -83,6 +83,17 @@ curl -X DELETE https://cyoda.example.com/api/clients/${CLIENT_ID} \
 
 Response: `204 No Content`. The deleted client's tokens remain valid until their natural `exp`; deletion stops new token issuance.
 
+### Reset a client secret
+
+Rotates `clientSecret` for an existing client. The new secret is shown only in the response — capture it before the connection closes.
+
+```bash
+curl -X POST https://cyoda.example.com/api/clients/${CLIENT_ID}/secret \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+```
+
+Response (`200 OK`) carries the rotated `clientSecret`. Existing JWTs minted with the previous secret remain valid until their natural `exp`; only new `/oauth/token` requests will require the new secret.
+
 ## TOKEN
 
 Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `/oauth/token` endpoint) to mint JWTs. The JWT carries the client's `tenantId` in `caas_org_id` and its roles in `user_roles`. Full claim shape is in `auth.tokens`.

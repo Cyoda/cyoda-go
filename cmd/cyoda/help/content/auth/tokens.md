@@ -100,7 +100,9 @@ Key constraints:
 
 ## TOKEN
 
-Every JWT cyoda accepts — whether minted via `client_credentials`, OBO, federated OIDC (`auth.oidc`), or trusted-key offline signing (`auth.trusted-keys`) — conforms to this claim shape:
+**Cyoda-minted tokens** (issued via `client_credentials` or token-exchange/OBO at `/oauth/token`, or via the bootstrap key in `auth.trusted-keys`) carry the following claim shape. **Federated OIDC tokens** (`auth.oidc`) are *not* re-minted; they carry the upstream IdP's claim shape, and tenant + user identity are bound server-side from the registered provider's `OwnerLegalEntityID` — claims like `caas_org_id`, `caas_user_id`, `tid` on a federated token are explicitly ignored to prevent attacker-controlled tenant routing.
+
+Claim shape for cyoda-minted tokens:
 
 - `sub` (string) — Principal. `client_id` for M2M, user ID for OBO and federated tokens.
 - `iss` (string) — Issuer. Cyoda-minted tokens use `CYODA_JWT_ISSUER`. Federated tokens use the upstream IdP's issuer.
