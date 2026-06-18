@@ -68,9 +68,25 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 	}, nil
 }
 
-// extractRoles accepts JSON array-of-strings, []string, or a space-delimited
-// string (OAuth2 scope convention per RFC 6749 §3.3 / RFC 8693 §4.2).
-// Empty/missing → empty slice.
+// extractRoles accepts the value found at the configured rolesClaim and
+// returns the user's roles as a flat slice. Recognised shapes:
+//
+//   - nil / empty → empty slice (authenticated but unprivileged).
+//   - string → space-delimited per RFC 6749 §3.3 / RFC 8693 §4.2; a lone
+//     non-empty token like "admin" yields ["admin"].
+//   - []string / []any (of strings) → use as-is, dropping empty entries
+//     and non-string entries in the []any case.
+//   - map[string]any / map[string]string → JSON-object claim; the
+//     top-level **keys** are the role values, inner values are ignored.
+//     This is the shape Zitadel emits for `urn:zitadel:iam:org:project:roles`
+//     with projectRoleAssertion=true (inner values are { orgId: domain }
+//     routing metadata, irrelevant for role extraction). Empty-string
+//     keys are dropped for parity with array handling.
+//
+// Any other scalar (number, bool, etc.) → empty slice (no panic). Map
+// iteration order is preserved as-is; downstream consumers
+// (spi.HasRole) are order-independent and tests compare as sets, so the
+// per-request sort cost is not paid here.
 func extractRoles(claim any) []string {
 	switch v := claim.(type) {
 	case nil:
@@ -93,6 +109,22 @@ func extractRoles(claim any) []string {
 		for _, item := range v {
 			if s, ok := item.(string); ok && s != "" {
 				out = append(out, s)
+			}
+		}
+		return out
+	case map[string]any:
+		out := make([]string, 0, len(v))
+		for k := range v {
+			if k != "" {
+				out = append(out, k)
+			}
+		}
+		return out
+	case map[string]string:
+		out := make([]string, 0, len(v))
+		for k := range v {
+			if k != "" {
+				out = append(out, k)
 			}
 		}
 		return out
