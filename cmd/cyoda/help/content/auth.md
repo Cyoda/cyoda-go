@@ -6,6 +6,8 @@ version_added: 0.8.0
 see_also:
   - config.auth
   - openapi
+  - errors.UNAUTHORIZED
+  - errors.FORBIDDEN
 ---
 
 # auth
