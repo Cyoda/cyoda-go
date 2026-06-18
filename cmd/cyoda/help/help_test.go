@@ -706,3 +706,75 @@ func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {
 	})
 	return out
 }
+
+// TestDefaultTree_AuthTopics ensures the new auth topic tree loads from
+// embedded content and that every topic's body contains the rigid
+// 7-section anchors the LLM-targeted template promises (per spec D5).
+func TestDefaultTree_AuthTopics(t *testing.T) {
+	tree := DefaultTree
+	if tree == nil || tree.Root == nil {
+		t.Fatal("DefaultTree.Root nil")
+	}
+
+	cases := []struct {
+		path           []string
+		title          string
+		requireAnchors []string
+	}{
+		{[]string{"auth"}, "auth — authenticate client applications against cyoda",
+			[]string{"## NAME", "## GOAL", "## WHICH PATH DO I NEED?", "## TOKEN PRESENTATION", "## SEE ALSO"}},
+		{[]string{"auth", "clients"}, "auth.clients — M2M client lifecycle",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "tokens"}, "auth.tokens — /oauth/token grants and JWT claim contract",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "oidc"}, "auth.oidc — federated OIDC providers",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## DIAGNOSTICS", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for offline JWT signing",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.path, "."), func(t *testing.T) {
+			topic := tree.Find(tc.path)
+			if topic == nil {
+				t.Fatalf("Find(%v): topic missing", tc.path)
+			}
+			if topic.Title != tc.title {
+				t.Errorf("title: got %q, want %q", topic.Title, tc.title)
+			}
+			if topic.Stability != "evolving" {
+				t.Errorf("stability: got %q, want %q", topic.Stability, "evolving")
+			}
+			body := string(topic.Body)
+			for _, anchor := range tc.requireAnchors {
+				if !strings.Contains(body, anchor) {
+					t.Errorf("body missing anchor %q", anchor)
+				}
+			}
+		})
+	}
+}
+
+// TestDefaultTree_AuthLandingListsAllChildren verifies the auth landing
+// page renders descriptors for every subtopic — the renderer auto-populates
+// the parent topic's Children slice from the embedded filesystem.
+func TestDefaultTree_AuthLandingListsAllChildren(t *testing.T) {
+	tree := DefaultTree
+	auth := tree.Find([]string{"auth"})
+	if auth == nil {
+		t.Fatal("Find([auth]): topic missing")
+	}
+	want := map[string]bool{"clients": true, "tokens": true, "oidc": true, "trusted-keys": true}
+	got := map[string]bool{}
+	for _, c := range auth.Children {
+		if len(c.Path) == 0 {
+			t.Fatalf("child with empty path: %#v", c)
+		}
+		got[c.Path[len(c.Path)-1]] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("auth missing child %q (have %v)", k, got)
+		}
+	}
+}
