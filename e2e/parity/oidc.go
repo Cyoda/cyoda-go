@@ -2436,6 +2436,67 @@ func RunOidcD23_RolesParsingMultiFormat(t *testing.T, fix BackendFixture) {
 	}
 }
 
+// RunOidcD23_RolesParsingObjectKeys_Zitadel verifies: when the
+// rolesClaim value is a JSON object (Zitadel's projectRoleAssertion
+// shape), the top-level object keys are the user's roles. The operator
+// points rolesClaim at the literal Zitadel claim string
+// `urn:zitadel:iam:org:project:roles`; cyoda must accept the object
+// value and read the keys.
+//
+// Verification: mint a JWT whose Zitadel claim object includes
+// ROLE_ADMIN as a top-level key (inner value is the Zitadel routing
+// payload, ignored); call a ROLE_ADMIN-gated endpoint and expect 2xx.
+// If extractRoles() failed to handle the object shape, roles would be
+// empty and the ROLE_ADMIN gate would return 403.
+//
+// Pattern follows RunOidcD23_RolesParsingMultiFormat: own tenant, IdP,
+// and provider per test for isolation; JWKS warm-up via ProbeAuthRaw
+// before hitting the ROLE_ADMIN-gated endpoint.
+func RunOidcD23_RolesParsingObjectKeys_Zitadel(t *testing.T, fix BackendFixture) {
+	const zitadelClaim = "urn:zitadel:iam:org:project:roles"
+
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+		"rolesClaim":         zitadelClaim,
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	// Zitadel-shaped object claim. Inner { orgId: domain } map is
+	// routing metadata — cyoda reads the keys and ignores it.
+	zitadelRoles := map[string]any{
+		"ROLE_ADMIN": map[string]any{"312orgId": "sioms.localhost"},
+		"warehouse":  map[string]any{"312orgId": "sioms.localhost"},
+	}
+
+	// Warm the JWKS cache via a non-ROLE_ADMIN probe first.
+	warmToken := idp.MintJWTWithRolesClaim(t, idp.DefaultKid, admin.ID, map[string]any{
+		zitadelClaim: zitadelRoles,
+	})
+	warmC := client.NewClient(fix.BaseURL(), warmToken)
+	if s, b, e := warmC.ProbeAuthRaw(t); e != nil {
+		t.Fatalf("warm ProbeAuthRaw transport: %v", e)
+	} else if s != http.StatusOK {
+		t.Fatalf("warm probe: status %d, want 200 (JWT validation failed for Zitadel object claim) (body: %s)", s, b)
+	}
+
+	// Hit a ROLE_ADMIN-gated endpoint. UpdateOidcProvider (PATCH, no-field-change)
+	// requires ROLE_ADMIN and does not perturb JWKS state — same probe pattern as
+	// RunOidcD23_RolesParsingMultiFormat.
+	token := idp.MintJWTWithRolesClaim(t, idp.DefaultKid, admin.ID, map[string]any{
+		zitadelClaim: zitadelRoles,
+	})
+	probeC := client.NewClient(fix.BaseURL(), token)
+	if _, err := probeC.UpdateOidcProvider(t, p.ID, map[string]any{}); err != nil {
+		t.Errorf("UpdateOidcProvider (ROLE_ADMIN gate via object-keys extraction): %v", err)
+	}
+}
+
 // --- D23 sub bounds (rows 57-59) ---
 
 // RunOidcD23_SubControlCharRejected verifies row 57: a JWT with a sub claim
