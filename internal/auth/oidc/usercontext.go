@@ -68,9 +68,33 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 	}, nil
 }
 
-// extractRoles accepts JSON array-of-strings, []string, or a space-delimited
-// string (OAuth2 scope convention per RFC 6749 §3.3 / RFC 8693 §4.2).
-// Empty/missing → empty slice.
+// extractRoles accepts the value found at the configured rolesClaim and
+// returns the user's roles as a flat slice. Recognised shapes:
+//
+//   - nil / empty → empty slice (authenticated but unprivileged).
+//   - string → space-delimited per RFC 6749 §3.3 / RFC 8693 §4.2; a lone
+//     non-empty token like "admin" yields ["admin"].
+//   - []string / []any (of strings) → use as-is, dropping empty entries
+//     and non-string entries in the []any case.
+//   - map[string]any / map[string]string → JSON-object claim; the
+//     top-level **keys** are the role values, inner values are ignored.
+//     This is the shape Zitadel emits for `urn:zitadel:iam:org:project:roles`
+//     with projectRoleAssertion=true (inner values are { orgId: domain }
+//     routing metadata, irrelevant for role extraction). Empty-string
+//     keys are dropped for parity with array handling.
+//
+// Any other scalar (number, bool, etc.) → empty slice (no panic). Map
+// iteration order is non-deterministic per Go's spec; downstream
+// consumers (spi.HasRole) and tests are order-independent, so we don't
+// pay a sort cost on the per-request hot path.
+//
+// Role names containing a comma are dropped silently at every shape.
+// UserContext.Roles is comma-joined into the CloudEvent `authclaims`
+// attribute (internal/grpc/cloudevent.go); a comma in a role name would
+// round-trip ambiguously for any consumer that splits on commas. No
+// major IdP (Cognito, Zitadel, Auth0, Keycloak) emits commas in role
+// names by convention, so filtering here keeps the wire format intact
+// without breaking any real-world IdP.
 func extractRoles(claim any) []string {
 	switch v := claim.(type) {
 	case nil:
@@ -79,11 +103,18 @@ func extractRoles(claim any) []string {
 		if v == "" {
 			return nil
 		}
-		return strings.Fields(v)
+		fields := strings.Fields(v)
+		out := make([]string, 0, len(fields))
+		for _, s := range fields {
+			if validRoleName(s) {
+				out = append(out, s)
+			}
+		}
+		return out
 	case []string:
 		out := make([]string, 0, len(v))
 		for _, s := range v {
-			if s != "" {
+			if validRoleName(s) {
 				out = append(out, s)
 			}
 		}
@@ -91,12 +122,36 @@ func extractRoles(claim any) []string {
 	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok && s != "" {
+			if s, ok := item.(string); ok && validRoleName(s) {
 				out = append(out, s)
+			}
+		}
+		return out
+	case map[string]any:
+		out := make([]string, 0, len(v))
+		for k := range v {
+			if validRoleName(k) {
+				out = append(out, k)
+			}
+		}
+		return out
+	case map[string]string:
+		out := make([]string, 0, len(v))
+		for k := range v {
+			if validRoleName(k) {
+				out = append(out, k)
 			}
 		}
 		return out
 	default:
 		return nil
 	}
+}
+
+// validRoleName reports whether s is usable as a role name. We drop
+// empties (parity across all extraction shapes) and anything containing
+// a comma — see extractRoles' doc comment for the CloudEvent
+// `authclaims` round-trip rationale.
+func validRoleName(s string) bool {
+	return s != "" && !strings.ContainsRune(s, ',')
 }

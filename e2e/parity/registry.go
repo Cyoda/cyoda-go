@@ -215,6 +215,7 @@ var allTests = []NamedTest{
 	{"OidcD23_CrossIdPSubCollisionDistinctUserIDs", RunOidcD23_CrossIdPSubCollisionDistinctUserIDs},
 	{"OidcD23_PerProviderRolesClaim", RunOidcD23_PerProviderRolesClaim},
 	{"OidcD23_RolesParsingMultiFormat", RunOidcD23_RolesParsingMultiFormat},
+	{"OidcD23_RolesParsingObjectKeys_Zitadel", RunOidcD23_RolesParsingObjectKeys_Zitadel},
 	// D23 sub bounds (rows 57-59).
 	{"OidcD23_SubControlCharRejected", RunOidcD23_SubControlCharRejected},
 	{"OidcD23_SubTooLong", RunOidcD23_SubTooLong},
