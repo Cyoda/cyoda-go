@@ -44,7 +44,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1",
+  "version": "1.0",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -250,6 +250,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
+- `errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — `400` — workflow declares a schema version this server does not accept
 - `errors.VALIDATION_FAILED` — `400` — static cycle detection failed during workflow import
 
 ## EXAMPLES
@@ -264,7 +265,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1",
+        "version": "1.0",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -316,7 +317,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1",
+        "version": "1.0",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,

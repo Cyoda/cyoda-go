@@ -293,7 +293,7 @@ the file and should see exactly what went wrong.
 
 ## Forward-port plan
 
-This work lands first on a `release/v0.7.2` branch (cut from the `v0.7.1`
+This work lands first on a `release/v0.7.x` maintenance branch (cut from the `v0.7.1`
 tag at `39e3266`). After it ships, it is forward-ported to `release/v0.8.0`
 by `git cherry-pick` or a clean re-merge — the touch surface is small and
 disjoint from in-flight v0.8.0 work (workflow domain code, help subsystem,

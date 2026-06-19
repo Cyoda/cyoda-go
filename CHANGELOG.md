@@ -4,6 +4,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes (wire format)
+
+- **Workflow-import `version` field is now strictly validated** as semver `MAJOR.MINOR`. Previously accepted values like `"1"` are rejected with `400 WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`. Replace with `"1.0"`. Authoritative supported set: `GET /help/workflows/schema-version/versions` or `cyoda help workflows schema-version versions`. Bump rules: `docs/workflow-schema-versioning.md`.
+
+### Added
+
+- New error code `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (`400`).
+- New help topic `workflows.schema-version` documenting the wire-format contract.
+- New help action `cyoda help workflows schema-version versions` emitting the supported-version manifest as JSON.
+- HTTP help-action mirror: `GET /help/<topic>/<action>` now reachable for every registered action (`grpc proto/json`, `openapi json/yaml/tags`, `cloudevents json`, `workflows.schema-version versions`) with declared `Content-Type`.
+
 ## [0.7.0] — 2026-05-05
 
 This release reconciles the OpenAPI spec with the actual server (#21,

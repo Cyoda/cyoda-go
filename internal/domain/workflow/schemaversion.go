@@ -81,11 +81,11 @@ func ParseSchemaVersion(s string) (major, minor int, err error) {
 	}
 	maj, e1 := parseSegment(parts[0])
 	if e1 != nil {
-		return 0, 0, fmt.Errorf("workflow schema version %q is not in MAJOR.MINOR form", s)
+		return 0, 0, fmt.Errorf("workflow schema version %q is not in MAJOR.MINOR form: %w", s, e1)
 	}
 	min, e2 := parseSegment(parts[1])
 	if e2 != nil {
-		return 0, 0, fmt.Errorf("workflow schema version %q is not in MAJOR.MINOR form", s)
+		return 0, 0, fmt.Errorf("workflow schema version %q is not in MAJOR.MINOR form: %w", s, e2)
 	}
 	return maj, min, nil
 }

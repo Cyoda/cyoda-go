@@ -4,6 +4,7 @@ title: "WORKFLOW_SCHEMA_VERSION_UNSUPPORTED — workflow schema version not acce
 stability: stable
 see_also:
   - errors
+  - workflows.schema-version
   - errors.WORKFLOW_NOT_FOUND
   - errors.VALIDATION_FAILED
 ---
@@ -30,8 +31,11 @@ Common causes:
 
 Correct the `"version"` field in every workflow object within the `workflows` array to use `"1.0"` (or the current supported version), then resubmit the import request.
 
+Discover the current supported set via `cyoda help workflows schema-version versions` or `GET /help/workflows/schema-version/versions`.
+
 ## SEE ALSO
 
 - errors
+- workflows.schema-version
 - errors.WORKFLOW_NOT_FOUND
 - errors.VALIDATION_FAILED

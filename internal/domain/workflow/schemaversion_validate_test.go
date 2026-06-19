@@ -67,6 +67,32 @@ func TestValidateSchemaVersions_RejectsMinorTooNew(t *testing.T) {
 	}
 }
 
+func TestValidateSchemaVersions_RejectsMinorTooOld(t *testing.T) {
+	// Mutates the package-level SupportedSchemaRanges to model a
+	// deprecation window where MinMinor has been raised. Cannot use
+	// t.Parallel() — see TestSupports for the same constraint.
+	orig := SupportedSchemaRanges
+	SupportedSchemaRanges = []SchemaRange{
+		{Major: 1, MinMinor: 2, MaxMinor: 5},
+	}
+	t.Cleanup(func() { SupportedSchemaRanges = orig })
+
+	wfs := []spi.WorkflowDefinition{
+		{Name: "wf-aged-out", Version: "1.0", InitialState: "S",
+			States: map[string]spi.StateDefinition{"S": {}}},
+	}
+	err := validateSchemaVersions(wfs)
+	if err == nil {
+		t.Fatalf("validateSchemaVersions(\"1.0\") with MinMinor=2 = nil; want error")
+	}
+	if !errors.Is(err, ErrSchemaMinorTooOld) {
+		t.Fatalf("error %v is not ErrSchemaMinorTooOld", err)
+	}
+	if !strings.Contains(err.Error(), "wf-aged-out") {
+		t.Fatalf("error message %q does not name workflow wf-aged-out", err.Error())
+	}
+}
+
 func TestValidateSchemaVersions_NamesOffendingWorkflowInMixedList(t *testing.T) {
 	t.Parallel()
 	wfs := []spi.WorkflowDefinition{
