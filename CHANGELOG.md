@@ -4,9 +4,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
-## [0.7.2] — 2026-06-19
+## [0.7.3] — 2026-06-19
 
 Patch release on the v0.7 maintenance line. Introduces a strict, discoverable semver `MAJOR.MINOR` contract for the workflow-import `version` field, plus a generic HTTP mirror of every `cyoda help <topic> <action>`. Workflow schema versioning is now an enforceable wire-format contract with a single Go-side source of truth (`internal/domain/workflow/schemaversion.go`) consumed by import validation, export stamping, the help topic action, and an OpenAPI YAML↔Go consistency test.
+
+The `v0.7.2` tag was created but its release workflow failed at the Homebrew-tap token step because `release.yml` referenced the legacy `cyoda-platform` GitHub org (renamed to `cyoda`). Per Go's module-immutability rule, the tag could not be force-moved once the proxy cached it; this release re-cuts at `v0.7.3` with the workflow fix included. No artifacts shipped at `v0.7.2`.
 
 ### ⚠️ Breaking changes (wire format)
 

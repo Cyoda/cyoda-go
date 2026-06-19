@@ -70,7 +70,7 @@ jobs:
         with:
           app-id: ${{ vars.HOMEBREW_TAP_APP_ID }}
           private-key: ${{ secrets.HOMEBREW_TAP_APP_KEY }}
-          owner: cyoda-platform
+          owner: cyoda
           repositories: homebrew-cyoda-go
 
       - uses: goreleaser/goreleaser-action@v7
