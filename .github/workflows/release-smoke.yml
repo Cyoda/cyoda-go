@@ -99,7 +99,7 @@ jobs:
           for a in artifacts:
               name = a.get('name', '')
               # Match ghcr.io/cyoda-platform/cyoda:TAG — take TAG.
-              if ':' in name and 'cyoda-platform/cyoda' in name:
+              if ':' in name and 'cyoda/cyoda' in name:
                   cyoda_tags.add(name.rsplit(':', 1)[1])
 
           print(f"cyoda image tags produced on v0.0.0 snapshot: {sorted(cyoda_tags)}")

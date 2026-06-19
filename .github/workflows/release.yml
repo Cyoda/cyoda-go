@@ -105,7 +105,7 @@ jobs:
         id: image-ref
         run: |
           version="${GITHUB_REF_NAME#v}"
-          echo "ref=ghcr.io/cyoda-platform/cyoda:${version}" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/cyoda/cyoda:${version}" >> "$GITHUB_OUTPUT"
 
       - name: Scan release image (Trivy)
         # Pin to >= v0.35.0; earlier versions are covered by

@@ -4,11 +4,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
-## [0.7.3] — 2026-06-19
+## [0.7.4] — 2026-06-19
 
 Patch release on the v0.7 maintenance line. Introduces a strict, discoverable semver `MAJOR.MINOR` contract for the workflow-import `version` field, plus a generic HTTP mirror of every `cyoda help <topic> <action>`. Workflow schema versioning is now an enforceable wire-format contract with a single Go-side source of truth (`internal/domain/workflow/schemaversion.go`) consumed by import validation, export stamping, the help topic action, and an OpenAPI YAML↔Go consistency test.
 
-The `v0.7.2` tag was created but its release workflow failed at the Homebrew-tap token step because `release.yml` referenced the legacy `cyoda-platform` GitHub org (renamed to `cyoda`). Per Go's module-immutability rule, the tag could not be force-moved once the proxy cached it; this release re-cuts at `v0.7.3` with the workflow fix included. No artifacts shipped at `v0.7.2`.
+The `v0.7.2` and `v0.7.3` tags were created earlier the same day but their release workflows failed because `release.yml` and `.goreleaser.yaml` hard-coded the legacy `cyoda-platform` GitHub org (renamed to `cyoda`) in both the Homebrew-tap-token step and the GHCR image push targets. `v0.7.2` shipped no artifacts; `v0.7.3` fixed the Homebrew-tap-token step but the GHCR push then failed (`denied: not_found: owner not found` on `ghcr.io/cyoda-platform/cyoda`). Per Go's module-immutability rule, neither tag could be force-moved once the proxy cached them; this release re-cuts at `v0.7.4` with the complete org-rename fix across `.goreleaser.yaml`, `release.yml`, and `release-smoke.yml`. The Go module path itself (`github.com/cyoda-platform/cyoda-go`) is unchanged — that's an immutable identifier independent of the GitHub URL, and modifying it would break every downstream consumer.
 
 ### ⚠️ Breaking changes (wire format)
 
