@@ -116,7 +116,9 @@ These variables control the federated OIDC provider registration behaviour
   Never set in production. (default: `false`)
 - `CYODA_OIDC_ROLES_CLAIM` — the JWT claim name from which role values are read
   for tokens issued by a federated OIDC provider. Overrideable per-provider via
-  the `rolesClaim` field on the registration or update API. (default: `roles`)
+  the `rolesClaim` field on the registration or update API. See
+  `cyoda help auth oidc` for the accepted claim value shapes (string array,
+  JSON object — keys are roles, space-delimited string). (default: `roles`)
 - `CYODA_OIDC_CONNECT_TIMEOUT_MS` — TCP connect timeout in milliseconds for
   OIDC discovery and JWKS endpoint fetches. (default: `5000`)
 - `CYODA_OIDC_SOCKET_TIMEOUT_MS` — HTTP read timeout in milliseconds for
