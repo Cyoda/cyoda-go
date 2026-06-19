@@ -7,6 +7,7 @@ see_also:
   - crud
   - grpc
   - search
+  - workflows.schema-version
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -100,7 +101,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **WorkflowDefinition fields:**
 
-- `version` — string — schema version tag (informational; not interpreted by the engine)
+- `version` — semver `MAJOR.MINOR` string identifying the workflow-import contract this definition was authored against. Validated strictly on import; stamped to the current contract version on export. See `cyoda help workflows schema-version` for the bump rules and current/supported list.
 - `name` — string — unique within the model; the primary key for MERGE mode
 - `desc` — string — optional description
 - `initialState` — string — state assigned when the entity is first created; must exist in `states`
