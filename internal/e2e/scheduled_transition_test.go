@@ -30,7 +30,7 @@ func TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound(t *test
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "sched-explicit-wf", "initialState": "Open", "active": true,
+			"version": "1.0", "name": "sched-explicit-wf", "initialState": "Open", "active": true,
 			"states": {
 				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 1000}}]},
 				"Closed": {}

@@ -75,7 +75,7 @@ func externalProcessorWorkflow(workflowName, procName, executionMode string) str
 	return `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
+			"version": "1.0", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
 					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "` + executionMode + `",
@@ -333,7 +333,7 @@ func RunExternalAPI_09_12_ExternalizedCriterionSkipsCall(t *testing.T, fixture p
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "ext-crit-skip-wf", "initialState": "CREATED", "active": true,
+			"version": "1.0", "name": "ext-crit-skip-wf", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
 					"criterion": {"type": "function", "function": {"name": "always-false"}}
@@ -366,7 +366,7 @@ func externalProcessorWorkflowWithContext(workflowName, procName, contextValue s
 	return `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
+			"version": "1.0", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
 					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "SYNC",
@@ -422,7 +422,7 @@ func criterionContextWorkflow(workflowName, contextValue string) string {
 	return `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
+			"version": "1.0", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
 					"criterion": {"type": "function", "function": {"name": "context-equals",

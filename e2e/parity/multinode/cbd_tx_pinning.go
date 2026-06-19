@@ -100,7 +100,7 @@ func RunWorkflowProc_CBD_TxPostPinnedToHomeNode(t *testing.T, fixture MultiNodeF
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "cbd-pinning-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "cbd-pinning-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,

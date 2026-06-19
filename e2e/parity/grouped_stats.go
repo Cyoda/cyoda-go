@@ -67,7 +67,7 @@ const statsModelSampleDoc = `{
 const statsModelAutoWorkflowJSON = `{
 	"importMode": "REPLACE",
 	"workflows": [{
-		"version": "1", "name": "stats-wf", "initialState": "NONE", "active": true,
+		"version": "1.0", "name": "stats-wf", "initialState": "NONE", "active": true,
 		"states": {
 			"NONE":    {"transitions": [{"name": "create", "next": "CREATED", "manual": false}]},
 			"CREATED": {"transitions": [{"name": "ship",   "next": "SHIPPED", "manual": true}]},

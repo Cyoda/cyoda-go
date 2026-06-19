@@ -69,9 +69,14 @@ func TestAction_GRPCJSON(t *testing.T) {
 }
 
 func TestLookupAction(t *testing.T) {
-	if _, ok := lookupAction("openapi", "json"); !ok {
+	entry, ok := lookupAction("openapi", "json")
+	if !ok {
 		t.Error("openapi.json should be registered")
 	}
+	if entry.ContentType == "" {
+		t.Error("openapi.json entry should carry a non-empty ContentType")
+	}
+
 	if _, ok := lookupAction("grpc", "proto"); !ok {
 		t.Error("grpc.proto should be registered")
 	}

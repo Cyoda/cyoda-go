@@ -27,6 +27,7 @@ var operationalPathPrefixes = []string{
 	"/api/openapi.json",
 	"/api/admin/",
 	"/api/.well-known/",
+	"/api/help/",
 }
 
 // isOperationalPath reports whether path p is an operational/admin endpoint

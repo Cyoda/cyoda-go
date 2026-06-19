@@ -311,6 +311,29 @@ func validateProcessorFlags(wf spi.WorkflowDefinition) error {
 	return nil
 }
 
+// validateSchemaVersions checks each workflow's Version field against
+// SupportedSchemaRanges. Returns an error wrapping one of the
+// sentinel schema errors so callers can branch with errors.Is. The
+// error message names the offending workflow by name so a multi-
+// workflow import surfaces a clear diagnosis without iterating again.
+//
+// This check is intentionally separate from validateWorkflows: it
+// maps to ErrCodeWorkflowSchemaVersionUnsupported in the handler,
+// not ErrCodeValidationFailed, and it must run BEFORE
+// applyImportMode mutates anything.
+func validateSchemaVersions(workflows []spi.WorkflowDefinition) error {
+	for _, wf := range workflows {
+		maj, min, err := ParseSchemaVersion(wf.Version)
+		if err != nil {
+			return fmt.Errorf("workflow %q: %w", wf.Name, err)
+		}
+		if err := Supports(maj, min); err != nil {
+			return fmt.Errorf("workflow %q: %w", wf.Name, err)
+		}
+	}
+	return nil
+}
+
 // validateWorkflowLoops performs DFS cycle detection on unguarded automated
 // transitions within a single workflow definition.
 func validateWorkflowLoops(wf spi.WorkflowDefinition) error {

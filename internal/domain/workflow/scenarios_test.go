@@ -520,7 +520,7 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1",
+			"version": "1.0",
 			"name": "loop-wf",
 			"initialState": "A",
 			"active": true,
@@ -678,7 +678,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1",
+			"version": "1.0",
 			"name": "snttd-wf",
 			"initialState": "S1",
 			"active": true,

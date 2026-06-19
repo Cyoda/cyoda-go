@@ -14,7 +14,7 @@ const workflowV1 = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "1",
+			"version": "1.0",
 			"name": "order-workflow-v1",
 			"initialState": "NONE",
 			"active": true,
@@ -35,7 +35,7 @@ const workflowV2 = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "2",
+			"version": "1.0",
 			"name": "order-workflow-v2",
 			"initialState": "NONE",
 			"active": true,

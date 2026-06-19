@@ -20,7 +20,7 @@ func TestTransaction_ConcurrentCreates(t *testing.T) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "tx1-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "tx1-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -67,7 +67,7 @@ func TestTransaction_ConcurrentUpdates(t *testing.T) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "tx2-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "tx2-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -124,7 +124,7 @@ func TestTransaction_RollbackOnProcessorFailure(t *testing.T) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "tx3-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "tx3-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "tx-fail", "executionMode": "SYNC",
@@ -156,7 +156,7 @@ func TestTransaction_StressTest(t *testing.T) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "tx4-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "tx4-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}

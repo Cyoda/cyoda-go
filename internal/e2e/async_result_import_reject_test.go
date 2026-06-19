@@ -23,7 +23,7 @@ func TestE2E_AsyncResultTrueRejectedAtImport(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version":"1","name":"async-reject-wf","initialState":"S1","active":true,
+			"version":"1.0","name":"async-reject-wf","initialState":"S1","active":true,
 			"states":{
 				"S1":{"transitions":[{
 					"name":"t","next":"S2","manual":false,
@@ -78,7 +78,7 @@ func TestE2E_CrossoverToAsyncMsRejectedAtImport(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version":"1","name":"crossover-orphan-wf","initialState":"S1","active":true,
+			"version":"1.0","name":"crossover-orphan-wf","initialState":"S1","active":true,
 			"states":{
 				"S1":{"transitions":[{
 					"name":"t","next":"S2","manual":false,

@@ -24,7 +24,7 @@ func TestWorkflowFailure_ProcessorError(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "fail-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "boom", "executionMode": "SYNC",
@@ -68,7 +68,7 @@ func TestWorkflowFailure_ProcessorWarnings(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "warn-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "warn-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "warn-proc", "executionMode": "SYNC",
@@ -126,7 +126,7 @@ func TestWorkflowFailure_CriteriaError(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "criteria-fail-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "criteria-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "auto", "next": "APPROVED", "manual": false,
@@ -169,7 +169,7 @@ func TestWorkflowFailure_ProcessorContextCancelled(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "timeout-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "timeout-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "ctx-cancel", "executionMode": "SYNC",
@@ -204,7 +204,7 @@ func TestWorkflowFailure_ProcessorPanic(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "panic-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "panic-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "panic-proc", "executionMode": "SYNC",
@@ -251,7 +251,7 @@ func TestWorkflowFailure_AsyncNewTxProcessorFailure(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "async-fail-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "async-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "async-fail", "executionMode": "ASYNC_NEW_TX",
@@ -296,7 +296,7 @@ func TestWorkflowFailure_AsyncNewTxSuccessThenCascadeFails(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "async-then-fail-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "async-then-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "STEP1", "manual": false,
 					"processors": [{"type": "calculator", "name": "async-ok", "executionMode": "ASYNC_NEW_TX",
