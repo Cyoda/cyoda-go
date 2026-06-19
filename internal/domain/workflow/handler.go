@@ -152,10 +152,20 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Stamp the current schema version on every workflow on the wire.
+	// The stored Version is the workflow content's record; the exported
+	// Version is the serialiser's contract. Callers re-importing an
+	// export always see the current contract.
+	stamped := make([]spi.WorkflowDefinition, len(workflows))
+	for i, wf := range workflows {
+		wf.Version = CurrentSchemaVersion
+		stamped[i] = wf
+	}
+
 	resp := map[string]any{
 		"entityName":   entityName,
 		"modelVersion": modelVersion,
-		"workflows":    workflows,
+		"workflows":    stamped,
 	}
 
 	common.WriteJSON(w, http.StatusOK, resp)
