@@ -53,6 +53,12 @@ var actionRegistry = map[string]map[string]ActionEntry{
 	},
 }
 
+// LookupAction returns the action entry for a topic, if registered.
+// Exported for HTTP-action-mirror consumers in internal/api.
+func LookupAction(topic, action string) (ActionEntry, bool) {
+	return lookupAction(topic, action)
+}
+
 // lookupAction returns the entry for a topic action, if registered.
 func lookupAction(topic, action string) (ActionEntry, bool) {
 	if m, ok := actionRegistry[topic]; ok {
