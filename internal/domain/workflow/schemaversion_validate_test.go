@@ -8,9 +8,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// validateSchemaVersions is the per-workflow check exercised here.
-// It is added in Task 4 (see plan).
-
 func TestValidateSchemaVersions_AcceptsCurrent(t *testing.T) {
 	t.Parallel()
 	wfs := []spi.WorkflowDefinition{
