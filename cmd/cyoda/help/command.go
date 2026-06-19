@@ -62,8 +62,8 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 			actionName := positional[len(positional)-1]
 			parent := tree.Find(parentPath)
 			if parent != nil {
-				if handler, ok := lookupAction(parent.DottedPath(), actionName); ok {
-					return handler(out)
+				if entry, ok := lookupAction(parent.DottedPath(), actionName); ok {
+					return entry.Handler(out)
 				}
 				// Dynamic action resolvers (issue #111): the openapi
 				// topic accepts any tag slug as an action, resolved at

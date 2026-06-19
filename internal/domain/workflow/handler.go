@@ -54,6 +54,16 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Schema-version gate — runs before any mutation or store access.
+	// Surfaces with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED so clients can
+	// distinguish "wrong contract version" from generic validation
+	// failures.
+	if err := validateSchemaVersions(req.Workflows); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeWorkflowSchemaVersionUnsupported, err.Error()))
+		return
+	}
+
 	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
@@ -142,10 +152,20 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Stamp the current schema version on every workflow on the wire.
+	// The stored Version is the workflow content's record; the exported
+	// Version is the serialiser's contract. Callers re-importing an
+	// export always see the current contract.
+	stamped := make([]spi.WorkflowDefinition, len(workflows))
+	for i, wf := range workflows {
+		wf.Version = CurrentSchemaVersion
+		stamped[i] = wf
+	}
+
 	resp := map[string]any{
 		"entityName":   entityName,
 		"modelVersion": modelVersion,
-		"workflows":    workflows,
+		"workflows":    stamped,
 	}
 
 	common.WriteJSON(w, http.StatusOK, resp)

@@ -48,7 +48,7 @@ func RunSmokeTest(t *testing.T, fix BackendFixture) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1",
+			"version": "1.0",
 			"name": "smoke-wf",
 			"initialState": "NONE",
 			"active": true,
