@@ -84,9 +84,9 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 //     keys are dropped for parity with array handling.
 //
 // Any other scalar (number, bool, etc.) → empty slice (no panic). Map
-// iteration order is preserved as-is; downstream consumers
-// (spi.HasRole) are order-independent and tests compare as sets, so the
-// per-request sort cost is not paid here.
+// iteration order is non-deterministic per Go's spec; downstream
+// consumers (spi.HasRole) and tests are order-independent, so we don't
+// pay a sort cost on the per-request hot path.
 func extractRoles(claim any) []string {
 	switch v := claim.(type) {
 	case nil:

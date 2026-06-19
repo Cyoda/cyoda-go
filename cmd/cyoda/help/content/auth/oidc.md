@@ -172,6 +172,8 @@ JWTs issued by the federated IdP must conform to the universal cyoda claim contr
 
   Note: there is no path/dot-walking syntax — whatever string you configure is used as a single literal claim-key lookup against the JWT, so colons, slashes, and dots inside the value are treated as part of the key name (which is exactly what Zitadel, Cognito, and Auth0 need).
 
+  Keycloak's default `realm_access.roles` lives one level deep inside the `realm_access` object, which the no-dot-walking rule means cyoda cannot reach. Configure a Keycloak token mapper (hardcoded-claim or role-list, at realm or client scope) to flatten the role list to a top-level `roles` claim, then point `rolesClaim` at that top-level key.
+
 Cyoda does not re-mint federated tokens — they are validated and trusted directly.
 
 ## DIAGNOSTICS
