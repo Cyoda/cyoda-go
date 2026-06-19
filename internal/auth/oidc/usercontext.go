@@ -87,6 +87,14 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 // iteration order is non-deterministic per Go's spec; downstream
 // consumers (spi.HasRole) and tests are order-independent, so we don't
 // pay a sort cost on the per-request hot path.
+//
+// Role names containing a comma are dropped silently at every shape.
+// UserContext.Roles is comma-joined into the CloudEvent `authclaims`
+// attribute (internal/grpc/cloudevent.go); a comma in a role name would
+// round-trip ambiguously for any consumer that splits on commas. No
+// major IdP (Cognito, Zitadel, Auth0, Keycloak) emits commas in role
+// names by convention, so filtering here keeps the wire format intact
+// without breaking any real-world IdP.
 func extractRoles(claim any) []string {
 	switch v := claim.(type) {
 	case nil:
@@ -95,11 +103,18 @@ func extractRoles(claim any) []string {
 		if v == "" {
 			return nil
 		}
-		return strings.Fields(v)
+		fields := strings.Fields(v)
+		out := make([]string, 0, len(fields))
+		for _, s := range fields {
+			if validRoleName(s) {
+				out = append(out, s)
+			}
+		}
+		return out
 	case []string:
 		out := make([]string, 0, len(v))
 		for _, s := range v {
-			if s != "" {
+			if validRoleName(s) {
 				out = append(out, s)
 			}
 		}
@@ -107,7 +122,7 @@ func extractRoles(claim any) []string {
 	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok && s != "" {
+			if s, ok := item.(string); ok && validRoleName(s) {
 				out = append(out, s)
 			}
 		}
@@ -115,7 +130,7 @@ func extractRoles(claim any) []string {
 	case map[string]any:
 		out := make([]string, 0, len(v))
 		for k := range v {
-			if k != "" {
+			if validRoleName(k) {
 				out = append(out, k)
 			}
 		}
@@ -123,7 +138,7 @@ func extractRoles(claim any) []string {
 	case map[string]string:
 		out := make([]string, 0, len(v))
 		for k := range v {
-			if k != "" {
+			if validRoleName(k) {
 				out = append(out, k)
 			}
 		}
@@ -131,4 +146,12 @@ func extractRoles(claim any) []string {
 	default:
 		return nil
 	}
+}
+
+// validRoleName reports whether s is usable as a role name. We drop
+// empties (parity across all extraction shapes) and anything containing
+// a comma — see extractRoles' doc comment for the CloudEvent
+// `authclaims` round-trip rationale.
+func validRoleName(s string) bool {
+	return s != "" && !strings.ContainsRune(s, ',')
 }

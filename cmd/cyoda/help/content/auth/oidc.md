@@ -156,7 +156,7 @@ JWTs issued by the federated IdP must conform to the universal cyoda claim contr
   2. **JSON object** — `{ "admin": {…}, "warehouse": {…} }` → roles are the **top-level keys** (`["admin","warehouse"]`); inner values are ignored. This is the shape Zitadel emits for `urn:zitadel:iam:org:project:roles` with `projectRoleAssertion=true`.
   3. **String** — `"admin warehouse"` → split on whitespace per RFC 6749 §3.3 / RFC 8693 §4.2; a lone token `"admin"` yields one role.
 
-  Empty / absent / non-collection scalar (number, bool) → no roles, no error (the user is authenticated but unprivileged).
+  Empty / absent / non-collection scalar (number, bool) → no roles, no error (the user is authenticated but unprivileged). Role names containing a comma are dropped silently (cyoda comma-joins roles for downstream serialisation; no major IdP emits commas in role names by convention).
 
   Common per-IdP values for `rolesClaim`:
 

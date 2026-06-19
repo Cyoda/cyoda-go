@@ -184,6 +184,20 @@ func TestExtractRoles_HandlesAllInputForms(t *testing.T) {
 		// map[string]string is also a legitimate JSON-object decode shape;
 		// keys are still the roles, inner string values are ignored.
 		{"map[string]string", map[string]string{"admin": "x", "viewer": "y"}, 2},
+		// Comma-containing role names are dropped at every shape, so the
+		// CloudEvent authclaims comma-join (internal/grpc/cloudevent.go)
+		// never sees an ambiguous round-trip. See TestExtractRoles_CommaContainingRolesDropped.
+		{"string-token-with-comma-dropped", "admin,m2m view", 1},
+		{"[]string-with-comma-role-dropped", []string{"admin", "ops,sales"}, 1},
+		{"[]any-with-comma-role-dropped", []any{"admin", "ops,sales"}, 1},
+		{"map[string]any-with-comma-key-dropped", map[string]any{
+			"admin":     nil,
+			"ops,sales": map[string]any{"orgId": "x"},
+		}, 1},
+		{"map[string]string-with-comma-key-dropped", map[string]string{
+			"admin":     "x",
+			"ops,sales": "y",
+		}, 1},
 		// Truly unsupported scalars stay unsupported.
 		{"unsupported-type-int", 42, 0},
 		{"unsupported-type-bool", true, 0},
@@ -384,5 +398,73 @@ func TestBuildOIDCUserContext_SubContainingColonAccepted(t *testing.T) {
 	expected := "oidc:11111111-2222-3333-4444-555555555555:a:b:c"
 	if uc.UserID != expected {
 		t.Errorf("UserID = %q, want %q", uc.UserID, expected)
+	}
+}
+
+// TestExtractRoles_CommaContainingRolesDropped pins down the rationale for
+// dropping comma-containing role names at extraction time. UserContext.Roles
+// is comma-joined into the CloudEvent `authclaims` attribute by
+// internal/grpc/cloudevent.go; a role name containing a comma would round-trip
+// ambiguously for any consumer that splits on commas. Filtering at the
+// extraction boundary keeps the wire format intact and matches the convention
+// of every major IdP (Cognito, Zitadel, Auth0, Keycloak), none of which emit
+// commas in role names. Validates the drop across every accepted claim shape.
+func TestExtractRoles_CommaContainingRolesDropped(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want []string // membership, order-independent
+	}{
+		{
+			name: "string-space-delimited",
+			in:   "admin ops,sales m2m",
+			want: []string{"admin", "m2m"},
+		},
+		{
+			name: "string-only-comma-token-yields-empty",
+			in:   "ops,sales",
+			want: []string{},
+		},
+		{
+			name: "[]string-comma-role-dropped",
+			in:   []string{"admin", "ops,sales", "m2m"},
+			want: []string{"admin", "m2m"},
+		},
+		{
+			name: "[]any-comma-role-dropped",
+			in:   []any{"admin", "ops,sales", "m2m"},
+			want: []string{"admin", "m2m"},
+		},
+		{
+			name: "map[string]any-comma-key-dropped",
+			in: map[string]any{
+				"admin":     map[string]any{"orgId": "a"},
+				"ops,sales": map[string]any{"orgId": "b"},
+				"m2m":       map[string]any{"orgId": "c"},
+			},
+			want: []string{"admin", "m2m"},
+		},
+		{
+			name: "map[string]string-comma-key-dropped",
+			in: map[string]string{
+				"admin":     "a",
+				"ops,sales": "b",
+				"m2m":       "c",
+			},
+			want: []string{"admin", "m2m"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := extractRoles(c.in)
+			if !sameStringSet(got, c.want) {
+				t.Errorf("extractRoles(%v) = %v, want set %v", c.in, got, c.want)
+			}
+			for _, r := range got {
+				if strings.ContainsRune(r, ',') {
+					t.Errorf("comma-containing role leaked: %q", r)
+				}
+			}
+		})
 	}
 }
