@@ -4,6 +4,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-06-19
+
+Patch release on the v0.7 maintenance line. Introduces a strict, discoverable semver `MAJOR.MINOR` contract for the workflow-import `version` field, plus a generic HTTP mirror of every `cyoda help <topic> <action>`. Workflow schema versioning is now an enforceable wire-format contract with a single Go-side source of truth (`internal/domain/workflow/schemaversion.go`) consumed by import validation, export stamping, the help topic action, and an OpenAPI YAML↔Go consistency test.
+
 ### ⚠️ Breaking changes (wire format)
 
 - **Workflow-import `version` field is now strictly validated** as semver `MAJOR.MINOR`. Previously accepted values like `"1"` are rejected with `400 WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`. Replace with `"1.0"`. Authoritative supported set: `GET /help/workflows/schema-version/versions` or `cyoda help workflows schema-version versions`. Bump rules: `docs/workflow-schema-versioning.md`.
