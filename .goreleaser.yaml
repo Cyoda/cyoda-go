@@ -48,7 +48,7 @@ nfpms:
   - id: cyoda
     package_name: cyoda
     vendor: Cyoda Platform
-    homepage: https://github.com/cyoda-platform/cyoda-go
+    homepage: https://github.com/cyoda/cyoda-go
     maintainer: Cyoda Platform <noreply@cyoda.com>
     description: Lightweight Go EDBMS — digital twin of the Cyoda platform.
     license: Apache-2.0
@@ -72,10 +72,10 @@ brews:
     # filter.
     skip_upload: auto
     repository:
-      owner: cyoda-platform
+      owner: cyoda
       name: homebrew-cyoda-go
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: https://github.com/cyoda-platform/cyoda-go
+    homepage: https://github.com/cyoda/cyoda-go
     description: Lightweight Go EDBMS — digital twin of the Cyoda platform
     license: Apache-2.0
     commit_author:
@@ -113,7 +113,7 @@ checksum:
 dockers_v2:
   - id: cyoda
     images:
-      - ghcr.io/cyoda-platform/cyoda
+      - ghcr.io/cyoda/cyoda
     tags:
       - "{{ .Version }}"
     platforms:
@@ -121,7 +121,7 @@ dockers_v2:
       - linux/arm64
     dockerfile: deploy/docker/Dockerfile
     labels:
-      org.opencontainers.image.source: https://github.com/cyoda-platform/cyoda-go
+      org.opencontainers.image.source: https://github.com/cyoda/cyoda-go
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .Commit }}"
       org.opencontainers.image.created: "{{ .Date }}"
@@ -129,7 +129,7 @@ dockers_v2:
 
   - id: cyoda-latest
     images:
-      - ghcr.io/cyoda-platform/cyoda
+      - ghcr.io/cyoda/cyoda
     tags:
       - latest
     # `:latest` tracks stable releases only — skip for prereleases.
@@ -141,7 +141,7 @@ dockers_v2:
       - linux/arm64
     dockerfile: deploy/docker/Dockerfile
     labels:
-      org.opencontainers.image.source: https://github.com/cyoda-platform/cyoda-go
+      org.opencontainers.image.source: https://github.com/cyoda/cyoda-go
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .Commit }}"
       org.opencontainers.image.created: "{{ .Date }}"
