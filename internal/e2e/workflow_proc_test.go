@@ -79,7 +79,7 @@ func TestWorkflowProc_Loopback(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "loopback-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "loopback-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "auto-promote", "next": "PREMIUM", "manual": false,
@@ -145,7 +145,7 @@ func TestWorkflowProc_CascadeDepthLimit(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "loop-wf", "initialState": "A", "active": true,
+			"version": "1.0", "name": "loop-wf", "initialState": "A", "active": true,
 			"states": {
 				"A": {"transitions": [{"name": "to-b", "next": "B", "manual": false,
 					"criterion": {"type": "function", "function": {"name": "loop-gate"}}
@@ -193,7 +193,7 @@ func TestWorkflowProc_ProcessorModifiesData(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "modify-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "modify-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "compute-total", "executionMode": "SYNC",
@@ -242,7 +242,7 @@ func TestWorkflowProc_MultipleProcessorsSameTransition(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "multi-proc-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "multi-proc-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [
@@ -282,7 +282,7 @@ func TestWorkflowProc_FullAuditTrail(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "audit-trail-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "audit-trail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "audit-proc", "executionMode": "SYNC",
@@ -386,7 +386,7 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "cbd-update-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "cbd-update-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
@@ -468,7 +468,7 @@ func TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch(t *testing.
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "cbd-ifmatch-stale-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "cbd-ifmatch-stale-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
@@ -533,7 +533,7 @@ func TestWorkflowProc_PostTxIdMatchesAuditEndpoint(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "txid-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "txid-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "finish", "next": "DONE", "manual": false}]},
@@ -605,7 +605,7 @@ func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "cbd-create-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "cbd-create-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "auto-approve", "next": "APPROVED", "manual": false,
@@ -735,7 +735,7 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "cbd-vis-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "cbd-vis-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
@@ -824,7 +824,7 @@ func TestWorkflowProc_UpdateWithoutCBD_RegressionBound(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "sync-regression-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "sync-regression-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
@@ -956,7 +956,7 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "cbd-loopback-wf", "initialState": "NONE", "active": true,
+			"version": "1.0", "name": "cbd-loopback-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":        {"transitions": [{"name": "init", "next": "PENDING_BIG", "manual": false}]},
 				"PENDING_BIG": {"transitions": [{"name": "auto-upgrade", "next": "UPGRADED", "manual": false,

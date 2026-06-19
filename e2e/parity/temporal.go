@@ -13,7 +13,7 @@ import (
 const temporalWorkflowJSON = `{
 	"importMode": "REPLACE",
 	"workflows": [{
-		"version": "1",
+		"version": "1.0",
 		"name": "temporal-workflow",
 		"initialState": "NONE",
 		"active": true,
@@ -164,7 +164,7 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 	draftWF := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1",
+			"version": "1.0",
 			"name": "draft-wf",
 			"initialState": "NONE",
 			"active": true,

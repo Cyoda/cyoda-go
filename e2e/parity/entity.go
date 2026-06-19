@@ -14,7 +14,7 @@ import (
 const simpleWorkflowJSON = `{
 	"importMode": "REPLACE",
 	"workflows": [{
-		"version": "1",
+		"version": "1.0",
 		"name": "simple-wf",
 		"initialState": "NONE",
 		"active": true,

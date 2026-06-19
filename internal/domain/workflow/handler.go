@@ -54,6 +54,16 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Schema-version gate — runs before any mutation or store access.
+	// Surfaces with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED so clients can
+	// distinguish "wrong contract version" from generic validation
+	// failures.
+	if err := validateSchemaVersions(req.Workflows); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeWorkflowSchemaVersionUnsupported, err.Error()))
+		return
+	}
+
 	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
