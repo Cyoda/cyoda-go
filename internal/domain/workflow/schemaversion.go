@@ -21,9 +21,9 @@ const CurrentSchemaVersion = "1.0"
 // supported window — when a MINOR ages out, raise MinMinor; when an
 // older MAJOR is retired, drop its range entirely.
 type SchemaRange struct {
-	Major    int
-	MinMinor int
-	MaxMinor int
+	Major    int `json:"major"`
+	MinMinor int `json:"minMinor"`
+	MaxMinor int `json:"maxMinor"`
 }
 
 // SupportedSchemaRanges is the closed set of (MAJOR, MINOR) pairs the

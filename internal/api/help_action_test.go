@@ -81,6 +81,7 @@ func TestHelpActionMirror(t *testing.T) {
 		{"/help/grpc/json", http.StatusOK, "{", "application/json"},
 		{"/help/openapi/json", http.StatusOK, "{", "application/json"},
 		{"/help/cloudevents/json", http.StatusOK, "{", "application/json"},
+		{"/help/workflows/schema-version/versions", http.StatusOK, "{", "application/json"},
 		// Equivalent with dotted separators.
 		{"/help/grpc.json", http.StatusOK, "{", "application/json"},
 		// Unknown action — falls through to topic-not-found.

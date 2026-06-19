@@ -51,6 +51,9 @@ var actionRegistry = map[string]map[string]ActionEntry{
 	"cloudevents": {
 		"json": {Handler: emitCloudEventsJSON, ContentType: "application/json"},
 	},
+	"workflows.schema-version": {
+		"versions": {Handler: emitWorkflowSchemaVersions, ContentType: "application/json"},
+	},
 }
 
 // LookupAction returns the action entry for a topic, if registered.
