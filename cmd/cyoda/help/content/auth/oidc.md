@@ -151,7 +151,26 @@ JWTs issued by the federated IdP must conform to the universal cyoda claim contr
 
 - `iss` must match per the `issuers` / discovery-document rule above.
 - `aud` must match `expectedAudiences` if set.
-- The configured `rolesClaim` (per-provider override or `CYODA_OIDC_ROLES_CLAIM`) must yield a string array of role values.
+- The configured `rolesClaim` (per-provider override or `CYODA_OIDC_ROLES_CLAIM`) is looked up as a literal **top-level** JWT claim name. The value at that key may be any of:
+  1. **JSON array of strings** — `["admin","warehouse"]` → used as-is.
+  2. **JSON object** — `{ "admin": {…}, "warehouse": {…} }` → roles are the **top-level keys** (`["admin","warehouse"]`); inner values are ignored. This is the shape Zitadel emits for `urn:zitadel:iam:org:project:roles` with `projectRoleAssertion=true`.
+  3. **String** — `"admin warehouse"` → split on whitespace per RFC 6749 §3.3 / RFC 8693 §4.2; a lone token `"admin"` yields one role.
+
+  Empty / absent / non-collection scalar (number, bool) → no roles, no error (the user is authenticated but unprivileged).
+
+  Common per-IdP values for `rolesClaim`:
+
+```text
+  IdP                              rolesClaim value
+  -------------------------------  -----------------------------------------------
+  Default (no override)            roles
+  Amazon Cognito                   cognito:groups
+  Zitadel (project-wide)           urn:zitadel:iam:org:project:roles
+  Zitadel (per-project)            urn:zitadel:iam:org:project:<projectId>:roles
+  Auth0 (namespaced custom claim)  https://your-app.example.com/roles
+```
+
+  Note: there is no path/dot-walking syntax — whatever string you configure is used as a single literal claim-key lookup against the JWT, so colons, slashes, and dots inside the value are treated as part of the key name (which is exactly what Zitadel, Cognito, and Auth0 need).
 
 Cyoda does not re-mint federated tokens — they are validated and trusted directly.
 
