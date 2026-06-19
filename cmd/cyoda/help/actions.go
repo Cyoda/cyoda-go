@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -64,12 +65,7 @@ func actionsFor(topic string) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	// insertion sort for deterministic output without importing sort
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
+	sort.Strings(out)
 	return out
 }
 
@@ -80,12 +76,7 @@ func topicsWithActions() []string {
 	for k := range actionRegistry {
 		out = append(out, k)
 	}
-	// insertion sort for deterministic output without importing sort
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
+	sort.Strings(out)
 	return out
 }
 
