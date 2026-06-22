@@ -730,6 +730,24 @@ The strict-`>` server-side partition guarantees no overlap or gap. But the clien
 - Server-side "search-with-bodyPredicate as-of T" endpoint.
 - Per-transition events (additional event type, not replacement).
 
+### Pending integration with the Connector abstraction
+
+**Status**: §3 (`EntityChangeService` gRPC stream), §3.5 (connection lifecycle), and §6 (wire protocol) describe subscriptions over a **client-connecting gRPC stream** — the same integration shape cyoda uses today for criteria evaluation and processor execution (`internal/grpc/streaming.go`).
+
+A separate design effort will introduce a **`Connector` abstraction** that unifies the integration layer for criteria evaluation, processor execution, and change-event notification. Under that abstraction, the wire shape described in §3/§6 becomes one implementation — `GRPCClientConnectingConnector` — with other connector types (e.g. serverless compute integrations, server-pushed webhooks) supporting the same subscription model via their own delivery semantics.
+
+When the Connector design lands, the following sections will be refactored:
+
+| Section | Refactor |
+|---|---|
+| §3 | "gRPC stream — `EntityChangeService`" reframed as "Connector — `GRPCClientConnectingConnector` implementation". |
+| §3.5 | Connection lifecycle becomes connector-type-aware. Generic semantics (cursor, ack, generation fencing) stay in the subscription protocol; transport-specific knobs (gRPC keepalive, session timeout) move to the connector. |
+| §6 | Factored into "subscription protocol over a connector" (generic — CloudEvent message types, cursor semantics, ack/commit) + "gRPC connector wire details" (max-message-size, base64 cursor encoding on the wire). |
+
+The transport-independent surface — §1 vocabulary, §2 subscription model, §4 emission, §4.1 enablement, §4.2 filtering, §4.3 cardinality, §4.4 cassandra wire-format, §5 SPI ChangeFeed, §7 backpressure, §8 auth, §9 failure modes — is unaffected by the Connector abstraction and remains valid as-is.
+
+This is documented as a forward-pointer; the Connector work and its retrofit into this spec are separate design tracks.
+
 ## §13. Configuration env vars
 
 Per Gate 4: each env-var-introducing PR updates **its slice** of `cmd/cyoda/help/content/config/changefeed.md` + `README.md` + `DefaultConfig()` **in the same change**. The PR plan in `§Workflow` is restructured to enforce this (each PR carries its own env-var docs slice).
