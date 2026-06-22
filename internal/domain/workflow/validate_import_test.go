@@ -23,7 +23,7 @@ import (
 
 func TestValidateImportRequest_RejectsEmptyWorkflowName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
@@ -43,7 +43,7 @@ func TestValidateImportRequest_RejectsEmptyWorkflowName(t *testing.T) {
 
 func TestValidateImportRequest_RejectsDuplicateWorkflowNamesInRequest(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "dup-wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "dup-wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
@@ -64,7 +64,7 @@ func TestValidateImportRequest_RejectsDuplicateWorkflowNamesInRequest(t *testing
 
 func TestValidateImportRequest_RejectsEmptyInitialState(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-empty-initial", InitialState: "", Active: true,
+		Version: "1.1", Name: "wf-empty-initial", InitialState: "", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
@@ -83,7 +83,7 @@ func TestValidateImportRequest_RejectsEmptyInitialState(t *testing.T) {
 
 func TestValidateImportRequest_RejectsInitialStateNotInStates(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-bad-initial", InitialState: "MISSING", Active: true,
+		Version: "1.1", Name: "wf-bad-initial", InitialState: "MISSING", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 		},
@@ -107,7 +107,7 @@ func TestValidateImportRequest_RejectsInitialStateNotInStates(t *testing.T) {
 
 func TestValidateImportRequest_RejectsTransitionNextNotInStates(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-bad-next", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-bad-next", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "NOWHERE", Manual: true},
@@ -136,7 +136,7 @@ func TestValidateImportRequest_RejectsTransitionNextNotInStates(t *testing.T) {
 
 func TestValidateImportRequest_RejectsDuplicateTransitionNameWithinState(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-dup-trans", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-dup-trans", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S2", Manual: true},
@@ -165,7 +165,7 @@ func TestValidateImportRequest_RejectsDuplicateTransitionNameWithinState(t *test
 // flags duplicates within a single state).
 func TestValidateImportRequest_AcceptsSameTransitionNameAcrossStates(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-cross-state-name", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-cross-state-name", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S2", Manual: true},
@@ -185,7 +185,7 @@ func TestValidateImportRequest_AcceptsSameTransitionNameAcrossStates(t *testing.
 
 func TestValidateImportRequest_RejectsUnknownExecutionMode(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-bad-mode", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-bad-mode", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -213,7 +213,7 @@ func TestValidateImportRequest_RejectsUnknownExecutionMode(t *testing.T) {
 // Empty ExecutionMode must remain valid — engine treats "" as SYNC.
 func TestValidateImportRequest_AcceptsEmptyExecutionMode(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-empty-mode", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-empty-mode", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -244,7 +244,7 @@ func TestValidateImportRequest_RejectsEmptyStateMapKey(t *testing.T) {
 	// transition to next="" and re-create the silent-park behaviour
 	// H6.b was supposed to close.
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-empty-state-key", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-empty-state-key", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 			"":   {},
@@ -266,7 +266,7 @@ func TestValidateImportRequest_RejectsEmptyStateMapKey(t *testing.T) {
 
 func TestValidateImportRequest_RejectsEmptyTransitionName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-empty-trans-name", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-empty-trans-name", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "", Next: "S2", Manual: true},
@@ -290,7 +290,7 @@ func TestValidateImportRequest_RejectsEmptyTransitionName(t *testing.T) {
 
 func TestValidateImportRequest_RejectsEmptyProcessorName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf-empty-proc-name", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf-empty-proc-name", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -324,7 +324,7 @@ func TestValidateImportRequest_RejectsEmptyProcessorName(t *testing.T) {
 
 func TestValidateImportRequest_RejectsOverlongWorkflowName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: strings.Repeat("x", 257), InitialState: "S1", Active: true,
+		Version: "1.1", Name: strings.Repeat("x", 257), InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{"S1": {}},
 	}
 	err := validateImportRequest([]spi.WorkflowDefinition{wf})
@@ -338,7 +338,7 @@ func TestValidateImportRequest_RejectsOverlongWorkflowName(t *testing.T) {
 
 func TestValidateImportRequest_AcceptsMaxLengthWorkflowName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: strings.Repeat("x", 256), InitialState: "S1", Active: true,
+		Version: "1.1", Name: strings.Repeat("x", 256), InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{"S1": {}},
 	}
 	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
@@ -349,7 +349,7 @@ func TestValidateImportRequest_AcceptsMaxLengthWorkflowName(t *testing.T) {
 func TestValidateImportRequest_RejectsOverlongStateName(t *testing.T) {
 	long := strings.Repeat("s", 257)
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {},
 			long: {},
@@ -366,7 +366,7 @@ func TestValidateImportRequest_RejectsOverlongStateName(t *testing.T) {
 
 func TestValidateImportRequest_RejectsOverlongTransitionName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: strings.Repeat("t", 257), Next: "S2", Manual: true},
@@ -385,7 +385,7 @@ func TestValidateImportRequest_RejectsOverlongTransitionName(t *testing.T) {
 
 func TestValidateImportRequest_RejectsOverlongProcessorName(t *testing.T) {
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -642,7 +642,7 @@ func TestValidateImportRequest_AcceptsAllKnownExecutionModes(t *testing.T) {
 	} {
 		t.Run(mode, func(t *testing.T) {
 			wf := spi.WorkflowDefinition{
-				Version: "1.0", Name: "wf-" + mode, InitialState: "S1", Active: true,
+				Version: "1.1", Name: "wf-" + mode, InitialState: "S1", Active: true,
 				States: map[string]spi.StateDefinition{
 					"S1": {Transitions: []spi.TransitionDefinition{
 						{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{

@@ -88,7 +88,7 @@ func trivialModelWF() string {
 	return `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "trivial-wf", "initialState": "CREATED", "active": true,
+			"version": "1.1", "name": "trivial-wf", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {}
 			}
@@ -428,7 +428,7 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "upd-coll-cbd-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "upd-coll-cbd-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,

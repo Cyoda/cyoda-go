@@ -42,7 +42,7 @@ func setupSearchModel(t *testing.T, model string) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "search-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "search-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},

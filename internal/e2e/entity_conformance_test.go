@@ -184,7 +184,7 @@ func TestUpdateSingle_EntityIdsIsArrayOfStrings(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "ids-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "ids-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "approve", "next": "DONE", "manual": true}]},
 				"DONE": {}

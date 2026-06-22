@@ -258,7 +258,7 @@ func RunExternalAPI_12_09_GetModelAfterDelete(t *testing.T, fixture parity.Backe
 func RunExternalAPI_12_10_ImportWorkflowOnUnknownModel(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
-	body := `{"workflows":[{"version":"1.0","name":"w","initialState":"s","states":{"s":{"transitions":[]}}}]}`
+	body := `{"workflows":[{"version":"1.1","name":"w","initialState":"s","states":{"s":{"transitions":[]}}}]}`
 	status, respBody, err := d.ImportWorkflowRaw("unknownModel", 1, body)
 	if err != nil {
 		t.Fatalf("ImportWorkflowRaw: %v", err)

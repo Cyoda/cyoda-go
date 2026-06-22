@@ -7,15 +7,16 @@ import (
 	"testing"
 )
 
-// TestWorkflowSchemaVersion_ImportAccepts10 — happy path: a "1.0"
-// workflow imports successfully.
-func TestWorkflowSchemaVersion_ImportAccepts10(t *testing.T) {
+// TestWorkflowSchemaVersion_ImportAcceptsCurrent — happy path: a
+// workflow stamped with the current supported MINOR imports
+// successfully. v0.8.0 ships "1.1".
+func TestWorkflowSchemaVersion_ImportAcceptsCurrent(t *testing.T) {
 	const entity = "wf-schema-accept"
 	importModelE2E(t, entity, 1)
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "wf-1",
 			"initialState": "S1",
 			"active": true,
@@ -66,6 +67,47 @@ func TestWorkflowSchemaVersion_ImportRejectsMajorUnsupported(t *testing.T) {
 	}
 }
 
+// TestWorkflowSchemaVersion_ImportRejectsRetiredMinor — v0.8.0 retired
+// the "1.0" MINOR that shipped on release/v0.7.x. Payloads stamped
+// "1.0" are rejected with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED rather
+// than silently degrading to a VALIDATION_FAILED on whichever stricter
+// rule the workflow would fall foul of. This guards against
+// regressing the diagnosis when 1.0 sneaks back into
+// SupportedSchemaRanges.
+func TestWorkflowSchemaVersion_ImportRejectsRetiredMinor(t *testing.T) {
+	const entity = "wf-schema-retired-minor"
+	importModelE2E(t, entity, 1)
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.0",
+			"name": "wf-retired",
+			"initialState": "S1",
+			"active": true,
+			"states": {"S1": {}}
+		}]
+	}`
+	status, respBody := importWorkflowE2E(t, entity, 1, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("import status = %d; want 400; body: %s", status, respBody)
+	}
+	var errBody struct {
+		Detail     string `json:"detail"`
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(respBody), &errBody); err != nil {
+		t.Fatalf("decode error body: %v; raw: %s", err, respBody)
+	}
+	if errBody.Properties.ErrorCode != "WORKFLOW_SCHEMA_VERSION_UNSUPPORTED" {
+		t.Fatalf("errorCode = %q; want WORKFLOW_SCHEMA_VERSION_UNSUPPORTED (got VALIDATION_FAILED would mean 1.0 sneaked back into the supported set); body: %s", errBody.Properties.ErrorCode, respBody)
+	}
+	if !strings.Contains(errBody.Detail, "wf-retired") {
+		t.Fatalf("detail %q does not name the offending workflow", errBody.Detail)
+	}
+}
+
 // TestWorkflowSchemaVersion_ImportRejectsMalformed — a "1.0.0"
 // workflow is rejected with a message pointing at MAJOR.MINOR.
 func TestWorkflowSchemaVersion_ImportRejectsMalformed(t *testing.T) {
@@ -101,7 +143,7 @@ func TestWorkflowSchemaVersion_ExportStampsCurrent(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "wf-export",
 			"initialState": "S1",
 			"active": true,
@@ -124,8 +166,8 @@ func TestWorkflowSchemaVersion_ExportStampsCurrent(t *testing.T) {
 		if !ok {
 			t.Fatalf("workflow[%d] not a map: %T", i, raw)
 		}
-		if m["version"] != "1.0" {
-			t.Fatalf("workflow[%d] version = %v; want \"1.0\"", i, m["version"])
+		if m["version"] != "1.1" {
+			t.Fatalf("workflow[%d] version = %v; want \"1.1\"", i, m["version"])
 		}
 	}
 }
@@ -147,15 +189,15 @@ func TestWorkflowSchemaVersion_HelpVersionsAction(t *testing.T) {
 	if err := json.Unmarshal([]byte(respBody), &got); err != nil {
 		t.Fatalf("decode: %v; raw: %s", err, respBody)
 	}
-	if got.Current != "1.0" {
-		t.Fatalf("current = %q; want 1.0", got.Current)
+	if got.Current != "1.1" {
+		t.Fatalf("current = %q; want 1.1", got.Current)
 	}
 	if len(got.Supported) != 1 {
 		t.Fatalf("supported length = %d; want 1; got %+v", len(got.Supported), got.Supported)
 	}
 	s := got.Supported[0]
-	if s["major"] != 1 || s["minMinor"] != 0 || s["maxMinor"] != 0 {
-		t.Fatalf("supported[0] = %+v; want {major:1, minMinor:0, maxMinor:0}", s)
+	if s["major"] != 1 || s["minMinor"] != 1 || s["maxMinor"] != 1 {
+		t.Fatalf("supported[0] = %+v; want {major:1, minMinor:1, maxMinor:1}", s)
 	}
 }
 

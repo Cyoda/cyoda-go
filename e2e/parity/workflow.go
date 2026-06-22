@@ -11,7 +11,7 @@ const workflowRoundTripPayload = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "round-trip-wf",
 			"initialState": "NONE",
 			"active": true,

@@ -36,7 +36,7 @@ func RunWorkflowProcessorChainOnCreation(t *testing.T, fixture BackendFixture) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "proc-chain-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "proc-chain-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
@@ -82,7 +82,7 @@ func RunWorkflowCriteriaMatch(t *testing.T, fixture BackendFixture) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "criteria-match-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "criteria-match-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "auto-approve", "next": "APPROVED", "manual": false,
@@ -122,7 +122,7 @@ func RunWorkflowCriteriaNoMatch(t *testing.T, fixture BackendFixture) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "criteria-nomatch-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "criteria-nomatch-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "auto-approve", "next": "APPROVED", "manual": false,
@@ -163,7 +163,7 @@ func RunWorkflowMultiStateCascade(t *testing.T, fixture BackendFixture) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "cascade-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "cascade-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "enrich", "next": "ENRICHED", "manual": false,
@@ -218,7 +218,7 @@ func RunWorkflowManualTransition(t *testing.T, fixture BackendFixture) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "manual-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "manual-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,

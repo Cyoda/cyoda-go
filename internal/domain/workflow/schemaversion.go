@@ -14,7 +14,19 @@ import (
 // CurrentSchemaVersion is stamped on every exported workflow. Bump
 // only per docs/workflow-schema-versioning.md. MUST be inside one of
 // SupportedSchemaRanges; schemaversion_test.go asserts this.
-const CurrentSchemaVersion = "1.0"
+//
+// 1.0 → 1.1 in v0.8.0: the import contract tightened beyond what
+// release/v0.7.x's 1.0 accepted (strict-decoder #264, structural
+// validation #255, active semantics #256, asyncResult/crossover
+// rejection #261, retryPolicy enum #262, scheduled-transition shape).
+// Workflows authored against 1.0 may be rejected by v0.8.0's stricter
+// checks even though their MAJOR is unchanged; treating that as a
+// MINOR-additions story would understate the surface change. We
+// retire 1.0 from SupportedSchemaRanges in this release rather than
+// maintain dual-shape acceptance — v0.7.x clients sending "1.0" are
+// rejected with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED so the diagnosis
+// is explicit. See docs/workflow-schema-versioning.md §"1.0 → 1.1".
+const CurrentSchemaVersion = "1.1"
 
 // SchemaRange is a closed integer interval [MinMinor..MaxMinor] on
 // the MINOR axis of a given MAJOR. A range models a single contiguous
@@ -35,7 +47,7 @@ type SchemaRange struct {
 // exercise alternative range configurations without changing
 // production defaults.
 var SupportedSchemaRanges = []SchemaRange{
-	{Major: 1, MinMinor: 0, MaxMinor: 0},
+	{Major: 1, MinMinor: 1, MaxMinor: 1},
 }
 
 // Sentinel errors returned by Supports. Callers use errors.Is to

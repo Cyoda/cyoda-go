@@ -429,7 +429,7 @@ func TestAuditWithStateMachineEvents(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "audit-sm-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -493,7 +493,7 @@ func TestAuditFilterStateMachineOnly(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "sm-only-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -532,7 +532,7 @@ func TestAuditFilterEntityChangeOnly(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "ec-only-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -596,7 +596,7 @@ func TestGetStateMachineFinishedEvent_Found(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "finish-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -658,7 +658,7 @@ func TestGetStateMachineFinishedEvent_NoFinishedEvent(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "no-finish-flow",
 			"initialState": "INITIAL",
 			"active": true,

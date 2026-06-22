@@ -30,7 +30,7 @@ func TestScenarioAutoCascadeChain(t *testing.T) {
 
 	// INITIAL ->(auto)-> STEP1 ->(auto)-> STEP2 ->(auto)-> FINAL
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CascadeChainWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "CascadeChainWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_STEP1", Next: "STEP1", Manual: false},
@@ -89,7 +89,7 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 	//   - RETRY -> PROCESSING (manual, loopback)
 	//   - COMPLETE ->(auto, criterion: $.status == "done")-> COMPLETED
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "LoopbackExitWF", InitialState: "PROCESSING", Active: true,
+		Version: "1.1", Name: "LoopbackExitWF", InitialState: "PROCESSING", Active: true,
 		States: map[string]spi.StateDefinition{
 			"PROCESSING": {Transitions: []spi.TransitionDefinition{
 				{Name: "COMPLETE", Next: "COMPLETED", Manual: false,
@@ -149,7 +149,7 @@ func TestScenarioStuckState(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "stuck", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "StuckWF", InitialState: "STUCK", Active: true,
+		Version: "1.1", Name: "StuckWF", InitialState: "STUCK", Active: true,
 		States: map[string]spi.StateDefinition{
 			"STUCK": {Transitions: []spi.TransitionDefinition{
 				{Name: "UNSTICK", Next: "FREE", Manual: true},
@@ -180,7 +180,7 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "priority-route", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "PriorityWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "PriorityWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "FAST", Next: "FAST_TRACK", Manual: false,
@@ -253,7 +253,7 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 func TestScenarioStaticLoopDetection(t *testing.T) {
 	// A -> (auto, no criterion) -> B -> (auto, no criterion) -> A
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "LoopWF", InitialState: "A", Active: true,
+		Version: "1.1", Name: "LoopWF", InitialState: "A", Active: true,
 		States: map[string]spi.StateDefinition{
 			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: false},
@@ -276,7 +276,7 @@ func TestScenarioStaticLoopDetection(t *testing.T) {
 func TestScenarioStaticLoopDetectionSelfLoop(t *testing.T) {
 	// A -> (auto, no criterion) -> A (self-loop)
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "SelfLoopWF", InitialState: "A", Active: true,
+		Version: "1.1", Name: "SelfLoopWF", InitialState: "A", Active: true,
 		States: map[string]spi.StateDefinition{
 			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_A", Next: "A", Manual: false},
@@ -297,7 +297,7 @@ func TestScenarioStaticValidationPassesGuardedCycle(t *testing.T) {
 	// A -> (auto, WITH criterion) -> B -> (auto, WITH criterion) -> A
 	// This should pass static validation because the criteria may break the cycle.
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "GuardedCycleWF", InitialState: "A", Active: true,
+		Version: "1.1", Name: "GuardedCycleWF", InitialState: "A", Active: true,
 		States: map[string]spi.StateDefinition{
 			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: false,
@@ -320,7 +320,7 @@ func TestScenarioStaticValidationPassesManualCycle(t *testing.T) {
 	// A -> (manual) -> B -> (manual) -> A
 	// Manual transitions never form infinite automated loops.
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ManualCycleWF", InitialState: "A", Active: true,
+		Version: "1.1", Name: "ManualCycleWF", InitialState: "A", Active: true,
 		States: map[string]spi.StateDefinition{
 			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: true},
@@ -355,7 +355,7 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 	alwaysTrue := lifecycleCriterion("state", "NOT_NULL", "")
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "DynamicLoopWF", InitialState: "A", Active: true,
+		Version: "1.1", Name: "DynamicLoopWF", InitialState: "A", Active: true,
 		States: map[string]spi.StateDefinition{
 			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: false, Criterion: alwaysTrue},
@@ -408,7 +408,7 @@ func TestScenarioManualTriggersAutoCascade(t *testing.T) {
 	// INITIAL -> PROCESS (manual)
 	// PROCESS ->(auto)-> DONE
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ManualCascadeWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ManualCascadeWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "PROCESS", Manual: true},
@@ -456,7 +456,7 @@ func TestScenarioLoopbackReEvaluates(t *testing.T) {
 
 	// WAITING: auto transition with criterion $.ready == true -> DONE
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "LoopbackReEvalWF", InitialState: "WAITING", Active: true,
+		Version: "1.1", Name: "LoopbackReEvalWF", InitialState: "WAITING", Active: true,
 		States: map[string]spi.StateDefinition{
 			"WAITING": {Transitions: []spi.TransitionDefinition{
 				{Name: "AUTO_DONE", Next: "DONE", Manual: false,
@@ -520,7 +520,7 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "loop-wf",
 			"initialState": "A",
 			"active": true,
@@ -573,7 +573,7 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 	// startNewTxOnDispatch:true on a SYNC processor must be rejected at registration.
 	tt := true
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "test-wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -605,7 +605,7 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *testing.T) {
 	tt := true
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "test-wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -625,7 +625,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
 	// Default (nil) must not be rejected. Explicit false must not be rejected.
 	ff := false
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "test-wf", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "test-wf", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
@@ -678,7 +678,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "snttd-wf",
 			"initialState": "S1",
 			"active": true,

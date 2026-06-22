@@ -73,7 +73,7 @@ func TestCreateCollection_InitialStateDerivation(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "initstate-wf", "initialState": "PENDING", "active": true,
+			"version": "1.1", "name": "initstate-wf", "initialState": "PENDING", "active": true,
 			"states": {
 				"PENDING": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
 				"APPROVED": {}
@@ -116,7 +116,7 @@ func TestCreateCollection_AuditEventsEmitted(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "audit-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "audit-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -172,7 +172,7 @@ func TestCreateCollection_AutomatedCascadeFires(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "cascade-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "cascade-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "READY", "manual": false}]},
 				"READY": {"transitions": [{"name": "auto", "next": "DONE", "manual": false}]},
@@ -221,7 +221,7 @@ func TestCreateCollection_FailureRollsBackBatch(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "fail-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -283,7 +283,7 @@ func TestCreateCollection_TenantScoped(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "tenant-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "tenant-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}

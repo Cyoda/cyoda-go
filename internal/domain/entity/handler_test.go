@@ -1670,7 +1670,7 @@ func TestCreateWithWorkflow(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "create-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -1714,7 +1714,7 @@ func TestManualTransition(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "approval-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -1766,7 +1766,7 @@ func TestLoopbackTransition(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "loopback-flow",
 			"initialState": "INITIAL",
 			"active": true,
@@ -1817,7 +1817,7 @@ func TestTransitionNotFound(t *testing.T) {
 	wfBody := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "simple-flow",
 			"initialState": "STABLE",
 			"active": true,

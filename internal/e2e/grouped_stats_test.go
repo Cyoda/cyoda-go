@@ -25,7 +25,7 @@ import (
 const statsWorkflowJSON = `{
 	"importMode": "REPLACE",
 	"workflows": [{
-		"version": "1.0", "name": "stats-wf", "initialState": "NONE", "active": true,
+		"version": "1.1", "name": "stats-wf", "initialState": "NONE", "active": true,
 		"states": {
 			"NONE":     {"transitions": [{"name": "init",    "next": "CREATED",  "manual": false}]},
 			"CREATED":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},

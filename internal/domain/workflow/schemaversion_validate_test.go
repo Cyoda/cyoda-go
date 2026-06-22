@@ -78,12 +78,12 @@ func TestValidateSchemaVersions_RejectsMinorTooOld(t *testing.T) {
 	t.Cleanup(func() { SupportedSchemaRanges = orig })
 
 	wfs := []spi.WorkflowDefinition{
-		{Name: "wf-aged-out", Version: "1.0", InitialState: "S",
+		{Name: "wf-aged-out", Version: "1.1", InitialState: "S",
 			States: map[string]spi.StateDefinition{"S": {}}},
 	}
 	err := validateSchemaVersions(wfs)
 	if err == nil {
-		t.Fatalf("validateSchemaVersions(\"1.0\") with MinMinor=2 = nil; want error")
+		t.Fatalf("validateSchemaVersions(\"1.1\") with MinMinor=2 = nil; want error")
 	}
 	if !errors.Is(err, ErrSchemaMinorTooOld) {
 		t.Fatalf("error %v is not ErrSchemaMinorTooOld", err)
@@ -96,7 +96,7 @@ func TestValidateSchemaVersions_RejectsMinorTooOld(t *testing.T) {
 func TestValidateSchemaVersions_NamesOffendingWorkflowInMixedList(t *testing.T) {
 	t.Parallel()
 	wfs := []spi.WorkflowDefinition{
-		{Name: "good-wf", Version: "1.0", InitialState: "S",
+		{Name: "good-wf", Version: "1.1", InitialState: "S",
 			States: map[string]spi.StateDefinition{"S": {}}},
 		{Name: "bad-wf", Version: "2.0", InitialState: "S",
 			States: map[string]spi.StateDefinition{"S": {}}},

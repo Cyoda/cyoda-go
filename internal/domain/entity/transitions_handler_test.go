@@ -101,7 +101,7 @@ func TestGetTransitions_WithCustomWorkflow(t *testing.T) {
 	}
 	err = wfStore.Save(ctx, modelRef, []spi.WorkflowDefinition{
 		{
-			Version:      "1.0",
+			Version:      "1.1",
 			Name:         "custom-wf",
 			InitialState: "NONE",
 			Active:       true,
@@ -168,7 +168,7 @@ func TestGetTransitions_TerminalState(t *testing.T) {
 	}
 	err = wfStore.Save(ctx, modelRef, []spi.WorkflowDefinition{
 		{
-			Version:      "1.0",
+			Version:      "1.1",
 			Name:         "terminal-wf",
 			InitialState: "NONE",
 			Active:       true,
@@ -274,7 +274,7 @@ func TestFetchTransitions_PlatformLibrary(t *testing.T) {
 	}
 	err = wfStore.Save(ctx, modelRef, []spi.WorkflowDefinition{
 		{
-			Version:      "1.0",
+			Version:      "1.1",
 			Name:         "fetch-wf",
 			InitialState: "NONE",
 			Active:       true,

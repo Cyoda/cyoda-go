@@ -18,7 +18,7 @@ func TestInternalizedRejection_AuditEvents_ManualTransition(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "audit-manual", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AuditManualWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AuditManualWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "FIRE", Next: "DONE", Manual: true,
@@ -108,7 +108,7 @@ func TestInternalizedRejection_AuditEvents_CascadedTransition(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "audit-cascade", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AuditCascadeWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AuditCascadeWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "AUTO", Next: "DONE", Manual: false,

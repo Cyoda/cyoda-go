@@ -9027,11 +9027,11 @@ components:
           pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           description: |
             Workflow-import contract version in semver MAJOR.MINOR form
-            (e.g. `1.0`). Identifies the wire-format contract this
-            workflow was authored against; independent of the cyoda-go
-            binary version and the OpenAPI document version. The server
-            validates this strictly and rejects unsupported values with
-            `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (400). The
+            (e.g. `1.1` on cyoda-go v0.8.0). Identifies the wire-format
+            contract this workflow was authored against; independent of
+            the cyoda-go binary version and the OpenAPI document version.
+            The server validates this strictly and rejects unsupported
+            values with `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (400). The
             authoritative list of supported values is published at
             `GET /help/workflows/schema-version/versions` (and the
             equivalent CLI `cyoda help workflows schema-version

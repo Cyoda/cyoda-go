@@ -44,7 +44,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.0",
+  "version": "1.1",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -400,7 +400,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.0",
+        "version": "1.1",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -452,7 +452,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.0",
+        "version": "1.1",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,
