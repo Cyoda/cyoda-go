@@ -35,8 +35,11 @@ jobs:
       - name: Run tests
         run: go test ./... -v
 
+      # Race detector. Scoped via `make race` to exclude `internal/e2e` —
+      # see Makefile and `.claude/rules/race-testing.md` for rationale.
+      # The same target runs locally pre-PR, so local and CI agree.
       - name: Run tests with race detector
-        run: go test -race ./...
+        run: make race
 
       # Plugin submodules each have their own go.mod, so `./...` from the root
       # does not recurse into them. Run tests inside each module so CI does

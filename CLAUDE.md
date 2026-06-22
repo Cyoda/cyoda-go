@@ -36,8 +36,10 @@ Run `go test ./... -v` and confirm green (this includes E2E tests). Run `go vet 
 E2E tests spin up their own PostgreSQL + HTTP server automatically — just run them.
 Do not claim work is done if any test — unit, integration, or E2E — is failing.
 
-Race detector (`go test -race ./...`) is a one-shot sanity check before PR creation,
-not a per-step gate — see `.claude/rules/race-testing.md`.
+Race detector (`make race`) is a one-shot sanity check before PR creation,
+not a per-step gate — see `.claude/rules/race-testing.md`. The target excludes
+`internal/e2e` from the race scope (timeout-driven carve-out, rationale in the
+rule) and CI runs the identical target, so local and CI stay in lock-step.
 
 ### Gate 6: Continuous improvement — resolve, don't defer
 We strive for continual improvement of code quality and progressively reduce
@@ -110,7 +112,7 @@ aggregator targets below when you want coverage across the whole repo.
 - Test (root + plugins, short): `make test-short-all`
 - Test (E2E only): `go test ./internal/e2e/... -v`
 - Coverage (root module): `go test -coverprofile=coverage.out ./...` — run inside each `plugins/*` for per-plugin coverage
-- Race detector (root module): `go test -race ./...`
+- Race detector (root module, CI-parity scope): `make race` — runs `go test -race -timeout=15m` on every package except `internal/e2e`; same scope CI runs. Use `go test -race -timeout=20m ./internal/e2e/...` separately if you need race coverage on E2E.
 - Build: `go build -o bin/cyoda ./cmd/cyoda`
 - Tidy: `go mod tidy`
 - Vet (root module): `go vet ./...` — the `per-module-hygiene` CI job vets each plugin separately
