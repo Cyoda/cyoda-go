@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all clean docker-build docker-push todos check-spi-pin-sync
+.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all race clean docker-build docker-push todos check-spi-pin-sync
 
 # Plugin submodules: each has its own go.mod, so `go test ./...` from the
 # repo root does not recurse into them. The aggregator targets below close
@@ -69,6 +69,17 @@ test-short-all:        ## Run root + every plugin submodule with -short (quick c
 	  echo "==> go test -short ./... in $$m"; \
 	  (cd $$m && go test -short ./... -v) || exit $$?; \
 	done
+
+# Race detector — run once before opening a PR, not on every iteration.
+# Race instrumentation makes tests 2-10× slower (see .claude/rules/race-testing.md).
+# `internal/e2e` is excluded because under race it exceeds the default per-package
+# 10m timeout; the production paths it covers (engine, cluster, store mutexes) are
+# also exercised by the workflow/cluster/plugin unit tests below — those keep race
+# coverage. CI invokes this same target so local and CI stay in lock-step.
+race:                  ## Run race detector on race-sensitive packages (CI parity; excludes internal/e2e)
+	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$'); \
+	echo "race-testing $$(echo "$$pkgs" | wc -l | tr -d ' ') packages"; \
+	go test -race -timeout=15m $$pkgs
 
 dev-test: dev-up       ## Run all tests against local postgres
 	set -a && . .env.dev && set +a && go test ./... -v -count=1

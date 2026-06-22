@@ -67,7 +67,7 @@ func TestImport_Success_EmitsSlogInfo(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "order-flow",
 				"desc": "primary order lifecycle",
 				"initialState": "NEW",
@@ -75,7 +75,7 @@ func TestImport_Success_EmitsSlogInfo(t *testing.T) {
 				"states": {"NEW": {"transitions": []}}
 			},
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "audit-flow",
 				"desc": "audit-only mirror of order-flow",
 				"initialState": "NEW",
@@ -179,7 +179,7 @@ func TestImport_MergeWithExisting_LogsIncomingNotMerged(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0", "name": "seed-existing", "desc": "preexisting",
+				"version": "1.1", "name": "seed-existing", "desc": "preexisting",
 				"initialState": "S1", "active": true,
 				"states": {"S1": {"transitions": []}}
 			}
@@ -199,7 +199,7 @@ func TestImport_MergeWithExisting_LogsIncomingNotMerged(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0", "name": "incoming-new", "desc": "added this call",
+				"version": "1.1", "name": "incoming-new", "desc": "added this call",
 				"initialState": "S1", "active": true,
 				"states": {"S1": {"transitions": []}}
 			}
@@ -254,7 +254,7 @@ func TestImport_LongDescription_TruncatedInLog(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0", "name": "long-desc-flow",
+				"version": "1.1", "name": "long-desc-flow",
 				"desc": "` + longDesc + `",
 				"initialState": "S1", "active": true,
 				"states": {"S1": {"transitions": []}}
@@ -344,7 +344,7 @@ func cyclicWorkflowImportBody(allowCycles bool) string {
 		"importMode": "REPLACE",
 		` + allow + `
 		"workflows": [{
-			"version": "1.0",
+			"version": "1.1",
 			"name": "cyclic",
 			"initialState": "S1",
 			"active": true,

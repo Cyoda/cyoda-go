@@ -96,7 +96,7 @@ func TestImportAndExport(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "order-flow",
 				"initialState": "NEW",
 				"active": true,
@@ -157,7 +157,7 @@ func TestImportMerge(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-a",
 				"initialState": "S1",
 				"active": true,
@@ -176,7 +176,7 @@ func TestImportMerge(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-b",
 				"initialState": "S2",
 				"active": true,
@@ -212,7 +212,7 @@ func TestImportReplace(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-a",
 				"initialState": "S1",
 				"active": true,
@@ -228,7 +228,7 @@ func TestImportReplace(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-b",
 				"initialState": "S2",
 				"active": true,
@@ -260,7 +260,7 @@ func TestImportActivate(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-a",
 				"initialState": "S1",
 				"active": true,
@@ -276,7 +276,7 @@ func TestImportActivate(t *testing.T) {
 		"importMode": "ACTIVATE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-b",
 				"initialState": "S2",
 				"active": true,
@@ -352,7 +352,7 @@ func TestImportFullWorkflow(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "payment-request-flow",
 				"initialState": "PENDING_VALIDATION",
 				"active": true,
@@ -479,7 +479,7 @@ func TestImport_UnknownModel_Returns404(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "ghost-flow",
 				"initialState": "S1",
 				"active": true,
@@ -515,36 +515,36 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 	}{
 		{
 			name: "H6.c empty workflow name",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "name",
 		},
 		{
 			name: "H6.d duplicate workflow names in request",
 			body: `{"importMode":"REPLACE","workflows":[
-				{"version":"1","name":"dup","initialState":"S1","active":true,"states":{"S1":{}}},
-				{"version":"1","name":"dup","initialState":"S2","active":true,"states":{"S2":{}}}
+				{"version":"1.1","name":"dup","initialState":"S1","active":true,"states":{"S1":{}}},
+				{"version":"1.1","name":"dup","initialState":"S2","active":true,"states":{"S2":{}}}
 			]}`,
 			mustContain: "duplicate",
 		},
 		{
 			name: "H6.a empty initialState",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"","active":true,"states":{"S1":{}}}]}`,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "initialState",
 		},
 		{
 			name: "H6.a initialState not in States",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"MISSING","active":true,"states":{"S1":{}}}]}`,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"MISSING","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "MISSING",
 		},
 		{
 			name: "H6.b transition.next not in States",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"S1","active":true,
 				"states":{"S1":{"transitions":[{"name":"go","next":"NOWHERE","manual":true}]}}}]}`,
 			mustContain: "NOWHERE",
 		},
 		{
 			name: "H6.e duplicate transition name in state",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"S1","active":true,
 				"states":{
 					"S1":{"transitions":[{"name":"go","next":"S2","manual":true},{"name":"go","next":"S3","manual":true}]},
 					"S2":{},"S3":{}
@@ -553,7 +553,7 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 		},
 		{
 			name: "H4 unknown ExecutionMode",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"S1","active":true,
 				"states":{"S1":{"transitions":[{"name":"t","next":"S2","manual":true,"processors":[
 					{"type":"externalized","name":"p","executionMode":"ASYN_SAME_TX"}
 				]}]}, "S2":{}}}]}`,
@@ -562,19 +562,19 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 		// Security-audit follow-ups M-1 + L-1 + L-2.
 		{
 			name: "M-1 empty state-map key",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"S1","active":true,
 				"states":{"S1":{},"":{}}}]}`,
 			mustContain: "empty state name",
 		},
 		{
 			name: "L-1 empty transition name",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"S1","active":true,
 				"states":{"S1":{"transitions":[{"name":"","next":"S2","manual":true}]}, "S2":{}}}]}`,
 			mustContain: "empty transition name",
 		},
 		{
 			name: "L-1 empty processor name",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1","name":"wf","initialState":"S1","active":true,
+			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"S1","active":true,
 				"states":{"S1":{"transitions":[{"name":"t","next":"S2","manual":true,"processors":[
 					{"type":"externalized","name":"","executionMode":"SYNC"}
 				]}]}, "S2":{}}}]}`,
@@ -582,7 +582,7 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 		},
 		{
 			name:        "L-2 workflow name exceeds 256 chars",
-			body:        `{"importMode":"REPLACE","workflows":[{"version":"1","name":"` + strings.Repeat("x", 257) + `","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
+			body:        `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"` + strings.Repeat("x", 257) + `","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "256-char limit",
 		},
 	}
@@ -613,7 +613,7 @@ func TestImportDefaultMode(t *testing.T) {
 	body := `{
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf-default",
 				"initialState": "S1",
 				"active": true,
@@ -652,7 +652,7 @@ func TestImport_LowercaseImportMode(t *testing.T) {
 				"importMode": "` + mode + `",
 				"workflows": [
 					{
-						"version": "1.0",
+						"version": "1.1",
 						"name": "case-flow",
 						"initialState": "S1",
 						"active": true,
@@ -682,7 +682,7 @@ func TestImport_EmptyImportMode_DefaultsToMerge(t *testing.T) {
 		"importMode": "",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "empty-mode-flow",
 				"initialState": "S1",
 				"active": true,
@@ -715,7 +715,7 @@ func TestImport_UnknownImportMode(t *testing.T) {
 		"importMode": "MIGRATE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "wf",
 				"initialState": "S1",
 				"active": true,
@@ -745,7 +745,7 @@ func TestImport_ExplicitActiveFalse_Preserved(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "staged-flow",
 				"initialState": "NEW",
 				"active": false,
@@ -778,7 +778,7 @@ func TestImport_ActiveAbsent_DefaultsToTrue(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "default-active-flow",
 				"initialState": "NEW",
 				"states": {"NEW": {"transitions": []}}
@@ -810,7 +810,7 @@ func TestImport_ExplicitActiveTrue_Preserved(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "explicit-true-flow",
 				"initialState": "NEW",
 				"active": true,
@@ -841,12 +841,12 @@ func TestExportReimportRoundtrip_PreservesActiveFalse(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0", "name": "alpha", "initialState": "S",
+				"version": "1.1", "name": "alpha", "initialState": "S",
 				"active": true,
 				"states": {"S": {"transitions": []}}
 			},
 			{
-				"version": "1.0", "name": "beta", "initialState": "S",
+				"version": "1.1", "name": "beta", "initialState": "S",
 				"active": false,
 				"states": {"S": {"transitions": []}}
 			}
@@ -914,7 +914,7 @@ func TestImport_ExplicitActiveNull_DefaultsToTrue(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0",
+				"version": "1.1",
 				"name": "null-active-flow",
 				"initialState": "NEW",
 				"active": null,
@@ -1008,7 +1008,7 @@ func TestImport_EmptyArrayMerge_NoOp(t *testing.T) {
 		"importMode": "MERGE",
 		"workflows": [
 			{
-				"version": "1.0", "name": "seed-wf", "initialState": "S",
+				"version": "1.1", "name": "seed-wf", "initialState": "S",
 				"active": true,
 				"states": {"S": {"transitions": []}}
 			}
@@ -1141,7 +1141,7 @@ func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
 	body := `{
 		"importMode":"REPLACE",
 		"workflows":[{
-			"version":"1.0","name":"typo-wf","initialState":"S1","active":true,
+			"version":"1.1","name":"typo-wf","initialState":"S1","active":true,
 			"states":{"S1":{"transitionn":[{"name":"go","next":"S2","manual":true}]},"S2":{}}
 		}]
 	}`
@@ -1188,7 +1188,7 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 	body := `{
 		"importMode":"REPLACE",
 		"workflows":[{
-			"version":"1.0","name":"spi-fields-wf","initialState":"S1","active":true,
+			"version":"1.1","name":"spi-fields-wf","initialState":"S1","active":true,
 			"states":{
 				"S1":{"transitions":[{
 					"name":"go","next":"S2","manual":true,
@@ -1246,7 +1246,7 @@ func TestImport_OversizedBody_Rejected(t *testing.T) {
 	// `desc` field with whitespace. The JSON itself stays well-formed so
 	// the rejection is unambiguously about size, not shape.
 	pad := strings.Repeat(" ", 10*1024*1024+1024) // 10 MiB + 1 KiB
-	body := `{"importMode":"MERGE","workflows":[{"version":"1.0","name":"big","initialState":"S","active":true,"desc":"` + pad + `","states":{"S":{}}}]}`
+	body := `{"importMode":"MERGE","workflows":[{"version":"1.1","name":"big","initialState":"S","active":true,"desc":"` + pad + `","states":{"S":{}}}]}`
 
 	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
 	defer resp.Body.Close()
@@ -1277,7 +1277,7 @@ func TestImport_MultipleCycles_RejectsWithFirstCycle(t *testing.T) {
 	body := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.0", "name": "multi-cycle", "initialState": "A",
+			"version": "1.1", "name": "multi-cycle", "initialState": "A",
 			"active": true,
 			"states": {
 				"A": {"transitions": [{"name": "to-b", "next": "B", "manual": false}]},
@@ -1325,7 +1325,7 @@ func TestExport_ReimportReplace_RoundtripEquivalence(t *testing.T) {
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1.0", "name": "rich-wf",
+				"version": "1.1", "name": "rich-wf",
 				"desc": "covers all the round-trip surface area",
 				"initialState": "NEW",
 				"active": true,
@@ -1368,7 +1368,7 @@ func TestExport_ReimportReplace_RoundtripEquivalence(t *testing.T) {
 				}
 			},
 			{
-				"version": "1.0", "name": "fallback-wf",
+				"version": "1.1", "name": "fallback-wf",
 				"initialState": "S",
 				"active": false,
 				"states": {"S": {"transitions": []}}

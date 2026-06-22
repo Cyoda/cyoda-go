@@ -14,7 +14,7 @@ const workflowV1 = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "1",
+			"version": "1.1",
 			"name": "order-workflow-v1",
 			"initialState": "NONE",
 			"active": true,
@@ -35,7 +35,7 @@ const workflowV2 = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "2",
+			"version": "1.1",
 			"name": "order-workflow-v2",
 			"initialState": "NONE",
 			"active": true,
@@ -218,7 +218,7 @@ func TestWorkflow_Import_UnknownField_Returns400(t *testing.T) {
 	body := `{
 		"importMode":"REPLACE",
 		"workflows":[{
-			"version":"1.0","name":"typo-wf","initialState":"S1","active":true,
+			"version":"1.1","name":"typo-wf","initialState":"S1","active":true,
 			"states":{"S1":{"transitionn":[{"name":"go","next":"S2","manual":true}]},"S2":{}}
 		}]
 	}`

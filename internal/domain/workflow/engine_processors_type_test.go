@@ -42,7 +42,7 @@ func TestInternalizedRejection_ExecutionModeMatrix(t *testing.T) {
 			}
 
 			wf := spi.WorkflowDefinition{
-				Version: "1.0", Name: "InternalizedRejectWF", InitialState: "INITIAL", Active: true,
+				Version: "1.1", Name: "InternalizedRejectWF", InitialState: "INITIAL", Active: true,
 				States: map[string]spi.StateDefinition{
 					"INITIAL": {Transitions: []spi.TransitionDefinition{
 						{Name: "RUN", Next: "DONE", Manual: false,
@@ -111,7 +111,7 @@ func TestType_Externalized_FallsThroughToExecutionModeDispatch(t *testing.T) {
 			}
 
 			wf := spi.WorkflowDefinition{
-				Version: "1.0", Name: "FallThroughWF", InitialState: "INITIAL", Active: true,
+				Version: "1.1", Name: "FallThroughWF", InitialState: "INITIAL", Active: true,
 				States: map[string]spi.StateDefinition{
 					"INITIAL": {Transitions: []spi.TransitionDefinition{
 						{Name: "RUN", Next: "DONE", Manual: false,
@@ -166,7 +166,7 @@ func TestType_UnknownValues_FallThrough(t *testing.T) {
 			}
 
 			wf := spi.WorkflowDefinition{
-				Version: "1.0", Name: "UnknownTypeWF", InitialState: "INITIAL", Active: true,
+				Version: "1.1", Name: "UnknownTypeWF", InitialState: "INITIAL", Active: true,
 				States: map[string]spi.StateDefinition{
 					"INITIAL": {Transitions: []spi.TransitionDefinition{
 						{Name: "RUN", Next: "DONE", Manual: false,
@@ -205,7 +205,7 @@ func TestType_EmptyProcessors_NoOp(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "no-procs", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "NoProcsWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "NoProcsWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false},
@@ -261,7 +261,7 @@ func TestInternalizedRejection_CascadePosition_SYNC(t *testing.T) {
 	}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CascadePosWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "CascadePosWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
@@ -315,7 +315,7 @@ func TestType_RoundTrip_PreservesUnknownValues(t *testing.T) {
 	for _, typeVal := range cases {
 		t.Run("Type="+typeVal, func(t *testing.T) {
 			wf := spi.WorkflowDefinition{
-				Version: "1.0", Name: "RoundTrip", InitialState: "INITIAL", Active: true,
+				Version: "1.1", Name: "RoundTrip", InitialState: "INITIAL", Active: true,
 				States: map[string]spi.StateDefinition{
 					"INITIAL": {Transitions: []spi.TransitionDefinition{
 						{Name: "RUN", Next: "DONE", Manual: true,

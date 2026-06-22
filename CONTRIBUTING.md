@@ -39,9 +39,14 @@ Every feature must have tests at the appropriate level before it can be merged.
 ```bash
 go test ./... -v                          # all unit tests (no Docker needed)
 go test ./internal/e2e/ -v               # E2E tests (requires Docker)
-go test -race ./...                       # race detector — run before every PR
+make race                                 # race detector (CI-parity scope) — run before every PR
 go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
 ```
+
+`make race` runs `go test -race -timeout=15m` over every package except
+`internal/e2e` and is what CI invokes — running it locally before a PR
+predicts CI. See `.claude/rules/race-testing.md` for the scope rationale
+and when to run `-race` against `./internal/e2e/...` manually.
 
 ## Common Commands
 
@@ -50,7 +55,7 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 | `go run ./cmd/cyoda` | Run from source |
 | `go build -o bin/cyoda ./cmd/cyoda` | Build executable |
 | `go test ./... -v` | Run all tests |
-| `go test -race ./...` | Run tests with race detector |
+| `make race` | Run tests with race detector (CI-parity scope; excludes `internal/e2e`) |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |
 | `./scripts/dev/run-docker-dev.sh` | Start with Docker + PostgreSQL |
 

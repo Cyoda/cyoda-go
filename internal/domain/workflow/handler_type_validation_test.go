@@ -15,7 +15,7 @@ func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 	t.Run("internalized+SYNC+startNewTxOnDispatch=true is rejected at import", func(t *testing.T) {
 		trueVal := true
 		wf := spi.WorkflowDefinition{
-			Version: "1.0", Name: "BadFlagsWF", InitialState: "INITIAL", Active: true,
+			Version: "1.1", Name: "BadFlagsWF", InitialState: "INITIAL", Active: true,
 			States: map[string]spi.StateDefinition{
 				"INITIAL": {Transitions: []spi.TransitionDefinition{
 					{Name: "RUN", Next: "DONE", Manual: false,
@@ -48,7 +48,7 @@ func TestValidator_TypeInternalized_WithStartNewTxOnDispatch(t *testing.T) {
 	t.Run("internalized+COMMIT_BEFORE_DISPATCH+startNewTxOnDispatch=true passes validator (Type rejection happens at engine fire only)", func(t *testing.T) {
 		trueVal := true
 		wf := spi.WorkflowDefinition{
-			Version: "1.0", Name: "ValidFlagsWF", InitialState: "INITIAL", Active: true,
+			Version: "1.1", Name: "ValidFlagsWF", InitialState: "INITIAL", Active: true,
 			States: map[string]spi.StateDefinition{
 				"INITIAL": {Transitions: []spi.TransitionDefinition{
 					{Name: "RUN", Next: "DONE", Manual: false,

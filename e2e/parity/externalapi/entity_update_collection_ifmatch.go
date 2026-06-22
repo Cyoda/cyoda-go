@@ -284,7 +284,7 @@ func RunExternalAPI_05_BulkUpdateChunkRollback(t *testing.T, fixture parity.Back
 const trivialWorkflowJSON = `{
 	"importMode": "REPLACE",
 	"workflows": [{
-		"version": "1",
+		"version": "1.1",
 		"name": "trivial-wf",
 		"initialState": "CREATED",
 		"active": true,

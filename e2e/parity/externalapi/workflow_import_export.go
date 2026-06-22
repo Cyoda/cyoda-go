@@ -54,7 +54,7 @@ func minimalWorkflow08(name string) string {
 	return `{
 		"workflows": [{
 			"name": "` + name + `",
-			"version": "1.0",
+			"version": "1.1",
 			"initialState": "draft",
 			"states": {
 				"draft": {
@@ -112,7 +112,7 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	body := `{
 		"workflows": [{
 			"name": "defaults",
-			"version": "1.0",
+			"version": "1.1",
 			"initialState": "s1",
 			"states": {
 				"s1": {"transitions": [{"name": "MOVE", "next": "s2"}]},
@@ -168,7 +168,7 @@ func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture pa
 	body := `{
 		"workflows": [{
 			"name": "advanced",
-			"version": "1.0",
+			"version": "1.1",
 			"initialState": "init",
 			"states": {
 				"init": {
@@ -227,7 +227,7 @@ func RunExternalAPI_08_04_StrategyReplace(t *testing.T, fixture parity.BackendFi
 		"importMode": "REPLACE",
 		"workflows": [{
 			"name": "second",
-			"version": "1.0",
+			"version": "1.1",
 			"initialState": "draft",
 			"states": {"draft": {"transitions": []}}
 		}]
@@ -264,7 +264,7 @@ func RunExternalAPI_08_05_StrategyActivate(t *testing.T, fixture parity.BackendF
 		"importMode": "ACTIVATE",
 		"workflows": [{
 			"name": "second",
-			"version": "1.0",
+			"version": "1.1",
 			"initialState": "draft",
 			"states": {"draft": {"transitions": []}}
 		}]
@@ -306,7 +306,7 @@ func RunExternalAPI_08_06_StrategyMerge(t *testing.T, fixture parity.BackendFixt
 		"workflows": [
 			{
 				"name": "baseline",
-				"version": "1.0",
+				"version": "1.1",
 				"initialState": "draft",
 				"states": {
 					"draft": {"transitions": [{"name": "PUBLISH", "next": "published", "manual": true}]},
@@ -315,7 +315,7 @@ func RunExternalAPI_08_06_StrategyMerge(t *testing.T, fixture parity.BackendFixt
 			},
 			{
 				"name": "newone",
-				"version": "1.0",
+				"version": "1.1",
 				"initialState": "s",
 				"states": {"s": {"transitions": []}}
 			}
@@ -373,7 +373,7 @@ func RunExternalAPI_08_07_ScheduledTransitionRoundtrip(t *testing.T, fixture par
 	}
 
 	body := `{"workflows":[{
-		"version":"1.0","name":"Scheduled Round-Trip Workflow",
+		"version":"1.1","name":"Scheduled Round-Trip Workflow",
 		"desc":"Three scheduled transitions covering the TimeoutMs pointer states",
 		"initialState":"start","active":true,
 		"states":{
@@ -474,7 +474,7 @@ func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parit
 
 	// Sub-case 1: manual+schedule.
 	manualPlusSchedule := `{"workflows":[{
-		"version":"1.0","name":"Manual Plus Schedule",
+		"version":"1.1","name":"Manual Plus Schedule",
 		"initialState":"start","active":true,
 		"states":{
 			"start":{"transitions":[{
@@ -498,7 +498,7 @@ func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parit
 
 	// Sub-case 2: delayMs:0.
 	zeroDelay := `{"workflows":[{
-		"version":"1.0","name":"Zero Delay Schedule",
+		"version":"1.1","name":"Zero Delay Schedule",
 		"initialState":"start","active":true,
 		"states":{
 			"start":{"transitions":[{
@@ -541,7 +541,7 @@ func RunExternalAPI_08_09_AllowCyclesBypass(t *testing.T, fixture parity.Backend
 
 	// Sub-case 1: WITHOUT allowCycles → cycle rejection.
 	defaultBody := `{"workflows":[{
-		"version":"1.0","name":"Polling Scheduled Workflow",
+		"version":"1.1","name":"Polling Scheduled Workflow",
 		"initialState":"S1","active":true,
 		"states":{
 			"S1":{"transitions":[{"name":"to-S2","next":"S2","manual":false,
@@ -563,7 +563,7 @@ func RunExternalAPI_08_09_AllowCyclesBypass(t *testing.T, fixture parity.Backend
 	// passes the body verbatim, so allowCycles slots in as a top-level
 	// envelope field.
 	allowBody := `{"allowCycles":true,"workflows":[{
-		"version":"1.0","name":"Polling Scheduled Workflow",
+		"version":"1.1","name":"Polling Scheduled Workflow",
 		"initialState":"S1","active":true,
 		"states":{
 			"S1":{"transitions":[{"name":"to-S2","next":"S2","manual":false,
@@ -608,7 +608,7 @@ func RunExternalAPI_08_10_AsyncResultTrueRejects(t *testing.T, fixture parity.Ba
 	}
 
 	body := `{"workflows":[{
-		"version":"1.0","name":"Async True Reject",
+		"version":"1.1","name":"Async True Reject",
 		"initialState":"start","active":true,
 		"states":{
 			"start":{"transitions":[{
@@ -646,7 +646,7 @@ func RunExternalAPI_08_11_CrossoverOrphanRejects(t *testing.T, fixture parity.Ba
 	}
 
 	body := `{"workflows":[{
-		"version":"1.0","name":"Crossover Orphan Reject",
+		"version":"1.1","name":"Crossover Orphan Reject",
 		"initialState":"start","active":true,
 		"states":{
 			"start":{"transitions":[{

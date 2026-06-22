@@ -131,6 +131,42 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Default Active to true only when the field is absent; explicit
+	// true/false pass through unchanged. This restores export → REPLACE
+	// re-import idempotency and lets operators stage inactive workflows
+	// for blue/green rollout. The bridge from request-shape (*bool
+	// Active) to SPI-shape (bool Active) is hoisted above the schema-
+	// version gate so all downstream validators see a single
+	// []spi.WorkflowDefinition slice — the conversion is purely
+	// in-memory and does not touch any store, preserving the gate's
+	// before-any-store-access intent.
+	incoming := make([]spi.WorkflowDefinition, len(req.Workflows))
+	for i, w := range req.Workflows {
+		active := true
+		if w.Active != nil {
+			active = *w.Active
+		}
+		incoming[i] = spi.WorkflowDefinition{
+			Version:      w.Version,
+			Name:         w.Name,
+			Description:  w.Description,
+			InitialState: w.InitialState,
+			Active:       active,
+			Criterion:    w.Criterion,
+			States:       w.States,
+		}
+	}
+
+	// Schema-version gate — runs before any mutation or store access.
+	// Surfaces with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED so clients can
+	// distinguish "wrong contract version" from generic validation
+	// failures.
+	if err := validateSchemaVersions(incoming); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeWorkflowSchemaVersionUnsupported, err.Error()))
+		return
+	}
+
 	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
@@ -178,33 +214,12 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// wipe or deactivate all stored workflows for the model; the engine
 	// fallback to the embedded default then masks the destruction behind
 	// HTTP 200. Reject explicitly. MERGE-empty stays a no-op.
-	if len(req.Workflows) == 0 && (mode == "REPLACE" || mode == "ACTIVATE") {
+	if len(incoming) == 0 && (mode == "REPLACE" || mode == "ACTIVATE") {
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
 			common.ErrCodeValidationFailed,
 			"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"))
 		return
-	}
-
-	// Default Active to true only when the field is absent; explicit
-	// true/false pass through unchanged. This restores export → REPLACE
-	// re-import idempotency and lets operators stage inactive workflows
-	// for blue/green rollout.
-	incoming := make([]spi.WorkflowDefinition, len(req.Workflows))
-	for i, w := range req.Workflows {
-		active := true
-		if w.Active != nil {
-			active = *w.Active
-		}
-		incoming[i] = spi.WorkflowDefinition{
-			Version:      w.Version,
-			Name:         w.Name,
-			Description:  w.Description,
-			InitialState: w.InitialState,
-			Active:       active,
-			Criterion:    w.Criterion,
-			States:       w.States,
-		}
 	}
 
 	// Structural validation runs on the incoming request only — the
@@ -340,10 +355,20 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Stamp the current schema version on every workflow on the wire.
+	// The stored Version is the workflow content's record; the exported
+	// Version is the serialiser's contract. Callers re-importing an
+	// export always see the current contract.
+	stamped := make([]spi.WorkflowDefinition, len(workflows))
+	for i, wf := range workflows {
+		wf.Version = CurrentSchemaVersion
+		stamped[i] = wf
+	}
+
 	resp := map[string]any{
 		"entityName":   entityName,
 		"modelVersion": modelVersion,
-		"workflows":    workflows,
+		"workflows":    stamped,
 	}
 
 	common.WriteJSON(w, http.StatusOK, resp)

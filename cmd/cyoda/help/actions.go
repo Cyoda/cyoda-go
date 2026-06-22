@@ -26,32 +26,51 @@ import (
 // writes raw content to w and returns a CLI exit code.
 type ActionFunc func(w io.Writer) int
 
+// ActionEntry pairs an action handler with the HTTP Content-Type
+// header to set when serving the action's output over HTTP. The CLI
+// ignores ContentType; the HTTP action-mirror handler in
+// internal/api/help.go uses it.
+type ActionEntry struct {
+	Handler     ActionFunc
+	ContentType string
+}
+
 // actionRegistry maps topic dotted-path to a map of action-name to
-// handler. Actions are invoked via "cyoda help <topic> <action>".
-// Action names must not collide with subtopic names on the same topic.
-var actionRegistry = map[string]map[string]ActionFunc{
+// ActionEntry. Actions are invoked via "cyoda help <topic> <action>"
+// or "GET /help/<topic>/<action>". Action names must not collide
+// with subtopic names on the same topic.
+var actionRegistry = map[string]map[string]ActionEntry{
 	"openapi": {
-		"json": emitOpenAPIJSON,
-		"yaml": emitOpenAPIYAML,
-		"tags": emitOpenAPITags,
+		"json": {Handler: emitOpenAPIJSON, ContentType: "application/json"},
+		"yaml": {Handler: emitOpenAPIYAML, ContentType: "application/yaml"},
+		"tags": {Handler: emitOpenAPITags, ContentType: "text/plain; charset=utf-8"},
 	},
 	"grpc": {
-		"proto": emitGRPCProto,
-		"json":  emitGRPCDescriptorJSON,
+		"proto": {Handler: emitGRPCProto, ContentType: "text/plain; charset=utf-8"},
+		"json":  {Handler: emitGRPCDescriptorJSON, ContentType: "application/json"},
 	},
 	"cloudevents": {
-		"json": emitCloudEventsJSON,
+		"json": {Handler: emitCloudEventsJSON, ContentType: "application/json"},
+	},
+	"workflows.schema-version": {
+		"versions": {Handler: emitWorkflowSchemaVersions, ContentType: "application/json"},
 	},
 }
 
-// lookupAction returns the handler for a topic action, if registered.
-func lookupAction(topic, action string) (ActionFunc, bool) {
+// LookupAction returns the action entry for a topic, if registered.
+// Exported for HTTP-action-mirror consumers in internal/api.
+func LookupAction(topic, action string) (ActionEntry, bool) {
+	return lookupAction(topic, action)
+}
+
+// lookupAction returns the entry for a topic action, if registered.
+func lookupAction(topic, action string) (ActionEntry, bool) {
 	if m, ok := actionRegistry[topic]; ok {
-		if fn, ok := m[action]; ok {
-			return fn, true
+		if e, ok := m[action]; ok {
+			return e, true
 		}
 	}
-	return nil, false
+	return ActionEntry{}, false
 }
 
 // actionsFor returns the sorted list of registered action names for

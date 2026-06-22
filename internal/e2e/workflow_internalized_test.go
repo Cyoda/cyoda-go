@@ -24,7 +24,7 @@ func TestE2E_InternalizedRejection_ManualTransitionReturns400(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1",
+			"version": "1.1",
 			"name": "internalized-wf",
 			"initialState": "NONE",
 			"active": true,

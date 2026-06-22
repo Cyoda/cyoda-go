@@ -7,6 +7,7 @@ see_also:
   - crud
   - grpc
   - search
+  - workflows.schema-version
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -43,7 +44,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1",
+  "version": "1.1",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -100,7 +101,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **WorkflowDefinition fields:**
 
-- `version` — string — schema version tag (informational; not interpreted by the engine)
+- `version` — semver `MAJOR.MINOR` string identifying the workflow-import contract this definition was authored against. Validated strictly on import; stamped to the current contract version on export. See `cyoda help workflows schema-version` for the bump rules and current/supported list.
 - `name` — string — unique within the model; the primary key for MERGE mode
 - `desc` — string — optional human-readable description. Surfaced in the import audit log line (`workflow import applied` at `INFO`, or `workflow import resulted in zero workflows` at `WARN`) as part of the per-workflow `{name, desc}` digest, and round-tripped via export when non-empty. Use it to record change intent that operators reading logs can correlate without consulting the workflow JSON
 - `initialState` — string — state assigned when the entity is first created; must exist in `states`
@@ -384,6 +385,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
+- `errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — `400` — workflow declares a schema version this server does not accept
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed; see IMPORT REQUEST above for the enumerated rules
 
 ## EXAMPLES
@@ -398,7 +400,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1",
+        "version": "1.1",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -450,7 +452,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1",
+        "version": "1.1",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,
