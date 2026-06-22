@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-21 (revisions 2026-06-22)
 **Status:** Design — awaiting plan
-**Scope:** v1 notification framework for cluster-of-application-nodes consumption. Not a substitute for a queue subsystem; not for webscale user-facing fan-out; not a historical reprocessing API.
+**Scope:** v1 notification framework for cluster-of-application-nodes consumption. Not a substitute for a queue subsystem; not for webscale user-facing fan-out; not a historical reprocessing API; not a per-transition trajectory log (the entity audit / workflow event log is that).
 
 ## §1. Scope & vocabulary
 
@@ -10,23 +10,26 @@ A subscriber framework that lets client nodes (not just compute nodes) attach to
 
 This is **a v1 notification framework, not a messaging or entity-event-queue framework.** Applications that need a durable, replayable, high-throughput queue subsystem build it on their own infrastructure. A future cyoda-native entity-event-queue would be a separate capability built on a real queue substrate.
 
+The change event publishes the **segment-level summary** — what the entity looked like at the start of the segment, what it looks like after, and the user-invoked transition name. The intermediate trajectory inside a cascade is **not** published; subscribers needing per-step detail query the entity audit / workflow event log.
+
 ### Vocabulary
 
 | Term | Meaning |
 |---|---|
 | **Segment** | A single transactional commit in cyoda's engine. `EngineResult.Segmented=true` means a request spanned multiple segments via `COMMIT_BEFORE_DISPATCH` processors. Within one segment, multiple workflow transitions can have cascaded (via `cascadeAutomated`). The segment is the natural emission unit. |
-| **Change event** | One emission per **(segment commit, entity)** pair, carrying envelope and an ordered list of transitions that ran in that segment for that entity. |
+| **Change event** | One emission per **(segment commit, entity)** pair carrying envelope (`from_state` at segment-start, `to_state` at segment-end, `transition_name` of the user-invoked transition, `kind`, `transaction_id`, etc.). Optionally `body_before` / `body_after`. |
 | **Subscription** | A server-side declaration: filter + delivery mode + consumption mode + batching + body-include policy. Ephemeral (lives with the stream) or durable (persists across connections). |
 | **Delivery mode** | `LIVE_ONLY` (no replay; ephemeral) or `DURABLE` (at-least-once delivery for events emitted after subscription start, replay possible from the subscription's last-committed cursor within outbox retention). |
 | **Consumption mode** | `BROADCAST` (each attached consumer gets every event) or `GROUP` (events partition across consumers by `entity_id`). Ephemeral is always `BROADCAST`. **GROUP is only available on backends advertising `GroupConsumption=true` — in v1 that is the cassandra plugin only**, which delegates to redpanda's Kafka-compatible consumer-group machinery. |
 | **ChangeFeed** | SPI capability each storage plugin implements internally. Atomic event append + filtered consume. Capabilities advertised per-backend. |
 | **Cursor** | Opaque server-issued token; monotone within a partition. Subscriber commits to advance. Handles **ordering**. |
-| **`event_id`** | Deterministic per-(tenant, transaction, entity) idempotency key. Format: `<transaction_id>:<entity_id>`. Recovery replays produce the identical id so consumer-side dedupe is correctness-stable. **Idempotency only — not an ordering primitive.** |
+| **`event_id`** | Deterministic per-(transaction, entity) idempotency key. Format: `<transaction_id>:<entity_id>`. Recovery replays produce the identical id so consumer-side dedupe is correctness-stable. **Idempotency only — not an ordering primitive.** |
 | **`startFromTimestamp`** | Optional subscription field. Permits bounded preload bridging — server-clamped by `maxLookback`. |
 | **Bootstrap point** | The `(createdAt, cursorZero, effectiveStartFrom)` tuple returned on subscription create. Defines the strict-`>` boundary between "preload territory" and "subscription territory". |
 
 ### Non-goals for v1
 
+- Per-transition trajectory inside a cascade. The change event carries segment-summary only (`from_state` → `to_state` plus user-invoked `transition_name`). Subscribers needing the intermediate cascade steps use the entity audit / workflow event log.
 - JSONPath body projection / JSON Patch diff in the envelope.
 - Failed-segment events (extensibility hook reserved on `kind`).
 - Processor outputs in the envelope (extensibility hook reserved).
@@ -34,13 +37,14 @@ This is **a v1 notification framework, not a messaging or entity-event-queue fra
 - ChangeFeed as a separately pluggable SPI capability.
 - Pulling redpanda into OSS core.
 - Cursor rewind / historical reprocessing.
-- Unbounded historical replay. Bounded preload bridging up to `maxLookback` (cluster-configurable, default 15 minutes) is in scope.
+- Unbounded historical replay. Bounded preload bridging up to `maxLookback` is in scope.
 - A substitute for a real durable queue subsystem.
-- Webscale per-user-session subscriptions. Operational target is **clusters of application nodes** (BFFs, cache invalidators, integration sinks). v1 caps active consumers per node.
-- Granular per-model permissions. v1 reuses `ROLE_M2M`, matching the existing compute-node gRPC streaming surface.
-- GROUP mode on OSS backends (memory/sqlite/postgres). v1 does not design a custom Kafka-style rebalance protocol.
-- Cross-entity atomicity of change-event emission. Atomicity is **per-entity within a segment** (matching cassandra's natural guarantee).
-- `LifecycleCondition` inside `bodyPredicate`. State-based filtering uses envelope fields (§2). `bodyPredicate` is purely data-focused.
+- Webscale per-user-session subscriptions. Operational target is **clusters of application nodes**.
+- Granular per-model permissions. v1 reuses `ROLE_M2M`.
+- GROUP mode on OSS backends. v1 does not design a custom Kafka-style rebalance protocol.
+- Cross-entity atomicity of change-event emission within a segment.
+- `LifecycleCondition` inside `bodyPredicate`.
+- Time-sortable `event_id`.
 
 ## §2. Subscription model
 
@@ -54,8 +58,8 @@ This is **a v1 notification framework, not a messaging or entity-event-queue fra
     "modelName": "ORDER",
     "modelVersion": "1.0",
     "kinds":      ["CREATE","UPDATE","DELETE"],
-    "fromState":  null,
-    "toState":    "PAID",
+    "fromState":  null,                  // direct match on envelope.from_state
+    "toState":    "PAID",                // direct match on envelope.to_state
     "bodyPredicate": { ... }            // spi.predicate.Condition; LifecycleCondition forbidden
   },
   "delivery":    "LIVE_ONLY" | "DURABLE",
@@ -69,12 +73,16 @@ This is **a v1 notification framework, not a messaging or entity-event-queue fra
 }
 ```
 
-### Filter semantics for segment-shaped events
+### Filter semantics
 
-- `kinds` — matches the segment-derived `kind`.
-- `fromState` — matches **any** transition's `from` in the segment.
-- `toState` — matches `final_state` **OR** any transition's `to` in the segment.
-- `bodyPredicate` — evaluated at fan-out against `body_after`. Uses `spi.predicate.Condition` tree (SimpleCondition / GroupCondition). **`LifecycleCondition` is rejected at create with `400 Bad Request`** (`internal/match/match.go:Match` requires `EntityMeta` for lifecycle eval; envelope doesn't carry full meta; state-based filtering uses envelope fields instead — the envelope already exposes everything state-related via `final_state`, `transitions[*]`, `fromState`, `toState`, `kinds`).
+All filter fields are direct matches against the segment-summary envelope:
+
+- `kinds` — matches `envelope.kind` (`CREATE | UPDATE | DELETE`).
+- `fromState` — matches `envelope.from_state` (the entity's state at the start of the segment).
+- `toState` — matches `envelope.to_state` (the entity's state after the segment commits).
+- `bodyPredicate` — evaluated at fan-out against `body_after` using the existing `spi.predicate.Condition` tree. The validator walks the tree recursively and **rejects `LifecycleCondition` at any depth** (including inside `GroupCondition.Conditions`). `FunctionCondition` is also rejected for v1 (it's a placeholder). `SimpleCondition`, `GroupCondition`, `ArrayCondition` are allowed.
+
+Subscribers needing intermediate-state visibility ("ORDER passed through VALIDATING during the cascade") use the entity audit log, **not** the change feed.
 
 ### Validity matrix
 
@@ -103,14 +111,13 @@ Backend capability mismatch at create → `400 Bad Request` with the supported c
 
 - `tenantId` always derived from JWT, never accepted from client.
 - Subscription `id`: server-generated ULID for durable subs.
-- `GROUP` consumer joins identify with a client-chosen `consumerInstanceId` + server-managed `generation`. Two attaches with the same `consumerInstanceId`: server increments generation; the older generation is fenced (cannot ack); rolling-deploy safe.
-- `lastAttachedAt`: updated on each successful **attach** (not on each ack, not on detach). On detach, the field is preserved at the attach time so reattach within TTL keeps the subscription alive. TTL countdown uses `now - lastAttachedAt`.
+- `GROUP` consumer joins identify with a client-chosen `consumerInstanceId` + server-managed `generation`. Server increments `generation` on every successful attach for that subscription. Two attaches with the same `consumerInstanceId`: the new generation supersedes; the older generation is fenced (cannot ack). Rolling-deploy safe.
+- `lastAttachedAt`: updated on each successful **attach**. Preserved across detach. Used for TTL math (`now - lastAttachedAt > ttl`).
 
 ### TTL behaviour
 
-- Durable subscription with no consumer attached for `ttl` (computed as `now - lastAttachedAt > ttl`) is auto-deleted. Default 30 days.
+- Durable subscription with no consumer attached for `ttl` is auto-deleted. Default 30 days.
 - At auto-delete: retention claim released atomically; outbox cleanup follows the sweeper.
-- Backlog ceiling applies separately (§3.5). `DETACH_CONSUMER` default.
 
 ## §3. API surface — REST CRUD + gRPC stream
 
@@ -120,13 +127,15 @@ All endpoints scoped under the tenant from JWT.
 
 | Method & path | Purpose | Notes |
 |---|---|---|
-| `POST   /tenants/{t}/subscriptions` | Create durable subscription | Validates `bodyPredicate` rejects `LifecycleCondition`. Returns 201 + full resource + `cursorZero` + `effectiveStartFrom` + `maxLookback` + `enablementBoundary`. |
-| `GET    /tenants/{t}/subscriptions/{id}` | Read subscription | Returns full resource + lag metrics. |
+| `POST   /tenants/{t}/subscriptions` | Create durable subscription | Validates `bodyPredicate` recursively rejecting `LifecycleCondition` / `FunctionCondition`. Returns 201 + full resource + `cursorZero` + `effectiveStartFrom` + `maxLookback` + `enablementBoundary`. |
+| `GET    /tenants/{t}/subscriptions/{id}` | Read subscription | Full resource + lag metrics. |
 | `GET    /tenants/{t}/subscriptions` | List subscriptions | Paginated. |
-| `PATCH  /tenants/{t}/subscriptions/{id}` | Update subscription | Mutable: `ttl`, `batching.windowMs`, `batching.maxEvents`, `includeBody`. Filter, delivery, consumption, startFromTimestamp immutable. |
+| `PATCH  /tenants/{t}/subscriptions/{id}` | Update subscription | Mutable: `ttl`, `batching.windowMs`, `batching.maxEvents`, `includeBody`. Filter / delivery / consumption / startFromTimestamp immutable. PATCH takes effect for events delivered after the PATCH commit; in-flight or buffered events keep their original shape. |
 | `DELETE /tenants/{t}/subscriptions/{id}` | Delete subscription | Detaches consumers, deletes cursor state, releases retention claim. Idempotent. |
 
 Ephemeral subscriptions have no REST surface.
+
+**`subscriptions` table is intentionally not row-level-security protected** — tenant scoping enforced at the application/SQL layer (matching cyoda's existing entity-store pattern). This permits the system-level existence-set bootstrap (§4) to scan across tenants efficiently without `BYPASSRLS` or `SECURITY DEFINER` indirection.
 
 Errors follow existing cyoda conventions.
 
@@ -155,16 +164,16 @@ One stream = one attached subscription.
 | Scenario | Ephemeral | Durable |
 |---|---|---|
 | **Clean detach** | State dropped. | Cursor at last ack persisted. GROUP: partitions reassigned via redpanda group protocol. |
-| **Network blip** | State dropped after keepalive timeout. | Cursor at last ack; GROUP rebalance is redpanda's; reconnect with same `subscriptionId`+`consumerInstanceId` resumes (server bumps generation). |
-| **Client restart / pod replacement** | New ephemeral subscription. | New `consumerInstanceId` joining = redpanda rebalance for GROUP, no-op for BROADCAST. Generation fencing prevents zombie acks from the prior pod. |
-| **Server node dies** | Stream errors `UNAVAILABLE`. | Stream errors `UNAVAILABLE`. Reconnect to another node; subscription resource lives in shared storage. |
+| **Network blip** | State dropped after keepalive timeout. | Cursor at last ack; GROUP rebalance is redpanda's. Reconnect with same `subscriptionId`+`consumerInstanceId` resumes; server bumps generation. |
+| **Client restart / pod replacement** | New ephemeral subscription. | New `consumerInstanceId` joining = redpanda rebalance for GROUP, no-op for BROADCAST. Generation fencing prevents zombie acks from prior pod. |
+| **Server node dies** | Stream errors `UNAVAILABLE`. | Reconnect to another node; subscription resource lives in shared storage. |
 | **Long disconnection** | Subscription gone with stream. | Replay from last cursor if within retention; else `OUT_OF_RANGE` with earliest still-available cursor. |
 | **TTL exceeded** | N/A | Subscription auto-deleted; reconnect = `NOT_FOUND`. |
 | **Mid-batch disconnect** | Batch lost. | Batch redelivered. Consumer dedupes via `event_id`. |
 
 ### Mechanism
 
-All authoritative state — subscription resource, cursor per consumer instance, partition assignments — lives in the storage tier (durable) or in-process on the attached node (ephemeral). gRPC stream death triggers fencing/grace; reconnect rehydrates state. At-least-once requires `event_id` dedupe.
+All authoritative state lives in the storage tier (durable) or in-process on the attached node (ephemeral). gRPC stream death triggers fencing/grace; reconnect rehydrates state. At-least-once requires `event_id` dedupe.
 
 For GROUP on cassandra, rebalance is **delegated to redpanda's consumer-group protocol** (`KafkaSubscribe`/`KafkaCommit` already used by the cassandra plugin).
 
@@ -172,110 +181,105 @@ For GROUP on cassandra, rebalance is **delegated to redpanda's consumer-group pr
 
 | Knob | Default | Notes |
 |---|---|---|
-| gRPC keepalive interval | 10s | Matches `internal/grpc/streaming.go:21`. |
-| gRPC keepalive timeout | 30s | Matches `internal/grpc/streaming.go:23`. |
-| GROUP session timeout | redpanda default | Inherited. |
-| Backlog ceiling | 1M events / 7d | Hard ceiling for un-acked backlog. |
-| Backlog ceiling policy | `DETACH_CONSUMER` | Per-consumer-instance detach (NOT group-level). For GROUP, redpanda then rebalances the detached consumer's partitions to peers. Group-level health is the application's concern; we don't trip whole groups on one slow member. |
+| gRPC keepalive interval | 10s | `internal/grpc/streaming.go:21`. |
+| gRPC keepalive timeout | 30s | `internal/grpc/streaming.go:23`. |
+| GROUP session timeout | `RedpandaSessionTimeoutSec` (default 30s) | Configured in cassandra plugin's redpanda config. |
+| Backlog ceiling | 1M events / 7d | Hard ceiling for un-acked outbox backlog. Applies at durable-retention level, not in-process queue (in-process queue is limited separately, §7). |
+| Backlog ceiling policy | `DETACH_CONSUMER` | Per-consumer-instance detach. For GROUP, redpanda rebalances detached consumer's partitions to peers. |
 | Consumers per node | 1000 | Operational ceiling. |
 
 ## §4. Event source & emission
 
 ### Source
 
-Single emission point: **the engine's segment commit hook** (in plugin `txMgr.Commit`, after `materialize()` succeeds). One segment commit emits one event **per entity** touched in that segment.
+Single emission point: **the engine's segment commit hook**. One segment commit emits one event **per entity** touched in that segment. The envelope is the segment-level summary (state at segment-start → state at segment-end; the user-invoked transition that started the segment).
 
 Engine semantics (verified in `internal/domain/workflow/engine.go`, `engine_processors.go`, `internal/domain/entity/service.go`):
 - One user request = 1+ segments (`EngineResult.Segmented=true` if `COMMIT_BEFORE_DISPATCH` ran).
 - One segment = exactly one tx commit.
 - One segment can contain multiple cascaded transitions on the same entity (`cascadeAutomated`).
-- One segment can touch multiple entities (in which case one event per entity is emitted).
+- One segment can touch multiple entities (one event per entity emitted).
+
+### Emission call site (reconciling engine vs. plugin)
+
+- **Memory / SQLite / Postgres**: the engine constructs the envelope and calls `ChangeFeed.AppendChange(ctx, envelope)` **directly inside the SPI tx**, before commit. The plugin writes to its outbox in the same tx.
+- **Cassandra**: the engine cannot call `AppendChange` synchronously because cassandra's commit machinery runs in the TX coordinator goroutine, potentially on a different node. Instead, the engine **populates envelope-source data** (the user-invoked transition name; from-state is derivable from existing `PrevData`; to-state is `CommitEntityInfo.State`) via the existing `CommitRequest` message. The coordinator builds the envelope and writes `entity_change_events` inside the materialize batch in the same tag group as the entity's other writes. See §4.4.
+
+The atomicity contract is the plugin's commit mechanism, not `AppendChange`'s return.
 
 ### Atomicity
 
 Per-entity within a segment:
 
-- **Cassandra**: change event row written to a new `entity_change_events` table in the existing materialize batch, in the same tag group as the entity's other writes (`tx_coordinator.go materialize()`, slot identified around line 863 — see §4.4). Per-entity statements share a tag → same chunk → atomic at the per-entity row level via `USING TIMESTAMP <HLC>` fencing. **Redpanda is async fan-out, not the atomicity boundary**.
-- **Postgres/SQLite**: change event row in the same SQL tx as the entity write.
-- **Memory**: pushed to in-process channel after the in-memory write. Tx-aware (rollback discards).
+- **Cassandra**: `entity_change_events` row written in the existing materialize batch in the same tag group as the entity's other writes (`tx_coordinator.go materialize()`). Per-entity statements share a tag → same chunk → atomic at per-entity row level via `USING TIMESTAMP <HLC>` fencing. **Redpanda is async fan-out, not the atomicity boundary**.
+- **Postgres/SQLite**: outbox row in the same SQL tx.
+- **Memory**: pushed to in-process channel after the in-memory write. Tx-aware.
 
 **Atomicity claim**: if `txMgr.Commit` succeeds, the change event for each entity in the segment will eventually be visible to subscribers. Cross-entity atomicity within one segment is **not** claimed.
 
 ### Cross-entity partial-commit recovery
 
-Cassandra's materialize chunks are independent; entity A's chunk can succeed while entity B's fails. The cassandra recovery path (`MaterializeFromLog`) replays the failed entities using the original HLC. Because `event_id` is deterministic (`<transaction_id>:<entity_id>`), recovery replay produces the **same** event id as the original would have — consumer-side dedupe sees them as one event. No "duplicates that look distinct" failure mode.
+Cassandra's materialize chunks are independent; entity A's chunk can succeed while entity B's fails. Recovery (`MaterializeFromLog`) replays the failed entities using the original HLC. The replay reconstructs `CommitEntityInfo` from `tx_writes` (which holds `Data, PrevData, State, Version` — sufficient to derive `from_state` from `PrevData._meta.state`, `to_state` from `State`, `kind` from `(PrevData, Data)`). `event_id` is deterministic (`<transaction_id>:<entity_id>`), so the replayed emission has the same id as the original would have — consumer-side dedupe is correctness-stable.
+
+Note: the user-invoked transition name is part of the small wire-format extension on `CommitEntityInfo` (§4.4); it persists in `tx_writes` as well, so recovery has full fidelity.
 
 ### Emission gate
 
-The engine emits per-entity change event at segment commit **iff** both:
+The engine emits a per-entity change event at segment commit **if and only if** both:
 
 1. The entity's `(tenant, model_name, model_version)` has at least one subscription (existence check), AND
 2. At least one subscription's envelope filter matches the segment for that entity. Short-circuit on first match. Body predicates are **not** evaluated at emission.
 
 ### Subscription cache strategy (two-tier)
 
-Per the C4 fork: **existence set + positive-content cache**.
-
 **Tier 1 — Existence set (per node, in-memory):**
 - Type: `map[(tenant, model, version)] → has_subscriptions bool`.
-- Bootstrap: at node startup, run `SELECT DISTINCT tenant_id, model_name, model_version FROM subscriptions` once. Populate the set.
+- Bootstrap: at node startup, run `SELECT DISTINCT tenant_id, model_name, model_version FROM subscriptions` once (subscriptions is not RLS-protected; bootstrap is direct). Populate the set.
 - Maintenance: subscription create/delete on any node broadcasts via `ClusterBroadcaster`; receiving nodes set/unset the key.
 - Emission fast-path: existence-set lookup → `false` means skip emission. **No storage read for unknown keys in steady state.**
-- Broadcast loss recovery: on subscription create, the originating node both writes-and-broadcasts. If a peer misses the broadcast, the existence set is stale (`false` where it should be `true`). Mitigation: periodic full-sync (default 60s) replays the bootstrap query; bounded staleness.
+- Periodic full-sync default 60s replays the bootstrap query, recovering from broadcast loss.
 
 **Tier 2 — Positive-content cache (per node, in-memory, TTL):**
 - Type: `map[(tenant, model, version)] → [filter set]` with TTL 30s.
-- Populated on emission when existence set says `true` and the content cache misses: read `subscriptions WHERE tenant=… AND model=… AND version=…`, cache for 30s.
-- Used by the emission gate's filter-match step (step 2 above).
+- Populated when existence set says `true` and content cache misses: read `subscriptions WHERE tenant=… AND model=… AND version=…`, cache for 30s.
 - On subscription create/delete, broadcast invalidates the entry.
 
-**Removes the previous "fail-open on cache unavailable" framing.** The cache is two Go maps. Cold-start storms are bounded: existence set bootstraps once with a single query; content cache reads only happen for keys with at least one subscription.
+**Staleness consequence**: a subscription created at time T can see up to `EXISTENCE_SYNC_INTERVAL` (default 60s) of missed emissions on nodes that didn't receive the create-broadcast. Documented; configurable.
 
 ### Envelope construction
 
 ```
 ChangeEvent {
-  event_id        string                          deterministic: "<transaction_id>:<entity_id>"
-  tenant_id       string                          from request context
-  transaction_id  string                          EntityMeta.TransactionID (cyoda-go-spi/types.go:18)
-  cursor          string (opaque base64)          assigned by ChangeFeed.AppendChange; monotone within partition
-  emitted_at      time.Time                       server clock at segment commit
+  event_id        string      "<transaction_id>:<entity_id>" — deterministic, idempotency only
+  tenant_id       string
+  transaction_id  string      EntityMeta.TransactionID (cyoda-go-spi/types.go:18)
+  cursor          string      opaque base64; monotone within partition; assigned by AppendChange
+  emitted_at      time.Time   server clock at segment commit
   model_name      string
   model_version   string
-  entity_id       string                          (SPI uses string, not uuid.UUID)
-  kind            ChangeKind                      CREATE | UPDATE | DELETE — derived from segment
-  transitions     []TransitionRecord              ordered list: {from, to, transitionName}
-  final_state     string                          last transition's to_state
-  body_after      *EntityBody                     attached at fan-out, not at emission
-  body_before     *EntityBody                     attached at fan-out, not at emission
-}
-
-TransitionRecord {
-  from           string
-  to             string
-  transition_name string
+  entity_id       string
+  kind            ChangeKind  CREATE | UPDATE | DELETE
+  from_state      string      entity state at segment-start (derived from PrevData._meta.state; empty on CREATE)
+  to_state        string      entity state at segment-end (derived from Data._meta.state; empty on hard-DELETE)
+  transition_name string      user-invoked transition name (preserved through cascade; see §4.4)
+  body_after      *EntityBody attached at fan-out, derived from CommitEntityInfo.Data
+  body_before     *EntityBody attached at fan-out, derived from CommitEntityInfo.PrevData
 }
 ```
 
-**`event_id` is deterministic (`<transaction_id>:<entity_id>`).** Recovery replay produces identical id. It is **purely an idempotency key**; ordering is the cursor's responsibility, not event_id's. ULID format is not required (and was over-engineered in earlier drafts).
+**`kind` derivation** from `(PrevData, Data)` alone:
+- `CREATE` — `PrevData == nil && Data != nil`
+- `DELETE` — `PrevData != nil && Data == nil` (hard-delete)
+- `UPDATE` — otherwise (includes soft-deletes to terminal states; subscribers filter on `to_state` for those)
 
-**`kind` derivation:**
-- `CREATE` — if the first transition was initial-state entry (no prior version of the entity).
-- `DELETE` — if the segment ended with `info.Data == nil` (cassandra's hard-delete marker) or with the entity entering a workflow state marked for deletion.
-- `UPDATE` — otherwise.
-
-**`final_state`** = `transitions[-1].to`; empty on hard-delete.
-
-**`body_before`** = entity body before the segment's first transition. See §4.4 for how this flows from engine to coordinator on cassandra.
-
-**`body_after`** = entity body after the segment commit.
+**Note**: `body_before` and `body_after` are not part of the outbox row itself; they're hydrated at fan-out from the corresponding entity-version (postgres/sqlite: `entity_versions` PK lookup; cassandra: lifecycle index by `(entity_id, version)`). `PrevData` is reused — no new `BodyBefore` wire field added.
 
 ### What is not emitted in v1
 
+- Per-individual-transition events (the segment summary is the contract).
 - Failed segments (rolled-back tx).
-- Per-individual-transition events (per-segment with `transitions` list is the v1 contract).
 - Non-transition writes.
-- Cross-entity correlation in one envelope. Each entity is its own change event; events from one segment share `transaction_id`.
+- Cross-entity correlation in one envelope (one event per entity; events from one segment share `transaction_id`).
 
 ## §4.1. Per-(tenant, model, version) enablement boundary
 
@@ -285,96 +289,74 @@ TransitionRecord {
   3. Broadcasts existence-set + content-cache invalidation.
 - Marker is the floor for subsequent `startFromTimestamp` on the same key.
 - Surfaced as `enablementBoundary.tenantFirstEnabledAt` in the create response.
-- Atomicity: row + marker in same storage tx. Broadcast is best-effort; periodic full-sync (60s) is the backstop on broadcast loss.
+- Atomicity: row + marker in same storage tx. Broadcast is best-effort; periodic full-sync (60s) is the backstop.
 
 ## §4.2. Filtering & body materialisation
 
 ### Pipeline per event E and candidate subscription S
 
-1. **Envelope match** — pure metadata.
-2. **Body predicate match** — `spi.predicate.Condition` evaluated against `body_after` at fan-out. Requires body load.
+1. **Envelope match** — direct field comparison on `kind`, `from_state`, `to_state`. Pure metadata; no body needed.
+2. **Body predicate match** (if S has one) — `spi.predicate.Condition` evaluated against `body_after` at fan-out. Requires body load.
 3. **Ship** — envelope and (per `includeBody`) `body_before` / `body_after`.
 
 ### Body load contract
 
-The entity body is loaded at fan-out **iff** at least one local consumer has either a body predicate OR `includeBody != NONE`.
+The entity body is loaded at fan-out **if and only if** at least one local consumer has either a body predicate OR `includeBody != NONE`.
 
-Bodies LRU-cached. Cache key: `(tenant_id, entity_id, version)`. **Tenant_id is always part of the lookup key**, both for cache and for storage queries (matches postgres row-level security on `entity_versions` and prevents cross-tenant leakage).
+Bodies LRU-cached. Cache key: **`(tenant_id, entity_id, version)`** — tenant always in key; matches postgres RLS on `entity_versions`; prevents cross-tenant cache poisoning. Bounded by `CYODA_CHANGEFEED_BODY_CACHE_BYTES` (default 256 MB).
 
-Cache bounded by `CYODA_CHANGEFEED_BODY_CACHE_BYTES` (default 256 MB). On eviction during in-flight batch use: the in-flight batch has already captured a reference; cached body is GC-eligible only after the batch ships. The cache only evicts *available* (unreferenced) entries.
+**Eviction safety**: cached bodies are `[]byte`. When an in-flight batch captures a body, it holds the `[]byte` reference directly; cache eviction removes the map entry but Go's GC keeps the underlying array alive as long as the batch references it. No custom refcount needed; rely on Go GC.
 
-**Documented cost**: body-predicate + `includeBody: NONE` triggers a body load.
+**Documented cost**: `bodyPredicate` + `includeBody: NONE` triggers a body load (predicate eval requires the body).
 
-### Pre-state capture (body_before) — engine-side
+### Pre-state body (`body_before`) — comes from `PrevData`
 
-The engine has the pre-state on the stack during the first transition of a segment. To make it available at emission, the engine captures `body_before` in `TransactionState`:
+For cassandra: `CommitEntityInfo.PrevData` already carries the body at segment-start. The change-event fan-out hydrates `body_before` from the same source the engine had (or, for replay, from the lifecycle index via the version pair).
 
-- `TransactionState.SegmentBodyBefore map[entity_id] []byte` — populated at the **start** of each segment for each entity touched.
-- Snapshot/restore semantics with SAVEPOINTs: `SegmentBodyBefore` participates in savepoint snapshots like `WriteSet` / `ReadSet`. A rollback restores the pre-segment body-before (which is what subscribers should see — the rollback undid intermediate state, the "before" is still the pre-segment state).
-- For multi-segment requests: each segment's `body_before` is "body at start of that segment" = "body at end of prior segment". Engine refreshes `SegmentBodyBefore` at segment boundaries.
+For postgres/sqlite: hydrated from the prior `entity_versions` row.
 
-### Outbox row vs. envelope shape
+For memory: from the prior in-memory version.
 
-The outbox row stores envelope fields. Bodies looked up at fan-out by `(tenant_id, entity_id, version)`:
+No new `BodyBefore` wire field is added.
 
-- Postgres/SQLite: `entity_versions` table — PK is `(tenant_id, entity_id, version)`. No new index needed for hydration. For outbox time-range scans (consume path), add composite index `(tenant_id, model_name, model_version, emitted_at DESC, version)`.
-- Cassandra: lifecycle index by `(entity_id, version)` per-tenant scoping via tenant_id in the partition key.
+### Outbox row contents
+
+The outbox row stores the envelope (less bodies). Bodies looked up at fan-out by `(tenant_id, entity_id, version)`. The version comes from `EntityMeta.Version` (post-segment) and `version - 1` (pre-segment).
+
+For outbox time-range scans (consume path on postgres/sqlite), add composite index `(tenant_id, model_name, model_version, sequence, emitted_at)` — `sequence` first inside the partition so cursor reads are pure index seeks. `emitted_at` for time-range filters.
 
 ### Subscription mutation invariants
 
-PATCH-mutable: `ttl`, `batching.windowMs`, `batching.maxEvents`, `includeBody`. Filter/delivery/consumption/startFromTimestamp immutable.
+PATCH-mutable: `ttl`, `batching.windowMs`, `batching.maxEvents`, `includeBody`. Filter/delivery/consumption/startFromTimestamp immutable. PATCH applies forward; in-flight/buffered events keep original shape.
 
 ## §4.3. Cardinality and outbox volume
 
-For a segment touching N entities → emits N change events (one per entity), all sharing `transaction_id`.
-For a segment with M cascaded transitions on one entity → emits 1 event with `transitions` list of length M.
-For a user request spanning S segments → emits ≥ S events (more if multi-entity).
+- A segment touching N entities → N change events sharing `transaction_id`.
+- A segment with M cascaded transitions on one entity → exactly **1** change event (segment-summary). Cascade fidelity is in the entity audit log, not the change feed.
+- A user request spanning S segments → ≥ S events.
 
-Outbox volume scales with **entity-update rate**, not transition rate. Cascade-heavy workflows produce fewer outbox rows than a per-transition design would.
+Outbox volume scales with **entity-update rate**, not transition rate. Cascade-heavy workflows do not amplify outbox cost.
 
-## §4.4. Engine → commit data plane (cassandra-specific)
+## §4.4. Small wire-format extension on cassandra
 
-On cassandra, the materialize batch runs in the TX coordinator's redpanda-consumer goroutine (`tx_coordinator.go:798`), potentially on a different node from the engine. The existing wire format `CommitEntityInfo` (`queue/tx_message.go`) carries `Data, PrevData, State, Version` — no transitions list, no `body_before`, no per-transition names.
-
-To make per-segment emission work on cassandra, the wire format must be extended:
-
-### Wire-format extension
+Cassandra's commit pipeline runs in the TX coordinator goroutine, potentially on a different node from the engine. To deliver the user-invoked `transition_name` to the coordinator (where the change-event row is built), `CommitEntityInfo` (`cyoda-go-cassandra/internal/queue/tx_message.go`) gains one field:
 
 ```go
-// New fields on CommitEntityInfo (cassandra plugin)
 type CommitEntityInfo struct {
-    // ... existing fields ...
-    Transitions []TransitionRecord  // ordered list of cascaded transitions in the segment
-    BodyBefore  []byte              // entity body at the start of the segment, nil if first transition was CREATE
-}
-
-type TransitionRecord struct {
-    From           string
-    To             string
-    TransitionName string
+    // ... existing: Data, PrevData, State, Version, ...
+    SegmentInvokedTransition string  // user-invoked transition name; preserved through cascade
 }
 ```
 
-### Engine-side population
+`tx_writes` schema gains the same column so recovery (`MaterializeFromLog`) sees it.
 
-The engine maintains `TransactionState.SegmentBodyBefore` and `TransactionState.SegmentTransitions[entity_id]`. As each transition in a segment commits its post-state, the engine appends a `TransitionRecord` to the entity's slice. At submit time (when the engine builds the `CommitRequest` for the coordinator), both fields are serialised into `CommitEntityInfo`.
+Engine-side: `TransactionState` gains `SegmentInvokedTransition string` field set once at segment start, never overwritten by cascade. Snapshot/restore semantics: participates in `Savepoint` / `RollbackToSavepoint` like `WriteSet` / `ReadSet`. Each plugin's savepoint implementation needs a small update.
 
-### Coordinator-side deserialisation
+**Backward compatibility**: `CommitEntityInfo` is JSON-encoded; the new field is `omitempty`. Rolling upgrade is byte-compatible. Semantic gap during rollout: until both engine and coordinator are upgraded, change events emitted during the window have empty `transition_name`. Documented.
 
-The TX coordinator deserialises the new fields and passes them through to `materialize()`, which constructs the `ChangeEnvelope` for `entity_change_events` insertion (same tag group as the entity write — per-entity atomic).
+This is the **only** wire-format extension required — much smaller than the previously-drafted full `Transitions[]` + `BodyBefore` extension, which is no longer needed.
 
-### Effort budget
-
-This is a non-trivial cross-repo change:
-- `cyoda-go-cassandra` wire format (`queue/tx_message.go`) — schema migration, version bump.
-- Engine-side `TransactionState` extension — touches `cyoda-go-spi` (TransactionState carries plugin-aware fields? or this is encapsulated in an engine-internal struct?).
-- Serialisation/deserialisation tests + parity tests.
-
-Plan-time decision: whether to bundle this into the cassandra-ChangeFeed PR or land it as a prerequisite PR.
-
-### Non-cassandra backends
-
-For memory/sqlite/postgres, the engine and the SPI tx commit happen in the same goroutine on the same node — no wire-format crossing. The engine constructs the `ChangeEnvelope` directly and calls `ChangeFeed.AppendChange(ctx, envelope)` inside the SPI tx. No extension needed.
+`from_state` and `to_state` come from existing `PrevData._meta.state` (cassandra has `ExtractMetaState` helper at `internal/store/index_engine.go`) and `CommitEntityInfo.State`. `kind` derives from `(PrevData, Data)`. No further wire fields needed.
 
 ## §5. SPI ChangeFeed capability
 
@@ -386,7 +368,7 @@ package spi
 import "context"
 
 // ChangeFeed is an optional capability. Plugins not implementing it advertise
-// no ChangeFeed support; subscriptions cannot be created on those tenants/backends.
+// no ChangeFeed support; subscriptions cannot be created on those backends.
 type ChangeFeed interface {
     // AppendChange writes the change event atomically with the entity write in
     // the current transaction. The transaction is retrieved from ctx via the
@@ -394,14 +376,13 @@ type ChangeFeed interface {
     //
     // Per-entity atomicity: if the SPI tx commits, this event is durable and
     // will eventually be visible to consumers. Cross-entity atomicity within
-    // one segment is NOT guaranteed (see §4 atomicity).
+    // one segment is NOT guaranteed.
     //
     // Implementation note: the atomicity boundary is the plugin's commit
     // mechanism (cassandra: materialize batch; postgres/sqlite: SQL tx;
     // memory: in-process channel), not this function's return.
     //
-    // envelope is value-passed; size is small (envelope ~few hundred bytes
-    // plus transitions slice header; bodies are not in the envelope).
+    // envelope is value-passed (small struct ~few hundred bytes).
     AppendChange(ctx context.Context, envelope ChangeEnvelope) error
 
     // Consume returns a stream of change events matching spec.
@@ -412,31 +393,33 @@ type ChangeFeed interface {
     Release(ctx context.Context, subscriptionID string) error
 
     // Capabilities reports backend capabilities. Called at plugin init only;
-    // implementations must return static values. Treat as memoized.
+    // implementations must return static values. Runtime config changes
+    // require restart for capability changes to take effect.
     Capabilities() ChangeFeedCapabilities
 }
 
 type ChangeEnvelope struct {
-    EventID        string                 // "<transaction_id>:<entity_id>"
-    TenantID       string
-    TransactionID  string
-    Cursor         string                 // assigned by AppendChange
-    EmittedAt      time.Time
-    ModelName      string
-    ModelVersion   string
-    EntityID       string
-    Kind           ChangeKind
-    Transitions    []TransitionRecord
-    FinalState     string
-    BodyVersionRef VersionRef             // {EntityID, Version} for body hydration
+    EventID         string        // "<transaction_id>:<entity_id>"
+    TenantID        string
+    TransactionID   string
+    Cursor          string        // assigned by AppendChange
+    EmittedAt       time.Time
+    ModelName       string
+    ModelVersion    string
+    EntityID        string
+    Kind            ChangeKind
+    FromState       string
+    ToState         string
+    TransitionName  string
+    BodyVersionRef  VersionRef    // {EntityID, Version} for body hydration
 }
 
 type ConsumerSpec struct {
     TenantID            string
     EnvelopeFilter      EnvelopeFilter
     StartCursor         string
-    GroupID             string                 // empty for BROADCAST
-    PartitionAssignment *PartitionAssignment   // GROUP mode only; backend-specific
+    GroupID             string                  // empty for BROADCAST
+    PartitionAssignment *PartitionAssignment    // GROUP only; backend-specific
 }
 
 type ChangeFeedCapabilities struct {
@@ -449,40 +432,56 @@ type ChangeFeedCapabilities struct {
 
 ### Implementation guidance
 
-- Errors wrapped with `fmt.Errorf("…: %w", err)` per CLAUDE.md.
+- Errors wrapped with `fmt.Errorf("…: %w", err)`.
 - Logging via `log/slog` only.
-- Tenant scoping enforced at storage layer: every query carries `tenant_id`; no SPI method ever returns cross-tenant data.
+- Tenant scoping enforced at storage layer.
+- Body hydration queries carry `tenant_id` in the lookup key (matches postgres RLS, prevents cross-tenant cache poisoning).
 
 ### Per-backend implementation
 
 | Backend | AppendChange | Consume | Retain/Release | Capabilities |
 |---|---|---|---|---|
 | **memory** | push to in-process channel; tx-aware (rollback discards) | range over channel buffer with envelope filters | no-op | `Durable=false, GroupConsumption=false`, retention=0 |
-| **sqlite** | INSERT into `change_outbox` in the SQL tx | in-process broadcaster signals post-commit; per-consumer bounded queues; catchup-by-cursor on attach; no polling in normal operation | UPDATE claim row; sweep daemon | `Durable=true, GroupConsumption=false`, retention configurable |
-| **postgres** | INSERT into `change_outbox` in the SQL tx; `pg_notify` post-commit | `LISTEN/NOTIFY` low-latency + periodic poll (default 10s) backstop. New composite index for time-range queries. | claim row + sweep daemon | `Durable=true, GroupConsumption=false`, retention configurable |
-| **cassandra** | INSERT into `entity_change_events` table inside the existing materialize batch, same tag group as entity writes (atomic per-entity via HLC fencing). Engine→coordinator data plane extended per §4.4. A publisher daemon drains `entity_change_events` → redpanda for fan-out + GROUP. | redpanda consumer-group via existing `KafkaSubscribe`. Replay older than redpanda retention reads `entity_change_events` table directly. | redpanda offset commits for GROUP; table TTL | `Durable=true, GroupConsumption=true`, retention = max(redpanda retention, table TTL) |
+| **sqlite** | INSERT into `change_outbox` in the SQL tx | in-process broadcaster signals post-commit; per-consumer bounded queues; catchup-by-cursor on attach; no polling | UPDATE claim row; sweep daemon | `Durable=true, GroupConsumption=false`, retention configurable |
+| **postgres** | INSERT into `change_outbox` in the SQL tx; `pg_notify` post-commit | `LISTEN/NOTIFY` low-latency + periodic poll (default 10s, `CYODA_CHANGEFEED_POSTGRES_POLL_INTERVAL`) backstop. Composite index on outbox. | claim row + sweep daemon | `Durable=true, GroupConsumption=false`, retention configurable |
+| **cassandra** | Engine threads `SegmentInvokedTransition` through `CommitEntityInfo`; coordinator builds envelope at materialize and writes to `entity_change_events` table in the same tag group as the entity write. Atomic per-entity via HLC `USING TIMESTAMP`. Publisher daemon drains `entity_change_events` → redpanda for fan-out + GROUP. | redpanda consumer-group via existing `KafkaSubscribe`. Replay older than redpanda retention reads `entity_change_events` directly. | redpanda offset commits for GROUP; table TTL | `Durable=true, GroupConsumption=true`, retention = max(redpanda retention, table TTL) |
+
+### Cassandra `entity_change_events` schema (sketch — concrete in plan)
+
+```cql
+CREATE TABLE entity_change_events (
+    tenant_id        text,
+    model_name       text,
+    model_version    text,
+    bucket_hour      int,           -- floor(emitted_at / 1 hour) for time-range scans
+    hlc              bigint,        -- monotone within partition
+    entity_id        text,
+    transaction_id   uuid,
+    from_state       text,
+    to_state         text,
+    transition_name  text,
+    kind             tinyint,       -- 0=CREATE, 1=UPDATE, 2=DELETE
+    body_version     bigint,        -- for hydration via lifecycle index
+    PRIMARY KEY ((tenant_id, model_name, model_version, bucket_hour), hlc, entity_id)
+) WITH default_time_to_live = 604800;  -- 7d default; configurable
+```
+
+Partition key by `(tenant, model, version, bucket_hour)` — tenant-isolated, time-range scannable, single hour bucket per partition keeps partitions bounded.
 
 ### Cassandra publisher daemon
 
-Drains `entity_change_events` → redpanda. Process model:
-- Per-node singleton, elected via existing cluster-membership (one publisher across the cluster avoids duplicate publishes).
-- Reads `entity_change_events` in HLC order; publishes to the appropriate redpanda topic keyed by entity_id.
-- Publisher lag is observability-monitored (`changefeed.publisher_lag_seconds` metric).
-- On publisher failure, leadership re-elects; new publisher resumes from last-committed publish offset stored in cassandra.
+Drains `entity_change_events` → redpanda. Leader election: **uses redpanda single-partition consumer-group as the election mechanism** (the consumer-group owner of the publisher's coordination topic is the publisher). No separate leader-election primitive needed. On publisher failure, redpanda rebalances the partition to another node; recovery latency = `RedpandaSessionTimeoutSec` (default 30s) + restart.
+
+**Latency consequence for live BROADCAST consumers**: during publisher leadership transfer (≤ ~30-60s), live consumers see delivery pause; outbox rows persist; replay catches up after leadership restores. Documented operational caveat.
+
+Publisher lag exposed via metric `changefeed.publisher_lag_seconds`.
 
 ### GROUP consumption — cassandra-only via redpanda
 
 - Redpanda topics partitioned by `entity_id` hash for per-entity ordering.
 - Consumer groups handled by redpanda natively.
-- Plugin advertises `GroupConsumption=true`.
 
-OSS plugins advertise `false`; subscription create with `GROUP` on OSS → `400 Bad Request`.
-
-### Engine-side contract
-
-- Engine calls `AppendChange` once per entity per segment commit, inside the SPI tx.
-- For non-cassandra backends, the engine constructs the envelope locally.
-- For cassandra, the engine populates `TransactionState.SegmentBodyBefore` + `SegmentTransitions` per §4.4; the coordinator materialises.
+OSS plugins advertise `GroupConsumption=false`; subscription create with `GROUP` on OSS → `400 Bad Request`.
 
 ### Fan-out layer (engine-internal)
 
@@ -494,7 +493,7 @@ OSS plugins advertise `false`; subscription create with `GROUP` on OSS → `400 
 
 ### Wire format
 
-Bare `CloudEvent` stream. CloudEvent `type` values (PascalCase + Event suffix matching cyoda convention):
+Bare `CloudEvent` stream. CloudEvent `type` values (PascalCase + suffix per cyoda convention):
 
 **Server → client:**
 
@@ -518,10 +517,10 @@ Bare `CloudEvent` stream. CloudEvent `type` values (PascalCase + Event suffix ma
 
 ### Cursor semantics
 
-Opaque, server-issued, monotone within a partition. Subscribers never interpret.
+Opaque, server-issued, monotone within a partition. Base64 wire shape. Subscribers never interpret.
 - Within retention bounds.
 - Stable across reconnects.
-- Encodes `(partition_id, sequence)` internally.
+- Encodes `(partition_id, sequence)` internally. For BROADCAST mode on non-partitioned backends, `partition_id = 0` (uniform encoding).
 
 ### Ack & commit semantics
 
@@ -539,7 +538,7 @@ Opaque, server-issued, monotone within a partition. Subscribers never interpret.
 
 ### Idempotency
 
-`event_id` (deterministic `<tx_id>:<entity_id>`) is the dedupe key. Required.
+`event_id` (deterministic `<tx_id>:<entity_id>`) is the dedupe key. The `:` separator is unambiguous (UUID strings contain no `:`).
 
 ## §6.1. Bootstrap & preload bridging
 
@@ -559,14 +558,22 @@ The subscription delivers events with `emitted_at > effectiveStartFrom`. **Stric
 
 ### Preload-bridging pattern
 
+The change feed pairs with cyoda's **existing entity APIs** for preload. The pattern in v1:
+
 ```
 1. T_preload = server-current-time
-2. Query entities matching <filter> as of T_preload
-3. POST subscription with startFromTimestamp = T_preload
-4. Consume stream
+2. Subscribe FIRST with startFromTimestamp = T_preload
+3. Begin buffering subscription events client-side (live but not yet processed)
+4. Query entity state via existing API:
+   - For a known set of entities: GetAsAt(entityID, T_preload) per entity
+   - For all entities matching a model: GetAllAsAt(modelRef, T_preload)
+   - For filtered queries: existing search API (note: "search as-of timestamp" is not a v1 cyoda primitive — applications doing this either filter client-side or use the GetAllAsAt + filter pattern)
+5. Apply preload result + buffered events to local cache
 ```
 
-Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite plugin's existing `<` semantics on as-of must be aligned to `≤`** as a **prerequisite PR** with parity-test scope; tracked in §11.
+The strict-`>` boundary on the subscription side + `≤` semantics on the `GetAsAt` / `GetAllAsAt` side give a clean partition at `T_preload`. Existing semantics across plugins are effectively `≤` at millisecond resolution (postgres uses `valid_time <= T`, memory uses `!After(T)`; sqlite uses `<` at sub-millisecond, identical at ms resolution).
+
+**Note on `bodyPredicate` and preload**: v1 does not provide a server-side "search-with-bodyPredicate as-of T" endpoint. Applications combining `bodyPredicate` filtering with preload must either (a) fetch a superset via `GetAllAsAt` and filter client-side, or (b) accept that preload covers entity-state without body-predicate narrowing. Future work could add an as-of search endpoint.
 
 ### maxLookback
 
@@ -580,23 +587,31 @@ Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite pl
 |---|---|---|
 | Ack window events | 1024 | Per-consumer. |
 | Ack window bytes | 16 MB | Whichever first; single oversized event ships. |
-| Per-consumer queue depth (in-process broadcaster) | 4096 | SQLite/memory; smaller on hot path. |
-| Backlog ceiling | 1M events / 7d | Per-consumer (NOT per-group). |
+| Per-consumer queue depth (in-process broadcaster) | 4096 | SQLite/memory in-process. |
+| Backlog ceiling (durable outbox) | 1M events / 7d | Per-consumer-instance (NOT per-group). |
 | Consumers per node | 1000 | Operational ceiling. |
+
+### Layering
+
+- Ack window is the in-band backpressure mechanism (live).
+- In-process queue depth limits per-consumer buffer between broadcaster and stream send (only on memory/sqlite in-process fan-out).
+- Backlog ceiling applies at durable storage retention — relevant for long-disconnected durable consumers, not live ones.
 
 ### Memory floor (per node, defaults)
 
-- 1000 consumers × 4096 queue × ~1 KB envelope ≈ **4 GB worst case** before ack-window backpressure kicks in.
+- 1000 consumers × 4096 queue × ~512 B envelope ≈ **2 GB worst case** before ack-window backpressure kicks in.
 - Plus 256 MB body cache.
-- **The defaults are sized for ≥8 GB nodes.** Smaller deployments must reduce `CYODA_CHANGEFEED_MAX_CONSUMERS_PER_NODE` or the queue depth. Documented in §13.
+- **Defaults sized for ≥4 GB nodes.** Smaller deployments must reduce `CYODA_CHANGEFEED_MAX_CONSUMERS_PER_NODE` or queue depth.
+
+(Envelope is ~512 B; segment-summary shape — `from_state`, `to_state`, `transition_name` strings + fixed-size IDs — has no cascade-dependent growth. The prior estimate of 8 KB was based on the now-dropped `transitions[]` list.)
 
 ### Slow-consumer policies
 
 | Policy | Default | Effect |
 |---|---|---|
 | `DETACH_CONSUMER` | yes | Per-consumer-instance detach. GROUP: redpanda rebalances. |
-| `BLOCK_APPEND` | no | **Not recommended**; explicit operator override. |
-| `DROP_OLDEST` | no | At-most-once degradation. |
+| `BLOCK_APPEND` | no | **Not recommended**; explicit operator override only. |
+| `DROP_OLDEST` | no | Explicit at-most-once degradation. |
 
 ## §8. Auth & multitenancy
 
@@ -604,15 +619,19 @@ Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite pl
 
 - `tenantId` always from JWT.
 - Outbox/log physically partitioned by tenant.
-- Body hydration lookups include `tenant_id` in the query key (enforces postgres row-level security + sqlite isolation).
+- Body hydration includes `tenant_id` in the lookup key.
 
 ### Role
 
 **All subscription operations require `ROLE_M2M`**. No granular permissions invented.
 
+### Subscriptions table RLS
+
+Intentionally **not RLS-protected** at the row level. Tenant scoping enforced at the application/SQL WHERE-clause layer, matching cyoda's existing entity-store patterns. Permits the existence-set bootstrap (§4) to scan across tenants without privileged role indirection.
+
 ### Audit logging
 
-- Subscription create/update/delete logged with tenant + actor + filter shape (model name, kinds, fromState, toState, bodyPredicate's **structural shape** — operators used, path **depth/shape only**, e.g. `$.string.string`, not actual paths like `$.creditCardNumber`).
+- Subscription create/update/delete logged with tenant + actor + filter shape (model name, kinds, fromState, toState, bodyPredicate's **structural shape** — operators used, path **depth/shape only**, e.g. `$.string.string`, never actual paths like `$.creditCardNumber`).
 - Attach/detach logged with tenant + subscription id + consumer instance + generation.
 - Per `.claude/rules/security.md`: never log credentials, tokens, secrets, signing keys, or event body content.
 
@@ -623,9 +642,9 @@ Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite pl
 | Failure | Effect |
 |---|---|
 | Storage tx rollback | Entity write + change event both fail. |
-| AppendChange returns error | SPI tx rolls back; entity write fails too. |
+| AppendChange returns error | SPI tx rolls back. |
 | ChangeFeed.Consume backend error | Affected streams terminate `INTERNAL` + ticket; reconnect. |
-| Cassandra publisher daemon lag/death | Outbox rows persist; redpanda publishes delayed; replay falls back to table. Daemon leadership re-elects. Lag metric exposed. |
+| Cassandra publisher daemon lag/death | Outbox rows persist; redpanda publishes delayed; replay falls back to table. Daemon leadership re-elects via redpanda group. Live consumers may see delivery pause ≤ `RedpandaSessionTimeoutSec + restart`. Lag metric exposed. |
 
 ### Cluster failures
 
@@ -633,7 +652,7 @@ Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite pl
 |---|---|
 | Single node death | Subscribers reconnect to surviving nodes. |
 | Network partition | Existing cluster protocol; delivery may pause on minority. |
-| Subscription cache broadcast lost | Periodic full-sync (60s) refreshes existence set + invalidates content cache. Bounded staleness. |
+| Subscription cache broadcast lost | Periodic full-sync (60s default) refreshes existence set. Bounded staleness; subscribers may see up to 60s of missed deliveries on un-synced nodes after a subscription creation. |
 | Storage corruption | Out of scope. |
 
 ### Subscriber-induced
@@ -648,6 +667,7 @@ Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite pl
 
 ## §10. Out of scope for v1
 
+- Per-transition trajectory inside a cascade. Segment-summary only; audit log carries trajectory.
 - JSONPath projection / JSON Patch diff.
 - Failed-segment events.
 - Processor outputs in envelope.
@@ -661,63 +681,76 @@ Strict-`>` on subscription + `≤` on as-of-query = clean partition. **SQLite pl
 - Granular per-model permissions.
 - GROUP on OSS backends.
 - Cross-entity atomicity within a segment.
-- Per-individual-transition events.
-- `LifecycleCondition` inside `bodyPredicate`.
-- Time-sortable `event_id` (purely an idempotency key; ordering is the cursor's job).
+- `LifecycleCondition` and `FunctionCondition` inside `bodyPredicate`.
+- Time-sortable `event_id`.
+- Server-side "search-with-bodyPredicate as-of T" endpoint for preload bridging.
 
 ## §11. Open verification items (plan-time)
 
-1. **SQLite as-of-timestamp `<` → `≤` alignment** — prerequisite PR with parity-test scope and behavioural-change changelog entry. **Bundled into the ChangeFeed work as PR 0 of the plan.**
-2. **Cassandra `entity_change_events` schema** — partition key, clustering key, TTL strategy; concrete design in the plan.
-3. **Cassandra publisher daemon** — per-node singleton via existing leader election; offset tracking schema. Concrete design in the plan.
-4. **Cassandra wire-format extension** (`CommitEntityInfo`) — schema migration, version bump, parity tests. Per §4.4.
-5. **Outbox composite index** for postgres/sqlite — column ordering decision depends on cursor encoding; pin in the plan.
-6. **Engine `TransactionState` extension** — `SegmentBodyBefore`, `SegmentTransitions`; SAVEPOINT snapshot/restore wiring; cyoda-go-spi changes if these are SPI-visible.
+1. **Cassandra `entity_change_events` schema** — sketch in §5; concrete partitioning, clustering, TTL strategy pending.
+2. **Cassandra publisher daemon** — single-partition redpanda coordination topic for leader election; offset tracking schema; concrete design pending.
+3. **CommitEntityInfo `SegmentInvokedTransition` extension** — per §4.4. JSON `omitempty`; tx_writes column add; recovery test coverage.
+4. **Engine `TransactionState.SegmentInvokedTransition`** — small SPI extension; per-plugin Savepoint/RollbackToSavepoint integration; bundled with PR 1.
+5. **Outbox composite index for postgres/sqlite** — `(tenant_id, model_name, model_version, sequence, emitted_at)` — column ordering may need refinement based on cursor encoding decision.
+6. **SQLite as-of sub-millisecond `≤` alignment** — optional parity cleanup, not a prerequisite (functional equivalence at ms resolution). Lands independently when convenient.
 
-### Resolved across both review iterations
+### Resolved across three review iterations
 
 | Item | Resolution |
 |---|---|
 | `transaction_id` field surfacing | `EntityMeta.TransactionID` exists at `cyoda-go-spi/types.go:18`. |
-| Search-DSL evaluator reuse | `spi.predicate.Condition` tree via `internal/match/match.go:Match`. `LifecycleCondition` forbidden in bodyPredicate. |
+| Search-DSL evaluator reuse | `spi.predicate.Condition` tree via `internal/match/match.go:Match`. `LifecycleCondition` + `FunctionCondition` forbidden in `bodyPredicate`; recursive walker rejects at any depth. |
 | gRPC keepalive defaults | 10s/30s, aligned with `streaming.go:21-23`. |
 | Lifecycle-index body hydration | postgres/sqlite `entity_versions` PK index. |
-| Multi-segment commits | Per-segment emission; transitions[] list in envelope. |
+| Multi-segment commits | Per-segment emission; segment-summary envelope (`from_state`, `to_state`, `transition_name`). |
 | SPI signature `TxHandle` | Removed. `AppendChange(ctx, envelope)`; tx via `spi.GetTransaction(ctx)`. |
 | Permission model invention | Removed. `ROLE_M2M` only. |
-| GROUP rebalance protocol | Removed. Cassandra-only via redpanda's native protocol. |
-| Cluster-broadcast correctness gap | Existence set + positive content cache + periodic full-sync. |
+| GROUP rebalance protocol | Cassandra-only via redpanda's native protocol. |
+| Cluster-broadcast correctness gap | Existence set bootstrap + content cache + periodic full-sync. |
 | Cassandra atomicity (no LWT) | Per-entity atomic via tag-grouped chunk in materialize batch. |
-| Goroutine scale | Capped at 1000/node; memory floor documented (~4 GB worst case). |
-| LRU body cache scope | Bounded by `CYODA_CHANGEFEED_BODY_CACHE_BYTES`, default 256 MB. Tenant_id is part of the lookup key. |
+| Goroutine scale | Capped at 1000/node; memory floor ~2 GB worst case. |
+| LRU body cache scope | Bounded by `CYODA_CHANGEFEED_BODY_CACHE_BYTES`. Tenant_id in lookup key. Eviction safety via Go GC + batch byte-slice refs. |
 | Outbox volume model | Per-segment-per-entity; composite index for time-range query. |
-| `event_id` determinism for replay | Deterministic format `<transaction_id>:<entity_id>`. Recovery replay produces same id. Idempotency only, not ordering. |
-| `event_id` collision risk | Zero (no hashing; concatenation of already-unique inputs). |
-| `LifecycleCondition` + EntityMeta | Forbidden in bodyPredicate; rejected at create. |
-| Engine→cassandra data plane | §4.4 documents wire-format extension. |
+| `event_id` determinism | `<transaction_id>:<entity_id>`; deterministic; zero collision risk by concatenation. Idempotency only, not ordering. |
+| `LifecycleCondition` + EntityMeta | Forbidden in bodyPredicate; recursive walker. |
+| Engine→cassandra data plane | Reduced to single field (`SegmentInvokedTransition`) on `CommitEntityInfo`; from_state derived from `PrevData._meta.state`; to_state from `State`; kind from `(PrevData, Data)`. |
 | Subscription cache thundering herd | Existence set bootstrap eliminates per-key storage reads at steady state. |
 | GROUP backlog interaction | Per-consumer-instance detach; redpanda handles partition rebalance. |
 | Body hydration tenant scoping | Explicit `tenant_id` in lookup key. |
-| bodyPredicate path audit redaction | Path depth/shape only, never raw paths. |
-| `Capabilities()` call timing | Init-time only; treat as memoized static. |
-| `AppendChange` envelope copy cost | Value-pass; small struct + slice header; documented intent. |
-| `kind=DELETE` ambiguity | `info.Data == nil` (hard-delete) or workflow-marked deletion state. |
-| `lastAttachedAt` semantics | Updated on attach; preserved on detach; used for TTL computation. |
+| bodyPredicate path audit redaction | Path depth/shape only. |
+| `Capabilities()` call timing | Init-time only; static; restart required for config changes. |
+| `AppendChange` envelope copy cost | Value-pass; small struct. |
+| `kind=DELETE` ambiguity | Derived directly from `(PrevData, Data)`. |
+| `lastAttachedAt` semantics | Updated on attach; preserved on detach. |
+| `transitions[]` over-design | Removed. Segment-summary only. |
+| `BodyBefore` field redundancy | Removed. `body_before` from `PrevData`. |
+| Recovery replay fidelity | Replay reconstructs envelope from `tx_writes` (which carries `SegmentInvokedTransition`); same `event_id`; same envelope shape. |
+| `subscriptions` table RLS | Intentionally not RLS-protected; app-layer tenant scoping (matches existing pattern). |
+| PR 0 SQLite ≤ prerequisite | Dropped; functional equivalence at ms resolution. |
+| Existence-set staleness window | Documented; subscribers may see ≤ 60s missed deliveries on un-synced nodes after subscription create; configurable via `CYODA_CHANGEFEED_EXISTENCE_SYNC_INTERVAL`. |
+| Publisher leader election | Redpanda single-partition consumer group; no new primitive needed. |
+| Wire-format rolling upgrade | JSON `omitempty`; byte-compatible; semantic gap during rollout window documented (empty `transition_name`). |
+| Preload bridging API mapping | Existing `GetAsAt` / `GetAllAsAt`; client-side filter for `bodyPredicate`-narrowed preload; "search as-of T" deferred. |
+| Cache eviction safety | Go GC + batch byte-slice refs. |
+| COMPATIBILITY.md | Required on PR 1 (SPI bump) and PR 7 (cassandra wire-format extension). |
+| CloudEvent type naming | PascalCase + Event/Request suffix per cyoda convention. |
 
 ## §12. Extension hooks reserved
 
 - `kind` enum extensibility (e.g., `SEGMENT_FAILED`).
-- `includeProcessorOutputs` per-transition.
+- `includeProcessorOutputs` — populate processor outputs in the envelope.
 - `partitionKey` JSONPath override.
 - JSONPath projection / JSON Patch diff.
 - ChangeFeed as separately pluggable SPI capability.
 - Admin "always on" tenant change feed.
 - Granular per-model permissions if `UserContext` gains a permission layer.
+- "Search-with-bodyPredicate as-of T" endpoint for richer preload.
+- Per-transition events (would be a separate, additional event type; not a replacement for segment-summary).
 
 ## §13. Configuration env vars
 
 Per `.claude/rules/documentation-hygiene.md` (Gate 4), **every env var below requires synchronised updates to:**
-1. `cmd/cyoda/help/content/config/*.md` (relevant topic)
+1. `cmd/cyoda/help/content/config/*.md` (relevant topic — likely new `config/changefeed.md`)
 2. `README.md` configuration section
 3. `DefaultConfig()` in the appropriate Go config struct
 
@@ -726,7 +759,7 @@ Per `.claude/rules/documentation-hygiene.md` (Gate 4), **every env var below req
 | `CYODA_CHANGEFEED_MAX_LOOKBACK` | `15m` | `startFromTimestamp` past-clamp |
 | `CYODA_CHANGEFEED_BODY_CACHE_BYTES` | `268435456` (256 MB) | Per-node body LRU cap |
 | `CYODA_CHANGEFEED_MAX_CONSUMERS_PER_NODE` | `1000` | Operational ceiling |
-| `CYODA_CHANGEFEED_POLL_INTERVAL` | `10s` | Postgres missed-notify backstop |
+| `CYODA_CHANGEFEED_POSTGRES_POLL_INTERVAL` | `10s` | Postgres missed-notify backstop |
 | `CYODA_CHANGEFEED_RETENTION` | `7d` | Outbox retention; must be ≥ `MAX_LOOKBACK` |
 | `CYODA_CHANGEFEED_BACKLOG_MAX_EVENTS` | `1000000` | Backlog ceiling |
 | `CYODA_CHANGEFEED_BACKLOG_MAX_AGE` | `7d` | Backlog ceiling |
@@ -734,60 +767,64 @@ Per `.claude/rules/documentation-hygiene.md` (Gate 4), **every env var below req
 | `CYODA_CHANGEFEED_ACK_WINDOW_BYTES` | `16777216` (16 MB) | Per-consumer ack window |
 | `CYODA_CHANGEFEED_CACHE_TTL` | `30s` | Positive content-cache TTL |
 | `CYODA_CHANGEFEED_EXISTENCE_SYNC_INTERVAL` | `60s` | Periodic full-sync of existence set |
+| `CYODA_CHANGEFEED_QUEUE_DEPTH` | `4096` | Per-consumer in-process queue depth (sqlite/memory) |
 
 ## §14. Test strategy
 
 ### TDD per CLAUDE.md Gate 1
 
-Every component is driven by a failing test first. The test suites are scoped per plan-PR; verification commands per CLAUDE.md.
+Failing tests drive every component. Scoped per plan-PR; verification per CLAUDE.md.
 
 ### E2E per Gate 2
 
-User-facing behaviour (REST CRUD, gRPC stream, error codes) covered by E2E tests in `internal/e2e/`. Pattern follows existing self-contained E2E (testcontainers postgres + httptest server). New tests:
-- Subscription CRUD lifecycle (create / get / list / patch / delete).
+User-facing behaviour (REST CRUD, gRPC stream, error codes) covered by E2E tests in `internal/e2e/`. Pattern follows existing testcontainers postgres + httptest server. New tests:
+- Subscription CRUD lifecycle.
 - gRPC attach (durable + ephemeral; broadcast + group on cassandra).
 - At-least-once delivery via simulated disconnect.
 - Backlog ceiling tripping → `DETACH_CONSUMER`.
-- Preload-bridging via `startFromTimestamp` end-to-end (query as-of + subscribe).
+- Preload-bridging via `startFromTimestamp` end-to-end.
 - Tenant isolation cross-check.
+- Cascade segment emits one envelope, not multiple.
+- Recovery-replay produces same `event_id` and envelope shape.
 
 ### Parity per existing pattern
 
 Storage-plugin parity tests in `e2e/parity/registry.go` extend to cover `ChangeFeed`:
-- `AppendChange` atomicity (commit + change-event visibility).
+- `AppendChange` atomicity.
 - `Consume` cursor semantics + envelope filter.
 - `Retain` / `Release` retention claim accounting.
 - Body hydration by version pair.
 
-Cassandra plugin picks up new parity tests automatically via the registry; the cassandra plugin's CI runs against its own dependency-update PR.
+Cassandra plugin picks up new parity tests automatically via the registry.
 
 ### SPI tests
 
 `cyoda-go-spi/spitest/` gets `ChangeFeed` contract tests (interface conformance, error semantics, capability enumeration).
 
+### gRPC stream tests
+
+Follow existing `internal/grpc/streaming_test.go` pattern for new `EntityChangeService`.
+
 ### Race detector
 
-Per CLAUDE.md, `go test -race ./...` is end-of-deliverable for the final PR series, not per-step.
-
-### SQLite as-of `≤` alignment (PR 0)
-
-Prerequisite PR. Adds parity test asserting `≤` semantics across plugins. SQLite plugin implementation update. Changelog entry. Verification: `go test ./plugins/sqlite/... -v` + parity suite.
+Per CLAUDE.md, `go test -race ./...` is end-of-deliverable for the final PR series.
 
 ---
 
 ## Workflow context
 
 Standard cyoda flow per `CLAUDE.md`:
-- Brainstorming → this spec (two fresh-context review iterations applied).
+- Brainstorming → this spec (three fresh-context review iterations applied).
 - Next: `superpowers:writing-plans` to produce the implementation plan.
-- Implementation track is multi-PR. The plan partitions into reviewable units:
-  - PR 0: SQLite as-of `≤` alignment (prerequisite).
-  - PR 1: SPI ChangeFeed interface in `cyoda-go-spi`.
-  - PR 2: Memory + SQLite ChangeFeed implementations.
-  - PR 3: Postgres ChangeFeed implementation + composite index migration.
-  - PR 4: Engine emission hook + `TransactionState` extensions.
-  - PR 5: REST CRUD endpoints.
-  - PR 6: gRPC `EntityChangeService` + fan-out + filter/body machinery.
-  - PR 7: Cassandra wire-format extension (`CommitEntityInfo`) — cross-repo PR pair.
-  - PR 8: Cassandra `entity_change_events` table + materialize integration + publisher daemon.
-  - PR 9: Documentation, help topics, env-var wiring.
+- Implementation track is multi-PR:
+  - **PR 1**: SPI ChangeFeed interface + `TransactionState.SegmentInvokedTransition` + `EntityMeta` clarifications. Bundled into one SPI tag per `feedback_spi_coordinated_release_procedure`. Includes `COMPATIBILITY.md` update.
+  - **PR 2**: Memory + SQLite ChangeFeed implementations. Engine emission for non-cassandra path.
+  - **PR 3**: Postgres ChangeFeed implementation + outbox composite index migration.
+  - **PR 4**: REST CRUD endpoints + auth + audit logging + `bodyPredicate` validator (recursive walker).
+  - **PR 5**: gRPC `EntityChangeService` + fan-out goroutine + filter/body machinery + body LRU cache.
+  - **PR 6**: Subscription cache (existence set + content cache + periodic sync + broadcast invariants).
+  - **PR 7**: Cassandra `CommitEntityInfo.SegmentInvokedTransition` extension + `tx_writes` schema migration. **Cross-repo PR pair** (cyoda-go-cassandra change → tag → cyoda-go pin bump). Includes `COMPATIBILITY.md`.
+  - **PR 8**: Cassandra `entity_change_events` table + materialize integration + publisher daemon + redpanda consumer-group integration for GROUP.
+  - **PR 9**: Documentation, help topics (`config/changefeed.md`), env-var wiring, README configuration section, COMPATIBILITY.md final sync.
+
+PR 0 (sqlite ≤ alignment) is **dropped from the prerequisite chain** — functional equivalence at millisecond resolution. It lands independently as a parity cleanup whenever convenient.
