@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -90,6 +92,83 @@ var validRetryPolicies = map[string]struct{}{
 // descriptions at 1024, so 256 sits in the natural midpoint for
 // human-meaningful identifier strings.
 const maxIdentifierLen = 256
+
+// maxAnnotationsBytes caps each individual annotations object at 64 KB,
+// measured on its compacted form. Aggregate annotations across a workflow
+// are already bounded by the 10 MB import-body cap; this per-field guard
+// stops a single bloated blob. Sits above the 256-char identifier cap by
+// three orders of magnitude — annotations carry structured client data
+// (role lists, labels, UI hints), not identifiers.
+const maxAnnotationsBytes = 64 * 1024
+
+// canonicalizeAnnotations validates one annotations value and returns its
+// canonical (compacted) form, or nil when the value is absent, blank, or
+// the JSON literal null. The engine never interprets the contents — this
+// only enforces that what is stored is a bounded JSON object. The location
+// string (e.g. `workflow "x" state "y"`) is used solely to build errors.
+func canonicalizeAnnotations(raw json.RawMessage, location string) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	// The value is already syntactically valid JSON (the strict decoder
+	// validated it when populating the RawMessage), so a leading '{' is a
+	// sufficient and necessary marker of a JSON object.
+	if trimmed[0] != '{' {
+		return nil, fmt.Errorf("%s: annotations must be a JSON object", location)
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, trimmed); err != nil {
+		// Unreachable in practice (decoder already validated); defensive.
+		return nil, fmt.Errorf("%s: annotations is not valid JSON: %v", location, err)
+	}
+	if buf.Len() > maxAnnotationsBytes {
+		return nil, fmt.Errorf("%s: annotations size %d bytes exceeds the %d-byte limit",
+			location, buf.Len(), maxAnnotationsBytes)
+	}
+	out := make(json.RawMessage, buf.Len())
+	copy(out, buf.Bytes())
+	return out, nil
+}
+
+// validateAndNormalizeAnnotations canonicalises the annotations on every
+// workflow, state, and transition in the incoming slice, mutating each in
+// place. Returns the first validation error (object-only, size cap). Run on
+// the incoming import request only — consistent with the other structural
+// validators, which are not retroactive against already-stored workflows.
+func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
+	for i := range workflows {
+		wf := &workflows[i]
+		canon, err := canonicalizeAnnotations(wf.Annotations, fmt.Sprintf("workflow %q", wf.Name))
+		if err != nil {
+			return err
+		}
+		wf.Annotations = canon
+		for stateName, stateDef := range wf.States {
+			sCanon, err := canonicalizeAnnotations(stateDef.Annotations,
+				fmt.Sprintf("workflow %q state %q", wf.Name, stateName))
+			if err != nil {
+				return err
+			}
+			stateDef.Annotations = sCanon
+			for j := range stateDef.Transitions {
+				tr := &stateDef.Transitions[j]
+				tCanon, err := canonicalizeAnnotations(tr.Annotations,
+					fmt.Sprintf("workflow %q state %q transition %q", wf.Name, stateName, tr.Name))
+				if err != nil {
+					return err
+				}
+				tr.Annotations = tCanon
+			}
+			// Map values are not addressable — write the state (with its
+			// normalised annotations) back. The transitions slice is shared
+			// by reference, but the state-level Annotations assignment above
+			// only touched the local copy.
+			wf.States[stateName] = stateDef
+		}
+	}
+	return nil
+}
 
 // validateImportRequest enforces the per-incoming-workflow structural
 // rules (audit §H4, §H6.a–e, §M4). Violations are returned as plain
