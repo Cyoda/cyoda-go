@@ -127,11 +127,28 @@ func RunWorkflowAnnotationsRoundTrip(t *testing.T, fixture BackendFixture) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("ExportWorkflow: parse: %v", err)
 	}
-	wf := body["workflows"].([]any)[0].(map[string]any)
+	workflows, ok := body["workflows"].([]any)
+	if !ok {
+		t.Fatalf("ExportWorkflow: expected workflows array, got %T", body["workflows"])
+	}
+	if len(workflows) == 0 {
+		t.Fatalf("ExportWorkflow: expected at least 1 workflow, got 0")
+	}
+	wf, ok := workflows[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ExportWorkflow: expected workflow to be an object, got %T", workflows[0])
+	}
 	if got, want := wf["annotations"], map[string]any{"roles": []any{"admin"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("workflow annotations: got %#v, want %#v", got, want)
 	}
-	state := wf["states"].(map[string]any)["NONE"].(map[string]any)
+	statesRaw, ok := wf["states"].(map[string]any)
+	if !ok {
+		t.Fatalf("ExportWorkflow: expected states to be an object, got %T", wf["states"])
+	}
+	state, ok := statesRaw["NONE"].(map[string]any)
+	if !ok {
+		t.Fatalf("ExportWorkflow: expected NONE state to be an object, got %T", statesRaw["NONE"])
+	}
 	if got, want := state["annotations"], map[string]any{"ui": "start"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("state annotations: got %#v, want %#v", got, want)
 	}
