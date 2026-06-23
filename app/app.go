@@ -202,7 +202,7 @@ func New(cfg Config) *App {
 	// Today only tracing is wired; add future decorators between tracing and
 	// the plugin TM in the order named here.
 	if cfg.OTelEnabled {
-		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager)
+		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager, observability.Meter())
 	}
 
 	// Auth service: JWT or mock mode
@@ -486,7 +486,7 @@ func New(cfg Config) *App {
 		extProc = localDispatcher
 	}
 	if cfg.OTelEnabled {
-		extProc = observability.NewTracingExternalProcessingService(extProc)
+		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),

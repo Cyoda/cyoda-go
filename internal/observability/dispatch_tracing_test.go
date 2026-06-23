@@ -8,6 +8,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type fakeDispatcher struct {
@@ -43,7 +45,7 @@ func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *
 	defer shutdown(context.Background())
 
 	inner := &fakeDispatcher{}
-	traced := observability.NewTracingExternalProcessingService(inner)
+	traced := observability.NewTracingExternalProcessingService(inner, observability.Meter())
 
 	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-1"}}
 	processor := spi.ProcessorDefinition{
@@ -71,7 +73,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_DelegatesToInner(t *t
 	defer shutdown(context.Background())
 
 	inner := &fakeDispatcher{}
-	traced := observability.NewTracingExternalProcessingService(inner)
+	traced := observability.NewTracingExternalProcessingService(inner, observability.Meter())
 
 	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-2"}}
 	criterion := json.RawMessage(`{"op":"eq","field":"status","value":"active"}`)
@@ -94,7 +96,7 @@ func TestTracingExternalProcessingService_DispatchProcessor_PropagatesError(t *t
 
 	wantErr := errors.New("dispatch failed")
 	inner := &fakeDispatcher{returnErr: wantErr}
-	traced := observability.NewTracingExternalProcessingService(inner)
+	traced := observability.NewTracingExternalProcessingService(inner, observability.Meter())
 
 	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-3"}}
 	processor := spi.ProcessorDefinition{Name: "failProc"}
@@ -111,7 +113,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *te
 
 	wantErr := errors.New("criteria failed")
 	inner := &fakeDispatcher{returnErr: wantErr}
-	traced := observability.NewTracingExternalProcessingService(inner)
+	traced := observability.NewTracingExternalProcessingService(inner, observability.Meter())
 
 	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-4"}}
 	criterion := json.RawMessage(`{}`)
@@ -120,4 +122,32 @@ func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *te
 	if !errors.Is(err, wantErr) {
 		t.Errorf("expected %v, got %v", wantErr, err)
 	}
+}
+
+func TestTracingDispatch_DurationHasExplicitBuckets(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	traced := observability.NewTracingExternalProcessingService(&fakeDispatcher{}, mp.Meter("test"))
+
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-1"}}
+	_, _ = traced.DispatchProcessor(context.Background(), entity, spi.ProcessorDefinition{Name: "p"}, "wf", "tr", "tx")
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+	for _, sm := range rm.ScopeMetrics {
+		for _, md := range sm.Metrics {
+			if md.Name != "cyoda.dispatch.duration" {
+				continue
+			}
+			h := md.Data.(metricdata.Histogram[float64])
+			if got := h.DataPoints[0].Bounds; len(got) != len(want) {
+				t.Fatalf("bounds len=%d want %d (%v)", len(got), len(want), got)
+			}
+			return
+		}
+	}
+	t.Fatal("cyoda.dispatch.duration not found")
 }
