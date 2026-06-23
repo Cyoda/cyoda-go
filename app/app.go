@@ -266,12 +266,16 @@ func New(cfg Config) *App {
 			AllowPrivateNetworks:     cfg.IAM.OIDC.AllowPrivateNetworks,
 		})
 
-		// NopMetrics for v0.8.0; real instrumentation lands in a future milestone.
 		var oidcBroadcaster spi.ClusterBroadcaster
 		if gossipReg != nil {
 			oidcBroadcaster = gossipReg
 		}
-		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidc.NopMetrics{}, slog.Default(), oidc.RegistryConfig{
+		oidcMetrics, err := oidc.NewOTelMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "oidc-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidcMetrics, slog.Default(), oidc.RegistryConfig{
 				AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
 				ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
 				SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
