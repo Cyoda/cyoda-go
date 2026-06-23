@@ -75,8 +75,8 @@ github.com/cpuguy83/dockercfg v0.3.2 h1:DlJTyZGBDlXqUZ2Dk2Q3xHs/FtnooJJVaad2S9GK
 github.com/cpuguy83/dockercfg v0.3.2/go.mod h1:sugsbF4//dDlL/i+S+rtpIWp+5h0BHJHfjj5/jFyUJc=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
-github.com/cyoda-platform/cyoda-go-spi v0.7.2-0.20260616013025-c86ade375eb4 h1:6zJeY1cmIzqQxMdcjWrv7D5kIMvopH+ksFeomDc47Ps=
-github.com/cyoda-platform/cyoda-go-spi v0.7.2-0.20260616013025-c86ade375eb4/go.mod h1:zyjI4jQb4Jz3p52FXGqImxGZ3b81Nuxe+cfsIStK3EQ=
+github.com/cyoda-platform/cyoda-go-spi v0.7.2-0.20260623011803-0cf3dfa202fc h1:EMt7uxBvrtk3neFhfTRjBOzsgoyImtmgzkZ5HXgCjbs=
+github.com/cyoda-platform/cyoda-go-spi v0.7.2-0.20260623011803-0cf3dfa202fc/go.mod h1:zyjI4jQb4Jz3p52FXGqImxGZ3b81Nuxe+cfsIStK3EQ=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.7.2-0.20260615153318-6e8c833632f7 h1:YoxZN7g2y+v/IVfOn+b6gXcP5g7SvgzbABsGJJIHSKU=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.7.2-0.20260615153318-6e8c833632f7/go.mod h1:dI7XkpXIC/2VaIN12BqFii+kJJzj7qxU2KMgAhRbOS8=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.7.2-0.20260615153318-6e8c833632f7 h1:TsbXsmaLp3KKNS2MQKYhhFO4htAaDdcfyY5ifeNd1H0=
