@@ -39,11 +39,17 @@ func NewFaultInjectingKV(inner spi.KeyValueStore) *FaultInjectingKV {
 //
 // When the corresponding operation completes, the wrapper sends on the returned
 // channel (signalling the test "op is done") and then blocks reading from the
-// same channel (waiting for the test to send "you may continue"). The channel
-// is buffered with capacity 1 so the test can send without blocking if it
-// resumes immediately.
+// same channel (waiting for the test to send "you may continue").
+//
+// The channel is UNBUFFERED so both handshakes are true rendezvous. A buffered
+// channel is unsafe here: maybeWait sends then immediately receives on the same
+// channel, so with a buffer the worker goroutine can consume its own signal back
+// before the test receives it — leaving the test's receive blocked forever (an
+// intermittent deadlock under randomized scheduling). An unbuffered send cannot
+// complete without a distinct receiver, so the worker can never satisfy its own
+// wait.
 func (k *FaultInjectingKV) PauseAt(opName string) chan struct{} {
-	ch := make(chan struct{}, 1)
+	ch := make(chan struct{})
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.pauseAfter[opName] = ch
