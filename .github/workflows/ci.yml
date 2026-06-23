@@ -29,6 +29,15 @@ permissions:
 # to the public proxy.
 env:
   GOPRIVATE: github.com/cyoda-platform/*
+  # Disable testcontainers' Ryuk resource-reaper in CI. Its handshake over
+  # IPv6 loopback intermittently resets ("Reaper handshake failed: connection
+  # reset by peer"), after which Ryuk reaps the still-in-use postgres container
+  # mid-test — surfacing as SQLSTATE 57P01 ("unexpected postmaster exit") and
+  # failing the whole parity/e2e suite. Ryuk only matters for cleaning up
+  # leaked containers when a test process dies; on ephemeral CI runners the VM
+  # is discarded after the job and the fixtures already call Terminate()
+  # explicitly, so the reaper is pure downside here.
+  TESTCONTAINERS_RYUK_DISABLED: "true"
 
 jobs:
   test:
