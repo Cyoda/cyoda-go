@@ -37,7 +37,7 @@ kubectl -n cyoda create secret generic cyoda-jwt \
 ### Install
 
 ```bash
-helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
+helm repo add cyoda https://cyoda.github.io/cyoda-go
 helm repo update
 
 helm install cyoda cyoda/cyoda -n cyoda \

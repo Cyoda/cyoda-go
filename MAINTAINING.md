@@ -10,7 +10,7 @@ job, these steps must be completed once.
 
 ### 1. Create the empty tap repository
 
-- New repo: `cyoda-platform/homebrew-cyoda-go` (public, empty).
+- New repo: `cyoda/homebrew-cyoda-go` (public, empty).
 - `README.md` in the tap repo: a short paragraph explaining the tap
   and linking back to this main repo. GoReleaser will push `cyoda.rb`
   on every release.
@@ -22,12 +22,12 @@ installation tokens for the release workflow. Advantages over a PAT:
 org-owned, no human account attached, no expiration to track, audit
 trail is clean.
 
-1. Navigate to `https://github.com/organizations/cyoda-platform/settings/apps`.
+1. Navigate to `https://github.com/organizations/cyoda/settings/apps`.
 2. Click **New GitHub App**.
 3. Fill in:
    - App name: `cyoda-platform-release-bot` (must be globally unique
      across all GitHub Apps; add a suffix if taken).
-   - Homepage URL: `https://github.com/cyoda-platform/cyoda-go`
+   - Homepage URL: `https://github.com/cyoda/cyoda-go`
    - Webhook: uncheck **Active** (no webhook needed).
    - Permissions → **Repository permissions**:
      - **Contents**: Read and write
@@ -42,15 +42,15 @@ trail is clean.
 ### 3. Install the App on the tap repo
 
 1. On the App settings page, click **Install App** in the left sidebar.
-2. Choose the `cyoda-platform` org.
+2. Choose the `cyoda` org.
 3. Under **Repository access**, select **Only select repositories** and
-   add `cyoda-platform/homebrew-cyoda-go`. Do NOT install on the whole
+   add `cyoda/homebrew-cyoda-go`. Do NOT install on the whole
    org — the App's scope must be minimal.
 4. Click **Install**.
 
 ### 4. Configure secrets in the cyoda-go repo
 
-1. Navigate to `https://github.com/cyoda-platform/cyoda-go/settings/secrets/actions`.
+1. Navigate to `https://github.com/cyoda/cyoda-go/settings/secrets/actions`.
 2. Add secret `HOMEBREW_TAP_APP_ID`: the numeric App ID from step 2.5.
 3. Add secret `HOMEBREW_TAP_APP_KEY`: the full contents of the `.pem`
    file from step 2.6, including the `-----BEGIN PRIVATE KEY-----`
@@ -159,7 +159,7 @@ they become vestigial and can stay dropped; dev-time workflows use
 
 ### 4. Homebrew tap setup (from the section above)
 
-Create `cyoda-platform/homebrew-cyoda-go` repo, create the GitHub App,
+Create `cyoda/homebrew-cyoda-go` repo, create the GitHub App,
 install on the tap repo, store the App ID and private key as Actions
 secrets. See "One-time setup: Homebrew tap release automation" above.
 
@@ -182,7 +182,7 @@ selector actually resolves:
 # Clone to a scratch dir per the snapshot-testing gotcha section:
 tmp=$(mktemp -d) && git clone --local . "$tmp/cyoda-go"
 cd "$tmp/cyoda-go"
-git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+git remote set-url origin https://github.com/cyoda/cyoda-go.git
 git remote set-url --push origin NO_PUSH
 
 # Tag a non-prerelease snapshot:
@@ -254,8 +254,8 @@ verify:
 
 - Release appears on the Releases page with all expected archives,
   `.deb`/`.rpm` packages, `SHA256SUMS`, cosign signatures, SBOMs.
-- `ghcr.io/cyoda-platform/cyoda:$V` and `:latest` manifests exist.
-- `cyoda-platform/homebrew-cyoda-go` shows a new commit updating
+- `ghcr.io/cyoda/cyoda:$V` and `:latest` manifests exist.
+- `cyoda/homebrew-cyoda-go` shows a new commit updating
   `Formula/cyoda.rb` to `$V`.
 - A PR titled `chore(helm): bump chart appVersion to $V` (labels:
   `helm`, `chart-release`) is opened automatically by
@@ -352,7 +352,7 @@ Per-release procedure:
      and publishes to `gh-pages`.
    - The chart appears in the index:
      ```bash
-     helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
+     helm repo add cyoda https://cyoda.github.io/cyoda-go
      helm repo update
      helm search repo cyoda --versions | head
      ```
@@ -389,14 +389,14 @@ fast with an actionable error if not.
 
 ```bash
 # Homebrew (macOS or Linux):
-brew install cyoda-platform/cyoda-go/cyoda
+brew install cyoda/cyoda-go/cyoda
 cyoda --help
 
 # curl | sh (any Unix):
-curl -fsSL https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/cyoda/cyoda-go/main/scripts/install.sh | sh
 
 # Debian:
-wget https://github.com/cyoda-platform/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
+wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
 sudo dpkg -i cyoda_linux_amd64.deb
 ```
 
@@ -450,7 +450,7 @@ Fix before running `goreleaser release --snapshot`:
 
 ```bash
 cd /path/to/temp/clone
-git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+git remote set-url origin https://github.com/cyoda/cyoda-go.git
 # Also disable push from this temp clone so an absent-minded `git push`
 # doesn't accidentally shove a local branch to the real upstream:
 git remote set-url --push origin NO_PUSH

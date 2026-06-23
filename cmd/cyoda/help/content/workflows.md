@@ -49,6 +49,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
   "active": true,
+  "annotations": { "roles": ["reviewer"], "label": "Prize lifecycle" },
   "criterion": null,
   "states": {
     "NEW": {
@@ -57,6 +58,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
           "name": "APPROVE",
           "next": "APPROVED",
           "manual": true,
+          "annotations": { "ui": { "color": "green" } },
           "disabled": false,
           "criterion": null,
           "processors": [
@@ -108,10 +110,12 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 - `active` — boolean — when `false`, the engine skips this workflow during selection
 - `criterion` — `Condition` JSON or `null` — evaluated against the entity at creation to select this workflow; `null` matches all entities
 - `states` — object — map of state name → `StateDefinition`
+- `annotations` — object or absent — optional client-owned metadata, stored and round-tripped (compacted) but never interpreted by the engine. Must be a JSON object; capped at 64 KB per field. Use for client concerns such as permitted roles, display labels, or UI hints
 
 **StateDefinition:**
 
 - `transitions` — array of `TransitionDefinition` — may be empty
+- `annotations` — object or absent — optional client-owned metadata (see WorkflowDefinition `annotations`); object-only, 64 KB cap, engine-opaque
 
 ## TRANSITIONS
 
@@ -123,6 +127,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `processors` — array of `ProcessorDefinition` — invoked sequentially on this transition
+- `annotations` — object or absent — optional client-owned metadata (see WorkflowDefinition `annotations`); object-only, 64 KB cap, engine-opaque
 
 ## PROCESSORS
 
@@ -363,7 +368,7 @@ Response: `200 OK`, `application/json`:
 
 Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the model.
 
-**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty.
+**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, or any transition) is omitted when absent, and is re-serialised in compacted form when present.
 
 ## ENGINE EXECUTION
 

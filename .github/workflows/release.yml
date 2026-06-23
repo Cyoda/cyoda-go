@@ -102,7 +102,7 @@ jobs:
       # Gating lives in CI (govulncheck) which runs pre-merge.
       #
       # goreleaser's `{{ .Version }}` strips the leading `v`, so tag `v1.2.3`
-      # produces image `ghcr.io/cyoda-platform/cyoda:1.2.3`. Derive the image
+      # produces image `ghcr.io/cyoda/cyoda:1.2.3`. Derive the image
       # ref accordingly.
       - name: Compute image ref for scan
         id: image-ref

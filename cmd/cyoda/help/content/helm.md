@@ -59,7 +59,7 @@ Number of cyoda pods. Scale up for multi-node cluster. At `replicas=1` the binar
 **`logLevel`** — string — default `info`
 Log level. Accepted values: `debug`, `info`, `warn`, `error`. Written to the ConfigMap as `CYODA_LOG_LEVEL`.
 
-**`image.repository`** — string — default `ghcr.io/cyoda-platform/cyoda`
+**`image.repository`** — string — default `ghcr.io/cyoda/cyoda`
 Container image repository.
 
 **`image.tag`** — string — default `""` (resolved to `.Chart.AppVersion`)

@@ -5,7 +5,7 @@
 # 'cyoda init' to enable sqlite persistence.
 #
 # Usage:
-#   curl -fsSL https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 #
 # Pin a version:
 #   CYODA_VERSION=v0.2.0 curl -fsSL ... | sh
@@ -16,7 +16,7 @@
 # Cosign verification (issue #47):
 #   - Auto-on when `cosign` is on PATH. Verifies the archive and
 #     SHA256SUMS against keyless Sigstore signatures issued by the
-#     cyoda-platform/cyoda-go release.yml workflow on a tag push.
+#     cyoda/cyoda-go release.yml workflow on a tag push.
 #   - Disable explicitly: CYODA_COSIGN_VERIFY=false curl ... | sh
 #   - Force-fail-without-cosign: CYODA_COSIGN_VERIFY=required curl ... | sh
 #     (Aborts if cosign is missing rather than falling back to SHA256-only.)
@@ -34,7 +34,7 @@
 
 set -eu
 
-REPO="cyoda-platform/cyoda-go"
+REPO="cyoda/cyoda-go"
 INSTALL_DIR="${CYODA_INSTALL_DIR:-$HOME/.local/bin}"
 # Cosign keyless verification expects the signing identity to come from
 # this OIDC issuer (GitHub Actions) and the cert subject to match the
@@ -45,7 +45,7 @@ INSTALL_DIR="${CYODA_INSTALL_DIR:-$HOME/.local/bin}"
 # from main with proper protection) can't mint a cert that this
 # verifier accepts.
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
-COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda-platform/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
+COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
 # Bind to push-triggered runs from a tag ref. release.yml's `on:`
 # allows both `push: tags` and `workflow_dispatch`; only the former
 # can produce signed release artifacts that consumers should trust,

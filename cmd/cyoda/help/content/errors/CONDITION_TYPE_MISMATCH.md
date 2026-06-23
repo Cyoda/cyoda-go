@@ -23,7 +23,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 Each field in a locked model has an inferred DataType (e.g. INTEGER, DOUBLE, BOOLEAN). When a search condition references a numeric or boolean field, the condition's value must be type-compatible with that field. For example, submitting a string value `"abc"` against a DOUBLE field is rejected.
 
-String fields are not strictly enforced — any comparison value (numeric or string) is accepted to support lexicographic and coerced comparisons. Conditions that reference field paths not present in the model schema are rejected by a separate pre-execution validation pass with `INVALID_FIELD_PATH` (see issue #77); the type-checker itself has no opinion on unknown paths.
+String fields are not strictly enforced — any comparison value (numeric or string) is accepted to support lexicographic and coerced comparisons. Conditions that reference field paths not present in the model schema are rejected by a separate pre-execution validation pass with `INVALID_FIELD_PATH`; the type-checker itself has no opinion on unknown paths.
 
 IS_NULL and NOT_NULL operators bypass type checking entirely. Null values are compatible with any field type.
 

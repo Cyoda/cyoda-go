@@ -258,7 +258,7 @@ jobs:
 
       - name: Build cyoda image from branch and load into kind
         # The chart's appVersion points at a concrete released binary
-        # tag (e.g. ghcr.io/cyoda-platform/cyoda:0.1.0) that may not yet
+        # tag (e.g. ghcr.io/cyoda/cyoda:0.1.0) that may not yet
         # exist for an in-progress PR. Build the image from the PR's
         # source tree and load it into the kind node, then override
         # image.repository + image.pullPolicy during ct install so the

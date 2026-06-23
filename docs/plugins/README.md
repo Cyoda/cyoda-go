@@ -1,7 +1,7 @@
 # Storage plugins
 
 cyoda-go's storage layer is a plugin system defined by the stable
-[`cyoda-go-spi`](https://github.com/cyoda-platform/cyoda-go-spi) module
+[`cyoda-go-spi`](https://github.com/cyoda/cyoda-go-spi) module
 (stdlib-only Go interfaces and value types). A running binary has
 exactly one active plugin, selected at startup via `CYODA_STORAGE_BACKEND`.
 

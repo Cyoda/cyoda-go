@@ -11,7 +11,7 @@ replicas: 1
 logLevel: info
 
 image:
-  repository: ghcr.io/cyoda-platform/cyoda
+  repository: ghcr.io/cyoda/cyoda
   # -- Image tag. Defaults to .Chart.AppVersion when empty.
   tag: ""
   pullPolicy: IfNotPresent

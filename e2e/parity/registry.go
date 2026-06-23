@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 142
+// Total parity scenarios: 143
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
@@ -42,6 +42,7 @@ var allTests = []NamedTest{
 	{"ModelListModels", RunModelListModels},
 	{"ModelDelete", RunModelDelete},
 	{"WorkflowImportExport", RunWorkflowImportExport},
+	{"WorkflowAnnotationsRoundTrip", RunWorkflowAnnotationsRoundTrip},
 
 	// Phase 4a — entity CRUD (Task 4a.2)
 	{"EntityCreateAndGet", RunEntityCreateAndGet},

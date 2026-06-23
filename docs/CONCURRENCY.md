@@ -139,8 +139,8 @@ OpMu-protected fields on the SPI struct are unused. Equivalent per-tx
 FCW bookkeeping lives in an internal `txState` struct (with its own
 per-tx `mu`) independent of the SPI surface.
 
-[spi-godoc]: https://github.com/Cyoda-platform/cyoda-go-spi/blob/v0.6.1/txcontext.go
-[spi-rule]: https://github.com/Cyoda-platform/cyoda-go-spi/blob/v0.6.1/.claude/rules/tx-state-locking.md
+[spi-godoc]: https://github.com/cyoda/cyoda-go-spi/blob/v0.6.1/txcontext.go
+[spi-rule]: https://github.com/cyoda/cyoda-go-spi/blob/v0.6.1/.claude/rules/tx-state-locking.md
 
 ## 5. Per-plugin pointer
 

@@ -2,7 +2,7 @@
 
 This directory is the canonical Docker source:
 
-- `Dockerfile` — the source of `ghcr.io/cyoda-platform/cyoda:<version>`
+- `Dockerfile` — the source of `ghcr.io/cyoda/cyoda:<version>`
   and `:latest`, published by GoReleaser on every non-prerelease tag.
 - `compose.yaml` — a reference single-service compose file that runs the
   published image with sqlite persistence.

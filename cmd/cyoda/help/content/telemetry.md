@@ -202,7 +202,7 @@ docker run --rm \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \
   -e OTEL_SERVICE_NAME=cyoda \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 **Scrape Prometheus metrics from the admin port:**
