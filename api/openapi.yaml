@@ -8936,7 +8936,7 @@ components:
           description: >
             Arbitrary client-owned metadata, stored and round-tripped (compacted)
             and never interpreted by the engine. Must be a JSON object; capped at
-            64 KB.
+            64 KB per field.
     TransitionDefinitionDto:
       type: object
       properties:
@@ -8985,7 +8985,7 @@ components:
           description: >
             Arbitrary client-owned metadata, stored and round-tripped (compacted)
             and never interpreted by the engine. Must be a JSON object; capped at
-            64 KB.
+            64 KB per field.
       required:
         - manual
         - name

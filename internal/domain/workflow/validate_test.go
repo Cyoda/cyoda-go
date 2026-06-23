@@ -109,3 +109,22 @@ func TestValidateAndNormalizeAnnotations_SizeCap(t *testing.T) {
 		t.Fatalf("expected size-cap error, got %v", err)
 	}
 }
+
+func TestValidateAndNormalizeAnnotations_SizeCapMeasuredOnCompacted(t *testing.T) {
+	// Build a value whose RAW length exceeds maxAnnotationsBytes but whose
+	// COMPACTED form is tiny. The whitespace between tokens is insignificant
+	// JSON and must be stripped before the cap is applied.
+	rawPadded := json.RawMessage("{" + strings.Repeat(" ", maxAnnotationsBytes) + `"k":1}`)
+	if len(rawPadded) <= maxAnnotationsBytes {
+		t.Fatalf("test setup: raw len = %d, must be > %d", len(rawPadded), maxAnnotationsBytes)
+	}
+	wfs := wfWithAnnotations(rawPadded, nil, nil)
+	if err := validateAndNormalizeAnnotations(wfs); err != nil {
+		t.Fatalf("raw-padded annotations should be accepted (cap is on compacted bytes): %v", err)
+	}
+	// The stored value must be the compacted form, not the whitespace-padded original.
+	const want = `{"k":1}`
+	if got := string(wfs[0].Annotations); got != want {
+		t.Errorf("annotations not compacted: got %q, want %q", got, want)
+	}
+}
