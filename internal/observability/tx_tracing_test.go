@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type fakeTxManager struct {
@@ -45,11 +47,11 @@ func (f *fakeTxManager) ReleaseSavepoint(ctx context.Context, txID string, savep
 }
 
 func TestTracingTxManager_DelegatesToInner(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	inner := &fakeTxManager{}
-	traced := observability.NewTracingTransactionManager(inner)
+	traced := observability.NewTracingTransactionManager(inner, observability.Meter())
 
 	ctx := context.Background()
 	txID, txCtx, err := traced.Begin(ctx)
@@ -81,12 +83,12 @@ func TestTracingTxManager_DelegatesToInner(t *testing.T) {
 // IM-17: txActive counter must NOT be decremented when rollback fails.
 // A failed rollback means the transaction is still active.
 func TestTracingTxManager_Rollback_FailedRollbackDoesNotDecrementActive(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	rollbackErr := errors.New("rollback failed")
 	inner := &fakeTxManager{rollbackErr: rollbackErr}
-	traced := observability.NewTracingTransactionManager(inner)
+	traced := observability.NewTracingTransactionManager(inner, observability.Meter())
 
 	// The test verifies the error is propagated and the method completes without panic.
 	// The real assertion is structural: txActive.Add(-1) must only run on success path.
@@ -95,4 +97,37 @@ func TestTracingTxManager_Rollback_FailedRollbackDoesNotDecrementActive(t *testi
 	if !errors.Is(err, rollbackErr) {
 		t.Errorf("expected rollback error, got %v", err)
 	}
+}
+
+func TestTracingTxManager_DurationHasExplicitBuckets(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	traced := observability.NewTracingTransactionManager(&fakeTxManager{}, mp.Meter("test"))
+
+	_, _, _ = traced.Begin(context.Background())
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+	for _, sm := range rm.ScopeMetrics {
+		for _, md := range sm.Metrics {
+			if md.Name != "cyoda.tx.duration" {
+				continue
+			}
+			h := md.Data.(metricdata.Histogram[float64])
+			got := h.DataPoints[0].Bounds
+			if len(got) != len(want) {
+				t.Fatalf("bounds len=%d want %d (%v)", len(got), len(want), got)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("bound[%d]=%v want %v", i, got[i], want[i])
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("cyoda.tx.duration not found")
 }

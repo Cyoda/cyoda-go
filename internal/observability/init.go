@@ -4,11 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
+	"sync/atomic"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/otlptranslator"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -26,16 +33,21 @@ var (
 	initOnce   sync.Once
 	initErr    error
 	shutdownFn func(context.Context) error
+
+	// activeRegistry holds the Prometheus registry served by MetricsHandler.
+	// Always non-nil (seeded below) so the handler works before/around Init,
+	// and an atomic.Pointer so ResetInit-vs-scrape is data-race-free.
+	activeRegistry atomic.Pointer[prometheus.Registry]
 )
 
-// Init initializes the OpenTelemetry SDK with OTLP exporters.
-// Returns a shutdown function that must be called on application exit.
-// Uses standard OTel env vars: OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME.
-//
-// Init is guarded by sync.Once — subsequent calls return the existing shutdown
-// function without re-initializing. To re-initialize, call the shutdown function
-// first and then ResetInit (test-only).
-func Init(ctx context.Context, serviceName, nodeID string) (func(context.Context) error, error) {
+func init() {
+	activeRegistry.Store(prometheus.NewRegistry())
+}
+
+// Init initializes OpenTelemetry. The Prometheus scrape pipeline is ALWAYS set
+// up (so /metrics carries app metrics with no collector); OTLP push + tracing
+// are created only when otelEnabled. Guarded by sync.Once.
+func Init(ctx context.Context, serviceName, nodeID string, otelEnabled bool) (func(context.Context) error, error) {
 	initOnce.Do(func() {
 		res, err := resource.New(ctx,
 			resource.WithAttributes(
@@ -48,56 +60,68 @@ func Init(ctx context.Context, serviceName, nodeID string) (func(context.Context
 			return
 		}
 
-		// Trace provider
-		traceExporter, err := otlptracehttp.New(ctx)
+		// --- Always-on scrape pipeline (best-effort; never fatal) ---
+		var readerOpts []sdkmetric.Option
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(collectors.NewGoCollector())
+		reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+		promExp, err := otelprom.New(
+			otelprom.WithRegisterer(reg),
+			otelprom.WithoutScopeInfo(),
+			otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes),
+		)
 		if err != nil {
-			initErr = fmt.Errorf("create trace exporter: %w", err)
-			return
-		}
-
-		// Seed the dynamic sampler from OTel env vars before constructing
-		// the TracerProvider. Sampler.SetSampler should never fail here
-		// because SamplerConfigFromEnv only returns valid configs, but
-		// fall back to the safe default if it ever does.
-		initialCfg := SamplerConfigFromEnv()
-		if err := Sampler.SetSampler(initialCfg); err != nil {
-			slog.Error("failed to set initial trace sampler, using default",
+			slog.Error("failed to create Prometheus metric exporter; app metrics disabled at /metrics",
 				"pkg", "observability", "error", err)
-			_ = Sampler.SetSampler(SamplerConfig{Sampler: "always", ParentBased: true})
+		} else {
+			readerOpts = append(readerOpts, sdkmetric.WithReader(promExp))
 		}
 
-		tp = sdktrace.NewTracerProvider(
-			sdktrace.WithBatcher(traceExporter),
-			sdktrace.WithResource(res),
-			sdktrace.WithSampler(Sampler),
-		)
-		otel.SetTracerProvider(tp)
+		// --- Gated OTLP push + tracing (fatal on error, BEFORE provider publish) ---
+		if otelEnabled {
+			metricExporter, err := otlpmetrichttp.New(ctx)
+			if err != nil {
+				initErr = fmt.Errorf("create metric exporter: %w", err)
+				return
+			}
+			readerOpts = append(readerOpts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)))
 
-		// Metric provider
-		metricExporter, err := otlpmetrichttp.New(ctx)
-		if err != nil {
-			initErr = fmt.Errorf("create metric exporter: %w", err)
-			return
+			traceExporter, err := otlptracehttp.New(ctx)
+			if err != nil {
+				initErr = fmt.Errorf("create trace exporter: %w", err)
+				return
+			}
+
+			initialCfg := SamplerConfigFromEnv()
+			if err := Sampler.SetSampler(initialCfg); err != nil {
+				slog.Error("failed to set initial trace sampler, using default",
+					"pkg", "observability", "error", err)
+				_ = Sampler.SetSampler(SamplerConfig{Sampler: "always", ParentBased: true})
+			}
+			tp = sdktrace.NewTracerProvider(
+				sdktrace.WithBatcher(traceExporter),
+				sdktrace.WithResource(res),
+				sdktrace.WithSampler(Sampler),
+			)
+			otel.SetTracerProvider(tp)
+			otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+				propagation.TraceContext{},
+				propagation.Baggage{},
+			))
 		}
-		mp = sdkmetric.NewMeterProvider(
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
-			sdkmetric.WithResource(res),
-		)
+
+		// --- Meter provider: always built (0..2 readers); always non-nil ---
+		mp = sdkmetric.NewMeterProvider(append(readerOpts, sdkmetric.WithResource(res))...)
 		otel.SetMeterProvider(mp)
-
-		// Context propagation (W3C trace context + baggage)
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-			propagation.TraceContext{},
-			propagation.Baggage{},
-		))
+		activeRegistry.Store(reg)
 
 		shutdownFn = func(ctx context.Context) error {
-			if err := tp.Shutdown(ctx); err != nil {
-				// Log but don't propagate — a missing backend (e.g. in tests) is not fatal.
-				slog.Warn("OTel trace provider shutdown error", "pkg", "observability", "err", err)
+			if tp != nil {
+				if err := tp.Shutdown(ctx); err != nil {
+					slog.Warn("OTel trace provider shutdown error", "pkg", "observability", "err", err)
+				}
 			}
 			if err := mp.Shutdown(ctx); err != nil {
-				// Log but don't propagate — a missing backend (e.g. in tests) is not fatal.
 				slog.Warn("OTel meter provider shutdown error", "pkg", "observability", "err", err)
 			}
 			return nil
@@ -109,14 +133,23 @@ func Init(ctx context.Context, serviceName, nodeID string) (func(context.Context
 	return shutdownFn, nil
 }
 
-// ResetInit resets the init guard so Init can be called again.
-// This is intended for tests only.
+// ResetInit resets the init guard so Init can be called again. Test-only.
 func ResetInit() {
 	initOnce = sync.Once{}
 	initErr = nil
 	shutdownFn = nil
 	tp = nil
 	mp = nil
+	activeRegistry.Store(prometheus.NewRegistry())
+}
+
+// MetricsHandler serves the current Prometheus registry, resolved per request
+// so a handler wired once tracks the active registry across ResetInit.
+func MetricsHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reg := activeRegistry.Load()
+		promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+	})
 }
 
 // Tracer returns the application tracer.

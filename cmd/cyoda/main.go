@@ -96,23 +96,19 @@ func main() {
 	printBanner(cfg)
 	printMockAuthWarningTo(os.Stdout, cfg)
 
-	// OTel flush is deferred at the top of main so it runs on every exit
-	// path (signal handler, server failure, panic recovery). All later
-	// errors below this point go through normal returns/exit codes so the
-	// deferred shutdown actually fires. Issue #26 specifically called out
-	// the previous os.Exit-from-goroutine pattern that bypassed this.
-	if cfg.OTelEnabled {
-		nodeID := cfg.Cluster.NodeID
-		if nodeID == "" {
-			nodeID = "standalone"
-		}
-		shutdown, err := observability.Init(context.Background(), "cyoda", nodeID)
-		if err != nil {
-			slog.Error("failed to initialize OTel", "error", err)
-			os.Exit(1)
-		}
-		defer shutdown(context.Background())
+	// OTel: the Prometheus scrape pipeline is always initialized (so /metrics
+	// carries app metrics with no collector); OTLP push + tracing are gated
+	// inside Init by the flag.
+	nodeID := cfg.Cluster.NodeID
+	if nodeID == "" {
+		nodeID = "standalone"
 	}
+	shutdown, err := observability.Init(context.Background(), "cyoda", nodeID, cfg.OTelEnabled)
+	if err != nil {
+		slog.Error("failed to initialize OTel", "error", err)
+		os.Exit(1)
+	}
+	defer shutdown(context.Background())
 
 	a := app.New(cfg)
 

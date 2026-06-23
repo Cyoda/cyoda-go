@@ -202,7 +202,7 @@ func New(cfg Config) *App {
 	// Today only tracing is wired; add future decorators between tracing and
 	// the plugin TM in the order named here.
 	if cfg.OTelEnabled {
-		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager)
+		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager, observability.Meter())
 	}
 
 	// Auth service: JWT or mock mode
@@ -266,16 +266,20 @@ func New(cfg Config) *App {
 			AllowPrivateNetworks:     cfg.IAM.OIDC.AllowPrivateNetworks,
 		})
 
-		// NopMetrics for v0.8.0; real instrumentation lands in a future milestone.
 		var oidcBroadcaster spi.ClusterBroadcaster
 		if gossipReg != nil {
 			oidcBroadcaster = gossipReg
 		}
-		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidc.NopMetrics{}, slog.Default(), oidc.RegistryConfig{
-				AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
-				ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
-				SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
-			})
+		oidcMetrics, err := oidc.NewOTelMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "oidc-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidcMetrics, slog.Default(), oidc.RegistryConfig{
+			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
+			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
+			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
+		})
 
 		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
 			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())
@@ -482,7 +486,7 @@ func New(cfg Config) *App {
 		extProc = localDispatcher
 	}
 	if cfg.OTelEnabled {
-		extProc = observability.NewTracingExternalProcessingService(extProc)
+		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),

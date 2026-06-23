@@ -1173,11 +1173,14 @@ main API listener and has its own authentication policy:
 - **`/livez` and `/readyz`** are always unauthenticated. Kubelet
   probes carry no bearer token; authenticating these endpoints
   would break the standard readiness contract.
-- **`/metrics`** is optionally bearer-gated. When
-  `CYODA_METRICS_BEARER` (or `CYODA_METRICS_BEARER_FILE`) is
-  non-empty, a request must carry `Authorization: Bearer <token>`
-  and the token must match (constant-time compare) or the request
-  receives `401 Unauthorized`.
+- **`/metrics`** is optionally bearer-gated and always exposes
+  application metrics — OIDC subsystem metrics (`oidc_*`) when IAM
+  runs in `jwt` mode, and transaction/dispatch metrics when
+  `CYODA_OTEL_ENABLED=true` — in addition to Go runtime/process
+  metrics. When `CYODA_METRICS_BEARER` (or
+  `CYODA_METRICS_BEARER_FILE`) is non-empty, a request must carry
+  `Authorization: Bearer <token>` and the token must match
+  (constant-time compare) or the request receives `401 Unauthorized`.
 - **`CYODA_METRICS_REQUIRE_AUTH=true`** is a coupled-predicate
   safety: if set true but `CYODA_METRICS_BEARER` is empty, startup
   fails with a fatal error naming the missing variable. Protects
@@ -1313,7 +1316,7 @@ See §7.5 for the authentication policy on admin endpoints.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_OTEL_ENABLED` | `false` | Enable OpenTelemetry SDK and `otelhttp` middleware. |
+| `CYODA_OTEL_ENABLED` | `false` | Enable OTLP push (metric + trace exporters) and `otelhttp` middleware. The Prometheus scrape endpoint (`/metrics`) and OIDC metrics are always on regardless of this flag. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (OTel SDK default) | Standard OTel environment variable — honored directly, no cyoda-specific alias. |
 
 The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler`
@@ -1483,13 +1486,15 @@ The start script:
 
 ## 11. Observability
 
-OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal/observability/init.go` with OTLP HTTP exporters for traces and metrics. W3C Trace Context and Baggage propagation are configured as the default global propagator.
+OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal/observability/init.go`. The meter provider always carries an OpenTelemetry → Prometheus exporter (a dedicated `prometheus.Registry` served at `/metrics`); when `CYODA_OTEL_ENABLED=true` it additionally carries an OTLP `PeriodicReader` and the OTLP trace exporter. Thus `/metrics` exposes application metrics with no collector, while OTLP push remains opt-in. W3C Trace Context and Baggage propagation are configured as the default global propagator.
 
 **HTTP middleware:** the generated API router is wrapped in `otelhttp.NewMiddleware` (enabled when `CYODA_OTEL_ENABLED=true`), producing `http.server` spans for every request and auto-extracting upstream trace context from `traceparent` headers.
 
-**Transaction manager decorator:** `TracingTransactionManager` wraps the underlying transaction manager and adds spans (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) plus metrics (`cyoda.tx.duration`, `cyoda.tx.active`, `cyoda.tx.conflicts`).
+**OIDC subsystem metrics** (`oidc_*`) are always exposed at `/metrics` when IAM runs in `jwt` mode — no collector required, no flag to toggle.
 
-**Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`; `dispatch.processor` and `dispatch.criteria` with `cyoda.dispatch.duration` and `cyoda.dispatch.count` metrics.
+**Transaction manager decorator:** `TracingTransactionManager` wraps the underlying transaction manager and adds spans (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) plus metrics (`cyoda.tx.duration`, `cyoda.tx.active`, `cyoda.tx.conflicts`). This decorator is active when `CYODA_OTEL_ENABLED=true`.
+
+**Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`; `dispatch.processor` and `dispatch.criteria` with `cyoda.dispatch.duration` and `cyoda.dispatch.count` metrics. These are active when `CYODA_OTEL_ENABLED=true`.
 
 **Plugin-level instrumentation:** plugins are free to add their own
 spans and metrics under a plugin-specific namespace. The `memory`
