@@ -16,12 +16,14 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -46,17 +48,19 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("minicyoda_test"),
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	}, testpg.HardenedOptions()...)
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		log.Fatalf("failed to start postgres container: %v", err)
 	}
-	defer pgContainer.Terminate(ctx)
+	defer func() {
+		testpg.DumpDiagnosticsIfDied(ctx, pgContainer)
+		_ = pgContainer.Terminate(ctx)
+	}()
 
 	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {

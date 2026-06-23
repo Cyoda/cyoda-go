@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/multinode"
+	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 )
 
 // pgMultiNode implements multinode.MultiNodeFixture for the postgres backend.
@@ -59,17 +61,17 @@ func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()
 	ctx := context.Background()
 
 	// 1. Start PostgreSQL container.
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_parity_multinode"),
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	}, testpg.HardenedOptions()...)
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		t.Fatalf("failed to start postgres container: %v", err)
 	}
 	containerCleanup := func() {
+		testpg.DumpDiagnosticsIfDied(ctx, pgContainer)
 		_ = pgContainer.Terminate(ctx)
 	}
 

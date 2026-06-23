@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 )
 
 // postgresFixture implements parity.BackendFixture for the postgres backend.
@@ -61,18 +63,18 @@ func setup() (*postgresFixture, func(), error) {
 	ctx := context.Background()
 
 	// 1. Start PostgreSQL container.
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_parity_test"),
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	}, testpg.HardenedOptions()...)
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to start postgres container: %w", err)
 	}
 
 	containerCleanup := func() {
+		testpg.DumpDiagnosticsIfDied(ctx, pgContainer)
 		_ = pgContainer.Terminate(ctx)
 	}
 
