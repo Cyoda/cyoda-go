@@ -8930,6 +8930,13 @@ components:
           description: List of possible transitions from this state
           items:
             $ref: "#/components/schemas/TransitionDefinitionDto"
+        annotations:
+          type: object
+          additionalProperties: true
+          description: >
+            Arbitrary client-owned metadata, stored and round-tripped (compacted)
+            and never interpreted by the engine. Must be a JSON object; capped at
+            64 KB.
     TransitionDefinitionDto:
       type: object
       properties:
@@ -8972,6 +8979,13 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        annotations:
+          type: object
+          additionalProperties: true
+          description: >
+            Arbitrary client-owned metadata, stored and round-tripped (compacted)
+            and never interpreted by the engine. Must be a JSON object; capped at
+            64 KB.
       required:
         - manual
         - name
@@ -9080,6 +9094,14 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        annotations:
+          type: object
+          additionalProperties: true
+          description: >
+            Arbitrary client-owned metadata for the whole workflow, stored and
+            round-tripped (compacted) and never interpreted by the engine. Must be
+            a JSON object; capped at 64 KB. Use for client concerns such as
+            permitted roles, display labels, or UI hints.
       required:
         - initialState
         - name
