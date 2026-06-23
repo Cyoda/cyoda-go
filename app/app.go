@@ -276,10 +276,10 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidcMetrics, slog.Default(), oidc.RegistryConfig{
-				AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
-				ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
-				SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
-			})
+			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
+			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
+			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
+		})
 
 		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
 			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())

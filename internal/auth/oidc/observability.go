@@ -20,15 +20,15 @@ type Metrics interface {
 // fallback in non-JWT IAM modes (where the OIDC subsystem is inactive).
 type NopMetrics struct{}
 
-func (NopMetrics) IncKidCacheHit()                        {}
-func (NopMetrics) IncKidCacheMiss()                       {}
-func (NopMetrics) IncKidCacheEvict()                      {}
-func (NopMetrics) IncJWKSFetchError(outcome string)       {}
-func (NopMetrics) IncBroadcastPanic()                     {}
-func (NopMetrics) IncBroadcastDrop(reason string)         {}
-func (NopMetrics) IncUnknownProviderBroadcast()           {}
+func (NopMetrics) IncKidCacheHit()                         {}
+func (NopMetrics) IncKidCacheMiss()                        {}
+func (NopMetrics) IncKidCacheEvict()                       {}
+func (NopMetrics) IncJWKSFetchError(outcome string)        {}
+func (NopMetrics) IncBroadcastPanic()                      {}
+func (NopMetrics) IncBroadcastDrop(reason string)          {}
+func (NopMetrics) IncUnknownProviderBroadcast()            {}
 func (NopMetrics) ObserveBroadcastReceive(seconds float64) {}
-func (NopMetrics) SetRegistryProviders(n int)             {}
+func (NopMetrics) SetRegistryProviders(n int)              {}
 
 // Compile-time guard.
 var _ Metrics = NopMetrics{}
