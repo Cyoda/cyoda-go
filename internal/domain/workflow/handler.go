@@ -79,6 +79,7 @@ type workflowImportDef struct {
 	Active       *bool                          `json:"active"`
 	Criterion    json.RawMessage                `json:"criterion,omitempty"`
 	States       map[string]spi.StateDefinition `json:"states"`
+	Annotations  json.RawMessage                `json:"annotations,omitempty"`
 }
 
 // importRequest is the JSON body shape for workflow import.
@@ -154,6 +155,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 			Active:       active,
 			Criterion:    w.Criterion,
 			States:       w.States,
+			Annotations:  w.Annotations,
 		}
 	}
 
@@ -228,6 +230,15 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// the merged result below, preserving pre-v0.8.0 semantics for those
 	// specific invariants.
 	if err := validateImportRequest(incoming); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
+
+	// Canonicalise and validate client-owned annotations on the incoming
+	// workflows (object-only, compacted, 64 KB per field). Mutates incoming
+	// in place so the stored/exported form is canonical. Incoming-only,
+	// matching the non-retroactive structural-validation policy above.
+	if err := validateAndNormalizeAnnotations(incoming); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
