@@ -4,14 +4,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-23
+
 ### Added
 
 - Optional `annotations` JSON-object field on workflows, states, and transitions — arbitrary client-owned metadata, stored and round-tripped (compacted) but never interpreted by the engine. Object-only, capped at 64 KB per field.
-
-## [0.8.0] — 2026-06-06
-
-### Added
-
 - New error code `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (`400`).
 - New help topic `workflows.schema-version` documenting the wire-format contract.
 - New help action `cyoda help workflows schema-version versions` emitting the supported-version manifest as JSON.
@@ -79,6 +76,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Pre-v0.8.0 KV trusted-key entries are orphaned.** Within the `trusted-keys` namespace, entries are now keyed `<tenantID>:<kid>` (was bare `<kid>`). v0.8.0 does not query the old shape; affected entries are left in place but not loaded. Operators must re-register affected keys. To audit, look for entries in the `trusted-keys` namespace whose key contains no `:` separator (the exact query depends on the KV backend; for the SQLite plugin: `SELECT key FROM kv_store WHERE namespace='trusted-keys' AND key NOT LIKE '%:%'`).
 - **v0.8.0 → pre-v0.8.0 rollback hazard.** Trusted keys created under v0.8.0 are visible to pre-v0.8.0 binaries as mangled-kid entries (`<tenantID>:<kid>` treated as the kid). Purge out-of-band before rollback if visibility matters.
 - **M2M clients created via `POST /clients` are held in-memory by the default `InMemoryM2MClientStore` and do not survive a server restart.** Customers running with the in-memory IAM mode must re-create their clients on every restart. A persistence follow-up tracking storage-SPI backing is on the roadmap; see the v0.8.0 milestone discussion.
+
+### Dependencies
+
+- Routine minor/patch dependency maintenance across the root and plugin modules: OpenTelemetry 1.43 → 1.44 (SDK, metric, trace, exporters, contrib), `jackc/pgx/v5` 5.9 → 5.10, `golang.org/x/crypto` 0.52 → 0.53, `getkin/kin-openapi` 0.139 → 0.140, `oapi-codegen/runtime` 1.4.1 → 1.4.2, `testcontainers-go` postgres 0.42 → 0.43, `ncruces/go-sqlite3` 0.34 → 0.35, and assorted `golang.org/x` updates.
 
 ---
 

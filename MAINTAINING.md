@@ -103,6 +103,30 @@ version number, even on repos with no production consumers.
 between versions yet. It does **not** mean we can reset version
 numbers — the one-way-ratchet applies from the first tag onward.
 
+### 0. Reconcile dependencies on the release branch (gate)
+
+**Dependency hygiene is a release gate, not post-release cleanup.** Before
+any tag is cut, the release branch must already be at the dependency versions
+you intend to ship — otherwise the release goes out stale and Dependabot
+re-raises the deferred bumps immediately after, manufacturing technical debt
+at the moment of release.
+
+Do this as a single consolidated **release-prep** commit on the release branch,
+*after* the coordinated `cyoda-go-spi` tag exists (so the pin resolves) but
+*before* the merge-to-main and tag:
+
+1. Bump the `cyoda-go-spi` pin to the freshly cut `vX.Y.Z` in all four
+   `go.mod` files (this is the maintainer-owned step — Dependabot does **not**
+   touch the SPI pin; see "Bumping cyoda-go-spi" below).
+2. Apply every pending Dependabot minor/patch bump (root + each plugin
+   submodule). If a grouped PR was closed because it was entangled with the
+   then-unresolvable SPI pin, apply its third-party updates by hand here.
+3. `go mod tidy` in every module.
+4. Verify: `make check-spi-pin-sync`, `make test-all`, `make race`.
+
+After this commit the branch is at latest on everything, so Dependabot's next
+run finds nothing to raise — a clean release with no immediate follow-on churn.
+
 ### 1. Plugin submodule tags first
 
 Plugin modules (`plugins/memory`, `plugins/postgres`, `plugins/sqlite`)
@@ -312,6 +336,23 @@ This rule is in addition to the existing **plugin-version lockstep**
 rule (plugin submodule tags use the same version as the umbrella).
 The two rules together ensure that consumers see consistent
 SPI-and-plugin pinning at every umbrella tag.
+
+**The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
+the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
+against `main` HEAD, and the final bump to the tagged `vX.Y.Z` happens by hand
+at release time (gate 0 above). `.github/dependabot.yml` therefore carries an
+`ignore` rule for `github.com/cyoda-platform/cyoda-go-spi` in every `gomod`
+block. This is deliberate: a coordinated SPI tag can be retracted and re-cut
+(it has been), and a Dependabot group that bundles the SPI pin with routine
+third-party bumps gets **mass-closed** when the pin can't resolve — taking
+good third-party updates down with it. Keeping the SPI pin out of Dependabot's
+hands keeps the grouped third-party PRs always-resolvable.
+
+**Retarget Dependabot after the milestone ships.** `dependabot.yml`'s
+`target-branch` points at the active milestone branch (e.g. `release/v0.8.0`)
+so bumps land where the work is. Once that milestone merges to `main` and is
+tagged, flip `target-branch` to the next active branch (`main`, or the next
+`release/vX.Y.0`) so Dependabot doesn't keep raising PRs against a dead branch.
 
 ### 8. Publish the Helm chart
 

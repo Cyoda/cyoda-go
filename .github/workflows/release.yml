@@ -11,7 +11,9 @@ permissions:
   id-token: write    # keyless cosign via OIDC
 
 env:
-  GOPRIVATE: github.com/Cyoda-platform/*
+  # Lowercase to match the module path exactly — GOPRIVATE matching is
+  # case-sensitive (see ci.yml for the full rationale).
+  GOPRIVATE: github.com/cyoda-platform/*
 
 jobs:
   release:

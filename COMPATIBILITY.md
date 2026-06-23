@@ -32,8 +32,8 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 | `cyoda-go` | Root `go.mod` pins | In-tree plugin go.mods pin | SPI surface added in this release |
 |---|---|---|---|
-| **`v0.8.0`** _(planned)_ | `cyoda-go-spi v0.8.0` | `cyoda-go-spi v0.8.0` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`); scheduled-transition shape: `TransitionDefinition.Schedule *TransitionSchedule` (`DelayMs`, `TimeoutMs *int64`); async-result shape: `ProcessorConfig.AsyncResult *bool`, `ProcessorConfig.CrossoverToAsyncMs *int64` |
-| **`v0.7.1`** _(planned)_ | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
+| **`v0.8.0`** | `cyoda-go-spi v0.8.0` | `cyoda-go-spi v0.8.0` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`); scheduled-transition shape: `TransitionDefinition.Schedule *TransitionSchedule` (`DelayMs`, `TimeoutMs *int64`); async-result shape: `ProcessorConfig.AsyncResult *bool`, `ProcessorConfig.CrossoverToAsyncMs *int64`; client-owned annotations: `Annotations json.RawMessage` on the workflow, state, and transition definitions |
+| **`v0.7.1`** | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
 | **`v0.7.0`** | `cyoda-go-spi v0.7.0` | `cyoda-go-spi v0.6.1`† | `ProcessorConfig.StartNewTxOnDispatch *bool` |
 | `v0.6.3` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | — (binary-only changes) |
 | `v0.6.2` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | — |
@@ -46,15 +46,15 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 A plugin pinned to **`cyoda-go-spi v<X.Y.Z>`** is compatible with any **`cyoda-go v<A.B.C>`** whose root `go.mod` pins the same `v<X.Y>.*` series or any *later* `v<X+1.0.0>` series that hasn't broken the interfaces the plugin uses.
 
-In practice, today: **all SPI versions `v0.5.0` … `v0.8.0` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.0` and the planned `v0.7.1` / `v0.8.0`. This will change only when SPI introduces a breaking interface (none planned for v0.x).
+In practice, today: **all SPI versions `v0.5.0` … `v0.8.0` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.x` and `v0.8.0`. This will change only when SPI introduces a breaking interface (none planned for v0.x).
 
 ### Migration window
 
 cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugins are using. Consumers compose at runtime — the active plugin's pinned SPI version determines which SPI surface is actually exercised, and unused additions are inert. There is no requirement that the binary's SPI pin and the plugin's SPI pin match exactly.
 
-### v0.8.0 milestone — SPI pseudo-version pin
+### v0.8.0 milestone — SPI pseudo-version pin window (closed)
 
-During the v0.8.0 milestone the root `go.mod` and every in-tree plugin submodule pin a pseudo-version of `cyoda-go-spi` against `main` HEAD (currently `v0.7.2-0.20260614212620-3e6807cb206a`). The final pin bump to `v0.8.0` happens at end of milestone once the SPI tag is cut. The previously published `v0.8.0` tag was retracted and replaced — out-of-tree consumers using `v0.8.0` before the re-cut should refresh after the new tag lands.
+During the v0.8.0 development milestone, the root `go.mod` and every in-tree plugin submodule pinned a pseudo-version of `cyoda-go-spi` against `main` HEAD while the SPI surface was still settling. That window closed at release: `cyoda-go-spi v0.8.0` was tagged and all four manifests were bumped to the release tag (the `v0.8.0` matrix row above). An earlier `v0.8.0` SPI tag was cut prematurely and retracted; the re-cut tag is canonical — out-of-tree consumers that fetched the premature tag should refresh.
 
 ### Optional capability interfaces (grouped-stats)
 
