@@ -39,7 +39,7 @@ func (f *fakeDispatcher) DispatchCriteria(
 }
 
 func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	inner := &fakeDispatcher{}
@@ -67,7 +67,7 @@ func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *
 }
 
 func TestTracingExternalProcessingService_DispatchCriteria_DelegatesToInner(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	inner := &fakeDispatcher{}
@@ -89,7 +89,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_DelegatesToInner(t *t
 }
 
 func TestTracingExternalProcessingService_DispatchProcessor_PropagatesError(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	wantErr := errors.New("dispatch failed")
@@ -106,7 +106,7 @@ func TestTracingExternalProcessingService_DispatchProcessor_PropagatesError(t *t
 }
 
 func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	wantErr := errors.New("criteria failed")

@@ -45,7 +45,7 @@ func (f *fakeTxManager) ReleaseSavepoint(ctx context.Context, txID string, savep
 }
 
 func TestTracingTxManager_DelegatesToInner(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	inner := &fakeTxManager{}
@@ -81,7 +81,7 @@ func TestTracingTxManager_DelegatesToInner(t *testing.T) {
 // IM-17: txActive counter must NOT be decremented when rollback fails.
 // A failed rollback means the transaction is still active.
 func TestTracingTxManager_Rollback_FailedRollbackDoesNotDecrementActive(t *testing.T) {
-	shutdown, _ := observability.Init(context.Background(), "test", "node-test")
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
 	defer shutdown(context.Background())
 
 	rollbackErr := errors.New("rollback failed")
