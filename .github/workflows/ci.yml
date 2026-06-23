@@ -12,15 +12,23 @@ on:
 permissions:
   contents: read
 
-# GOPRIVATE bypasses sum.golang.org for cyoda-platform modules. This makes
-# the Go toolchain check checksums against the local go.sum only (not
-# against the public checksum database), which is required during periods
+# GOPRIVATE bypasses sum.golang.org AND the public module proxy for
+# cyoda-platform modules, fetching them direct from VCS and checking
+# checksums against the local go.sum only. This is required during periods
 # when a cyoda-go-spi tag is being re-cut at a new commit (see the v0.8.0
-# retraction note in cyoda-go-spi's CHANGELOG). It also keeps the
-# commercial cyoda-go-cassandra plugin and any other internal Cyoda
-# modules clean of sum.golang.org dependence.
+# retraction note in cyoda-go-spi's CHANGELOG): the public proxy permanently
+# caches the first SHA it sees for a tag, so without a direct fetch a re-cut
+# tag resolves to stale content. It also keeps the commercial
+# cyoda-go-cassandra plugin and any other internal Cyoda modules clean of
+# sum.golang.org dependence.
+#
+# IMPORTANT: the pattern must match the module path EXACTLY — GOPRIVATE
+# matching is case-sensitive. The module path is lowercase
+# `github.com/cyoda-platform/...` even though the GitHub org renders as
+# `Cyoda`; a capitalised pattern silently fails to match and falls through
+# to the public proxy.
 env:
-  GOPRIVATE: github.com/Cyoda-platform/*
+  GOPRIVATE: github.com/cyoda-platform/*
 
 jobs:
   test:
