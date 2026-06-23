@@ -167,6 +167,10 @@ annotations:
     labels, or UI hints.
 ```
 
+`annotations` is **optional** — it is added only as a property and is **never**
+added to any `required` list on the three DTOs, consistent with the `omitempty`
+struct tags and the "absent/null → no-annotations" normalisation.
+
 These DTO additions are **load-bearing, not just documentation**: the OpenAPI
 response validator runs in `ModeEnforce` and validates every E2E *response*
 against the spec. An export carrying `annotations` against a DTO that does not
