@@ -13,6 +13,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/admin"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 // shutdownDrainBudget bounds graceful HTTP/admin server drain. Matches the
@@ -105,6 +106,7 @@ func runServers(
 		Handler: admin.NewHandler(admin.Options{
 			Readiness:          a.ReadinessCheck,
 			MetricsBearerToken: cfg.Admin.MetricsBearerToken,
+			MetricsHandler:     observability.MetricsHandler(),
 		}),
 	}
 	g.Go(func() error {

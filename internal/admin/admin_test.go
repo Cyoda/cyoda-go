@@ -79,3 +79,33 @@ func TestHandler_Metrics_ReturnsPrometheusFormat(t *testing.T) {
 		t.Fatalf("metrics: Content-Type %q is not a Prometheus exposition format", ct)
 	}
 }
+
+func TestHandler_Metrics_UsesInjectedHandler(t *testing.T) {
+	sentinel := "injected_metrics_sentinel 1"
+	h := NewHandler(Options{
+		Readiness: func() error { return nil },
+		MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(sentinel))
+		}),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), sentinel) {
+		t.Fatalf("expected injected handler output, got %q", rec.Body.String())
+	}
+}
+
+func TestHandler_Metrics_InjectedHandlerStillBearerGated(t *testing.T) {
+	h := NewHandler(Options{
+		Readiness:          func() error { return nil },
+		MetricsBearerToken: "secret",
+		MetricsHandler:     http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil) // no bearer
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without bearer, got %d", rec.Code)
+	}
+}

@@ -30,6 +30,12 @@ type Options struct {
 	// present a bearer. Empty leaves /metrics unauthenticated (the
 	// desktop/docker default, where the listener is loopback-only).
 	MetricsBearerToken string
+
+	// MetricsHandler, when non-nil, serves GET /metrics. When nil, falls back
+	// to promhttp.Handler() (global default registry — runtime metrics only).
+	// Production passes observability.MetricsHandler(); admin unit tests may
+	// leave it nil.
+	MetricsHandler http.Handler
 }
 
 func NewHandler(opts Options) http.Handler {
@@ -51,6 +57,9 @@ func NewHandler(opts Options) http.Handler {
 		_, _ = w.Write([]byte("ready"))
 	})
 	var metricsHandler http.Handler = promhttp.Handler()
+	if opts.MetricsHandler != nil {
+		metricsHandler = opts.MetricsHandler
+	}
 	if opts.MetricsBearerToken != "" {
 		metricsHandler = requireBearer(opts.MetricsBearerToken, metricsHandler)
 	}
