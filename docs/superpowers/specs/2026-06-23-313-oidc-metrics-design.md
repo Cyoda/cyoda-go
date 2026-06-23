@@ -1,19 +1,38 @@
 # OIDC subsystem metrics — primitive infrastructure (issue #313)
 
-**Status:** design approved (rev. 2, post fresh-context review), pre-implementation
+**Status:** design approved (rev. 3, post second fresh-context review), pre-implementation
 **Date:** 2026-06-23
 **Refs:** #284 (OIDC providers) — design `docs/superpowers/specs/2026-06-16-284-oidc-providers-design.md`, decision **D22**; this is follow-up #313
 
 ## 0. Revision note
 
-rev. 2 incorporates two independent fresh-context design reviews (correctness +
-proportionality). Material changes from rev. 1: enablement model decoupled from
-`CYODA_OTEL_ENABLED` (§2.3 — the always-on scrape decision); exporter pinned to
-`v0.65.0` (§2.4); `MetricsHandler()` resolves the live registry per-call (§3.1); tx/dispatch
-constructors take an injected `metric.Meter` for testability (§5); cleanup (b) re-justified
-on consistency, not performance (§5/§6); test plan reworked — the acceptance smoke test is
-an admin-handler HTTP integration test, not the main e2e harness (§7); documentation
-targets expanded to the help `telemetry` topic, `ARCHITECTURE.md`, `PRD.md` (§8).
+rev. 2 incorporated two independent fresh-context reviews (correctness + proportionality).
+Material rev.1→rev.2 changes: enablement decoupled from `CYODA_OTEL_ENABLED` (§2.3); exporter
+pinned `v0.65.0` (§2.4); live-registry handler (§3.1); injected `metric.Meter` for tx/dispatch
+testability (§5); cleanup (b) re-justified on consistency (§5/§6); smoke test moved to an
+admin HTTP integration test (§7); doc targets expanded (§8).
+
+rev. 3 incorporates a second review round (feasibility + readiness). Material rev.2→rev.3
+changes, each verified against the cached modules:
+- **Translation strategy set explicitly** (§2.4, §3.1, §4.1). otelprom `v0.65.0` happens to
+  default to `UnderscoreEscapingWithSuffixes` (`config.go:34-36`, unconditional), so the D22
+  names render correctly today — but the upstream godoc warns the default is changing and
+  `prometheus/common@v0.66.1` defaults to `UTF8Validation`, so we set
+  `WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes)` explicitly to be
+  upgrade-immune. Adds a direct dep on `github.com/prometheus/otlptranslator` (already an
+  indirect dep at `v1.0.0`).
+- **Init control flow pinned down** (new §3.0). Concrete signature, the always-vs-gated
+  split, the shutdown nil-`tp` guard, and the metrics-soft-fail / trace-hard-fail error
+  policy — previously asserted as outcomes without a mechanism.
+- **Concurrency primitive named** (§3.1). The live registry is held in an
+  `atomic.Pointer[prometheus.Registry]`, always non-nil, to survive `ResetInit` races under
+  `make race` and to define pre-init behavior.
+- **Histogram buckets decided** (§4.1). `oidc.broadcast.receive` gets explicit sub-second
+  bucket boundaries; the OTel SDK default buckets are ms-tuned and wrong for a seconds-unit
+  sub-second latency.
+- Admin call site corrected to `cmd/cyoda/run.go:105` with handler-selection-before-bearer
+  ordering (§3.2); smoke test must run init first (§7); meter-injection blast radius
+  enumerated (§5).
 
 ## 1. Problem
 
@@ -137,7 +156,13 @@ Pin `go.opentelemetry.io/otel/exporters/prometheus v0.65.0` — it requires `ote
 and `client_golang v1.23.2`, both exact matches to the current `go.mod`. **Do not** let
 `go get` pull `v0.66.0`, which requires `otel v1.44.0` and would drag the whole OTel stack
 to a new minor across all four `go.mod` files — an unwanted bump during the v0.8.0 SPI pin
-window. The exporter is added to the root module only.
+window. Exact command: `go get go.opentelemetry.io/otel/exporters/prometheus@v0.65.0`
+(root module only).
+
+This also promotes `github.com/prometheus/otlptranslator` (currently indirect at `v1.0.0`)
+to a **direct** dependency, because §3.1 references its `UnderscoreEscapingWithSuffixes`
+strategy constant explicitly. No version change — `v1.0.0` is already in the graph via the
+exporter.
 
 ## 3. Architecture
 
@@ -160,6 +185,51 @@ MeterProvider ──────────-┤
       admin /metrics  (optional Bearer auth, unchanged)
 ```
 
+### 3.0 Init control flow (the always-on restructure)
+
+`observability.Init` keeps a single `sync.Once` but gains an explicit enable flag and is
+**always called** from startup:
+
+```go
+// signature change: add otelEnabled
+func Init(ctx context.Context, serviceName, nodeID string, otelEnabled bool) (func(context.Context) error, error)
+```
+
+`cmd/cyoda/main.go:104` changes from `if cfg.OTelEnabled { ...Init... }` to an
+**unconditional** `shutdown, err := observability.Init(ctx, "cyoda", nodeID, cfg.OTelEnabled)`.
+
+Inside `initOnce.Do`, the body splits into always-run and gated arms:
+
+1. **Always (scrape path, best-effort):**
+   - Build the resource (`resource.New`).
+   - Build the Prometheus exporter:
+     `otelprom.New(otelprom.WithRegisterer(reg), otelprom.WithoutScopeInfo(),
+     otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes))`
+     into a fresh `reg := prometheus.NewRegistry()` (+ Go/process collectors).
+   - **On exporter/meter error: log and continue** — do **not** set `initErr`. `Meter()`
+     stays a no-op and `/metrics` simply lacks app metrics; the process still serves.
+   - Build the readers slice: always include the Prometheus exporter; append the OTLP
+     `PeriodicReader` **only if** `otelEnabled` (readers are fixed at `NewMeterProvider`
+     construction, so the slice is assembled before the single `NewMeterProvider` call).
+   - `mp = sdkmetric.NewMeterProvider(WithReader(...)..., WithResource(res))`;
+     `otel.SetMeterProvider(mp)`; publish `reg` into the registry pointer (§3.1).
+2. **Gated on `otelEnabled` (push + tracing, fail-fast):**
+   - Build the OTLP metric exporter (for the reader appended above) and the OTLP trace
+     exporter; **on error set `initErr`** (preserves today's fatal behavior — `main.go`
+     `os.Exit(1)`; an operator who opted into OTLP wants to know it failed).
+   - Seed the sampler from env, build `tp`, `otel.SetTracerProvider(tp)`, install the W3C
+     propagator. **None of this runs when `otelEnabled` is false**, so tracing stays off by
+     default exactly as today.
+3. **`shutdownFn`** must guard `if tp != nil { tp.Shutdown(ctx) }` (tp is nil when OTEL is
+   off) and always `mp.Shutdown(ctx)`.
+
+`ResetInit` (test-only) resets `initOnce`, nils `tp`/`mp`/`initErr`, and resets the registry
+pointer (§3.1) to a fresh empty registry.
+
+**Error-policy summary:** scrape/meter setup is best-effort (log-and-continue); OTLP/trace
+setup is fatal **only when `otelEnabled`**. This is the metrics-soft-fail / trace-hard-fail
+split §2.3 calls for, reconciled with the existing single-`initErr` contract.
+
 ### 3.1 Registry ownership & handler lifecycle
 
 `internal/observability` owns a **dedicated `prometheus.Registry`** (OTel docs explicitly
@@ -168,27 +238,48 @@ recommend a custom registry over the global default to avoid global state):
 - On metrics init, create `reg := prometheus.NewRegistry()`, register
   `collectors.NewGoCollector()` + `collectors.NewProcessCollector(...)` into it (preserving
   the runtime/process metrics the default registry gave us), and construct the exporter
-  with `otelprom.New(otelprom.WithRegisterer(reg), otelprom.WithoutScopeInfo())`. (Scope
-  info is suppressed — single instrumentation scope, so `otel_scope_*` labels add only
-  noise; `target_info` retained. Reversible one-liner if multiple scopes are added later.)
-- Expose `observability.MetricsHandler() http.Handler`. **The handler resolves the *current*
-  registry at request time** (closure over a package-level accessor / sync-guarded var),
-  not a registry captured at wiring time. This is required so that after `ResetInit` builds
-  a fresh registry, a previously-wired handler scrapes the live one, not a dead one.
-  Before metrics init has run, `MetricsHandler()` serves an empty (but valid) registry.
-- `ResetInit` (test-only) discards the registry/handler state so a fresh registry is built
-  on re-init — no `AlreadyRegisteredError` (the lifecycle hazard that rules out the global
-  default registry). `ResetInit` must nil the new registry package var in addition to the
-  existing `tp`/`mp`.
+  with:
+  ```go
+  otelprom.New(
+      otelprom.WithRegisterer(reg),
+      otelprom.WithoutScopeInfo(),                                              // single scope → otel_scope_* is noise; target_info retained
+      otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes), // explicit — do not rely on the scheme-dependent default (§2.4)
+  )
+  ```
+- **Registry held in `var activeRegistry atomic.Pointer[prometheus.Registry]`, initialized
+  at package load to an empty `prometheus.NewRegistry()`** (so it is *always non-nil*).
+  `Init` calls `activeRegistry.Store(reg)` once the real registry is built; `ResetInit`
+  calls `activeRegistry.Store(prometheus.NewRegistry())` (fresh empty). This avoids the
+  global default registry's `AlreadyRegisteredError` on re-init, and the atomic pointer
+  makes the `ResetInit`-vs-scrape interaction data-race-free under `make race`.
+- Expose `observability.MetricsHandler() http.Handler` — a small handler that, **per
+  request**, loads `activeRegistry.Load()` and serves `promhttp.HandlerFor(reg,
+  promhttp.HandlerOpts{})`. Per-request resolution is what lets a handler wired once still
+  scrape the live registry after `ResetInit`. Pre-init it serves the empty sentinel
+  registry (valid, just app-metric-empty) — never nil, never the global default.
+- `ResetInit` (test-only) resets `initOnce`, nils `tp`/`mp`/`initErr`, and stores a fresh
+  empty registry into `activeRegistry`.
 
 ### 3.2 Admin wiring
 
-`admin.Options` gains an optional `MetricsHandler http.Handler`. When nil, `NewHandler`
-falls back to `promhttp.Handler()` (current behavior preserved for existing admin unit
-tests, which construct `Options` without a metrics handler). `cmd/cyoda/run.go` / `app`
-pass `observability.MetricsHandler()` so production `/metrics` carries app metrics. The
-Bearer-auth wrapping (`requireBearer`) is unchanged and wraps whichever handler is in
-effect.
+`admin.Options` gains an optional `MetricsHandler http.Handler`. In `admin.NewHandler`, the
+selection happens **before** the bearer wrap:
+
+```go
+var metricsHandler http.Handler = promhttp.Handler() // nil-fallback: global default registry
+if opts.MetricsHandler != nil {
+    metricsHandler = opts.MetricsHandler
+}
+if opts.MetricsBearerToken != "" {
+    metricsHandler = requireBearer(opts.MetricsBearerToken, metricsHandler)
+}
+```
+
+so the existing bearer gate still applies to the injected handler. The **only** admin
+construction site is `cmd/cyoda/run.go:105`; it passes `observability.MetricsHandler()` so
+production `/metrics` carries app metrics. (`app/app.go` does not build the admin handler.)
+The nil-fallback preserves current behavior for existing admin unit tests, which construct
+`Options` without a metrics handler.
 
 **Known caveat (accepted):** the nil-fallback exposes the *global default* registry
 (Go/process only), while production exposes the *dedicated* registry (app metrics). If
@@ -213,9 +304,10 @@ the OIDC kid-cache path is per-token-verify, so this one is genuinely hot-path r
 
 ### 4.1 Metric mapping
 
-Translation strategy: exporter default (`UnderscoreEscapingWithSuffixes`). Names authored
-in dotted OTel form render to the exact D22 Prometheus names. (All nine renderings were
-verified against `otlptranslator` as bundled with `exporters/prometheus v0.65.0`.)
+Translation strategy: `UnderscoreEscapingWithSuffixes`, **set explicitly** on the exporter
+(§3.1) — not relied upon as a default (§2.4). Names authored in dotted OTel form render to
+the exact D22 Prometheus names. (otlptranslator `v1.0.0`, which `exporters/prometheus
+v0.65.0` depends on, produces these renderings under that strategy.)
 
 | Interface method | OTel instrument (kind, unit) | Rendered `/metrics` name |
 |---|---|---|
@@ -231,6 +323,13 @@ verified against `otlptranslator` as bundled with `exporters/prometheus v0.65.0`
 
 - Gauge uses synchronous `Int64Gauge` (verified present in pinned otel/metric v1.43.0),
   mapping 1:1 to `SetRegistryProviders(n int)` — no observable callback.
+- **Histogram buckets (decided).** `oidc.broadcast.receive` is created with explicit
+  sub-second boundaries:
+  `metric.WithExplicitBucketBoundaries(0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5)`
+  (advisory option, honored by the SDK's default explicit-bucket aggregation). The OTel SDK
+  default buckets (`0,5,10,…,10000`) are tuned for **milliseconds**; for a seconds-unit,
+  sub-second in-process broadcast-handling latency they would collapse every sample into the
+  first bucket. The boundaries above span 100µs–5s, covering the realistic range.
 - `oidc_registry_providers` carries **no tenant label** (D22 / rev.4 I3).
 - Label cardinality is bounded: `outcome` and `reason` are closed enums (`reason` ∈
   {`malformed_envelope`, `oversized_op`, `oversized_tenantid`, `oversized_uri`} per
@@ -272,8 +371,12 @@ Three same-package changes, each TDD'd:
 - **Meter injection (enabler).** `NewTracingTransactionManager` and
   `NewTracingExternalProcessingService` currently call `observability.Meter()` internally,
   which makes their metric output untestable. Change both constructors to accept a
-  `metric.Meter` parameter (call sites in `app.go:205,485` pass `observability.Meter()`).
-  This mirrors the OIDC impl and is the prerequisite for unit-testing (a) and (b).
+  `metric.Meter` parameter. **Blast radius (verified):** two production call sites
+  (`app.go:205`, `app.go:485`, both pass `observability.Meter()`) and six test call sites
+  (`tx_tracing_test.go:52,89`; `dispatch_tracing_test.go:46,74,97,114`) update to pass a
+  meter. No other callers exist (grep across repo; the decorators live in
+  `internal/observability`, not the SPI, so out-of-tree plugins cannot reference them). This
+  mirrors the OIDC impl and is the prerequisite for unit-testing (a) and (b).
 - **(a) Log instrument-creation errors.** Replace `x, _ := meter.Float64Histogram(...)`
   with logged error handling (no behavioral change beyond a diagnostic). Once these
   instruments are externally visible, a silently-dropped creation error is a silently-
@@ -320,7 +423,10 @@ Three same-package changes, each TDD'd:
   bridge end-to-end. (It lives as a focused integration test — `internal/admin` or a
   dedicated metrics integration test — **not** the main `internal/e2e` harness, which
   mounts only the API router and has no `/metrics` surface. The main API is unchanged by
-  this work, so Gate 2's E2E surface is unaffected.)
+  this work, so Gate 2's E2E surface is unaffected.) **Ordering:** the test must run the
+  metrics-init path first (so `Meter()` is real and `activeRegistry` holds the live
+  registry); the Prometheus reader is pull-based, so the `GET /metrics` scrape collects
+  current values synchronously — no flush needed (unlike the OTLP `PeriodicReader`).
 - **Gate 5:** `go test ./... -v` green; `go vet ./...`. **Race** (`make race`) once before
   PR.
 
@@ -352,10 +458,16 @@ now carries app metrics) must be reflected in:
 
 ## 9. Acceptance (from #313, with rev. 2 additions)
 
-- [ ] OTel Prometheus exporter (`v0.65.0`) wired as an always-on reader; `/metrics` serves
-      OTel metrics regardless of `CYODA_OTEL_ENABLED`; OTLP push stays gated.
-- [ ] `MeterProvider` always initialized (scrape); metrics-init failure is log-and-continue.
-- [ ] `MetricsHandler()` resolves the live registry per-request (survives `ResetInit`).
+- [ ] OTel Prometheus exporter (`v0.65.0`) wired as an always-on reader, with
+      `WithTranslationStrategy(UnderscoreEscapingWithSuffixes)` set explicitly; `/metrics`
+      serves OTel metrics regardless of `CYODA_OTEL_ENABLED`; OTLP push stays gated.
+- [ ] `Init(ctx, serviceName, nodeID, otelEnabled)` called unconditionally from `main.go`;
+      always-on scrape vs gated OTLP/trace split; `shutdownFn` guards nil `tp`.
+- [ ] Error policy: scrape/meter setup log-and-continue; OTLP/trace setup fatal only when
+      `otelEnabled`.
+- [ ] `MetricsHandler()` resolves the live registry per-request via
+      `atomic.Pointer[prometheus.Registry]` (survives `ResetInit`; data-race-free).
+- [ ] `oidc.broadcast.receive` histogram uses explicit sub-second bucket boundaries.
 - [ ] `oidc.Metrics` implemented against OTel instruments (`NewOTelMetrics`).
 - [ ] All **9** interface metrics emitted with correct labels (8 D22 + reconciled
       `oidc_broadcast_drop_total{reason}`).
