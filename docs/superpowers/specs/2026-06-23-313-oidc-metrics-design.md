@@ -1,6 +1,6 @@
 # OIDC subsystem metrics — primitive infrastructure (issue #313)
 
-**Status:** design approved (rev. 3, post second fresh-context review), pre-implementation
+**Status:** design approved (rev. 4, post third review — empirically verified), pre-implementation
 **Date:** 2026-06-23
 **Refs:** #284 (OIDC providers) — design `docs/superpowers/specs/2026-06-16-284-oidc-providers-design.md`, decision **D22**; this is follow-up #313
 
@@ -33,6 +33,28 @@ changes, each verified against the cached modules:
 - Admin call site corrected to `cmd/cyoda/run.go:105` with handler-selection-before-bearer
   ordering (§3.2); smoke test must run init first (§7); meter-injection blast radius
   enumerated (§5).
+
+rev. 4 incorporates a third review round. One reviewer **empirically compiled and ran** the
+exporter against the exact pinned modules and confirmed all nine D22 names, the custom
+sub-second histogram buckets, `WithoutScopeInfo`, `target_info` retention, the gauge (no
+`_total`), and the dual-reader all render/compile exactly as specified — the core technical
+premise is now proven, not assumed. Material rev.3→rev.4 corrections from the adversarial
+pass:
+- **Init control flow rewritten as one linear sequence** (§3.0). rev.3's "assemble readers
+  in step 1, build the OTLP exporter in step 2" was internally contradictory (a
+  `PeriodicReader` can't be appended before the exporter it wraps exists) and risked a
+  half-published global provider on a fatal OTLP error. Now: build all exporters first
+  (OTLP hard-fail *returns before* `NewMeterProvider`), then one provider construction.
+- **"`Meter()` stays a no-op on prom-exporter failure" corrected** (§3.0). A provider with
+  zero readers still returns a *real* meter; only a shut-down provider is no-op. Prose fixed.
+- **OIDC always-on qualified to IAM `jwt` mode** (§2.3, §4.3). The OIDC registry is gated by
+  `if cfg.IAM.Mode == "jwt"` (app.go:215), not unconditional.
+- **`Init` signature-change blast radius enumerated** (§3.0): 10 call sites.
+- **tx/dispatch duration histograms get the same explicit-bucket fix** (§5c). They are also
+  seconds-unit histograms with the wrong default buckets — §4.1's argument applies equally
+  (Gate 6 consistency); rev.3's "units render cleanly, no changes" was contradictory.
+- **Transitive dep bumps acknowledged** (§2.4): adding the exporter pulls
+  `prometheus/common v0.67.5` (+ `procfs`, `klauspost/compress`) via MVS.
 
 ## 1. Problem
 
@@ -145,10 +167,13 @@ undesirable. Consequence:
 - `CYODA_OTEL_ENABLED=true`: `/metrics` additionally carries tx/dispatch metrics, and
   everything also pushes via OTLP.
 
-OIDC metrics are always-on because the OIDC registry is wired unconditionally
-(`app.go:274`); they are the auth-critical, always-relevant set. tx/dispatch are deeper
-diagnostics enabled with full observability. This is recorded in the help topic and
-`ARCHITECTURE.md` (§8).
+OIDC metrics are always-on **whenever the OIDC subsystem itself is active** — i.e. when
+`cfg.IAM.Mode == "jwt"` (the OIDC registry and its metrics wiring at `app.go:274` live
+inside that block, `app.go:215`). In mock IAM mode there is no OIDC registry and hence no
+OIDC metrics, by construction. When OIDC is active its metrics are always exported
+(independent of `CYODA_OTEL_ENABLED`); they are the auth-critical, always-relevant set.
+tx/dispatch are deeper diagnostics enabled with full observability. This is recorded in the
+help topic and `ARCHITECTURE.md` (§8).
 
 ### 2.4 Dependency pin (the B3 decision)
 
@@ -159,10 +184,18 @@ to a new minor across all four `go.mod` files — an unwanted bump during the v0
 window. Exact command: `go get go.opentelemetry.io/otel/exporters/prometheus@v0.65.0`
 (root module only).
 
-This also promotes `github.com/prometheus/otlptranslator` (currently indirect at `v1.0.0`)
-to a **direct** dependency, because §3.1 references its `UnderscoreEscapingWithSuffixes`
-strategy constant explicitly. No version change — `v1.0.0` is already in the graph via the
-exporter.
+`github.com/prometheus/otlptranslator` is **not** in the module graph today (it appears in
+neither `go.mod` nor `go.sum`). Adding the exporter pulls it in at `v1.0.0`; because §3.1
+references its `UnderscoreEscapingWithSuffixes` constant directly, list it as a **direct**
+dependency after `go mod tidy`.
+
+**Expected transitive bumps (verified by building against the cache).** `exporters/prometheus
+v0.65.0`'s own `go.mod` requires `github.com/prometheus/common v0.67.5`, above the current
+`v0.66.1` pin, so MVS will bump `common` to `v0.67.5` (and likely `prometheus/procfs` and
+`klauspost/compress`). These are pure-Go support libs, compile clean, and do **not** touch
+the OTel `v1.43.0` / `client_golang v1.23.2` pins. Run `go mod tidy` after the `go get` and
+expect those three lines to move; this is benign relative to the SPI pin window (no OTel/SPI
+version change).
 
 ## 3. Architecture
 
@@ -195,39 +228,52 @@ MeterProvider ──────────-┤
 func Init(ctx context.Context, serviceName, nodeID string, otelEnabled bool) (func(context.Context) error, error)
 ```
 
-`cmd/cyoda/main.go:104` changes from `if cfg.OTelEnabled { ...Init... }` to an
-**unconditional** `shutdown, err := observability.Init(ctx, "cyoda", nodeID, cfg.OTelEnabled)`.
+`cmd/cyoda/main.go` changes from `if cfg.OTelEnabled { ...Init... }` (the guard is at
+`main.go:104`, the call at `main.go:109`) to an **unconditional**
+`shutdown, err := observability.Init(ctx, "cyoda", nodeID, cfg.OTelEnabled)`.
 
-Inside `initOnce.Do`, the body splits into always-run and gated arms:
+**Signature-change blast radius (verified).** `observability.Init` is called at 10 sites that
+all move to the 4-arg form: `cmd/cyoda/main.go:109` (passes `cfg.OTelEnabled`), and 9 test
+sites that pass an explicit bool — `init_test.go:12,29,35,51`,
+`dispatch_tracing_test.go:42,70,92,109`, `tx_tracing_test.go:48,84` (tracing-metric tests
+pass `true`; pure scrape tests pass `false`).
 
-1. **Always (scrape path, best-effort):**
-   - Build the resource (`resource.New`).
-   - Build the Prometheus exporter:
-     `otelprom.New(otelprom.WithRegisterer(reg), otelprom.WithoutScopeInfo(),
-     otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes))`
-     into a fresh `reg := prometheus.NewRegistry()` (+ Go/process collectors).
-   - **On exporter/meter error: log and continue** — do **not** set `initErr`. `Meter()`
-     stays a no-op and `/metrics` simply lacks app metrics; the process still serves.
-   - Build the readers slice: always include the Prometheus exporter; append the OTLP
-     `PeriodicReader` **only if** `otelEnabled` (readers are fixed at `NewMeterProvider`
-     construction, so the slice is assembled before the single `NewMeterProvider` call).
-   - `mp = sdkmetric.NewMeterProvider(WithReader(...)..., WithResource(res))`;
-     `otel.SetMeterProvider(mp)`; publish `reg` into the registry pointer (§3.1).
-2. **Gated on `otelEnabled` (push + tracing, fail-fast):**
-   - Build the OTLP metric exporter (for the reader appended above) and the OTLP trace
-     exporter; **on error set `initErr`** (preserves today's fatal behavior — `main.go`
-     `os.Exit(1)`; an operator who opted into OTLP wants to know it failed).
-   - Seed the sampler from env, build `tp`, `otel.SetTracerProvider(tp)`, install the W3C
-     propagator. **None of this runs when `otelEnabled` is false**, so tracing stays off by
-     default exactly as today.
-3. **`shutdownFn`** must guard `if tp != nil { tp.Shutdown(ctx) }` (tp is nil when OTEL is
-   off) and always `mp.Shutdown(ctx)`.
+Inside `initOnce.Do`, a **single linear sequence** — build every exporter/reader *before*
+constructing the provider, so a fatal OTLP error returns before anything global is published:
 
-`ResetInit` (test-only) resets `initOnce`, nils `tp`/`mp`/`initErr`, and resets the registry
-pointer (§3.1) to a fresh empty registry.
+1. Build the resource (`resource.New`).
+2. **Prometheus exporter (soft-fail).** `reg := prometheus.NewRegistry()`; register
+   `collectors.NewGoCollector()` and `collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})`;
+   then
+   `promExp, err := otelprom.New(otelprom.WithRegisterer(reg), otelprom.WithoutScopeInfo(),
+   otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes))`.
+   **On error: log and continue** (do not set `initErr`) — `reg` still carries Go/process
+   metrics, so `/metrics` keeps runtime metrics; only app metrics are absent. Collect the
+   succeeded readers into `readerOpts []sdkmetric.Option` (one `sdkmetric.WithReader(r)` per
+   reader — `WithReader` takes a *single* `Reader`, not variadic).
+3. **If `otelEnabled` (hard-fail, before provider construction):** build the OTLP metric
+   exporter; **on error set `initErr` and `return`** (preserves today's fatal behavior; no
+   global provider has been published yet). Wrap it in a `PeriodicReader` and append to
+   `readerOpts`. Likewise build the OTLP trace exporter; on error set `initErr` and `return`.
+4. `mp = sdkmetric.NewMeterProvider(append(readerOpts, sdkmetric.WithResource(res))...)`;
+   `otel.SetMeterProvider(mp)`; `activeRegistry.Store(reg)` (§3.1). `mp` is always non-nil
+   (a provider with zero readers is valid — see note). `Meter()` therefore returns a *real*
+   meter regardless; if the Prometheus exporter failed and OTEL is off, that meter simply
+   records into no reader (it is **not** a no-op meter — only a *shut-down* provider returns
+   the no-op meter).
+5. **If `otelEnabled`:** seed the sampler from env, build `tp`, `otel.SetTracerProvider(tp)`,
+   install the W3C propagator. None of this runs when OTEL is off, so tracing stays off by
+   default exactly as today.
 
-**Error-policy summary:** scrape/meter setup is best-effort (log-and-continue); OTLP/trace
-setup is fatal **only when `otelEnabled`**. This is the metrics-soft-fail / trace-hard-fail
+**`shutdownFn`** guards `if tp != nil { tp.Shutdown(ctx) }` (tp is nil when OTEL is off) and
+always calls `mp.Shutdown(ctx)` (mp is always non-nil per step 4).
+
+`ResetInit` (test-only) resets `initOnce`, nils `tp`/`mp`/`initErr`, and stores a fresh empty
+registry into `activeRegistry` (§3.1).
+
+**Error-policy summary:** Prometheus/scrape setup is best-effort (log-and-continue, real
+meter, runtime-only `/metrics`); OTLP/trace setup is fatal **only when `otelEnabled`**, and
+fails *before* the provider is published. This is the metrics-soft-fail / trace-hard-fail
 split §2.3 calls for, reconciled with the existing single-`initErr` contract.
 
 ### 3.1 Registry ownership & handler lifecycle
@@ -350,10 +396,11 @@ record and is not edited.)
 
 ### 4.3 Startup wiring
 
-`app/app.go` (~line 274): replace `oidc.NopMetrics{}` with
-`oidc.NewOTelMetrics(observability.Meter())`, handling the returned error at startup
-(fail fast). Because the scrape pipeline is always on (§2.3), `Meter()` returns a real
-meter here regardless of `CYODA_OTEL_ENABLED`.
+`app/app.go` (~line 274, inside the `if cfg.IAM.Mode == "jwt"` block at `app.go:215`):
+replace `oidc.NopMetrics{}` with `oidc.NewOTelMetrics(observability.Meter())`, handling the
+returned error at startup (fail fast). Because the scrape pipeline is always on (§2.3, §3.0),
+`Meter()` returns a real meter here regardless of `CYODA_OTEL_ENABLED`. (This call site is
+only reached in jwt IAM mode — consistent with §2.3.)
 
 ## 5. Adjacent cleanup (folded in — Gate 6)
 
@@ -363,10 +410,16 @@ instruments at `/metrics` (when OTEL is enabled), so their hygiene now matters. 
 - **No cardinality risk.** Metric-level labels are bounded enums only (`tx.op` ∈
   {begin, commit, rollback}; `dispatch.type` ∈ {processor, criteria}). High-cardinality
   attributes (processor name, tags, workflow/transition/tx IDs) live on **spans only**.
-- **Naming/units render cleanly** (`cyoda_tx_duration_seconds`, `cyoda_dispatch_count_total`,
+- **Names/units render cleanly** (`cyoda_tx_duration_seconds`, `cyoda_dispatch_count_total`,
   etc. — verified). No renames needed.
+- **But the duration histograms have the wrong default buckets** — same defect §4.1 fixes
+  for OIDC. `cyoda.tx.duration` and `cyoda.dispatch.duration` are `Float64Histogram`s with
+  `WithUnit("s")` and **no** explicit boundaries (`tx_tracing.go:30`, `dispatch_tracing.go:30`),
+  so once scrape-visible they inherit the ms-tuned SDK default buckets and collapse
+  sub-second samples. Folding the same fix in (cleanup (c) below) keeps §4.1 and §5
+  internally consistent (Gate 6).
 
-Three same-package changes, each TDD'd:
+Four same-package changes, each TDD'd:
 
 - **Meter injection (enabler).** `NewTracingTransactionManager` and
   `NewTracingExternalProcessingService` currently call `observability.Meter()` internally,
@@ -387,6 +440,11 @@ Three same-package changes, each TDD'd:
   consistency (one pattern), not performance** — the tx/dispatch paths fire once per
   transaction / dispatch and are dominated by I/O, so the allocation saving is immaterial
   there. (Contrast §4, where the OIDC kid-cache path is genuinely hot.)
+- **(c) Explicit histogram buckets.** Add seconds-tuned boundaries to `cyoda.tx.duration`
+  and `cyoda.dispatch.duration` via `metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025,
+  0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)` (the classic Prometheus seconds histogram set —
+  appropriate for transaction/dispatch latencies, which span ms to seconds). Without this
+  they collapse into the ms-tuned SDK default once scrapeable.
 
 ## 6. Performance & memory
 
@@ -473,7 +531,9 @@ now carries app metrics) must be reflected in:
       `oidc_broadcast_drop_total{reason}`).
 - [ ] `oidc_registry_providers` has no tenant label.
 - [ ] `NopMetrics` remains for tests.
-- [ ] tx/dispatch: meter injected; cleanups (a)+(b) landed with tests.
+- [ ] tx/dispatch: meter injected (all 10 `Init` call sites + 2 constructor sites updated);
+      cleanups (a) error-logging, (b) attribute-hoist, (c) explicit duration buckets landed
+      with tests.
 - [ ] Acceptance smoke test (admin `/metrics` HTTP integration) green.
 - [ ] Docs updated: `telemetry.md`, `admin.md`, `ARCHITECTURE.md`, `PRD.md` (+ README if
       applicable).
