@@ -51,7 +51,7 @@ The instrumentation name is `github.com/cyoda-platform/cyoda-go`.
 
 **cyoda-specific:**
 
-- `CYODA_OTEL_ENABLED` — `true` to initialize the OTel SDK; `false` (default) to use no-op providers. All standard `OTEL_*` env vars are only read when this is `true`.
+- `CYODA_OTEL_ENABLED` — `true` to enable OTLP push (the OTLP metric and trace exporters) and the otelhttp/gRPC tracing middleware; `false` (default) leaves tracing off and OTLP disabled, but the Prometheus scrape pipeline and `/metrics` remain active. All standard `OTEL_*` env vars are only read when this is `true`.
 - `CYODA_METRICS_BEARER` — static Bearer token required on `GET :9091/metrics`. When empty (default), `/metrics` is unauthenticated. Supports `_FILE` suffix: `CYODA_METRICS_BEARER_FILE=<path>` takes precedence over the plain var.
 - `CYODA_METRICS_REQUIRE_AUTH` — `true` to refuse startup when `CYODA_METRICS_BEARER` is unset. Default `false`. The Helm chart sets this to `true` for shared-cluster deployments.
 
@@ -80,13 +80,15 @@ Traces are exported via `otlptracehttp`. Spans are created by:
 
 **Metrics**
 
-Metrics are exported via `otlpmetrichttp` with a periodic reader. The following instruments are registered:
+Metrics are exported via `otlpmetrichttp` with a periodic reader. The following instruments are registered when `CYODA_OTEL_ENABLED=true` (their instrumentation decorators are active only when OTLP push is enabled):
 
 - `cyoda.tx.duration` — `Float64Histogram`, unit `s` — transaction operation duration; labeled by `op` (`begin`, `commit`, `rollback`)
 - `cyoda.tx.active` — `Int64UpDownCounter` — count of active (begun but not committed/rolled-back) transactions
 - `cyoda.tx.conflicts` — `Int64Counter` — count of transaction serialization conflicts (commit returning `spi.ErrConflict`)
 - `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — processor/criteria dispatch duration; labeled by `type` (`processor`, `criteria`)
 - `cyoda.dispatch.count` — `Int64Counter` — total processor/criteria dispatch calls; labeled by `type` (`processor`, `criteria`)
+
+OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
 
 **Logs**
 
