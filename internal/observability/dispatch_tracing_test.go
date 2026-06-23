@@ -143,8 +143,14 @@ func TestTracingDispatch_DurationHasExplicitBuckets(t *testing.T) {
 				continue
 			}
 			h := md.Data.(metricdata.Histogram[float64])
-			if got := h.DataPoints[0].Bounds; len(got) != len(want) {
+			got := h.DataPoints[0].Bounds
+			if len(got) != len(want) {
 				t.Fatalf("bounds len=%d want %d (%v)", len(got), len(want), got)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("bound[%d]=%v want %v", i, got[i], want[i])
+				}
 			}
 			return
 		}
