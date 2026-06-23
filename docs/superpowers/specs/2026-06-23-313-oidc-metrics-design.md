@@ -2,7 +2,7 @@
 
 **Status:** design approved (rev. 2, post fresh-context review), pre-implementation
 **Date:** 2026-06-23
-**Refs:** #284 (OIDC providers), D22; follow-up #313
+**Refs:** #284 (OIDC providers) — design `docs/superpowers/specs/2026-06-16-284-oidc-providers-design.md`, decision **D22**; this is follow-up #313
 
 ## 0. Revision note
 
@@ -17,7 +17,13 @@ targets expanded to the help `telemetry` topic, `ARCHITECTURE.md`, `PRD.md` (§8
 
 ## 1. Problem
 
-Issue #284 committed (spec D22) to a metric set for the OIDC subsystem and shipped a
+> **"D22" defined.** Throughout this spec, *D22* refers to decision row **D22** in the
+> #284 design decision table:
+> [`docs/superpowers/specs/2026-06-16-284-oidc-providers-design.md`](2026-06-16-284-oidc-providers-design.md)
+> ("Observability — telemetry on the OIDC hot path"), which enumerates the OIDC metric
+> set, labels, and the aggregate-only (no-tenant-label) gauge decision (rev. 4 I3).
+
+Issue #284 committed (in D22) to a metric set for the OIDC subsystem and shipped a
 thin `Metrics` interface (`internal/auth/oidc/observability.go`) wired at every call
 site, with `NopMetrics` as the only implementation. No metrics are emitted in
 production today. This change lands the metric-primitive infrastructure and a real
