@@ -120,7 +120,7 @@ LB_GRPC_PORT="$GRPC_PORT"
 # convention. Mirror the staging pattern from scripts/dev/run-docker-dev.sh:
 # build the binary once for the host arch, stage it, then buildx the image
 # and reference it by tag from compose. One image, N containers share it.
-LOCAL_IMAGE_TAG="ghcr.io/cyoda-platform/cyoda:multi-node-dev"
+LOCAL_IMAGE_TAG="ghcr.io/cyoda/cyoda:multi-node-dev"
 
 case "$(uname -m)" in
     x86_64|amd64) HOST_ARCH=amd64 ;;

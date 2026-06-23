@@ -873,5 +873,5 @@ See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 14 for detailed technical 
 - **Per-plugin documentation:** [`docs/plugins/`](plugins/)
 - **Architecture Decision Records:** [`docs/adr/`](adr/)
 - **OpenAPI Specification:** `api/openapi.yaml`
-- **Storage Plugin SPI module:** [github.com/cyoda-platform/cyoda-go-spi](https://github.com/cyoda-platform/cyoda-go-spi)
+- **Storage Plugin SPI module:** [github.com/cyoda-platform/cyoda-go-spi](https://github.com/cyoda/cyoda-go-spi)
 - **Commercial Cassandra plugin:** contact Cyoda via [cyoda.com](https://www.cyoda.com)

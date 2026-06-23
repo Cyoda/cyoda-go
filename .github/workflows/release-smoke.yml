@@ -98,7 +98,7 @@ jobs:
           cyoda_tags = set()
           for a in artifacts:
               name = a.get('name', '')
-              # Match ghcr.io/cyoda-platform/cyoda:TAG — take TAG.
+              # Match ghcr.io/cyoda/cyoda:TAG — take TAG.
               if ':' in name and 'cyoda/cyoda' in name:
                   cyoda_tags.add(name.rsplit(':', 1)[1])
 

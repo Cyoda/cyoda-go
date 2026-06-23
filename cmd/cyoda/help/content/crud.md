@@ -196,7 +196,7 @@ The `payload` field in each update item must be a string containing the JSON-enc
 Correct: `"payload": "{\"category\":\"physics\"}"`
 Wrong:   `"payload": {"category":"physics"}`   (will be rejected with `errors.BAD_REQUEST`)
 
-Each item may also carry an optional `ifMatch` field (issue #228) — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item.
+Each item may also carry an optional `ifMatch` field — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item.
 
 Request body: JSON array of update items:
 
@@ -214,7 +214,7 @@ Request body: JSON array of update items:
 Failure handling within a chunk:
 
 - **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide infrastructure failures.
-- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-#228 contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
+- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-existing contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
 
 Each per-item `ENTITY_MODIFIED` is also reflected in the entity's state-machine audit log: the engine emits a paired `STATE_MACHINE_START` plus `TRANSITION_ABORTED` event (with `data.reason = "ENTITY_MODIFIED"`, `data.expectedTxId`, and `data.actualTxId`) so consumers can correlate the failure cleanly without orphaned start events.
 
@@ -521,7 +521,7 @@ All entity read operations return entities in the standard envelope:
 - `meta.creationDate` — RFC 3339 with nanoseconds
 - `meta.lastUpdateTime` — RFC 3339 with nanoseconds
 - `meta.transactionId` — present when a transaction ID exists
-- `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug (#94):** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
+- `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
 
 ## OPTIMISTIC CONCURRENCY
 
@@ -543,7 +543,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
+- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
 - Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `400` for validation failures (`MALFORMED_REQUEST`, `UNKNOWN_MODEL`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.

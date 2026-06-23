@@ -29,7 +29,7 @@ cyoda
 
 # Docker
 docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 
 # Docker Compose (bundled compose.yaml)
 docker compose -f deploy/docker/compose.yaml up
@@ -93,7 +93,7 @@ The binary accepts env vars from the process environment, from `.env` files load
 
 ### Docker
 
-**Image:** `ghcr.io/cyoda-platform/cyoda:latest`
+**Image:** `ghcr.io/cyoda/cyoda:latest`
 
 The image uses `gcr.io/distroless/static` as its base. The binary is placed at `/cyoda`. The container runs as UID/GID 65532:65532 (non-root). `/var/lib/cyoda` is pre-staged with ownership 65532:65532 and is the intended mount point for persistent SQLite data.
 
@@ -109,7 +109,7 @@ docker run --rm \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` is required when running in Docker so the health probes on port 9091 are reachable from outside the container. Without it, the admin server binds to loopback (127.0.0.1) inside the container and `/livez` and `/readyz` are unreachable.
@@ -125,7 +125,7 @@ docker run --rm \
   -e CYODA_SQLITE_PATH=/var/lib/cyoda/cyoda.db \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -v cyoda-data:/var/lib/cyoda \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 **Postgres + JWT (production-shaped):**
@@ -142,7 +142,7 @@ docker run --rm \
   -e CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem \
   -v /path/to/signing.pem:/run/secrets/signing.pem:ro \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 ### Docker Compose
@@ -154,7 +154,7 @@ The repository ships a bundled compose file at `deploy/docker/compose.yaml`.
 ```yaml
 services:
   cyoda:
-    image: ghcr.io/cyoda-platform/cyoda:latest
+    image: ghcr.io/cyoda/cyoda:latest
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"
@@ -204,11 +204,11 @@ docker compose up
 **Use a custom image (e.g. a local dev build):**
 
 ```
-CYODA_IMAGE=ghcr.io/cyoda-platform/cyoda:dev \
+CYODA_IMAGE=ghcr.io/cyoda/cyoda:dev \
   docker compose -f deploy/docker/compose.yaml up
 ```
 
-The compose file reads `${CYODA_IMAGE:-ghcr.io/cyoda-platform/cyoda:latest}` for the image name.
+The compose file reads `${CYODA_IMAGE:-ghcr.io/cyoda/cyoda:latest}` for the image name.
 
 **Adjust start_period for slow environments** (Postgres migrations, cluster mode) by editing the `healthcheck.start_period` field in `deploy/docker/compose.yaml`.
 
@@ -239,7 +239,7 @@ helm upgrade --install cyoda ./deploy/helm/cyoda \
 Developer convenience scripts live under `scripts/dev/`. These are not canonical provisioning artifacts. Canonical artifacts are in `deploy/`.
 
 - `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile (in-memory storage, mock auth). Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
-- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda-platform/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. Generates a fresh JWT signing key and randomized bootstrap client secret per run. Intended for contributors testing local changes in a container before they land.
+- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. Generates a fresh JWT signing key and randomized bootstrap client secret per run. Intended for contributors testing local changes in a container before they land.
 
 **Run with in-memory storage and mock auth (go run):**
 
@@ -325,7 +325,7 @@ docker run --rm \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \
   -e OTEL_SERVICE_NAME=cyoda \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 **Docker — suppress banner (CI):**
@@ -334,7 +334,7 @@ docker run --rm \
 docker run --rm \
   -e CYODA_SUPPRESS_BANNER=true \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 **Check health from outside the container:**

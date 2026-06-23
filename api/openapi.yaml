@@ -2052,7 +2052,7 @@ paths:
                       entity has been modified since, the item surfaces
                       in the per-chunk `failed` array with
                       `code=ENTITY_MODIFIED`; the chunk still commits
-                      its remaining successful items. Issue #228.
+                      its remaining successful items.
                 required:
                   - id
                   - payload
@@ -7779,7 +7779,7 @@ components:
         successful items. When every item in such a chunk fails, the
         chunk commits as a zero-write transaction — `entityIds` is
         empty, `failed` lists every item, and `transactionId` remains
-        meaningful for audit correlation. Issue #228.
+        meaningful for audit correlation.
 
         Per-item ENTITY_MODIFIED conflicts surface inside the `200`
         response body via the `failed[]` array, not as a `4xx` envelope.
@@ -7822,7 +7822,7 @@ components:
           type: array
           description: |
             Present only on UpdateCollection chunks that experienced one or
-            more per-item ENTITY_MODIFIED conflicts (issue #228). Each
+            more per-item ENTITY_MODIFIED conflicts. Each
             entry names the conflicted entity and carries an `error` object
             with the failure code, an operator-facing message, and the
             item's per-chunk-relative index. Absent on chunks with no
@@ -9371,7 +9371,7 @@ components:
           type: string
         contentType:
           type: string
-          description: "Informational only; see EdgeMessagePayload note. See #193 for proper handling."
+          description: "Informational only; see EdgeMessagePayload note. Proper content-type handling is a planned future feature."
         contentLength:
           type: integer
           format: int64
@@ -9408,8 +9408,8 @@ components:
         in the message header is informational; it does not affect storage or
         retrieval format. Clients needing to store non-JSON content should
         stringify it (e.g. base64 for binary, plain string with escape for
-        non-JSON text). See https://github.com/Cyoda-platform/cyoda-go/issues/193
-        for proper content-type support as a future feature.
+        non-JSON text). Proper content-type handling may be added
+        as a future feature.
       additionalProperties: true
     MessageDeleteResponse:
       type: object
@@ -10048,7 +10048,7 @@ components:
               type: string
               description: |
                 Type of the state machine event. `TRANSITION_ABORTED` is
-                a cyoda-go extension (#228 reviewer S1) emitted as a
+                a cyoda-go extension emitted as a
                 compensating event when an in-flight transition is
                 rejected by a stale `ifMatch` precondition; its `data`
                 payload carries `{reason: "ENTITY_MODIFIED",
@@ -10564,7 +10564,7 @@ components:
             $ref: '#/components/schemas/ProblemDetail'
     NotImplemented:
       description: |
-        Not yet implemented — see https://github.com/Cyoda-platform/cyoda-go/issues/194.
+        Not yet implemented.
         The handler exists as a placeholder but returns 501 Not Implemented;
         real implementation is tracked separately.
       content:

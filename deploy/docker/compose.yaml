@@ -1,6 +1,6 @@
 services:
   cyoda:
-    image: ${CYODA_IMAGE:-ghcr.io/cyoda-platform/cyoda:latest}
+    image: ${CYODA_IMAGE:-ghcr.io/cyoda/cyoda:latest}
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"

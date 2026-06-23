@@ -30,7 +30,7 @@ echo "Building cyoda for $PLATFORM..."
 CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
     go build -ldflags="-s -w" -o "$BUILDCTX/$PLATFORM/cyoda" ./cmd/cyoda
 
-LOCAL_TAG="ghcr.io/cyoda-platform/cyoda:dev"
+LOCAL_TAG="ghcr.io/cyoda/cyoda:dev"
 echo "Building image $LOCAL_TAG..."
 # BuildKit auto-injects TARGETPLATFORM from --platform, so no --build-arg
 # needed for the Dockerfile's `COPY $TARGETPLATFORM/cyoda /cyoda` line.

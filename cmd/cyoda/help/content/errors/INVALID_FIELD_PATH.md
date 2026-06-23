@@ -23,7 +23,7 @@ HTTP: `400` `Bad Request`. Retryable: `no` (unless the model schema is then exte
 
 Before executing a search, the server validates that every data-field path referenced by the condition (e.g. `$.price`, `$.profile.email`) resolves against the target model's locked schema. Lifecycle paths (`state`, `previousTransition`, etc.) and meta paths (`$._meta.*`) bypass this check.
 
-If any referenced path is unknown, the server performs at most one bounded `RefreshAndGet` against the model store to recover from a stale cached schema (issue #77). If the path is still unknown after the refresh, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
+If any referenced path is unknown, the server performs at most one bounded `RefreshAndGet` against the model store to recover from a stale cached schema. If the path is still unknown after the refresh, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
 
 Programmatic clients should branch on `errorCode == "INVALID_FIELD_PATH"` (not on HTTP 400) to distinguish unknown-field-path errors from other 400s such as `BAD_REQUEST` (malformed JSON) or `CONDITION_TYPE_MISMATCH` (incompatible value type).
 

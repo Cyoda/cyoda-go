@@ -185,7 +185,7 @@ docker run --rm \
   -e CYODA_SQLITE_PATH=/var/lib/cyoda/cyoda.db \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -v cyoda-data:/var/lib/cyoda \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 The image pre-stages `/var/lib/cyoda` owned by UID 65532. The container runs as non-root (65532:65532). `/livez` and `/readyz` are served on port 9091. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` so the health endpoint is reachable from outside the container.
@@ -193,7 +193,7 @@ The image pre-stages `/var/lib/cyoda` owned by UID 65532. The container runs as 
 **Docker Compose (sqlite + mock auth):**
 
 ```
-curl -O https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/deploy/docker/compose.yaml
+curl -O https://raw.githubusercontent.com/cyoda/cyoda-go/main/deploy/docker/compose.yaml
 docker compose up
 ```
 

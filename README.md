@@ -1,5 +1,5 @@
-[![CI](https://github.com/Cyoda-platform/cyoda-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Cyoda-platform/cyoda-go/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/Cyoda-platform/cyoda-go)](https://github.com/Cyoda-platform/cyoda-go/releases)
+[![CI](https://github.com/cyoda/cyoda-go/actions/workflows/ci.yml/badge.svg)](https://github.com/cyoda/cyoda-go/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/cyoda/cyoda-go)](https://github.com/cyoda/cyoda-go/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cyoda-platform/cyoda-go.svg)](https://pkg.go.dev/github.com/cyoda-platform/cyoda-go)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -25,7 +25,7 @@ Switch by setting `CYODA_STORAGE_BACKEND` — no code changes. The cassandra eng
 ## Try it in 30 seconds
 
 ```bash
-brew install cyoda-platform/cyoda-go/cyoda
+brew install cyoda/cyoda-go/cyoda
 cyoda init && cyoda &
 curl http://localhost:8080/api/health
 # {"status":"UP"}
@@ -38,13 +38,13 @@ curl http://localhost:8080/api/health
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew install cyoda-platform/cyoda-go/cyoda
+brew install cyoda/cyoda-go/cyoda
 ```
 
 ### curl (any Unix)
 
 ```bash
-curl -fsSL https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
 Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `CYODA_VERSION=v0.7.1 curl ... | sh`. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
@@ -53,11 +53,11 @@ Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `CYOD
 
 ```bash
 # Debian / Ubuntu
-wget https://github.com/cyoda-platform/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
+wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
 sudo dpkg -i cyoda_linux_amd64.deb
 
 # Fedora / RHEL
-wget https://github.com/cyoda-platform/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
+wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
 sudo rpm -i cyoda_linux_amd64.rpm
 ```
 
@@ -159,7 +159,7 @@ Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` 
 
 | Goal                          | Link                                              |
 |-------------------------------|---------------------------------------------------|
-| Build an app fast (Claude Code) | [github.com/Cyoda-platform/cyoda-skills](https://github.com/Cyoda-platform/cyoda-skills) — install the cyoda-skills plugin and use `/cyoda:app` to scaffold |
+| Build an app fast (Claude Code) | [github.com/cyoda/cyoda-skills](https://github.com/cyoda/cyoda-skills) — install the cyoda-skills plugin and use `/cyoda:app` to scaffold |
 | Build an app                  | [docs.cyoda.net/help/quickstart](https://docs.cyoda.net/help/quickstart) |
 | Configure                     | [docs.cyoda.net/help/config](https://docs.cyoda.net/help/config)       |
 | Error reference               | [docs.cyoda.net/help/errors](https://docs.cyoda.net/help/errors)       |
@@ -177,12 +177,12 @@ Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` 
 
 ## Related projects
 
-Sibling repositories under [github.com/Cyoda-platform](https://github.com/Cyoda-platform) that complement cyoda-go:
+Sibling repositories under [github.com/cyoda](https://github.com/cyoda) that complement cyoda-go:
 
-- **[cyoda-skills](https://github.com/Cyoda-platform/cyoda-skills)** — Claude Code skills (`/cyoda:app`, `/cyoda:design`, `/cyoda:build`, `/cyoda:test`, ...) for AI-assisted Cyoda app development against a local cyoda-go or Cyoda Cloud instance.
-- **[cyoda-cloud-cli](https://github.com/Cyoda-platform/cyoda-cloud-cli)** — Command-line client for Cyoda Cloud with OAuth 2.0 authentication and Cloud-side API operations.
-- **[cyoda-docs](https://github.com/Cyoda-platform/cyoda-docs)** — Source for [docs.cyoda.net](https://docs.cyoda.net) — developer guides, onboarding, and the rendered `cyoda help` topic tree.
-- **[cyoda-workflow-editor](https://github.com/Cyoda-platform/cyoda-workflow-editor)** — TypeScript components for parsing, rendering, and editing Cyoda workflow JSON definitions.
+- **[cyoda-skills](https://github.com/cyoda/cyoda-skills)** — Claude Code skills (`/cyoda:app`, `/cyoda:design`, `/cyoda:build`, `/cyoda:test`, ...) for AI-assisted Cyoda app development against a local cyoda-go or Cyoda Cloud instance.
+- **[cyoda-cloud-cli](https://github.com/cyoda/cyoda-cloud-cli)** — Command-line client for Cyoda Cloud with OAuth 2.0 authentication and Cloud-side API operations.
+- **[cyoda-docs](https://github.com/cyoda/cyoda-docs)** — Source for [docs.cyoda.net](https://docs.cyoda.net) — developer guides, onboarding, and the rendered `cyoda help` topic tree.
+- **[cyoda-workflow-editor](https://github.com/cyoda/cyoda-workflow-editor)** — TypeScript components for parsing, rendering, and editing Cyoda workflow JSON definitions.
 
 ## Versioning
 

@@ -62,7 +62,7 @@ the first response.
 ## External Storage Plugins
 
 The Cassandra storage plugin lives in a separate repository:
-- Repo: https://github.com/Cyoda-platform/cyoda-go-cassandra
+- Repo: https://github.com/cyoda/cyoda-go-cassandra
 - Local checkout: `../cyoda-go-cassandra`
 
 When doing cross-plugin work (changing the SPI, adding parity tests, modifying

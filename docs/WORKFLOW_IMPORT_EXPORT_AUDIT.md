@@ -224,7 +224,7 @@ cyoda-go-cassandra#22 so both plugins stay behaviourally equivalent.
 
 ### H4. Unknown `ExecutionMode` is silently coerced to SYNC
 
-**Issues:** [#255](https://github.com/Cyoda-platform/cyoda-go/issues/255). **Resolved in v0.8.0** — `validateWorkflows` now rejects any `ExecutionMode` outside `{SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}` with `400 VALIDATION_FAILED`. Historical analysis below retained for context.
+**Issues:** [#255](https://github.com/cyoda/cyoda-go/issues/255). **Resolved in v0.8.0** — `validateWorkflows` now rejects any `ExecutionMode` outside `{SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}` with `400 VALIDATION_FAILED`. Historical analysis below retained for context.
 
 **Where.** `engine_processors.go:63–87` is a `switch proc.ExecutionMode`
 covering `ASYNC_NEW_TX` and `COMMIT_BEFORE_DISPATCH` explicitly; the `default`
@@ -282,7 +282,7 @@ misconfigurations).
 
 ### H6. No state-graph validation at import time
 
-**Issues:** [#255](https://github.com/Cyoda-platform/cyoda-go/issues/255). **Partially resolved in v0.8.0** (scoped subset H6.a–e plus the in-PR security-audit follow-ups). A new `validateImportRequest` rejects: empty workflow name (H6.c), duplicate workflow names within a request (H6.d), empty or undeclared `initialState` (H6.a), transition `next` not in `states` (H6.b), duplicate transition names within a state (H6.e), unknown `executionMode` values (H4), empty state-map keys, empty transition / processor names, and any workflow / state / transition / processor name longer than 256 characters (defence-in-depth against log-volume amplification and unbounded state-machine identifiers). The OpenAPI schema carries matching `minLength: 1` + `maxLength: 256` on the relevant fields and `propertyNames` on the `states` map so the contract and the server agree. Each error names the offending workflow / state / transition.
+**Issues:** [#255](https://github.com/cyoda/cyoda-go/issues/255). **Partially resolved in v0.8.0** (scoped subset H6.a–e plus the in-PR security-audit follow-ups). A new `validateImportRequest` rejects: empty workflow name (H6.c), duplicate workflow names within a request (H6.d), empty or undeclared `initialState` (H6.a), transition `next` not in `states` (H6.b), duplicate transition names within a state (H6.e), unknown `executionMode` values (H4), empty state-map keys, empty transition / processor names, and any workflow / state / transition / processor name longer than 256 characters (defence-in-depth against log-volume amplification and unbounded state-machine identifiers). The OpenAPI schema carries matching `minLength: 1` + `maxLength: 256` on the relevant fields and `propertyNames` on the `states` map so the contract and the server agree. Each error names the offending workflow / state / transition.
 
 **Policy: import validator is request-time, not retroactive.** The new H4/H6 rules run only on the incoming request slice — legacy stored shapes that slipped past weaker pre-v0.8.0 validation are not re-rejected on every subsequent import. The pre-existing behavioural checks (`validateWorkflowLoops`, `validateProcessorFlags`) continue to run on the merged result, so a stored cycle or incoherent `startNewTxOnDispatch` still surfaces — that pre-v0.8.0 contract is preserved. Future rule additions should declare which side of this split they belong on.
 
@@ -475,7 +475,7 @@ both supply non-empty incoming sets).
 
 ### M4. `applyImportMode` MERGE silently coalesces duplicate names
 
-**Issues:** [#255](https://github.com/Cyoda-platform/cyoda-go/issues/255). **Resolved in v0.8.0** — `validateWorkflows` now rejects duplicate or empty workflow names within a single import request before `applyImportMode` runs, so the silent-clobber path is no longer reachable. Historical analysis below retained for context.
+**Issues:** [#255](https://github.com/cyoda/cyoda-go/issues/255). **Resolved in v0.8.0** — `validateWorkflows` now rejects duplicate or empty workflow names within a single import request before `applyImportMode` runs, so the silent-clobber path is no longer reachable. Historical analysis below retained for context.
 
 
 `import.go:33–44` keys by `wf.Name`. The same name appearing twice within

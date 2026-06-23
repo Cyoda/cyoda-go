@@ -12,7 +12,7 @@ see_also:
 
 ## STATUS
 
-**Not yet implemented (#91).** The error code is reserved and documented here for the future contract, but no API handler currently reads the `Idempotency-Key` header or raises this error. Duplicate collection requests will currently pass through without detection. Tracked for implementation or removal.
+**Not yet implemented.** The error code is reserved and documented here for the future contract, but no API handler currently reads the `Idempotency-Key` header or raises this error. Duplicate collection requests will currently pass through without detection. Tracked for implementation or removal.
 
 ## NAME
 

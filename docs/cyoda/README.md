@@ -20,7 +20,7 @@ api/openapi-iam.yml         # OAuth, OIDC, technical users
 api/openapi-workflow.yml
 ```
 
-Byte-identical mirror of `Cyoda-platform/cyoda` `develop` branch at
+Byte-identical mirror of `Cyoda/cyoda` `develop` branch at
 `client/src/main/resources/api/`. This is the form maintainers read
 when checking parity ("does cyoda-go's `OidcProviderResponseDto`
 match upstream?"). The split files are easier to diff against
@@ -57,7 +57,7 @@ When upstream Cloud spec changes, refresh both layers:
 
 ```bash
 # 1. Refresh the split files from upstream
-UPSTREAM=/path/to/Cyoda-platform/cyoda/client/src/main/resources/api
+UPSTREAM=/path/to/Cyoda/cyoda/client/src/main/resources/api
 cp -r "$UPSTREAM"/* docs/cyoda/api/
 
 # 2. Re-bundle. The bundled form is produced by the same tool the

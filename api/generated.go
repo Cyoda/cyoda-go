@@ -1850,8 +1850,8 @@ type EdgeMessageDto struct {
 	// in the message header is informational; it does not affect storage or
 	// retrieval format. Clients needing to store non-JSON content should
 	// stringify it (e.g. base64 for binary, plain string with escape for
-	// non-JSON text). See https://github.com/Cyoda-platform/cyoda-go/issues/193
-	// for proper content-type support as a future feature.
+	// non-JSON text). Proper content-type handling may be added
+	// as a future feature.
 	Content  *EdgeMessagePayload `json:"content,omitempty"`
 	Header   EdgeMessageHeader   `json:"header"`
 	MetaData EdgeMessageMetaData `json:"metaData"`
@@ -1862,7 +1862,7 @@ type EdgeMessageHeader struct {
 	ContentEncoding string `json:"contentEncoding"`
 	ContentLength   int64  `json:"contentLength"`
 
-	// ContentType Informational only; see EdgeMessagePayload note. See #193 for proper handling.
+	// ContentType Informational only; see EdgeMessagePayload note. Proper content-type handling is a planned future feature.
 	ContentType   string  `json:"contentType"`
 	CorrelationId *string `json:"correlationId,omitempty"`
 	MessageId     *string `json:"messageId,omitempty"`
@@ -1882,8 +1882,8 @@ type EdgeMessageMetaData struct {
 // in the message header is informational; it does not affect storage or
 // retrieval format. Clients needing to store non-JSON content should
 // stringify it (e.g. base64 for binary, plain string with escape for
-// non-JSON text). See https://github.com/Cyoda-platform/cyoda-go/issues/193
-// for proper content-type support as a future feature.
+// non-JSON text). Proper content-type handling may be added
+// as a future feature.
 type EdgeMessagePayload map[string]interface{}
 
 // EntityAuditEventsResponseDto defines model for EntityAuditEventsResponseDto.
@@ -2046,7 +2046,7 @@ type EntityResultDto struct {
 // successful items. When every item in such a chunk fails, the
 // chunk commits as a zero-write transaction — `entityIds` is
 // empty, `failed` lists every item, and `transactionId` remains
-// meaningful for audit correlation. Issue #228.
+// meaningful for audit correlation.
 //
 // Per-item ENTITY_MODIFIED conflicts surface inside the `200`
 // response body via the `failed[]` array, not as a `4xx` envelope.
@@ -2073,7 +2073,7 @@ type EntityTransactionResponse struct {
 	} `json:"error,omitempty"`
 
 	// Failed Present only on UpdateCollection chunks that experienced one or
-	// more per-item ENTITY_MODIFIED conflicts (issue #228). Each
+	// more per-item ENTITY_MODIFIED conflicts. Each
 	// entry names the conflicted entity and carries an `error` object
 	// with the failure code, an operator-facing message, and the
 	// item's per-chunk-relative index. Absent on chunks with no
@@ -2677,6 +2677,9 @@ type SingleDeleteResult struct {
 
 // StateDefinitionDto defines model for StateDefinitionDto.
 type StateDefinitionDto struct {
+	// Annotations Arbitrary client-owned metadata, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB per field.
+	Annotations *map[string]interface{} `json:"annotations,omitempty"`
+
 	// Transitions List of possible transitions from this state
 	Transitions *[]TransitionDefinitionDto `json:"transitions,omitempty"`
 }
@@ -2703,7 +2706,7 @@ type StateMachineAuditEventDto struct {
 	EntityModel *string `json:"entityModel,omitempty"`
 
 	// EventType Type of the state machine event. `TRANSITION_ABORTED` is
-	// a cyoda-go extension (#228 reviewer S1) emitted as a
+	// a cyoda-go extension emitted as a
 	// compensating event when an in-flight transition is
 	// rejected by a stale `ifMatch` precondition; its `data`
 	// payload carries `{reason: "ENTITY_MODIFIED",
@@ -2732,7 +2735,7 @@ type StateMachineAuditEventDto struct {
 }
 
 // StateMachineAuditEventDtoEventType Type of the state machine event. `TRANSITION_ABORTED` is
-// a cyoda-go extension (#228 reviewer S1) emitted as a
+// a cyoda-go extension emitted as a
 // compensating event when an in-flight transition is
 // rejected by a stale `ifMatch` precondition; its `data`
 // payload carries `{reason: "ENTITY_MODIFIED",
@@ -2926,7 +2929,9 @@ type TokenResponseDtoTokenType string
 
 // TransitionDefinitionDto defines model for TransitionDefinitionDto.
 type TransitionDefinitionDto struct {
-	Criterion *TransitionDefinitionDto_Criterion `json:"criterion,omitempty"`
+	// Annotations Arbitrary client-owned metadata, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB per field.
+	Annotations *map[string]interface{}            `json:"annotations,omitempty"`
+	Criterion   *TransitionDefinitionDto_Criterion `json:"criterion,omitempty"`
 
 	// Disabled Flag indicating if the transition is disabled
 	Disabled *bool `json:"disabled,omitempty"`
@@ -3114,6 +3119,9 @@ type WorkflowConfigurationDto struct {
 	// Active Flag indicating if the workflow is active
 	Active *bool `json:"active,omitempty"`
 
+	// Annotations Arbitrary client-owned metadata for the whole workflow, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB. Use for client concerns such as permitted roles, display labels, or UI hints.
+	Annotations *map[string]interface{} `json:"annotations,omitempty"`
+
 	// Criterion Optional selection criterion evaluated against the entity to
 	// decide which of several workflows applies. When a model has
 	// multiple workflow definitions, the engine iterates them in
@@ -3140,7 +3148,16 @@ type WorkflowConfigurationDto struct {
 	// States Map of state codes to state definitions
 	States map[string]StateDefinitionDto `json:"states"`
 
-	// Version Version of the workflow configuration schema
+	// Version Workflow-import contract version in semver MAJOR.MINOR form
+	// (e.g. `1.1` on cyoda-go v0.8.0). Identifies the wire-format
+	// contract this workflow was authored against; independent of
+	// the cyoda-go binary version and the OpenAPI document version.
+	// The server validates this strictly and rejects unsupported
+	// values with `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (400). The
+	// authoritative list of supported values is published at
+	// `GET /help/workflows/schema-version/versions` (and the
+	// equivalent CLI `cyoda help workflows schema-version
+	// versions`).
 	Version string `json:"version"`
 }
 
@@ -3382,7 +3399,7 @@ type UpdateCollectionJSONBody = []struct {
 	// entity has been modified since, the item surfaces
 	// in the per-chunk `failed` array with
 	// `code=ENTITY_MODIFIED`; the chunk still commits
-	// its remaining successful items. Issue #228.
+	// its remaining successful items.
 	IfMatch *string `json:"ifMatch,omitempty"`
 
 	// Payload JSON-encoded entity body (a STRING, not a nested
