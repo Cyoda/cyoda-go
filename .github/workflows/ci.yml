@@ -2,15 +2,26 @@ name: CI
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, main, 'release/**']
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, 'release/**']
   workflow_dispatch:
 
 # Default to read-only token for all jobs. Individual jobs may opt-in to
 # additional scopes if they need them; none currently do.
 permissions:
   contents: read
+
+env:
+  # Disable testcontainers' Ryuk resource-reaper in CI. Its handshake over
+  # IPv6 loopback intermittently resets ("Reaper handshake failed: connection
+  # reset by peer"), after which Ryuk reaps the still-in-use postgres container
+  # mid-test — surfacing as SQLSTATE 57P01 ("unexpected postmaster exit") and
+  # failing the whole parity/e2e suite. Ryuk only matters for cleaning up
+  # leaked containers when a test process dies; on ephemeral CI runners the VM
+  # is discarded after the job and the fixtures already call Terminate()
+  # explicitly, so the reaper is pure downside here.
+  TESTCONTAINERS_RYUK_DISABLED: "true"
 
 jobs:
   test:
@@ -25,8 +36,11 @@ jobs:
       - name: Run tests
         run: go test ./... -v
 
+      # Race detector. Scoped via `make race` to exclude `internal/e2e` —
+      # see Makefile and `.claude/rules/race-testing.md` for rationale.
+      # The same target runs locally pre-PR, so local and CI agree.
       - name: Run tests with race detector
-        run: go test -race ./...
+        run: make race
 
       # Plugin submodules each have their own go.mod, so `./...` from the root
       # does not recurse into them. Run tests inside each module so CI does
@@ -130,7 +144,7 @@ jobs:
       # Push events to main/develop skip this step — the govulncheck above still runs.
       - name: Dependency review
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: moderate
 

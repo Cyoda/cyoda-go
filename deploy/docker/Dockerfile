@@ -11,14 +11,14 @@
 # busybox pinned to a specific version for release-pipeline
 # reproducibility. Bump intentionally; the stage is discarded post-build
 # so image size is irrelevant.
-FROM busybox:1.37 AS stage
+FROM busybox:1.38 AS stage
 RUN mkdir -p /data && chown 65532:65532 /data
 
 # distroless/static pinned by digest for supply-chain integrity. The digest
 # resolves to a multi-arch OCI image index (linux/amd64 + linux/arm64), so
 # the COPY $TARGETPLATFORM/cyoda below still resolves under buildx.
 # Refresh monthly via scripts/refresh-distroless-digest.sh.
-FROM gcr.io/distroless/static@sha256:47b2d72ff90843eb8a768b5c2f89b40741843b639d065b9b937b07cd59b479c6
+FROM gcr.io/distroless/static@sha256:3592aa8171c77482f62bbc4164e6a2d141c6122554ace66e5cc910cadb961ff0
 # was :latest, pinned 2026-04-27
 ARG TARGETPLATFORM
 

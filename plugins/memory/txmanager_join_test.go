@@ -1,7 +1,7 @@
 package memory_test
 
 import (
-	"strings"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -60,8 +60,8 @@ func TestJoinNonExistentTransaction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error joining non-existent transaction")
 	}
-	if !strings.Contains(err.Error(), "transaction not found") {
-		t.Fatalf("unexpected error message: %v", err)
+	if !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("expected ErrTxNotFound, got: %v", err)
 	}
 }
 
@@ -82,8 +82,15 @@ func TestJoinRolledBackTransaction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error joining rolled-back transaction")
 	}
-	if !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("unexpected error message: %v", err)
+	// Memory's Rollback removes the tx from m.active before this Join runs,
+	// so the lookup hits ErrTxNotFound rather than the more specific
+	// ErrTxRolledBack — the latter would surface only if a caller observed
+	// tx.RolledBack via an already-held tx reference. Both sentinels are
+	// valid terminal-state signals; either satisfies the contract. This
+	// matches the contract-slack disjunction used in spitest's
+	// TxStateErrors/JoinAfterCommit subtest.
+	if !errors.Is(err, spi.ErrTxTerminated) && !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("expected ErrTxTerminated or ErrTxNotFound, got: %v", err)
 	}
 }
 
@@ -104,8 +111,12 @@ func TestJoinCommittedTransaction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error joining committed transaction")
 	}
-	if !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("unexpected error message: %v", err)
+	// Memory's Commit removes the tx from m.active before this Join runs,
+	// so the lookup hits ErrTxNotFound rather than ErrTxAlreadyCommitted.
+	// Both satisfy the terminal-state contract; the disjunction matches
+	// spitest's TxStateErrors/JoinAfterCommit.
+	if !errors.Is(err, spi.ErrTxTerminated) && !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("expected ErrTxTerminated or ErrTxNotFound, got: %v", err)
 	}
 }
 
@@ -123,8 +134,8 @@ func TestJoinTenantMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on tenant mismatch join")
 	}
-	if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("unexpected error message: %v", err)
+	if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	// Clean up.
@@ -226,8 +237,8 @@ func TestJoinRejectsNilUserContext(t *testing.T) {
 	// Pass a context with NO UserContext — Join must reject.
 	if _, err := tm.Join(spi.WithTransaction(t.Context(), nil), txID); err == nil {
 		t.Fatal("expected error when joining without UserContext")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctx, txID)

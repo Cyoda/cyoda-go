@@ -706,3 +706,186 @@ func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {
 	})
 	return out
 }
+
+// TestDefaultTree_AuthTopics ensures the new auth topic tree loads from
+// embedded content and that every topic's body contains the rigid
+// 7-section anchors the LLM-targeted template promises (per spec D5).
+func TestDefaultTree_AuthTopics(t *testing.T) {
+	tree := DefaultTree
+	if tree == nil || tree.Root == nil {
+		t.Fatal("DefaultTree.Root nil")
+	}
+
+	cases := []struct {
+		path           []string
+		title          string
+		requireAnchors []string
+	}{
+		{[]string{"auth"}, "auth — authenticate client applications against cyoda",
+			[]string{"## NAME", "## GOAL", "## WHICH PATH DO I NEED?", "## TOKEN PRESENTATION", "## SEE ALSO"}},
+		{[]string{"auth", "clients"}, "auth.clients — M2M client lifecycle",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "tokens"}, "auth.tokens — /oauth/token grants and JWT claim contract",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "oidc"}, "auth.oidc — federated OIDC providers",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## DIAGNOSTICS", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for offline JWT signing",
+			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.path, "."), func(t *testing.T) {
+			topic := tree.Find(tc.path)
+			if topic == nil {
+				t.Fatalf("Find(%v): topic missing", tc.path)
+			}
+			if topic.Title != tc.title {
+				t.Errorf("title: got %q, want %q", topic.Title, tc.title)
+			}
+			if topic.Stability != "evolving" {
+				t.Errorf("stability: got %q, want %q", topic.Stability, "evolving")
+			}
+			body := string(topic.Body)
+			for _, anchor := range tc.requireAnchors {
+				if !strings.Contains(body, anchor) {
+					t.Errorf("body missing anchor %q", anchor)
+				}
+			}
+		})
+	}
+}
+
+// TestDefaultTree_AuthCurlExamplesMatchOpenAPI verifies that every
+// `curl -X METHOD https://.../api/<path>` example in the auth.* page
+// bodies references a real (method, path) tuple declared in
+// api/openapi.yaml. Catches the class of drift where help-content
+// invents endpoints or uses wrong HTTP verbs — exactly the bug that
+// shipped to auth/clients.md in the first round (POST instead of PUT
+// for reset-secret, etc.) and the bug-class the rigid 7-section
+// template (D5) is supposed to prevent. The lint pairs with the
+// template: D5 enforces structural uniformity; this enforces wire
+// fidelity.
+func TestDefaultTree_AuthCurlExamplesMatchOpenAPI(t *testing.T) {
+	// Build the (method, path) set from api/openapi.yaml. Parse is
+	// line-anchored — the spec's shape (`  /path:` at column 2,
+	// `    METHOD:` at column 4) is stable.
+	specBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read api/openapi.yaml: %v", err)
+	}
+	type opKey struct{ method, path string }
+	declared := map[opKey]bool{}
+	pathHead := regexp.MustCompile(`^  (/\S+):`)
+	verb := regexp.MustCompile(`^    (get|post|put|patch|delete):`)
+	var curPath string
+	for _, line := range strings.Split(string(specBytes), "\n") {
+		if m := pathHead.FindStringSubmatch(line); m != nil {
+			curPath = m[1]
+			continue
+		}
+		if m := verb.FindStringSubmatch(line); m != nil && curPath != "" {
+			declared[opKey{strings.ToUpper(m[1]), curPath}] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("OpenAPI parser returned no operations — parse logic broken")
+	}
+
+	// curl-example pattern: `curl -X <METHOD> ... /api<path>` or
+	// `curl -X <METHOD> "<url>?query"`. Path is extracted between
+	// `/api` and the first whitespace, `\`, `"`, `?`, or end-of-line.
+	curlPat := regexp.MustCompile(`curl\s+-X\s+(GET|POST|PUT|PATCH|DELETE)\s+"?[^"\s]*?/api(/[^\s"?\\]+)`)
+
+	// Path parameters in curl examples are concrete (e.g. ${CLIENT_ID}
+	// or a real-looking UUID); translate them back to the spec's
+	// `{name}` placeholders by matching against declared paths whose
+	// shape is identical when parameter segments are stripped.
+	pathParam := regexp.MustCompile(`\$\{[^}]+\}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+	resolves := func(method, concrete string) bool {
+		// Fast path: literal match.
+		if declared[opKey{method, concrete}] {
+			return true
+		}
+		// Substitute concrete params back to the spec's `{name}` shape
+		// by comparing segment-by-segment against every declared path
+		// with the same method.
+		concreteSegs := strings.Split(strings.TrimPrefix(concrete, "/"), "/")
+		for k := range declared {
+			if k.method != method {
+				continue
+			}
+			declSegs := strings.Split(strings.TrimPrefix(k.path, "/"), "/")
+			if len(declSegs) != len(concreteSegs) {
+				continue
+			}
+			match := true
+			for i, declSeg := range declSegs {
+				cSeg := concreteSegs[i]
+				if strings.HasPrefix(declSeg, "{") && strings.HasSuffix(declSeg, "}") {
+					// Spec parameter — accept any non-empty concrete segment.
+					if cSeg == "" {
+						match = false
+						break
+					}
+					continue
+				}
+				if declSeg != cSeg && !pathParam.MatchString(cSeg) {
+					match = false
+					break
+				}
+				if declSeg != cSeg {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, pageName := range []string{"auth.md", "auth/clients.md", "auth/tokens.md", "auth/oidc.md", "auth/trusted-keys.md"} {
+		t.Run(pageName, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join("content", pageName))
+			if err != nil {
+				t.Fatalf("read %s: %v", pageName, err)
+			}
+			matches := curlPat.FindAllStringSubmatch(string(body), -1)
+			if len(matches) == 0 {
+				return // pages without HTTP examples are valid (e.g. auth.md landing)
+			}
+			for _, m := range matches {
+				method, concrete := m[1], m[2]
+				if !resolves(method, concrete) {
+					t.Errorf("curl example %s %s does not resolve to a declared operation in api/openapi.yaml", method, concrete)
+				}
+			}
+		})
+	}
+}
+
+// TestDefaultTree_AuthLandingListsAllChildren verifies the auth landing
+// page renders descriptors for every subtopic — the renderer auto-populates
+// the parent topic's Children slice from the embedded filesystem.
+func TestDefaultTree_AuthLandingListsAllChildren(t *testing.T) {
+	tree := DefaultTree
+	auth := tree.Find([]string{"auth"})
+	if auth == nil {
+		t.Fatal("Find([auth]): topic missing")
+	}
+	want := map[string]bool{"clients": true, "tokens": true, "oidc": true, "trusted-keys": true}
+	got := map[string]bool{}
+	for _, c := range auth.Children {
+		if len(c.Path) == 0 {
+			t.Fatalf("child with empty path: %#v", c)
+		}
+		got[c.Path[len(c.Path)-1]] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("auth missing child %q (have %v)", k, got)
+		}
+	}
+}

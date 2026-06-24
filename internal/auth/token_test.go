@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
@@ -43,11 +44,13 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	}
 	err = keyStore.Save(&auth.KeyPair{
 		KID:        "signing-kid-1",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &signingKey.PublicKey,
 		PrivateKey: signingKey,
 		Active:     true,
-		CreatedAt:  time.Now(),
-	})
+		ValidFrom:  time.Now(),
+	}, auth.RotateOptions{})
 	if err != nil {
 		t.Fatalf("failed to save signing key: %v", err)
 	}
@@ -58,21 +61,21 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		t.Fatalf("failed to generate trusted key: %v", err)
 	}
 	trustedKID := "trusted-kid-1"
+	// Create M2M client.
+	tenantID := "tenant-abc"
 	err = trustedKeyStore.Register(&auth.TrustedKey{
 		KID:       trustedKID,
+		TenantID:  spi.TenantID(tenantID),
 		PublicKey: &trustedKey.PublicKey,
 		Audience:  "cyoda-go",
 		Active:    true,
 		ValidFrom: time.Now().Add(-time.Hour),
-	})
+	}, auth.RotateOptions{})
 	if err != nil {
 		t.Fatalf("failed to register trusted key: %v", err)
 	}
-
-	// Create M2M client.
-	tenantID := "tenant-abc"
 	clientID := "test-m2m-client"
-	clientSecret, err := m2mStore.Create(clientID, tenantID, "user-123", []string{"admin", "reader"})
+	clientSecret, err := m2mStore.Create(clientID, spi.TenantID(tenantID), "user-123", []string{"admin", "reader"})
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
@@ -494,7 +497,7 @@ func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	env := setupTokenEnv(t)
 
 	// Invalidate the trusted key.
-	if err := env.trustedKeyStore.Invalidate(env.trustedKID); err != nil {
+	if err := env.trustedKeyStore.Invalidate(spi.TenantID(env.tenantID), env.trustedKID, 0); err != nil {
 		t.Fatalf("failed to invalidate trusted key: %v", err)
 	}
 

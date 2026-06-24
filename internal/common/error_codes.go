@@ -1,20 +1,21 @@
 package common
 
 const (
-	ErrCodeModelNotFound        = "MODEL_NOT_FOUND"
-	ErrCodeModelNotLocked       = "MODEL_NOT_LOCKED"
-	ErrCodeModelAlreadyLocked   = "MODEL_ALREADY_LOCKED"
-	ErrCodeModelAlreadyUnlocked = "MODEL_ALREADY_UNLOCKED"
-	ErrCodeModelHasEntities     = "MODEL_HAS_ENTITIES"
-	ErrCodeEntityModified       = "ENTITY_MODIFIED"
-	ErrCodeEntityNotFound       = "ENTITY_NOT_FOUND"
-	ErrCodeValidationFailed     = "VALIDATION_FAILED"
-	ErrCodeTransitionNotFound   = "TRANSITION_NOT_FOUND"
-	ErrCodeWorkflowNotFound     = "WORKFLOW_NOT_FOUND"
-	ErrCodeWorkflowFailed       = "WORKFLOW_FAILED"
-	ErrCodeConflict             = "CONFLICT"
-	ErrCodeEpochMismatch        = "EPOCH_MISMATCH"
-	ErrCodeBadRequest           = "BAD_REQUEST"
+	ErrCodeModelNotFound                    = "MODEL_NOT_FOUND"
+	ErrCodeModelNotLocked                   = "MODEL_NOT_LOCKED"
+	ErrCodeModelAlreadyLocked               = "MODEL_ALREADY_LOCKED"
+	ErrCodeModelAlreadyUnlocked             = "MODEL_ALREADY_UNLOCKED"
+	ErrCodeModelHasEntities                 = "MODEL_HAS_ENTITIES"
+	ErrCodeEntityModified                   = "ENTITY_MODIFIED"
+	ErrCodeEntityNotFound                   = "ENTITY_NOT_FOUND"
+	ErrCodeValidationFailed                 = "VALIDATION_FAILED"
+	ErrCodeTransitionNotFound               = "TRANSITION_NOT_FOUND"
+	ErrCodeWorkflowNotFound                 = "WORKFLOW_NOT_FOUND"
+	ErrCodeWorkflowFailed                   = "WORKFLOW_FAILED"
+	ErrCodeWorkflowSchemaVersionUnsupported = "WORKFLOW_SCHEMA_VERSION_UNSUPPORTED"
+	ErrCodeConflict                         = "CONFLICT"
+	ErrCodeEpochMismatch                    = "EPOCH_MISMATCH"
+	ErrCodeBadRequest                       = "BAD_REQUEST"
 	// ErrCodeIncompatibleType is returned when an entity payload's leaf
 	// value type is not assignable to the schema's declared DataType for
 	// that field (e.g. submitting "abc" or 13.111 against an INTEGER
@@ -22,16 +23,23 @@ const (
 	// FoundIncompatibleTypeWithEntityModelException. Distinct from
 	// ErrCodeConditionTypeMismatch which is the search-side equivalent
 	// for a condition's literal-vs-field mismatch.
-	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
-	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
-	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
-	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
-	ErrCodeUnauthorized         = "UNAUTHORIZED"
-	ErrCodeForbidden            = "FORBIDDEN"
-	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
-	ErrCodeServerError          = "SERVER_ERROR"
-	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
-	ErrCodeNotFound             = "NOT_FOUND"
+	ErrCodeIncompatibleType          = "INCOMPATIBLE_TYPE"
+	ErrCodeInvalidChangeLevel        = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath          = "INVALID_FIELD_PATH"
+	ErrCodePolymorphicSlot           = "POLYMORPHIC_SLOT"
+	ErrCodeUnauthorized              = "UNAUTHORIZED"
+	ErrCodeForbidden                 = "FORBIDDEN"
+	ErrCodeFeatureDisabled           = "FEATURE_DISABLED"
+	ErrCodeKeyOwnedByDifferentTenant = "KEY_OWNED_BY_DIFFERENT_TENANT"
+	ErrCodeKeypairNotFound           = "KEYPAIR_NOT_FOUND"
+	ErrCodeTrustedKeyCapReached      = "TRUSTED_KEY_CAP_REACHED"
+	ErrCodeTrustedKeyNotFound        = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeM2MClientNotFound         = "M2M_CLIENT_NOT_FOUND"
+	ErrCodeUnsupportedAlgorithm      = "UNSUPPORTED_ALGORITHM"
+	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
+	ErrCodeServerError               = "SERVER_ERROR"
+	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
+	ErrCodeNotFound                  = "NOT_FOUND"
 )
 
 const (
@@ -71,3 +79,32 @@ const (
 const (
 	ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
 )
+
+// OIDC provider management
+const (
+	// ErrCodeOidcInvalidTenant is returned when an OIDC provider registration
+	// is attempted from a tenant context whose ID is not a valid UUID.
+	// OIDC provider ownership requires UUID-shaped legal entity identifiers
+	// (matching the cyoda data model). Bootstrap deployments using the literal
+	// "default-tenant" string must migrate to real tenant UUIDs before
+	// registering OIDC providers.
+	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
+	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
+	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
+	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"
+	ErrCodeOIDCSSRFBlocked       = "OIDC_SSRF_BLOCKED"
+)
+
+// Token-validation failures (audience mismatch, claims invalid, iat
+// pre-transition, KID unknown, JWKS unavailable during key resolution) carry
+// no precise OIDC_* code. The bearer-auth middleware uniformly returns a
+// problem-detail body with code UNAUTHORIZED and no per-cause distinction; a
+// precise code would enumerate IdP / audience / kid / claim-shape recognition
+// to an unauthenticated caller.
+//
+// Discovery failures at registration time also carry no precise code.
+// Registry warm-up is non-fatal: the provider stays registered, discovery
+// errors log internally, and tokens 401 until the IdP becomes reachable.
+//
+// The per-cause diagnostic path is the server-side log stream — see the
+// auth.oidc help topic.

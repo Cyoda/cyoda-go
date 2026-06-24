@@ -11,7 +11,7 @@ import (
 func sampleWorkflows() []spi.WorkflowDefinition {
 	return []spi.WorkflowDefinition{
 		{
-			Version:      "1.0",
+			Version:      "1.1",
 			Name:         "order-workflow",
 			Description:  "Handles order lifecycle",
 			InitialState: "NEW",
@@ -25,7 +25,7 @@ func sampleWorkflows() []spi.WorkflowDefinition {
 							Next: "APPROVED",
 							Processors: []spi.ProcessorDefinition{
 								{
-									Type: "EXTERNAL",
+									Type: "externalized",
 									Name: "validate-order",
 									Config: spi.ProcessorConfig{
 										AttachEntity:      true,

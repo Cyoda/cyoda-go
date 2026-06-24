@@ -76,6 +76,31 @@ func newCatalog() *catalog {
 				}
 				return entity, nil
 			},
+			// echo-context-to-field — records the pass-through Context
+			// (delivered in EntityProcessorCalculationRequest.parameters as a
+			// JSON string per the cyoda-go contract) into entity data at
+			// `_context` so callers can observe it through the entity HTTP
+			// API. Absence of a context surfaces as no field write —
+			// distinguishable from the "context was empty string" case via
+			// field presence.
+			"echo-context-to-field": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				var data map[string]any
+				if err := json.Unmarshal(entity.Data, &data); err != nil {
+					return nil, err
+				}
+				if len(config) > 0 {
+					var ctxStr string
+					if err := json.Unmarshal(config, &ctxStr); err != nil {
+						return nil, fmt.Errorf("echo-context-to-field: expected JSON-string parameters, got %s: %w", config, err)
+					}
+					data["_context"] = ctxStr
+				}
+				out, err := json.Marshal(data)
+				if err != nil {
+					return nil, err
+				}
+				return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
+			},
 			"set-field": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				var cfg struct {
 					Field string `json:"field"`
@@ -122,6 +147,22 @@ func newCatalog() *catalog {
 			},
 			"select-standard": func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error) {
 				return true, nil
+			},
+			// context-equals — matches when the pass-through Context
+			// (delivered in EntityCriteriaCalculationRequest.parameters as a
+			// JSON string) equals the literal "match". Anything else
+			// (including a missing Context) returns false. Used by the
+			// workflow_externalization parity test to assert the criterion
+			// path forwards Context faithfully.
+			"context-equals": func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error) {
+				if len(config) == 0 {
+					return false, nil
+				}
+				var ctxStr string
+				if err := json.Unmarshal(config, &ctxStr); err != nil {
+					return false, fmt.Errorf("context-equals: expected JSON-string parameters, got %s: %w", config, err)
+				}
+				return ctxStr == "match", nil
 			},
 			"field-equals": func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error) {
 				var cfg struct {

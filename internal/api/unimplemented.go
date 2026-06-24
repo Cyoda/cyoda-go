@@ -266,3 +266,10 @@ func (u *Unimplemented) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Requ
 func (u *Unimplemented) SearchEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.SearchEntitiesParams) {
 	u.stub(w, r)
 }
+
+// QueryGroupedEntityStatisticsForModel is never called via this path — the real
+// handler is mounted directly on the outer mux in app/app.go before the generated
+// API handler fires.
+func (u *Unimplemented) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+	u.stub(w, r)
+}

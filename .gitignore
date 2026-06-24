@@ -77,6 +77,7 @@ coverage.out
 .superpowers/
 
 .env.docker*
+/minimal.toml
 .worktrees/
 
 # local logs
@@ -93,3 +94,6 @@ go.work.sum
 # Docker build context staged by scripts/dev/run-docker-dev.sh
 /.buildctx/
 .worktree-scratch/
+
+# Local git worktrees created by the worktree workflow — never commit
+.claude/worktrees/

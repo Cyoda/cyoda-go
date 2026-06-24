@@ -3,7 +3,7 @@ output: generated.go
 generate:
   std-http-server: true
   models: true
-  embedded-spec: true
+  embedded-spec: false
 output-options:
   exclude-tags:
     - "Stream Data"

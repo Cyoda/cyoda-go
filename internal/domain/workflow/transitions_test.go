@@ -14,7 +14,7 @@ func TestGetAvailableTransitions_WithTransitions(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "OrderWF", InitialState: "OPEN", Active: true,
+		Version: "1.1", Name: "OrderWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{
 			"OPEN": {Transitions: []spi.TransitionDefinition{
 				{Name: "approve", Next: "APPROVED"},
@@ -58,7 +58,7 @@ func TestGetAvailableTransitions_TerminalState(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "OrderWF", InitialState: "OPEN", Active: true,
+		Version: "1.1", Name: "OrderWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{
 			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "close", Next: "CLOSED"}}},
 			"CLOSED": {Transitions: []spi.TransitionDefinition{}},
@@ -146,7 +146,7 @@ func TestGetAvailableTransitions_CustomWorkflowTakesPrecedence(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "invoice", ModelVersion: "1.0"}
 
 	customWF := spi.WorkflowDefinition{
-		Version: "1.0", Name: "InvoiceWF", InitialState: "DRAFT", Active: true,
+		Version: "1.1", Name: "InvoiceWF", InitialState: "DRAFT", Active: true,
 		States: map[string]spi.StateDefinition{
 			"DRAFT": {Transitions: []spi.TransitionDefinition{
 				{Name: "submit", Next: "SUBMITTED"},

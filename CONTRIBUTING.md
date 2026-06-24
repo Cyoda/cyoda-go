@@ -39,9 +39,14 @@ Every feature must have tests at the appropriate level before it can be merged.
 ```bash
 go test ./... -v                          # all unit tests (no Docker needed)
 go test ./internal/e2e/ -v               # E2E tests (requires Docker)
-go test -race ./...                       # race detector — run before every PR
+make race                                 # race detector (CI-parity scope) — run before every PR
 go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
 ```
+
+`make race` runs `go test -race -timeout=15m` over every package except
+`internal/e2e` and is what CI invokes — running it locally before a PR
+predicts CI. See `.claude/rules/race-testing.md` for the scope rationale
+and when to run `-race` against `./internal/e2e/...` manually.
 
 ## Common Commands
 
@@ -50,7 +55,7 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 | `go run ./cmd/cyoda` | Run from source |
 | `go build -o bin/cyoda ./cmd/cyoda` | Build executable |
 | `go test ./... -v` | Run all tests |
-| `go test -race ./...` | Run tests with race detector |
+| `make race` | Run tests with race detector (CI-parity scope; excludes `internal/e2e`) |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |
 | `./scripts/dev/run-docker-dev.sh` | Start with Docker + PostgreSQL |
 
@@ -83,6 +88,7 @@ Release builds additionally run a Trivy scan against the published GHCR image (`
 No external web frameworks. No DI frameworks. No ORM.
 
 - When bumping `cyoda-go-spi` in the root `go.mod`, bump it identically in every `plugins/*/go.mod` in the same PR. The `check-spi-pin-sync` CI gate enforces this. See [`MAINTAINING.md`](MAINTAINING.md#bumping-cyoda-go-spi) for the full procedure.
+- **Set `GOPRIVATE=github.com/Cyoda-platform/*`** in your shell environment. This tells the Go toolchain to bypass `proxy.golang.org` and `sum.golang.org` for cyoda-platform modules — required because (a) the commercial `cyoda-go-cassandra` plugin is private, and (b) during periods when a `cyoda-go-spi` tag is being re-cut at a new commit (see the v0.8.0 retraction note in cyoda-go-spi's CHANGELOG), the public checksum database would otherwise serve stale SHAs. CI workflows set this in their `env:` block; developers should add `export GOPRIVATE=github.com/Cyoda-platform/*` to their shell profile.
 
 | Dependency | Purpose |
 |------------|---------|

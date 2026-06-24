@@ -3,7 +3,6 @@ package memory_test
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -91,13 +90,7 @@ func TestCompareAndSave_TxBufferWriteVsCommit_NoRace(t *testing.T) {
 					Data: []byte(fmt.Sprintf(`{"iter":%d}`, iter)),
 				}
 				_, cerr := store.CompareAndSave(txCtx, e, "tx-seed")
-				if cerr == nil || errors.Is(cerr, spi.ErrConflict) {
-					return
-				}
-				msg := cerr.Error()
-				if strings.Contains(msg, "rolled back") ||
-					strings.Contains(msg, "already completed") ||
-					strings.Contains(msg, "not found") {
+				if cerr == nil || errors.Is(cerr, spi.ErrConflict) || isToleratedClosedTxErr(cerr) {
 					return
 				}
 				t.Errorf("CompareAndSave failed: %v", cerr)
@@ -166,13 +159,7 @@ func TestSave_TxBufferWriteVsRollback_NoRace(t *testing.T) {
 					Data: []byte(fmt.Sprintf(`{"iter":%d}`, iter)),
 				}
 				_, serr := store.Save(txCtx, e)
-				if serr == nil {
-					return
-				}
-				msg := serr.Error()
-				if strings.Contains(msg, "rolled back") ||
-					strings.Contains(msg, "already completed") ||
-					strings.Contains(msg, "not found") {
+				if serr == nil || isToleratedClosedTxErr(serr) {
 					return
 				}
 				t.Errorf("Save failed: %v", serr)

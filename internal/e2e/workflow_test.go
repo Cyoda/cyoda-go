@@ -14,7 +14,7 @@ const workflowV1 = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "1",
+			"version": "1.1",
 			"name": "order-workflow-v1",
 			"initialState": "NONE",
 			"active": true,
@@ -35,7 +35,7 @@ const workflowV2 = `{
 	"importMode": "REPLACE",
 	"workflows": [
 		{
-			"version": "2",
+			"version": "1.1",
 			"name": "order-workflow-v2",
 			"initialState": "NONE",
 			"active": true,
@@ -197,6 +197,46 @@ func TestWorkflow_ImportUnknownModel(t *testing.T) {
 	const wantCode = "MODEL_NOT_FOUND"
 	if !strings.Contains(detail, wantCode) {
 		t.Errorf("workflow import 404: expected error code %s in detail, got: %s", wantCode, detail)
+	}
+}
+
+// TestWorkflow_Import_UnknownField_Returns400 is the e2e fence for the
+// strict-decoder boundary. Through the full JWT-authenticated HTTP
+// stack, a workflow-import body carrying a typo'd nested field
+// (`transitionn` for `transitions`) is rejected with 400 BAD_REQUEST
+// and the offending field name surfaced in the RFC 9457 detail. Pairs
+// with handler-level TestImport_UnknownField_Typo_Returns400.
+func TestWorkflow_Import_UnknownField_Returns400(t *testing.T) {
+	const entityName = "e2e-strict-decoder"
+	const modelVersion = 1
+
+	importModelE2E(t, entityName, modelVersion)
+	lockModelE2E(t, entityName, modelVersion)
+
+	// `transitionn` (extra n) inside a StateDefinition — previously
+	// silently dropped, now rejected by the strict decoder.
+	body := `{
+		"importMode":"REPLACE",
+		"workflows":[{
+			"version":"1.1","name":"typo-wf","initialState":"S1","active":true,
+			"states":{"S1":{"transitionn":[{"name":"go","next":"S2","manual":true}]},"S2":{}}
+		}]
+	}`
+	status, respBody := importWorkflowE2E(t, entityName, modelVersion, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("workflow import with typo'd field: expected 400, got %d: %s", status, respBody)
+	}
+
+	var problem map[string]any
+	if err := json.Unmarshal([]byte(respBody), &problem); err != nil {
+		t.Fatalf("workflow import 400: failed to parse problem-detail JSON: %v\nbody: %s", err, respBody)
+	}
+	detail, _ := problem["detail"].(string)
+	if !strings.Contains(detail, "BAD_REQUEST") {
+		t.Errorf("workflow import 400: expected error code BAD_REQUEST in detail, got: %s", detail)
+	}
+	if !strings.Contains(detail, "transitionn") {
+		t.Errorf("workflow import 400: expected field name 'transitionn' in detail, got: %s", detail)
 	}
 }
 

@@ -19,21 +19,27 @@ type TracingTransactionManager struct {
 	txDuration  metric.Float64Histogram
 	txActive    metric.Int64UpDownCounter
 	txConflicts metric.Int64Counter
+	opBegin     metric.MeasurementOption
+	opCommit    metric.MeasurementOption
+	opRollback  metric.MeasurementOption
 }
 
 // NewTracingTransactionManager returns a TracingTransactionManager that decorates inner
 // with OTel tracing spans and metrics.
-func NewTracingTransactionManager(inner spi.TransactionManager) *TracingTransactionManager {
+func NewTracingTransactionManager(inner spi.TransactionManager, meter metric.Meter) *TracingTransactionManager {
 	tracer := Tracer()
-	meter := Meter()
 
-	txDuration, _ := meter.Float64Histogram("cyoda.tx.duration",
+	txDuration, err := meter.Float64Histogram("cyoda.tx.duration",
 		metric.WithUnit("s"),
-		metric.WithDescription("Transaction operation duration"))
-	txActive, _ := meter.Int64UpDownCounter("cyoda.tx.active",
+		metric.WithDescription("Transaction operation duration"),
+		metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
+	instrErr("cyoda.tx.duration", err)
+	txActive, err := meter.Int64UpDownCounter("cyoda.tx.active",
 		metric.WithDescription("Number of active transactions"))
-	txConflicts, _ := meter.Int64Counter("cyoda.tx.conflicts",
+	instrErr("cyoda.tx.active", err)
+	txConflicts, err := meter.Int64Counter("cyoda.tx.conflicts",
 		metric.WithDescription("Transaction serialization conflicts"))
+	instrErr("cyoda.tx.conflicts", err)
 
 	return &TracingTransactionManager{
 		inner:       inner,
@@ -41,6 +47,9 @@ func NewTracingTransactionManager(inner spi.TransactionManager) *TracingTransact
 		txDuration:  txDuration,
 		txActive:    txActive,
 		txConflicts: txConflicts,
+		opBegin:     metric.WithAttributes(AttrTxOp.String("begin")),
+		opCommit:    metric.WithAttributes(AttrTxOp.String("commit")),
+		opRollback:  metric.WithAttributes(AttrTxOp.String("rollback")),
 	}
 }
 
@@ -48,7 +57,7 @@ func (t *TracingTransactionManager) Begin(ctx context.Context) (string, context.
 	ctx, span := t.tracer.Start(ctx, "tx.begin")
 	start := time.Now()
 	txID, txCtx, err := t.inner.Begin(ctx)
-	t.txDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(AttrTxOp.String("begin")))
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opBegin)
 	if err != nil {
 		span.RecordError(err)
 		span.End()
@@ -65,7 +74,7 @@ func (t *TracingTransactionManager) Commit(ctx context.Context, txID string) err
 	defer span.End()
 	start := time.Now()
 	err := t.inner.Commit(ctx, txID)
-	t.txDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(AttrTxOp.String("commit")))
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opCommit)
 	if err != nil {
 		span.RecordError(err)
 		if isConflict(err) {
@@ -83,7 +92,7 @@ func (t *TracingTransactionManager) Rollback(ctx context.Context, txID string) e
 	defer span.End()
 	start := time.Now()
 	err := t.inner.Rollback(ctx, txID)
-	t.txDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(AttrTxOp.String("rollback")))
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opRollback)
 	if err != nil {
 		span.RecordError(err)
 		return err

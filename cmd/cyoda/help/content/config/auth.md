@@ -50,6 +50,12 @@ signal that requests are unauthenticated.
 - `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs;
   empty string disables the audience check (default: empty)
 - `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds (default: `3600`)
+- `CYODA_JWT_BOOTSTRAP_AUDIENCE` — audience for the bootstrap signing key
+  derived from `CYODA_JWT_SIGNING_KEY`. Must be `client` or `human`. The
+  M2M token-issuance path (`POST /oauth/token`) always uses the
+  client-audience key. Set to `human` only in deployments where M2M token
+  issuance is disabled and the bootstrap key signs human tokens through
+  an external flow. (default: `client`)
 
 ### HMAC secret (inter-node dispatch authentication)
 
@@ -69,6 +75,89 @@ cyoda can provision a machine-to-machine client at startup for automation and CI
 - `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`)
 - `CYODA_BOOTSTRAP_ROLES` — comma-separated roles granted to the bootstrap client
   (default: `ROLE_ADMIN,ROLE_M2M`)
+
+### IAM features
+
+These environment variables tune the IAM admin endpoints under `/oauth/keys/*` and `/clients`.
+
+- `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` — gates all 5 endpoints under
+  `/oauth/keys/trusted/*`. When `false`, every trusted-key endpoint returns
+  `404 FEATURE_DISABLED`. (default: `false`)
+- `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` — gates the `withAdminRole=true`
+  query parameter on `POST /clients`. When `false` (default), that request
+  shape returns `404` with error code `FEATURE_DISABLED` and no client is
+  created. When `true`, the created M2M client receives both `ROLE_M2M`
+  and `ROLE_ADMIN`. Toggling does not affect existing clients. (default: `false`)
+- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on registered
+  trusted keys. Counts only currently-valid keys (active and not past
+  `validTo`). `0` means unbounded. (default: `10`)
+- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` — default validity for trusted
+  keys when the registration request omits `validTo`. No clamp on
+  user-supplied `validTo` values. (default: `365`)
+- `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` — caps the number of properties
+  in a registered JWK to guard against absurdly large payloads. (default: `20`)
+- `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity for both the
+  bootstrap signing key and runtime-issued keypairs via
+  `POST /oauth/keys/keypair`. The startup banner emits a `WARN` if the
+  active bootstrap key expires within 30 days. (default: `365`)
+
+### Federated OIDC providers (`POST /oauth/oidc/providers`)
+
+These variables control the federated OIDC provider registration behaviour
+(JWT mode only). They apply to all tenants at the process level.
+
+- `CYODA_OIDC_REQUIRE_HTTPS` — when `true`, `POST /oauth/oidc/providers` rejects
+  any `wellKnownConfigUri` whose scheme is not `https`. Set to `true` in
+  production to prevent accidental registration of plaintext-HTTP providers.
+  (default: `true`)
+- `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` — when `true`, the SSRF blocklist check is
+  bypassed so private-network OIDC providers (e.g. `https://127.0.0.1/...`) can
+  be registered. Intended for integration tests and local development only.
+  Never set in production. (default: `false`)
+- `CYODA_OIDC_ROLES_CLAIM` — the JWT claim name from which role values are read
+  for tokens issued by a federated OIDC provider. Overrideable per-provider via
+  the `rolesClaim` field on the registration or update API. See
+  `cyoda help auth oidc` for the accepted claim value shapes (string array,
+  JSON object — keys are roles, space-delimited string). (default: `roles`)
+- `CYODA_OIDC_CONNECT_TIMEOUT_MS` — TCP connect timeout in milliseconds for
+  OIDC discovery and JWKS endpoint fetches. (default: `5000`)
+- `CYODA_OIDC_SOCKET_TIMEOUT_MS` — HTTP read timeout in milliseconds for
+  OIDC discovery and JWKS endpoint fetches. (default: `5000`)
+- `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` — connection-pool request timeout
+  in milliseconds for OIDC discovery and JWKS endpoint fetches. (default: `5000`)
+
+### JWT signing keypair rotation
+
+The bootstrap signing key derived from `CYODA_JWT_SIGNING_KEY` (or
+`CYODA_JWT_SIGNING_KEY_FILE`) is the default signing key for the
+`POST /oauth/token` flow. Its KID is deterministic across nodes sharing
+the same PEM (SHA-256 of the public key).
+
+Operators can rotate signing keys at runtime via
+`POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`),
+optionally setting `invalidateCurrent: true` and
+`invalidateGracePeriodSec: N` to overlap the old and new keys.
+
+v0.8.0 limitations:
+- Runtime-issued keypairs are held in memory only; they do not survive
+  process restart. The bootstrap key survives because its KID is derived
+  deterministically from the PEM input. Persisted signing-key storage is
+  tracked in a v0.8.x follow-up.
+- Bootstrap keys are saved with a finite `validTo` (default 365 days).
+  After expiry the M2M token-issuance path will return
+  `404 KEYPAIR_NOT_FOUND` for `getCurrentJwtKeyPair?audience=client`.
+  Operators should monitor the startup `WARN` and rotate before expiry.
+
+#### Upgrading from v0.7.x
+
+KV-backed trusted-key entries written by versions < v0.8.0 are orphaned.
+Within the `trusted-keys` namespace, entries are now keyed `<tenantID>:<kid>`
+(was bare `<kid>`). v0.8.0 does not query the old shape; affected entries are
+left in place but not loaded. Operators must re-register affected keys. To audit,
+look for entries in the `trusted-keys` namespace whose key contains no `:`
+separator (the exact query depends on the KV backend; for the SQLite plugin:
+`SELECT key FROM kv_store WHERE namespace='trusted-keys' AND key NOT LIKE '%:%'`).
+cyoda-go has no known production users on this surface.
 
 ## EXAMPLES
 
@@ -96,6 +185,26 @@ CYODA_JWT_EXPIRY_SECONDS=3600
 CYODA_BOOTSTRAP_CLIENT_ID=ci-client
 CYODA_BOOTSTRAP_CLIENT_SECRET_FILE=/etc/secrets/ci-secret
 CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M
+```
+
+**With trusted-key registration enabled:**
+
+```
+CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true
+CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT=10
+```
+
+**With M2M admin-role grants enabled:**
+
+```
+CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true
+```
+
+**With federated OIDC providers (JWT mode):**
+
+```
+CYODA_OIDC_REQUIRE_HTTPS=true
+CYODA_OIDC_ROLES_CLAIM=roles
 ```
 
 ## SEE ALSO

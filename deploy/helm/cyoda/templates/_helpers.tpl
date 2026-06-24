@@ -95,3 +95,26 @@ Image reference: falls back to .Chart.AppVersion if image.tag is unset.
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end }}
+
+{{/*
+Migration-Job DSN secret (name + key). When migrate.postgres.existingSecret is
+set, the Job uses that secret and its key; otherwise BOTH fall back to the
+runtime postgres secret (single-DSN, backward-compatible). Name and key fall
+back together as a unit, so a custom postgres.existingSecretKey is honored by
+the migration Job in single-DSN mode.
+*/}}
+{{- define "cyoda.migrateSecretName" -}}
+{{- if .Values.migrate.postgres.existingSecret -}}
+{{- .Values.migrate.postgres.existingSecret -}}
+{{- else -}}
+{{- .Values.postgres.existingSecret -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "cyoda.migrateSecretKey" -}}
+{{- if .Values.migrate.postgres.existingSecret -}}
+{{- .Values.migrate.postgres.existingSecretKey -}}
+{{- else -}}
+{{- .Values.postgres.existingSecretKey -}}
+{{- end -}}
+{{- end -}}

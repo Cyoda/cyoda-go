@@ -16,12 +16,14 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -29,10 +31,11 @@ import (
 )
 
 var (
-	serverURL      string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
-	dbPool         *pgxpool.Pool                     // direct DB access for verification queries
-	procSvc        *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
+	serverURL       string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
+	dbPool          *pgxpool.Pool                     // direct DB access for verification queries
+	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
+	testApp         *app.App // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
 )
 
 func TestMain(m *testing.M) {
@@ -45,17 +48,19 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("minicyoda_test"),
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	}, testpg.HardenedOptions()...)
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		log.Fatalf("failed to start postgres container: %v", err)
 	}
-	defer pgContainer.Terminate(ctx)
+	defer func() {
+		testpg.DumpDiagnosticsIfDied(ctx, pgContainer)
+		_ = pgContainer.Terminate(ctx)
+	}()
 
 	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
@@ -99,19 +104,23 @@ func TestMain(m *testing.M) {
 	cfg := app.DefaultConfig()
 	cfg.ContextPath = "/api"
 	cfg.StorageBackend = "postgres"
-	cfg.IAM = app.IAMConfig{
-		Mode:          "jwt",
-		JWTSigningKey: keyPEM,
-		JWTIssuer:     "cyoda-test",
-		JWTExpiry:     3600,
-	}
+	// Override only the JWT auth fields; preserve IAM feature defaults
+	// (KeypairDefaultValidityDays, TrustedKeyMax*, etc.) from DefaultConfig.
+	cfg.IAM.Mode = "jwt"
+	cfg.IAM.JWTSigningKey = keyPEM
+	cfg.IAM.JWTIssuer = "cyoda-test"
+	cfg.IAM.JWTExpiry = 3600
 	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientID:     "testclient",
+		ClientSecret: "testsecret",
 		TenantID:     "test-tenant",
 		UserID:       "test-admin",
 		Roles:        "ROLE_ADMIN,ROLE_M2M",
 	}
+	// Enable trusted-key feature for E2E coverage. The KV store backing the
+	// trusted-key store is wired in app.New, so this must be set before that call.
+	cfg.IAM.TrustedKeyRegistrationEnabled = true
+	cfg.IAM.M2MAdminRoleEnabled = true
 
 	// In-process processor/criteria service for workflow E2E tests.
 	procSvc = localproc.New()
@@ -130,7 +139,7 @@ func TestMain(m *testing.M) {
 	srvPort := srv.Listener.Addr().(*net.TCPAddr).Port
 	cfg.HTTPPort = srvPort
 
-	a := app.New(cfg)
+	testApp = app.New(cfg)
 
 	// Build the conformance validator from the embedded spec. Wraps the
 	// production handler; failures collected end-to-end and reported by
@@ -150,7 +159,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("build validator: %v", err)
 	}
-	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(a.Handler())
+	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(testApp.Handler())
 
 	// Capture the full operationId set so the conformance test can compute
 	// the uncovered list at end-of-suite.

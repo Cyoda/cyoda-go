@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 )
 
 // postgresFixture implements parity.BackendFixture for the postgres backend.
@@ -40,6 +42,13 @@ func (f *postgresFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
+// fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
+func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
+}
+
 // IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The
 // postgres backend writes audit events into the same SQL transaction as
 // the entity writes, so a rolled-back entity-update transaction also
@@ -54,18 +63,18 @@ func setup() (*postgresFixture, func(), error) {
 	ctx := context.Background()
 
 	// 1. Start PostgreSQL container.
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_parity_test"),
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	}, testpg.HardenedOptions()...)
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to start postgres container: %w", err)
 	}
 
 	containerCleanup := func() {
+		testpg.DumpDiagnosticsIfDied(ctx, pgContainer)
 		_ = pgContainer.Terminate(ctx)
 	}
 

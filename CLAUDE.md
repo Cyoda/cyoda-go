@@ -28,6 +28,7 @@ Validate input at system boundaries. Sanitize output — no stack traces or inte
 When changing env vars, update the relevant `cmd/cyoda/help/content/config/*.md` help topic, `README.md`, and `DefaultConfig()` together.
 When changing public interfaces or developer workflow, check `README.md` and `CONTRIBUTING.md`.
 When bumping the `cyoda-go-spi` pin in `go.mod`, when tagging a `cyoda-go` binary release, when changing the chart `version:` / `appVersion:`, or when out-of-tree-plugin pin guidance changes, update `COMPATIBILITY.md` in the same change.
+When changing the `WorkflowConfigurationDto` import surface — DTO shape, validation strictness, accepted-input set, exporter stamping behaviour — follow `docs/workflow-schema-versioning.md`: bump rules, tightening-release decision rubric (MINOR retirement vs dual-shape acceptance), and the required commit-time checks. The doc is the canonical place to record the rationale for each bump.
 
 ### Gate 5: Verify before claiming done
 Use `superpowers:verification-before-completion` skill before claiming work is complete.
@@ -35,8 +36,10 @@ Run `go test ./... -v` and confirm green (this includes E2E tests). Run `go vet 
 E2E tests spin up their own PostgreSQL + HTTP server automatically — just run them.
 Do not claim work is done if any test — unit, integration, or E2E — is failing.
 
-Race detector (`go test -race ./...`) is a one-shot sanity check before PR creation,
-not a per-step gate — see `.claude/rules/race-testing.md`.
+Race detector (`make race`) is a one-shot sanity check before PR creation,
+not a per-step gate — see `.claude/rules/race-testing.md`. The target excludes
+`internal/e2e` from the race scope (timeout-driven carve-out, rationale in the
+rule) and CI runs the identical target, so local and CI stay in lock-step.
 
 ### Gate 6: Continuous improvement — resolve, don't defer
 We strive for continual improvement of code quality and progressively reduce
@@ -59,7 +62,7 @@ the first response.
 ## External Storage Plugins
 
 The Cassandra storage plugin lives in a separate repository:
-- Repo: https://github.com/Cyoda-platform/cyoda-go-cassandra
+- Repo: https://github.com/cyoda/cyoda-go-cassandra
 - Local checkout: `../cyoda-go-cassandra`
 
 When doing cross-plugin work (changing the SPI, adding parity tests, modifying
@@ -109,7 +112,7 @@ aggregator targets below when you want coverage across the whole repo.
 - Test (root + plugins, short): `make test-short-all`
 - Test (E2E only): `go test ./internal/e2e/... -v`
 - Coverage (root module): `go test -coverprofile=coverage.out ./...` — run inside each `plugins/*` for per-plugin coverage
-- Race detector (root module): `go test -race ./...`
+- Race detector (root module, CI-parity scope): `make race` — runs `go test -race -timeout=15m` on every package except `internal/e2e`; same scope CI runs. Use `go test -race -timeout=20m ./internal/e2e/...` separately if you need race coverage on E2E.
 - Build: `go build -o bin/cyoda ./cmd/cyoda`
 - Tidy: `go mod tidy`
 - Vet (root module): `go vet ./...` — the `per-module-hygiene` CI job vets each plugin separately

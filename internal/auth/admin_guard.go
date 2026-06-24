@@ -3,11 +3,11 @@ package auth
 import (
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// requireAdmin gates administrative endpoints: the key pair handler, the
+// RequireAdmin gates administrative endpoints: the key pair handler, the
 // trusted-key handler, and the M2M client handler. These routes are wrapped
 // by the auth middleware, so a missing UserContext here means the middleware
 // was bypassed or misconfigured — respond 401. A present UserContext lacking
@@ -19,7 +19,7 @@ import (
 //
 // Returns true when the caller may proceed; otherwise writes the response
 // and returns false.
-func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+func RequireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	uc := spi.GetUserContext(r.Context())
 	if uc == nil {
 		common.WriteError(w, r, common.Operational(

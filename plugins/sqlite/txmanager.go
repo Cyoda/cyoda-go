@@ -124,10 +124,13 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 
 	tx, ok := m.active[txID]
 	if !ok {
-		return nil, fmt.Errorf("transaction not found: %s", txID)
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
-	if tx.RolledBack || tx.Closed {
-		return nil, fmt.Errorf("transaction already closed: %s", txID)
+	if tx.RolledBack {
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxRolledBack, txID)
+	}
+	if tx.Closed {
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxAlreadyCommitted, txID)
 	}
 
 	// Verify tenant matches. Strict — rejects nil UserContext to match
@@ -136,7 +139,7 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		return nil, fmt.Errorf("tenant mismatch on transaction join")
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 
 	return spi.WithTransaction(ctx, tx), nil
@@ -156,15 +159,15 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	tx, ok := m.active[txID]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction not found or already completed: %w", spi.ErrNotFound)
+		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction tenant mismatch")
+		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 	if m.committing[txID] {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction already being committed")
+		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
 	}
 	m.committing[txID] = true
 	m.mu.Unlock()
@@ -426,11 +429,11 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 	tx, ok := m.active[txID]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction not found or already completed: %w", spi.ErrNotFound)
+		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction tenant mismatch")
+		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 	m.mu.Unlock()
 
@@ -471,7 +474,7 @@ func (m *transactionManager) GetSubmitTime(_ context.Context, txID string) (time
 	err := m.factory.db.QueryRow(
 		"SELECT submit_time FROM submit_times WHERE tx_id = ?", txID).Scan(&micro)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("transaction not found: %s", txID)
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	return time.UnixMicro(micro), nil
 }
@@ -503,17 +506,20 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 	tx, ok := m.active[txID]
 	m.mu.Unlock()
 	if !ok {
-		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		return "", fmt.Errorf("Savepoint: tenant mismatch on transaction %s", txID)
+		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 
 	tx.OpMu.RLock()
 	defer tx.OpMu.RUnlock()
 
-	if tx.RolledBack || tx.Closed {
-		return "", fmt.Errorf("Savepoint: transaction %s already closed", txID)
+	if tx.RolledBack {
+		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxRolledBack, txID)
+	}
+	if tx.Closed {
+		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxAlreadyCommitted, txID)
 	}
 
 	spID := uuid.UUID(m.uuids.NewTimeUUID()).String()
@@ -566,17 +572,20 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	tx, ok := m.active[txID]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		return fmt.Errorf("RollbackToSavepoint: tenant mismatch on transaction %s", txID)
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 
 	tx.OpMu.Lock()
 	defer tx.OpMu.Unlock()
 
-	if tx.RolledBack || tx.Closed {
-		return fmt.Errorf("RollbackToSavepoint: transaction %s already closed", txID)
+	if tx.RolledBack {
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxRolledBack, txID)
+	}
+	if tx.Closed {
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxAlreadyCommitted, txID)
 	}
 
 	m.mu.Lock()
@@ -584,11 +593,11 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 
 	txSavepoints, ok := m.savepoints[txID]
 	if !ok {
-		return fmt.Errorf("RollbackToSavepoint: savepoint %s not found", savepointID)
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 	snap, ok := txSavepoints[savepointID]
 	if !ok {
-		return fmt.Errorf("RollbackToSavepoint: savepoint %s not found", savepointID)
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 
 	tx.Buffer = snap.buffer
@@ -616,18 +625,18 @@ func (m *transactionManager) ReleaseSavepoint(ctx context.Context, txID string, 
 
 	tx, ok := m.active[txID]
 	if !ok {
-		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		return fmt.Errorf("ReleaseSavepoint: tenant mismatch on transaction %s", txID)
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 
 	txSavepoints, ok := m.savepoints[txID]
 	if !ok {
-		return fmt.Errorf("ReleaseSavepoint: savepoint %s not found", savepointID)
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 	if _, ok := txSavepoints[savepointID]; !ok {
-		return fmt.Errorf("ReleaseSavepoint: savepoint %s not found", savepointID)
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 
 	delete(txSavepoints, savepointID)

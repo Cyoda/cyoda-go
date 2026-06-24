@@ -487,6 +487,220 @@ func TestStreaming_CriteriaResponse(t *testing.T) {
 	<-done
 }
 
+// --- Retryable flag plumbing (audit §M1) -----------------------------------
+//
+// These tests cover the wire tri-state: retryable=true / retryable=false /
+// retryable absent on a present error / no error at all. All four must
+// round-trip into ProcessingResponse.Retryable as a *bool whose presence
+// distinguishes "wire said so" from "wire didn't say". Plus one symmetric
+// pair on the criteria response handler — both halves of the future retry
+// loop need this data, so both are surfaced now.
+
+// retryableHarness wraps the common setup for retryable-plumbing tests:
+// a joined member, a tracked request, and the response channel
+// the test asserts on. Caller MUST call closeAndWait() at end of test.
+type retryableHarness struct {
+	stream *mockBidiStream
+	done   chan error
+	respCh <-chan *ProcessingResponse
+}
+
+func newRetryableHarness(t *testing.T, requestID string) *retryableHarness {
+	t.Helper()
+	svc := newServiceForTest()
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	t.Cleanup(cancel)
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{"python"}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StartStreaming(stream)
+	}()
+
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	_, greetPayload, _ := ParseCloudEvent(greetCE)
+	memberID := ExtractStringField(greetPayload, "memberId")
+	member := svc.registry.Get(memberID)
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	respCh := member.TrackRequest(requestID)
+	return &retryableHarness{stream, done, respCh}
+}
+
+func (h *retryableHarness) closeAndWait() {
+	h.stream.closeRecv()
+	<-h.done
+}
+
+// awaitResponse blocks until a response is routed (or fails the test on
+// timeout). Returns the captured *ProcessingResponse for assertion.
+func (h *retryableHarness) awaitResponse(t *testing.T) *ProcessingResponse {
+	t.Helper()
+	select {
+	case resp := <-h.respCh:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		return resp
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for response")
+		return nil
+	}
+}
+
+func TestStreaming_ProcessorResponse_PropagatesRetryableFalse(t *testing.T) {
+	h := newRetryableHarness(t, "req-rt-false")
+	defer h.closeAndWait()
+
+	respPayload := map[string]any{
+		"requestId": "req-rt-false",
+		"success":   false,
+		"error": map[string]any{
+			"message":   "boom",
+			"retryable": false,
+		},
+	}
+	respCE, err := NewCloudEvent(EntityProcessorCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create response event: %v", err)
+	}
+	h.stream.enqueue(respCE)
+
+	resp := h.awaitResponse(t)
+	if resp.Retryable == nil {
+		t.Fatal("expected Retryable to be non-nil (wire said retryable=false)")
+	}
+	if *resp.Retryable {
+		t.Errorf("expected Retryable=false, got true")
+	}
+}
+
+func TestStreaming_ProcessorResponse_PropagatesRetryableTrue(t *testing.T) {
+	h := newRetryableHarness(t, "req-rt-true")
+	defer h.closeAndWait()
+
+	respPayload := map[string]any{
+		"requestId": "req-rt-true",
+		"success":   false,
+		"error": map[string]any{
+			"message":   "transient",
+			"retryable": true,
+		},
+	}
+	respCE, err := NewCloudEvent(EntityProcessorCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create response event: %v", err)
+	}
+	h.stream.enqueue(respCE)
+
+	resp := h.awaitResponse(t)
+	if resp.Retryable == nil {
+		t.Fatal("expected Retryable to be non-nil (wire said retryable=true)")
+	}
+	if !*resp.Retryable {
+		t.Errorf("expected Retryable=true, got false")
+	}
+}
+
+func TestStreaming_ProcessorResponse_RetryableNilWhenAbsent(t *testing.T) {
+	h := newRetryableHarness(t, "req-rt-absent")
+	defer h.closeAndWait()
+
+	respPayload := map[string]any{
+		"requestId": "req-rt-absent",
+		"success":   false,
+		"error": map[string]any{
+			"message": "no flag set",
+		},
+	}
+	respCE, err := NewCloudEvent(EntityProcessorCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create response event: %v", err)
+	}
+	h.stream.enqueue(respCE)
+
+	resp := h.awaitResponse(t)
+	if resp.Retryable != nil {
+		t.Errorf("expected Retryable to be nil when wire omitted the key; got *Retryable=%v", *resp.Retryable)
+	}
+}
+
+func TestStreaming_ProcessorResponse_RetryableNilOnSuccess(t *testing.T) {
+	h := newRetryableHarness(t, "req-rt-success")
+	defer h.closeAndWait()
+
+	respPayload := map[string]any{
+		"requestId": "req-rt-success",
+		"success":   true,
+		"payload":   map[string]any{"data": map[string]any{"ok": true}},
+	}
+	respCE, err := NewCloudEvent(EntityProcessorCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create response event: %v", err)
+	}
+	h.stream.enqueue(respCE)
+
+	resp := h.awaitResponse(t)
+	if resp.Retryable != nil {
+		t.Errorf("expected Retryable to be nil on success (no error block); got *Retryable=%v", *resp.Retryable)
+	}
+}
+
+func TestStreaming_CriteriaResponse_PropagatesRetryableFlag(t *testing.T) {
+	// Symmetric to the processor case: criteria responses can also carry a
+	// member-vetoed retryable=false on the inbound error shape. The future
+	// retry loop covers the criteria dispatch path, so symmetry now avoids
+	// a second streaming-handler edit later.
+	t.Run("retryable_false", func(t *testing.T) {
+		h := newRetryableHarness(t, "req-cri-false")
+		defer h.closeAndWait()
+
+		respPayload := map[string]any{
+			"requestId": "req-cri-false",
+			"success":   false,
+			"matches":   false,
+			"error": map[string]any{
+				"message":   "criteria boom",
+				"retryable": false,
+			},
+		}
+		respCE, err := NewCloudEvent(EntityCriteriaCalculationResponse, respPayload)
+		if err != nil {
+			t.Fatalf("failed to create criteria response event: %v", err)
+		}
+		h.stream.enqueue(respCE)
+
+		resp := h.awaitResponse(t)
+		if resp.Retryable == nil || *resp.Retryable {
+			t.Errorf("expected Retryable=false on criteria response; got %v", resp.Retryable)
+		}
+	})
+
+	t.Run("absent_on_success", func(t *testing.T) {
+		h := newRetryableHarness(t, "req-cri-success")
+		defer h.closeAndWait()
+
+		respPayload := map[string]any{
+			"requestId": "req-cri-success",
+			"success":   true,
+			"matches":   true,
+		}
+		respCE, err := NewCloudEvent(EntityCriteriaCalculationResponse, respPayload)
+		if err != nil {
+			t.Fatalf("failed to create criteria response event: %v", err)
+		}
+		h.stream.enqueue(respCE)
+
+		resp := h.awaitResponse(t)
+		if resp.Retryable != nil {
+			t.Errorf("expected Retryable=nil on criteria success; got *Retryable=%v", *resp.Retryable)
+		}
+	})
+}
+
 func TestStreaming_KeepAliveTimeout(t *testing.T) {
 	svc := newServiceForTest()
 	// Set very short keep-alive for testing.

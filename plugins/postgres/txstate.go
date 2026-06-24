@@ -149,6 +149,22 @@ func (s *txState) PushSavepoint(id string) {
 	s.savepoints = append(s.savepoints, snap)
 }
 
+// HasSavepoint reports whether a savepoint with the given id is currently
+// on the snapshot stack. Used by the TM lifecycle methods to pre-validate
+// the savepoint exists before issuing the SQL command, so missing
+// savepoints surface as spi.ErrSavepointNotFound rather than an opaque
+// PostgreSQL SQLSTATE 3B001 error.
+func (s *txState) HasSavepoint(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sp := range s.savepoints {
+		if sp.id == id {
+			return true
+		}
+	}
+	return false
+}
+
 // RestoreSavepoint restores readSet/writeSet to the snapshot captured at
 // PushSavepoint(id) and trims any savepoints pushed after id. The named
 // savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT).
@@ -163,7 +179,7 @@ func (s *txState) RestoreSavepoint(id string) error {
 		}
 	}
 	if idx < 0 {
-		return fmt.Errorf("unknown savepoint %q", id)
+		return fmt.Errorf("%w (savepointID=%q)", spi.ErrSavepointNotFound, id)
 	}
 	snap := s.savepoints[idx]
 	s.readSet = make(map[string]int64, len(snap.readSet))
@@ -220,7 +236,7 @@ func (s *txState) ReleaseSavepoint(id string) error {
 		}
 	}
 	if idx < 0 {
-		return fmt.Errorf("unknown savepoint %q", id)
+		return fmt.Errorf("%w (savepointID=%q)", spi.ErrSavepointNotFound, id)
 	}
 	s.savepoints = append(s.savepoints[:idx], s.savepoints[idx+1:]...)
 	return nil

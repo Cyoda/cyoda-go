@@ -113,6 +113,13 @@ func (s *Server) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, 
 	s.Unimplemented.FetchEntityTransitions(w, r, params)
 }
 
+// QueryGroupedEntityStatisticsForModel is routed directly in app/app.go before the
+// generated API mux — this method satisfies ServerInterface but is never reached in
+// production.
+func (s *Server) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+	s.Unimplemented.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion)
+}
+
 func (s *Server) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
 	if s.Entity != nil {
 		s.Entity.DeleteEntities(w, r, entityName, modelVersion, params)

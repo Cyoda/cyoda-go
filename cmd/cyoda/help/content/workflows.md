@@ -7,6 +7,7 @@ see_also:
   - crud
   - grpc
   - search
+  - workflows.schema-version
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -43,11 +44,12 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1",
+  "version": "1.1",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
   "active": true,
+  "annotations": { "roles": ["reviewer"], "label": "Prize lifecycle" },
   "criterion": null,
   "states": {
     "NEW": {
@@ -56,11 +58,12 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
           "name": "APPROVE",
           "next": "APPROVED",
           "manual": true,
+          "annotations": { "ui": { "color": "green" } },
           "disabled": false,
           "criterion": null,
           "processors": [
             {
-              "type": "EXTERNAL",
+              "type": "externalized",
               "name": "notify-approval",
               "executionMode": "SYNC",
               "config": {
@@ -100,17 +103,19 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **WorkflowDefinition fields:**
 
-- `version` — string — schema version tag (informational; not interpreted by the engine)
+- `version` — semver `MAJOR.MINOR` string identifying the workflow-import contract this definition was authored against. Validated strictly on import; stamped to the current contract version on export. See `cyoda help workflows schema-version` for the bump rules and current/supported list.
 - `name` — string — unique within the model; the primary key for MERGE mode
-- `desc` — string — optional description
+- `desc` — string — optional human-readable description. Surfaced in the import audit log line (`workflow import applied` at `INFO`, or `workflow import resulted in zero workflows` at `WARN`) as part of the per-workflow `{name, desc}` digest, and round-tripped via export when non-empty. Use it to record change intent that operators reading logs can correlate without consulting the workflow JSON
 - `initialState` — string — state assigned when the entity is first created; must exist in `states`
 - `active` — boolean — when `false`, the engine skips this workflow during selection
 - `criterion` — `Condition` JSON or `null` — evaluated against the entity at creation to select this workflow; `null` matches all entities
 - `states` — object — map of state name → `StateDefinition`
+- `annotations` — object or absent — optional client-owned metadata, stored and round-tripped (compacted) but never interpreted by the engine. Must be a JSON object; capped at 64 KB per field. Use for client concerns such as permitted roles, display labels, or UI hints
 
 **StateDefinition:**
 
 - `transitions` — array of `TransitionDefinition` — may be empty
+- `annotations` — object or absent — optional client-owned metadata (see WorkflowDefinition `annotations`); object-only, 64 KB cap, engine-opaque
 
 ## TRANSITIONS
 
@@ -122,21 +127,24 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `processors` — array of `ProcessorDefinition` — invoked sequentially on this transition
+- `annotations` — object or absent — optional client-owned metadata (see WorkflowDefinition `annotations`); object-only, 64 KB cap, engine-opaque
 
 ## PROCESSORS
 
 **ProcessorDefinition fields:**
 
-- `type` — string — processor type; see valid values below
+- `type` — string — execution-location axis; see below for valid values
 - `name` — string — logical processor name
 - `executionMode` — string — execution mode; see valid values below
 - `config` — `ProcessorConfig`
 
-**Valid `type` values (exhaustive for v0.6.1):**
+**Processor `type` (execution-location axis):**
 
-- `"EXTERNAL"` — dispatches to a calculation node via gRPC using `calculationNodesTags` for routing
+- `"externalized"` (default when omitted) — dispatched via gRPC to a calculation node selected by `Config.calculationNodesTags`. This is the only execution location implemented today; all the `executionMode` semantics below apply to externalized processors.
 
-No other types are supported. Supplying any other value produces `errors.VALIDATION_FAILED` at workflow import time.
+The engine reserves the value `"internalized"` for an in-process execution location not yet implemented. Any transition that fires a processor with `type: "internalized"` is rejected at dispatch with `WORKFLOW_FAILED` (400) and the operator-visible error `processor X failed: execution type "internalized" is not yet implemented`. The reserved value is intentionally absent from the OpenAPI enum until the subtype lands; workflow authors who include it in import payloads will not be rejected at import, but their entities cannot transit past the affected step.
+
+Any value other than `"internalized"` (including the empty string, the canonical `"externalized"`, and unknown values such as legacy `"scheduled"` or `"EXTERNAL"`) falls through to the `executionMode` dispatch path. This permissiveness will narrow in a future release; do not rely on it.
 
 **Valid `executionMode` values (exhaustive):**
 
@@ -162,15 +170,110 @@ No other types are supported. Supplying any other value produces `errors.VALIDAT
   Pick one path: let the engine apply the result, OR have the processor write
   the entity itself and return no mutations for it.
 
-An invalid `executionMode` value is treated as `SYNC` / `ASYNC_SAME_TX` (the engine's default branch). It is not rejected at import time but produces undefined behaviour and must not be relied upon.
+Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 
 **ProcessorConfig fields:**
 
 - `attachEntity` — boolean — when `true`, the full entity payload is sent to the processor
 - `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
 - `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
-- `retryPolicy` — string — retry policy name (plugin/platform-defined); empty means no retry
-- `context` — string — arbitrary string forwarded to the processor as context metadata
+- `retryPolicy` — string — selects the server-resolved retry strategy.
+  Valid values: `NONE` (single attempt, no retry), `FIXED` (up to N
+  additional attempts with fixed delay between tries, where N and delay
+  are server-configured). When omitted, defaults to `FIXED` at engine
+  fire. Import-time validation rejects any other value with `400
+  VALIDATION_FAILED`. **cyoda-go status:** captured but not consumed —
+  the dispatcher is single-shot regardless of policy; the full retry
+  loop ships in a later release. Cloud honours both policies.
+- `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
+- `asyncResult` — boolean (pointer; nil-default) — declared in the
+  OpenAPI for Cloud parity; the runtime does **not** implement
+  async-result semantics on this backend. Imports that set
+  `asyncResult: true` are rejected with `400 VALIDATION_FAILED`. The
+  explicit `asyncResult: false` and absent cases are accepted and
+  round-tripped.
+- `crossoverToAsyncMs` — int64 (pointer; nil-default) — crossover
+  delay (ms) for the async-result semantic; declared in the OpenAPI
+  for Cloud parity; the runtime does **not** implement it. Imports
+  that set any non-nil value are rejected with `400 VALIDATION_FAILED`,
+  including the orphan case where `asyncResult` is absent or false.
+
+## SCHEDULED TRANSITIONS
+
+A transition may carry an optional `schedule` object marking it as
+scheduled. Presence of `schedule` declares that the transition fires
+automatically at `scheduledTime = stateEntryTime + delayMs`. The
+`schedule` shape is:
+
+```json
+{
+  "name": "AutoClose",
+  "next": "Closed",
+  "manual": false,
+  "schedule": {
+    "delayMs": 86400000,
+    "timeoutMs": 600000
+  }
+}
+```
+
+**Fields:**
+
+- `delayMs` (integer, required) — delay between source-state entry
+  and the scheduled execution time, in milliseconds. Must be `> 0`.
+- `timeoutMs` (integer, optional) — late-tolerance window past the
+  scheduled execution time, in milliseconds. When the scheduler
+  picks the task up, if `(executionTime - scheduledTime) > timeoutMs`
+  the task is dropped and the transition is NOT attempted. Absent
+  (omitted) means no timeout — fire whenever the scheduler
+  eventually picks it up. Explicit `0` is the strictest setting —
+  drop on any lateness. Independent of `delayMs`; the two measure
+  different quantities.
+
+**Import-time validation rules:**
+
+- `manual: true` and `schedule` present are mutually exclusive
+  (`VALIDATION_FAILED`).
+- `schedule.delayMs <= 0` is rejected (`VALIDATION_FAILED`).
+- No further rule on `timeoutMs` beyond `>= 0` (enforced at the DTO
+  boundary).
+
+**Engine behaviour (runtime not yet implemented).** The scheduler
+that arms and fires scheduled transitions is not yet implemented.
+Two guards govern behaviour until it ships:
+
+- During automated cascade evaluation, scheduled transitions are
+  silently skipped — they are never selected for immediate firing.
+  Other automated/manual transitions out of the same state fire
+  normally. An entity whose only exit is scheduled rests in its
+  current state.
+- Explicitly firing a scheduled transition by name returns HTTP 400
+  `TRANSITION_NOT_FOUND` with the message `transition "X" in state
+  "Y" is scheduled; scheduled transitions are not yet implemented`.
+  Same code returned when a transition is `disabled: true` — same
+  semantic: "the transition exists but is not currently dispatchable
+  from the caller's POV." The entity remains in the source state.
+
+**Importing cyclic scheduled workflows.** A canonical scheduled-
+transition use case is a polling pattern such as `S1 →scheduled→ S2
+→scheduled→ S1`. The import-time cycle detector rejects unguarded
+automated cycles by default — including this one, because a delayed
+cycle is still a cycle. To import such a workflow, set the request-
+level field `allowCycles: true` on the import body:
+
+```json
+{
+  "importMode": "REPLACE",
+  "allowCycles": true,
+  "workflows": [ /* ... */ ]
+}
+```
+
+`allowCycles: true` bypasses only the cycle-detection check. Schedule
+shape rules (manual+schedule, delayMs) and all other validators
+remain unconditional. The runtime cascade-depth and per-state visit
+caps still catch actual runaway at fire time. Use only for workflows
+whose cyclicity is intentional.
 
 ## CRITERIA
 
@@ -179,6 +282,20 @@ Criteria on workflows and transitions use the same `Condition` DSL as search. Al
 `simple` criteria match entity data fields via JSONPath. `lifecycle` criteria match `state`, `creationDate`, or `previousTransition` from entity metadata.
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
+
+### Workflow-level selection
+
+When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on every `Execute` / `ManualTransition` / `Loopback` (no caching across calls):
+
+1. Iterate workflows in their stored declaration order. (Storage preserves the order from the most recent import; MERGE inserts new workflows at the tail.)
+2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
+3. For each active workflow, evaluate `criterion` against the entity payload and lifecycle metadata. A `null` (absent) criterion matches unconditionally — the workflow is selected immediately.
+4. The first active workflow whose criterion matches is selected. Subsequent workflows in the array are not consulted.
+5. If no active workflow matches — which includes the case where every active workflow has a criterion and none of them passes — the engine falls back to the embedded **default workflow**. The substitution surfaces on two channels: a body warning via `AddWarning` and an operator-visible `slog.Warn` line (`reason=no_criterion_matched`).
+
+Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
+
+Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
 
 ## IMPORT REQUEST
 
@@ -198,16 +315,40 @@ Request body (`application/json`):
 }
 ```
 
-- `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones and are set `active=true`; existing workflows not in the import set are set `active=false`.
-- `workflows` — array of `WorkflowDefinition`; all imported workflows are set `active=true` regardless of the `active` field in the body
+- `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`. `REPLACE` / `ACTIVATE` reject an empty `workflows` array (or a missing `workflows` key) with `400 VALIDATION_FAILED` — once a model has imported workflows it always carries ≥1; the built-in default workflow is only used when no workflow has ever been imported. `MERGE` with an empty `workflows` array is allowed as a no-op. The field defaults to `MERGE` when omitted or empty. Parsing is **case-insensitive**: `"merge"`, `"Merge"`, and `"MERGE"` are equivalent. Any value outside the documented enum (after case-folding) is rejected with `400 BAD_REQUEST`.
+- `workflows` — array of `WorkflowDefinition`. The `active` flag on each incoming workflow is preserved as supplied; the server never overrides it. If the field is absent (or explicitly `null`), it defaults to `true`. Controlling which workflows are active is entirely up to the importer.
 
-Static validation runs before saving: definite infinite loops (cycles reachable only via automated transitions) cause `400 VALIDATION_FAILED`.
+Static validation runs on the incoming request before saving. Any of the following returns `400 VALIDATION_FAILED` with the offending workflow / state / transition named in `detail`:
+
+- Definite infinite loops — cycles reachable only via unguarded automated transitions.
+- Empty workflow `name`, or two workflows in the same request sharing a `name`.
+- Empty `initialState`, or `initialState` not declared in `states`.
+- Empty state-map key (i.e. `"states": { "": { … } }`).
+- Empty or duplicate transition `name` within a single state.
+- Empty processor `name`.
+- Workflow / state / transition / processor names longer than 256 characters.
+- Transition `next` not declared in `states`.
+- Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
+- Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
+- `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
+- Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
+
+The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
 Response: `200 OK`, `application/json`:
 
 ```json
 {"success": true}
 ```
+
+### Audit log on success
+
+Every successful import emits a single structured `log/slog` line so operators can correlate workflow-config changes in their log pipeline.
+
+- **Normal path** — `level=INFO`, `msg="workflow import applied"`. Fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `importMode`, `workflowCount` (size of THIS call's incoming payload), `storedWorkflowCount` (model's post-merge total), `workflows` (array of `{name, desc}` reflecting the incoming payload — the audit subject is what was applied, not the resulting model state).
+- **Zero-result canary** — `level=WARN`, `msg="workflow import resulted in zero workflows"`, same field shape. After `REPLACE` / `ACTIVATE` empty became a `400 VALIDATION_FAILED` (see above), the only reachable path is a `MERGE` with an empty `workflows` array against a model that has no prior workflows. The model will then silently fall back to the embedded default on the next entity execution; this canary surfaces that outcome before it shows up in entity-execution logs.
+
+The `desc` field on each workflow is surfaced in the audit log digest, truncated to 200 characters with a `...` suffix when longer — set a meaningful description to record change intent that log readers can correlate without consulting the workflow JSON.
 
 ## EXPORT RESPONSE
 
@@ -227,14 +368,14 @@ Response: `200 OK`, `application/json`:
 
 Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the model.
 
-**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty.
+**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, or any transition) is omitted when absent, and is re-serialised in compacted form when present.
 
 ## ENGINE EXECUTION
 
 The workflow engine runs synchronously within the entity write transaction. The execution sequence for a CREATE:
 
 1. Load workflow definitions for the model.
-2. Evaluate each workflow's `criterion` against the entity; select the first match. If none match, use the built-in default workflow.
+2. Evaluate each workflow's `criterion` against the entity; select the first match. If none match (or if no workflows have been imported for the model), use the built-in default workflow. The substitution emits both a `slog.Warn` line (fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason=no_workflows_imported`|`no_criterion_matched`) and an `AddWarning` entry surfaced in the response body, so operators can detect models silently running on the default.
 3. Set `entity.Meta.State = workflow.initialState`.
 4. If a named transition was requested (by the client), execute it: evaluate `criterion`, invoke processors, set `entity.Meta.State = transition.next`.
 5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) non-disabled transition, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
@@ -249,7 +390,8 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
-- `errors.VALIDATION_FAILED` — `400` — static cycle detection failed during workflow import
+- `errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — `400` — workflow declares a schema version this server does not accept
+- `errors.VALIDATION_FAILED` — `400` — workflow import validation failed; see IMPORT REQUEST above for the enumerated rules
 
 ## EXAMPLES
 
@@ -263,7 +405,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1",
+        "version": "1.1",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -315,7 +457,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1",
+        "version": "1.1",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,

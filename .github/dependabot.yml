@@ -19,6 +19,12 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    # The cyoda-go-spi pin is a maintainer-owned coordinated-release step
+    # (MAINTAINING.md "Coordinated release across sibling repos"), not a routine
+    # bump. Ignoring it keeps the grouped third-party PRs from being entangled
+    # with — and mass-closed alongside — an unresolvable SPI pin mid-milestone.
+    ignore:
+      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:
@@ -34,6 +40,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:
@@ -47,6 +55,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:
@@ -60,6 +70,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:

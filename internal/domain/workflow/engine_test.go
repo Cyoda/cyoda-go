@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,7 +70,7 @@ func TestSelectWorkflow(t *testing.T) {
 
 	// Workflow 1: criterion requires amount > 100
 	wf1 := spi.WorkflowDefinition{
-		Version: "1.0", Name: "HighValueWF", InitialState: "HIGH_INITIAL", Active: true,
+		Version: "1.1", Name: "HighValueWF", InitialState: "HIGH_INITIAL", Active: true,
 		Criterion: simpleCriterion("$.amount", "GREATER_THAN", 100),
 		States: map[string]spi.StateDefinition{
 			"HIGH_INITIAL": {Transitions: []spi.TransitionDefinition{}},
@@ -77,7 +78,7 @@ func TestSelectWorkflow(t *testing.T) {
 	}
 	// Workflow 2: criterion requires amount < 50
 	wf2 := spi.WorkflowDefinition{
-		Version: "1.0", Name: "LowValueWF", InitialState: "LOW_INITIAL", Active: true,
+		Version: "1.1", Name: "LowValueWF", InitialState: "LOW_INITIAL", Active: true,
 		Criterion: simpleCriterion("$.amount", "LESS_THAN", 50),
 		States: map[string]spi.StateDefinition{
 			"LOW_INITIAL": {Transitions: []spi.TransitionDefinition{}},
@@ -105,7 +106,7 @@ func TestNoMatchingWorkflow_FallsBackToDefault(t *testing.T) {
 
 	// Import a workflow with a criterion that won't match.
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "HighValueWF", InitialState: "HIGH_INITIAL", Active: true,
+		Version: "1.1", Name: "HighValueWF", InitialState: "HIGH_INITIAL", Active: true,
 		Criterion: simpleCriterion("$.amount", "GREATER_THAN", 1000),
 		States: map[string]spi.StateDefinition{
 			"HIGH_INITIAL": {Transitions: []spi.TransitionDefinition{}},
@@ -153,7 +154,7 @@ func TestAutomatedCascade(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "approval", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ApprovalWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ApprovalWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "VALIDATE", Next: "PENDING", Manual: false},
@@ -185,7 +186,7 @@ func TestCriterionBlocksTransition(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "blocked", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "BlockedWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "BlockedWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "ADVANCE", Next: "DONE", Manual: false,
@@ -215,7 +216,7 @@ func TestMultipleTransitionsFirstEligible(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "multi", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "MultiWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "MultiWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PATH_A", Next: "STATE_A", Manual: false,
@@ -250,7 +251,7 @@ func TestNamedTransition(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "named", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "NamedWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "NamedWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: true},
@@ -279,7 +280,7 @@ func TestNamedTransitionNotFound(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "named2", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "NamedWF2", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "NamedWF2", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: true},
@@ -306,7 +307,7 @@ func TestErrTransitionNotFound_SentinelWrapped(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "sentinel-tnf", ModelVersion: "1"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "SentinelWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "SentinelWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: true},
@@ -336,7 +337,7 @@ func TestErrTransitionNotFound_DisabledTransition(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "sentinel-disabled", ModelVersion: "1"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "DisabledWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "DisabledWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "BLOCKED", Next: "DONE", Manual: true, Disabled: true},
@@ -364,7 +365,7 @@ func TestManualTransition(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "manual", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ManualWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ManualWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "SUBMIT", Next: "SUBMITTED", Manual: true},
@@ -399,12 +400,12 @@ func TestProcessorStubSuccess(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "proc", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ProcWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ProcWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "external", Name: "myProcessor"},
+						{Type: ProcessorTypeExternalized, Name: "myProcessor"},
 					}},
 			}},
 			"DONE": {Transitions: []spi.TransitionDefinition{}},
@@ -431,7 +432,7 @@ func TestAuditEventsRecorded(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "audit", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AuditWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AuditWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: false},
@@ -485,7 +486,7 @@ func TestExecuteUsesCallerTxID(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "txid-match", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "TxIdWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "TxIdWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: false},
@@ -550,7 +551,7 @@ func TestManualTransitionUsesCallerTxID(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "mt-txid", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "MtTxWF", InitialState: "PENDING", Active: true,
+		Version: "1.1", Name: "MtTxWF", InitialState: "PENDING", Active: true,
 		States: map[string]spi.StateDefinition{
 			"PENDING": {Transitions: []spi.TransitionDefinition{
 				{Name: "approve", Next: "APPROVED", Manual: true},
@@ -612,7 +613,7 @@ func TestLoopbackUsesCallerTxID(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "lb-txid", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "LbTxWF", InitialState: "ACTIVE", Active: true,
+		Version: "1.1", Name: "LbTxWF", InitialState: "ACTIVE", Active: true,
 		States: map[string]spi.StateDefinition{
 			"ACTIVE": {Transitions: []spi.TransitionDefinition{
 				{Name: "auto-finish", Next: "DONE", Manual: false},
@@ -676,7 +677,7 @@ func TestLoopback(t *testing.T) {
 	// Since we can't mutate data in the processor stub, we use a trick:
 	// First transition has a criterion that won't match, second goes to DONE.
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "LoopWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "LoopWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "LOOP", Next: "INITIAL", Manual: false,
@@ -730,14 +731,14 @@ func TestProcessorAsyncNewTxIndependent(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "async-new-tx", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AsyncNewTxWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AsyncNewTxWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {
 				Transitions: []spi.TransitionDefinition{
 					{
 						Name: "auto-process", Next: "PROCESSED", Manual: false,
 						Processors: []spi.ProcessorDefinition{
-							{Type: "EXTERNAL", Name: "ext-proc", ExecutionMode: "ASYNC_NEW_TX"},
+							{Type: ProcessorTypeExternalized, Name: "ext-proc", ExecutionMode: "ASYNC_NEW_TX"},
 						},
 					},
 				},
@@ -773,14 +774,14 @@ func TestProcessorSyncInCallerTx(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "sync-proc", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "SyncProcWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "SyncProcWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {
 				Transitions: []spi.TransitionDefinition{
 					{
 						Name: "auto-sync", Next: "DONE", Manual: false,
 						Processors: []spi.ProcessorDefinition{
-							{Type: "INTERNAL", Name: "sync-proc", ExecutionMode: "SYNC"},
+							{Type: ProcessorTypeExternalized, Name: "sync-proc", ExecutionMode: "SYNC"},
 						},
 					},
 				},
@@ -816,14 +817,14 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "async-same-tx", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AsyncSameTxWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AsyncSameTxWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {
 				Transitions: []spi.TransitionDefinition{
 					{
 						Name: "auto-same", Next: "COMPLETE", Manual: false,
 						Processors: []spi.ProcessorDefinition{
-							{Type: "INTERNAL", Name: "same-proc", ExecutionMode: "ASYNC_SAME_TX"},
+							{Type: ProcessorTypeExternalized, Name: "same-proc", ExecutionMode: "ASYNC_SAME_TX"},
 						},
 					},
 				},
@@ -887,12 +888,12 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "ext-proc", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ExtProcWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ExtProcWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "ext-proc-1", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "ext-proc-1", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -937,12 +938,12 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "ext-async-new", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AsyncNewTxExtWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AsyncNewTxExtWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "ext-proc-new-tx", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "ext-proc-new-tx", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -974,6 +975,69 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	}
 }
 
+// TestProcessorEmptyExecutionMode_FiresAsSync covers the audit's case
+// 14: a processor with an empty `ExecutionMode` is dispatched through
+// the SYNC path at engine fire-time. The validator already accepts the
+// empty value (see TestValidateImportRequest_AcceptsEmptyExecutionMode)
+// — this asserts the engine-fire counterpart: failure propagates and
+// blocks state advance, which is SYNC's distinguishing semantic
+// (ASYNC_NEW_TX would warn-and-continue; COMMIT_BEFORE_DISPATCH would
+// split the transaction). engine_processors.go's switch falls through
+// to executeSyncProcessor via the default case for "" — we verify the
+// effect at the observable behaviour level.
+func TestProcessorEmptyExecutionMode_FiresAsSync(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExtProc{returnErr: fmt.Errorf("processor failed")}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "empty-mode", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "EmptyModeWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "RUN", Next: "DONE", Manual: false,
+					Processors: []spi.ProcessorDefinition{
+						{
+							Type:          ProcessorTypeExternalized,
+							Name:          "empty-mode-proc",
+							ExecutionMode: "", // the unit under test
+						},
+					}},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("empty-mode-1", modelRef, map[string]any{"x": 1})
+	_, err := engine.Execute(ctx, entity, "")
+
+	// SYNC-style failure semantics: the processor error propagates AND
+	// the entity does not advance to the next state. ASYNC_NEW_TX would
+	// swallow the failure and let the entity reach DONE.
+	if err == nil {
+		t.Fatalf("expected error from failing processor (SYNC-style propagation)")
+	}
+	if entity.Meta.State == "DONE" {
+		t.Errorf("entity advanced to DONE — empty executionMode did NOT fire as SYNC")
+	}
+
+	// And the dispatcher was actually called exactly once — i.e. it
+	// wasn't silently treated as "no-op" via some unknown-mode swallow.
+	mock.mu.Lock()
+	calls := mock.dispatchProcessorCalls
+	mock.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("expected DispatchProcessor called 1 time for empty executionMode, got %d", calls)
+	}
+}
+
 func TestProcessorDispatchError(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
@@ -987,12 +1051,12 @@ func TestProcessorDispatchError(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "ext-err", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ErrWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ErrWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "fail-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "fail-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -1023,12 +1087,12 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "ext-mod", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "ModWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "ModWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "ENRICH", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "enrich-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "enrich-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -1062,13 +1126,13 @@ func TestNilExtProcProcessorNoOp(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "nil-ext", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "NilExtWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "NilExtWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "proc-1", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "proc-2", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "proc-1", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "proc-2", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1104,7 +1168,7 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "checkEligibility"})
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "FuncCritWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "FuncCritWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "CHECK", Next: "ELIGIBLE", Manual: false,
@@ -1144,7 +1208,7 @@ func TestFunctionCriterionNoExtProcError(t *testing.T) {
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "check"})
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "FuncNoExtWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "FuncNoExtWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "CHECK", Next: "DONE", Manual: false,
@@ -1177,7 +1241,7 @@ func TestFunctionCriterionReturnsFalse(t *testing.T) {
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "deny"})
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "FuncFalseWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "FuncFalseWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "CHECK", Next: "DONE", Manual: false,
@@ -1217,7 +1281,7 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "selectWF"})
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "WFFuncCritWF", InitialState: "SELECTED", Active: true,
+		Version: "1.1", Name: "WFFuncCritWF", InitialState: "SELECTED", Active: true,
 		Criterion: funcCriterion,
 		States: map[string]spi.StateDefinition{
 			"SELECTED": {},
@@ -1348,7 +1412,7 @@ func TestCustomWorkflowTakesPrecedence(t *testing.T) {
 
 	// Import a custom workflow for this model.
 	customWF := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CustomWF", InitialState: "CUSTOM_INITIAL", Active: true,
+		Version: "1.1", Name: "CustomWF", InitialState: "CUSTOM_INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"CUSTOM_INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "CUSTOM_DONE", Manual: false},
@@ -1562,13 +1626,13 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "async-fail-test", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AsyncFailWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AsyncFailWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "sync-proc", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "async-fail-proc", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "sync-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "async-fail-proc", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1617,12 +1681,12 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "async-discard-test", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AsyncDiscardWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AsyncDiscardWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "async-mutator", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "async-mutator", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1687,14 +1751,14 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "cumulative-test", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CumulativeWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "CumulativeWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "first", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "second", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "third", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "first", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "second", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "third", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -1765,13 +1829,13 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 	}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AsyncSeesSyncWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "AsyncSeesSyncWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "sync-modifier", ExecutionMode: "SYNC"},
-						{Type: "EXTERNAL", Name: "async-reader", ExecutionMode: "ASYNC_NEW_TX"},
+						{Type: ProcessorTypeExternalized, Name: "sync-modifier", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "async-reader", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
@@ -1801,12 +1865,12 @@ func TestSyncProcessor_ContextCancellation(t *testing.T) {
 	}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CtxCancelWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "CtxCancelWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "slow-proc", ExecutionMode: "SYNC"},
+						{Type: ProcessorTypeExternalized, Name: "slow-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
@@ -2008,12 +2072,12 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "cbd-false", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdFalseWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdFalseWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2184,12 +2248,12 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "single-seg", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "SingleSegWF", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "SingleSegWF", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t1", Next: "S2", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "p1", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
 					}},
 			}},
 			"S2": {Transitions: []spi.TransitionDefinition{
@@ -2307,12 +2371,12 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdCASConflictWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdCASConflictWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2452,13 +2516,13 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 
 	tt := true
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdTrueWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdTrueWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
 						{
-							Type:          "EXTERNAL",
+							Type:          ProcessorTypeExternalized,
 							Name:          "cbd-proc",
 							ExecutionMode: ExecutionModeCommitBeforeDispatch,
 							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
@@ -2594,13 +2658,13 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *t
 
 	tt := true
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdTrueLWWWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdTrueLWWWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
 						{
-							Type:          "EXTERNAL",
+							Type:          ProcessorTypeExternalized,
 							Name:          "cbd-proc",
 							ExecutionMode: ExecutionModeCommitBeforeDispatch,
 							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
@@ -2706,12 +2770,12 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "cbd-audit", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdAuditWF", InitialState: "S1", Active: true,
+		Version: "1.1", Name: "CbdAuditWF", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t1", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "p1", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2851,12 +2915,12 @@ func TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "cbd-final-tx", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdFinalTxWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdFinalTxWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -2915,7 +2979,7 @@ func TestEngine_Execute_ReturnsInputTxOnNonSegmentingCascade(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "no-cbd-final-tx", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "NoCbdFinalTxWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "NoCbdFinalTxWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: false},
@@ -2999,13 +3063,13 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "cbd-then-fail", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdThenFailWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdThenFailWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
-						{Type: "EXTERNAL", Name: "sync-fail-proc", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "sync-fail-proc", ExecutionMode: ExecutionModeSync},
 					}},
 			}},
 			"S_post": {},
@@ -3053,4 +3117,119 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 	// Defensive: caller still rolls back the original entry TX. This is
 	// what the production handler does on a workflow error.
 	_ = txMgr.Rollback(txCtx, entryTxID)
+}
+
+// TestEngine_CascadeSkipsScheduled_RestsInState verifies that when a state has
+// ONLY a scheduled transition as its exit, the automated cascade silently skips
+// the scheduled transition and the entity rests in its source state. Until the
+// scheduled-task runtime ships (#251), scheduled transitions are invisible to
+// the cascade — they wait for their timer.
+func TestEngine_CascadeSkipsScheduled_RestsInState(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sched-rest", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "SchedRestWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "scheduledOnly", Next: "S2", Manual: false,
+					Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"S2": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("sched-rest-e1", modelRef, map[string]any{})
+
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected success=true")
+	}
+	if entity.Meta.State != "S1" {
+		t.Errorf("expected entity to rest in S1 (scheduled transitions are invisible to cascade); got %q", entity.Meta.State)
+	}
+}
+
+// TestEngine_CascadeSkipsScheduled_FiresRegularSibling verifies that when a
+// state has both a scheduled transition and a regular automated sibling, the
+// cascade silently skips the scheduled one and fires the regular sibling.
+func TestEngine_CascadeSkipsScheduled_FiresRegularSibling(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sched-sibling", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "SchedSiblingWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "scheduled", Next: "S2", Manual: false,
+					Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+				{Name: "regular", Next: "Sfinal", Manual: false},
+			}},
+			"S2":     {},
+			"Sfinal": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("sched-sibling-e1", modelRef, map[string]any{})
+
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected success=true")
+	}
+	if entity.Meta.State != "Sfinal" {
+		t.Errorf("expected entity to land in Sfinal via the regular sibling; got %q", entity.Meta.State)
+	}
+}
+
+// TestEngine_AttemptTransition_Scheduled_ReturnsTransitionNotFound verifies
+// that an explicit fire by name of a scheduled transition is rejected with an
+// error wrapping ErrTransitionNotFound. Mirrors the Disabled precedent: the
+// transition exists in config but is not currently dispatchable from the
+// caller's POV. classifyWorkflowError maps the sentinel to
+// 400 TRANSITION_NOT_FOUND, identical to the Disabled and missing-by-name
+// cases. The audit event reuses SMEventTransitionNotFound; the Details string
+// distinguishes the scheduled case.
+func TestEngine_AttemptTransition_Scheduled_ReturnsTransitionNotFound(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sched-explicit", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "SchedExplicitWF", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "Closed", Manual: false,
+					Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"Closed": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("sched-explicit-e1", modelRef, map[string]any{})
+	entity.Meta.State = "S1"
+
+	_, err := engine.ManualTransition(ctx, entity, "AutoClose")
+	if err == nil {
+		t.Fatal("expected error firing a scheduled transition by name")
+	}
+	if !errors.Is(err, ErrTransitionNotFound) {
+		t.Errorf("expected error to wrap ErrTransitionNotFound (mirrors Disabled precedent); got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "scheduled transitions are not yet implemented") {
+		t.Errorf("expected error message to name the unavailability; got: %v", err)
+	}
+	if entity.Meta.State != "S1" {
+		t.Errorf("expected entity to stay in source state S1; got %q", entity.Meta.State)
+	}
 }

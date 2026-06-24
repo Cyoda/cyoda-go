@@ -42,6 +42,7 @@ GET    /api/entity/stats
 GET    /api/entity/stats/states
 GET    /api/entity/stats/{entityName}/{modelVersion}
 GET    /api/entity/stats/states/{entityName}/{modelVersion}
+POST   /api/entity/stats/{entityName}/{modelVersion}/query
 GET    /api/platform-api/entity/fetch/transitions
 ```
 
@@ -195,7 +196,7 @@ The `payload` field in each update item must be a string containing the JSON-enc
 Correct: `"payload": "{\"category\":\"physics\"}"`
 Wrong:   `"payload": {"category":"physics"}`   (will be rejected with `errors.BAD_REQUEST`)
 
-Each item may also carry an optional `ifMatch` field (issue #228) — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item.
+Each item may also carry an optional `ifMatch` field — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item.
 
 Request body: JSON array of update items:
 
@@ -213,7 +214,7 @@ Request body: JSON array of update items:
 Failure handling within a chunk:
 
 - **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide infrastructure failures.
-- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-#228 contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
+- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-existing contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
 
 Each per-item `ENTITY_MODIFIED` is also reflected in the entity's state-machine audit log: the engine emits a paired `STATE_MACHINE_START` plus `TRANSITION_ABORTED` event (with `data.reason = "ENTITY_MODIFIED"`, `data.expectedTxId`, and `data.actualTxId`) so consumers can correlate the failure cleanly without orphaned start events.
 
@@ -367,6 +368,131 @@ Response: `200 OK`, `application/json`, single `ModelStatsDto`.
 
 Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`.
 
+**POST /api/entity/stats/{entityName}/{modelVersion}/query** — Grouped statistics with optional aggregations
+
+Returns aggregate counts (and optional `sum`/`avg`/`min`/`max`/`stdev`) grouped by entity data fields and/or lifecycle state. Restricts the population by an optional `Condition` DSL predicate (same shape as `/search/*` — see the `search` topic). Supports `pointInTime` historical snapshots.
+
+- `entityName` (path): string
+- `modelVersion` (path): int32
+
+Request body: `application/json`. Body size limit: 10 MiB (shared with `/search/*`).
+
+```json
+{
+  "groupBy":      ["$.variantId", "state"],
+  "condition":    { "type": "lifecycle", "field": "state", "operatorType": "NOT_EQUAL", "value": "shipped" },
+  "aggregations": [
+    { "op": "sum",   "field": "$.costPrice", "as": "totalCost" },
+    { "op": "avg",   "field": "$.costPrice" },
+    { "op": "stdev", "field": "$.costPrice" }
+  ],
+  "pointInTime":  "2026-06-14T12:00:00Z",
+  "limit":        100
+}
+```
+
+Request fields:
+
+- `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath. Order in the request determines order in the response's `groupKey` array. Duplicate entries (after normalization) → 400 `DUPLICATE_GROUP_BY`. Array projections (`[*]`, `[0]`) → 400 `INVALID_GROUP_BY_PATH`.
+- `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`, ArrayCondition, FunctionCondition). Omitted → match-all. See the `search` topic for the full DSL.
+- `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` with the leading `$.` stripped from the field (for example, `field: "$.costPrice"` → alias `sum_costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
+- `pointInTime` (optional RFC 3339): historical snapshot; default = now.
+- `limit` (optional positive int): top-N. Must be `≤ CYODA_STATS_GROUP_MAX` (default 10000); `> CYODA_STATS_GROUP_MAX` → 400 `INVALID_LIMIT`. Default = unlimited (up to the cardinality ceiling).
+
+Response: `200 OK`, `application/json`, array of `GroupedStatsBucket`:
+
+```json
+[
+  {
+    "groupKey": [
+      { "path": "$.variantId", "value": "1111" },
+      { "path": "state",       "value": "available" }
+    ],
+    "count": 812,
+    "aggregations": { "totalCost": 41200.00, "avg_costPrice": 50.74, "stdev_costPrice": 18.42 }
+  },
+  {
+    "groupKey": [
+      { "path": "$.variantId", "value": null },
+      { "path": "state",       "value": "available" }
+    ],
+    "count": 3,
+    "aggregations": { "totalCost": null, "avg_costPrice": null, "stdev_costPrice": null }
+  }
+]
+```
+
+Each bucket's `aggregations` map is keyed by either the explicit `as` alias or the synthesized `<op>_<field>` label. The `aggregations` map is omitted entirely when the request supplied no aggregations.
+
+Sort order is backend-independent: primary key is `count` descending; tiebreaker is `groupKey` lex order (element-wise; `null` sorts before any string; strings compared bytes-wise).
+
+**JSONPath restrictions.** Every JSONPath in `groupBy` and aggregation `field` is scalar-only. Bracket-quoted property access (`$['my.field']`) is accepted. Array projections (`$.items[*]`, `$.items[0]`) are rejected at validation time with 400 `INVALID_GROUP_BY_PATH` (for `groupBy`) or 400 `INVALID_AGGREGATION_FIELD` (for aggregations). The reserved token `"state"` is accepted in `groupBy` only; it has no leading `$.` and refers to lifecycle state.
+
+**Aggregation operators.** Five operators: `sum`, `avg`, `min`, `max`, `stdev`. `stdev` is the sample standard deviation (divisor `n − 1`); when `n < 2`, the value is `null` on both the pushdown and streaming paths. `sum`, `avg`, and `stdev` treat non-numeric and absent field values as NULL (the value is skipped, not zero). `min` and `max` are lexicographic over text values and numeric over numeric values; the comparison ordering matches the underlying backend's collation for the pushed-down path.
+
+**Numeric coercion on postgres.** The postgres backend wraps every numeric aggregation argument in the `cyoda_try_float8(text)` SQL function (shipped as a built-in migration). The behavior is exhaustive:
+
+- Empty string → NULL.
+- Strict-numeric string matching `-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?` and within `float8` range → parsed `float8`.
+- Strict-numeric string that overflows `float8` (for example `1e500`) → NULL (the value would be `Infinity`; stripped by an outer `NULLIF`).
+- `NaN`, `Infinity`, `-Infinity`, `inf` → NULL (not strict-numeric per the regex above).
+- Any other non-numeric string (`"n/a"`, `"unknown"`, etc.) → NULL.
+
+The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes). NULL values are skipped by `SUM`/`AVG`/`STDDEV_SAMP` per standard SQL semantics. A single dirty value does not abort the query.
+
+**Non-scalar runtime values.** When a `groupBy` JSONPath resolves to a JSON object or array at runtime, the bucket key for that dimension is `null`. Numbers and booleans group by their canonical text representation (for example the integer `42` and the string `"42"` both bucket under `"42"`).
+
+**In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via the SPI `Iterable` interface. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
+
+- **memory** — `Iterate` captures a snapshot under the read lock, overlays `tx.Buffer` (buffered saves), and masks `tx.Deletes` (buffered deletes). The iteration runs lock-free. RYW-correct.
+- **sqlite** — the iterator dispatches by `(in-tx, point-in-time)`. Non-tx, non-PIT queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved). Non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx, non-PIT materializes via the same `getAllTx` overlay that `GetAll` uses inside a tx (entity_versions snapshot at `tx.SnapshotTime`, plus `tx.Buffer` overlay, minus `tx.Deletes`), then iterates the slice; RYW-correct, with buffered writes visible and buffered deletes hidden. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
+- **postgres** — `Iterate` selects from the bi-temporal `entity_versions` table with `valid_time <= tx.SnapshotTime AND transaction_time <= CURRENT_TIMESTAMP`, and adds `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE` to skip deletion-marker versions. The `GroupedAggregate` pushdown is skipped in-tx.
+
+**Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
+
+**Backend capability.** The endpoint requires the storage backend to implement at least one of the optional SPI interfaces `Iterable` or `GroupedAggregator`. The three plugins shipped in this repository (`memory`, `sqlite`, `postgres`) implement both. Backends that implement neither return 501 `NOT_IMPLEMENTED_BY_BACKEND`.
+
+**Index guidance — postgres.**
+
+- **State grouping/filtering on the non-tx pushdown path is index-backed out of the box.** The shipped migration creates `entities_state_idx` on `(tenant_id, model_name, model_version, (doc->'_meta'->>'state')) WHERE NOT deleted`. Queries grouping by or filtering on `state` use this index without operator action.
+- **In-tx and `pointInTime` paths are not covered.** Those read from `entity_versions`, not `entities`. The state index does not apply. Add expression indexes on `entity_versions` if perf demands.
+- **Hot data-field dimensions** (the dimensions that appear most often in `groupBy` and `condition`) are caller responsibility on the non-tx path. Example for `variantId`:
+
+  ```sql
+  CREATE INDEX entities_variantid_idx
+  ON entities (tenant_id, model_name, model_version, (doc->>'variantId'))
+  WHERE NOT deleted;
+  ```
+
+**Index guidance — sqlite.** The shipped schema indexes `(tenant_id, model_name, model_version)` covering the WHERE-clause prefix. For hot grouping dimensions, add expression indexes on the JSON path:
+
+```sql
+CREATE INDEX entities_variantid_idx
+ON entities (json_extract(data, '$.variantId'));
+```
+
+**Memory backend cost.** The snapshot walk is `O(tenant entities)`, not `O(model entities)` — the underlying map is keyed `tenantID → entityID → versions` and is not partitioned by model. A tenant with many models pays a constant per-request walk cost proportional to all their entities, even when querying one model. Relevant for operators running memory-backed deployments with many models per tenant.
+
+Error codes (response carries RFC 9457 problem+json with `properties.errorCode` set to the machine-readable code below):
+
+- `MALFORMED_REQUEST` — `400` — JSON parse failed
+- `UNKNOWN_MODEL` — `400` — path does not resolve for the calling tenant
+- `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
+- `INVALID_GROUP_BY_PATH` — `400` — empty entry, or array projection in a `groupBy` JSONPath
+- `DUPLICATE_GROUP_BY` — `400` — duplicate entries after normalization
+- `INVALID_AGGREGATION_OP` — `400` — `op` outside the set {`sum`, `avg`, `min`, `max`, `stdev`}
+- `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` empty or contains array projection
+- `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
+- `INVALID_OPERATOR` — `400` — `condition` operator outside the canonical list (propagated from search validator)
+- `INVALID_CONDITION` — `400` — `condition` malformed or unknown `type` (propagated from search validator)
+- `INVALID_FIELD_PATH` — `400` — `condition` JSONPath absent from the locked schema (propagated from search validator)
+- `CONDITION_TYPE_MISMATCH` — `400` — `condition` value type incompatible with the locked DataType (propagated from search validator)
+- `INVALID_POINT_IN_TIME` — `400` — `pointInTime` not parseable as RFC 3339
+- `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`
+- `GROUP_CARDINALITY_EXCEEDED` — `422` — result buckets would exceed `CYODA_STATS_GROUP_MAX`
+- `NOT_IMPLEMENTED_BY_BACKEND` — `501` — backend implements neither `Iterable` nor `GroupedAggregator`
+- Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
+
 ## ENTITY ENVELOPE
 
 All entity read operations return entities in the standard envelope:
@@ -395,7 +521,7 @@ All entity read operations return entities in the standard envelope:
 - `meta.creationDate` — RFC 3339 with nanoseconds
 - `meta.lastUpdateTime` — RFC 3339 with nanoseconds
 - `meta.transactionId` — present when a transaction ID exists
-- `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug (#94):** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
+- `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
 
 ## OPTIMISTIC CONCURRENCY
 
@@ -417,9 +543,10 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
+- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
+- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `400` for validation failures (`MALFORMED_REQUEST`, `UNKNOWN_MODEL`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
 ## EXAMPLES
 
@@ -520,6 +647,37 @@ curl -s -X POST \
 ```
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/stats/states/nobel-prize/1"
+```
+
+**Grouped statistics — count by state and country, with sum/avg aggregations, top 5000:**
+
+```
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "groupBy": ["state", "$.country"],
+    "condition": {"type":"simple","jsonPath":"$.year","operatorType":"GREATER_OR_EQUAL","value":2000},
+    "aggregations": [
+      {"op":"sum","field":"$.amount","as":"totalAmount"},
+      {"op":"avg","field":"$.amount"}
+    ],
+    "limit": 5000
+  }' \
+  "http://localhost:8080/api/entity/stats/nobel-prize/1/query"
+```
+
+**Grouped statistics — count-only (no aggregations), at a historical point in time:**
+
+```
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "groupBy": ["$.variantId"],
+    "pointInTime": "2026-01-01T00:00:00Z"
+  }' \
+  "http://localhost:8080/api/entity/stats/nobel-prize/1/query"
 ```
 
 ## SEE ALSO

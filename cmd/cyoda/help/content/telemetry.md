@@ -26,17 +26,32 @@ cyoda
 
 ## DESCRIPTION
 
-cyoda-go integrates the OpenTelemetry Go SDK (`go.opentelemetry.io/otel`). When `CYODA_OTEL_ENABLED=true`, the binary initializes a trace provider and a meter provider at startup using OTLP HTTP exporters. When `CYODA_OTEL_ENABLED=false` (default), no OTel SDK is initialized and no spans or metrics are emitted; the global OTel provider remains a no-op.
+cyoda-go integrates the OpenTelemetry Go SDK (`go.opentelemetry.io/otel`). The
+**metric scrape pipeline is always on**: at startup the binary creates a meter
+provider with an OpenTelemetry → Prometheus exporter and serves it at
+`:9091/metrics`, regardless of `CYODA_OTEL_ENABLED`. No collector is required to
+scrape metrics.
+
+`CYODA_OTEL_ENABLED` (default `false`) additionally enables **OTLP push** — the
+OTLP metric and trace exporters and the tracer provider — for environments with
+an OTel collector. When it is `false`, tracing is off and nothing is pushed, but
+application metrics are still exposed at `/metrics`.
+
+Which application metrics appear:
+- **OIDC subsystem metrics** (`oidc_*`) — always exposed when IAM runs in `jwt`
+  mode (the OIDC subsystem is active).
+- **Transaction and dispatch metrics** (`cyoda_tx_*`, `cyoda_dispatch_*`) —
+  exposed when `CYODA_OTEL_ENABLED=true` (their instrumentation decorators are
+  enabled with full observability).
+- Go runtime and process metrics are always present.
 
 The instrumentation name is `github.com/cyoda-platform/cyoda-go`.
-
-The admin port (`:9091`) always emits Prometheus-format metrics at `/metrics` regardless of `CYODA_OTEL_ENABLED`. OTel metrics and Prometheus metrics are separate emission paths.
 
 ## ENV VARS
 
 **cyoda-specific:**
 
-- `CYODA_OTEL_ENABLED` — `true` to initialize the OTel SDK; `false` (default) to use no-op providers. All standard `OTEL_*` env vars are only read when this is `true`.
+- `CYODA_OTEL_ENABLED` — `true` to enable OTLP push (the OTLP metric and trace exporters) and the otelhttp/gRPC tracing middleware; `false` (default) leaves tracing off and OTLP disabled, but the Prometheus scrape pipeline and `/metrics` remain active. All standard `OTEL_*` env vars are only read when this is `true`.
 - `CYODA_METRICS_BEARER` — static Bearer token required on `GET :9091/metrics`. When empty (default), `/metrics` is unauthenticated. Supports `_FILE` suffix: `CYODA_METRICS_BEARER_FILE=<path>` takes precedence over the plain var.
 - `CYODA_METRICS_REQUIRE_AUTH` — `true` to refuse startup when `CYODA_METRICS_BEARER` is unset. Default `false`. The Helm chart sets this to `true` for shared-cluster deployments.
 
@@ -65,13 +80,15 @@ Traces are exported via `otlptracehttp`. Spans are created by:
 
 **Metrics**
 
-Metrics are exported via `otlpmetrichttp` with a periodic reader. The following instruments are registered:
+Metrics are exported via `otlpmetrichttp` with a periodic reader. The following instruments are registered when `CYODA_OTEL_ENABLED=true` (their instrumentation decorators are active only when OTLP push is enabled):
 
 - `cyoda.tx.duration` — `Float64Histogram`, unit `s` — transaction operation duration; labeled by `op` (`begin`, `commit`, `rollback`)
 - `cyoda.tx.active` — `Int64UpDownCounter` — count of active (begun but not committed/rolled-back) transactions
 - `cyoda.tx.conflicts` — `Int64Counter` — count of transaction serialization conflicts (commit returning `spi.ErrConflict`)
 - `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — processor/criteria dispatch duration; labeled by `type` (`processor`, `criteria`)
 - `cyoda.dispatch.count` — `Int64Counter` — total processor/criteria dispatch calls; labeled by `type` (`processor`, `criteria`)
+
+OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
 
 **Logs**
 
@@ -127,9 +144,13 @@ cyoda-go uses **W3C Trace Context** (`traceparent`, `tracestate`) and **W3C Bagg
 
 Serves Prometheus-format metrics (text exposition format). The handler is `promhttp.Handler()` from `github.com/prometheus/client_golang`. Port is `CYODA_ADMIN_PORT` (default `9091`); bind address is `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1`).
 
-This endpoint uses Prometheus client registry — it is separate from the OTel metric exporter. OTel metrics are pushed to the OTLP endpoint; Prometheus metrics are pulled from `:9091/metrics`.
-
-The default metrics exposed are those registered by the `prometheus/client_golang` default registerer, which includes Go runtime metrics (GC, goroutine count, memory) and process metrics (CPU, open FDs). cyoda-go does not currently register additional custom Prometheus metrics beyond what the default registerer provides.
+The handler is backed by a dedicated `prometheus.Registry` that collects from the
+OTel SDK meter provider (via the OpenTelemetry → Prometheus bridge), so
+application metrics registered through the OTel API appear here automatically.
+Go runtime metrics (GC, goroutine count, memory) and process metrics (CPU, open
+FDs) are always present. OIDC subsystem metrics (`oidc_*`) appear whenever IAM
+runs in `jwt` mode. Transaction and dispatch metrics (`cyoda_tx_*`,
+`cyoda_dispatch_*`) appear when `CYODA_OTEL_ENABLED=true`.
 
 ## AUTHENTICATION
 
@@ -202,7 +223,7 @@ docker run --rm \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \
   -e OTEL_SERVICE_NAME=cyoda \
-  ghcr.io/cyoda-platform/cyoda:latest
+  ghcr.io/cyoda/cyoda:latest
 ```
 
 **Scrape Prometheus metrics from the admin port:**

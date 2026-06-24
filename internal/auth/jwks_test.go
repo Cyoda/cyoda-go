@@ -49,12 +49,14 @@ func TestJWKS_OneActiveKey(t *testing.T) {
 
 	kp := &KeyPair{
 		KID:        "key-1",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &privKey.PublicKey,
 		PrivateKey: privKey,
 		Active:     true,
-		CreatedAt:  time.Now(),
+		ValidFrom:  time.Now(),
 	}
-	if err := store.Save(kp); err != nil {
+	if err := store.Save(kp, RotateOptions{}); err != nil {
 		t.Fatalf("failed to save key pair: %v", err)
 	}
 
@@ -114,16 +116,18 @@ func TestJWKS_InvalidatedKeyNotIncluded(t *testing.T) {
 
 	kp := &KeyPair{
 		KID:        "key-inactive",
+		Audience:   "client",
+		Algorithm:  "RS256",
 		PublicKey:  &privKey.PublicKey,
 		PrivateKey: privKey,
 		Active:     true,
-		CreatedAt:  time.Now(),
+		ValidFrom:  time.Now(),
 	}
-	if err := store.Save(kp); err != nil {
+	if err := store.Save(kp, RotateOptions{}); err != nil {
 		t.Fatalf("failed to save key pair: %v", err)
 	}
 
-	if err := store.Invalidate("key-inactive"); err != nil {
+	if err := store.Invalidate("key-inactive", 0); err != nil {
 		t.Fatalf("failed to invalidate key: %v", err)
 	}
 
@@ -146,32 +150,46 @@ func TestJWKS_InvalidatedKeyNotIncluded(t *testing.T) {
 	}
 }
 
-func TestJWKS_MultipleKeys_OnlyActiveIncluded(t *testing.T) {
+// TestJWKS_GracePeriodKeyIncluded verifies that a grace-period key
+// (Active=false but ValidTo in the future) IS published in JWKS per spec §3.2 #1,
+// so that external verifiers can validate tokens signed before rotation.
+// Only keys whose ValidTo is in the past are excluded.
+func TestJWKS_GracePeriodKeyIncluded(t *testing.T) {
 	store := NewInMemoryKeyStore()
 	handler := NewJWKSHandler(store)
 
+	futureValidTo := time.Now().Add(30 * time.Second)
+	pastValidTo := time.Now().Add(-1 * time.Second)
+
 	for _, tc := range []struct {
-		kid    string
-		active bool
+		kid     string
+		active  bool
+		validTo *time.Time
+		wantIn  bool
 	}{
-		{"active-1", true},
-		{"active-2", true},
-		{"inactive-1", false},
+		// Active key with no expiry — always published.
+		{"active-1", true, nil, true},
+		// Grace-period key (Active=false) with future ValidTo — published per spec §3.2 #1.
+		{"grace-1", false, &futureValidTo, true},
+		// Expired key (past ValidTo) — excluded by ListForVerification.
+		{"expired-1", false, &pastValidTo, false},
 	} {
 		privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			t.Fatalf("failed to generate RSA key: %v", err)
+			t.Fatalf("generate RSA key: %v", err)
 		}
-
 		kp := &KeyPair{
 			KID:        tc.kid,
+			Audience:   "client",
+			Algorithm:  "RS256",
 			PublicKey:  &privKey.PublicKey,
 			PrivateKey: privKey,
 			Active:     tc.active,
-			CreatedAt:  time.Now(),
+			ValidFrom:  time.Now(),
+			ValidTo:    tc.validTo,
 		}
-		if err := store.Save(kp); err != nil {
-			t.Fatalf("failed to save key pair %s: %v", tc.kid, err)
+		if err := store.Save(kp, RotateOptions{}); err != nil {
+			t.Fatalf("save key pair %s: %v", tc.kid, err)
 		}
 	}
 
@@ -186,11 +204,7 @@ func TestJWKS_MultipleKeys_OnlyActiveIncluded(t *testing.T) {
 
 	var resp jwksResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if len(resp.Keys) != 2 {
-		t.Fatalf("expected 2 active keys, got %d", len(resp.Keys))
+		t.Fatalf("decode response: %v", err)
 	}
 
 	kids := make(map[string]bool)
@@ -199,12 +213,12 @@ func TestJWKS_MultipleKeys_OnlyActiveIncluded(t *testing.T) {
 	}
 
 	if !kids["active-1"] {
-		t.Error("expected active-1 in JWKS response")
+		t.Error("expected active-1 in JWKS (active, no expiry)")
 	}
-	if !kids["active-2"] {
-		t.Error("expected active-2 in JWKS response")
+	if !kids["grace-1"] {
+		t.Error("expected grace-1 in JWKS (grace-period key, ValidTo in future)")
 	}
-	if kids["inactive-1"] {
-		t.Error("inactive-1 should not be in JWKS response")
+	if kids["expired-1"] {
+		t.Error("expired-1 must not be in JWKS (ValidTo in past)")
 	}
 }

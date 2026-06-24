@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // Clock abstracts time.Now so tests can drive expiry deterministically.
@@ -107,7 +108,7 @@ func (c *CachingModelStore) EntryExpiresAt(ref spi.ModelRef) time.Time {
 // ---- spi.ModelStore pass-throughs with caching --------------------------
 
 func (c *CachingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: tenantOf(ctx), ref: ref}
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
 	if d := c.lookup(key); d != nil {
 		return d, nil
 	}
@@ -126,7 +127,7 @@ func (c *CachingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.Mod
 // singleflight, then reads from the inner store and repopulates the
 // cache. Used by the validator refresh-on-stale path.
 func (c *CachingModelStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: tenantOf(ctx), ref: ref}
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
 	c.evict(key)
 
 	v, err, _ := c.flight.Do(flightKey(key), func() (any, error) {
@@ -235,7 +236,7 @@ func (c *CachingModelStore) evict(key cacheKey) {
 }
 
 func (c *CachingModelStore) invalidate(ctx context.Context, ref spi.ModelRef) {
-	key := cacheKey{tenant: tenantOf(ctx), ref: ref}
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
 	c.evict(key)
 	c.notifyLocalSubscribers(key.tenant, ref)
 	if c.broadcaster != nil {
@@ -290,15 +291,6 @@ func (c *CachingModelStore) jitteredLeaseLocked() time.Duration {
 
 func flightKey(key cacheKey) string {
 	return key.tenant + "|" + key.ref.EntityName + "|" + key.ref.ModelVersion
-}
-
-// tenantOf best-effort extracts tenant from ctx; empty string on absence.
-func tenantOf(ctx context.Context) string {
-	uc := spi.GetUserContext(ctx)
-	if uc == nil {
-		return ""
-	}
-	return string(uc.Tenant.ID)
 }
 
 // Compile-time interface check.

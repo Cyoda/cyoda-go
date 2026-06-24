@@ -115,11 +115,11 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
-		return fmt.Errorf("Commit: transaction %s not found", txID)
+		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
-		return fmt.Errorf("Commit: tx state for %s not found", txID)
+		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if err := verifyTenant(ctx, state.tenantID, "Commit", txID); err != nil {
 		return err
@@ -212,12 +212,12 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
-		return fmt.Errorf("Rollback: transaction %s not found", txID)
+		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 
 	tenantID, ok := tm.lookupTenant(txID)
 	if !ok {
-		return fmt.Errorf("Rollback: transaction %s not found", txID)
+		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if err := verifyTenant(ctx, tenantID, "Rollback", txID); err != nil {
 		return err
@@ -241,12 +241,12 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
 	_, ok := tm.registry.Lookup(txID)
 	if !ok {
-		return nil, fmt.Errorf("Join: transaction %s not found", txID)
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 
 	tenantID, ok := tm.lookupTenant(txID)
 	if !ok {
-		return nil, fmt.Errorf("Join: transaction %s not found", txID)
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if err := verifyTenant(ctx, tenantID, "Join", txID); err != nil {
 		return nil, err
@@ -315,11 +315,11 @@ func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
 func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
-		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
-		return "", fmt.Errorf("Savepoint: tx state for %s not found", txID)
+		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if err := verifyTenant(ctx, state.tenantID, "Savepoint", txID); err != nil {
 		return "", err
@@ -341,14 +341,23 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
-		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
-		return fmt.Errorf("RollbackToSavepoint: tx state for %s not found", txID)
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if err := verifyTenant(ctx, state.tenantID, "RollbackToSavepoint", txID); err != nil {
 		return err
+	}
+	// Validate the savepoint exists in the in-memory snapshot stack BEFORE
+	// issuing the SQL command. PostgreSQL would surface a missing savepoint as
+	// SQLSTATE 3B001, which is opaque to errors.Is(err, spi.ErrSavepointNotFound).
+	// Checking first guarantees the SPI sentinel is wrapped consistently
+	// regardless of whether the txState snapshot stack and the DB savepoint
+	// stack ever diverge (they shouldn't, but the contract is the sentinel).
+	if !state.HasSavepoint(savepointID) {
+		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
@@ -367,14 +376,19 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
-		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	state, ok := tm.lookupTxState(txID)
 	if !ok {
-		return fmt.Errorf("ReleaseSavepoint: tx state for %s not found", txID)
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 	if err := verifyTenant(ctx, state.tenantID, "ReleaseSavepoint", txID); err != nil {
 		return err
+	}
+	// Validate the savepoint exists before issuing the SQL command — see
+	// RollbackToSavepoint for rationale.
+	if !state.HasSavepoint(savepointID) {
+		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
@@ -411,7 +425,7 @@ func (tm *TransactionManager) lookupTenant(txID string) (spi.TenantID, bool) {
 func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID string) error {
 	uc := spi.GetUserContext(ctx)
 	if uc == nil || uc.Tenant.ID != txTenantID {
-		return fmt.Errorf("%s: tenant mismatch on transaction %s", op, txID)
+		return fmt.Errorf("%s: %w (txID=%s)", op, spi.ErrTxTenantMismatch, txID)
 	}
 	return nil
 }

@@ -1,16 +1,47 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
 	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
+
+// dispatchHelpAction buffers an action handler's output, then either
+// writes the complete body with Content-Length OR converts a non-zero
+// rc into a 500. Extracted from RegisterHelpRoutes so failure paths
+// can be unit-tested without registering a real failing action.
+func dispatchHelpAction(w http.ResponseWriter, r *http.Request, topic, actionName string, entry help.ActionEntry) {
+	var buf bytes.Buffer
+	if rc := entry.Handler(&buf); rc != 0 {
+		slog.Error("help: action handler reported failure",
+			"pkg", "api",
+			"topic", topic,
+			"action", actionName,
+			"exitCode", rc)
+		common.WriteError(w, r, common.Internal(
+			"help action handler failed", nil))
+		return
+	}
+	w.Header().Set("Content-Type", entry.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		// Client disconnect after success — informational, not an
+		// error from our side.
+		slog.Debug("help: client disconnected during action write",
+			"pkg", "api",
+			"topic", topic,
+			"action", actionName,
+			"error", err)
+	}
+}
 
 // topicPathPattern accepts both . and / as topic-path separators.
 // Must start and end with alphanumeric; internal characters allow
@@ -90,6 +121,18 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 			}
 		}
 		node := tree.Find(segs)
+		if node == nil && len(segs) >= 2 {
+			// Try treating the last segment as an action on the parent topic.
+			parentSegs := segs[:len(segs)-1]
+			actionName := segs[len(segs)-1]
+			parent := tree.Find(parentSegs)
+			if parent != nil {
+				if entry, ok := help.LookupAction(parent.DottedPath(), actionName); ok {
+					dispatchHelpAction(w, r, parent.DottedPath(), actionName, entry)
+					return
+				}
+			}
+		}
 		if node == nil {
 			common.WriteError(w, r, common.Operational(
 				http.StatusNotFound,

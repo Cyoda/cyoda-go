@@ -17,7 +17,7 @@ func TestEntityLifecycle_Update(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
@@ -56,7 +56,7 @@ func TestEntityLifecycle_UpdateWithTransition(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc2-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc2-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
@@ -93,7 +93,7 @@ func TestEntityLifecycle_AvailableTransitions(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc3-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc3-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [
@@ -157,7 +157,7 @@ func TestEntityLifecycle_InvalidTransition(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc5-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc5-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
@@ -187,7 +187,7 @@ func TestEntityLifecycle_DisabledTransition(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc6-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc6-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [
@@ -224,7 +224,7 @@ func TestEntityLifecycle_VersionHistory(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc7-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc7-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
@@ -268,7 +268,7 @@ func TestEntityLifecycle_TemporalAsAt(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc8-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc8-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -316,7 +316,7 @@ func TestEntityLifecycle_TemporalByTransactionID(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc8b-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc8b-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -381,7 +381,7 @@ func TestEntityLifecycle_BatchCreate(t *testing.T) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc9-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc9-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -423,7 +423,7 @@ func TestEntityLifecycle_Statistics(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "lc10-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "lc10-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
@@ -519,7 +519,7 @@ func TestEntityLifecycle_PreservesLargeIntPrecision(t *testing.T) {
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "precision-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "precision-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}
@@ -566,7 +566,7 @@ func TestEntityLifecycle_CollectionCreate50(t *testing.T) {
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1", "name": "col50-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "col50-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {}

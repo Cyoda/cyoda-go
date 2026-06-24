@@ -1,10 +1,12 @@
 package memory_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -66,7 +68,7 @@ func TestGetSubmitTime_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent transaction")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("expected 'not found' error, got: %v", err)
+	if !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("expected ErrTxNotFound, got: %v", err)
 	}
 }

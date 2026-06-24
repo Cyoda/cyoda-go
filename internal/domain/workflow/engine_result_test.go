@@ -27,7 +27,7 @@ func TestEngineResult_Segmented_FalseOnNonSegmentingCascade(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "no-cbd-segmented", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "NoCbdSegmentedWF", InitialState: "INITIAL", Active: true,
+		Version: "1.1", Name: "NoCbdSegmentedWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: true},
@@ -94,12 +94,12 @@ func TestEngineResult_Segmented_TrueOnCBDCascade(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "cbd-segmented", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "CbdSegmentedWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "CbdSegmentedWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},

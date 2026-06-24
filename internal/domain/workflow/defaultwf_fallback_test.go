@@ -19,7 +19,7 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 
 	importedWF := []spi.WorkflowDefinition{
 		{
-			Version:      "1",
+			Version:      "1.1",
 			Name:         "obo-workflow",
 			InitialState: "INIT",
 			Active:       true,

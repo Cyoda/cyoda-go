@@ -574,7 +574,7 @@ paths:
         and available for authentication.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: listTechnicalUsers
       responses:
         "200":
@@ -588,23 +588,21 @@ paths:
         "401":
           description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -626,13 +624,13 @@ paths:
         granting it full access to all ADMIN-level endpoints (e.g., trusted key
         registration).
 
-        This requires the `cyoda.security.web.jwt.m2m.admin-role-enabled`
-        feature flag to be enabled;
+        This requires the `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env
+        flag to be set to `true`;
 
-        otherwise, a 401 Unauthorized response is returned.
+        otherwise, a `404` response with error code `FEATURE_DISABLED` is returned.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: createTechnicalUser
       parameters:
         - name: withAdminRole
@@ -642,7 +640,7 @@ paths:
             "
           required: false
           schema:
-            type: string
+            type: boolean
       responses:
         "200":
           description: M2M client created successfully
@@ -653,23 +651,28 @@ paths:
         "401":
           description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Feature is disabled — M2M admin-role grants are not enabled
+            via `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -688,7 +691,7 @@ paths:
         new credentials.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: deleteTechnicalUser
       parameters:
         - name: clientId
@@ -710,35 +713,33 @@ paths:
         "400":
           description: Bad Request - The request was invalid or malformed
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: M2M client not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -757,7 +758,7 @@ paths:
         new credentials.
 
 
-        **Authorization Required:** SUPER_USER role
+        **Authorization Required:** ROLE_ADMIN role
       operationId: resetTechnicalUserSecret
       parameters:
         - name: clientId
@@ -779,35 +780,33 @@ paths:
         "400":
           description: Bad Request - The request was invalid or malformed
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: M2M client not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /entity/stats:
@@ -1105,6 +1104,139 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/InternalServerError'
+  /entity/stats/{entityName}/{modelVersion}/query:
+    post:
+      tags:
+        - Entity Management
+      summary: Query grouped entity statistics for a specific model
+      description: >-
+        Returns statistics for entities of a specific model name and version,
+        grouped by one or more fields (workflow state or JSONPath expressions
+        over the entity payload). Optionally restricts the population by an
+        existing Condition DSL predicate and computes per-group aggregations
+        (sum, avg, min, max, stdev) over a JSONPath field.
+
+
+        Group cardinality is bounded server-side by `CYODA_STATS_GROUP_MAX`
+        (default 10000); requests exceeding the bound fail with 422
+        `GROUP_CARDINALITY_EXCEEDED`. Backends that do not implement the
+        grouped-stats SPI capability return 501 `NOT_IMPLEMENTED_BY_BACKEND`.
+
+
+        Error responses use RFC 9457 problem+json with the cyoda-go
+        `properties.errorCode` extension carrying the stable machine-readable
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `UNKNOWN_MODEL`,
+        `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
+      operationId: queryGroupedEntityStatisticsForModel
+      parameters:
+        - name: entityName
+          in: path
+          description: Name of the entity model
+          required: true
+          schema:
+            type: string
+            maxLength: 1024
+            minLength: 1
+        - name: modelVersion
+          in: path
+          description: Version number of the entity model
+          required: true
+          schema:
+            type: integer
+            format: int32
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupedStatsRequest"
+            example:
+              groupBy:
+                - state
+                - $.country
+              condition:
+                type: simple
+                jsonPath: $.year
+                operatorType: GREATER_OR_EQUAL
+                value: 2000
+              aggregations:
+                - op: sum
+                  field: $.amount
+                  as: totalAmount
+                - op: avg
+                  field: $.amount
+              pointInTime: 2035-01-01T12:00:00Z
+              limit: 5000
+      responses:
+        "200":
+          description: Grouped statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GroupedStatsBucket"
+              example:
+                - groupKey:
+                    - path: state
+                      value: AWARDED
+                    - path: $.country
+                      value: SE
+                  count: 31
+                  aggregations:
+                    totalAmount: 12500000
+                    avg_amount: 403225.806
+                - groupKey:
+                    - path: state
+                      value: AWARDED
+                    - path: $.country
+                      value: null
+                  count: 4
+                  aggregations:
+                    totalAmount: null
+                    avg_amount: null
+        "400":
+          description: >-
+            Bad request — malformed JSON body, validation failure (empty
+            `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
+            JSONPath, etc.), invalid Condition DSL predicate, or unknown
+            model for the calling tenant.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "413":
+          description: Request body exceeds the 10 MiB maximum
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: >-
+            Group cardinality exceeds the configured `CYODA_STATS_GROUP_MAX`.
+            Retry with a more selective `condition` or fewer `groupBy`
+            dimensions.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "501":
+          description: >-
+            The configured storage backend does not implement the
+            grouped-stats SPI capability.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        default:
+          $ref: '#/components/responses/InternalServerError'
+      security:
+        - bearerAuth: []
   /entity/{entityId}:
     get:
       tags:
@@ -1920,7 +2052,7 @@ paths:
                       entity has been modified since, the item surfaces
                       in the per-chunk `failed` array with
                       `code=ENTITY_MODIFIED`; the chunk still commits
-                      its remaining successful items. Issue #228.
+                      its remaining successful items.
                 required:
                   - id
                   - payload
@@ -4048,7 +4180,7 @@ paths:
         Generates and stores a new asymmetric key-pair (public/private) for
         signing and validating OAuth 2.0 JWT
 
-        access tokens.
+        access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
       operationId: issueJwtKeyPair
       requestBody:
         content:
@@ -4066,29 +4198,27 @@ paths:
         "400":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -4119,35 +4249,33 @@ paths:
         "400":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -4175,29 +4303,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -4211,7 +4337,7 @@ paths:
         After invalidation, the key will no longer be used for signing new
         tokens,
 
-        and existing tokens signed with this key pair would not be accepted.
+        and existing tokens signed with this key pair would not be accepted. If `gracePeriodSec` is omitted or zero, invalidation is immediate.
       operationId: invalidateJwtKeyPair
       parameters:
         - name: keyId
@@ -4232,29 +4358,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -4277,6 +4401,12 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactivateKeyRequestDto"
+        required: true
       responses:
         "200":
           description: JWT key-pair reactivated successfully or already active
@@ -4284,32 +4414,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
+        "400":
+          description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -4319,7 +4453,7 @@ paths:
       summary: List registered trusted keys
       description: |
         Returns all trusted public keys registered for the caller's tenant.
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
       operationId: listTrustedKeys
       responses:
         "200":
@@ -4333,29 +4467,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Feature is disabled
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -4394,9 +4526,9 @@ paths:
         during which the old keys continue to be accepted.
 
 
-        Requires ADMIN or SUPER_USER role. Disabled by default — enable via
+        Requires ADMIN or ROLE_ADMIN role. Disabled by default — enable via
 
-        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`.
+        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
       operationId: registerTrustedKey
       requestBody:
         content:
@@ -4414,41 +4546,39 @@ paths:
         "400":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Feature is disabled
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "409":
           description: Key with this keyId belongs to a different tenant
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -4460,7 +4590,7 @@ paths:
         Deletes a registered trusted public key. The key must belong to the
         caller's tenant.
 
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
       operationId: deleteTrustedKey
       parameters:
         - name: keyId
@@ -4476,29 +4606,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -4511,9 +4639,9 @@ paths:
         signed with the
 
         corresponding private key will no longer be accepted for validation
-        (after the grace period).
+        (after the grace period). If `gracePeriodSec` is omitted or zero, invalidation is immediate.
 
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
       operationId: invalidateTrustedKey
       parameters:
         - name: keyId
@@ -4534,29 +4662,27 @@ paths:
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -4570,7 +4696,7 @@ paths:
 
         be accepted again. This operation is idempotent.
 
-        Requires ADMIN or SUPER_USER role.
+        Requires ADMIN or ROLE_ADMIN role.
 
 
         **Important**: Reactivation removes the key's expiration entirely
@@ -4588,6 +4714,12 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactivateKeyRequestDto"
+        required: true
       responses:
         "200":
           description: Trusted key reactivated successfully
@@ -4595,32 +4727,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
+        "400":
+          description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers:
@@ -4630,7 +4766,7 @@ paths:
       summary: List all registered OIDC providers
       description: >
         Retrieves a list of all registered OIDC providers, including both active
-        and inactive providers.
+        and inactive providers. Accessible by any authenticated tenant member.
       operationId: listOidcProviders
       parameters:
         - name: activeOnly
@@ -4666,8 +4802,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -4680,6 +4814,8 @@ paths:
 
         discovered from the well-known configuration endpoint and used to
         validate JWT tokens.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: registerOidcProvider
       requestBody:
         content:
@@ -4724,8 +4860,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -4756,6 +4890,8 @@ paths:
         latest OIDC provider
 
         configurations and that any revoked keys are no longer trusted.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: reloadOidcProviders
       responses:
         "200":
@@ -4779,8 +4915,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -4793,6 +4927,8 @@ paths:
 
         The provider will first be invalidated (if not already) and then removed
         from storage.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: deleteOidcProvider
       parameters:
         - name: id
@@ -4830,8 +4966,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     patch:
@@ -4852,6 +4986,8 @@ paths:
         endpoint with the
 
         new issuer configuration when they are next needed for JWT validation.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: updateOidcProvider
       parameters:
         - name: id
@@ -4904,8 +5040,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -4921,6 +5055,8 @@ paths:
         but will no longer be
 
         used for JWT validation.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: invalidateOidcProvider
       parameters:
         - name: id
@@ -4958,8 +5094,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -4975,6 +5109,8 @@ paths:
 
         This operation is idempotent - if the provider is already active, it
         returns the current state.
+
+        **Authorization Required:** ROLE_ADMIN role.
       operationId: reactivateOidcProvider
       parameters:
         - name: id
@@ -5020,8 +5156,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/token:
@@ -7645,7 +7779,7 @@ components:
         successful items. When every item in such a chunk fails, the
         chunk commits as a zero-write transaction — `entityIds` is
         empty, `failed` lists every item, and `transactionId` remains
-        meaningful for audit correlation. Issue #228.
+        meaningful for audit correlation.
 
         Per-item ENTITY_MODIFIED conflicts surface inside the `200`
         response body via the `failed[]` array, not as a `4xx` envelope.
@@ -7688,7 +7822,7 @@ components:
           type: array
           description: |
             Present only on UpdateCollection chunks that experienced one or
-            more per-item ENTITY_MODIFIED conflicts (issue #228). Each
+            more per-item ENTITY_MODIFIED conflicts. Each
             entry names the conflicted entity and carries an `error` object
             with the failure code, an operator-facing message, and the
             item's per-chunk-relative index. Absent on chunks with no
@@ -7982,10 +8116,23 @@ components:
           description: Response timeout in milliseconds
         retryPolicy:
           type: string
-          description: Retry policy for the function
+          enum: [NONE, FIXED]
+          description: |
+            Retry policy selector. NONE → single attempt, no retry. FIXED →
+            up to N additional attempts with fixed delay between tries
+            (N and delay are server-configured). When omitted, defaults
+            to FIXED at engine fire. Import-time validation rejects any
+            other value.
         context:
           type: string
-          description: Additional context for the function
+          description: |
+            Pass-through string forwarded verbatim as the `parameters` JSON
+            node of the outgoing `EntityCriteriaCalculationRequest`. The value
+            is encoded as a JSON string (pass-as-string); the receiver gets a
+            JSON-quoted string in `parameters`. Empty value causes the
+            `parameters` field to be omitted entirely. Use to distinguish
+            multiple workflow roles served by a single externalized criterion
+            implementation without registering a separate name per role.
     ExternalizedFunctionDto:
       type: object
       properties:
@@ -8363,12 +8510,31 @@ components:
           example: 2025-11-01T10:00:00.000Z
         issuers:
           type: array
-          description: "List of allowed issuer URIs from this OIDC provider. When present
-            and non-empty, JWT validation requires the 'iss' claim to match one
-            of these values. "
+          description: "List of allowed `iss` claim values for tokens from this provider.
+            When present and non-empty, the JWT `iss` claim must match one of
+            these values bytewise. When absent or empty, the `iss` claim must
+            match the provider's discovery-document `issuer` field bytewise per
+            OIDC Core 1.0 §2."
           example: "[https://oidc-domain.local/]"
           items:
             type: string
+        expectedAudiences:
+          type: array
+          description: "Optional list of audiences accepted in the JWT `aud` claim for
+            this provider. When omitted, null, or empty array, the audience claim
+            is not checked (issuer-binding is the trust anchor)."
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 10
+        rolesClaim:
+          type: string
+          maxLength: 100
+          description: "Optional override for the JWT claim that carries roles for tokens
+            from this provider. When omitted or null, falls back to the global
+            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
+            override accommodates IdP variation (e.g., Cognito uses
+            `cognito:groups`, Keycloak uses `realm_access.roles`)."
       required:
         - active
         - createdAt
@@ -8384,15 +8550,32 @@ components:
           example: https://oidc-domain.local/.well-known/openid-configuration
         issuers:
           type: array
-          description: "Optional but highly recommended list of allowed issuer URIs from
-            this OIDC provider. When present, JWT validation will require the
-            'iss' claim to match one of these values. When set to null or empty
-            array, the 'iss' claim validation is skipped. "
+          description: "Optional list of allowed `iss` claim values for tokens from this
+            provider. When present, the JWT `iss` claim must match one of these
+            values bytewise. When omitted, null, or empty array, the `iss` claim
+            must match the provider's discovery-document `issuer` field bytewise
+            per OIDC Core 1.0 §2."
           example: "[https://oidc-domain.local/]"
           items:
             type: string
           maxItems: 2147483647
-          minItems: 1
+        expectedAudiences:
+          type: array
+          description: "Optional list of audiences accepted in the JWT `aud` claim for
+            this provider. When omitted, null, or empty array, the audience claim
+            is not checked (issuer-binding is the trust anchor)."
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 10
+        rolesClaim:
+          type: string
+          maxLength: 100
+          description: "Optional override for the JWT claim that carries roles for tokens
+            from this provider. When omitted or null, falls back to the global
+            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
+            override accommodates IdP variation (e.g., Cognito uses
+            `cognito:groups`, Keycloak uses `realm_access.roles`)."
       required:
         - wellKnownConfigUri
     ReactivateOidcProviderRequestDto:
@@ -8406,41 +8589,44 @@ components:
     TrustedKeyResponseDto:
       type: object
       properties:
-        keyId:
-          type: string
-          description: Unique key identifier
-          example: my-app-key-1
-        jwk:
-          type: object
-          additionalProperties:
-            type: object
-          description: "The registered public key in JWK format (RFC 7517). Contains only
-            public key components. "
+        active:
+          type: boolean
+          description: Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
         audience:
           type: string
           enum:
             - human
             - client
-        validFrom:
-          type: string
-          format: date-time
-          description: When this key became valid
-          example: 2025-11-01T10:00:00.000Z
-        legalEntityId:
-          type: string
-          description: The tenant this key is bound to
-          example: tenant-abc-123
         issuers:
           type: array
           example: "[https://my-app.local/]"
           items:
             type: string
+        jwk:
+          type: object
+          additionalProperties: true
+          description: "The registered public key in JWK format (RFC 7517). Contains only
+            public key components. "
+        keyId:
+          type: string
+          description: Unique key identifier
+          example: my-app-key-1
+        legalEntityId:
+          type: string
+          description: The tenant this key is bound to
+          example: tenant-abc-123
+        validFrom:
+          type: string
+          format: date-time
+          description: When this key became valid
+          example: 2025-11-01T10:00:00.000Z
         validTo:
           type: string
           format: date-time
           description: When this key expires
           example: 2026-02-01T10:00:00.000Z
       required:
+        - active
         - audience
         - jwk
         - keyId
@@ -8456,8 +8642,7 @@ components:
           example: my-app-key-1
         jwk:
           type: object
-          additionalProperties:
-            type: object
+          additionalProperties: true
           description: 'A JSON Web Key (JWK) as defined in RFC 7517. Must contain the
             public key components only. Supported key types: RSA (`kty: "RSA"`),
             EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC
@@ -8502,6 +8687,7 @@ components:
             invalidation). "
           example: 3600
           minimum: 0
+          maximum: 31622400
       required:
         - audience
         - jwk
@@ -8516,14 +8702,26 @@ components:
             is 0 (immediate invalidation).
           example: 3600
           minimum: 0
+          maximum: 31622400
+    ReactivateKeyRequestDto:
+      type: object
+      properties:
+        validFrom:
+          type: string
+          format: date-time
+          description: Optional; defaults to now if absent.
+        validTo:
+          type: string
+          format: date-time
+          description: Required. Must be > now and > validFrom.
+      required:
+        - validTo
     JwtKeyPairResponseDto:
       type: object
       properties:
-        keyId:
-          type: string
-          description: Unique identifier for this key-pair (UUID). Included in JWT header
-            as 'kid' claim.
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+        active:
+          type: boolean
+          description: Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
         algorithm:
           type: string
           enum:
@@ -8537,6 +8735,11 @@ components:
             - PS384
             - PS512
             - EdDSA
+        keyId:
+          type: string
+          description: Unique identifier for this key-pair (UUID). Included in JWT header
+            as 'kid' claim.
+          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
         publicKey:
           type: string
           description: Base64-encoded public key in X.509 SubjectPublicKeyInfo format.
@@ -8552,6 +8755,7 @@ components:
           description: When this key-pair expires
           example: 2026-10-15T10:00:00.000Z
       required:
+        - active
         - algorithm
         - keyId
         - publicKey
@@ -8600,6 +8804,7 @@ components:
             Only applicable when invalidateCurrent is true.
           example: 36000
           minimum: 0
+          maximum: 31622400
       required:
         - algorithm
         - audience
@@ -8618,24 +8823,44 @@ components:
           description: Response timeout in milliseconds
         retryPolicy:
           type: string
-          description: Retry policy for the function
+          enum: [NONE, FIXED]
+          description: |
+            Retry policy selector. NONE → single attempt, no retry. FIXED →
+            up to N additional attempts with fixed delay between tries
+            (N and delay are server-configured). When omitted, defaults
+            to FIXED at engine fire. Import-time validation rejects any
+            other value.
         context:
           type: string
-          description: Additional context for the function
+          description: |
+            Pass-through string forwarded verbatim as the `parameters` JSON
+            node of the outgoing `EntityProcessorCalculationRequest`. The
+            value is encoded as a JSON string (pass-as-string); the receiver
+            gets a JSON-quoted string in `parameters`. Empty value causes the
+            `parameters` field to be omitted entirely. Use to distinguish
+            multiple workflow roles served by a single externalized processor
+            implementation without registering a separate name per role.
         asyncResult:
           type: boolean
           description: |
             Whether to await the result asynchronously, outside of the
             transaction. Behavior is storage-engine-plugin dependent — not
             every plugin implements crossover semantics; consult the runtime
-            plugin's documentation for the supported behavior.
+            plugin's documentation for the supported behavior. This backend
+            does not implement async/crossover semantics; imports that set
+            asyncResult=true are rejected with HTTP 400 VALIDATION_FAILED.
+            The field is round-tripped for nil (absent) and the explicit-
+            false case.
         crossoverToAsyncMs:
           type: integer
           format: int64
           description: |
             Crossover delay to switch to asynchronous processing (ms),
             effective only when asyncResult is true. Behavior is
-            storage-engine-plugin dependent — see asyncResult.
+            storage-engine-plugin dependent — see asyncResult. This
+            backend does not implement async/crossover semantics; imports
+            that set any value for crossoverToAsyncMs are rejected with
+            HTTP 400 VALIDATION_FAILED.
     ExternalizedProcessorDefinitionDto:
       allOf:
         - $ref: "#/components/schemas/ProcessorDefinitionDto"
@@ -8673,42 +8898,29 @@ components:
       type: object
       discriminator:
         propertyName: type
+        mapping:
+          externalized: "#/components/schemas/ExternalizedProcessorDefinitionDto"
       properties:
         type:
           type: string
-          description: Type of the processor (externalized or scheduled)
+          enum:
+            - externalized
+          description: |
+            Processor execution-location axis. `externalized` dispatches the
+            processor via gRPC to a calculation node selected by
+            `calculationNodesTags`. Empty or omitted is treated as
+            `externalized` by the runtime. The engine reserves the value
+            `internalized` for an in-process execution location not yet
+            implemented; any payload carrying `type: "internalized"` is
+            rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
+            reserved value is intentionally absent from this enum until the
+            in-process subtype lands together with its schema.
         name:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Name of the processor
       required:
-        - name
-    ScheduledTransitionConfigDto:
-      type: object
-      properties:
-        delayMs:
-          type: integer
-          format: int64
-          description: Delay in milliseconds before executing the transition
-        transition:
-          type: string
-          description: The transition to execute after waiting delayMs
-        timeoutMs:
-          type: integer
-          format: int64
-          description: Timeout in milliseconds for executing the transition task, after
-            which it will be expired
-      required:
-        - delayMs
-        - transition
-    ScheduledTransitionProcessorDefinitionDto:
-      allOf:
-        - $ref: "#/components/schemas/ProcessorDefinitionDto"
-        - type: object
-          properties:
-            config:
-              $ref: "#/components/schemas/ScheduledTransitionConfigDto"
-      required:
-        - config
         - name
     StateDefinitionDto:
       type: object
@@ -8718,14 +8930,25 @@ components:
           description: List of possible transitions from this state
           items:
             $ref: "#/components/schemas/TransitionDefinitionDto"
+        annotations:
+          type: object
+          additionalProperties: true
+          description: >
+            Arbitrary client-owned metadata, stored and round-tripped (compacted)
+            and never interpreted by the engine. Must be a JSON object; capped at
+            64 KB per field.
     TransitionDefinitionDto:
       type: object
       properties:
         name:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Name of the transition
         next:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Target state code for this transition
         manual:
           type: boolean
@@ -8739,7 +8962,16 @@ components:
           items:
             oneOf:
               - $ref: "#/components/schemas/ExternalizedProcessorDefinitionDto"
-              - $ref: "#/components/schemas/ScheduledTransitionProcessorDefinitionDto"
+        schedule:
+          $ref: "#/components/schemas/TransitionScheduleDto"
+          description: |
+            Optional scheduling configuration. Presence marks the transition
+            as scheduled — it fires automatically `delayMs` milliseconds
+            after the entity enters the source state. Mutually exclusive
+            with `manual=true`. The runtime scheduler is not yet
+            implemented; until it ships, the engine silently skips
+            scheduled transitions during automated cascade selection, and
+            explicit fires by name return HTTP 400 `TRANSITION_NOT_FOUND`.
         criterion:
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
@@ -8747,24 +8979,92 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        annotations:
+          type: object
+          additionalProperties: true
+          description: >
+            Arbitrary client-owned metadata, stored and round-tripped (compacted)
+            and never interpreted by the engine. Must be a JSON object; capped at
+            64 KB per field.
       required:
         - manual
         - name
         - next
+    TransitionScheduleDto:
+      type: object
+      description: |
+        Scheduling configuration for an automatic future state transition.
+        Presence of this object marks the parent transition as scheduled.
+        The transition is scheduled to fire at `stateEntryTime + delayMs`
+        (the "scheduledTime"). When the scheduler picks the task up for
+        execution at `executionTime`, it computes `lateness = executionTime
+        - scheduledTime`; if `lateness > timeoutMs` the task is dropped
+        and the transition is NOT attempted. `timeoutMs` gives operators
+        control over how the system should handle backlog or intermittent-
+        offline conditions: short timeoutMs values prefer freshness over
+        eventual execution; absent timeoutMs always eventually fires.
+
+        Mutually exclusive with parent transition's manual=true.
+
+        The runtime that arms and fires the timer is not yet implemented.
+        Until it ships, the engine silently skips scheduled transitions
+        during automated cascade selection, and explicit fires by name are
+        rejected with HTTP 400 TRANSITION_NOT_FOUND.
+      properties:
+        delayMs:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            Delay between source-state entry and the scheduled execution
+            time, in milliseconds. Must be a positive integer (zero or
+            negative would make this a regular automated transition).
+        timeoutMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Late-tolerance window past the scheduled execution time, in
+            milliseconds. When the scheduler picks the task up, if
+            `(executionTime - scheduledTime) > timeoutMs` the task is
+            dropped. Absent (omitted) means no timeout — the task fires
+            whenever the scheduler eventually picks it up. Explicit zero
+            is the strictest setting — drop on any lateness. Independent
+            of `delayMs`; the two measure different quantities.
+      required:
+        - delayMs
     WorkflowConfigurationDto:
       type: object
       properties:
         version:
           type: string
-          description: Version of the workflow configuration schema
+          pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          description: |
+            Workflow-import contract version in semver MAJOR.MINOR form
+            (e.g. `1.1` on cyoda-go v0.8.0). Identifies the wire-format
+            contract this workflow was authored against; independent of
+            the cyoda-go binary version and the OpenAPI document version.
+            The server validates this strictly and rejects unsupported
+            values with `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (400). The
+            authoritative list of supported values is published at
+            `GET /help/workflows/schema-version/versions` (and the
+            equivalent CLI `cyoda help workflows schema-version
+            versions`).
         name:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Name of the workflow
         initialState:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Initial state for entities in this workflow
         states:
           type: object
+          propertyNames:
+            minLength: 1
+            maxLength: 256
           additionalProperties:
             $ref: "#/components/schemas/StateDefinitionDto"
           description: Map of state codes to state definitions
@@ -8775,12 +9075,33 @@ components:
           type: boolean
           description: Flag indicating if the workflow is active
         criterion:
+          description: |
+            Optional selection criterion evaluated against the entity to
+            decide which of several workflows applies. When a model has
+            multiple workflow definitions, the engine iterates them in
+            declaration order and picks the first one whose `active` flag
+            is true AND whose `criterion` matches the entity. A `null`
+            (absent) criterion matches unconditionally. If no active
+            workflow matches — and `active=false` workflows are skipped
+            entirely during selection — the engine falls back to the
+            embedded default workflow and emits both a body warning and
+            an operator-visible `slog.Warn` line. Workflow-level criteria
+            use the same Condition DSL as search and transition-level
+            criteria.
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
             - $ref: "#/components/schemas/FunctionConditionDto"
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        annotations:
+          type: object
+          additionalProperties: true
+          description: >
+            Arbitrary client-owned metadata for the whole workflow, stored and
+            round-tripped (compacted) and never interpreted by the engine. Must be
+            a JSON object; capped at 64 KB. Use for client concerns such as
+            permitted roles, display labels, or UI hints.
       required:
         - initialState
         - name
@@ -8797,11 +9118,29 @@ components:
             $ref: "#/components/schemas/WorkflowConfigurationDto"
         importMode:
           type: string
-          description: Import mode for handling existing workflows
+          description: |
+            Import mode for handling existing workflows. Defaults to MERGE
+            when the field is omitted or empty. Parsing is case-insensitive:
+            "merge", "Merge", and "MERGE" are all accepted. Any value outside
+            the documented enum (after case-folding) is rejected with
+            400 BAD_REQUEST.
+          default: MERGE
           enum:
             - REPLACE
             - ACTIVATE
             - MERGE
+        allowCycles:
+          type: boolean
+          default: false
+          description: |
+            When true, bypasses the import-time check that rejects workflows
+            containing unguarded automated cycles (transitions with manual=false
+            and no criterion that form a closed loop). The runtime cascade
+            safety net — per-state visit cap and total cascade depth limit —
+            remains in effect and catches actual runaway at fire time. Use
+            when the cyclicity is intentional, e.g. polling patterns built on
+            scheduled transitions. Default false preserves the pre-existing
+            rejection behaviour exactly.
       required:
         - workflows
     UpdateOidcProviderRequestDto:
@@ -8809,15 +9148,32 @@ components:
       properties:
         issuers:
           type: array
-          description: "Optional but highly recommended list of allowed issuer URIs from
-            this OIDC provider. When present, JWT validation will require the
-            'iss' claim to match one of these values. When set to null or empty
-            array, the 'iss' claim validation is skipped. "
+          description: "Optional list of allowed `iss` claim values for tokens from this
+            provider. When present, the JWT `iss` claim must match one of these
+            values bytewise. When omitted, null, or empty array, the `iss` claim
+            must match the provider's discovery-document `issuer` field bytewise
+            per OIDC Core 1.0 §2."
           example: "[https://oidc-domain.local/, https://oidc-domain.local/tenant1]"
           items:
             type: string
           maxItems: 2147483647
-          minItems: 1
+        expectedAudiences:
+          type: array
+          description: "Optional list of audiences accepted in the JWT `aud` claim for
+            this provider. When omitted, null, or empty array, the audience claim
+            is not checked (issuer-binding is the trust anchor)."
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 10
+        rolesClaim:
+          type: string
+          maxLength: 100
+          description: "Optional override for the JWT claim that carries roles for tokens
+            from this provider. When omitted or null, falls back to the global
+            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
+            override accommodates IdP variation (e.g., Cognito uses
+            `cognito:groups`, Keycloak uses `realm_access.roles`)."
     PageMetadataDto:
       type: object
       properties:
@@ -9015,7 +9371,7 @@ components:
           type: string
         contentType:
           type: string
-          description: "Informational only; see EdgeMessagePayload note. See #193 for proper handling."
+          description: "Informational only; see EdgeMessagePayload note. Proper content-type handling is a planned future feature."
         contentLength:
           type: integer
           format: int64
@@ -9052,8 +9408,8 @@ components:
         in the message header is informational; it does not affect storage or
         retrieval format. Clients needing to store non-JSON content should
         stringify it (e.g. base64 for binary, plain string with escape for
-        non-JSON text). See https://github.com/Cyoda-platform/cyoda-go/issues/193
-        for proper content-type support as a future feature.
+        non-JSON text). Proper content-type handling may be added
+        as a future feature.
       additionalProperties: true
     MessageDeleteResponse:
       type: object
@@ -9364,6 +9720,142 @@ components:
         - modelName
         - modelVersion
         - state
+    AggregateOp:
+      type: string
+      description: >-
+        Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply
+        to scalar numeric fields; non-numeric or missing values are skipped
+        per spec §3 (D4 semantics — see grouped-stats design doc).
+      enum:
+        - sum
+        - avg
+        - min
+        - max
+        - stdev
+    AggregationExpr:
+      type: object
+      description: >-
+        One requested aggregation. `field` is a JSONPath into the entity
+        payload. `as` is an optional alias for the result key in the
+        bucket's `aggregations` map; when omitted, the alias defaults to
+        `op(field)` (e.g. `sum($.amount)`).
+      properties:
+        op:
+          $ref: "#/components/schemas/AggregateOp"
+        field:
+          type: string
+          description: JSONPath of the field to aggregate (e.g. `$.amount`).
+          example: $.amount
+          minLength: 1
+        as:
+          type: string
+          description: Optional result alias.
+          example: totalAmount
+      required:
+        - op
+        - field
+    GroupedStatsRequest:
+      type: object
+      description: >-
+        Request body for the grouped-stats query endpoint. `groupBy`
+        dimensions may be either the literal string `state` (the workflow
+        state) or a JSONPath expression starting with `$.` over the entity
+        payload.
+      properties:
+        groupBy:
+          type: array
+          description: >-
+            Ordered list of group-by dimensions. Each entry is either the
+            literal `state` or a JSONPath expression. At least one entry
+            is required.
+          minItems: 1
+          items:
+            type: string
+            example: $.country
+        condition:
+          description: >-
+            Optional Condition DSL predicate restricting the population.
+            Uses the same union shape as the async-search endpoint.
+          oneOf:
+            - $ref: "#/components/schemas/ArrayConditionDto"
+            - $ref: "#/components/schemas/FunctionConditionDto"
+            - $ref: "#/components/schemas/GroupConditionDto"
+            - $ref: "#/components/schemas/LifecycleConditionDto"
+            - $ref: "#/components/schemas/SimpleConditionDto"
+        aggregations:
+          type: array
+          description: Optional per-group aggregations.
+          items:
+            $ref: "#/components/schemas/AggregationExpr"
+        pointInTime:
+          type: string
+          format: date-time
+          description: >-
+            Optional point-in-time for the query in ISO 8601 / RFC 3339
+            format. Defaults to the current consistency time.
+          example: 2035-01-01T12:00:00Z
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >-
+            Optional cap on the number of buckets returned. Must be
+            positive and less than or equal to the server-configured
+            `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding
+            the cap are rejected with 400 `MALFORMED_REQUEST`.
+          example: 5000
+      required:
+        - groupBy
+    GroupKeyEntry:
+      type: object
+      description: >-
+        One (path, value) pair in a bucket's ordered group key. `path`
+        echoes the corresponding `groupBy` dimension; `value` is the
+        observed value (any JSON scalar) or `null` when the field is
+        absent or non-scalar (D4 semantics).
+      properties:
+        path:
+          type: string
+          description: Group-by dimension (echoes the request entry).
+          example: $.country
+        value:
+          description: Observed value for this dimension, or null.
+          nullable: true
+          example: SE
+      required:
+        - path
+        - value
+    GroupedStatsBucket:
+      type: object
+      description: >-
+        One row of the grouped-stats result. `groupKey` is ordered to
+        match the request's `groupBy` list. `aggregations` is omitted
+        when the request specified no aggregations; otherwise each
+        requested aggregation appears keyed by its alias (or
+        `op(field)` default), with `null` for empty groups.
+      properties:
+        groupKey:
+          type: array
+          description: Ordered group-key entries matching the request's `groupBy`.
+          items:
+            $ref: "#/components/schemas/GroupKeyEntry"
+        count:
+          type: integer
+          format: int64
+          description: Number of entities in this group.
+          example: 31
+        aggregations:
+          type: object
+          description: >-
+            Per-alias aggregation results. Values are numeric or `null`
+            (when the aggregation has no eligible inputs). Absent when
+            the request specified no aggregations.
+          additionalProperties:
+            type: number
+            nullable: true
+      required:
+        - count
+        - groupKey
     TechnicalUserDto:
       type: object
       properties:
@@ -9556,7 +10048,7 @@ components:
               type: string
               description: |
                 Type of the state machine event. `TRANSITION_ABORTED` is
-                a cyoda-go extension (#228 reviewer S1) emitted as a
+                a cyoda-go extension emitted as a
                 compensating event when an in-flight transition is
                 rejected by a stale `ifMatch` precondition; its `data`
                 payload carries `{reason: "ENTITY_MODIFIED",
@@ -10072,7 +10564,7 @@ components:
             $ref: '#/components/schemas/ProblemDetail'
     NotImplemented:
       description: |
-        Not yet implemented — see https://github.com/Cyoda-platform/cyoda-go/issues/194.
+        Not yet implemented.
         The handler exists as a placeholder but returns 501 Not Implemented;
         real implementation is tracked separately.
       content:

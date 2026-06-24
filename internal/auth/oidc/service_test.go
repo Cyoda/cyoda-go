@@ -1,0 +1,844 @@
+package oidc
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/google/uuid"
+)
+
+// newTestService builds a Service over an in-memory store with a fake (nop)
+// discovery so tests stay offline.
+func newTestService(t *testing.T) *Service {
+	t.Helper()
+	store := newTestStore(t)
+	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true}) // tests bind to httptest.Server on 127.0.0.1
+	return NewService(store, r, nil)
+}
+
+// newTestServiceWithLogger returns a Service whose slog output is captured.
+func newTestServiceWithLogger(t *testing.T) (*Service, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	store := newTestStore(t)
+	r := NewRegistry(store, &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}, nil, NopMetrics{}, logger,
+		RegistryConfig{AllowPrivateNetworks: true}) // tests bind to httptest.Server on 127.0.0.1
+	return NewService(store, r, logger), &buf
+}
+
+const (
+	tenantA = spi.TenantID("00000000-0000-0000-0000-00000000000a")
+	tenantB = spi.TenantID("00000000-0000-0000-0000-00000000000b")
+)
+
+const sampleURI = "https://idp.example/.well-known/openid-configuration"
+
+func defaultInput(tenant spi.TenantID) RegisterInput {
+	return RegisterInput{
+		TenantID:           tenant,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"myapp"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenant)),
+	}
+}
+
+// ---------- Register ----------
+
+func TestService_Register_Success(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if p.ID == uuid.Nil {
+		t.Error("Register did not assign ID")
+	}
+	if !p.CreatedAt.After(time.Now().Add(-time.Minute)) {
+		t.Error("CreatedAt not set or too far in the past")
+	}
+	if p.Active() == false {
+		t.Error("newly registered provider should be active")
+	}
+	if p.WellKnownConfigURI != sampleURI {
+		t.Errorf("WellKnownConfigURI = %q, want %q", p.WellKnownConfigURI, sampleURI)
+	}
+}
+
+func TestService_Register_Duplicate(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.Register(ctx, defaultInput(tenantA)); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+
+	_, err := s.Register(ctx, defaultInput(tenantA))
+	if !errors.Is(err, ErrProviderDuplicate) {
+		t.Errorf("second Register = %v, want ErrProviderDuplicate", err)
+	}
+}
+
+func TestService_Register_DifferentTenantsShareURI(t *testing.T) {
+	// Two tenants may register the same URI independently — no conflict.
+	s := newTestService(t)
+	ctx := context.Background()
+
+	inA := defaultInput(tenantA)
+	inB := RegisterInput{
+		TenantID:           tenantB,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantB)),
+	}
+
+	if _, err := s.Register(ctx, inA); err != nil {
+		t.Fatalf("Register tenantA: %v", err)
+	}
+	pB, err := s.Register(ctx, inB)
+	if err != nil {
+		t.Fatalf("Register tenantB: %v", err)
+	}
+	if pB == nil || pB.ID == uuid.Nil {
+		t.Error("tenantB registration failed")
+	}
+}
+
+func TestService_Register_EmitsOwnershipTransitionLog(t *testing.T) {
+	// D25: register URI under tenantA, delete it, then register under tenantB.
+	// The second Register must log oidc.cross_tenant_uri_registration.
+	s, buf := newTestServiceWithLogger(t)
+	ctx := context.Background()
+
+	// Register and then delete under tenantA.
+	pA, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register tenantA: %v", err)
+	}
+	if err := s.Delete(ctx, tenantA, pA.ID.String()); err != nil {
+		t.Fatalf("Delete tenantA: %v", err)
+	}
+
+	// Register the same URI under tenantB.
+	inB := RegisterInput{
+		TenantID:           tenantB,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantB)),
+	}
+	if _, err := s.Register(ctx, inB); err != nil {
+		t.Fatalf("Register tenantB: %v", err)
+	}
+
+	// Verify the cross-tenant log was emitted.
+	if !strings.Contains(buf.String(), "oidc.cross_tenant_uri_registration") {
+		t.Errorf("expected cross_tenant_uri_registration log, got:\n%s", buf.String())
+	}
+}
+
+func TestService_Register_SetsCreatedAt(t *testing.T) {
+	s := newTestService(t)
+	// Override clock to a known value.
+	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	s.clock = func() time.Time { return fixed }
+
+	p, err := s.Register(context.Background(), defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if !p.CreatedAt.Equal(fixed) {
+		t.Errorf("CreatedAt = %v, want %v", p.CreatedAt, fixed)
+	}
+}
+
+// ---------- Update ----------
+
+func TestService_Update_Success(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	updated, err := s.Update(ctx, UpdateInput{
+		TenantID:          tenantA,
+		ProviderID:        p.ID.String(),
+		UpdateIssuers:     true,
+		Issuers:           []string{"https://updated-idp.example"},
+		UpdateAudiences:   true,
+		ExpectedAudiences: []string{"aud1", "aud2"},
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(updated.Issuers) != 1 || updated.Issuers[0] != "https://updated-idp.example" {
+		t.Errorf("Issuers not updated: %v", updated.Issuers)
+	}
+	if len(updated.ExpectedAudiences) != 2 {
+		t.Errorf("ExpectedAudiences not updated: %v", updated.ExpectedAudiences)
+	}
+}
+
+func TestService_Update_ClearIssuersWithEmpty(t *testing.T) {
+	// UpdateIssuers=true with Issuers=nil (or []) must clear the field.
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	updated, err := s.Update(ctx, UpdateInput{
+		TenantID:      tenantA,
+		ProviderID:    p.ID.String(),
+		UpdateIssuers: true,
+		Issuers:       nil, // explicit clear
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(updated.Issuers) != 0 {
+		t.Errorf("expected Issuers cleared to nil/empty, got %v", updated.Issuers)
+	}
+}
+
+func TestService_Update_AbsentFieldsUnchanged(t *testing.T) {
+	// UpdateIssuers=false → field must not change.
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	origIssuers := p.Issuers
+
+	claim := "roles"
+	updated, err := s.Update(ctx, UpdateInput{
+		TenantID:         tenantA,
+		ProviderID:       p.ID.String(),
+		UpdateRolesClaim: true,
+		RolesClaim:       &claim,
+		// UpdateIssuers and UpdateAudiences both false → leave existing values.
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(updated.Issuers) != len(origIssuers) {
+		t.Errorf("Issuers changed when UpdateIssuers=false: got %v, want %v", updated.Issuers, origIssuers)
+	}
+}
+
+func TestService_Update_OnInvalidatedReturnsErrProviderInactive(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := s.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	_, err = s.Update(ctx, UpdateInput{
+		TenantID:      tenantA,
+		ProviderID:    p.ID.String(),
+		UpdateIssuers: true,
+		Issuers:       []string{"https://new.example"},
+	})
+	if !errors.Is(err, ErrProviderInactive) {
+		t.Errorf("Update on invalidated = %v, want ErrProviderInactive", err)
+	}
+}
+
+func TestService_Update_NotFound(t *testing.T) {
+	s := newTestService(t)
+	_, err := s.Update(context.Background(), UpdateInput{
+		TenantID:   tenantA,
+		ProviderID: uuid.New().String(),
+	})
+	if !errors.Is(err, ErrProviderNotFound) {
+		t.Errorf("Update unknown = %v, want ErrProviderNotFound", err)
+	}
+}
+
+// ---------- Invalidate ----------
+
+func TestService_Invalidate_Success(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := s.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	// Verify store reflects the invalidation.
+	got, err := s.store.Get(ctx, tenantA, p.ID.String())
+	if err != nil {
+		t.Fatalf("store.Get after Invalidate: %v", err)
+	}
+	if got.InvalidatedAt == nil {
+		t.Error("InvalidatedAt not set after Invalidate")
+	}
+}
+
+func TestService_Invalidate_AlreadyInvalidatedIsIdempotent(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := s.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("first Invalidate: %v", err)
+	}
+	// Second call must not error.
+	if err := s.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Errorf("second Invalidate (idempotent) = %v, want nil", err)
+	}
+}
+
+func TestService_Invalidate_NotFound(t *testing.T) {
+	s := newTestService(t)
+	err := s.Invalidate(context.Background(), tenantA, uuid.New().String())
+	if !errors.Is(err, ErrProviderNotFound) {
+		t.Errorf("Invalidate unknown = %v, want ErrProviderNotFound", err)
+	}
+}
+
+// ---------- Reactivate ----------
+
+func TestService_Reactivate_Success(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := s.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	back, err := s.Reactivate(ctx, ReactivateInput{TenantID: tenantA, ProviderID: p.ID.String()})
+	if err != nil {
+		t.Fatalf("Reactivate: %v", err)
+	}
+	if back.InvalidatedAt != nil {
+		t.Error("InvalidatedAt not cleared after Reactivate")
+	}
+	if !back.Active() {
+		t.Error("provider not active after Reactivate")
+	}
+}
+
+func TestService_Reactivate_AlreadyActiveIsIdempotent(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	back, err := s.Reactivate(ctx, ReactivateInput{TenantID: tenantA, ProviderID: p.ID.String()})
+	if err != nil {
+		t.Errorf("Reactivate on active = %v, want nil", err)
+	}
+	if back == nil || back.ID != p.ID {
+		t.Error("Reactivate on active did not return current DTO")
+	}
+}
+
+func TestService_Reactivate_NotFound(t *testing.T) {
+	s := newTestService(t)
+	_, err := s.Reactivate(context.Background(), ReactivateInput{
+		TenantID:   tenantA,
+		ProviderID: uuid.New().String(),
+	})
+	if !errors.Is(err, ErrProviderNotFound) {
+		t.Errorf("Reactivate unknown = %v, want ErrProviderNotFound", err)
+	}
+}
+
+// ---------- Delete ----------
+
+func TestService_Delete_RemovesBlobAndIndexAndMarksHistory(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	p, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := s.Delete(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Blob gone.
+	if _, err := s.store.Get(ctx, tenantA, p.ID.String()); !errors.Is(err, ErrProviderNotFound) {
+		t.Errorf("Get after Delete = %v, want ErrProviderNotFound", err)
+	}
+	// Index gone.
+	if _, err := s.store.GetByURI(ctx, tenantA, sampleURI); !errors.Is(err, ErrProviderNotFound) {
+		t.Errorf("GetByURI after Delete = %v, want ErrProviderNotFound", err)
+	}
+
+	// D25 history: CurrentOwner should be nil, deleted owner in Past with DeletedAt set.
+	h, err := s.store.GetURIHistory(ctx, sha256Hex(sampleURI))
+	if err != nil {
+		t.Fatalf("GetURIHistory after Delete: %v", err)
+	}
+	if h == nil {
+		t.Fatal("expected history after Delete, got nil")
+	}
+	if h.CurrentOwner != nil {
+		t.Errorf("CurrentOwner = %+v, want nil after Delete", h.CurrentOwner)
+	}
+	if len(h.Past) == 0 {
+		t.Error("Past is empty after Delete; expected deleted owner entry")
+	}
+	if h.Past[0].DeletedAt == nil {
+		t.Error("Past[0].DeletedAt is nil after Delete")
+	}
+}
+
+func TestService_Delete_NotFound(t *testing.T) {
+	s := newTestService(t)
+	err := s.Delete(context.Background(), tenantA, uuid.New().String())
+	if !errors.Is(err, ErrProviderNotFound) {
+		t.Errorf("Delete unknown = %v, want ErrProviderNotFound", err)
+	}
+}
+
+// ---------- ReloadAll ----------
+
+func TestService_ReloadAll_RebuildsRegistry(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	// Plant a provider directly in the store (bypassing Service to avoid
+	// reloadOne's discovery fetch altering registry state).
+	tenantUUID := uuid.MustParse(string(tenantA))
+	p := &OidcProvider{
+		ID:                 uuid.New(),
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		CreatedAt:          time.Now().UTC(),
+		OwnerLegalEntityID: tenantUUID,
+	}
+	if err := s.store.Register(ctx, p); err != nil {
+		t.Fatalf("store.Register: %v", err)
+	}
+
+	if err := s.ReloadAll(ctx); err != nil {
+		t.Fatalf("ReloadAll: %v", err)
+	}
+
+	// Verify registry's in-memory map has the provider.
+	s.registry.mu.RLock()
+	byURI := s.registry.providers[tenantA]
+	s.registry.mu.RUnlock()
+	if byURI == nil {
+		t.Fatal("registry provider map for tenantA is nil after ReloadAll")
+	}
+	if _, ok := byURI[sampleURI]; !ok {
+		t.Error("provider not present in registry after ReloadAll")
+	}
+}
+
+// ---------- ListByTenant ----------
+
+func TestService_ListByTenant_ReturnsAll(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	uri2 := "https://other-idp.example/.well-known/openid-configuration"
+	if _, err := s.Register(ctx, defaultInput(tenantA)); err != nil {
+		t.Fatalf("Register 1: %v", err)
+	}
+	if _, err := s.Register(ctx, RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: uri2,
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}); err != nil {
+		t.Fatalf("Register 2: %v", err)
+	}
+
+	all, err := s.ListByTenant(ctx, tenantA, false)
+	if err != nil {
+		t.Fatalf("ListByTenant: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("ListByTenant = %d, want 2", len(all))
+	}
+}
+
+// TestService_Register_CrossTenantSameAudienceWARNs verifies Layer 3 of the
+// Critical audit fix (D25): when a second tenant registers the same URI with
+// overlapping ExpectedAudiences, the service emits a WARN log identifying the
+// audience-overlap misconfiguration.
+func TestService_Register_CrossTenantSameAudienceWARNs(t *testing.T) {
+	s, buf := newTestServiceWithLogger(t)
+	ctx := context.Background()
+
+	// Register provider A with expectedAudiences=["shared"].
+	inA := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"shared"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	if _, err := s.Register(ctx, inA); err != nil {
+		t.Fatalf("Register tenantA: %v", err)
+	}
+
+	// Register provider B (different tenant) with overlapping expectedAudiences=["shared"].
+	inB := RegisterInput{
+		TenantID:           tenantB,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"shared"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantB)),
+	}
+	if _, err := s.Register(ctx, inB); err != nil {
+		t.Fatalf("Register tenantB: %v", err)
+	}
+
+	// Verify that a WARN was emitted about the audience overlap.
+	logged := buf.String()
+	if !strings.Contains(logged, "WARN") {
+		t.Errorf("expected WARN log for cross-tenant audience overlap, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, "oidc.cross_tenant_audience_overlap") {
+		t.Errorf("expected oidc.cross_tenant_audience_overlap in log, got:\n%s", logged)
+	}
+}
+
+// TestService_Register_CrossTenantDistinctAudiencesNoWARN verifies that
+// when two tenants register the same URI with DISTINCT ExpectedAudiences,
+// no audience-overlap WARN is emitted (only the existing cross-tenant INFO).
+func TestService_Register_CrossTenantDistinctAudiencesNoWARN(t *testing.T) {
+	s, buf := newTestServiceWithLogger(t)
+	ctx := context.Background()
+
+	inA := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"app-a"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	if _, err := s.Register(ctx, inA); err != nil {
+		t.Fatalf("Register tenantA: %v", err)
+	}
+
+	inB := RegisterInput{
+		TenantID:           tenantB,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{"https://idp.example"},
+		ExpectedAudiences:  []string{"app-b"},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantB)),
+	}
+	if _, err := s.Register(ctx, inB); err != nil {
+		t.Fatalf("Register tenantB: %v", err)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "oidc.cross_tenant_audience_overlap") {
+		t.Errorf("unexpected oidc.cross_tenant_audience_overlap WARN for distinct audiences, got:\n%s", logged)
+	}
+}
+
+// ---------- Reactivate with ReactivateKeys flag (I-1) ----------
+
+// TestService_Reactivate_KeysFalse_PreservesJWKSCache verifies D19 §2 spec:
+// when ReactivateKeys=false, reloadDiscoveryOnly is called — the JWKS endpoint
+// is NOT contacted during the reactivate. We verify this by:
+//   1. Installing a cached keySource via reloadOne (through Register), which
+//      triggers an initial JWKS fetch during the lazy ResolveKey dial.
+//   2. Invalidating (drops the source).
+//   3. Reactivating with keys=false — must NOT trigger a JWKS fetch.
+//   4. Asserting the JWKS endpoint received zero additional hits beyond
+//      what already happened during the initial warm (step 1).
+//
+// The JWKS hit count is tracked by a counter incremented in the handler
+// so we can distinguish fetch vs. no-fetch regardless of cache state.
+func TestService_Reactivate_KeysFalse_PreservesJWKSCache(t *testing.T) {
+	var jwksHits int64
+	// Stand up a minimal JWKS server with a hit counter.
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&jwksHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		// Return an empty JWKS — we only care about whether the endpoint is hit.
+		_, _ = fmt.Fprintf(w, `{"keys":[]}`)
+	}))
+	t.Cleanup(jwksSrv.Close)
+
+	issuer := "https://idp.test"
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			sampleURI: {
+				Issuer:  issuer,
+				JWKSURI: jwksSrv.URL + "/jwks",
+			},
+		},
+	}
+
+	store := newTestStore(t)
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
+	svc := NewService(store, r, nil)
+
+	ctx := context.Background()
+	in := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{issuer},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	p, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Trigger the lazy JWKS fetch by calling ResolveKey. The HTTPJWKSSource
+	// constructed in reloadOne is lazy — it only dials on the first GetKey call.
+	_, _ = r.ResolveKey("any-kid", issuer, "")
+	hitsAfterRegister := atomic.LoadInt64(&jwksHits)
+	// Must have been hit at least once during the lazy dial.
+	if hitsAfterRegister == 0 {
+		t.Fatal("JWKS endpoint not hit during initial warmup — test setup broken")
+	}
+
+	// Invalidate the provider.
+	if err := svc.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	// Reactivate with ReactivateKeys=false: discovery IS refetched but the
+	// JWKS endpoint must NOT be contacted (no new HTTPJWKSSource constructed,
+	// no GetKey-triggered dial).
+	_, err = svc.Reactivate(ctx, ReactivateInput{
+		TenantID:       tenantA,
+		ProviderID:     p.ID.String(),
+		ReactivateKeys: false,
+	})
+	if err != nil {
+		t.Fatalf("Reactivate(keys=false): %v", err)
+	}
+
+	// Reactivate(false) must not have hit the JWKS endpoint.
+	hitsAfterReactivate := atomic.LoadInt64(&jwksHits)
+	if hitsAfterReactivate != hitsAfterRegister {
+		t.Errorf("ReactivateKeys=false triggered JWKS fetch: hits before=%d, after=%d — JWKS not preserved",
+			hitsAfterRegister, hitsAfterReactivate)
+	}
+
+	// Verify that the source WAS installed (discovery doc refreshed).
+	var installed bool
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenantA]; byURI != nil {
+			installed = byURI[sampleURI] != nil
+		}
+	}()
+	if !installed {
+		t.Error("source not installed after Reactivate(keys=false) — discovery refresh failed")
+	}
+}
+
+// TestService_Reactivate_KeysFalse_AfterInvalidate_ResolveKeyDoesNotPanic is a
+// regression test for the bug where Invalidate drops the cached source and a
+// subsequent Reactivate(keys=false) installs a providerSource with a nil
+// keySource. The next ResolveKey then dereferenced the nil keySource and
+// panicked inside disposeCandidates, surfacing as a 500 instead of 401.
+//
+// Expected behaviour: Reactivate(keys=false) post-invalidate must install a
+// fresh lazy JWKS source (the "preserve existing keys" semantic degrades
+// gracefully when there are no keys to preserve), and ResolveKey must return
+// a sentinel error without panicking.
+func TestService_Reactivate_KeysFalse_AfterInvalidate_ResolveKeyDoesNotPanic(t *testing.T) {
+	// JWKS server returns an empty keys list — ResolveKey will get ErrKeyNotFound
+	// per source, eventually returning ErrUnknownKID. We only care that no panic.
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"keys":[]}`)
+	}))
+	t.Cleanup(jwksSrv.Close)
+
+	issuer := "https://idp.test"
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			sampleURI: {Issuer: issuer, JWKSURI: jwksSrv.URL + "/jwks"},
+		},
+	}
+
+	store := newTestStore(t)
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true})
+	svc := NewService(store, r, nil)
+
+	ctx := context.Background()
+	in := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{issuer},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	p, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := svc.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	if _, err := svc.Reactivate(ctx, ReactivateInput{
+		TenantID:       tenantA,
+		ProviderID:     p.ID.String(),
+		ReactivateKeys: false,
+	}); err != nil {
+		t.Fatalf("Reactivate(keys=false): %v", err)
+	}
+
+	// Must not panic. The returned error is expected (no matching kid in JWKS).
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("ResolveKey panicked: %v", rec)
+		}
+	}()
+	if _, err := r.ResolveKey("any-kid", issuer, ""); err == nil {
+		t.Error("ResolveKey returned nil error for unknown kid — expected sentinel")
+	}
+}
+
+// TestService_Reactivate_KeysTrue_RefreshesJWKS verifies D19 §2 spec:
+// when ReactivateKeys=true (default), the JWKS source IS replaced with a
+// fresh source. After a kid is revoked at the mock IdP, reactivating with
+// keys=true causes the new source to reflect the removal on its first fetch.
+func TestService_Reactivate_KeysTrue_RefreshesJWKS(t *testing.T) {
+	idp := NewFixtureIdP(t)
+
+	disc := &fakeDiscovery{
+		docs: map[string]*DiscoveryDoc{
+			sampleURI: {
+				Issuer:  idp.Issuer,
+				JWKSURI: idp.JWKSURI,
+			},
+		},
+	}
+
+	store := newTestStore(t)
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
+	svc := NewService(store, r, nil)
+
+	ctx := context.Background()
+	in := RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: sampleURI,
+		Issuers:            []string{idp.Issuer},
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}
+	p, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Snapshot the source pointer installed by Register.
+	var srcBefore *providerSource
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenantA]; byURI != nil {
+			srcBefore = byURI[sampleURI]
+		}
+	}()
+
+	// Invalidate.
+	if err := svc.Invalidate(ctx, tenantA, p.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	// Reactivate with ReactivateKeys=true: the keySource MUST be a new object.
+	_, err = svc.Reactivate(ctx, ReactivateInput{
+		TenantID:       tenantA,
+		ProviderID:     p.ID.String(),
+		ReactivateKeys: true,
+	})
+	if err != nil {
+		t.Fatalf("Reactivate(keys=true): %v", err)
+	}
+
+	var srcAfter *providerSource
+	func() {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if byURI := r.sources[tenantA]; byURI != nil {
+			srcAfter = byURI[sampleURI]
+		}
+	}()
+	if srcAfter == nil {
+		t.Fatal("source not installed after Reactivate(keys=true)")
+	}
+	// The keySource must be a different pointer (fresh source installed).
+	if srcBefore != nil && srcAfter.keySource == srcBefore.keySource {
+		t.Error("ReactivateKeys=true did NOT replace the keySource — full JWKS sync not performed")
+	}
+}
+
+func TestService_ListByTenant_FiltersActive(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	uri2 := "https://other-idp.example/.well-known/openid-configuration"
+	p1, err := s.Register(ctx, defaultInput(tenantA))
+	if err != nil {
+		t.Fatalf("Register 1: %v", err)
+	}
+	if _, err := s.Register(ctx, RegisterInput{
+		TenantID:           tenantA,
+		WellKnownConfigURI: uri2,
+		OwnerLegalEntityID: uuid.MustParse(string(tenantA)),
+	}); err != nil {
+		t.Fatalf("Register 2: %v", err)
+	}
+
+	// Invalidate provider 1.
+	if err := s.Invalidate(ctx, tenantA, p1.ID.String()); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	active, err := s.ListByTenant(ctx, tenantA, true)
+	if err != nil {
+		t.Fatalf("ListByTenant(activeOnly): %v", err)
+	}
+	if len(active) != 1 {
+		t.Errorf("ListByTenant(activeOnly) = %d, want 1", len(active))
+	}
+}

@@ -10,7 +10,7 @@ job, these steps must be completed once.
 
 ### 1. Create the empty tap repository
 
-- New repo: `cyoda-platform/homebrew-cyoda-go` (public, empty).
+- New repo: `cyoda/homebrew-cyoda-go` (public, empty).
 - `README.md` in the tap repo: a short paragraph explaining the tap
   and linking back to this main repo. GoReleaser will push `cyoda.rb`
   on every release.
@@ -22,12 +22,12 @@ installation tokens for the release workflow. Advantages over a PAT:
 org-owned, no human account attached, no expiration to track, audit
 trail is clean.
 
-1. Navigate to `https://github.com/organizations/cyoda-platform/settings/apps`.
+1. Navigate to `https://github.com/organizations/cyoda/settings/apps`.
 2. Click **New GitHub App**.
 3. Fill in:
    - App name: `cyoda-platform-release-bot` (must be globally unique
      across all GitHub Apps; add a suffix if taken).
-   - Homepage URL: `https://github.com/cyoda-platform/cyoda-go`
+   - Homepage URL: `https://github.com/cyoda/cyoda-go`
    - Webhook: uncheck **Active** (no webhook needed).
    - Permissions → **Repository permissions**:
      - **Contents**: Read and write
@@ -42,15 +42,15 @@ trail is clean.
 ### 3. Install the App on the tap repo
 
 1. On the App settings page, click **Install App** in the left sidebar.
-2. Choose the `cyoda-platform` org.
+2. Choose the `cyoda` org.
 3. Under **Repository access**, select **Only select repositories** and
-   add `cyoda-platform/homebrew-cyoda-go`. Do NOT install on the whole
+   add `cyoda/homebrew-cyoda-go`. Do NOT install on the whole
    org — the App's scope must be minimal.
 4. Click **Install**.
 
 ### 4. Configure secrets in the cyoda-go repo
 
-1. Navigate to `https://github.com/cyoda-platform/cyoda-go/settings/secrets/actions`.
+1. Navigate to `https://github.com/cyoda/cyoda-go/settings/secrets/actions`.
 2. Add secret `HOMEBREW_TAP_APP_ID`: the numeric App ID from step 2.5.
 3. Add secret `HOMEBREW_TAP_APP_KEY`: the full contents of the `.pem`
    file from step 2.6, including the `-----BEGIN PRIVATE KEY-----`
@@ -102,6 +102,58 @@ version number, even on repos with no production consumers.
 "Greenfield" means we promise nothing about backward compatibility
 between versions yet. It does **not** mean we can reset version
 numbers — the one-way-ratchet applies from the first tag onward.
+
+#### The never-re-cut rule (non-negotiable)
+
+A module version is **tagged exactly once, at the final verified commit, and
+never re-cut.** This follows directly from the write-once property above, and
+it is absolute:
+
+1. **Never tag speculatively or mid-milestone.** The instant a tag is pushed
+   and anything fetches it, `proxy.golang.org` and `sum.golang.org` bind that
+   version to that commit **permanently and globally**. There is no cache-bust.
+2. **A bad or premature tag is recovered ONLY by the next version number.**
+   Deleting the git tag does *not* clean the proxy/checksum-database binding —
+   it just creates a mismatch between git and the proxy. Re-cutting the same
+   version at a new commit produces a permanently-poisoned version that every
+   consumer must then bypass with `GOPRIVATE` forever. **Don't.** Skip to the
+   next patch/minor and tag that, cleanly, once.
+3. **Pre-tag gate:** before pushing any `cyoda-go-spi` / plugin / binary tag,
+   confirm the milestone work is fully merged and CI is green on the exact
+   commit being tagged. A tag is a publish, not a checkpoint.
+
+> **2026-06 incident (why this rule is in caps):** `cyoda-go-spi v0.8.0` was
+> tagged prematurely at an incomplete commit, fetched through the proxy, then
+> "retracted" and re-cut at the finished commit. The proxy still served the
+> premature commit for `v0.8.0`, so every build broke until `GOPRIVATE` was
+> wired into every Go context — and even then the public version stayed
+> poisoned. The clean fix was to abandon `v0.8.0` and release `v0.8.1` (fresh,
+> never-seen) for both the SPI and the binary. Cost: a burned version number
+> and a day of churn. Prevention: this rule.
+
+### 0. Reconcile dependencies on the release branch (gate)
+
+**Dependency hygiene is a release gate, not post-release cleanup.** Before
+any tag is cut, the release branch must already be at the dependency versions
+you intend to ship — otherwise the release goes out stale and Dependabot
+re-raises the deferred bumps immediately after, manufacturing technical debt
+at the moment of release.
+
+Do this as a single consolidated **release-prep** commit on the release branch,
+*after* the coordinated `cyoda-go-spi` tag exists (so the pin resolves) but
+*before* the merge-to-main and tag:
+
+1. Bump the `cyoda-go-spi` pin to the freshly cut `vX.Y.Z` in all four
+   `go.mod` files (this is the maintainer-owned step — Dependabot does **not**
+   touch the SPI pin; see "Bumping cyoda-go-spi" below).
+2. Apply every pending Dependabot minor/patch bump (root + each plugin
+   submodule). If a grouped PR was closed because it was entangled with the
+   then-unresolvable SPI pin, apply its third-party updates by hand here.
+3. `go mod tidy` in every module.
+4. Verify: `make check-spi-pin-sync`, `make test-all`, `make race`.
+
+After this commit the branch is at latest on everything, so Dependabot's next
+run finds nothing to raise — a clean release with no immediate follow-on churn.
 
 ### 1. Plugin submodule tags first
 
@@ -159,7 +211,7 @@ they become vestigial and can stay dropped; dev-time workflows use
 
 ### 4. Homebrew tap setup (from the section above)
 
-Create `cyoda-platform/homebrew-cyoda-go` repo, create the GitHub App,
+Create `cyoda/homebrew-cyoda-go` repo, create the GitHub App,
 install on the tap repo, store the App ID and private key as Actions
 secrets. See "One-time setup: Homebrew tap release automation" above.
 
@@ -182,7 +234,7 @@ selector actually resolves:
 # Clone to a scratch dir per the snapshot-testing gotcha section:
 tmp=$(mktemp -d) && git clone --local . "$tmp/cyoda-go"
 cd "$tmp/cyoda-go"
-git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+git remote set-url origin https://github.com/cyoda/cyoda-go.git
 git remote set-url --push origin NO_PUSH
 
 # Tag a non-prerelease snapshot:
@@ -254,8 +306,8 @@ verify:
 
 - Release appears on the Releases page with all expected archives,
   `.deb`/`.rpm` packages, `SHA256SUMS`, cosign signatures, SBOMs.
-- `ghcr.io/cyoda-platform/cyoda:$V` and `:latest` manifests exist.
-- `cyoda-platform/homebrew-cyoda-go` shows a new commit updating
+- `ghcr.io/cyoda/cyoda:$V` and `:latest` manifests exist.
+- `cyoda/homebrew-cyoda-go` shows a new commit updating
   `Formula/cyoda.rb` to `$V`.
 - A PR titled `chore(helm): bump chart appVersion to $V` (labels:
   `helm`, `chart-release`) is opened automatically by
@@ -313,6 +365,23 @@ rule (plugin submodule tags use the same version as the umbrella).
 The two rules together ensure that consumers see consistent
 SPI-and-plugin pinning at every umbrella tag.
 
+**The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
+the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
+against `main` HEAD, and the final bump to the tagged `vX.Y.Z` happens by hand
+at release time (gate 0 above). `.github/dependabot.yml` therefore carries an
+`ignore` rule for `github.com/cyoda-platform/cyoda-go-spi` in every `gomod`
+block. This is deliberate: the SPI pin moves in lock-step with a coordinated
+cross-repo release (gate 0), and a Dependabot group that bundles the SPI pin
+with routine third-party bumps gets **mass-closed** if the pin can't resolve at
+that moment — taking good third-party updates down with it. Keeping the SPI pin
+out of Dependabot's hands keeps the grouped third-party PRs always-resolvable.
+
+**Retarget Dependabot after the milestone ships.** `dependabot.yml`'s
+`target-branch` points at the active milestone branch (e.g. `release/v0.8.0`)
+so bumps land where the work is. Once that milestone merges to `main` and is
+tagged, flip `target-branch` to the next active branch (`main`, or the next
+`release/vX.Y.0`) so Dependabot doesn't keep raising PRs against a dead branch.
+
 ### 8. Publish the Helm chart
 
 Frontline binary releases auto-open a PR from
@@ -352,7 +421,7 @@ Per-release procedure:
      and publishes to `gh-pages`.
    - The chart appears in the index:
      ```bash
-     helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
+     helm repo add cyoda https://cyoda.github.io/cyoda-go
      helm repo update
      helm search repo cyoda --versions | head
      ```
@@ -389,14 +458,14 @@ fast with an actionable error if not.
 
 ```bash
 # Homebrew (macOS or Linux):
-brew install cyoda-platform/cyoda-go/cyoda
+brew install cyoda/cyoda-go/cyoda
 cyoda --help
 
 # curl | sh (any Unix):
-curl -fsSL https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/cyoda/cyoda-go/main/scripts/install.sh | sh
 
 # Debian:
-wget https://github.com/cyoda-platform/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
+wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
 sudo dpkg -i cyoda_linux_amd64.deb
 ```
 
@@ -450,7 +519,7 @@ Fix before running `goreleaser release --snapshot`:
 
 ```bash
 cd /path/to/temp/clone
-git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+git remote set-url origin https://github.com/cyoda/cyoda-go.git
 # Also disable push from this temp clone so an absent-minded `git push`
 # doesn't accidentally shove a local branch to the real upstream:
 git remote set-url --push origin NO_PUSH

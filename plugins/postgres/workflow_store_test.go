@@ -10,7 +10,9 @@ import (
 func setupWorkflowTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -21,7 +23,7 @@ func setupWorkflowTest(t *testing.T) *postgres.StoreFactory {
 func sampleWorkflows() []spi.WorkflowDefinition {
 	return []spi.WorkflowDefinition{
 		{
-			Version:      "1",
+			Version:      "1.1",
 			Name:         "default",
 			InitialState: "NONE",
 			Active:       true,
@@ -77,7 +79,7 @@ func TestWorkflowStore_SaveOverwrites(t *testing.T) {
 	store.Save(ctx, ref, sampleWorkflows())
 
 	updated := []spi.WorkflowDefinition{{
-		Version: "2", Name: "updated", InitialState: "START", Active: true,
+		Version: "1.1", Name: "updated", InitialState: "START", Active: true,
 		States: map[string]spi.StateDefinition{"START": {}},
 	}}
 	store.Save(ctx, ref, updated)

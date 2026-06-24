@@ -23,28 +23,15 @@ import (
 // conformance-audit.md captures the full disposition for each.
 var knownUncoveredOps = map[string]bool{
 	// Stub IAM/account ops — implementation tracked in #194.
-	"accountSubscriptionsGet":  true,
-	"createTechnicalUser":      true,
-	"deleteTechnicalUser":      true,
-	"listTechnicalUsers":       true,
-	"resetTechnicalUserSecret": true,
-	"deleteJwtKeyPair":         true,
-	"deleteTrustedKey":         true,
-	"getCurrentJwtKeyPair":     true,
-	"invalidateJwtKeyPair":     true,
-	"invalidateTrustedKey":     true,
-	"issueJwtKeyPair":          true,
-	"listTrustedKeys":          true,
-	"reactivateJwtKeyPair":     true,
-	"reactivateTrustedKey":     true,
-	"registerTrustedKey":       true,
-	"deleteOidcProvider":       true,
-	"invalidateOidcProvider":   true,
-	"listOidcProviders":        true,
-	"reactivateOidcProvider":   true,
-	"registerOidcProvider":     true,
-	"reloadOidcProviders":      true,
-	"updateOidcProvider":       true,
+	"accountSubscriptionsGet": true,
+	// OIDC provider ops — implementation tracked in #194.
+	"deleteOidcProvider":     true,
+	"invalidateOidcProvider": true,
+	"listOidcProviders":      true,
+	"reactivateOidcProvider": true,
+	"registerOidcProvider":   true,
+	"reloadOidcProviders":    true,
+	"updateOidcProvider":     true,
 	// Outside the generated ServerInterface dispatch — see #21 design
 	// Section 8, Task 5.1's Option B note. Tracked as future cleanup.
 	"fetchEntityTransitions": true,

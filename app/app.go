@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
@@ -50,6 +52,7 @@ type App struct {
 	transactionManager spi.TransactionManager
 	authService        contract.AuthenticationService
 	authzService       contract.AuthorizationService
+	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
 	searchService      *search.SearchService
 	auditService       contract.AuditService
@@ -199,10 +202,16 @@ func New(cfg Config) *App {
 	// Today only tracing is wired; add future decorators between tracing and
 	// the plugin TM in the order named here.
 	if cfg.OTelEnabled {
-		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager)
+		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager, observability.Meter())
 	}
 
 	// Auth service: JWT or mock mode
+	//
+	// pendingOIDCAdapter and pendingWarmJWKS are populated inside the JWT block
+	// and consumed after server.Account is constructed. They remain nil in mock
+	// IAM mode (OIDC requires real token validation).
+	var pendingOIDCAdapter *account.OidcAdapter
+	var pendingWarmJWKS func()
 	var authSvc *auth.AuthService
 	if cfg.IAM.Mode == "jwt" {
 		if cfg.IAM.JWTSigningKey == "" {
@@ -224,18 +233,74 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore)
+		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore,
+			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant))
 		if err != nil {
 			slog.Error("startup failure",
 				"phase", "kv-trusted-store-bootstrap",
 				"error", err.Error())
 			os.Exit(1)
 		}
+
+		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
+		// enabled. Checked here (after KVTrustedKeyStore bootstrap, before OIDC
+		// subsystem init) so the OIDC registry is never constructed with a
+		// missing broadcaster in cluster mode.
+		if cfg.Cluster.Enabled && gossipReg == nil {
+			slog.Error("startup failure", "phase", "oidc-broadcaster-missing")
+			os.Exit(1)
+		}
+
+		// Phase 1: synchronous OIDC bootstrap — blocks until KV load completes.
+		// The HTTP listener must NOT bind before this phase finishes (D8).
+		oidcStore, err := oidc.NewKVProviderStore(systemCtx, kvStore)
+		if err != nil {
+			slog.Error("startup failure", "phase", "oidc-store-bootstrap", "error", err.Error())
+			os.Exit(1)
+		}
+
+		oidcDiscovery := oidc.NewHTTPDiscovery(oidc.DiscoveryConfig{
+			ConnectTimeout:           cfg.IAM.OIDC.ConnectTimeout,
+			SocketTimeout:            cfg.IAM.OIDC.SocketTimeout,
+			ConnectionRequestTimeout: cfg.IAM.OIDC.ConnectionRequestTimeout,
+			AllowPrivateNetworks:     cfg.IAM.OIDC.AllowPrivateNetworks,
+		})
+
+		var oidcBroadcaster spi.ClusterBroadcaster
+		if gossipReg != nil {
+			oidcBroadcaster = gossipReg
+		}
+		oidcMetrics, err := oidc.NewOTelMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "oidc-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidcMetrics, slog.Default(), oidc.RegistryConfig{
+			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
+			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
+			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
+		})
+
+		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
+			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())
+			os.Exit(1)
+		}
+
+		oidcSvc := oidc.NewService(oidcStore, oidcRegistry, slog.Default())
+		pendingOIDCAdapter = account.NewOidcAdapter(
+			oidcSvc,
+			cfg.IAM.OIDC.DefaultRolesClaim,
+			cfg.IAM.OIDC.RequireHTTPS,
+			cfg.IAM.OIDC.AllowPrivateNetworks,
+		)
+		pendingWarmJWKS = func() { oidcRegistry.WarmJWKSAsync(systemCtx) }
+
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
 			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
 			Issuer:          cfg.IAM.JWTIssuer,
 			ExpirySeconds:   cfg.IAM.JWTExpiry,
 			TrustedKeyStore: trustedKeyStore,
+			IAMFeatures:     cfg.IAM.AuthIAMFeatures(),
 		})
 		if err != nil {
 			slog.Error("startup failure",
@@ -246,11 +311,19 @@ func New(cfg Config) *App {
 		// The built-in IAM holds its signing keys in-process, so the validator
 		// reads public keys directly from the local key store. No loopback JWKS
 		// fetch, no HTTP client, no attack surface on that path.
-		validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
+		jwksValidator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
 		if cfg.IAM.JWTAudience != "" {
-			validator.SetExpectedAudience(cfg.IAM.JWTAudience)
+			jwksValidator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
-		a.authService = auth.NewDelegatingAuthenticator(validator)
+		// Build the OIDC validator and chain it after the first-party JWKS
+		// validator. Chain order is normative per spec D3 and §11 row 36:
+		// JWKSValidator FIRST, OIDCValidator SECOND. Reversing would cause a
+		// first-party kid with a foreign iss to reach OIDCValidator before
+		// JWKSValidator has a chance to hard-fail with ErrIssuerMismatch.
+		oidcValidator := oidc.NewValidator(oidcRegistry, cfg.IAM.OIDC.DefaultRolesClaim)
+		chainedValidator := auth.NewChainedValidator(jwksValidator, oidcValidator)
+		a.authService = auth.NewDelegatingAuthenticator(chainedValidator)
+		a.authSvc = authSvc
 
 		// Bootstrap M2M client if configured.
 		// validateBootstrapConfig (called above) guarantees that in jwt mode,
@@ -262,7 +335,7 @@ func New(cfg Config) *App {
 			}
 			if err := authSvc.M2MClientStore().CreateWithSecret(
 				cfg.Bootstrap.ClientID,
-				cfg.Bootstrap.TenantID,
+				spi.TenantID(cfg.Bootstrap.TenantID),
 				cfg.Bootstrap.UserID,
 				cfg.Bootstrap.ClientSecret,
 				roles,
@@ -413,7 +486,7 @@ func New(cfg Config) *App {
 		extProc = localDispatcher
 	}
 	if cfg.OTelEnabled {
-		extProc = observability.NewTracingExternalProcessingService(extProc)
+		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),
@@ -440,7 +513,30 @@ func New(cfg Config) *App {
 	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
-	server.Account = account.New(a.authService, a.authzService)
+	var accountKeyStore auth.KeyStore
+	var accountTrustedKeyStore auth.TrustedKeyStore
+	var accountM2MStore auth.M2MClientStore
+	if authSvc != nil {
+		accountKeyStore = authSvc.KeyStore()
+		accountTrustedKeyStore = authSvc.TrustedKeyStore()
+		accountM2MStore = authSvc.M2MClientStore()
+	}
+	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
+	// Wire the OIDC HTTP adapter if the OIDC subsystem was bootstrapped (JWT
+	// IAM mode only). nil is safe — WithOIDCAdapter tolerates nil and leaves
+	// the 7 OIDC stub paths returning 501.
+	if pendingOIDCAdapter != nil {
+		accountHandler.WithOIDCAdapter(pendingOIDCAdapter)
+	}
+	server.Account = accountHandler
+
+	// Phase 2: asynchronous OIDC warmup launched after all synchronous wiring
+	// is complete (D8). The goroutine fetches discovery + JWKS for every
+	// provider loaded in Phase 1. Tokens for not-yet-warmed providers fall
+	// through the chain as ErrUnknownKID → 401 during the cold-start window.
+	if pendingWarmJWKS != nil {
+		go pendingWarmJWKS()
+	}
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
@@ -458,12 +554,9 @@ func New(cfg Config) *App {
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
 	//     and must be reachable by unauthenticated callers by protocol.
 	//
-	//   ADMIN (authMW + ROLE_ADMIN): /oauth/keys/*, /account/m2m, /account/m2m/*.
-	//     Two-layer enforcement: middleware.Auth populates UserContext (or
-	//     rejects with 401), then the handlers in internal/auth/ call the
-	//     requireAdmin guard which enforces ROLE_ADMIN (or rejects with 403).
-	//     Both layers are required — authMW alone would let any
-	//     authenticated caller manage signing keys.
+	//   ADMIN (authMW + ROLE_ADMIN): served via the chi router (account
+	//     handler). The /account/m2m* legacy mux entries were retired
+	//     when /clients chi adapters landed; see m2m_adapter.go.
 
 	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
@@ -474,15 +567,6 @@ func New(cfg Config) *App {
 	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	// Admin auth endpoints: key management, M2M clients, trusted keys.
-	// The handler-side requireAdmin guard enforces ROLE_ADMIN; authMW here
-	// guarantees the UserContext is populated so the guard has something
-	// to check.
-	if authSvc != nil {
-		mux.Handle("/oauth/keys/", authMW(authSvc.AdminHandler()))
-		mux.Handle("/account/m2m/", authMW(authSvc.AdminHandler()))
-		mux.Handle("/account/m2m", authMW(authSvc.AdminHandler()))
-	}
 	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleGetLogLevel)))
 	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleSetLogLevel)))
 	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
@@ -491,6 +575,36 @@ func New(cfg Config) *App {
 	// Entity transition routes (with auth, outside generated API mux)
 	mux.Handle("GET /entity/{entityId}/transitions", authMW(http.HandlerFunc(entityHandler.HandleGetTransitions)))
 	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(http.HandlerFunc(entityHandler.HandleFetchTransitions)))
+
+	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
+	// the closure can capture a.storeFactory directly — the handler needs
+	// the EntityStore as `any` (capability detection via type assertion in
+	// the service layer) and a validated ModelRef for the calling tenant.
+	// The resolver returns ok=false for spi.ErrNotFound (mapped by the
+	// handler to 400 UNKNOWN_MODEL per spec §3) and surfaces every other
+	// storage error to the 500-with-ticket path.
+	storeFactory := a.storeFactory
+	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, bool, error) {
+		ctx := r.Context()
+		modelStore, err := storeFactory.ModelStore(ctx)
+		if err != nil {
+			return nil, spi.ModelRef{}, false, err
+		}
+		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
+		if _, gerr := modelStore.Get(ctx, ref); gerr != nil {
+			if errors.Is(gerr, spi.ErrNotFound) {
+				return nil, ref, false, nil
+			}
+			return nil, ref, false, gerr
+		}
+		entityStore, err := storeFactory.EntityStore(ctx)
+		if err != nil {
+			return nil, ref, false, err
+		}
+		return entityStore, ref, true, nil
+	}
+	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
+	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(groupedStatsHandler))
 
 	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths.
@@ -571,6 +685,11 @@ func (a *App) TransactionManager() spi.TransactionManager { return a.transaction
 func (a *App) AuthenticationService() contract.AuthenticationService {
 	return a.authService
 }
+
+// AuthService returns the underlying *auth.AuthService when JWT IAM mode is
+// active, or nil when running in mock IAM mode. Exposed for test-mode seeding
+// of M2M clients across tenants without going through the public HTTP surface.
+func (a *App) AuthService() *auth.AuthService { return a.authSvc }
 func (a *App) AuthorizationService() contract.AuthorizationService {
 	return a.authzService
 }

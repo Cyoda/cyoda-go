@@ -32,7 +32,8 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 | `cyoda-go` | Root `go.mod` pins | In-tree plugin go.mods pin | SPI surface added in this release |
 |---|---|---|---|
-| **`v0.7.1`** _(planned)_ | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
+| **`v0.8.1`** | `cyoda-go-spi v0.8.1` | `cyoda-go-spi v0.8.1` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`); scheduled-transition shape: `TransitionDefinition.Schedule *TransitionSchedule` (`DelayMs`, `TimeoutMs *int64`); async-result shape: `ProcessorConfig.AsyncResult *bool`, `ProcessorConfig.CrossoverToAsyncMs *int64`; client-owned annotations: `Annotations json.RawMessage` on the workflow, state, and transition definitions |
+| **`v0.7.1`** | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
 | **`v0.7.0`** | `cyoda-go-spi v0.7.0` | `cyoda-go-spi v0.6.1`† | `ProcessorConfig.StartNewTxOnDispatch *bool` |
 | `v0.6.3` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | — (binary-only changes) |
 | `v0.6.2` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | — |
@@ -45,11 +46,27 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 A plugin pinned to **`cyoda-go-spi v<X.Y.Z>`** is compatible with any **`cyoda-go v<A.B.C>`** whose root `go.mod` pins the same `v<X.Y>.*` series or any *later* `v<X+1.0.0>` series that hasn't broken the interfaces the plugin uses.
 
-In practice, today: **all SPI versions `v0.5.0` … `v0.7.1` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.0` and the planned `v0.7.1`. This will change only when SPI introduces a breaking interface (none planned for v0.x).
+In practice, today: **all SPI versions `v0.5.0` … `v0.8.1` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.x` and `v0.8.1`. This will change only when SPI introduces a breaking interface (none planned for v0.x).
 
 ### Migration window
 
 cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugins are using. Consumers compose at runtime — the active plugin's pinned SPI version determines which SPI surface is actually exercised, and unused additions are inert. There is no requirement that the binary's SPI pin and the plugin's SPI pin match exactly.
+
+### Why there is no `v0.8.0` (SPI or binary)
+
+A `cyoda-go-spi v0.8.0` tag was cut prematurely on 2026-06-13 at an incomplete
+commit and was fetched through `proxy.golang.org`, which **permanently** binds a
+version to the first commit it serves. A Go module version cannot be re-cut once
+the proxy/checksum-database has seen it, so `v0.8.0` is abandoned and
+**`cyoda-go-spi v0.8.1`** is the canonical, complete v0.8.x SPI release — it
+resolves cleanly through the public proxy with no `GOPRIVATE` workaround. To keep
+the binary aligned with the SPI it pins, `cyoda-go` skips `v0.8.0` as well and
+ships **`v0.8.1`**. See [`MAINTAINING.md`](./MAINTAINING.md): a module version is
+tagged exactly once, at the final commit, and never re-cut.
+
+### Optional capability interfaces (grouped-stats)
+
+The `Iterable` and `GroupedAggregator` SPI interfaces are **type-assertion-only**. The `EntityStore` base interface is unchanged. Existing plugins keep compiling without implementing either. A plugin that implements neither causes `POST /api/entity/stats/{entityName}/{modelVersion}/query` to return 501 `NOT_IMPLEMENTED_BY_BACKEND`; every other endpoint continues to work normally. Implementing only `Iterable` is sufficient — the service layer falls back to streaming-tally when `GroupedAggregator` is absent. Implementing `GroupedAggregator` without `Iterable` is supported but loses the in-transaction code path (in-tx calls route through `Iterable` to preserve read-your-writes).
 
 ## Plugin tag history
 
@@ -73,7 +90,8 @@ When cyoda-go-cassandra bumps to `cyoda-go v0.7.0`, the four new parity scenario
 
 | Chart `version:` | Chart `appVersion:` | Default binary | Notes |
 |---|---|---|---|
-| `0.6.3` | `0.7.0` | `cyoda-go v0.7.0` | **Current.** Chart manifests unchanged since `cyoda-0.6.3`; `appVersion` advances independently per [PR #232](https://github.com/Cyoda-platform/cyoda-go/pull/232). |
+| `0.7.0` | `0.7.1` | `cyoda-go v0.7.1` | **Current.** Adds optional `migrate.postgres` DSN — a separate migration-Job (owner/DDL) role for the two-role DB model; backward-compatible (falls back to `postgres.existingSecret`). First chart-manifest change since `0.6.3`. |
+| `0.6.3` | `0.7.0` | `cyoda-go v0.7.0` | Chart manifests unchanged since `cyoda-0.6.3`; `appVersion` advances independently per [PR #232](https://github.com/cyoda/cyoda-go/pull/232). |
 | `0.6.3` | `0.6.3` | `cyoda-go v0.6.3` | Tagged as `cyoda-0.6.3` chart release (April 2026). |
 
 The chart's `version:` bumps only when **rendered manifests** change (templates, values, schema). The chart's `appVersion:` advances each binary release worth advertising via the chart. The two are decoupled by Helm convention.
@@ -87,7 +105,7 @@ The chart's `version:` bumps only when **rendered manifests** change (templates,
 
 ## Homebrew formula
 
-[`homebrew-cyoda-go`](https://github.com/Cyoda-platform/homebrew-cyoda-go) ships a single binary per release. The `cyoda.rb` formula is auto-updated by GoReleaser on every `v*` tag push and pins:
+[`homebrew-cyoda-go`](https://github.com/cyoda/homebrew-cyoda-go) ships a single binary per release. The `cyoda.rb` formula is auto-updated by GoReleaser on every `v*` tag push and pins:
 
 - `version "<X.Y.Z>"` (matches the binary tag)
 - `url "…/cyoda_<X.Y.Z>_<os>_<arch>.tar.gz"`

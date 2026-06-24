@@ -216,7 +216,7 @@ The compute member protocol allows external processes to serve as workflow proce
 
 **Processor dispatch (server → client):**
 
-Server sends `EntityProcessorCalculationRequest` when a workflow transition invokes an `EXTERNAL` processor whose `calculationNodesTags` matches one of the member's declared tags:
+Server sends `EntityProcessorCalculationRequest` when a workflow transition invokes an `externalized` processor whose `calculationNodesTags` matches one of the member's declared tags:
 
 ```json
 {

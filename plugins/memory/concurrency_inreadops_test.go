@@ -3,7 +3,6 @@ package memory_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,10 +25,13 @@ import (
 //
 // Each test runs many iterations to give the scheduler chances to
 // interleave the in-flight op with Rollback. Tolerated errors are the
-// legitimate outcomes of a tx that closed mid-op:
-//   - "rolled back"
-//   - "already completed"
-//   - "not found"
+// legitimate outcomes of a tx that closed mid-op, recognised via
+// errors.Is against the SPI tx-state sentinels (issue #200):
+//   - spi.ErrTxTerminated      ("already completed" / "rolled back")
+//   - spi.ErrTxNotFound        ("not found")
+//   - spi.ErrTxCommitInProgress ("already being committed")
+//
+// See isToleratedClosedTxErr in concurrency_helpers_test.go.
 //
 // These tests are intended to be run with `go test -race`. Without
 // `-race`, they will not exercise the data-race detector but still
@@ -81,13 +83,7 @@ func runOpVsRollback(
 				defer wg.Done()
 				<-start
 				if oerr := op(txCtx, store); oerr != nil {
-					if errors.Is(oerr, spi.ErrConflict) || errors.Is(oerr, spi.ErrNotFound) {
-						return
-					}
-					msg := oerr.Error()
-					if strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "not found") {
+					if errors.Is(oerr, spi.ErrConflict) || isToleratedClosedTxErr(oerr) {
 						return
 					}
 					t.Errorf("%s: op failed: %v", name, oerr)
@@ -273,14 +269,7 @@ func runOpVsCommit(
 				defer wg.Done()
 				<-start
 				if oerr := op(txCtx, store); oerr != nil {
-					if errors.Is(oerr, spi.ErrConflict) || errors.Is(oerr, spi.ErrNotFound) {
-						return
-					}
-					msg := oerr.Error()
-					if strings.Contains(msg, "rolled back") ||
-						strings.Contains(msg, "already completed") ||
-						strings.Contains(msg, "not found") ||
-						strings.Contains(msg, "already being committed") {
+					if errors.Is(oerr, spi.ErrConflict) || isToleratedClosedTxErr(oerr) {
 						return
 					}
 					t.Errorf("%s: op failed: %v", name, oerr)

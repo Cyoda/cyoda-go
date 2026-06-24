@@ -39,12 +39,12 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted(t *te
 	modelRef := spi.ModelRef{EntityName: "ifmatch-aborted", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "AbortedWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "AbortedWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S_post", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},

@@ -87,3 +87,14 @@ func NewStoreFactoryWithTMForTest(pool *pgxpool.Pool, tm *TransactionManager) *S
 	f.setTransactionManager(tm)
 	return f
 }
+
+// ValidateJSONPathForTest exposes the unexported path validator so tests in
+// _test packages can assert the accept/reject contract directly without
+// reaching through GroupedAggregate.
+var ValidateJSONPathForTest = validateJSONPath
+
+// PoolForTest returns the underlying pgx pool for diagnostic queries (e.g.
+// EXPLAIN) that don't fit any typed store method.
+func PoolForTest(f *StoreFactory) *pgxpool.Pool {
+	return f.pool
+}

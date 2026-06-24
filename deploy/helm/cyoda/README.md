@@ -4,8 +4,8 @@ Production-ready Helm deployment of cyoda-go backed by an external
 Postgres, fronted by Gateway API (default) or a still-maintained
 Ingress controller (transitional).
 
-Chart version: 0.1.0 — AppVersion: pinned by `bump-chart-appversion.yml`
-on each binary release.
+See `Chart.yaml` for the chart `version:`. `appVersion:` is pinned to the
+binary release by `bump-chart-appversion.yml`.
 
 ## Installation
 
@@ -37,7 +37,7 @@ kubectl -n cyoda create secret generic cyoda-jwt \
 ### Install
 
 ```bash
-helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
+helm repo add cyoda https://cyoda.github.io/cyoda-go
 helm repo update
 
 helm install cyoda cyoda/cyoda -n cyoda \
@@ -64,6 +64,29 @@ helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
 
 The chart auto-generates the secret (or use
 `bootstrap.clientSecret.existingSecret` for GitOps).
+
+### Separate migration DSN (optional, two-role DB model)
+
+By default the migration Job and the runtime pods share one DSN
+(`postgres.existingSecret`). For least-privilege deployments you can run the
+migration Job (which performs DDL) as a dedicated **owner** role while the
+runtime StatefulSet connects as a non-owner **runtime** role. Set
+`migrate.postgres.existingSecret` (and optionally `existingSecretKey`, default
+`dsn`) to a Secret holding the owner DSN:
+
+```bash
+kubectl -n cyoda create secret generic cyoda-dsn-migrate \
+  --from-literal=dsn='postgres://cyoda_owner:REDACTED@pg.example.com:5432/cyoda?sslmode=require'
+
+helm upgrade cyoda cyoda/cyoda -n cyoda \
+  --set migrate.postgres.existingSecret=cyoda-dsn-migrate
+```
+
+(combine the `--set migrate.postgres.existingSecret=…` flag with the flags
+from your original `helm install` above.)
+
+When `migrate.postgres.existingSecret` is unset, the migration Job falls back
+to `postgres.existingSecret`, so existing single-DSN installs are unchanged.
 
 ### NetworkPolicy (default ON)
 

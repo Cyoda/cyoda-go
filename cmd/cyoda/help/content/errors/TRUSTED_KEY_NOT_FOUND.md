@@ -30,6 +30,8 @@ The detail field carries a generic `key not found` message; internal store phras
 
 Not retryable. Verify the KID via `GET /oauth/keys/trusted` before retrying the operation.
 
+Returned uniformly for kids that don't exist AND kids owned by another tenant; the response does not distinguish — by design, to prevent cross-tenant existence enumeration.
+
 ## SEE ALSO
 
 - errors

@@ -11,16 +11,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type Config struct {
-	HTTPPort           int
-	ContextPath        string
-	ErrorResponseMode  string
-	MaxStateVisits     int
-	LogLevel           string
+	HTTPPort          int
+	ContextPath       string
+	ErrorResponseMode string
+	MaxStateVisits    int
+	LogLevel          string
 	// Version is the ldflag-injected binary version string reported in the
 	// REST /help payload. Defaults to "dev" when unset.
 	Version            string
@@ -42,6 +43,12 @@ type Config struct {
 	// ExternalProcessing overrides the default gRPC processor dispatcher.
 	// Used in tests to inject a LocalProcessingService.
 	ExternalProcessing contract.ExternalProcessingService
+	// StatsGroupMax is the cardinality ceiling for grouped-stats results
+	// (POST /api/entity/stats/{entityName}/{modelVersion}/query). When the
+	// service produces more distinct groupKey combinations than this value,
+	// the request fails with 422 GROUP_CARDINALITY_EXCEEDED. Defaults to
+	// 10000; tune via CYODA_STATS_GROUP_MAX. See spec D2.
+	StatsGroupMax int
 }
 
 type AdminConfig struct {
@@ -76,6 +83,39 @@ type IAMConfig struct {
 	JWTAudience    string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
 	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
 	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
+
+	// IAM feature-flag fields — passed through to auth.IAMFeatures via AuthIAMFeatures().
+	// Individual fields document their own purpose; this block covers both
+	// /oauth/keys/* (TrustedKey* + KeypairDefault*) and /clients (M2MAdminRoleEnabled).
+	TrustedKeyRegistrationEnabled bool
+	TrustedKeyMaxPerTenant        int
+	TrustedKeyMaxValidityDays     int
+	TrustedKeyMaxJWKProperties    int
+	KeypairDefaultValidityDays    int
+	BootstrapAudience             string
+
+	// M2MAdminRoleEnabled — see auth.IAMFeatures.M2MAdminRoleEnabled.
+	// env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
+	M2MAdminRoleEnabled bool
+
+	// OIDC holds the OIDC provider subsystem configuration.
+	// See OIDCConfig for per-field documentation.
+	OIDC OIDCConfig
+}
+
+// OIDCConfig holds the OIDC provider subsystem's configuration per spec §7.
+// All four timeouts are positive Durations; zero values inherit the 5s default
+// applied inside oidc.NewHTTPDiscovery. DefaultRolesClaim is the global default
+// for the roles claim name (per-provider override available via provider.RolesClaim).
+// AllowPrivateNetworks is a test/dev override of the SSRF blocklist; production
+// deployments leave it false.
+type OIDCConfig struct {
+	RequireHTTPS             bool
+	ConnectTimeout           time.Duration
+	SocketTimeout            time.Duration
+	ConnectionRequestTimeout time.Duration
+	AllowPrivateNetworks     bool
+	DefaultRolesClaim        string
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -114,6 +154,17 @@ func DefaultConfig() Config {
 	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
 	metricsBearerToken := mustResolveSecretEnv("CYODA_METRICS_BEARER")
 
+	// CYODA_STATS_GROUP_MAX defends against an operator setting the cap to
+	// 0 or a negative value (e.g. via shell typo). Without the clamp the
+	// value would propagate to plugin GroupedAggregator implementations
+	// which interpret <=0 as "unbounded" (sqlite skips LIMIT, memory skips
+	// the cardinality check) — silently disabling the cardinality
+	// ceiling. Clamp to the documented default instead.
+	statsGroupMax := envInt("CYODA_STATS_GROUP_MAX", 10000)
+	if statsGroupMax <= 0 {
+		statsGroupMax = 10000
+	}
+
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
 		ContextPath:       envString("CYODA_CONTEXT_PATH", "/api"),
@@ -146,25 +197,41 @@ func DefaultConfig() Config {
 		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
+		StatsGroupMax:      statsGroupMax,
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
 			MetricsRequireAuth: envBool("CYODA_METRICS_REQUIRE_AUTH", false),
 			MetricsBearerToken: metricsBearerToken,
 		},
-		StartupTimeout:     envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
+		StartupTimeout: envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
-			Mode:           envString("CYODA_IAM_MODE", "mock"),
-			MockUserID:     "mock-user-001",
-			MockUserName:   "Mock User",
-			MockTenantID:   "mock-tenant",
-			MockTenantName: "Mock Tenant",
-			MockRoles:      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			JWTSigningKey:  jwtSigningKey,
-			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda"),
-			JWTAudience:    envString("CYODA_JWT_AUDIENCE", ""),
-			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
-			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
+			Mode:                          envString("CYODA_IAM_MODE", "mock"),
+			MockUserID:                    "mock-user-001",
+			MockUserName:                  "Mock User",
+			MockTenantID:                  "mock-tenant",
+			MockTenantName:                "Mock Tenant",
+			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			JWTSigningKey:                 jwtSigningKey,
+			JWTIssuer:                     envString("CYODA_JWT_ISSUER", "cyoda"),
+			JWTAudience:                   envString("CYODA_JWT_AUDIENCE", ""),
+			JWTExpiry:                     envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
+			RequireJWT:                    envBool("CYODA_REQUIRE_JWT", false),
+			TrustedKeyRegistrationEnabled: envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
+			TrustedKeyMaxPerTenant:        envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
+			TrustedKeyMaxValidityDays:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
+			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
+			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
+			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
+			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
+			OIDC: OIDCConfig{
+				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
+				ConnectTimeout:           envMillis("CYODA_OIDC_CONNECT_TIMEOUT_MS", 5*time.Second),
+				SocketTimeout:            envMillis("CYODA_OIDC_SOCKET_TIMEOUT_MS", 5*time.Second),
+				ConnectionRequestTimeout: envMillis("CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", 5*time.Second),
+				AllowPrivateNetworks:     envBool("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", false),
+				DefaultRolesClaim:        envString("CYODA_OIDC_ROLES_CLAIM", "roles"),
+			},
 		},
 		Cluster: cluster.Config{
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
@@ -249,6 +316,21 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// envMillis parses an env var as an integer number of milliseconds and returns
+// it as a time.Duration. Falls back to def if the variable is unset or not a
+// valid integer.
+func envMillis(name string, def time.Duration) time.Duration {
+	s := os.Getenv(name)
+	if s == "" {
+		return def
+	}
+	ms, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // mockRolesFromEnv parses CYODA_IAM_MOCK_ROLES and falls back to the
@@ -433,19 +515,43 @@ func isASCII(s string) bool {
 	return true
 }
 
-// ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary
-// refuses to run with mock auth or a missing signing key. Intended for
-// production provisioning (Helm) where silent mock-auth fallback would be
-// a security hazard. Callers must invoke this before wiring auth in New().
+// ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT
+// is set, mock mode is rejected and the signing key must be present. In JWT
+// mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
+// env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
+// etc. fail startup rather than being silently ignored.
+// Callers must invoke this before wiring auth in New().
 func ValidateIAM(iam IAMConfig) error {
-	if !iam.RequireJWT {
-		return nil
-	}
-	if iam.Mode != "jwt" {
+	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
+	// can never silently fall back to unauthenticated access.
+	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
 	}
-	if iam.JWTSigningKey == "" {
+	// Mock mode needs no further validation.
+	if iam.Mode == "mock" {
+		return nil
+	}
+	// JWT mode: signing-key presence gated on RequireJWT; feature validation
+	// is unconditional so misconfigured env values fail at startup.
+	if iam.RequireJWT && iam.JWTSigningKey == "" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_JWT_SIGNING_KEY is empty")
 	}
+	if err := iam.AuthIAMFeatures().Validate(); err != nil {
+		return fmt.Errorf("IAM features validation: %w", err)
+	}
 	return nil
+}
+
+// AuthIAMFeatures projects the new IAM-feature fields out of IAMConfig
+// into the auth-package value struct.
+func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
+	return auth.IAMFeatures{
+		TrustedKeyRegistrationEnabled: c.TrustedKeyRegistrationEnabled,
+		TrustedKeyMaxPerTenant:        c.TrustedKeyMaxPerTenant,
+		TrustedKeyMaxValidityDays:     c.TrustedKeyMaxValidityDays,
+		TrustedKeyMaxJWKProperties:    c.TrustedKeyMaxJWKProperties,
+		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
+		BootstrapAudience:             c.BootstrapAudience,
+		M2MAdminRoleEnabled:           c.M2MAdminRoleEnabled,
+	}
 }

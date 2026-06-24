@@ -2,7 +2,6 @@ package memory_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -559,8 +558,8 @@ func TestSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	if _, err := tm.Savepoint(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B takes savepoint on tenant A's tx")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -586,8 +585,8 @@ func TestRollbackToSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	if err := tm.RollbackToSavepoint(ctxB, txAID, spID); err == nil {
 		t.Fatal("expected error when tenant B rolls back tenant A's savepoint")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)
@@ -613,8 +612,8 @@ func TestReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	if err := tm.ReleaseSavepoint(ctxB, txAID, spID); err == nil {
 		t.Fatal("expected error when tenant B releases tenant A's savepoint")
-	} else if !strings.Contains(err.Error(), "tenant mismatch") {
-		t.Fatalf("expected tenant-mismatch error, got: %v", err)
+	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
 
 	_ = tm.Rollback(ctxA, txAID)

@@ -36,7 +36,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - Entities as finite state machines with automated and manual transitions
 - Multiple workflows per model with criteria-based selection
 - Transition criteria (JSONPath predicates, lifecycle conditions, group logic, external functions)
-- Processor execution on transitions (SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX)
+- Processor execution on transitions (SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH) — see [`docs/PROCESSOR_EXECUTION_MODES.md`](PROCESSOR_EXECUTION_MODES.md)
 - Cascade loop — automated transitions fire until stable state
 - Loopback — re-evaluate automation from current state on data update
 - Workflow import/export (MERGE, REPLACE, ACTIVATE modes)
@@ -76,6 +76,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - M2M technical user management (create, delete, reset secret)
 - JWT key pair management (issue, invalidate, reactivate, delete)
 - Trusted external key registration (persistent across restarts)
+- OIDC provider per-tenant registry (register, list, get, update, invalidate, reactivate, delete, reload). External-IdP JWT validation via chained multi-issuer validator. Cross-node cache eviction via cluster broadcast.
 - Mock mode for zero-setup development
 
 ### Multi-Tenancy
@@ -111,7 +112,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 | **Audit** | `GET /audit/entity/{entityId}`, workflow finished event |
 | **Messaging** | `POST/GET/DELETE /message/...` |
 | **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key + trusted-key management |
-| **M2M Clients** | `GET/POST /account/m2m`, `DELETE /account/m2m/{clientId}`, `POST /account/m2m/{clientId}/secret/reset` |
+| **M2M Clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` |
 | **Account** | `GET /account`, subscriptions |
 | **Admin** | `GET/POST /admin/log-level`, `GET/POST /admin/trace-sampler` |
 

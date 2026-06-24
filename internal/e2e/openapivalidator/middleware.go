@@ -17,16 +17,17 @@ import (
 // /api context-path mount (e.g. "/api/health" matches prefix "/api/health").
 //
 // Keep this list to genuinely non-spec paths only. Customer endpoints that
-// are spec-declared but not yet implemented (e.g. /oauth/keys/, /account/m2m)
-// must NOT appear here — they should go through the validator so that
-// knownUncoveredOps (in zzz_openapi_conformance_test.go) remains the single
-// authoritative source of "intentionally uncovered" operations.
+// are spec-declared but not yet implemented must NOT appear here — they should
+// go through the validator so that knownUncoveredOps (in
+// zzz_openapi_conformance_test.go) remains the single authoritative source of
+// "intentionally uncovered" operations.
 var operationalPathPrefixes = []string{
 	"/api/health",
 	"/api/docs",
 	"/api/openapi.json",
 	"/api/admin/",
 	"/api/.well-known/",
+	"/api/help/",
 }
 
 // isOperationalPath reports whether path p is an operational/admin endpoint

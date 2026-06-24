@@ -29,7 +29,7 @@ func TestManualTransitionWithIfMatch_NoSegmentingCascade(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "ifmatch-no-cbd", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "IfMatchNoCbdWF", InitialState: "PENDING", Active: true,
+		Version: "1.1", Name: "IfMatchNoCbdWF", InitialState: "PENDING", Active: true,
 		States: map[string]spi.StateDefinition{
 			"PENDING":  {Transitions: []spi.TransitionDefinition{{Name: "approve", Next: "APPROVED", Manual: true}}},
 			"APPROVED": {},
@@ -108,12 +108,12 @@ func TestManualTransitionWithIfMatch_CBDCascadeMatching(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "ifmatch-cbd-match", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "IfMatchCbdWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "IfMatchCbdWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S_post", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},
@@ -204,12 +204,12 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch(t *test
 	modelRef := spi.ModelRef{EntityName: "ifmatch-cbd-stale", ModelVersion: "1.0"}
 
 	wf := spi.WorkflowDefinition{
-		Version: "1.0", Name: "IfMatchStaleWF", InitialState: "S_pre", Active: true,
+		Version: "1.1", Name: "IfMatchStaleWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
 			"S_pre": {Transitions: []spi.TransitionDefinition{
 				{Name: "go", Next: "S_post", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: "EXTERNAL", Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
 					}},
 			}},
 			"S_post": {},

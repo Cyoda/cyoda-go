@@ -42,7 +42,7 @@ func workflowLifecycleFlow() Scenario {
 				Name:         "Import workflow",
 				Method:       "POST",
 				PathTemplate: "/model/{model}/1/workflow/import",
-				Body:         `{"importMode":"MERGE","workflows":[{"version":"1.0","name":"TestWorkflow","initialState":"NEW","active":true,"states":{"NEW":{"transitions":[{"name":"VALIDATE","next":"VALIDATED","manual":false}]},"VALIDATED":{"transitions":[]}}}]}`,
+				Body:         `{"importMode":"MERGE","workflows":[{"version":"1.1","name":"TestWorkflow","initialState":"NEW","active":true,"states":{"NEW":{"transitions":[{"name":"VALIDATE","next":"VALIDATED","manual":false}]},"VALIDATED":{"transitions":[]}}}]}`,
 				ExpectStatus: 200,
 			},
 			// 4. Export workflow

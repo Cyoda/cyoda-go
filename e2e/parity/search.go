@@ -12,7 +12,7 @@ import (
 const searchWorkflowJSON = `{
 	"importMode": "REPLACE",
 	"workflows": [{
-		"version": "1", "name": "search-wf", "initialState": "NONE", "active": true,
+		"version": "1.1", "name": "search-wf", "initialState": "NONE", "active": true,
 		"states": {
 			"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 			"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true}]},
@@ -221,7 +221,7 @@ func RunWorkflowCriteriaSelectingWorkflow(t *testing.T, fixture BackendFixture) 
 		"importMode": "REPLACE",
 		"workflows": [
 			{
-				"version": "1", "name": "premium-wf", "initialState": "NONE", "active": true,
+				"version": "1.1", "name": "premium-wf", "initialState": "NONE", "active": true,
 				"criterion": {"type": "function", "function": {"name": "select-premium"}},
 				"states": {
 					"NONE": {"transitions": [{"name": "init", "next": "PREMIUM_CREATED", "manual": false}]},
@@ -229,7 +229,7 @@ func RunWorkflowCriteriaSelectingWorkflow(t *testing.T, fixture BackendFixture) 
 				}
 			},
 			{
-				"version": "1", "name": "standard-wf", "initialState": "NONE", "active": true,
+				"version": "1.1", "name": "standard-wf", "initialState": "NONE", "active": true,
 				"criterion": {"type": "function", "function": {"name": "select-standard"}},
 				"states": {
 					"NONE": {"transitions": [{"name": "init", "next": "STD_CREATED", "manual": false}]},

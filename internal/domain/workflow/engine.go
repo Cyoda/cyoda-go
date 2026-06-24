@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -28,10 +29,18 @@ var defaultWorkflowJSON []byte
 
 // ErrTransitionNotFound is returned by ManualTransition (and surfaces from
 // Execute) when the requested transition name is absent from the entity's
-// current state — either because no such transition exists or because it is
-// disabled. Callers can discriminate this case from other engine failures via
+// current state — either because no such transition exists, it is disabled,
+// or it is scheduled and the timer runtime is not yet implemented. Callers
+// can discriminate this case from other engine failures via
 // errors.Is(err, ErrTransitionNotFound).
 var ErrTransitionNotFound = errors.New("transition not found")
+
+// scheduledNotYetImplementedReason is the human-readable cause emitted by
+// both the audit event Details and the wrapped error message when an explicit
+// fire of a scheduled transition is rejected. Extracted as a const so the
+// rewording required when the timer runtime ships only has to happen in one
+// place.
+const scheduledNotYetImplementedReason = "scheduled transitions are not yet implemented"
 
 // maxCascadeDepth is an absolute safety net for total cascade steps.
 const maxCascadeDepth = 100
@@ -91,7 +100,7 @@ func WithMaxStateVisits(n int) EngineOption {
 //
 // State-machine audit events are recorded under entity.Meta.TransactionID so
 // that the transaction ID returned by POST /entity can be used to look up
-// workflow results via /audit/entity/{id}/workflow/{txId}/finished (issue #20).
+// workflow results via /audit/entity/{id}/workflow/{txId}/finished.
 func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.execute", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -123,9 +132,11 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
 
-	// No workflows defined → use default workflow.
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
@@ -225,9 +236,11 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
 
-	// No workflows defined → use default workflow.
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
@@ -307,9 +320,11 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
 
-	// No workflows defined → use default workflow.
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
@@ -383,9 +398,11 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name), nil)
 	}
 
-	// No imported workflow matched — fall back to the default workflow.
+	// No imported workflow matched the entity — fall back to the embedded
+	// default. Both channels (body warning + slog.Warn) fire.
 	if len(e.defaultWorkflows) > 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
+		common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_criterion_matched")
 		defaultWF := &e.defaultWorkflows[0]
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
@@ -441,6 +458,16 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName), nil)
 		return ctx, txID, fmt.Errorf("transition %q is disabled in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
+	}
+
+	if transition.Schedule != nil {
+		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+			spi.SMEventTransitionNotFound,
+			fmt.Sprintf("Transition %q is scheduled; %s",
+				transitionName, scheduledNotYetImplementedReason), nil)
+		return ctx, txID, fmt.Errorf(
+			"transition %q in state %q is scheduled; %s: %w",
+			transitionName, entity.Meta.State, scheduledNotYetImplementedReason, ErrTransitionNotFound)
 	}
 
 	// Evaluate transition criterion.
@@ -516,7 +543,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		fired := false
 		for i := range stateDef.Transitions {
 			tr := &stateDef.Transitions[i]
-			if tr.Disabled || tr.Manual {
+			if tr.Disabled || tr.Manual || tr.Schedule != nil {
 				continue
 			}
 
@@ -619,6 +646,27 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 		return entity.Meta.TransactionID
 	}
 	return uuid.UUID(e.uuids.NewTimeUUID()).String()
+}
+
+// logDefaultFallback emits a single slog.Warn line whenever the engine
+// substitutes the embedded default workflow. The four call sites map to
+// two cause groups via the reason argument:
+//   - "no_workflows_imported": cold-path (Execute/ManualTransition/Loopback)
+//     with no stored workflows for the model — three call sites.
+//   - "no_criterion_matched":  workflows exist but no criterion matched the
+//     entity (selectWorkflow tail) — one call site.
+//
+// The body-level warning via common.AddWarning is retained at each call
+// site for client-facing surfacing; this log line is purely additive for
+// operational observability.
+func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
+	slog.WarnContext(ctx, "default workflow substituted",
+		slog.String("pkg", "workflow"),
+		slog.String("tenant", common.TenantFromContext(ctx)),
+		slog.String("entityName", entity.Meta.ModelRef.EntityName),
+		slog.String("modelVersion", entity.Meta.ModelRef.ModelVersion),
+		slog.String("entityId", entity.Meta.ID),
+		slog.String("reason", reason))
 }
 
 // recordEvent records a single audit event.

@@ -93,7 +93,7 @@ The spec declares 83 paths across these tag groups:
 - **User, Machine** — M2M client management under `/clients/`
 - **Entity, Audit** — audit log retrieval under `/audit/`
 - **Messaging** — message CRUD under `/message/`
-- **IAM** — OAuth token, key management, OIDC providers under `/oauth/`
+- **IAM** — OAuth token and key management under `/oauth/`. As of v0.8.0, the 10 `/oauth/keys/*` admin operations (keypair + trusted-key lifecycle), the 7 `/oauth/oidc/providers/*` operations, and the 4 `/clients` operations are conformant. Remaining stubbed surface across `/account/*` and adjacent paths is tracked in `docs/cyoda/cloud-divergences.md`.
 - **SQL Schema** — SQL schema generation and management under `/sql/schema/` (excluded from cyoda-go — see below)
 - **Platform API** — stream-data operations under `/platform-api/stream-data/` (excluded from cyoda-go — see below)
 
@@ -101,7 +101,7 @@ The **Stream Data** and **SQL-Schema** tag groups (22 operations) are excluded f
 shipped API via `api/config.yaml`'s `exclude-tags` list. These operations are not served by
 cyoda-go and are filtered from the generated `ServerInterface` and from E2E coverage tracking.
 
-Named schemas added or refined since the initial spec import (see #21):
+Named schemas added or refined since the initial spec import:
 
 - `Envelope` — entity get/list response wrapper `{type, data, meta}`
 - `EdgeMessagePayload` — polymorphic message content schema
@@ -259,7 +259,7 @@ curl -s http://localhost:8080/api/help/models | jq '.title'
 docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -e CYODA_STORAGE_BACKEND=memory \
-  ghcr.io/cyoda-platform/cyoda:latest &
+  ghcr.io/cyoda/cyoda:latest &
 sleep 2
 curl -s http://localhost:8080/openapi.json | jq '.paths | keys | length'
 ```

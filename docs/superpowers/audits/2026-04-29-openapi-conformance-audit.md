@@ -119,16 +119,16 @@ change.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| deleteJwtKeyPair | DELETE | /oauth/keys/keypair/{keyId} | `internal/domain/account/handler.go:93` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| deleteTrustedKey | DELETE | /oauth/keys/trusted/{keyId} | `internal/domain/account/handler.go:113` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| getCurrentJwtKeyPair | GET | /oauth/keys/keypair/current | `internal/domain/account/handler.go:89` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| invalidateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/invalidate | `internal/domain/account/handler.go:97` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| invalidateTrustedKey | POST | /oauth/keys/trusted/{keyId}/invalidate | `internal/domain/account/handler.go:117` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| issueJwtKeyPair | POST | /oauth/keys/keypair | `internal/domain/account/handler.go:85` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| listTrustedKeys | GET | /oauth/keys/trusted | `internal/domain/account/handler.go:105` | `type:array items:$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| reactivateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/reactivate | `internal/domain/account/handler.go:101` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| reactivateTrustedKey | POST | /oauth/keys/trusted/{keyId}/reactivate | `internal/domain/account/handler.go:121` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| registerTrustedKey | POST | /oauth/keys/trusted | `internal/domain/account/handler.go:109` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| deleteJwtKeyPair | DELETE | /oauth/keys/keypair/{keyId} | `internal/domain/account/handler.go:93` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| deleteTrustedKey | DELETE | /oauth/keys/trusted/{keyId} | `internal/domain/account/handler.go:113` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| getCurrentJwtKeyPair | GET | /oauth/keys/keypair/current | `internal/domain/account/handler.go:89` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| invalidateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/invalidate | `internal/domain/account/handler.go:97` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| invalidateTrustedKey | POST | /oauth/keys/trusted/{keyId}/invalidate | `internal/domain/account/handler.go:117` | `content:{}` (empty body); `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| issueJwtKeyPair | POST | /oauth/keys/keypair | `internal/domain/account/handler.go:85` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| listTrustedKeys | GET | /oauth/keys/trusted | `internal/domain/account/handler.go:105` | `type:array items:$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| reactivateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/reactivate | `internal/domain/account/handler.go:101` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| reactivateTrustedKey | POST | /oauth/keys/trusted/{keyId}/reactivate | `internal/domain/account/handler.go:121` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
+| registerTrustedKey | POST | /oauth/keys/trusted | `internal/domain/account/handler.go:109` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | match | pending — release/v0.8.0 merge |
 
 ---
 
@@ -159,11 +159,11 @@ change.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| createTechnicalUser | POST | /clients | `internal/domain/account/handler.go:69` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| deleteTechnicalUser | DELETE | /clients/{clientId} | `internal/domain/account/handler.go:73` | `$ref DeleteTechnicalUser200ResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| getTechnicalUserToken | POST | /oauth/token | real impl in `internal/auth/token.go` (account handler stub bypassed) | `$ref TokenResponseDto`; 200/400/401/403/500 declared — matches server for `client_credentials`; note: `issued_token_type` enum only has `access_token` but server returns `jwt` for token-exchange (fix-spec minor) | real impl via `auth/token.go`; `client_credentials` wire matches spec; `token-exchange` `issued_token_type` enum drift noted | fix-spec (minor: issued_token_type enum) | 766df8b |
-| listTechnicalUsers | GET | /clients | `internal/domain/account/handler.go:65` | `type:array items:$ref TechnicalUserDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| resetTechnicalUserSecret | PUT | /clients/{clientId}/secret | `internal/domain/account/handler.go:77` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| createTechnicalUser | POST | /clients | `internal/domain/account/m2m_adapter.go:116` | `$ref TechnicalUserCredentialsDto`; 400/401/403/409/default declared | `genapi.TechnicalUserCredentialsDto` — shape matches | match | 37910b8 |
+| deleteTechnicalUser | DELETE | /clients/{clientId} | `internal/domain/account/m2m_adapter.go:174` | `$ref DeleteTechnicalUser200ResponseDto`; 401/403/404/default declared | `genapi.DeleteTechnicalUser200ResponseDto` — shape matches | match | 37910b8 |
+| getTechnicalUserToken | POST | /oauth/token | real impl in `internal/auth/token.go` (account handler stub bypassed) | `$ref TokenResponseDto`; 200/400/401/403/500 declared — matches server for `client_credentials`; note: `issued_token_type` enum only has `access_token` but server returns `jwt` for token-exchange (fix-spec minor) | real impl via `auth/token.go`; `client_credentials` wire matches spec; `token-exchange` `issued_token_type` enum drift noted | match (client_credentials path fully implemented; token-exchange issued_token_type drift accepted per spec — no blocking mismatch) | cf42362 |
+| listTechnicalUsers | GET | /clients | `internal/domain/account/m2m_adapter.go:245` | `type:array items:$ref TechnicalUserDto`; 401/403/default declared | `[]genapi.TechnicalUserDto` — shape matches | match | 37910b8 |
+| resetTechnicalUserSecret | PUT | /clients/{clientId}/secret | `internal/domain/account/m2m_adapter.go:210` | `$ref TechnicalUserCredentialsDto`; 401/403/404/default declared | `genapi.TechnicalUserCredentialsDto` — shape matches | match | 37910b8 |
 
 ---
 

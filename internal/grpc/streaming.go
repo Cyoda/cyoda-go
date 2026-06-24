@@ -245,7 +245,8 @@ func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payloa
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
 		Error     *struct {
-			Message string `json:"message"`
+			Message   string `json:"message"`
+			Retryable *bool  `json:"retryable"`
 		} `json:"error"`
 		Warnings []string        `json:"warnings"`
 		Payload  json.RawMessage `json:"payload"`
@@ -261,14 +262,17 @@ func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payloa
 	}
 
 	errMsg := ""
+	var retryable *bool
 	if resp.Error != nil {
 		errMsg = resp.Error.Message
+		retryable = resp.Error.Retryable
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Payload:  resp.Payload,
-		Success:  resp.Success,
-		Error:    errMsg,
-		Warnings: resp.Warnings,
+		Payload:   resp.Payload,
+		Success:   resp.Success,
+		Error:     errMsg,
+		Warnings:  resp.Warnings,
+		Retryable: retryable,
 	})
 }
 
@@ -280,7 +284,8 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Success   bool   `json:"success"`
 		Matches   bool   `json:"matches"`
 		Error     *struct {
-			Message string `json:"message"`
+			Message   string `json:"message"`
+			Retryable *bool  `json:"retryable"`
 		} `json:"error"`
 		Warnings []string `json:"warnings"`
 	}
@@ -295,14 +300,17 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 	}
 
 	errMsg := ""
+	var retryable *bool
 	if resp.Error != nil {
 		errMsg = resp.Error.Message
+		retryable = resp.Error.Retryable
 	}
 	matches := resp.Matches
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Success:  resp.Success,
-		Error:    errMsg,
-		Matches:  &matches,
-		Warnings: resp.Warnings,
+		Success:   resp.Success,
+		Error:     errMsg,
+		Matches:   &matches,
+		Warnings:  resp.Warnings,
+		Retryable: retryable,
 	})
 }
