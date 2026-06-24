@@ -103,6 +103,34 @@ version number, even on repos with no production consumers.
 between versions yet. It does **not** mean we can reset version
 numbers — the one-way-ratchet applies from the first tag onward.
 
+#### The never-re-cut rule (non-negotiable)
+
+A module version is **tagged exactly once, at the final verified commit, and
+never re-cut.** This follows directly from the write-once property above, and
+it is absolute:
+
+1. **Never tag speculatively or mid-milestone.** The instant a tag is pushed
+   and anything fetches it, `proxy.golang.org` and `sum.golang.org` bind that
+   version to that commit **permanently and globally**. There is no cache-bust.
+2. **A bad or premature tag is recovered ONLY by the next version number.**
+   Deleting the git tag does *not* clean the proxy/checksum-database binding —
+   it just creates a mismatch between git and the proxy. Re-cutting the same
+   version at a new commit produces a permanently-poisoned version that every
+   consumer must then bypass with `GOPRIVATE` forever. **Don't.** Skip to the
+   next patch/minor and tag that, cleanly, once.
+3. **Pre-tag gate:** before pushing any `cyoda-go-spi` / plugin / binary tag,
+   confirm the milestone work is fully merged and CI is green on the exact
+   commit being tagged. A tag is a publish, not a checkpoint.
+
+> **2026-06 incident (why this rule is in caps):** `cyoda-go-spi v0.8.0` was
+> tagged prematurely at an incomplete commit, fetched through the proxy, then
+> "retracted" and re-cut at the finished commit. The proxy still served the
+> premature commit for `v0.8.0`, so every build broke until `GOPRIVATE` was
+> wired into every Go context — and even then the public version stayed
+> poisoned. The clean fix was to abandon `v0.8.0` and release `v0.8.1` (fresh,
+> never-seen) for both the SPI and the binary. Cost: a burned version number
+> and a day of churn. Prevention: this rule.
+
 ### 0. Reconcile dependencies on the release branch (gate)
 
 **Dependency hygiene is a release gate, not post-release cleanup.** Before
@@ -342,11 +370,11 @@ the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
 against `main` HEAD, and the final bump to the tagged `vX.Y.Z` happens by hand
 at release time (gate 0 above). `.github/dependabot.yml` therefore carries an
 `ignore` rule for `github.com/cyoda-platform/cyoda-go-spi` in every `gomod`
-block. This is deliberate: a coordinated SPI tag can be retracted and re-cut
-(it has been), and a Dependabot group that bundles the SPI pin with routine
-third-party bumps gets **mass-closed** when the pin can't resolve — taking
-good third-party updates down with it. Keeping the SPI pin out of Dependabot's
-hands keeps the grouped third-party PRs always-resolvable.
+block. This is deliberate: the SPI pin moves in lock-step with a coordinated
+cross-repo release (gate 0), and a Dependabot group that bundles the SPI pin
+with routine third-party bumps gets **mass-closed** if the pin can't resolve at
+that moment — taking good third-party updates down with it. Keeping the SPI pin
+out of Dependabot's hands keeps the grouped third-party PRs always-resolvable.
 
 **Retarget Dependabot after the milestone ships.** `dependabot.yml`'s
 `target-branch` points at the active milestone branch (e.g. `release/v0.8.0`)

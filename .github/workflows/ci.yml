@@ -12,23 +12,7 @@ on:
 permissions:
   contents: read
 
-# GOPRIVATE bypasses sum.golang.org AND the public module proxy for
-# cyoda-platform modules, fetching them direct from VCS and checking
-# checksums against the local go.sum only. This is required during periods
-# when a cyoda-go-spi tag is being re-cut at a new commit (see the v0.8.0
-# retraction note in cyoda-go-spi's CHANGELOG): the public proxy permanently
-# caches the first SHA it sees for a tag, so without a direct fetch a re-cut
-# tag resolves to stale content. It also keeps the commercial
-# cyoda-go-cassandra plugin and any other internal Cyoda modules clean of
-# sum.golang.org dependence.
-#
-# IMPORTANT: the pattern must match the module path EXACTLY — GOPRIVATE
-# matching is case-sensitive. The module path is lowercase
-# `github.com/cyoda-platform/...` even though the GitHub org renders as
-# `Cyoda`; a capitalised pattern silently fails to match and falls through
-# to the public proxy.
 env:
-  GOPRIVATE: github.com/cyoda-platform/*
   # Disable testcontainers' Ryuk resource-reaper in CI. Its handshake over
   # IPv6 loopback intermittently resets ("Reaper handshake failed: connection
   # reset by peer"), after which Ryuk reaps the still-in-use postgres container

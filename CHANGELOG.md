@@ -4,7 +4,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-06-23
+## [0.8.1] — 2026-06-23
+
+> No `v0.8.0` release. The `cyoda-go-spi v0.8.0` tag was poisoned by a premature
+> tag on the Go module proxy and abandoned in favour of `v0.8.1` (see
+> [COMPATIBILITY.md](./COMPATIBILITY.md)). To keep the binary aligned with the
+> SPI it pins, `cyoda-go` skips `v0.8.0` too — `v0.8.1` is the first v0.8.x
+> binary release. No functionality differs from what `v0.8.0` would have shipped.
 
 ### Added
 

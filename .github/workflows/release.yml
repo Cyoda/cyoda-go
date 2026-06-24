@@ -10,11 +10,6 @@ permissions:
   packages: write    # GHCR push
   id-token: write    # keyless cosign via OIDC
 
-env:
-  # Lowercase to match the module path exactly — GOPRIVATE matching is
-  # case-sensitive (see ci.yml for the full rationale).
-  GOPRIVATE: github.com/cyoda-platform/*
-
 jobs:
   release:
     runs-on: ubuntu-latest
