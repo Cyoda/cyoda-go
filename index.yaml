@@ -3,6 +3,33 @@ entries:
   cyoda:
   - annotations:
       artifacthub.io/changes: |
+        - Optional separate migration DSN (migrate.postgres) for the two-role DB model
+    apiVersion: v2
+    appVersion: 0.8.1
+    created: "2026-06-24T01:16:42.684182325Z"
+    description: 'cyoda-go: a lightweight, multi-node Go digital twin of the Cyoda
+      platform. This chart ships a production-ready Helm deployment backed by an external
+      Postgres, fronted by Gateway API (default) or a still-maintained Ingress controller
+      (transitional). '
+    digest: 397ae79fad4bebd0af168b097d9adc7582d2c4ab8d601ae4721098460199e1ee
+    home: https://github.com/cyoda/cyoda-go
+    keywords:
+    - cyoda
+    - digital-twin
+    - workflow
+    kubeVersion: '>=1.31.0'
+    maintainers:
+    - name: Cyoda Platform
+      url: https://github.com/cyoda
+    name: cyoda
+    sources:
+    - https://github.com/cyoda/cyoda-go
+    type: application
+    urls:
+    - https://github.com/Cyoda/cyoda-go/releases/download/cyoda-0.8.1/cyoda-0.8.1.tgz
+    version: 0.8.1
+  - annotations:
+      artifacthub.io/changes: |
         - Chart and appVersion synced to the v0.6.x binary series
     apiVersion: v2
     appVersion: 0.6.3
@@ -28,4 +55,4 @@ entries:
     urls:
     - https://github.com/Cyoda-platform/cyoda-go/releases/download/cyoda-0.6.3/cyoda-0.6.3.tgz
     version: 0.6.3
-generated: "2026-04-29T02:30:55.473712202Z"
+generated: "2026-06-24T01:16:42.684192801Z"
