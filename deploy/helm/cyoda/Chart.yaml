@@ -6,8 +6,8 @@ description: |
   Postgres, fronted by Gateway API (default) or a still-maintained Ingress
   controller (transitional).
 type: application
-version: 0.7.0
-appVersion: "0.7.1" # bump-chart-appversion.yml syncs this to the binary
+version: 0.8.1
+appVersion: "0.8.1" # bump-chart-appversion.yml syncs this to the binary
 kubeVersion: ">=1.31.0"
 keywords:
   - cyoda
