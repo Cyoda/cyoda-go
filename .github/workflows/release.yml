@@ -68,7 +68,12 @@ jobs:
         id: homebrew-tap-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.HOMEBREW_TAP_APP_ID }}
+          # actions/create-github-app-token deprecated `app-id` in favour of
+          # `client-id` (the App's Client ID, e.g. Iv23..., NOT the numeric App
+          # ID). Requires the repo Actions variable HOMEBREW_TAP_CLIENT_ID to be
+          # set to the tap App's Client ID. The old numeric HOMEBREW_TAP_APP_ID
+          # variable is now unused and can be removed.
+          client-id: ${{ vars.HOMEBREW_TAP_CLIENT_ID }}
           private-key: ${{ secrets.HOMEBREW_TAP_APP_KEY }}
           owner: cyoda
           repositories: homebrew-cyoda-go
