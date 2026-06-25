@@ -62,7 +62,7 @@ The request body is a sparse JSON object applied to the **stored** entity payloa
 The implementation must be a faithful realisation of RFC 7386 (the recursive
 `MergePatch` algorithm), so Cloud has a *specification* to match, not an
 observed behaviour to reverse-engineer. The algorithm is small enough to implement
-directly; the RFC's appendix test cases become unit tests (§10). The merge must
+directly; the RFC **Appendix A** test cases become unit tests (§10). The merge must
 operate on number-preserving decoding (`json.Number`, as `decodeJSONPreservingNumbers`
 does for update) so large `int64` values survive a merge without `float64`
 coercion.
@@ -96,6 +96,18 @@ into the same field that carries the token means the two states can never
 contradict each other. 428 is RFC 6585, which exists precisely to "prevent the
 lost update problem" by forcing requests to be conditional.
 
+**The 428 body must be educational, not a bare status.** The target audience is
+naive/LLM-generated clients that will not send `If-Match` and will reach for the
+quickest way to clear the error. To make that choice *informed* rather than a
+cargo-culted "add the magic header", the 428 response teaches the GET-first
+discipline, e.g.: *"This entity was patched without stating which version you read.
+Send `If-Match: <transactionId>` (the `transactionId` from your last GET of this
+entity) to patch safely, or `If-Match: *` to explicitly accept last-writer-wins."*
+This is a considered acceptance of the trade-off the reviewer raised: 428 still
+costs the naive client one failed attempt and some will hardcode `*`, but they do so
+*consciously*, which is the whole point of refusing a silent unconditional patch
+(§1 motivation: don't let apps build on a stale premise without noticing).
+
 **`*` translation (mechanism).** `*` is *not* passed down to `CompareAndSave` as
 the literal string `"*"` — that would be compared against the stored
 `transaction_id` and never match, yielding a spurious 412. Instead `*` is
@@ -118,11 +130,14 @@ primitive is introduced.
 
 New verb, parallel to the existing `PUT` endpoints (which are unchanged):
 
-- `PATCH /api/entity/{format}/{entityId}` — loopback (no named transition)
-- `PATCH /api/entity/{format}/{entityId}/{transition}` — patch carrying a named transition
+- `PATCH /api/entity/{format}/{entityId}` — loopback (no named transition), mirroring
+  `UpdateSingleWithLoopback` (`handler.go:864`)
+- `PATCH /api/entity/{format}/{entityId}/{transition}` — patch carrying a named
+  transition, mirroring `UpdateSingle` (`handler.go:897`)
 
-Transition stays orthogonal to the patch body, exactly as with update today
-(loopback vs `ManualTransition`). The same query parameters the `PUT` endpoints
+Both PUT handlers have PATCH counterparts; the plan wires *both*, not just the
+transition form. Transition stays orthogonal to the patch body, exactly as with
+update today (loopback vs `ManualTransition`). The same query parameters the `PUT` endpoints
 accept (`transactionTimeoutMillis`, `waitForConsistencyAfter`) apply unchanged, and
 the response shape is the existing `EntityTransactionResponse`.
 
@@ -148,7 +163,7 @@ symmetry over the format-less `GET /api/entity/{entityId}` shape.)
 | --- | --- |
 | 404 Not Found | Entity does not exist (covers soft-deleted — `Get` filters `NOT deleted`) |
 | 409 Conflict (retryable) | A concurrent writer committed between the in-tx base read and this save (read-set conflict at commit). Possible even under `If-Match: *`; caller may retry. |
-| 412 Precondition Failed | `If-Match: "<transactionId>"` supplied and the stored transactionId differs |
+| 412 Precondition Failed | `If-Match: "<transactionId>"` supplied and the stored transactionId differs. Reuses the existing `ErrCodeEntityModified` code/message ("entity has been modified since last read", `service.go:1122`) for consistency with PUT. |
 | 415 Unsupported Media Type | `XML` format, or a `Content-Type` other than the two patch media types |
 | 428 Precondition Required | No `If-Match` header present |
 | 501 Not Implemented | `Content-Type: application/json-patch+json` (RFC 6902 scaffold) |
@@ -257,8 +272,12 @@ PatchEntityInput {
 3. Apply the RFC 7386 merge of `Patch` onto `existing.Data` (number-preserving) ⇒
    merged payload.
 4. **Strictly validate** the merged result against the model schema — *validate
-   only, never extend* (see §8.3). A `null`-deletion that removes a required field
-   fails here.
+   only, never extend* (see §8.3). The validation input is the **merged result**,
+   not the request body (PUT validates the body directly; PATCH must re-derive the
+   parsed/validated form from the merge output). A `null`-deletion that removes a
+   field the schema marks `required` fails here; if the schema does not mark the
+   field `required`, the deletion succeeds and the field vanishes (RFC-correct) —
+   the guard is exactly as strong as the model's `required` set, no stronger.
 5. Run the merged payload through the **existing** loopback / named-transition +
    `If-Match` machinery (`LoopbackWithIfMatch` / `ManualTransitionWithIfMatch`) — no
    new engine path. `If-Match: *` is translated to the no-CAS path (§5).
@@ -287,7 +306,14 @@ deliberately does **not** reuse the extend behaviour: it validates the merged re
 sparse delta is rejected rather than silently widening the tenant's model. This is a
 considered divergence from PUT (which may extend), justified by partial deltas —
 especially LLM-generated ones, the §1 motivation — being the most likely source of
-accidental fields. The divergence is documented in the Cloud-parity contract.
+accidental fields.
+
+**Hard limitation, stated plainly (not buried as "catches typos"):** because PATCH
+never extends, **a PATCH can never introduce a field the model schema does not
+already allow — even when the model is in an extend-permitting `ChangeLevel`.** To
+add a genuinely new field, callers use PUT (which extends), then PATCH it thereafter.
+This limitation is documented as such in the Cloud-parity contract and in `crud.md`,
+so a caller who legitimately wants schema growth is not surprised by a rejection.
 
 Both the HTTP handler and the gRPC `EntityManage` case reach the same shared flow via
 `PatchEntity`, mirroring how `UpdateEntity` is shared today.
@@ -303,7 +329,11 @@ Both the HTTP handler and the gRPC `EntityManage` case reach the same shared flo
      semantics (§4), precondition model (§5), HTTP + gRPC surfaces (§6–7), error
      table. Framed explicitly as *the spec Cloud implements*.
 2. **`cmd/cyoda/help/content/crud.md`** — add PATCH to the SYNOPSIS and a
-   partial-update section (media types, `If-Match` three-state, error codes).
+   partial-update section (media types, `If-Match` three-state with the educational
+   428 framing, error codes). Must explicitly carry two behaviours callers will
+   otherwise discover by surprise: (a) **strict validation** — a PATCH cannot
+   introduce a new field even in extend mode (§8.3); (b) **processors run after the
+   merge** and may overwrite patched fields under a named transition (§8.2).
 3. **`api/openapi.yaml`** — new PATCH operations (the generator already supports
    `patch:` ops — see the existing OIDC patch operation). Add `409`/`415`/`428`/`501`
    responses; reuse a `412`/`409` component if one exists, otherwise define them.
@@ -318,6 +348,11 @@ Both the HTTP handler and the gRPC `EntityManage` case reach the same shared flo
    `workflows.md`, and the error topics describe specific declared-but-unimplemented
    fields — a *different* sense of "parity". They are reworded case-by-case during
    planning (who-implements-what), **not** by blanket find/replace.
+   **Reviewability:** two independent reviews flagged this reframe as a repo-governance
+   change riding on a feature PR. Decision (Paul): keep it folded into this work, but
+   land it as its **own clearly-separable commit** (the reframe + `docs/cloud-parity/`
+   convention), distinct from the feature commits, so a reviewer can assess the
+   directional statement on its own.
 5. **Release note** — `docs/release-notes/v0.8.2.md` + `CHANGELOG.md` entry at
    release time; issue #341 milestoned to v0.8.2 (the milestone is the changelog
    source).
@@ -361,6 +396,25 @@ RED-first throughout (project Gate 1).
   Cyoda/cyoda-go#342 for a future release.
 
 ## 12. Design-review disposition
+
+This spec survived **two** independent fresh-context code reviews. The second found
+**no blocking issues** and verified every load-bearing codebase claim against the
+source (atomicity/read-set commit validation on all three backends, the `*`→no-CAS
+translation, the gRPC `CLIENT_ERROR` envelope, the generated-vs-hand-written type
+split, the merge-hook seam at `service.go:1005–1015`, and number fidelity).
+
+Second-review refinements folded in: educational 428 body (§5); both PUT handlers
+mirrored (§6.1); 412 reuses `ErrCodeEntityModified` (§6.4); validation input is the
+merged result and the `required`-field guard is only as strong as the schema (§8.2);
+strict validation's hard limitation stated plainly — PATCH can never introduce a new
+field even in extend mode (§8.3); merge-then-processor ordering pinned by E2E and
+documented in `crud.md` (§8.2/§9/§10); RFC 7386 **Appendix A** cited (§4/§10); the
+fidelity reframe lands as its own separable commit (§9.4).
+
+Second-review dissents consciously **not** adopted (prior explicit decisions): the
+428 gate stays (Paul: keep, with the educational body above); the RFC 6902 501
+scaffold stays (explicitly requested selector shaping); the reframe stays folded
+(as a separable commit). The first review's revisions remain below.
 
 This spec was revised after an independent fresh-context code review. Verified
 corrections folded in: the precondition token is `transactionId` (not "version");
