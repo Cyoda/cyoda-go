@@ -18,9 +18,10 @@ func TestPatch_XMLFormatIs415(t *testing.T) {
 	h, _ := newPatchTestHandler(t)
 	r := httptest.NewRequest(http.MethodPatch, "/entity/XML/"+sampleUUID, strings.NewReader(`{}`))
 	r.Header.Set("Content-Type", "application/merge-patch+json")
-	r.Header.Set("If-Match", "*")
 	w := httptest.NewRecorder()
-	h.PatchSingleWithLoopback(w, r, "XML", openapi_types.UUID(mustUUID(sampleUUID)), genapiPatchLoopbackParams("*"))
+	// IfMatch is intentionally nil (absent) to prove that the format/media-type
+	// 415 check fires BEFORE the If-Match presence 428 check.
+	h.PatchSingleWithLoopback(w, r, "XML", openapi_types.UUID(mustUUID(sampleUUID)), genapiPatchLoopbackParams(""))
 	if w.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("got %d", w.Code)
 	}
