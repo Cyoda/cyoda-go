@@ -77,6 +77,27 @@ type UpdateEntityInput struct {
 	IfMatch    string // optional ETag for CAS
 }
 
+// updateOptions tunes the shared update flow. Zero value = plain replace (PUT).
+type updateOptions struct {
+	// merge, when non-nil, transforms the parsed request body against the
+	// existing entity's stored data inside the transaction, before validation
+	// (RFC 7386 for PATCH).
+	merge func(existing json.RawMessage, incoming any) (any, error)
+	// strictValidate forces validate-only — never extend the model schema (PATCH).
+	strictValidate bool
+}
+
+// PatchEntityInput holds parameters for a partial (RFC 7386) entity update.
+// IfMatch is required in some form (a transactionId, or "*" for unconditional);
+// its absence is rejected as 428 at the HTTP/gRPC edge, not here.
+type PatchEntityInput struct {
+	EntityID    string
+	Patch       json.RawMessage
+	PatchFormat string // "MERGE_PATCH" | "JSON_PATCH"
+	Transition  string
+	IfMatch     string
+}
+
 // DeleteAllResult holds the result of deleting all entities for a model.
 type DeleteAllResult struct {
 	TotalCount    int
@@ -958,6 +979,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 // UpdateEntity updates a single entity with an optional named transition or loopback.
 func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*EntityTransactionResult, error) {
+	return h.updateEntityCore(ctx, input, updateOptions{})
+}
+
+// updateEntityCore is the shared implementation for UpdateEntity and PatchEntity.
+// opts.merge, when non-nil, applies an RFC 7386 merge before validation.
+// opts.strictValidate forces validate-only (never extends the model schema).
+func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput, opts updateOptions) (*EntityTransactionResult, error) {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
@@ -1011,10 +1039,34 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		return nil, common.Internal("failed to load model for entity", err)
 	}
 
-	// Validate or extend model schema
-	if err := h.validateOrExtend(txCtx, modelStore, desc, parsedData); err != nil {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, classifyValidateOrExtendErr(err)
+	// PATCH: merge the sparse body onto the stored data before validation,
+	// inside this transaction so the merge base is the version being overwritten.
+	if opts.merge != nil {
+		merged, mErr := opts.merge(existing.Data, parsedData)
+		if mErr != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid patch: "+mErr.Error())
+		}
+		parsedData = merged
+		bodyBytes, err = json.Marshal(parsedData)
+		if err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, common.Internal("failed to serialize merged entity", err)
+		}
+	}
+
+	// Validate the (possibly merged) result. PATCH validates strictly and never
+	// extends the model; PUT may extend per the model's ChangeLevel.
+	if opts.strictValidate {
+		if vErr := h.validateStrict(desc, parsedData); vErr != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, classifyValidateOrExtendErr(vErr)
+		}
+	} else {
+		if vErr := h.validateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, classifyValidateOrExtendErr(vErr)
+		}
 	}
 
 	now := time.Now()
@@ -1161,6 +1213,39 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		TransactionID: txID,
 		EntityIDs:     []string{input.EntityID},
 	}, nil
+}
+
+// PatchEntity applies a partial update. RFC 7386 merge patch is implemented;
+// RFC 6902 (JSON_PATCH) is scaffolded and returns 501.
+func (h *Handler) PatchEntity(ctx context.Context, input PatchEntityInput) (*EntityTransactionResult, error) {
+	switch input.PatchFormat {
+	case "MERGE_PATCH":
+		// handled below
+	case "JSON_PATCH":
+		return nil, common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplemented,
+			"RFC 6902 JSON Patch is not implemented; use application/merge-patch+json")
+	default:
+		return nil, common.Operational(http.StatusUnsupportedMediaType, common.ErrCodeUnsupportedMediaType,
+			"unsupported patch format")
+	}
+
+	// "*" = unconditional: drop the CAS token. Existence is still guaranteed by
+	// the in-transaction Get inside updateEntityCore (404 if the entity is gone).
+	ifMatch := input.IfMatch
+	if ifMatch == "*" {
+		ifMatch = ""
+	}
+
+	return h.updateEntityCore(ctx, UpdateEntityInput{
+		EntityID:   input.EntityID,
+		Format:     "JSON",
+		Data:       input.Patch,
+		Transition: input.Transition,
+		IfMatch:    ifMatch,
+	}, updateOptions{
+		merge:          mergeMergePatch,
+		strictValidate: true,
+	})
 }
 
 // UpdateEntityCollection updates multiple entities in a single transaction

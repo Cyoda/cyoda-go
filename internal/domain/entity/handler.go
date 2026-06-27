@@ -146,6 +146,22 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	return nil
 }
 
+// validateStrict validates parsedData against the model schema WITHOUT
+// extending it. PATCH uses this: a sparse delta must never widen the tenant's
+// model (a stray/typo'd key is rejected, not absorbed). Mirrors the
+// ChangeLevel=="" branch of validateOrExtend.
+func (h *Handler) validateStrict(desc *spi.ModelDescriptor, parsedData any) error {
+	modelNode, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return fmt.Errorf("%w: failed to unmarshal model schema: %w", errInternalSchema, err)
+	}
+	errs := schema.Validate(modelNode, parsedData)
+	if len(errs) > 0 {
+		return enrichWithModelRef(validationErrorsToError(errs), desc.Ref)
+	}
+	return nil
+}
+
 // ValidateWithRefresh runs strict schema validation with a bounded
 // refresh-on-stale safety net. One refresh attempt, only on unknown-
 // schema-element errors — the signal that our cached schema is behind
