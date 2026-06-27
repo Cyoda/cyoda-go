@@ -238,13 +238,15 @@ func TestE2E_EntityPatch_WithTransition(t *testing.T) {
 func TestE2E_EntityPatch_MergeOrdering_WithProcessor(t *testing.T) {
 	const model = "e2e-patch-order"
 
-	// Register an in-process processor that sets amount to 999 regardless of input.
+	// Register an in-process processor that records the incoming amount into
+	// seenAmount (proving what the merge produced) then overwrites amount to 999.
 	const procName = "patch-order-overwriter"
 	procSvc.RegisterProcessor(procName, func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		var data map[string]any
 		if err := json.Unmarshal(entity.Data, &data); err != nil {
 			return nil, err
 		}
+		data["seenAmount"] = data["amount"] // snapshot what the processor received
 		data["amount"] = float64(999)
 		updated, err := json.Marshal(data)
 		if err != nil {
@@ -299,9 +301,14 @@ func TestE2E_EntityPatch_MergeOrdering_WithProcessor(t *testing.T) {
 	}
 
 	// Processor value wins over the merge value.
+	// seenAmount proves the processor received the MERGED value (75), not the
+	// pre-patch value (50) — i.e. the merge ran before the processor.
 	data := getEntityData(t, entityID, "")
 	if data["name"] != "Charlie" {
 		t.Errorf("name not preserved; got %v", data["name"])
+	}
+	if seen, _ := data["seenAmount"].(float64); seen != 75 {
+		t.Errorf("merge must run before processor: processor saw amount=%v, want 75 (the merged value)", data["seenAmount"])
 	}
 	if amt, _ := data["amount"].(float64); amt != 999 {
 		t.Errorf("processor must win: expected amount=999, got %v", data["amount"])
