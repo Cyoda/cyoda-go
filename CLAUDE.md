@@ -18,6 +18,11 @@ add or update E2E tests in `internal/e2e/` to cover the change through the full 
 E2E tests are self-contained: `TestMain` starts a PostgreSQL container via testcontainers-go
 and an in-process `httptest.Server` with JWT auth — no external instance needed.
 Just run `go test ./internal/e2e/... -v` (requires Docker running).
+For API/gRPC features the bar is **full coverage** — happy path AND every documented
+status/error code on a running backend, plus a cross-backend parity scenario for
+backend-agnostic behavior. See `.claude/rules/test-coverage.md` (the spec's error table is
+the checklist). `superpowers:brainstorming` and `superpowers:writing-plans` auto-inject these
+gates via a `PreToolUse` hook (`.claude/hooks/inject-skill-gates.sh`).
 
 ### Gate 3: Security by default
 Never log credentials, tokens, secrets, or signing keys at any level.
