@@ -65,12 +65,11 @@ This is never referred to as "version".
 
 ### The 428 educational body
 
-The 428 response body must explain the two valid choices to the caller. Example:
+The 428 response body must explain the two valid choices to the caller. This is
+the message cyoda-go returns:
 
-> This entity was patched without stating which version you read.
-> Send `If-Match: <transactionId>` (the `transactionId` from your last GET of
-> this entity) to patch safely, or `If-Match: *` to explicitly accept
-> last-writer-wins.
+> missing If-Match: send `If-Match: <transactionId>` from your last GET of this
+> entity to patch safely, or `If-Match: *` to explicitly accept last-writer-wins
 
 The target audience is naive or LLM-generated clients that will not send
 `If-Match` unprompted. The body teaches the GET-first discipline.
