@@ -3483,6 +3483,23 @@ type PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody = map[string]inter
 
 // PatchSingleWithLoopbackParams defines parameters for PatchSingleWithLoopback.
 type PatchSingleWithLoopbackParams struct {
+	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
+	// Operation will fail if it takes longer than this timeout.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
+	// May increase response time but guarantees data consistency when
+	// returning, so that subsequent calls will see the updated data.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
+
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
@@ -3527,6 +3544,23 @@ type PatchSingleApplicationMergePatchPlusJSONBody = map[string]interface{}
 
 // PatchSingleParams defines parameters for PatchSingle.
 type PatchSingleParams struct {
+	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
+	// Operation will fail if it takes longer than this timeout.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
+	// May increase response time but guarantees data consistency when
+	// returning, so that subsequent calls will see the updated data.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
+
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
@@ -6138,6 +6172,32 @@ func (siw *ServerInterfaceWrapper) PatchSingleWithLoopback(w http.ResponseWriter
 	// Parameter object where we will unmarshal all parameters from the context
 	var params PatchSingleWithLoopbackParams
 
+	// ------------- Optional query parameter "transactionTimeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "transactionTimeoutMillis", r.URL.Query(), &params.TransactionTimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
+		}
+		return
+	}
+
 	headers := r.Header
 
 	// ------------- Optional header parameter "If-Match" -------------
@@ -6302,6 +6362,32 @@ func (siw *ServerInterfaceWrapper) PatchSingle(w http.ResponseWriter, r *http.Re
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params PatchSingleParams
+
+	// ------------- Optional query parameter "transactionTimeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "transactionTimeoutMillis", r.URL.Query(), &params.TransactionTimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
+		}
+		return
+	}
 
 	headers := r.Header
 

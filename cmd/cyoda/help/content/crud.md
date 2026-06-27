@@ -275,7 +275,7 @@ Response: `200 OK`, same shape as the single-item PUT update.
 - `format` (path): `JSON` only
 - `entityId` (path): UUID
 - `transition` (path): string — transition name defined in the model's workflow
-- `Content-Type` (header, required): same two-value table as the loopback form
+- `Content-Type` (header, required): same two-value list as the loopback form
 - `If-Match` (header, required in some form): same three-state list as the loopback form
 - `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.

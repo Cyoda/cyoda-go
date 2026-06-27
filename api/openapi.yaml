@@ -2533,6 +2533,36 @@ paths:
           required: false
           schema:
             type: string
+        - name: transactionTimeoutMillis
+          in: query
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
+            Operation will fail if it takes longer than this timeout.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 10000
+          example: 30000
+        - name: waitForConsistencyAfter
+          in: query
+          description: |
+            If true, waits for the consistency time to pass before responding.
+            May increase response time but guarantees data consistency when
+            returning, so that subsequent calls will see the updated data.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: true
       requestBody:
         required: true
         content:
@@ -2837,6 +2867,36 @@ paths:
           required: false
           schema:
             type: string
+        - name: transactionTimeoutMillis
+          in: query
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
+            Operation will fail if it takes longer than this timeout.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 10000
+          example: 30000
+        - name: waitForConsistencyAfter
+          in: query
+          description: |
+            If true, waits for the consistency time to pass before responding.
+            May increase response time but guarantees data consistency when
+            returning, so that subsequent calls will see the updated data.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: true
       requestBody:
         required: true
         content:

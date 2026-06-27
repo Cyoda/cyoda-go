@@ -21,6 +21,9 @@ func mergeMergePatch(existing json.RawMessage, patch any) (any, error) {
 // applyMergePatch is the RFC 7386 section 2 algorithm. When patch is not a
 // JSON object it replaces the target wholesale; otherwise each key is merged
 // recursively, and an explicit null deletes the key.
+//
+// Mutates targetObj in place; safe because mergeMergePatch always passes a
+// freshly-decoded, decode-local map that is never aliased back into the store.
 func applyMergePatch(target, patch any) any {
 	patchObj, ok := patch.(map[string]any)
 	if !ok {
