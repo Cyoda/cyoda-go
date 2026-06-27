@@ -1093,6 +1093,12 @@ func TestRPC_EntityPatch(t *testing.T) {
 	if !typed.Success {
 		t.Fatalf("expected success; got %#v", typed.Error)
 	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId")
+	}
+	if len(typed.TransactionInfo.EntityIds) == 0 {
+		t.Error("expected at least one entityId in response")
+	}
 }
 
 func TestRPC_EntityPatch_MissingIfMatch428(t *testing.T) {
@@ -1119,6 +1125,24 @@ func TestRPC_EntityPatch_MissingIfMatch428(t *testing.T) {
 	}
 	if !strings.Contains(typed.Error.Message, "PRECONDITION_REQUIRED") {
 		t.Errorf("expected PRECONDITION_REQUIRED in message, got %q", typed.Error.Message)
+	}
+
+	// Also cover the absent-ifMatch branch (*string == nil): omit the ifMatch key entirely.
+	patchCENoKey := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p2", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"name": "C"}},
+	})
+	resp2, err := svc.EntityManage(ctx, patchCENoKey)
+	if err != nil {
+		t.Fatalf("unexpected transport error (absent ifMatch): %v", err)
+	}
+	var typed2 events.EntityTransactionResponseJson
+	validateResponse(t, resp2, &typed2)
+	if typed2.Success || typed2.Error == nil {
+		t.Fatalf("expected failure envelope for absent ifMatch")
+	}
+	if !strings.Contains(typed2.Error.Message, "PRECONDITION_REQUIRED") {
+		t.Errorf("expected PRECONDITION_REQUIRED in message for absent ifMatch, got %q", typed2.Error.Message)
 	}
 }
 
