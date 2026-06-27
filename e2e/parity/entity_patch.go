@@ -636,12 +636,15 @@ func RunEntityPatchTypeMismatchIs400(t *testing.T, fixture BackendFixture) {
 			ErrorCode string `json:"errorCode"`
 		} `json:"properties"`
 	}
-	if jsonErr := json.Unmarshal(body, &problem); jsonErr == nil && problem.Properties.ErrorCode != "" {
-		code := problem.Properties.ErrorCode
-		if code != "INCOMPATIBLE_TYPE" && code != "VALIDATION_FAILED" && code != "BAD_REQUEST" {
-			t.Errorf("error body properties.errorCode = %q; want INCOMPATIBLE_TYPE, VALIDATION_FAILED, or BAD_REQUEST; body=%s",
-				code, body)
-		}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("type-mismatch 400 body is not JSON: %v; body=%s", err, body)
+	}
+	switch problem.Properties.ErrorCode {
+	case "INCOMPATIBLE_TYPE", "VALIDATION_FAILED", "BAD_REQUEST":
+		// acceptable client validation codes
+	default:
+		t.Errorf("type-mismatch: properties.errorCode = %q; want INCOMPATIBLE_TYPE / VALIDATION_FAILED / BAD_REQUEST; body=%s",
+			problem.Properties.ErrorCode, body)
 	}
 }
 
@@ -710,9 +713,19 @@ func RunEntityPatchCrossTenantIsNotFound(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("tenantA CreateEntity: %v", err)
 	}
 
-	// Tenant B mints a fresh identity and uses it to PATCH A's entity.
+	// Tenant B mints a fresh identity, imports the same model (so the 404
+	// can only be entity-level, not model-level), and attempts to PATCH A's entity.
 	tenantB := fixture.NewTenant(t)
 	cB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+	if err := cB.ImportModel(t, modelName, modelVersion, `{"name":"x","amount":1,"status":"new"}`); err != nil {
+		t.Fatalf("tenantB ImportModel: %v", err)
+	}
+	if err := cB.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("tenantB LockModel: %v", err)
+	}
+	if err := cB.ImportWorkflow(t, modelName, modelVersion, patchWorkflowJSON); err != nil {
+		t.Fatalf("tenantB ImportWorkflow: %v", err)
+	}
 	status, body, err := cB.PatchEntityMerge(t, idA, "", "*", `{"amount":999}`)
 	if err != nil {
 		t.Fatalf("tenantB PatchEntityMerge transport: %v", err)
