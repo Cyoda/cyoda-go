@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -312,5 +313,92 @@ func TestE2E_EntityPatch_MergeOrdering_WithProcessor(t *testing.T) {
 	}
 	if amt, _ := data["amount"].(float64); amt != 999 {
 		t.Errorf("processor must win: expected amount=999, got %v", data["amount"])
+	}
+}
+
+// TestE2E_EntityPatch_ConcurrentConflict fires two concurrent PATCHes
+// against the same entity using the same If-Match txId. Exactly one must
+// succeed (200) and the other must be rejected (409 or 412). The final
+// entity state must reflect the winner's value with no torn write.
+//
+// This test is isolated here (not in the shared cross-backend parity suite)
+// because goroutine-storm concurrency tests can tip an unrelated later
+// scenario over the parity HTTP client's timeout on the shared in-memory
+// store. Running it here exercises only the real PostgreSQL backend.
+func TestE2E_EntityPatch_ConcurrentConflict(t *testing.T) {
+	const model = "e2e-patch-concurrent"
+
+	setupModelWithWorkflow(t, model, `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "patch-concurrent-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
+				"CREATED": {}
+			}
+		}]
+	}`)
+
+	entityID, createTxID := createEntityE2EWithTxID(t, model, 1,
+		`{"name":"Race","amount":1,"status":"draft"}`)
+
+	type patchResult struct {
+		status int
+		amount int // 100 or 200 — which value this goroutine tried to set
+	}
+	results := [2]patchResult{}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		resp := patchEntity(t,
+			fmt.Sprintf("/api/entity/JSON/%s", entityID),
+			"application/merge-patch+json",
+			createTxID,
+			`{"amount":100}`,
+		)
+		readBody(t, resp)
+		results[0] = patchResult{status: resp.StatusCode, amount: 100}
+	}()
+	go func() {
+		defer wg.Done()
+		resp := patchEntity(t,
+			fmt.Sprintf("/api/entity/JSON/%s", entityID),
+			"application/merge-patch+json",
+			createTxID,
+			`{"amount":200}`,
+		)
+		readBody(t, resp)
+		results[1] = patchResult{status: resp.StatusCode, amount: 200}
+	}()
+	wg.Wait()
+
+	// Exactly one goroutine must have won (200); the other must have been
+	// rejected with 409 (Conflict) or 412 (Precondition Failed).
+	var winnerAmount int
+	var successCount int
+	for _, r := range results {
+		switch r.status {
+		case http.StatusOK:
+			successCount++
+			winnerAmount = r.amount
+		case http.StatusConflict, http.StatusPreconditionFailed:
+			// expected loser codes
+		default:
+			t.Errorf("concurrent PATCH goroutine (amount=%d): unexpected status %d; want 200, 409, or 412",
+				r.amount, r.status)
+		}
+	}
+	if successCount != 1 {
+		t.Fatalf("concurrent PATCH: %d goroutines succeeded, want exactly 1; results=%v", successCount, results)
+	}
+
+	// Final entity must reflect the winner's amount with no torn write.
+	data := getEntityData(t, entityID, "")
+	if amt, _ := data["amount"].(float64); int(amt) != winnerAmount {
+		t.Errorf("post-concurrent amount = %v, want %d (winner's value); torn write or wrong commit",
+			data["amount"], winnerAmount)
 	}
 }

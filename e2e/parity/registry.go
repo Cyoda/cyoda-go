@@ -266,8 +266,6 @@ var allTests = []NamedTest{
 	{"EntityPatchStrictRejectsUnknownField", RunEntityPatchStrictRejectsUnknownField},
 	// Cross-tenant isolation.
 	{"EntityPatchCrossTenantIsNotFound", RunEntityPatchCrossTenantIsNotFound},
-	// Concurrency.
-	{"EntityPatchConcurrentConflict", RunEntityPatchConcurrentConflict},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend

@@ -3,7 +3,6 @@ package parity
 import (
 	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -745,75 +744,3 @@ func RunEntityPatchCrossTenantIsNotFound(t *testing.T, fixture BackendFixture) {
 	}
 }
 
-// --- Concurrency ---
-
-// RunEntityPatchConcurrentConflict fires two concurrent PATCHes against
-// the same entity using the same If-Match txId. Exactly one must succeed
-// (200) and the other must fail with 412 or 409. The final entity state
-// must reflect the value committed by the winner with no torn write.
-func RunEntityPatchConcurrentConflict(t *testing.T, fixture BackendFixture) {
-	t.Helper()
-	c, _ := setupPatchModel(t, fixture, "patch-concurrent-conflict")
-	const modelVersion = 1
-
-	id, err := c.CreateEntity(t, "patch-concurrent-conflict", modelVersion, `{"name":"L","amount":0,"status":"new"}`)
-	if err != nil {
-		t.Fatalf("CreateEntity: %v", err)
-	}
-
-	ent, err := c.GetEntity(t, id)
-	if err != nil {
-		t.Fatalf("GetEntity (pre-concurrent): %v", err)
-	}
-	sharedTxID := ent.Meta.TransactionID
-	if sharedTxID == "" {
-		t.Fatal("GetEntity: meta.transactionId is empty")
-	}
-
-	type result struct {
-		status int
-		body   []byte
-		which  int // 100 or 200
-	}
-	results := make([]result, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		st, b, _ := c.PatchEntityMerge(t, id, "", sharedTxID, `{"amount":100}`)
-		results[0] = result{status: st, body: b, which: 100}
-	}()
-	go func() {
-		defer wg.Done()
-		st, b, _ := c.PatchEntityMerge(t, id, "", sharedTxID, `{"amount":200}`)
-		results[1] = result{status: st, body: b, which: 200}
-	}()
-	wg.Wait()
-
-	// Exactly one 200; the other is 412 or 409.
-	var winner result
-	var successCount int
-	for _, r := range results {
-		if r.status == 200 {
-			successCount++
-			winner = r
-		} else if r.status != 412 && r.status != 409 {
-			t.Errorf("concurrent PATCH loser: status %d, want 412 or 409; body=%s", r.status, r.body)
-		}
-	}
-	if successCount != 1 {
-		t.Fatalf("concurrent PATCH: %d succeeded, want exactly 1; results=%v", successCount, results)
-	}
-
-	// Final entity must reflect exactly the winner's value.
-	got, err := c.GetEntity(t, id)
-	if err != nil {
-		t.Fatalf("GetEntity (post-concurrent): %v", err)
-	}
-	wantAmount := float64(winner.which)
-	if got.Data["amount"] != wantAmount {
-		t.Errorf("data.amount = %v, want %v (winner's value); torn write or wrong commit",
-			got.Data["amount"], wantAmount)
-	}
-}
