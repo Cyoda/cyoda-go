@@ -1539,3 +1539,59 @@ func (c *Client) QueryGroupedStatsRaw(t *testing.T, modelName string, modelVersi
 	resp.Body.Close()
 	return resp.StatusCode, raw, nil
 }
+
+// PatchEntityRaw issues PATCH /api/entity/{format}/{entityId} (loopback) or
+// PATCH /api/entity/{format}/{entityId}/{transition} (named transition) and
+// returns the HTTP status, response body, and a transport error only. A
+// non-2xx status is returned without raising, so scenarios can assert
+// 200/400/404/412/415/428/501 directly.
+//
+// transition == "" selects the loopback path (no transition segment).
+// ifMatch == "" omits the If-Match header entirely (to exercise the 428 path).
+// format is the path format segment (normally "JSON"; pass "XML" to exercise
+// the 415 unsupported-format path).
+// contentType is sent verbatim as the Content-Type header (e.g.
+// "application/merge-patch+json").
+//
+// No 409 retry is performed — concurrency scenarios need to observe 409/412
+// directly. The request is issued once via the underlying http.Client, which
+// mirrors the pattern of all other *Raw methods in this file.
+func (c *Client) PatchEntityRaw(t *testing.T, entityID uuid.UUID, format, transition, contentType, ifMatch, body string) (int, []byte, error) {
+	t.Helper()
+
+	var path string
+	if transition == "" {
+		path = fmt.Sprintf("/api/entity/%s/%s", format, entityID.String())
+	} else {
+		path = fmt.Sprintf("/api/entity/%s/%s/%s", format, entityID.String(), transition)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPatch, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// PatchEntityMerge issues a merge-patch (application/merge-patch+json) PATCH
+// against /api/entity/JSON/{entityId}[/{transition}] and returns status+body.
+// Delegates to PatchEntityRaw with format="JSON" and the merge-patch
+// Content-Type so scenarios don't have to repeat the MIME string.
+func (c *Client) PatchEntityMerge(t *testing.T, entityID uuid.UUID, transition, ifMatch, body string) (int, []byte, error) {
+	t.Helper()
+	return c.PatchEntityRaw(t, entityID, "JSON", transition, "application/merge-patch+json", ifMatch, body)
+}

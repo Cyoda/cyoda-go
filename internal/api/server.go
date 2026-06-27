@@ -168,6 +168,22 @@ func (s *Server) UpdateSingle(w http.ResponseWriter, r *http.Request, format gen
 	s.Unimplemented.UpdateSingle(w, r, format, entityId, transition, params)
 }
 
+func (s *Server) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.PatchSingleWithLoopbackParams) {
+	if s.Entity != nil {
+		s.Entity.PatchSingleWithLoopback(w, r, format, entityId, params)
+		return
+	}
+	s.Unimplemented.PatchSingleWithLoopback(w, r, format, entityId, params)
+}
+
+func (s *Server) PatchSingle(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.PatchSingleParams) {
+	if s.Entity != nil {
+		s.Entity.PatchSingle(w, r, format, entityId, transition, params)
+		return
+	}
+	s.Unimplemented.PatchSingle(w, r, format, entityId, transition, params)
+}
+
 func (s *Server) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
 	if s.Entity != nil {
 		s.Entity.Create(w, r, format, entityName, modelVersion, params)

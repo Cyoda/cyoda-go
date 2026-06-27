@@ -1,7 +1,7 @@
 # Cyoda-Go
 
-Lightweight, multi-node Go digital twin of the Cyoda platform.
-Goal: API and behavioral fidelity with Cyoda Cloud.
+Lightweight, multi-node Go implementation of the Cyoda platform.
+cyoda-go defines the API and integration contract; Cyoda Cloud aligns to it.
 
 ## Development Gates
 

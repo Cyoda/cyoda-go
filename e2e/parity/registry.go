@@ -245,6 +245,28 @@ var allTests = []NamedTest{
 	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
 	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
 
+	// Entity PATCH (RFC 7386 merge-patch) — cross-backend contract matrix.
+	// Normal operation.
+	{"EntityPatchMergePreservesFields", RunEntityPatchMergePreservesFields},
+	{"EntityPatchNullDeletesKey", RunEntityPatchNullDeletesKey},
+	{"EntityPatchNestedMerge", RunEntityPatchNestedMerge},
+	{"EntityPatchArrayWholesaleReplace", RunEntityPatchArrayWholesaleReplace},
+	{"EntityPatchEmptyNoOp", RunEntityPatchEmptyNoOp},
+	{"EntityPatchNumberFidelity", RunEntityPatchNumberFidelity},
+	{"EntityPatchStarUnconditional", RunEntityPatchStarUnconditional},
+	{"EntityPatchWithTransition", RunEntityPatchWithTransition},
+	// Error scenarios.
+	{"EntityPatchNotFound", RunEntityPatchNotFound},
+	{"EntityPatchStaleTokenIs412", RunEntityPatchStaleTokenIs412},
+	{"EntityPatchXMLFormatIs415", RunEntityPatchXMLFormatIs415},
+	{"EntityPatchWrongContentTypeIs415", RunEntityPatchWrongContentTypeIs415},
+	{"EntityPatchMissingIfMatchIs428", RunEntityPatchMissingIfMatchIs428},
+	{"EntityPatchJSONPatchNotImplemented", RunEntityPatchJSONPatchNotImplemented},
+	{"EntityPatchTypeMismatchIs400", RunEntityPatchTypeMismatchIs400},
+	{"EntityPatchStrictRejectsUnknownField", RunEntityPatchStrictRejectsUnknownField},
+	// Cross-tenant isolation.
+	{"EntityPatchCrossTenantIsNotFound", RunEntityPatchCrossTenantIsNotFound},
+
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the

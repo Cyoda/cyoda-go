@@ -115,6 +115,14 @@ func (u *Unimplemented) UpdateSingle(w http.ResponseWriter, r *http.Request, for
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.PatchSingleWithLoopbackParams) {
+	u.stub(w, r)
+}
+
+func (u *Unimplemented) PatchSingle(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.PatchSingleParams) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
 	u.stub(w, r)
 }

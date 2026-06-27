@@ -31,6 +31,7 @@ const (
 	EntityDeleteAllResponse       = "EntityDeleteAllResponse"
 	EntityTransitionRequest       = "EntityTransitionRequest"
 	EntityTransitionResponse      = "EntityTransitionResponse"
+	EntityPatchRequest            = "EntityPatchRequest"
 )
 
 // Model management types.
