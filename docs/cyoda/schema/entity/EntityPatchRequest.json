@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityPatchRequest.json",
+  "title": "EntityPatchRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "payload": {
+      "$ref": "./EntityPatchPayload.json",
+      "description": "Data payload containing the entity id and patch."
+    },
+    "patchFormat": {
+      "$ref": "../common/PatchFormat.json"
+    },
+    "transactionTimeoutMs": {
+      "type": "integer",
+      "existingJavaType": "java.lang.Long",
+      "description": "Indicates the timeout of transaction for transactional save."
+    }
+  },
+  "required": [
+    "patchFormat",
+    "payload"
+  ]
+}

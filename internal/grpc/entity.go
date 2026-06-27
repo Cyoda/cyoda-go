@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -117,6 +118,51 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			TransactionInfo: events.EntityTransactionInfoJson{
 				EntityIds: result.EntityIDs,
 			},
+		}
+		if result.TransactionID != "" {
+			resp.TransactionInfo.TransactionID = &result.TransactionID
+		}
+		slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entityManage", "type", EntityTransactionResponse, "ceId", ce.Id, "success", true)
+		return NewCloudEvent(EntityTransactionResponse, resp)
+
+	case EntityPatchRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
+		var req events.EntityPatchRequestJson
+		if err := dec.Decode(&req); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+		}
+		if req.Payload.IfMatch == nil || *req.Payload.IfMatch == "" {
+			return entityTransactionError(ctx, ce.Id, common.Operational(
+				http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
+				"missing ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
+		}
+		patchBytes, err := json.Marshal(req.Payload.Patch)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to marshal patch: %v", err)
+		}
+		transition := ""
+		if req.Payload.Transition != nil {
+			transition = *req.Payload.Transition
+		}
+		result, err := s.entityHandler.PatchEntity(ctx, entity.PatchEntityInput{
+			EntityID:    req.Payload.EntityID,
+			Patch:       patchBytes,
+			PatchFormat: string(req.PatchFormat),
+			Transition:  transition,
+			IfMatch:     *req.Payload.IfMatch,
+		})
+		if err != nil {
+			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
+			return entityTransactionError(ctx, ce.Id, err)
+		}
+		diag := common.GetDiagnostics(ctx)
+		resp := events.EntityTransactionResponseJson{
+			ID:              ce.Id,
+			Success:         true,
+			Warnings:        diag.GetWarnings(),
+			RequestID:       ce.Id,
+			TransactionInfo: events.EntityTransactionInfoJson{EntityIds: result.EntityIDs},
 		}
 		if result.TransactionID != "" {
 			resp.TransactionInfo.TransactionID = &result.TransactionID

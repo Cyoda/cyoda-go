@@ -1066,6 +1066,62 @@ func TestRPC_SnapshotSearch_Error_SchemaValid(t *testing.T) {
 	}
 }
 
+func TestRPC_EntityPatch(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice", "age": 30})
+
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "Alice", "age": 30}},
+	})
+	createResp, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"age": 31}, "ifMatch": "*"},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("expected success; got %#v", typed.Error)
+	}
+}
+
+func TestRPC_EntityPatch_MissingIfMatch428(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A"})
+	createResp, _ := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "A"}},
+	}))
+	entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"name": "B"}, "ifMatch": ""},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success || typed.Error == nil {
+		t.Fatalf("expected failure envelope")
+	}
+	if !strings.Contains(typed.Error.Message, "PRECONDITION_REQUIRED") {
+		t.Errorf("expected PRECONDITION_REQUIRED in message, got %q", typed.Error.Message)
+	}
+}
+
 // --- mock stream implementations ---
 
 // mockManageStream implements CloudEventsService_EntityManageCollectionServer.

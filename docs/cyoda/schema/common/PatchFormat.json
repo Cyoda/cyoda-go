@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/PatchFormat.json",
+  "title": "PatchFormat",
+  "type": "string",
+  "enum": [
+    "MERGE_PATCH",
+    "JSON_PATCH"
+  ],
+  "description": "Patch dialect: MERGE_PATCH (RFC 7386, implemented) or JSON_PATCH (RFC 6902, not implemented)."
+}
