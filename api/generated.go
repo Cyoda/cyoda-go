@@ -1522,6 +1522,24 @@ func (e UpdateCollectionParamsFormat) Valid() bool {
 	}
 }
 
+// Defines values for PatchSingleWithLoopbackParamsFormat.
+const (
+	PatchSingleWithLoopbackParamsFormatJSON PatchSingleWithLoopbackParamsFormat = "JSON"
+	PatchSingleWithLoopbackParamsFormatXML  PatchSingleWithLoopbackParamsFormat = "XML"
+)
+
+// Valid indicates whether the value is a known member of the PatchSingleWithLoopbackParamsFormat enum.
+func (e PatchSingleWithLoopbackParamsFormat) Valid() bool {
+	switch e {
+	case PatchSingleWithLoopbackParamsFormatJSON:
+		return true
+	case PatchSingleWithLoopbackParamsFormatXML:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UpdateSingleWithLoopbackParamsFormat.
 const (
 	UpdateSingleWithLoopbackParamsFormatJSON UpdateSingleWithLoopbackParamsFormat = "JSON"
@@ -1534,6 +1552,24 @@ func (e UpdateSingleWithLoopbackParamsFormat) Valid() bool {
 	case UpdateSingleWithLoopbackParamsFormatJSON:
 		return true
 	case UpdateSingleWithLoopbackParamsFormatXML:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PatchSingleParamsFormat.
+const (
+	PatchSingleParamsFormatJSON PatchSingleParamsFormat = "JSON"
+	PatchSingleParamsFormatXML  PatchSingleParamsFormat = "XML"
+)
+
+// Valid indicates whether the value is a known member of the PatchSingleParamsFormat enum.
+func (e PatchSingleParamsFormat) Valid() bool {
+	switch e {
+	case PatchSingleParamsFormatJSON:
+		return true
+	case PatchSingleParamsFormatXML:
 		return true
 	default:
 		return false
@@ -3439,6 +3475,21 @@ type UpdateCollectionParams struct {
 // UpdateCollectionParamsFormat defines parameters for UpdateCollection.
 type UpdateCollectionParamsFormat string
 
+// PatchSingleWithLoopbackApplicationJSONPatchPlusJSONBody defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackApplicationJSONPatchPlusJSONBody = []map[string]interface{}
+
+// PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody = map[string]interface{}
+
+// PatchSingleWithLoopbackParams defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackParams struct {
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchSingleWithLoopbackParamsFormat defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackParamsFormat string
+
 // UpdateSingleWithLoopbackJSONBody defines parameters for UpdateSingleWithLoopback.
 type UpdateSingleWithLoopbackJSONBody = map[string]interface{}
 
@@ -3467,6 +3518,21 @@ type UpdateSingleWithLoopbackParams struct {
 
 // UpdateSingleWithLoopbackParamsFormat defines parameters for UpdateSingleWithLoopback.
 type UpdateSingleWithLoopbackParamsFormat string
+
+// PatchSingleApplicationJSONPatchPlusJSONBody defines parameters for PatchSingle.
+type PatchSingleApplicationJSONPatchPlusJSONBody = []map[string]interface{}
+
+// PatchSingleApplicationMergePatchPlusJSONBody defines parameters for PatchSingle.
+type PatchSingleApplicationMergePatchPlusJSONBody = map[string]interface{}
+
+// PatchSingleParams defines parameters for PatchSingle.
+type PatchSingleParams struct {
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchSingleParamsFormat defines parameters for PatchSingle.
+type PatchSingleParamsFormat string
 
 // UpdateSingleJSONBody defines parameters for UpdateSingle.
 type UpdateSingleJSONBody = map[string]interface{}
@@ -3688,8 +3754,20 @@ type CreateCollectionJSONRequestBody = CreateCollectionJSONBody
 // UpdateCollectionJSONRequestBody defines body for UpdateCollection for application/json ContentType.
 type UpdateCollectionJSONRequestBody = UpdateCollectionJSONBody
 
+// PatchSingleWithLoopbackApplicationJSONPatchPlusJSONRequestBody defines body for PatchSingleWithLoopback for application/json-patch+json ContentType.
+type PatchSingleWithLoopbackApplicationJSONPatchPlusJSONRequestBody = PatchSingleWithLoopbackApplicationJSONPatchPlusJSONBody
+
+// PatchSingleWithLoopbackApplicationMergePatchPlusJSONRequestBody defines body for PatchSingleWithLoopback for application/merge-patch+json ContentType.
+type PatchSingleWithLoopbackApplicationMergePatchPlusJSONRequestBody = PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody
+
 // UpdateSingleWithLoopbackJSONRequestBody defines body for UpdateSingleWithLoopback for application/json ContentType.
 type UpdateSingleWithLoopbackJSONRequestBody = UpdateSingleWithLoopbackJSONBody
+
+// PatchSingleApplicationJSONPatchPlusJSONRequestBody defines body for PatchSingle for application/json-patch+json ContentType.
+type PatchSingleApplicationJSONPatchPlusJSONRequestBody = PatchSingleApplicationJSONPatchPlusJSONBody
+
+// PatchSingleApplicationMergePatchPlusJSONRequestBody defines body for PatchSingle for application/merge-patch+json ContentType.
+type PatchSingleApplicationMergePatchPlusJSONRequestBody = PatchSingleApplicationMergePatchPlusJSONBody
 
 // UpdateSingleJSONRequestBody defines body for UpdateSingle for application/json ContentType.
 type UpdateSingleJSONRequestBody = UpdateSingleJSONBody
@@ -4782,9 +4860,15 @@ type ServerInterface interface {
 	// Update Collection
 	// (PUT /entity/{format})
 	UpdateCollection(w http.ResponseWriter, r *http.Request, format UpdateCollectionParamsFormat, params UpdateCollectionParams)
+	// Patch Single with a loopback transition
+	// (PATCH /entity/{format}/{entityId})
+	PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params PatchSingleWithLoopbackParams)
 	// Update Single with a loopback transition
 	// (PUT /entity/{format}/{entityId})
 	UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params UpdateSingleWithLoopbackParams)
+	// Patch Single
+	// (PATCH /entity/{format}/{entityId}/{transition})
+	PatchSingle(w http.ResponseWriter, r *http.Request, format PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params PatchSingleParams)
 	// Update Single
 	// (PUT /entity/{format}/{entityId}/{transition})
 	UpdateSingle(w http.ResponseWriter, r *http.Request, format UpdateSingleParamsFormat, entityId openapi_types.UUID, transition string, params UpdateSingleParams)
@@ -6021,6 +6105,71 @@ func (siw *ServerInterfaceWrapper) UpdateCollection(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// PatchSingleWithLoopback operation middleware
+func (siw *ServerInterfaceWrapper) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "format" -------------
+	var format PatchSingleWithLoopbackParamsFormat
+
+	err = runtime.BindStyledParameterWithOptions("simple", "format", r.PathValue("format"), &format, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "format", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "entityId" -------------
+	var entityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityId", r.PathValue("entityId"), &entityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PatchSingleWithLoopbackParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchSingleWithLoopback(w, r, format, entityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateSingleWithLoopback operation middleware
 func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request) {
 
@@ -6103,6 +6252,80 @@ func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateSingleWithLoopback(w, r, format, entityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchSingle operation middleware
+func (siw *ServerInterfaceWrapper) PatchSingle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "format" -------------
+	var format PatchSingleParamsFormat
+
+	err = runtime.BindStyledParameterWithOptions("simple", "format", r.PathValue("format"), &format, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "format", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "entityId" -------------
+	var entityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityId", r.PathValue("entityId"), &entityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "transition" -------------
+	var transition string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "transition", r.PathValue("transition"), &transition, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transition", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PatchSingleParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchSingle(w, r, format, entityId, transition, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8058,7 +8281,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/{entityName}/{modelVersion}", wrapper.GetAllEntities)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entity/{format}", wrapper.CreateCollection)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/entity/{format}", wrapper.UpdateCollection)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/entity/{format}/{entityId}", wrapper.PatchSingleWithLoopback)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/entity/{format}/{entityId}", wrapper.UpdateSingleWithLoopback)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/entity/{format}/{entityId}/{transition}", wrapper.PatchSingle)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/entity/{format}/{entityId}/{transition}", wrapper.UpdateSingle)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entity/{format}/{entityName}/{modelVersion}", wrapper.Create)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/message", wrapper.DeleteMessages)

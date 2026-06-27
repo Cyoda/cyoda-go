@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -941,4 +942,74 @@ func (h *Handler) UpdateSingle(w http.ResponseWriter, r *http.Request, format ge
 		"entityIds":     result.EntityIDs,
 	}
 	common.WriteJSON(w, http.StatusOK, resp)
+}
+
+// PatchSingleWithLoopback handles PATCH /entity/{format}/{entityId} (loopback).
+func (h *Handler) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.PatchSingleWithLoopbackParams) {
+	h.patch(w, r, string(format), entityId, "", params.IfMatch)
+}
+
+// PatchSingle handles PATCH /entity/{format}/{entityId}/{transition}.
+func (h *Handler) PatchSingle(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.PatchSingleParams) {
+	h.patch(w, r, string(format), entityId, transition, params.IfMatch)
+}
+
+// patch is the shared PATCH implementation. Error precedence: media-type/format
+// (415) -> If-Match presence (428) -> service (404/412/409/501/4xx).
+func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, entityId openapi_types.UUID, transition string, ifMatchHeader *string) {
+	if format != "JSON" {
+		common.WriteError(w, r, common.Operational(http.StatusUnsupportedMediaType, common.ErrCodeUnsupportedMediaType, "patch supports the JSON format only"))
+		return
+	}
+	patchFormat, ok := patchFormatFromContentType(r.Header.Get("Content-Type"))
+	if !ok {
+		common.WriteError(w, r, common.Operational(http.StatusUnsupportedMediaType, common.ErrCodeUnsupportedMediaType,
+			"unsupported Content-Type; use application/merge-patch+json or application/json-patch+json"))
+		return
+	}
+	if ifMatchHeader == nil {
+		common.WriteError(w, r, common.Operational(http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
+			"missing If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
+		return
+	}
+	result, err := h.PatchEntity(r.Context(), PatchEntityInput{
+		EntityID:    entityId.String(),
+		Patch:       bodyBytes,
+		PatchFormat: patchFormat,
+		Transition:  transition,
+		IfMatch:     *ifMatchHeader,
+	})
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, map[string]any{
+		"transactionId": result.TransactionID,
+		"entityIds":     result.EntityIDs,
+	})
+}
+
+// patchFormatFromContentType maps the request Content-Type to a patch dialect.
+func patchFormatFromContentType(ct string) (string, bool) {
+	if ct == "" {
+		return "", false
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return "", false
+	}
+	switch mediaType {
+	case "application/merge-patch+json":
+		return "MERGE_PATCH", true
+	case "application/json-patch+json":
+		return "JSON_PATCH", true
+	default:
+		return "", false
+	}
 }

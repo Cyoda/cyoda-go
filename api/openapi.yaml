@@ -2494,6 +2494,113 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags:
+        - Entity Management
+      summary: Patch Single with a loopback transition
+      description: |
+        Partially updates a single entity (RFC 7386 JSON Merge Patch) with a
+        loopback transition. Send only the fields that change; an explicit null
+        deletes a key. The merged result is validated against the model schema
+        and cannot introduce a new field (unlike PUT). The dialect is selected
+        by Content-Type: application/merge-patch+json (RFC 7386, implemented) or
+        application/json-patch+json (RFC 6902, not implemented -> 501).
+
+        If-Match is required in some form: the transactionId from your last GET
+        of this entity (conditional; 412 if it has moved), or "*" to accept
+        last-writer-wins. Its absence returns 428.
+      operationId: patchSingleWithLoopback
+      parameters:
+        - name: format
+          in: path
+          description: Must be JSON (merge patch is JSON only)
+          required: true
+          schema:
+            type: string
+            enum:
+              - JSON
+              - XML
+        - name: entityId
+          in: path
+          description: The UUID of the entity to patch
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          description: transactionId from the last read, or "*" for unconditional. Absent returns 428.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              format: json
+            examples:
+              MergePatch:
+                summary: Change one field
+                value:
+                  year: "2025"
+          application/json-patch+json:
+            schema:
+              type: array
+              items:
+                type: object
+      responses:
+        "200":
+          description: Entity patched successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityTransactionResponse"
+        "400":
+          description: Bad request — invalid patch or validation failure
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — concurrent writer committed during the patch (retryable)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: Precondition Failed — If-Match transactionId no longer matches
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "428":
+          description: Precondition Required — If-Match absent; supply a transactionId or "*"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "501":
+          $ref: '#/components/responses/NotImplemented'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
     put:
       tags:
@@ -2675,6 +2782,123 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags:
+        - Entity Management
+      summary: Patch Single
+      description: |
+        Partially updates a single entity (RFC 7386 JSON Merge Patch) with a
+        named transition. Send only the fields that change; an explicit null
+        deletes a key. The merged result is validated against the model schema
+        and cannot introduce a new field (unlike PUT). The dialect is selected
+        by Content-Type: application/merge-patch+json (RFC 7386, implemented) or
+        application/json-patch+json (RFC 6902, not implemented -> 501).
+
+        If-Match is required in some form: the transactionId from your last GET
+        of this entity (conditional; 412 if it has moved), or "*" to accept
+        last-writer-wins. Its absence returns 428.
+      operationId: patchSingle
+      parameters:
+        - name: format
+          in: path
+          description: Must be JSON (merge patch is JSON only)
+          required: true
+          schema:
+            type: string
+            enum:
+              - JSON
+              - XML
+        - name: entityId
+          in: path
+          description: The UUID of the entity to patch
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: transition
+          in: path
+          description: The transition state to apply to the entity (e.g., 'UPDATE',
+            'PUBLISH')
+          required: true
+          schema:
+            type: string
+            maxLength: 1024
+            minLength: 1
+          example: UPDATE
+        - name: If-Match
+          in: header
+          description: transactionId from the last read, or "*" for unconditional. Absent returns 428.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              format: json
+            examples:
+              MergePatch:
+                summary: Change one field
+                value:
+                  year: "2025"
+          application/json-patch+json:
+            schema:
+              type: array
+              items:
+                type: object
+      responses:
+        "200":
+          description: Entity patched successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityTransactionResponse"
+        "400":
+          description: Bad request — invalid patch or validation failure
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — concurrent writer committed during the patch (retryable)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: Precondition Failed — If-Match transactionId no longer matches
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "428":
+          description: Precondition Required — If-Match absent; supply a transactionId or "*"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "501":
+          $ref: '#/components/responses/NotImplemented'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
