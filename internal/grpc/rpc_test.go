@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -1143,6 +1144,232 @@ func TestRPC_EntityPatch_MissingIfMatch428(t *testing.T) {
 	}
 	if !strings.Contains(typed2.Error.Message, "PRECONDITION_REQUIRED") {
 		t.Errorf("expected PRECONDITION_REQUIRED in message for absent ifMatch, got %q", typed2.Error.Message)
+	}
+}
+
+func TestRPC_EntityPatch_JSONPatchNotImplemented(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
+
+	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "A", "amount": 1}},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "JSON_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": []any{}, "ifMatch": "*"},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success || typed.Error == nil {
+		t.Fatalf("expected failure envelope")
+	}
+	if !strings.Contains(typed.Error.Message, "NOT_IMPLEMENTED") {
+		t.Errorf("expected NOT_IMPLEMENTED in message, got %q", typed.Error.Message)
+	}
+}
+
+func TestRPC_EntityPatch_StaleTokenIs412(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
+
+	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "A", "amount": 1}},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	createPayload := parseResponsePayload(t, createResp)
+	txInfo := createPayload["transactionInfo"].(map[string]any)
+	entityID := txInfo["entityIds"].([]any)[0].(string)
+	createTxID := txInfo["transactionId"].(string)
+
+	// First patch with the create txId — should succeed and advance the entity.
+	firstPatchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"amount": 31}, "ifMatch": createTxID},
+	})
+	firstResp, err := svc.EntityManage(ctx, firstPatchCE)
+	if err != nil {
+		t.Fatalf("first patch transport error: %v", err)
+	}
+	var firstTyped events.EntityTransactionResponseJson
+	validateResponse(t, firstResp, &firstTyped)
+	if !firstTyped.Success {
+		t.Fatalf("expected first patch to succeed; got %#v", firstTyped.Error)
+	}
+
+	// Second patch with the same now-stale createTxID — should fail with ENTITY_MODIFIED.
+	stalePatchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p2", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"amount": 99}, "ifMatch": createTxID},
+	})
+	staleResp, err := svc.EntityManage(ctx, stalePatchCE)
+	if err != nil {
+		t.Fatalf("stale patch transport error: %v", err)
+	}
+	var staleTyped events.EntityTransactionResponseJson
+	validateResponse(t, staleResp, &staleTyped)
+	if staleTyped.Success || staleTyped.Error == nil {
+		t.Fatalf("expected failure envelope for stale token")
+	}
+	if !strings.Contains(staleTyped.Error.Message, "ENTITY_MODIFIED") {
+		t.Errorf("expected ENTITY_MODIFIED in message, got %q", staleTyped.Error.Message)
+	}
+}
+
+func TestRPC_EntityPatch_StarUnconditional(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
+
+	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "A", "amount": 1}},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"amount": 42}, "ifMatch": "*"},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("expected success; got %#v", typed.Error)
+	}
+
+	// Read back and verify the field was applied.
+	envelope, err := svc.entityHandler.GetEntity(ctx, entity.GetOneEntityInput{EntityID: entityID})
+	if err != nil {
+		t.Fatalf("get entity: %v", err)
+	}
+	dataBytes, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatalf("marshal entity data: %v", err)
+	}
+	var dataMap map[string]any
+	if err := json.Unmarshal(dataBytes, &dataMap); err != nil {
+		t.Fatalf("unmarshal entity data: %v", err)
+	}
+	// json.Unmarshal decodes numbers as float64 by default.
+	if dataMap["amount"] != float64(42) {
+		t.Errorf("expected amount=42, got %v", dataMap["amount"])
+	}
+}
+
+func TestRPC_EntityPatch_NotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	missingID := uuid.NewString()
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": missingID, "patch": map[string]any{"name": "X"}, "ifMatch": "*"},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success || typed.Error == nil {
+		t.Fatalf("expected failure envelope")
+	}
+	if !strings.Contains(typed.Error.Message, "ENTITY_NOT_FOUND") {
+		t.Errorf("expected ENTITY_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+}
+
+func TestRPC_EntityPatch_TypeMismatchIs400(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
+
+	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "A", "amount": 1}},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"amount": "not-a-number"}, "ifMatch": "*"},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success || typed.Error == nil {
+		t.Fatalf("expected failure envelope")
+	}
+	msg := typed.Error.Message
+	if !strings.Contains(msg, "INCOMPATIBLE_TYPE") && !strings.Contains(msg, "VALIDATION_FAILED") && !strings.Contains(msg, "BAD_REQUEST") {
+		t.Errorf("expected INCOMPATIBLE_TYPE, VALIDATION_FAILED, or BAD_REQUEST in message, got %q", msg)
+	}
+}
+
+func TestRPC_EntityPatch_WithTransition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "Alice"}},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+	patchCE := makeCE(EntityPatchRequest, map[string]any{
+		"id": "p1", "patchFormat": "MERGE_PATCH",
+		"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"name": "Renamed"}, "ifMatch": "*", "transition": "UPDATE"},
+	})
+	resp, err := svc.EntityManage(ctx, patchCE)
+	if err != nil {
+		t.Fatalf("patch with transition: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("expected success; got %#v", typed.Error)
+	}
+
+	// Read back and verify the field was applied.
+	envelope, err := svc.entityHandler.GetEntity(ctx, entity.GetOneEntityInput{EntityID: entityID})
+	if err != nil {
+		t.Fatalf("get entity: %v", err)
+	}
+	dataBytes, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatalf("marshal entity data: %v", err)
+	}
+	var dataMap map[string]any
+	if err := json.Unmarshal(dataBytes, &dataMap); err != nil {
+		t.Fatalf("unmarshal entity data: %v", err)
+	}
+	if dataMap["name"] != "Renamed" {
+		t.Errorf("expected name=Renamed, got %v", dataMap["name"])
 	}
 }
 
