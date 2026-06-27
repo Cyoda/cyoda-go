@@ -1,10 +1,12 @@
 # Cloud divergences
 
-cyoda-go is the digital twin of Cyoda Cloud. Most of the API surface
-matches one-for-one. This page tracks the **deliberate, known
-divergences** — fields cyoda-go declares for spec parity but does not
-yet implement, behavior that intentionally differs, or
-enterprise-tier features that live only in the commercial backend.
+cyoda-go defines the API and integration contract; Cyoda Cloud aligns
+to it. Most of the API surface matches one-for-one. This page tracks
+the **deliberate, known divergences** — fields cyoda-go declares in
+`api/openapi.yaml` but does not yet implement, behavior that
+intentionally differs, or enterprise-tier features that live only in
+the commercial backend. For features Cloud exposes that cyoda-go has
+not yet implemented, see [`../cloud-parity/`](../cloud-parity/).
 
 This is the canonical place for "I see this in the OpenAPI spec but
 cyoda-go silently ignores it" entries. Add new rows here whenever a
