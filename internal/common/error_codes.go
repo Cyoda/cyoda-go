@@ -40,6 +40,8 @@ const (
 	ErrCodeServerError               = "SERVER_ERROR"
 	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
 	ErrCodeNotFound                  = "NOT_FOUND"
+	ErrCodePreconditionRequired      = "PRECONDITION_REQUIRED"
+	ErrCodeUnsupportedMediaType      = "UNSUPPORTED_MEDIA_TYPE"
 )
 
 const (
