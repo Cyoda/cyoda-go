@@ -4,6 +4,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- PostgreSQL search now pushes supported predicates into SQL (JSONB `->>`
+  extraction, numeric/range/string comparisons) instead of loading every entity
+  of a model and filtering them in memory. Non-pushable operators (regex,
+  case-insensitive) are post-filtered while rows stream, and `LIMIT`/`OFFSET`
+  are pushed into SQL when no residual remains. This is a constant-factor win —
+  no full-result wire transfer, no decode of every document, filtering and
+  pagination done in the database — not a JSON-path-index speedup; adding
+  indexes on queried paths remains a separate operational step. SQLite already
+  did this; the memory backend keeps filtering in memory by design.
+  ([#37](https://github.com/Cyoda-platform/cyoda-go/issues/37))
+
 ### Fixed
 
 - Point-in-time ("as at T") reads now apply one canonical rule across all
