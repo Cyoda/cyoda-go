@@ -186,7 +186,16 @@ Sibling repositories under [github.com/cyoda](https://github.com/cyoda) that com
 
 ## Versioning
 
-cyoda-go is **pre-1.0**. Minor bumps may break wire format, configuration, or operational surface; patch bumps do not. See [`CHANGELOG.md`](CHANGELOG.md) for breaking changes and [`MAINTAINING.md`](MAINTAINING.md#maintenance-of-older-release-lines) for the policy on older release lines.
+The Cyoda-Go ecosystem follows Semantic Versioning with a leading `v`, under the pre-1.0 convention where **the minor component is the breaking-change signal**:
+
+- **`0.MINOR.0`** — a backward-*incompatible* change to that module's public contract (the HTTP/wire API for the `cyoda-go` binary; the Go interface surface for `cyoda-go-spi`).
+- **`0.x.PATCH`** — any backward-*compatible* change, **including new features**: additive API parameters, new endpoints, new optional SPI fields, and bug fixes all ship as patches.
+
+This is the "leftmost non-zero component is the de-facto major" convention (as used by Cargo and npm's `^0.x` ranges). It keeps the minor counter meaningful — a minor bump means "something under you may have broken" — rather than a feature odometer. The discipline it rests on: **a breaking change never ships in a patch.**
+
+**Each module versions on its own axis.** `cyoda-go-spi`, the `cyoda-go` binary, the in-tree plugins, and the Helm chart are **not** required to share a version number. Because the SPI surface is strictly additive today, its minor stays put while the binary iterates — a new SPI release is a *patch* unless it breaks an interface. The compatible combinations are recorded in [`COMPATIBILITY.md`](COMPATIBILITY.md); that matrix, not a shared digit, is the source of truth for what works with what.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for breaking changes and [`MAINTAINING.md`](MAINTAINING.md#maintenance-of-older-release-lines) for the policy on older release lines.
 
 ## License
 

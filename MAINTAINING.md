@@ -92,12 +92,29 @@ fires `release.yml`, which builds artifacts, signs, and publishes.
 
 ### Versioning
 
-Semver with a leading `v`: `v0.6.0`, `v1.2.3`. Pre-v1 allows
-breaking changes between minor versions. New version must be
-**strictly greater** than the previous tag — Go module tags are
-write-once-per-value on the proxy (`proxy.golang.org` caches the
-SHA of every tag it serves), so you cannot retag or reuse a
+Semver with a leading `v`: `v0.6.0`, `v1.2.3`. Pre-v1, the **minor
+component is the breaking-change signal**: bump `0.MINOR.0` for a
+backward-incompatible change to that module's public contract, and
+`0.x.PATCH` for any backward-compatible change — **including new
+features**. Additive API parameters, new endpoints, new optional SPI
+fields, and bug fixes all ship as patches. The discipline this rests
+on: **a breaking change never ships in a patch.** (This is the
+"leftmost non-zero component is the de-facto major" convention; see
+[`README.md`](README.md#versioning) for the consumer-facing statement.)
+
+New version must be **strictly greater** than the previous tag — Go
+module tags are write-once-per-value on the proxy (`proxy.golang.org`
+caches the SHA of every tag it serves), so you cannot retag or reuse a
 version number, even on repos with no production consumers.
+
+**Each module versions on its own axis.** `cyoda-go-spi`, the
+`cyoda-go` binary, the in-tree plugins, and the Helm chart are **not**
+required to share a version number, and the binary must **never** skip
+or burn a version number merely to mirror the SPI's (as `v0.8.0` was
+once skipped — see [`COMPATIBILITY.md`](COMPATIBILITY.md)). The binary
+pins whatever SPI version it needs and versions independently; their
+compatible combinations are recorded in the compatibility matrix, not
+encoded in a shared digit.
 
 "Greenfield" means we promise nothing about backward compatibility
 between versions yet. It does **not** mean we can reset version
@@ -364,6 +381,19 @@ This rule is in addition to the existing **plugin-version lockstep**
 rule (plugin submodule tags use the same version as the umbrella).
 The two rules together ensure that consumers see consistent
 SPI-and-plugin pinning at every umbrella tag.
+
+**These two rules are repo-internal hygiene, not a binary↔SPI version
+coupling.** "Pin-sync" means every `go.mod` *in this repo* agrees on one
+SPI version; "plugin-version lockstep" means the plugin *tags* match the
+umbrella *tag*. Neither ties the `cyoda-go` version number to the
+`cyoda-go-spi` version number — those move independently (see the
+"Versioning" section above). `cyoda-go-spi` versions on its **own** axis
+under the same convention as everything else: a **patch** for additive
+interface surface (which is what every SPI release `v0.5.0…v0.8.1`
+actually was), a **minor** only for a breaking interface change. So the
+SPI minor stays put across many binary releases; pick the next SPI
+version by whether the SPI *interface* broke, never to match the
+binary's number.
 
 **The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
 the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
