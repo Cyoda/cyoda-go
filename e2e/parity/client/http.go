@@ -1217,6 +1217,34 @@ func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, co
 	return results, nil
 }
 
+// SyncSearchAt issues POST /api/search/direct/{name}/{version}?pointInTime=<t>
+// with the given condition JSON and returns the entity results at the snapshot.
+// Mirrors SyncSearch (NDJSON response); the direct-search handler honours the
+// pointInTime query param.
+func (c *Client) SyncSearchAt(t *testing.T, modelName string, modelVersion int, condition string, at time.Time) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d?pointInTime=%s",
+		modelName, modelVersion, at.UTC().Format(time.RFC3339Nano))
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	var results []EntityResult
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var r EntityResult
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err != nil {
+			return nil, fmt.Errorf("decode NDJSON line: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
 // GetAuditEvents issues GET /api/audit/entity/{entityId} with optional
 // query parameters for filtering.
 // Canonical: docs/cyoda/api/openapi-audit.yml:31 (SearchEntityAuditEvents).
