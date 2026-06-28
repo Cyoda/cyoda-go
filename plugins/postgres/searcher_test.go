@@ -285,6 +285,46 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 	}
 }
 
+func TestPGSearcher_EqNumeric(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	got, err := searcherOf(t, store).Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		baseOpts())
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 1 { // Alice age=30
+		t.Fatalf("age=30: want 1, got %d", len(got))
+	}
+}
+
+func TestPGSearcher_NeNumeric(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	got, err := searcherOf(t, store).Search(ctx,
+		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		baseOpts())
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 4 { // Bob 25, Charlie 35, Diana 28, Eve 40
+		t.Fatalf("age!=30: want 4, got %d", len(got))
+	}
+}
+
+func TestPGSearcher_ContainsNumericValue(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	// value is float64(3); string-op treats it as "3"; ages 30 and 35 contain "3"
+	got, err := searcherOf(t, store).Search(ctx,
+		spi.Filter{Op: spi.FilterContains, Path: "age", Source: spi.SourceData, Value: float64(3)},
+		baseOpts())
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 2 { // Alice 30, Charlie 35
+		t.Fatalf("age contains '3': want 2, got %d", len(got))
+	}
+}
+
 // Compile-time guard mirrored as a runtime assertion for clarity.
 func TestPGSearcher_ImplementsSearcher(t *testing.T) {
 	store, ctx := setupSearcher(t)

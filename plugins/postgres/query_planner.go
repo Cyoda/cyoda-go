@@ -283,10 +283,20 @@ func nextPlaceholder(counter *int) string {
 func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 	switch f.Op {
 	case spi.FilterEq:
+		if isNumericValue(f.Value) {
+			col := orderExpr(f, true)
+			p := nextPlaceholder(counter)
+			return fmt.Sprintf("(%s IS NOT NULL AND %s = %s::float8)", col, col, p), []any{f.Value}
+		}
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
 		return fmt.Sprintf("(%s IS NOT NULL AND %s = %s)", col, col, p), []any{f.Value}
 	case spi.FilterNe:
+		if isNumericValue(f.Value) {
+			col := orderExpr(f, true)
+			p := nextPlaceholder(counter)
+			return fmt.Sprintf("(%s IS NULL OR %s != %s::float8)", col, col, p), []any{f.Value}
+		}
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
 		return fmt.Sprintf("(%s IS NULL OR %s != %s)", col, col, p), []any{f.Value}
@@ -301,17 +311,19 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 	case spi.FilterContains:
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
-		return fmt.Sprintf("strpos(%s, %s) > 0", col, p), []any{f.Value}
+		return fmt.Sprintf("strpos(%s, %s) > 0", col, p), []any{fmt.Sprint(f.Value)}
 	case spi.FilterStartsWith:
 		col := fieldExpr(f)
 		p1 := nextPlaceholder(counter)
 		p2 := nextPlaceholder(counter)
-		return fmt.Sprintf("substr(%s, 1, length(%s)) = %s", col, p1, p2), []any{f.Value, f.Value}
+		sv := fmt.Sprint(f.Value)
+		return fmt.Sprintf("substr(%s, 1, length(%s)) = %s", col, p1, p2), []any{sv, sv}
 	case spi.FilterEndsWith:
 		col := fieldExpr(f)
 		p1 := nextPlaceholder(counter)
 		p2 := nextPlaceholder(counter)
-		return fmt.Sprintf("substr(%s, -length(%s)) = %s", col, p1, p2), []any{f.Value, f.Value}
+		sv := fmt.Sprint(f.Value)
+		return fmt.Sprintf("substr(%s, -length(%s)) = %s", col, p1, p2), []any{sv, sv}
 	case spi.FilterLike:
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
