@@ -409,10 +409,6 @@ func (s *entityStore) getSnapshot(ctx context.Context, entityID string, snapshot
 }
 
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
-	// Round asAt up to the next millisecond boundary. Clients work at
-	// millisecond precision but submitTime has microsecond precision.
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	// Track in read set if in tx.
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		tx.OpMu.RLock()
@@ -431,7 +427,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		 INNER JOIN (
 		     SELECT entity_id, MAX(version) AS max_ver
 		     FROM entity_versions
-		     WHERE tenant_id = ? AND entity_id = ? AND submit_time < ?
+		     WHERE tenant_id = ? AND entity_id = ? AND submit_time <= ?
 		     GROUP BY entity_id
 		 ) latest ON ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
 		 WHERE ev.tenant_id = ?`,
@@ -545,9 +541,6 @@ func (s *entityStore) getAllTx(ctx context.Context, tx *spi.TransactionState, mo
 }
 
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	// Round asAt up to the next millisecond boundary.
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	asAtMicro := timeToMicro(asAt)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
@@ -556,7 +549,7 @@ func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asA
 		 INNER JOIN (
 		     SELECT entity_id, MAX(version) AS max_ver
 		     FROM entity_versions
-		     WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time < ?
+		     WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
 		     GROUP BY entity_id
 		 ) latest ON ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
 		 WHERE ev.tenant_id = ? AND ev.change_type != 'DELETED'`,

@@ -27,6 +27,11 @@ func NewTestClock() *TestClock {
 	return &TestClock{now: time.Now()}
 }
 
+// NewTestClockAt returns a TestClock whose virtual time starts at t.
+func NewTestClockAt(t time.Time) *TestClock {
+	return &TestClock{now: t}
+}
+
 // Now returns the current virtual time.
 func (c *TestClock) Now() time.Time {
 	c.mu.Lock()
