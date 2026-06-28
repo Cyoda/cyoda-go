@@ -174,7 +174,9 @@ The function is dispatched as `EntityCriteriaCalculationRequest` to the matching
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant
+- `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
+  Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
+  see `cyoda help crud` ("Point-in-time semantics").
 - `limit` (query, optional): string-encoded integer, clamped to maximum 10000; default 1000
 
 Request body: `Condition` JSON document.
