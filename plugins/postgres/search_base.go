@@ -11,7 +11,7 @@ import "time"
 // $4 the snapshot time. Callers append a pushdown WHERE fragment with
 // shiftPlaceholders(frag, len(args)) and (for Search) ORDER BY / LIMIT / OFFSET.
 //
-// PIT uses the canonical inclusive bound valid_time <= $4 (no rounding; #349).
+// PIT uses the canonical inclusive bound valid_time <= $4 (no rounding).
 // Shared by Iterate and Search so both stay in lock-step.
 func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time.Time) (string, []any) {
 	tid := string(s.tenantID)
@@ -31,7 +31,7 @@ func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time
 		return baseQuery, []any{tid, entityName, modelVersion, *pit}
 	}
 	baseQuery := `SELECT doc
-	             FROM entities
-	             WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
+		             FROM entities
+		             WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
 	return baseQuery, []any{tid, entityName, modelVersion}
 }
