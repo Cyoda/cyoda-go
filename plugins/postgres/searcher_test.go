@@ -176,6 +176,13 @@ func TestPGSearcher_PaginationNoResidual(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("limit 2 offset 1: want 2, got %d", len(got))
 	}
+	// Offset 1 over e1..e5 → page is e2 then e3.
+	if got[0].Meta.ID != "e2" {
+		t.Errorf("limit 2 offset 1: want got[0]=e2, got %s", got[0].Meta.ID)
+	}
+	if got[1].Meta.ID != "e3" {
+		t.Errorf("limit 2 offset 1: want got[1]=e3, got %s", got[1].Meta.ID)
+	}
 }
 
 // Pagination WITH residual → LIMIT/OFFSET applied in Go after post-filter.
@@ -212,6 +219,16 @@ func TestPGSearcher_UnboundedOffsetWithResidual(t *testing.T) {
 	if len(got) != 3 { // 5 total, drop first 2
 		t.Fatalf("unbounded offset 2 + residual: want 3, got %d", len(got))
 	}
+	// Offset 2 over e1..e5 → page is e3, e4, e5.
+	if got[0].Meta.ID != "e3" {
+		t.Errorf("unbounded offset 2: want got[0]=e3, got %s", got[0].Meta.ID)
+	}
+	if got[1].Meta.ID != "e4" {
+		t.Errorf("unbounded offset 2: want got[1]=e4, got %s", got[1].Meta.ID)
+	}
+	if got[2].Meta.ID != "e5" {
+		t.Errorf("unbounded offset 2: want got[2]=e5, got %s", got[2].Meta.ID)
+	}
 }
 
 func TestPGSearcher_OrderByDataPathDesc(t *testing.T) {
@@ -226,7 +243,7 @@ func TestPGSearcher_OrderByDataPathDesc(t *testing.T) {
 		t.Fatalf("want 5, got %d", len(got))
 	}
 	// Lexicographic desc: Eve, Diana, Charlie, Bob, Alice.
-	if string(got[0].Data) == "" || got[0].Meta.ID != "e5" {
+	if got[0].Meta.ID != "e5" {
 		t.Errorf("desc by name: want first=Eve(e5), got id=%s", got[0].Meta.ID)
 	}
 }
@@ -322,6 +339,40 @@ func TestPGSearcher_ContainsNumericValue(t *testing.T) {
 	}
 	if len(got) != 2 { // Alice 30, Charlie 35
 		t.Fatalf("age contains '3': want 2, got %d", len(got))
+	}
+}
+
+// TestPGSearcher_NeNumeric_MissingFieldMatches verifies 3VL: a row that has no
+// "age" field at all must be included in age!=30 results (missing != value is
+// true under three-valued logic).
+func TestPGSearcher_NeNumeric_MissingFieldMatches(t *testing.T) {
+	store, ctx := setupSearcher(t) // seeds e1..e5
+	// Save an extra entity with no "age" field.
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e6", ModelRef: searchModel, State: "NEW"},
+		Data: []byte(`{"name":"Frank","city":"Bremen"}`),
+	}); err != nil {
+		t.Fatalf("Save e6: %v", err)
+	}
+	got, err := searcherOf(t, store).Search(ctx,
+		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		baseOpts())
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Alice (age=30) is excluded; Bob/Charlie/Diana/Eve (age≠30) + Frank (no age) = 5.
+	if len(got) != 5 {
+		t.Fatalf("age!=30 with missing-field row: want 5, got %d", len(got))
+	}
+	found := false
+	for _, e := range got {
+		if e.Meta.ID == "e6" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("age!=30: e6 (no age field) must be included but was absent")
 	}
 }
 
