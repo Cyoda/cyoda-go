@@ -285,6 +285,10 @@ func nextPlaceholder(counter *int) string {
 func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 	switch f.Op {
 	case spi.FilterEq:
+		// Numeric operand: cyoda_try_float8 coerces the field to float8, so a field stored
+		// as a numeric-looking string (e.g. "30") coerces and matches — intentional, matching
+		// sqlite's type-coercing comparison and the S4 numeric-equality intent; string operands
+		// use plain text comparison.
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)

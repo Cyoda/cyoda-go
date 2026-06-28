@@ -248,6 +248,67 @@ func TestPGSearcher_OrderByDataPathDesc(t *testing.T) {
 	}
 }
 
+func TestPGSearcher_OrderByDataPathAsc(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	opts := baseOpts()
+	opts.OrderBy = []spi.OrderSpec{{Path: "name", Source: spi.SourceData}} // Desc omitted → ascending
+	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("asc by name: want 5, got %d", len(got))
+	}
+	// Lexicographic asc: Alice, Bob, Charlie, Diana, Eve → e1 first, e5 last.
+	if got[0].Meta.ID != "e1" {
+		t.Errorf("asc by name: want first=Alice(e1), got id=%s", got[0].Meta.ID)
+	}
+	if got[4].Meta.ID != "e5" {
+		t.Errorf("asc by name: want last=Eve(e5), got id=%s", got[4].Meta.ID)
+	}
+}
+
+func TestPGSearcher_OrderByMetaDirectColumn(t *testing.T) {
+	// entity_id is in directMetaColumns so orderByFieldExpr emits the bare column
+	// name instead of a doc->'_meta'->>'entity_id' expression. Exercises that branch.
+	store, ctx := setupSearcher(t)
+	opts := baseOpts()
+	opts.OrderBy = []spi.OrderSpec{{Path: "entity_id", Source: spi.SourceMeta}}
+	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("asc by entity_id: want 5, got %d", len(got))
+	}
+	// Lexicographic asc over "e1".."e5" → e1 first, e5 last.
+	if got[0].Meta.ID != "e1" {
+		t.Errorf("asc by entity_id: want first=e1, got %s", got[0].Meta.ID)
+	}
+	if got[4].Meta.ID != "e5" {
+		t.Errorf("asc by entity_id: want last=e5, got %s", got[4].Meta.ID)
+	}
+}
+
+func TestPGSearcher_OrderByMetaJSONPath(t *testing.T) {
+	// "state" is NOT in directMetaColumns, so orderByFieldExpr emits
+	// doc->'_meta'->>'state' — the SourceMeta non-direct branch. All five seed
+	// rows have state="NEW", so ordering is uniform; this test's purpose is to
+	// confirm the meta-JSONPath ORDER BY expression is valid SQL and executes
+	// without error. A meaningful ordering assertion is deferred until the seed
+	// carries state variation (all current seed states are uniform).
+	store, ctx := setupSearcher(t)
+	opts := baseOpts()
+	opts.OrderBy = []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta}}
+	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("order by meta state: want 5, got %d", len(got))
+	}
+}
+
 func TestPGSearcher_InjectionFilterPath(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	_, err := searcherOf(t, store).Search(ctx,
