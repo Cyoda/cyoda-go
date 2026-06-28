@@ -35,15 +35,33 @@ func RunPITBoundaryExactT(t *testing.T, fixture BackendFixture) {
 	}
 	t1 := pitbLatestChangeTime(t, c, id)
 
+	// Space writes ≥1ms apart so each version lands in a distinct millisecond.
+	// The commercial backend stores timestamps at millisecond precision; two
+	// writes inside the same wall-clock millisecond would report identical
+	// TimeOfChange values, making the exact-T assertion for the earlier version
+	// ambiguous (as-at that millisecond inclusively resolves to the later one).
+	// This does not weaken the guard — each assertion still queries a version's
+	// own exact reported timestamp, which is what exposes a strict-`<` bound.
+	time.Sleep(2 * time.Millisecond)
 	if err := c.UpdateEntityData(t, id, `{"k":2}`); err != nil {
 		t.Fatalf("update k=2: %v", err)
 	}
 	t2 := pitbLatestChangeTime(t, c, id)
 
+	time.Sleep(2 * time.Millisecond)
 	if err := c.UpdateEntityData(t, id, `{"k":3}`); err != nil {
 		t.Fatalf("update k=3: %v", err)
 	}
 	t3 := pitbLatestChangeTime(t, c, id)
+
+	// Precondition: the spacing above must yield strictly increasing version
+	// timestamps on every supported backend. A violation means the backend's
+	// timestamp resolution is coarser than the spacing — surface it clearly
+	// rather than as a confusing exact-T failure below.
+	if !t1.Before(t2) || !t2.Before(t3) {
+		t.Fatalf("version timestamps not strictly increasing: t1=%s t2=%s t3=%s",
+			t1.Format(time.RFC3339Nano), t2.Format(time.RFC3339Nano), t3.Format(time.RFC3339Nano))
+	}
 
 	// As-at exactly each version's write time returns that version.
 	pitbAssertKAt(t, c, id, t1, 1)

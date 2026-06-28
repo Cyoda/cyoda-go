@@ -171,11 +171,20 @@ The behaviour-changing row is the exact-boundary case.
 
 | Scenario | Unit (per-engine, white-box) | Running-backend e2e | Cross-backend parity | gRPC |
 |---|---|---|---|---|
-| Exact-T inclusive (`as-at T_v` returns v) | memory / sqlite / postgres | — | ✅ registry: `GetAsAt` + `GetAllAsAt` (all backends incl. Cassandra @ ms) | ✅ search / changes PIT envelope |
+| Exact-T inclusive (`as-at T_v` returns v) | memory / sqlite / postgres | — | ✅ registry: `GetAsAt` + `GetAllAsAt` (all backends incl. Cassandra @ ms) | ↳ transitive (see note) |
 | No over-inclusion (later sub-ms version excluded at `T_v`) | memory (ns), sqlite (µs), postgres (µs) — hand-placed timestamps | — | — (sub-ms not representable on Cassandra) | — |
 | sqlite `<` → `<=` (version at exactly creation-T visible) | sqlite | — | covered by exact-T parity | — |
-| PIT Search / Iterate / grouped-stats boundary | memory / sqlite / postgres | — | ✅ memory / sqlite / postgres (Cassandra path not implemented → gated) | ✅ |
+| PIT Search / Iterate / grouped-stats boundary | memory / sqlite / postgres | — | ✅ memory / sqlite / postgres (Cassandra path not implemented → gated) | ↳ transitive (see note) |
 | Async self-consistency (Search select == `GetAsAt` re-fetch at boundary) | — | ✅ isolated single-backend (**sqlite** — see rationale) | — | — |
+
+**gRPC column — transitive, not a separate test.** PIT bounding lives entirely in
+the shared SPI engine layer; gRPC `Search`/`GetChangesMetadata` and the HTTP
+endpoints funnel the same `PointInTime` into the same engine bound. This change
+adds no gRPC-specific PIT logic and no new status/error codes (see the error
+table — "no new codes"), so the per-engine white-box + cross-backend parity
+coverage protects the gRPC path transitively. No dedicated `internal/grpc`
+boundary test is added; the `↳ transitive` cells mark this deliberate reading
+rather than a delivered gRPC-specific test.
 
 ### Test approach rationale
 
