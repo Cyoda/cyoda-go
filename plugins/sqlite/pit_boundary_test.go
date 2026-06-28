@@ -67,6 +67,10 @@ func TestSqlitePIT_GetAllAsAt_InclusiveExactT(t *testing.T) {
 		t.Fatalf("GetAllAsAt(pitBase): %v", err)
 	}
 	if len(got) != 1 || string(got[0].Data) != `{"v":1}` {
-		t.Errorf("GetAllAsAt(pitBase) = %v entities, want 1 with {\"v\":1}", len(got))
+		var firstData string
+		if len(got) > 0 {
+			firstData = string(got[0].Data)
+		}
+		t.Errorf("GetAllAsAt(pitBase): got %d entities, data=%s; want 1 with {\"v\":1}", len(got), firstData)
 	}
 }

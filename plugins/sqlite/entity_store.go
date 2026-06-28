@@ -380,9 +380,8 @@ func (s *entityStore) getDirect(ctx context.Context, entityID string) (*spi.Enti
 //
 // Snapshot-time convention: submit_time <= snapshotTime (non-strict).
 // This matches the memory plugin's !v.submitTime.After(snapshotTime) and is
-// used consistently across getSnapshot, getAllTx, DeleteAll tx, and
-// searchPointInTimeBase. The separate GetAsAt/GetAllAsAt queries use strict <
-// because they first round asAt up to the next millisecond boundary.
+// used consistently across getSnapshot, getAllTx, DeleteAll tx,
+// searchPointInTimeBase, GetAsAt, and GetAllAsAt.
 func (s *entityStore) getSnapshot(ctx context.Context, entityID string, snapshotTime time.Time) (*spi.Entity, error) {
 	snapshotMicro := timeToMicro(snapshotTime)
 	row := s.db.QueryRowContext(ctx,
