@@ -86,13 +86,11 @@ func (s *EntityStore) Iterate(
 func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time) ([]*spi.Entity, error) {
 	// PIT path: historical read, bypass tx overlay.
 	if pit != nil {
-		// Round up to next millisecond boundary, matching GetAllAsAt.
-		asAt := pit.Truncate(time.Millisecond).Add(time.Millisecond)
 		var snapshot []*spi.Entity
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			snapshot = s.getAllSnapshotPointersUnlocked(model, asAt)
+			snapshot = s.getAllSnapshotPointersUnlocked(model, *pit)
 		}()
 		return snapshot, nil
 	}

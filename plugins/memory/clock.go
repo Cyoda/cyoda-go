@@ -27,6 +27,13 @@ func NewTestClock() *TestClock {
 	return &TestClock{now: time.Now()}
 }
 
+// NewTestClockAt returns a TestClock whose virtual time starts at t.
+// Tests that need a millisecond-aligned base (so sub-millisecond Advance
+// steps land in a known millisecond) use this instead of NewTestClock.
+func NewTestClockAt(t time.Time) *TestClock {
+	return &TestClock{now: t}
+}
+
 // Now returns the current virtual time.
 func (c *TestClock) Now() time.Time {
 	c.mu.Lock()
