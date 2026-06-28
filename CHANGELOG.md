@@ -4,6 +4,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- Point-in-time ("as at T") reads now apply one canonical rule across all
+  storage engines and read paths: inclusive of the requested instant (`<=`),
+  compared at native precision, with no millisecond round-up. Previously the
+  memory engine and the SQL `GetAsAt`/`GetAllAsAt` paths rounded the requested
+  time up to the next millisecond (over-including later same-millisecond
+  versions), and sqlite used a strict `<` bound — so different backends, and
+  different read paths within one backend, could disagree at sub-millisecond
+  boundaries. ([#349](https://github.com/Cyoda-platform/cyoda-go/issues/349))
+
 ## [0.8.1] — 2026-06-23
 
 > No `v0.8.0` release. The `cyoda-go-spi v0.8.0` tag was poisoned by a premature

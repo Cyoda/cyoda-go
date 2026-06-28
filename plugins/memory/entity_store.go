@@ -318,11 +318,6 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 
-	// Round asAt up to the next millisecond boundary. Clients work at
-	// millisecond precision but submitTime has microsecond/nanosecond
-	// precision. A query for "302ms" should include "302.306ms".
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	var result *spi.Entity
 	var wasDeleted bool
 	for _, v := range versions {
@@ -415,9 +410,6 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
-
-	// Round asAt up to the next millisecond boundary (same as GetAsAt).
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
 	// Historical query: always reads committed data.
 	result := make([]*spi.Entity, 0)

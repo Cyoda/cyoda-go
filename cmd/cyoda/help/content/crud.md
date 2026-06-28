@@ -550,6 +550,21 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `NOT_IMPLEMENTED_BY_BACKEND` — `501` — backend implements neither `Iterable` nor `GroupedAggregator`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
 
+## POINT-IN-TIME SEMANTICS
+
+A `pointInTime` read returns entity state **as at exactly that instant,
+inclusive**: a version whose write timestamp equals `pointInTime` is included
+(`<=`), and no rounding is applied to the requested time. The bound is compared
+against stored version timestamps at the storage engine's native precision.
+
+Behaviour is identical across every read path — single-entity read, list,
+search, grouped statistics, change history, and available transitions — and
+across storage backends. Because backends store timestamps at different
+precisions (down to milliseconds on some deployments), cross-backend results are
+guaranteed to agree at **millisecond granularity**; finer-grained ordering
+within a single millisecond is backend-defined. Timestamps are accepted and
+emitted as RFC 3339 with full fractional precision.
+
 ## ENTITY ENVELOPE
 
 All entity read operations return entities in the standard envelope:
