@@ -179,9 +179,6 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
-	// Round up to the next millisecond boundary (matching memory implementation).
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	var doc []byte
 	err := s.q.QueryRow(ctx,
 		`SELECT doc FROM entity_versions
@@ -239,8 +236,6 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	rows, err := s.q.Query(ctx,
 		`SELECT v.doc
 		 FROM entities e
