@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
@@ -291,4 +292,77 @@ func TestPGSearcher_ImplementsSearcher(t *testing.T) {
 		t.Fatal("postgres entityStore must implement spi.Searcher")
 	}
 	_ = ctx
+}
+
+// pitSearchSetup saves v1 (active) then v2 (inactive) of one entity, then
+// pins v1's valid_time to baseTS and v2's to 300µs later (same millisecond),
+// mirroring pit_boundary_test.go. Returns the store, ctx, and the base time.
+func pitSearchSetup(t *testing.T) (spi.EntityStore, context.Context, time.Time) {
+	t.Helper()
+	const (
+		tenant = "pit-search-tenant"
+		baseTS = "2026-02-01 00:00:00+00"
+		nextTS = "2026-02-01 00:00:00.000300+00"
+	)
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant(tenant)
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ent := &spi.Entity{
+		Meta: spi.EntityMeta{ID: "pp1", ModelRef: searchModel, State: "NEW"},
+		Data: []byte(`{"name":"Alice","status":"active"}`),
+	}
+	if _, err := store.Save(ctx, ent); err != nil {
+		t.Fatalf("Save v1: %v", err)
+	}
+	ent.Data = []byte(`{"name":"Alice","status":"inactive"}`)
+	if _, err := store.Save(ctx, ent); err != nil {
+		t.Fatalf("Save v2: %v", err)
+	}
+	pool := factory.Pool()
+	if _, err := pool.Exec(ctx,
+		`UPDATE entity_versions SET valid_time=$1, transaction_time=$1
+		 WHERE tenant_id=$2 AND entity_id=$3 AND version=1`, baseTS, tenant, "pp1"); err != nil {
+		t.Fatalf("pin v1: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE entity_versions SET valid_time=$1, transaction_time=$1
+		 WHERE tenant_id=$2 AND entity_id=$3 AND version=2`, nextTS, tenant, "pp1"); err != nil {
+		t.Fatalf("pin v2: %v", err)
+	}
+	base, err := time.Parse(time.RFC3339Nano, "2026-02-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+	return store, ctx, base
+}
+
+// At the base timestamp only v1 (status=active) is visible, so a search for
+// status=active returns the entity; a search for status=inactive returns none.
+// This is the test that catches the B1 inner-projection defect — without the
+// fix the query errors with `column "entity_id" does not exist` (default
+// ORDER BY entity_id over a derived table that only projected doc).
+func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
+	store, ctx, base := pitSearchSetup(t)
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base}
+
+	active, err := store.(spi.Searcher).Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active"}, opts)
+	if err != nil {
+		t.Fatalf("Search active@base: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("status=active @base: want 1 (v1 snapshot), got %d", len(active))
+	}
+
+	inactive, err := store.(spi.Searcher).Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive"}, opts)
+	if err != nil {
+		t.Fatalf("Search inactive@base: %v", err)
+	}
+	if len(inactive) != 0 {
+		t.Fatalf("status=inactive @base: want 0 (v2 not yet visible), got %d", len(inactive))
+	}
 }

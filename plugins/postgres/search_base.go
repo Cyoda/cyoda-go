@@ -20,7 +20,8 @@ func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time
 		// entity visible at the snapshot; outer drops deletion-marker versions
 		// AFTER the DISTINCT ON (so a delete shadows an older live version).
 		baseQuery := `SELECT doc FROM (
-		                SELECT DISTINCT ON (entity_id) doc
+		                SELECT DISTINCT ON (entity_id)
+		                       entity_id, model_name, model_version, version, doc
 		                FROM entity_versions
 		                WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
 		                  AND valid_time <= $4
