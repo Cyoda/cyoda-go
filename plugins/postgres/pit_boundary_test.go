@@ -79,6 +79,10 @@ func TestPostgresPIT_GetAllAsAt_InclusiveNoRoundUp(t *testing.T) {
 		t.Fatalf("GetAllAsAt(base): %v", err)
 	}
 	if len(got) != 1 || string(got[0].Data) != `{"value":"v1"}` {
-		t.Errorf("GetAllAsAt(base) = %d entities, want 1 with v1", len(got))
+		var data string
+		if len(got) > 0 {
+			data = string(got[0].Data)
+		}
+		t.Errorf("GetAllAsAt(base) = %d entities (first data=%q), want 1 with {\"value\":\"v1\"}", len(got), data)
 	}
 }
