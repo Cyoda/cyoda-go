@@ -175,7 +175,7 @@ The behaviour-changing row is the exact-boundary case.
 | No over-inclusion (later sub-ms version excluded at `T_v`) | memory (ns), sqlite (µs), postgres (µs) — hand-placed timestamps | — | — (sub-ms not representable on Cassandra) | — |
 | sqlite `<` → `<=` (version at exactly creation-T visible) | sqlite | — | covered by exact-T parity | — |
 | PIT Search / Iterate / grouped-stats boundary | memory / sqlite / postgres | — | ✅ memory / sqlite / postgres (Cassandra path not implemented → gated) | ✅ |
-| Async self-consistency (Search select == `GetAsAt` re-fetch at boundary) | — | ✅ isolated single-backend (postgres) | — | — |
+| Async self-consistency (Search select == `GetAsAt` re-fetch at boundary) | — | ✅ isolated single-backend (**sqlite** — see rationale) | — | — |
 
 ### Test approach rationale
 
@@ -204,14 +204,33 @@ The behaviour-changing row is the exact-boundary case.
 - The **async self-consistency** check is consistency-flavoured (Search-select vs
   `GetAsAt` re-fetch agreeing at a boundary); it stays an **isolated single-backend
   e2e** rather than entering the shared parity suite, per `.claude/rules/test-coverage.md`.
+  It must target **sqlite**, not postgres: today sqlite's async *select* runs through
+  `searcher.Search` (raw `<=`) while its re-fetch runs through the rounded + strict-`<`
+  `GetAsAt`, so a boundary entity re-fetches to a different version or to
+  `ENTITY_NOT_FOUND` (which `search/service.go` silently skips → count mismatch) — a
+  genuine RED. Postgres has **no** sync `Searcher` until #37, so its async select falls
+  back to `GetAllAsAt` and its re-fetch to `GetAsAt` — both rounded pre-fix, hence
+  always in agreement: a postgres version of this test is a tautology (green→green) and
+  would violate the RED requirement. (Postgres becomes a meaningful target only after
+  #37 adds its Searcher.)
+- **Black-box exact-T tests must query at the *backend-reported* timestamp** of the
+  written version (read it back from the entity meta / change history), never a
+  client-side pre-storage nanosecond value. Stored precision truncates (ns→µs→ms) and
+  truncation is idempotent at the boundary, so inclusive `<=` holds across engines only
+  when the queried instant is the value the engine actually stored.
 
 ### Existing tests to review under GREEN
 
-Tests that encode the old rounded expectation must be re-derived (not blindly relaxed):
-`plugins/memory/search_store_test.go`, `plugins/postgres/model_store_test.go`,
-`plugins/postgres/model_extensions_*_test.go`, `plugins/sqlite/model_extensions_internal_test.go`.
-Any that constructed expected timestamps via `Truncate(time.Millisecond).Add(...)` to
-match the buggy bound are corrected to the canonical inclusive raw `<=`.
+The behavioural `GetAsAt`/`GetAllAsAt` tests live in `plugins/memory/entity_store_test.go`
+(e.g. `TestGetAllAsAt`, soft-delete-as-at cases) and `plugins/postgres/entity_store_test.go`
+(`TestEntityStore_GetAsAt`, `TestEntityStore_GetAllAsAt`). These are the tests to review
+under GREEN and the natural homes for the new white-box boundary tests; they currently
+stay green only because every case uses multi-millisecond gaps and samples mid-gap.
+**sqlite has no existing `GetAsAt`/`GetAllAsAt` test at all** — that path is currently
+fully untested, so the new sqlite white-box boundary tests are net-new coverage, not
+edits. (The `Truncate(time.Millisecond)` hits in `model_store_test.go` /
+`model_extensions_*_test.go` / `search_store_test.go` only build an `UpdateDate` field —
+they are *not* PIT-bound tests and need no change.)
 
 ## Out of scope
 
