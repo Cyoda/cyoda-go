@@ -85,7 +85,8 @@ sub-millisecond cross-engine guarantee that Cassandra physically cannot honour.
 
 ## Production changes (cyoda-go only)
 
-Nine edits. No new types, no SPI change, no migration.
+Seven sites, nine changes (7 round-up removals + 2 sqlite predicate flips). No new
+types, no SPI change, no migration.
 
 | Engine | File:line | Change |
 |---|---|---|
@@ -100,14 +101,31 @@ Nine edits. No new types, no SPI change, no migration.
 All other PIT paths are already raw inclusive `<=` and become consistent automatically
 once the rounded paths stop rounding:
 
-- sqlite `searcher.go` PIT base query: already `submit_time <= ?` (raw).
-- postgres `searcher.go` / `grouped_stats.go` PIT: already `valid_time <= $N` (raw).
+- sqlite `searcher.go` PIT base query: already `submit_time <= ?` (raw). This is the
+  tree's only sync `spi.Searcher`.
+- postgres `grouped_stats.go:93` (`Iterate` PIT): already `valid_time <= $4` (raw).
+  Postgres has **no** sync `Search` today — a sync `spi.Searcher` is exactly what #37
+  adds, on top of this canonical bound.
 - memory snapshot helpers (`getSnapshotVersion`, `getAllSnapshotUnlocked`,
   `getAllSnapshotPointersUnlocked`): already `!submitTime.After(...)` = `<=`.
 
+**All `GetAsAt` consumers whose boundary result changes after the fix** (covered
+automatically by the `GetAsAt` edit, but enumerated so the behavioural change is not
+silent): single-entity read (`internal/domain/entity/handler.go`, HTTP + gRPC); HTTP
+transitions-as-at handler (`internal/domain/entity/transitions_handler.go` →
+`GetAsAt`); workflow available-transitions-as-at
+(`internal/domain/workflow/transitions.go` `GetAvailableTransitions(…, pointInTime)` →
+`GetAsAt`); async-search re-fetch (`internal/domain/search/service.go` →
+`GetAsAt(…, job.PointInTime)`). The change-history-as-at path
+(`GetChangesMetadata`) is **not** a `GetAsAt` consumer — it does its own
+already-inclusive, non-rounded cutoff filter (`!Timestamp.After(cutoff)`), so it needs
+no production change, only a boundary assertion.
+
 **No collateral.** Transaction-snapshot reads use `tx.SnapshotTime` and never applied
-the round-up; they are untouched. The async-search self-inconsistency resolves for free
-once `GetAsAt` stops rounding (both Search-select and re-fetch then bind raw `<=`).
+the round-up; they are untouched (sqlite `getAllTx` binds `submit_time <= snapshotMicro`
+raw; memory snapshot helpers take `tx.SnapshotTime` directly). The async-search
+self-inconsistency resolves for free once `GetAsAt` stops rounding (both Search-select
+and re-fetch then bind raw `<=`).
 
 **Commercial backend.** Cassandra already implements the canonical rule (inclusive
 `<=`, no round-up) at millisecond precision; it requires no production change. The new
@@ -146,7 +164,8 @@ The behaviour-changing row is the exact-boundary case.
 | `GET /api/entity/{name}/{ver}?pointInTime` | `GetAllAsAt` | 200; 400 `INVALID_POINT_IN_TIME` | set includes versions with T == bound; excludes T > bound (sqlite strictness fixed) |
 | `POST /api/entity/search/{…}` + gRPC `Search` (`pointInTime`) | PIT `Search` | 200/202; 400 | already raw `<=`; now identical to `GetAsAt` (async select == re-fetch) |
 | `POST /api/entity/stats/{…}/query` + gRPC (`pointInTime`) | grouped-stats / `Iterate` | 200; 400 `INVALID_POINT_IN_TIME`/`INVALID_LIMIT`; 422 `GROUP_CARDINALITY_EXCEEDED`; 501 `NOT_IMPLEMENTED_BY_BACKEND` | memory stops rounding → matches SQL engines |
-| `GET /api/entity/{id}/changes?pointInTime`, `…/transitions?pointInTime` + gRPC `GetChangesMetadata` | history / transitions as-at | 200; 404; 400 `INVALID_POINT_IN_TIME` | verify raw inclusive `<=` (no round-up site here today — add boundary assertion to prove it) |
+| `GET /api/entity/{id}/transitions?pointInTime`; workflow available-transitions-as-at | `GetAsAt` (entity-as-at) | 200; 404; 400 `INVALID_POINT_IN_TIME` | routes through `GetAsAt`, which **rounds today** — fixed by the `GetAsAt` edit; add boundary assertion |
+| `GET /api/entity/{id}/changes?pointInTime` + gRPC `GetChangesMetadata` | history as-at (own cutoff filter) | 200; 404; 400 `INVALID_POINT_IN_TIME` | already inclusive raw `<=` (`!Timestamp.After(cutoff)`), no round-up — add boundary assertion to lock it |
 
 ## Coverage matrix (scenario × layer)
 
@@ -168,6 +187,15 @@ The behaviour-changing row is the exact-boundary case.
   included by `as-at T` (inclusive boundary); (b) a version written at T+ε within the
   same millisecond is excluded by `as-at T` (no round-up over-inclusion); (c) sqlite:
   the version at exactly its creation T is visible (`<=` not `<`).
+  - **Sequencing caveat (sqlite strictness is masked by the round-up).** On unmodified
+    sqlite the round-up hides the strict `<`: `as-at T_v` rounds up to the next ms then
+    does `< (T_v_ms + 1ms)`, so the version at `T_v` is already returned. A standalone
+    "version at exactly creation-T visible" test therefore passes green on current code
+    and proves nothing. The genuine RED driver for sqlite is the **over-inclusion** test
+    (a same-ms `T+ε` version *is* wrongly returned today and must be excluded). Sequence
+    the sqlite work: (1) write over-inclusion RED → remove the round-up (now the strict
+    `<` is observable and the exact-T test goes RED) → (2) flip `<`→`<=` to green it.
+    Do not treat the exact-T strictness test as RED before the round-up is removed.
 - **Exact-T inclusivity** is deterministic at millisecond granularity, so it is the
   **cross-backend parity** guard — it runs on Cassandra too and asserts every backend
   returns the same version when queried at a version's own reported timestamp. New
