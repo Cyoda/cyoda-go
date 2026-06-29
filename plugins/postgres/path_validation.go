@@ -97,3 +97,19 @@ func validateFilterPaths(f spi.Filter) error {
 	}
 	return validateJSONPath(f.Path)
 }
+
+// validateOrderSpecs checks every OrderSpec.Path against the same dotted-
+// identifier grammar as filter paths. Empty paths (direct-column / default
+// ordering) are skipped. MUST be called at the Search() boundary before any
+// OrderSpec.Path is interpolated into SQL (injection invariant).
+func validateOrderSpecs(specs []spi.OrderSpec) error {
+	for _, sp := range specs {
+		if sp.Path == "" {
+			continue
+		}
+		if err := validateJSONPath(sp.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
