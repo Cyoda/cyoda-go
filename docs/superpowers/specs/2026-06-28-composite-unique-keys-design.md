@@ -9,9 +9,11 @@ backend deferred to a separate issue in its own repository.
 
 Allow an entity model to declare one or more **composite unique keys** over a set of
 **scalar** fields, such that no two *live* entities of that model (within a tenant) may
-share the same value-set on a key. This is a general SQL-style `UNIQUE` constraint:
-declared in the model schema, enforced on **create and update**, with key fields mutable
-as long as uniqueness continues to hold.
+share the same value-set on a key. Modelled on SQL `UNIQUE` (declared in the schema,
+enforced on **create and update**, key fields mutable as long as uniqueness holds) with two
+**deliberate deviations** from the SQL standard: (1) the **all-or-nothing null rule** (§2)
+rejects partially-filled keys with a 422 rather than admitting them as distinct via
+NULL-distinctness; (2) scope is restricted to *live* entities, so soft-delete frees a value.
 
 ## 2. Agreed semantics
 
@@ -61,7 +63,11 @@ definitions and an entity doc it produces a list of **claims** `{keyId, signatur
 
 Claims ride on `spi.Entity` as an **additive, transient field** (not marshaled into the
 stored doc / `Data` bytes). Engines read it on the write path and enforce; they never
-compute signatures themselves.
+compute signatures themselves. The field is provably non-persisted: memory stores
+`copyEntity(entity)` which copies only `Meta`+`Data` (`plugins/memory/entity_store.go`
+~`:37-41`), and postgres builds the doc from explicit `Meta` fields + `entity.Data` via
+`marshalEntityDoc` (`plugins/postgres/entity_doc.go` ~`:34-74`) — neither does
+`json.Marshal(entity)`, so a new struct field cannot leak into storage.
 
 **Why claims-in-service (not an SPI helper):** keeps the canonicalization in one Go code
 path, avoids plumbing model descriptors into every engine's `Save`, and keeps the SPI
@@ -72,10 +78,13 @@ change purely additive (a struct field, not a new interface method). See §3.6.
 `spi.Entity.Data` is raw `[]byte`; the doc never round-trips through `float64` at storage,
 so precision can be preserved. Rules:
 
-- **Numbers:** parse with `json.Number` / arbitrary-precision decimal; normalize to one
-  canonical decimal form so `1`, `1.0`, `1e0` collide, and **full int64+ precision is
-  preserved**. Do **not** reuse `cyoda_try_float8` (search-read helper; lossy above 2^53
-  and never present at write time).
+- **Numbers:** parse with `json.Number` into an **arbitrary-precision decimal** (pin the
+  exact library in the plan — `math/big.Rat` or a decimal package; **never** `float64`/
+  `big.Float`, which round). Normalize to one canonical decimal form so `1`, `1.0`, `1e0`
+  collide and **full int64+ precision is preserved**. Enumerate and test the edge cases:
+  negative zero (`-0` ≡ `0`), large integers (> 2^53), high-exponent literals (`1e400`
+  must not overflow or round), and trailing-fraction normalization. Do **not** reuse
+  `cyoda_try_float8` (search-read helper; lossy above 2^53 and never present at write time).
 - **Strings:** byte-exact by default (SQL `UNIQUE` semantics). Unicode normalization (NFC)
   and case-sensitivity are **decided in the helper** and documented there; default is
   *no normalization, case-sensitive, no whitespace trimming* unless the plan justifies
@@ -87,8 +96,22 @@ so precision can be preserved. Rules:
 
 > A claim row exists **iff** the entity is currently live and has a fully-present key.
 
-The only removal hook is soft-delete (no hard-delete path for entities exists), so this
-invariant has a single maintenance point per engine.
+**This invariant has multiple maintenance points, not one** — every write *and* every
+removal path must keep it true. There is no hard-delete of entities, but soft-delete and
+writes happen on several distinct code paths the plan must enumerate and individually test:
+
+- transactional commit (single-entity create/update via the tx tombstone/flush loop),
+- the **non-transactional** `Save` and `Delete` paths (memory `entity_store.go` ~`:225-245`,
+  ~`:480-504`),
+- **`DeleteAll`** — bulk soft-delete of every entity of a model (memory `entity_store.go`
+  ~`:507-581`; postgres bulk soft-delete behind `DeleteAllEntities`,
+  `internal/domain/entity/service.go` ~`:677`) — **must release every affected claim**,
+- **`SaveAll`** — collection create (`spi.EntityStore.SaveAll`); see §3.7 for intra-batch
+  uniqueness.
+
+Missing any of these orphans claim rows, which later resurface as **spurious 409s** when a
+freed value-set is re-used. Coverage (§7) asserts "zero claim rows after `DeleteAll`" and
+"after model delete".
 
 **postgres / sqlite (Option 1 — chosen):** a side table
 `unique_claims(tenant, model, version, key_id, signature, entity_id)` with a **plain**
@@ -116,9 +139,15 @@ tables. Both the entity upsert and the claim mutation run inside the same `pgx.T
 - evaluated against **current committed state, ignoring snapshot isolation** (no
   `submitTime.After(SnapshotTime)` filter) — otherwise a committer whose snapshot predates
   a rival's commit would skip the conflict.
-- Release-on-soft-delete happens in the commit tombstone loop, also under `entityMu`.
+- Release-on-soft-delete happens under `entityMu` on **every** delete path (commit tombstone
+  loop, the non-tx `Delete`, and `DeleteAll`), not only the commit loop.
 
 ### 3.4 Update that moves a key value
+
+Claims are computed from the **post-merge full doc**, never a patch fragment: `PATCH`
+merges the fragment into the stored doc, so the helper must run on the merged result (a
+patch that nulls/removes one key field then triggers the all-or-nothing rule → 422
+`INVALID_UNIQUE_KEY`, a case the coverage matrix must include).
 
 Within the same (version-checked) transaction as the write:
 1. **Delete-first** the entity's prior claim rows for the affected key(s), then insert the
@@ -136,17 +165,27 @@ recompute claims for release).
 A unique-index conflict must surface as a **non-retryable 409 `UNIQUE_VIOLATION`**,
 distinct from the existing *retryable* `CONFLICT`.
 
-- **Postgres:** today only SQLSTATE `40001`/`40P01` map to `spi.ErrConflict`; `23505` is
-  unhandled and would become a **500**, and a `40001` would be wrongly marked
-  **retryable**. The implementation must detect the **specific claim constraint by name**
-  (`pgconn.PgError.ConstraintName`) and map *only that* to the new
-  `spi.ErrUniqueViolation`. A `23505` on any *other* constraint must remain a 500.
-- **sqlite / memory:** map their unique-conflict signal to the same sentinel.
+Concrete mechanism (so an implementer can't accidentally make it retryable or a 500):
 
-`spi.ErrUniqueViolation` is a **new additive sentinel** in `cyoda-go-spi`. The service maps
-it to 409 `UNIQUE_VIOLATION`, **non-retryable**, whose body names the violated `keyId`
-only — **never** the incumbent entity's id (need-to-know; avoids leaking another entity's
-existence even within a tenant).
+- **Postgres:** `classifyError` (`plugins/postgres/transaction_manager.go` ~`:446`) today
+  maps only `40001`/`40P01` → `spi.ErrConflict`; `23505` is unhandled (→ 500) and
+  `ConstraintName` is used nowhere. Extend it to wrap `23505` **iff
+  `pgconn.PgError.ConstraintName == <the claim unique constraint>`** into
+  `spi.ErrUniqueViolation`. A `23505` on **any other** constraint must fall through
+  unchanged (→ 500). The claim INSERT already flows through the classifying querier
+  (`plugins/postgres/classifying_querier.go` ~`:35`), so no new plumbing is needed.
+  *(A duplicate INSERT under `RepeatableRead` surfaces as `23505`, not `40001`; the
+  rare-race `40001` path is retried and deterministically converges to the `23505` →
+  `UNIQUE_VIOLATION` outcome, so constraint-name detection is the real fix, not a
+  `40001` reclassification.)*
+- **sqlite / memory:** map their unique-conflict signal to the same sentinel.
+- **Service mapping:** add a branch to `common.Internal` (`internal/common/errors.go`
+  ~`:96`) mirroring the existing `ErrConflict` branch but returning
+  `Operational(409, UNIQUE_VIOLATION)` **without** `.AsRetryable()`.
+
+`spi.ErrUniqueViolation` is a **new additive sentinel** in `cyoda-go-spi`. The 409 body
+names the violated `keyId` only — **never** the incumbent entity's id (need-to-know; avoids
+leaking another entity's existence even within a tenant).
 
 ### 3.6 Capability gate
 
@@ -171,6 +210,18 @@ type CompositeUniqueKeyCapable interface {
 - **Out of scope:** a process-wide backend swap (supported → unsupported) under a model
   that already declares keys would strand enforcement. The backend is process-wide, so this
   requires a deliberate data migration; explicitly not handled here.
+- *On the explicit bool:* interface **presence** alone could signal capability (the
+  `Searcher` pattern). The bool is retained deliberately — it honours the declared-flag
+  decision and leaves room for an implement-but-disable backend — at the cost of being
+  marginally more than presence-detection strictly requires.
+
+### 3.7 Collection create / `SaveAll` — intra-batch uniqueness
+
+`SaveAll` (collection create, `spi.EntityStore.SaveAll`) must enforce uniqueness **within
+the batch** as well as against committed state: two entities in one `SaveAll` sharing a
+value-set must collide. SQL gets this for free (the second claim INSERT raises `23505` in
+the same tx); the memory signature-map check in the flush must likewise reject the second
+in-batch claim. Coverage matrix includes an intra-batch-duplicate row.
 
 ## 4. Unique-key definition
 
@@ -236,7 +287,11 @@ and `INVALID_UNIQUE_KEY_DEFINITION` if not reusing an existing code) requires:
 | All-or-nothing null rule (all-null exempt; partial ⇒ 422) | ✓ | ✓ | ✓ | ✓ |
 | Create duplicate ⇒ 409 `UNIQUE_VIOLATION` | | ✓ | ✓ | ✓ |
 | Update moves key ⇒ 409 on collision; success when free | | ✓ | ✓ | ✓ |
+| PATCH that nulls/removes a key field ⇒ 422 (all-or-nothing on merged doc) | | ✓ | ✓ | ✓ |
 | Soft-delete frees value (re-create with same key succeeds) | | ✓ | ✓ | |
+| `DeleteAll` releases all claims (zero claim rows after; re-create succeeds) | | ✓ | ✓ | |
+| Model delete releases all claims; re-created `(name,version)` has no false collision | | ✓ | | |
+| `SaveAll` intra-batch duplicate ⇒ 409 (no torn write) | | ✓ | ✓ | |
 | Multiple independent keys per model | | ✓ | ✓ | |
 | Definition validation (non-scalar/array/unknown/dup) ⇒ 422 | ✓ | ✓ | | ✓ |
 | `COMPOSITE_KEY_UNSUPPORTED` on unsupported backend | | | ✓ (commercial asserts this) | ✓ |
@@ -258,10 +313,15 @@ memory-backend parity-destabilization.
 - **Gate 4 docs:** OpenAPI / help topics for the new model-config `uniqueKeys` surface;
   help topics for the new error codes; `COMPATIBILITY.md` on the SPI bump;
   `docs/workflow-schema-versioning.md` bump per the import-surface change.
-- **`ModelStore.Delete`** is a physical delete with no cascade, but shares the
-  zero-live-entities guard, and soft-deleted entities never held claims ⇒ at delete time the
-  claim set for that `(model, version)` is empty. Net orphan risk: nil *given the guard
-  holds* — covered by the §2.1 guard test.
+- **`ModelStore.Delete`** is a physical delete with no cascade. Its claim-table safety
+  depends on the **claim-release-on-soft-delete invariant (§3.3), not the §2.1
+  zero-live-entities guard** — these are different properties, and the former is the more
+  fragile one. Because model identity is `deterministicID(name, version)`, a
+  `(tenant, model, version)` can be **re-created** after delete, so any leaked claim becomes
+  a *cross-incarnation false collision*. Therefore make model delete **defensive**: it must
+  also `DELETE FROM unique_claims WHERE (tenant, model, version)` (and/or an `ON DELETE
+  CASCADE` FK on postgres), with a guard test asserting **zero claim rows after model
+  delete** and **after `DeleteAll`**.
 
 ## 9. Out of scope
 
