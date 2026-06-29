@@ -212,8 +212,7 @@ type CompositeUniqueKeyCapable interface {
 }
 ```
 
-- Checked at **config time** (model registration/import and lock), never in the write hot
-  path.
+- Checked at **declaration time** (the `unique-keys` PUT, §4), never in the write hot path.
 - memory / sqlite / postgres support it; the **commercial backend does not** ⇒ unsupported,
   until its own issue lands.
 - Purely additive — it does **not** add a method to the existing `StoreFactory` interface
@@ -230,10 +229,7 @@ value-set must collide. SQL gets this for free (the second claim INSERT raises `
 the same tx); the memory signature-map check in the flush must likewise reject the second
 in-batch claim. Coverage matrix includes an intra-batch-duplicate row.
 
-## 4. Unique-key definition
-
-A minimal SPI-level definition is carried on the model config import surface
-(`WorkflowConfigurationDto`) and lifted to whatever the helper needs:
+## 4. Unique-key definition & declaration surface
 
 ```
 UniqueKey {
@@ -242,15 +238,37 @@ UniqueKey {
 }
 ```
 
-Validation at declaration / lock time (422 `COMPOSITE_KEY_UNSUPPORTED` for capability;
-otherwise a definition-validation 422):
-- every field is a known **scalar leaf** in the model schema (reject array / object /
-  wildcard / unknown paths),
-- `fields` non-empty, no duplicate field within a key,
-- `id` unique within the model.
+**Declaration surface (corrected — supersedes any earlier "WorkflowConfigurationDto"
+reference).** Models in cyoda-go are *not* defined via an explicit schema DTO — they are
+imported from `SAMPLE_DATA` (schema inferred) and exported via `ExportMetadata`. The model
+write surface is a set of sub-resources mirroring `/lock`, `/unlock`,
+`/changeLevel/{changeLevel}`. Unique keys are therefore declared through a **new dedicated
+model sub-resource**, not the workflow surface:
 
-This touches the model import surface ⇒ follow `docs/workflow-schema-versioning.md` bump
-rules (Gate 4).
+- **HTTP:** `PUT /model/{entityName}/{modelVersion}/unique-keys` with body
+  `{ "uniqueKeys": [ { "id": "...", "fields": ["$.a","$.b"] }, ... ]}` — idempotent
+  *set-the-whole-list*. Allowed only while the model is **UNLOCKED** (else 409
+  `MODEL_ALREADY_LOCKED`, matching the existing transition guards). Validated **immediately**
+  on this call (not deferred to lock).
+- **gRPC:** a new `EntityModelManage` CloudEvents event type alongside the existing
+  import/export/transition/delete handlers (`internal/grpc/model.go`).
+- **Persistence:** the key list lives **inside the model schema bytes**
+  (`spi.ModelDescriptor.Schema`), via a codec evolution — the current `Marshal`/`Unmarshal`
+  emit a bare `wireNode` tree; they gain a back-compat wrapper
+  `{ "root": <wireNode>, "uniqueKeys": [...] }` (a missing wrapper / bare-node payload reads
+  as "no unique keys"). Engines persist `Schema []byte` opaquely ⇒ **zero per-engine
+  model-store change, no model-table migration**. `ExportMetadata` round-trips the keys.
+
+Validation (on the `unique-keys` PUT — capability first, then definition; both 422):
+- backend **capability** present (else 422 `COMPOSITE_KEY_UNSUPPORTED`);
+- every field is a known **scalar leaf** in the (inferred) model schema — reject
+  array / object / wildcard / unknown paths;
+- `fields` non-empty, no duplicate field within a key; `id` unique within the model
+  → else 422 `INVALID_UNIQUE_KEY_DEFINITION`.
+
+Because the keys ride inside `Schema`, this touches the model import/export surface ⇒
+follow `docs/workflow-schema-versioning.md` bump rules (Gate 4), and bump the schema codec's
+back-compat handling.
 
 ## 5. Data flow
 
