@@ -140,6 +140,25 @@ func TestValidateUniqueKeys_EmptyID(t *testing.T) {
 	}
 }
 
+func TestValidateUniqueKeys_ObjectPathRejected(t *testing.T) {
+	n := testModel()
+	// $.addr is an object node with a child ("city"), NOT a scalar leaf.
+	keys := []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.addr"}},
+	}
+	err := ValidateUniqueKeys(n, keys)
+	if err == nil {
+		t.Fatal("expected error for object (non-scalar) path, got nil")
+	}
+	var def *UniqueKeyDefError
+	if !errors.As(err, &def) {
+		t.Fatalf("expected *UniqueKeyDefError, got %T: %v", err, err)
+	}
+	if def.Reason == "" {
+		t.Error("expected non-empty Reason")
+	}
+}
+
 func TestValidateUniqueKeys_UniqueKeyDefError_Implements_Error(t *testing.T) {
 	e := &UniqueKeyDefError{Reason: "test reason"}
 	// Verify Error() returns non-empty string.
