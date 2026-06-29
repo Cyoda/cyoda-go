@@ -9,6 +9,23 @@ import (
 	sqlite3 "github.com/ncruces/go-sqlite3"
 )
 
+// classifyClaimError maps SQLite errors from unique-claim INSERT operations to
+// spi.ErrUniqueViolation. It is used ONLY around claim-INSERT calls so that
+// entity-PK and other constraint violations are NOT mapped to ErrUniqueViolation.
+//
+// Contrast with classifyError, which maps CONSTRAINT_UNIQUE → spi.ErrConflict
+// (retryable) for the entity write path.
+func classifyClaimError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var xcode sqlite3.ExtendedErrorCode
+	if errors.As(err, &xcode) && xcode == sqlite3.CONSTRAINT_UNIQUE {
+		return fmt.Errorf("%w", spi.ErrUniqueViolation)
+	}
+	return err
+}
+
 // classifyError maps SQLite errors to SPI-level sentinel errors so the
 // handler layer can react uniformly across storage backends.
 //

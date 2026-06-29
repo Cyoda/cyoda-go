@@ -207,6 +207,11 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it.
 		delete(tx.Deletes, entity.Meta.ID)
+		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer).
+		// flushToSQLite runs once at Commit with a single context, so keys must
+		// be stored per-entity here to support mixed-model batches where each Save
+		// may carry a different key set.
+		s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil // actual version assigned at commit
 	}
 
@@ -278,6 +283,12 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 		nextVersion, string(cp.Data), string(metaJSON), changeType, timeToMicro(now))
 	if err != nil {
 		return 0, fmt.Errorf("insert version: %w", classifyError(err))
+	}
+
+	// Maintain unique-key claims for the non-transactional (direct) write path.
+	// Keys are read from ctx inline since there is no buffer to pre-capture them.
+	if err := replaceClaims(ctx, sqlTx, tid, cp, spi.UniqueKeysFromContext(ctx)); err != nil {
+		return 0, fmt.Errorf("replace claims: %w", err)
 	}
 
 	if err := sqlTx.Commit(); err != nil {
@@ -642,6 +653,11 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		nextVersion, nowMicro, userName)
 	if err != nil {
 		return fmt.Errorf("insert delete version: %w", classifyError(err))
+	}
+
+	// Release unique-key claims so the freed value can be claimed immediately.
+	if err := releaseClaims(ctx, sqlTx, tid, entityID); err != nil {
+		return fmt.Errorf("release claims on delete: %w", err)
 	}
 
 	if err := sqlTx.Commit(); err != nil {
