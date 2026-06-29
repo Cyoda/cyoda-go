@@ -153,6 +153,28 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	}
 	if existing != nil {
 		desc.ChangeLevel = existing.ChangeLevel
+		desc.UniqueKeys = existing.UniqueKeys
+
+		// Re-validate the carried-forward keys against the merged schema.
+		// If a re-import drops a field that a key references, reject the
+		// import immediately rather than silently storing an invalid descriptor.
+		if len(desc.UniqueKeys) > 0 {
+			if valErr := schema.ValidateUniqueKeys(finalNode, desc.UniqueKeys); valErr != nil {
+				var keyDefErr *schema.UniqueKeyDefError
+				if errors.As(valErr, &keyDefErr) {
+					appErr := common.Operational(
+						http.StatusUnprocessableEntity,
+						common.ErrCodeInvalidUniqueKeyDefinition,
+						fmt.Sprintf("re-import invalidates existing unique key definitions: %s", keyDefErr.Reason))
+					appErr.Props = map[string]any{
+						"entityName":    input.EntityName,
+						"entityVersion": ver,
+					}
+					return nil, appErr
+				}
+				return nil, common.Internal("failed to validate existing unique key definitions against new schema", valErr)
+			}
+		}
 	}
 
 	if err := store.Save(ctx, desc); err != nil {
@@ -484,6 +506,82 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 	}
 
 	return nil
+}
+
+// SetUniqueKeys sets composite unique-key definitions on an unlocked model.
+// The backend must advertise spi.CompositeUniqueKeyCapable; the model must be
+// UNLOCKED; and every key must reference only known scalar leaf fields.
+func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion string, keys []spi.UniqueKey) (*ModelTransitionResult, error) {
+	// Capability gate FIRST — fast path for unsupported backends.
+	if c, ok := h.factory.(spi.CompositeUniqueKeyCapable); !ok || !c.SupportsCompositeUniqueKeys() {
+		return nil, common.Operational(
+			http.StatusUnprocessableEntity,
+			common.ErrCodeCompositeKeyUnsupported,
+			"backend does not support composite unique keys")
+	}
+
+	store, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+
+	ver := parseVersion(modelVersion)
+	ref := modelRef(entityName, ver)
+
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, store, ref)
+	if err != nil {
+		return nil, classifyGetErr("set unique keys", entityName, ver, err)
+	}
+	if desc == nil {
+		return nil, modelNotFound(entityName, ver)
+	}
+
+	if desc.State == spi.ModelLocked {
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyLocked,
+			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"expectedState": "UNLOCKED",
+			"actualState":   "LOCKED",
+		}
+		return nil, appErr
+	}
+
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil, common.Internal("failed to unmarshal schema", err)
+	}
+
+	if valErr := schema.ValidateUniqueKeys(node, keys); valErr != nil {
+		var keyDefErr *schema.UniqueKeyDefError
+		if errors.As(valErr, &keyDefErr) {
+			appErr := common.Operational(
+				http.StatusUnprocessableEntity,
+				common.ErrCodeInvalidUniqueKeyDefinition,
+				keyDefErr.Reason)
+			appErr.Props = map[string]any{
+				"entityName":    entityName,
+				"entityVersion": ver,
+			}
+			return nil, appErr
+		}
+		return nil, common.Internal("failed to validate unique key definitions", valErr)
+	}
+
+	desc.UniqueKeys = keys
+	if err := store.Save(ctx, desc); err != nil {
+		return nil, common.Internal("failed to save model", err)
+	}
+
+	return &ModelTransitionResult{
+		ModelID: deterministicID(ref).String(),
+		State:   string(desc.State),
+	}, nil
 }
 
 // ValidationError is a non-AppError that signals validation failure (not an HTTP error).
