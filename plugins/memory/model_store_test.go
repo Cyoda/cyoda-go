@@ -9,6 +9,80 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
+// TestModelStoreUniqueKeysRoundTrip verifies that UniqueKeys survive a Save/Get cycle.
+func TestModelStoreUniqueKeysRoundTrip(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+
+	desc := &spi.ModelDescriptor{
+		Ref:        spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+		State:      spi.ModelUnlocked,
+		UpdateDate: time.Now(),
+		UniqueKeys: []spi.UniqueKey{
+			{ID: "uk1", Fields: []string{"tenantId", "orderNumber"}},
+			{ID: "uk2", Fields: []string{"externalRef"}},
+		},
+	}
+	if err := store.Save(ctx, desc); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := store.Get(ctx, desc.Ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.UniqueKeys) != 2 {
+		t.Fatalf("UniqueKeys length: got %d, want 2", len(got.UniqueKeys))
+	}
+	if got.UniqueKeys[0].ID != "uk1" || got.UniqueKeys[1].ID != "uk2" {
+		t.Errorf("UniqueKeys mismatch: got %v", got.UniqueKeys)
+	}
+}
+
+// TestModelStoreUniqueKeysDeepCopy verifies that cloneDescriptor deep-copies UniqueKeys:
+// mutating the returned slice must not affect the stored copy.
+func TestModelStoreUniqueKeysDeepCopy(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+
+	desc := &spi.ModelDescriptor{
+		Ref:        spi.ModelRef{EntityName: "Product", ModelVersion: "1"},
+		State:      spi.ModelUnlocked,
+		UpdateDate: time.Now(),
+		UniqueKeys: []spi.UniqueKey{
+			{ID: "uk1", Fields: []string{"sku"}},
+		},
+	}
+	if err := store.Save(ctx, desc); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Mutate the original slice and the returned Get slice — neither should affect the stored copy.
+	desc.UniqueKeys[0].ID = "MUTATED-ORIGINAL"
+
+	got1, err := store.Get(ctx, desc.Ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got1.UniqueKeys[0].ID = "MUTATED-RETURNED"
+
+	// A second Get must still see the original value.
+	got2, err := store.Get(ctx, desc.Ref)
+	if err != nil {
+		t.Fatalf("Get2: %v", err)
+	}
+	if got2.UniqueKeys[0].ID != "uk1" {
+		t.Errorf("deep-copy violated: stored UniqueKeys[0].ID = %q, want %q", got2.UniqueKeys[0].ID, "uk1")
+	}
+}
+
 func TestModelStoreSaveAndGetDescriptor(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")

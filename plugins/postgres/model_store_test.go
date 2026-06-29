@@ -301,6 +301,39 @@ func TestModelStore_SetChangeLevelNotFound(t *testing.T) {
 	}
 }
 
+// TestModelStore_UniqueKeysRoundTrip verifies that UniqueKeys survive a Save/Get cycle.
+func TestModelStore_UniqueKeysRoundTrip(t *testing.T) {
+	factory := setupModelTest(t)
+	ctx := ctxWithTenant("model-tenant")
+	store, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+
+	desc := makeDescriptor("Widget", "1")
+	desc.UniqueKeys = []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"tenantId", "orderNumber"}},
+		{ID: "uk2", Fields: []string{"externalRef"}},
+	}
+	if err := store.Save(ctx, desc); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := store.Get(ctx, desc.Ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.UniqueKeys) != 2 {
+		t.Fatalf("UniqueKeys length: got %d, want 2", len(got.UniqueKeys))
+	}
+	if got.UniqueKeys[0].ID != "uk1" || got.UniqueKeys[1].ID != "uk2" {
+		t.Errorf("UniqueKeys mismatch: got %v", got.UniqueKeys)
+	}
+	if len(got.UniqueKeys[0].Fields) != 2 || got.UniqueKeys[0].Fields[0] != "tenantId" {
+		t.Errorf("UniqueKeys[0].Fields mismatch: got %v", got.UniqueKeys[0].Fields)
+	}
+}
+
 func TestModelStore_TenantIsolation(t *testing.T) {
 	factory := setupModelTest(t)
 	ctxA := ctxWithTenant("tenant-A")
