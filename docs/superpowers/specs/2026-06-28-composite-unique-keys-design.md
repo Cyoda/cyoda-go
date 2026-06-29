@@ -110,8 +110,11 @@ Mechanics:
 - **Partial-key pre-check stays in the service** on the *input* doc (it has `desc.UniqueKeys`):
   `ComputeClaims(desc.UniqueKeys, inputDoc)` before `engine.Execute`; `ErrPartialUniqueKey` →
   422 `INVALID_UNIQUE_KEY` — a fast, clean 422 for client partial input even on a segmenting
-  workflow. A partial key *produced by a processor* surfaces from the store and is routed to a
-  sanitized workflow 5xx (§3.5 C2).
+  workflow. A partial key *produced by a processor* surfaces from the store and is routed to the
+  **same sanitized 422 `INVALID_UNIQUE_KEY`** via `classifyWorkflowError` (§3.5 C2/F3) — the
+  store can't tell input-partial from processor-partial provenance, and a sanitized 422 ("the
+  resulting entity's key is incomplete") beats a raw-text `WORKFLOW_FAILED` 5xx. Uniform 422 for
+  any partial key regardless of origin.
 
 **Why (b):** uniform enforcement at the store (sees the live post-processor doc on every
 path), keys resolved where the coherent cache is reachable (the handler) and propagated by
@@ -469,9 +472,9 @@ collision; 412 `ENTITY_MODIFIED` still applies via `CompareAndSave`.
 
 | Operation (HTTP & gRPC) | Code | HTTP | Retryable | Trigger |
 |---|---|---|---|---|
-| Create entity | `INVALID_UNIQUE_KEY` | 422 | no | partially-filled composite key |
+| Create entity | `INVALID_UNIQUE_KEY` | 422 | no | invalid key value: partially-filled key, over-bound numeric, or non-scalar at a key path |
 | Create entity | `UNIQUE_VIOLATION` | 409 | no | fully-present key collides with another live entity |
-| Update / patch entity | `INVALID_UNIQUE_KEY` | 422 | no | partially-filled composite key |
+| Update / patch entity | `INVALID_UNIQUE_KEY` | 422 | no | invalid key value: partially-filled key, over-bound numeric, or non-scalar at a key path |
 | Update / patch entity | `UNIQUE_VIOLATION` | 409 | no | moved/created key collides with another live entity |
 | Update / patch entity | `ENTITY_MODIFIED` | 412 | no | existing optimistic-lock failure (unchanged) |
 | Set unique keys (`PUT …/unique-keys`) | `COMPOSITE_KEY_UNSUPPORTED` | 422 | no | unique key declared on a backend without capability |
@@ -506,6 +509,7 @@ and `INVALID_UNIQUE_KEY_DEFINITION` if not reusing an existing code) requires:
 | Schema-extend/re-import widening a key field ⇒ rejected; non-scalar at key path ⇒ 4xx (#5) | ✓ | ✓ | | |
 | Processor rewrites a key field ⇒ final value enforced (create dup of rewritten value ⇒ 409) | | ✓ | | |
 | CBD-segmenting violation (plain **and** If-Match) ⇒ 409 (not 400/WORKFLOW_FAILED, no raw text) (C2/Co-1) | | ✓ | | ✓ |
+| Over-bound numeric / non-scalar key value via a **processor** ⇒ 422 `INVALID_UNIQUE_KEY` through `classifyWorkflowError` (not 400/raw text) (F3) | ✓ | ✓ | | ✓ |
 | `ASYNC_NEW_TX` processor writes duplicate key ⇒ no duplicate persisted (constraint holds; 2xx + WARN) (S5) | | ✓ | | |
 | Re-import preserves `UniqueKeys` (copy-from-existing-descriptor); re-import dropping a key field is rejected (S2/#6) | | ✓ | | ✓ |
 | Model export includes `UniqueKeys` (external visibility) (S2/#6) | | ✓ | | ✓ |
