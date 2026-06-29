@@ -100,6 +100,14 @@ Mechanics:
   submodules call one canonicalization path. A claim is emitted **only** for a *fully-present*
   key; all-null keys produce none (⇒ exempt); a *partially-filled* key returns
   `ErrPartialUniqueKey`.
+  - **Buffered backends (sqlite, memory) capture the keys at *buffer time*, not at flush.**
+    Postgres enforces inside `Save` (per-entity, per-item context). sqlite/memory buffer writes
+    and enforce at the **commit flush**, which runs once with a single context — so a
+    mixed-model batch's per-item keys are NOT all available there. The buffer-path `Save` must
+    therefore **capture `UniqueKeysFromContext(ctx)` per entity into a plugin-local per-tx side
+    map** (txID→entityID→keys, last-write-wins to match the buffer), and the flush computes
+    claims from the *captured* keys + the buffered `Data`. Non-tx direct saves read keys from
+    ctx inline (no buffer).
 - **Field-path resolution (S3 — corrected).** A field is a dotted leaf path identical in form
   to `schema.FieldDescriptor.Path` (built by `collectFields` joining segments with `.`). The
   helper resolves a path by splitting on `.` exactly as the schema *constructs* it — so it
