@@ -41,6 +41,17 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 	f.applyFunc = ApplyFunc(fn)
 }
 
+// claimKey is the composite key used to enforce unique-signature constraints.
+// It identifies one (tenant, model, version, keyID, signature) tuple.
+// Guarded by entityMu.
+type claimKey struct {
+	tenant    string
+	model     string
+	version   string
+	keyID     string
+	signature string
+}
+
 type StoreFactory struct {
 	clock       Clock
 	entityMu    sync.RWMutex
@@ -59,6 +70,11 @@ type StoreFactory struct {
 	txManager   *TransactionManager
 	searchStore *AsyncSearchStore
 	applyFunc   ApplyFunc
+
+	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
+	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
+	uniqueClaims   map[claimKey]string    // claimKey → entityID currently holding it
+	claimsByEntity map[string][]claimKey  // entityID → its claimKeys (for release)
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {
@@ -67,14 +83,16 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		panic(fmt.Sprintf("failed to create blob temp dir: %v", err))
 	}
 	f := &StoreFactory{
-		clock:      wallClock{},
-		entityData: make(map[spi.TenantID]map[string][]entityVersion),
-		modelData:  make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
-		kvData:     make(map[spi.TenantID]map[string]map[string][]byte),
-		msgData:    make(map[spi.TenantID]map[string]*messageEntry),
-		wfData:     make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
-		smAudit:    make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
-		blobDir:    blobDir,
+		clock:          wallClock{},
+		entityData:     make(map[spi.TenantID]map[string][]entityVersion),
+		modelData:      make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
+		kvData:         make(map[spi.TenantID]map[string]map[string][]byte),
+		msgData:        make(map[spi.TenantID]map[string]*messageEntry),
+		wfData:         make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
+		smAudit:        make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
+		blobDir:        blobDir,
+		uniqueClaims:   make(map[claimKey]string),
+		claimsByEntity: make(map[string][]claimKey),
 	}
 	for _, o := range opts {
 		o(f)
@@ -149,6 +167,30 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 
 func (f *StoreFactory) Close() error {
 	return os.RemoveAll(f.blobDir)
+}
+
+// releaseClaims removes all unique-key claims held by entityID from the claim
+// maps. Caller must hold entityMu (write lock).
+func (f *StoreFactory) releaseClaims(entityID string) {
+	for _, k := range f.claimsByEntity[entityID] {
+		delete(f.uniqueClaims, k)
+	}
+	delete(f.claimsByEntity, entityID)
+}
+
+// insertClaims records new unique-key claims for entityID. Caller must hold
+// entityMu (write lock). Prior claims must have been released via releaseClaims.
+func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, claims []spi.UniqueClaim) {
+	if len(claims) == 0 {
+		return
+	}
+	keys := make([]claimKey, 0, len(claims))
+	for _, c := range claims {
+		k := claimKey{tenant: tenant, model: model, version: version, keyID: c.KeyID, signature: c.Signature}
+		f.uniqueClaims[k] = entityID
+		keys = append(keys, k)
+	}
+	f.claimsByEntity[entityID] = keys
 }
 
 // TransactionManager implements spi.StoreFactory.

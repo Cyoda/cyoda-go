@@ -120,13 +120,17 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		cp := copyEntity(entity)
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
+		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer
+		// semantics). Commit sees ONE ctx but a mixed-model batch may buffer
+		// entities with different key contexts, so keys must be stored per-entity.
+		s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil // actual version assigned at commit
 	}
 
 	// Non-transaction mode: direct write (implicit auto-commit).
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
-	return s.saveUnlocked(entity)
+	return s.saveUnlocked(ctx, entity)
 }
 
 func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
@@ -169,6 +173,8 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if conflict {
 			return 0, spi.ErrConflict
 		}
+		// Capture unique keys at buffer time (outside the IIFE; entityMu released).
+		s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil
 	}
 
@@ -190,13 +196,32 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		}
 	}
 
-	return s.saveUnlocked(entity)
+	return s.saveUnlocked(ctx, entity)
 }
 
-// saveUnlocked performs the save logic without acquiring the lock. The caller must hold s.factory.entityMu.
-func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
+// saveUnlocked performs the save logic without acquiring the lock. The caller
+// must hold s.factory.entityMu (write lock). ctx is used to read unique keys
+// for composite unique-key claim enforcement.
+func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int64, error) {
 	tid := s.tenant
 	eid := entity.Meta.ID
+
+	// Compute and validate unique-key claims before writing entity data.
+	// All steps run inside the caller's entityMu.Lock() so the check-and-insert
+	// is atomic with respect to other concurrent non-tx saves.
+	keys := spi.UniqueKeysFromContext(ctx)
+	newClaims, err := spi.ComputeClaims(keys, entity.Data)
+	if err != nil {
+		return 0, err // ErrPartialUniqueKey family
+	}
+	model := entity.Meta.ModelRef.EntityName
+	version := entity.Meta.ModelRef.ModelVersion
+	for _, c := range newClaims {
+		k := claimKey{tenant: string(tid), model: model, version: version, keyID: c.KeyID, signature: c.Signature}
+		if holder, exists := s.factory.uniqueClaims[k]; exists && holder != eid {
+			return 0, spi.ErrUniqueViolation
+		}
+	}
 
 	if s.factory.entityData[tid] == nil {
 		s.factory.entityData[tid] = make(map[string][]entityVersion)
@@ -248,6 +273,10 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 		changeType:    entity.Meta.ChangeType,
 		user:          entity.Meta.ChangeUser,
 	})
+
+	// Apply unique-key claims: release old (handles update-moves-key) then insert new.
+	s.factory.releaseClaims(eid)
+	s.factory.insertClaims(eid, string(tid), model, version, newClaims)
 
 	return nextVersion, nil
 }
@@ -501,6 +530,8 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		changeType:    "DELETED",
 		user:          userName,
 	})
+	// Release unique-key claims so the freed values can be claimed immediately.
+	s.factory.releaseClaims(entityID)
 	return nil
 }
 
@@ -575,6 +606,8 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 				changeType:    "DELETED",
 				user:          userName,
 			})
+			// Release unique-key claims so freed values can be claimed immediately.
+			s.factory.releaseClaims(eid)
 		}
 	}
 	return nil

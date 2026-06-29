@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,12 +37,19 @@ type savepointSnapshot struct {
 type TransactionManager struct {
 	factory      *StoreFactory
 	uuids        spi.UUIDGenerator
-	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, and savepoints
+	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
 	active       map[string]*spi.TransactionState
 	committedLog []committedTx
 	committing   map[string]bool                         // tracks txIDs currently being committed
 	submitTimes  map[string]time.Time                    // txID -> submitTime, survives log pruning. Evicted after submitTimeTTL.
 	savepoints   map[string]map[string]savepointSnapshot // txID -> spID -> snapshot
+
+	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
+	// Captured when an entity is buffered so that Commit can enforce the correct
+	// keys per entity even in a mixed-model batch where each Save may carry a
+	// different key set in its context. Protected by mu. Cleaned up after commit
+	// or rollback (no leak).
+	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 }
 
 // Verify interface compliance at compile time.
@@ -57,9 +65,22 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		committing:   make(map[string]bool),
 		submitTimes:  make(map[string]time.Time),
 		savepoints:   make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys: make(map[string]map[string][]spi.UniqueKey),
 	}
 	f.txManager = tm
 	return tm
+}
+
+// recordUniqueKeys stores the unique keys for entityID under txID so that
+// Commit can look them up per entity during the flush. Last-write-wins,
+// matching the semantics of tx.Buffer. Protected by mu.
+func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.UniqueKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.txUniqueKeys[txID] == nil {
+		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
+	}
+	m.txUniqueKeys[txID][entityID] = keys
 }
 
 // GetTransactionManager returns the registered TransactionManager, or nil.
@@ -180,6 +201,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	m.factory.entityMu.Lock()
 
 	// 3. Conflict detection: check committed log for overlapping write sets.
+	// Also snapshot the per-entity unique keys captured at Save time so that
+	// step 3.5 can read them without re-acquiring m.mu.
+	var capturedKeys map[string][]spi.UniqueKey
 	m.mu.Lock()
 	for _, committed := range m.committedLog {
 		if committed.submitTime.After(tx.SnapshotTime) {
@@ -188,6 +212,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 					delete(m.committing, txID)
 					delete(m.active, txID)
 					delete(m.savepoints, txID)
+					delete(m.txUniqueKeys, txID)
 					m.mu.Unlock()
 					m.factory.entityMu.Unlock()
 					return spi.ErrConflict
@@ -195,11 +220,71 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 		}
 	}
+	capturedKeys = m.txUniqueKeys[txID] // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
 	m.mu.Unlock()
+
+	// 3.5. Validate composite unique-key claims inside the entityMu critical section.
+	//
+	// Deterministic order: sort buffered entity ids so that any intra-batch
+	// collision is detected stably (independent of map iteration order).
+	//
+	// On violation: unwind exactly as the FCW ErrConflict branch above does —
+	// acquire m.mu for cleanup, bare Unlock both mutexes, return error.
+	tid := tx.TenantID
+	{
+		ids := make([]string, 0, len(tx.Buffer))
+		for id := range tx.Buffer {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		// abortClaim performs the same cleanup as the FCW abort branch above.
+		abortClaim := func(err error) error {
+			func() {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				delete(m.committing, txID)
+				delete(m.active, txID)
+				delete(m.savepoints, txID)
+				delete(m.txUniqueKeys, txID)
+			}()
+			m.factory.entityMu.Unlock()
+			return err
+		}
+
+		pending := make(map[claimKey]string) // claimKey → entityID within this batch
+		for _, entityID := range ids {
+			entity := tx.Buffer[entityID]
+			keys := capturedKeys[entityID] // nil if entity was buffered without unique keys
+
+			claims, err := spi.ComputeClaims(keys, entity.Data)
+			if err != nil {
+				return abortClaim(err)
+			}
+
+			for _, c := range claims {
+				k := claimKey{
+					tenant:    string(tid),
+					model:     entity.Meta.ModelRef.EntityName,
+					version:   entity.Meta.ModelRef.ModelVersion,
+					keyID:     c.KeyID,
+					signature: c.Signature,
+				}
+				// Intra-batch collision: two buffered entities share a claim.
+				if pendingHolder, exists := pending[k]; exists && pendingHolder != entityID {
+					return abortClaim(spi.ErrUniqueViolation)
+				}
+				// Collision with a currently committed claim held by a different entity.
+				if holder, exists := m.factory.uniqueClaims[k]; exists && holder != entityID {
+					return abortClaim(spi.ErrUniqueViolation)
+				}
+				pending[k] = entityID
+			}
+		}
+	}
 
 	// 4. Flush buffer to entity store.
 	submitTime := m.factory.clock.Now()
-	tid := tx.TenantID
 
 	for entityID, entity := range tx.Buffer {
 		if m.factory.entityData[tid] == nil {
@@ -235,6 +320,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			changeType:    entity.Meta.ChangeType,
 			user:          entity.Meta.ChangeUser,
 		})
+
+		// Apply unique-key claims: release prior claims then insert new set.
+		// ComputeClaims cannot error here — it was validated in step 3.5.
+		keys := capturedKeys[entityID]
+		newClaims, _ := spi.ComputeClaims(keys, entity.Data)
+		m.factory.releaseClaims(entityID)
+		m.factory.insertClaims(entityID, string(tid),
+			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, newClaims)
 	}
 
 	// 5. Apply deletes.
@@ -255,6 +348,8 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			changeType:    "DELETED",
 			user:          userName,
 		})
+		// Release unique-key claims so freed values can be claimed immediately.
+		m.factory.releaseClaims(entityID)
 	}
 
 	// 6. Record in committed log, submit times, and prune.
@@ -276,6 +371,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	delete(m.active, txID)
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
 	var oldest time.Time
 	for _, activeTx := range m.active {
 		if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -328,6 +424,7 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	delete(m.active, txID)
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
 	m.mu.Unlock()
 	return nil
 }
