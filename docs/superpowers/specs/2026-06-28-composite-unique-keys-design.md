@@ -52,7 +52,7 @@ fail-resurrect-vs-restore decision is explicitly **out of scope** here.
 
 ## 3. Architecture (Approach A — engine-internal enforcement)
 
-### 3.1 Claims computed in the store, keys read from the model descriptor
+### 3.1 Claims computed in the store; keys resolved by the handler, threaded via context
 
 > **Revision history (two supersessions, kept visible).** (a) An early draft computed claims
 > in the *service* and attached them to the entity before `Save`. That fails because the
@@ -63,59 +63,83 @@ fail-resurrect-vs-restore decision is explicitly **out of scope** here.
 > therefore lives in the **store**, computing from the **live** `entity.Data` on every save.
 > (b) A second draft carried the key *definitions* on a transient `spi.Entity.UniqueKeys`
 > field. That is fragile: any save path that forgets to set it computes **zero claims and
-> silently enforces nothing** — and the field has many drop sites (memory `saveUnlocked`
-> literal, sqlite `copyEntity`, four service construction sites, cluster-dispatch
-> serialization). **This revision** drops the transient field and makes the **model
-> descriptor the single source of the key definitions** (next).
+> silently enforces nothing** — many drop sites. (c) A third draft had the *entity store*
+> look the keys up "via the existing model cache." That is impossible: the model cache
+> (`internal/cluster/modelcache`) is a main-module decorator a plugin store cannot reach
+> (circular module dependency). **This revision (b):** the **handler** (main module, where the
+> coherent cache *is* reachable) resolves the keys and threads them to the store via the
+> request **context**; the store reads them from context and computes claims from the live
+> `entity.Data`.
 
 Mechanics:
 
 - The model's **unique-key definitions** live on a new additive field
-  **`spi.ModelDescriptor.UniqueKeys []spi.UniqueKey`** — durable, persisted by each engine's
-  model store as its own column/blob, **outside** the foldable schema-node tree (see §4 / C1:
-  storing them inside `Schema` bytes is destroyed by `ExtendSchema`/`Merge`/`Apply`).
-- The **entity store**, inside `Save`, looks the definitions up from the model descriptor by
-  `entity.Meta.ModelRef` (via the existing model cache — keys are stable while entities exist,
-  since a model can't unlock with live entities, §2.1), then calls the shared SPI helper
-  **`spi.ComputeClaims(keys, entity.Data) ([]UniqueClaim, error)`** and enforces the result
-  (side table / map). Because the store self-serves the keys, **every** save path enforces
-  uniformly — the service's final save *and* the engine's internal post-processor saves —
-  with **no transient field to drop** anywhere.
-- `ComputeClaims` lives in **`cyoda-go-spi`** so all three engine submodules (separate
-  `go.mod`) call one canonicalization path (no cross-engine drift). A claim is emitted **only**
-  for a *fully-present* key; all-null keys produce none (⇒ exempt); a *partially-filled* key
-  returns `ErrPartialUniqueKey`. Field extraction is **segment-based, not raw gjson path
-  strings** — JSON keys may contain `.`/gjson metacharacters, so the helper walks the decoded
-  doc by literal path segments (`json.Number` preserved) rather than building a gjson query
-  (S1/S2).
-- The service keeps a **partial-key pre-check** on the *input* doc (it already loaded the
-  descriptor, so it has `desc.UniqueKeys`): `ComputeClaims(desc.UniqueKeys, inputDoc)` before
-  `engine.Execute`; `ErrPartialUniqueKey` → 422 `INVALID_UNIQUE_KEY`. This gives a fast clean
-  422 for client partial input *even on a segmenting workflow*. A partial key *produced by a
-  processor* surfaces from the store and must be routed to a sanitized workflow 5xx (see §3.5
-  C2 — `classifyWorkflowError` wiring).
+  **`spi.ModelDescriptor.UniqueKeys []spi.UniqueKey`** — durable, **outside** the foldable
+  schema-node tree (see §4 / C1: storing them inside `Schema` bytes is destroyed by
+  `ExtendSchema`/`Merge`/`Apply`). They ride inside each model store's existing serialized
+  descriptor blob, so **no model-table migration** is needed (S1).
+- **Cross-cluster coherence is inherited, not invented.** Keys are part of the descriptor,
+  which already has a proven coherence story (`internal/cluster/modelcache/cache.go`):
+  UNLOCKED models bypass the cache (read fresh from disk while keys are editable, `:119-120`);
+  Lock/Unlock/Save/Delete `invalidate` → evict locally **and gossip-broadcast**
+  `topicModelInvalidate` (`:160-188,:238-245`) → every node evicts and reloads the descriptor
+  (keys included) from disk. The lock that lets a model accept saves *is* the invalidation
+  event. **No new cache, no new invalidation.**
+- **Key resolution + threading (the handler already has the descriptor).** Every entity write
+  path loads `desc` for validation via the cached `ModelStore`, so it already holds
+  `desc.UniqueKeys` at **zero extra cost**. The handler puts the keys on the request context
+  (`spi.WithUniqueKeys(ctx, desc.UniqueKeys)`) right after that load. The engine's internal
+  CBD saves inherit them automatically — `engine.Execute`/CBD derive their tx context via
+  `context.WithoutCancel(ctx)`, which **preserves values** — so post-processor internal saves
+  read the same keys. No transient `spi.Entity` field; no per-save model read; the
+  engine-internal saves that broke draft (a) are covered by context propagation, not a
+  re-attached field.
+- **The store enforces.** Inside `Save`, the store reads `spi.UniqueKeysFromContext(ctx)`,
+  calls **`spi.ComputeClaims(keys, entity.Data) ([]UniqueClaim, error)`**, and enforces the
+  result (side table / map). `ComputeClaims` lives in **`cyoda-go-spi`** so all three engine
+  submodules call one canonicalization path. A claim is emitted **only** for a *fully-present*
+  key; all-null keys produce none (⇒ exempt); a *partially-filled* key returns
+  `ErrPartialUniqueKey`.
+- **Field-path resolution (S3 — corrected).** A field is a dotted leaf path identical in form
+  to `schema.FieldDescriptor.Path` (built by `collectFields` joining segments with `.`). The
+  helper resolves a path by splitting on `.` exactly as the schema *constructs* it — so it
+  inherits cyoda's existing project-wide assumption that field identifiers contain no `.`
+  (the same (un)ambiguity `FieldDescriptor.Path` already has; **no new ambiguity**). It does
+  **not** issue a raw gjson query (gjson's `* ? # @ [ ]` metacharacters and array semantics
+  are the real reason to avoid it). Decode with `json.Number` preserved.
+- **Partial-key pre-check stays in the service** on the *input* doc (it has `desc.UniqueKeys`):
+  `ComputeClaims(desc.UniqueKeys, inputDoc)` before `engine.Execute`; `ErrPartialUniqueKey` →
+  422 `INVALID_UNIQUE_KEY` — a fast, clean 422 for client partial input even on a segmenting
+  workflow. A partial key *produced by a processor* surfaces from the store and is routed to a
+  sanitized workflow 5xx (§3.5 C2).
 
-**Why model-descriptor + store-lookup:** the store is the one chokepoint every save funnels
-through, and the descriptor is the one durable home that survives the schema fold — together
-they give uniform enforcement with zero silent-skip surface. Cost (accepted): an additive
-`spi.ModelDescriptor.UniqueKeys` field, per-engine model-store persistence (small
-column/blob + migration; trivial for memory), and a cached model lookup inside entity
-`Save`. The SPI also gains the `UniqueKey`/`UniqueClaim` types, the `ComputeClaims` helper,
-and `ErrUniqueViolation`/`ErrPartialUniqueKey` sentinels, plus the capability interface
-(§3.6). There is **no** new `spi.Entity` field.
+**Why (b):** uniform enforcement at the store (sees the live post-processor doc on every
+path), keys resolved where the coherent cache is reachable (the handler) and propagated by
+context (so the engine-internal saves are covered for free), with **zero extra reads** and
+**no new coherence machinery**. Residual silent-skip surface: only a **non-transactional**
+`store.Save` (no context keys) — but the entity service always writes inside a transaction,
+so non-tx saves are not user-write paths; a guard test asserts this. Cost (accepted): the
+additive `spi.ModelDescriptor.UniqueKeys` field + `spi.WithUniqueKeys`/`UniqueKeysFromContext`
+context helpers + each model store wiring the field through its existing descriptor blob
+(no migration). The SPI also gains `UniqueKey`/`UniqueClaim`, `ComputeClaims`,
+`ErrUniqueViolation`/`ErrPartialUniqueKey`, and the capability interface (§3.6). There is
+**no** new `spi.Entity` field.
 
 ### 3.2 Signature canonicalization (pinned)
 
 `spi.Entity.Data` is raw `[]byte`; the doc never round-trips through `float64` at storage,
 so precision can be preserved. Rules:
 
-- **Numbers:** parse with `json.Number` into an **arbitrary-precision decimal** (pin the
-  exact library in the plan — `math/big.Rat` or a decimal package; **never** `float64`/
-  `big.Float`, which round). Normalize to one canonical decimal form so `1`, `1.0`, `1e0`
-  collide and **full int64+ precision is preserved**. Enumerate and test the edge cases:
-  negative zero (`-0` ≡ `0`), large integers (> 2^53), high-exponent literals (`1e400`
-  must not overflow or round), and trailing-fraction normalization. Do **not** reuse
-  `cyoda_try_float8` (search-read helper; lossy above 2^53 and never present at write time).
+- **Numbers (S4 — DoS-safe):** canonicalize with a **coefficient + exponent decimal**
+  (e.g. `cockroachdb/apd`) under a **bounded context**, **never `math/big.Rat`**: `big.Rat`
+  *materializes* the rational, so an attacker-supplied key value like `1e1000000000` forces a
+  multi-gigabyte numerator → OOM (Gate-3). A coefficient/exponent decimal canonicalizes the
+  same literal cheaply. **Bound** the accepted coefficient digits / exponent magnitude at
+  canonicalization and reject anything beyond it as a 4xx (client input). Normalize to one
+  canonical form so `1`, `1.0`, `1e0`, `1E0` collide and **full int64+ precision is
+  preserved**; cover `-0 ≡ 0`, integers > 2^53, leading zeros, and `e`/`E` explicitly. Do
+  **not** reuse `cyoda_try_float8` (lossy float8 search helper). Note: no decimal lib exists in
+  the tree today — this is a new SPI-module dependency; pick one in the plan.
 - **Strings:** **byte-exact** (decided). Case-sensitive, **no** Unicode folding (NFC ≠ NFD),
   **no** whitespace trimming — the bytes the app sent are what's compared (SQL `UNIQUE` under
   a binary collation). Apps wanting looser matching (e.g. case-insensitive emails) normalize
@@ -220,18 +244,25 @@ Concrete mechanism (so an implementer can't accidentally make it retryable or a 
   - the plain-`Save` CBD segment (~`:345`) is wrapped with `ErrCommitBeforeDispatchInfra`,
     routed by `classifyWorkflowError` → `common.Internal`, and `errors.Is` chain-walks to the
     new sentinel — **works** once the `common.Internal` branches exist;
-  - the **If-Match `CompareAndSave` CBD path** (~`:311,:340-343`) bubbles **unwrapped**;
-    `classifyWorkflowError` (`internal/domain/entity/service.go` ~`:1534`) misses it and hits
-    its catch-all → **400 `WORKFLOW_FAILED` with raw sentinel text in the body** (wrong status
-    *and* a Gate-3 output-sanitization leak). **Fix:** `classifyWorkflowError` must detect
-    `spi.ErrUniqueViolation` (→ 409) and `spi.ErrPartialUniqueKey` (→ 422) **before** its
-    catch-all.
-  - the **`ASYNC_NEW_TX` processor save** (~`:85-93`) currently logs WARN and returns
-    **2xx success** — a violation there is silently swallowed. **Decision (v1):** an
-    `ASYNC_NEW_TX` processor cannot transactionally enforce uniqueness; document this as an
-    explicit limitation and add an operator-visible WARN, OR reject configuring a unique-keyed
-    model together with an `ASYNC_NEW_TX` processor that writes key fields. Pick one in the
-    plan; do **not** leave it as a silent 2xx.
+  - the **universal CBD apply-result `CompareAndSave`** (~`:311`, returns unwrapped at `:313`)
+    runs for *every* CBD cascade (the If-Match-specific unwrapped site is `:340-343`). Both
+    bubble **unwrapped** to `classifyWorkflowError` (`internal/domain/entity/service.go`
+    ~`:1534`) → catch-all → **400 `WORKFLOW_FAILED` with raw sentinel text in the body** (wrong
+    status *and* a Gate-3 output-sanitization leak). **Fix:** `classifyWorkflowError` must
+    detect `spi.ErrUniqueViolation` (→ 409) and `spi.ErrPartialUniqueKey` (→ 422) **before**
+    its catch-all. Coverage must include a **plain CBD-segmenting** violation, not only the
+    If-Match one (Co-1).
+  - the **`ASYNC_NEW_TX` processor save** (~`:85-93`): **not a data-integrity hole, by virtue
+    of store-level enforcement** (S5 — corrected). The async processor's `store.Save` runs in
+    its own new tx and hits the same `unique_claims` index / memory map, so a duplicate is
+    **rejected and that tx rolls back** — no duplicate is ever persisted. What the async path
+    does *not* do is surface the error synchronously: per the **existing async-processor
+    contract**, the failure is logged WARN (`:85-93`) and the originating request still returns
+    2xx (the synchronous part genuinely succeeded). This is uniform with how *all* async
+    processor failures behave, not uniqueness-specific. **v1: keep this behavior** (the
+    constraint holds; the async error is logged like any other), and add an explicit test
+    asserting that an `ASYNC_NEW_TX` processor writing a duplicate key value leaves **no
+    duplicate persisted**. No reject-config machinery.
 
 `spi.ErrUniqueViolation` and `spi.ErrPartialUniqueKey` are **new additive sentinels** in
 `cyoda-go-spi`. The 409 body names the violated `keyId` only — **never** the incumbent
@@ -282,7 +313,11 @@ the same tx). For **memory** the batch shares one `tx.Buffer`, and the flush loo
 **map** (`plugins/memory/txmanager.go` ~`:204`) — *nondeterministic order*, so "the second
 in-batch claim loses" has no defined winner (S3). The flush must therefore process buffered
 entities in a **deterministic order** (e.g. sorted by entityId) so the winner is stable and
-testable. Non-tx `SaveAll` is N independent `entityMu` cycles with no batch-wide section —
+testable. **Sorted order is necessary but not sufficient (Co-3):** correctness *also* requires
+the claim check to run under `entityMu` against **current committed state** (ignoring
+`SnapshotTime`, §3.3) and the same maintenance wired into all three non-tx paths — order alone
+only fixes the intra-batch winner, not the cross-tx race or the non-tx paths. Non-tx `SaveAll`
+is N independent `entityMu` cycles with no batch-wide section —
 postgres's unique index still catches it, but memory's per-cycle check is the enforcement
 point; assert consistency (one winner), not a specific interleave. Coverage matrix includes
 an intra-batch-duplicate row.
@@ -318,10 +353,20 @@ model sub-resource**, not the workflow surface:
   schema-extending entity write after lock runs `ExtendSchema → Unmarshal → Apply → Marshal`
   (`internal/domain/entity/handler.go` ~`:135`, `app/app.go` ~`:852`) which round-trips
   through the node tree and **drops** any wrapper; `ImportModel`'s `Merge` drops it too.
-  A dedicated descriptor field sits outside the foldable tree and survives. Cost: a small
-  per-engine model-store change + migration (postgres/sqlite add a column; memory trivial).
-  `ExportMetadata` includes `UniqueKeys`. The entity store reads this same field on `Save`
-  (§3.1).
+  A dedicated descriptor field sits outside the foldable tree and survives. **No migration
+  (S1):** both SQL model stores already persist the *entire* descriptor as one opaque JSON
+  blob (postgres `model_store.go` `doc JSONB`; sqlite identical), so `UniqueKeys` rides inside
+  it with **zero DDL** — only the private `modelDoc` struct + `Save`/`unmarshalModelDoc` need
+  field wiring, plus a deep-copy arm in memory's `cloneDescriptor` so the slice isn't aliased.
+  *(The `unique_claims` **side table** in §3.3 is a separate thing — it IS a new table/migration;
+  don't conflate the enforcement index with the descriptor field.)*
+- **Round-trip preservation (S2 — required).** `ImportModel` rebuilds a fresh descriptor
+  copying only `ChangeLevel` forward (`internal/domain/model/service.go` ~`:148-156`), so a
+  re-import would **silently drop** `UniqueKeys`. It must **preserve** `UniqueKeys` across
+  re-import (like `ChangeLevel`) and **re-validate** them against the merged schema (reject the
+  import if a re-imported schema removes a field a key references). `ExportMetadata` threads
+  only the schema node today (~`:179-194`) — it must be extended to **include** `UniqueKeys` so
+  export/import is lossless.
 
 Validation (on the `unique-keys` PUT — capability first, then definition; both 422):
 - backend **capability** present (else 422 `COMPOSITE_KEY_UNSUPPORTED`);
@@ -330,17 +375,19 @@ Validation (on the `unique-keys` PUT — capability first, then definition; both
 - `fields` non-empty, no duplicate field within a key; `id` unique within the model
   → else 422 `INVALID_UNIQUE_KEY_DEFINITION`.
 
-Because the keys ride inside `Schema`, this touches the model import/export surface ⇒
-follow `docs/workflow-schema-versioning.md` bump rules (Gate 4), and bump the schema codec's
-back-compat handling.
+Because `UniqueKeys` now appears in the model **export DTO** (S2), this touches the
+model export surface ⇒ follow `docs/workflow-schema-versioning.md` bump rules (Gate 4). *(It
+does **not** touch the schema-codec / `Schema`-bytes format — keys are no longer stored there,
+N-1.)*
 
 ## 5. Data flow
 
-**Create:** service pre-checks the input doc against `desc.UniqueKeys` (partial key ⇒ 422
-`INVALID_UNIQUE_KEY`); the store, inside `Save`, looks up `desc.UniqueKeys` for
-`entity.Meta.ModelRef` (cached) and computes claims from the **live** `entity.Data` via
-`spi.ComputeClaims`, writing entity + claim rows in one tx → unique primitive collision ⇒
-`ErrUniqueViolation` ⇒ 409 `UNIQUE_VIOLATION`. *This closes the
+**Create:** the handler loads `desc` (carrying `UniqueKeys`), pre-checks the input doc
+(partial key ⇒ 422 `INVALID_UNIQUE_KEY`), and puts the keys on the context
+(`spi.WithUniqueKeys`); the store, inside `Save`, reads `spi.UniqueKeysFromContext(ctx)` and
+computes claims from the **live** `entity.Data` via `spi.ComputeClaims`, writing entity +
+claim rows in one tx → unique primitive collision ⇒ `ErrUniqueViolation` ⇒ 409
+`UNIQUE_VIOLATION`. *This closes the
 First-Committer-Wins gap*: two concurrent creates of distinct entity ids sharing a value-set
 have disjoint write-sets, so the existing FCW check cannot catch them — the native unique
 index (sql) / `entityMu`-guarded map (memory) serializes them so exactly one commits.
@@ -389,7 +436,9 @@ and `INVALID_UNIQUE_KEY_DEFINITION` if not reusing an existing code) requires:
 | Set keys on LOCKED model ⇒ 409 `MODEL_ALREADY_LOCKED` | | ✓ | | ✓ |
 | Schema-extend after lock does NOT drop keys (C1 regression guard) | | ✓ | ✓ | |
 | Processor rewrites a key field ⇒ final value enforced (create dup of rewritten value ⇒ 409) | | ✓ | | |
-| If-Match workflow-segment violation ⇒ 409 (not 400/WORKFLOW_FAILED, no raw text) (C2) | | ✓ | | ✓ |
+| CBD-segmenting violation (plain **and** If-Match) ⇒ 409 (not 400/WORKFLOW_FAILED, no raw text) (C2/Co-1) | | ✓ | | ✓ |
+| `ASYNC_NEW_TX` processor writes duplicate key ⇒ no duplicate persisted (constraint holds; 2xx + WARN) (S5) | | ✓ | | |
+| Export then re-import preserves `UniqueKeys`; re-import dropping a key field is rejected (S2) | | ✓ | | ✓ |
 | Concurrency: two concurrent creates same key ⇒ exactly one wins, other 409, no torn write | | ✓ (isolated, single-backend) | **never in shared parity** | |
 
 Parity scenarios registered in `e2e/parity/registry.go`; positive uniqueness scenarios are
@@ -400,22 +449,29 @@ is covered by a **unit test against a fake `StoreFactory` that does not implemen
 `CompositeUniqueKeyCapable`** (S4), plus the commercial backend asserting it on its next dep
 update. Concurrency tests are isolated single-backend e2e asserting consistency, per
 `.claude/rules/test-coverage.md` and the known memory-backend parity-destabilization.
-`ASYNC_NEW_TX` enforcement limitation (§3.5 C2): cover whichever resolution the plan picks
-(documented-limitation WARN, or reject-config) with an explicit test.
+`ASYNC_NEW_TX` (§3.5 S5): the store enforces on the async save too, so the test asserts **no
+duplicate is persisted** (constraint holds) while the request returns 2xx + WARN — no
+reject-config.
 
 ## 8. Cross-cutting / dependencies
 
 - **SPI surface (all additive):** `spi.UniqueKey`/`spi.UniqueClaim` types, the new
-  **`spi.ModelDescriptor.UniqueKeys []UniqueKey`** field, `spi.ComputeClaims`,
-  `spi.ErrUniqueViolation` + `spi.ErrPartialUniqueKey`, and `CompositeUniqueKeyCapable`. There
-  is **no** `spi.Entity` field. `ComputeClaims` adds a JSON-extraction dependency to the SPI
-  module — prefer segment-based traversal over pulling `gjson` into the contract (S1); if
-  `gjson` is used, escape path segments.
-- **Per-engine model-store persistence + migration:** each model store must read/write the
-  new `ModelDescriptor.UniqueKeys` — postgres/sqlite add a column (migration; mirror the
-  existing `model_schema_extensions` tenant_id+RLS side-table precedent if a table is cleaner
-  than a column) and memory stores it on the struct. This is the per-engine change C1 makes
-  unavoidable (the earlier "zero model-store change" claim was wrong).
+  **`spi.ModelDescriptor.UniqueKeys []UniqueKey`** field, the **`spi.WithUniqueKeys` /
+  `spi.UniqueKeysFromContext`** context helpers, `spi.ComputeClaims`, `spi.ErrUniqueViolation`
+  + `spi.ErrPartialUniqueKey`, and `CompositeUniqueKeyCapable`. There is **no** `spi.Entity`
+  field. `ComputeClaims` needs JSON extraction + a decimal lib (S4) in the SPI module — resolve
+  paths by segment (S3), do not pull a raw-gjson-path query into the contract.
+- **Per-engine model-store persistence (NO migration — S1):** each model store reads/writes
+  `ModelDescriptor.UniqueKeys` **inside its existing serialized descriptor blob** (postgres
+  `doc JSONB`, sqlite identical) — field wiring in the private `modelDoc` struct +
+  `Save`/`unmarshal`, plus a deep-copy arm in memory's `cloneDescriptor`. The earlier "add a
+  column + migration" was wrong; the descriptor is already one opaque blob. (Only the
+  `unique_claims` enforcement side table is a new table/migration.)
+- **Context plumbing:** the handler sets `spi.WithUniqueKeys(ctx, desc.UniqueKeys)` after its
+  existing descriptor load on every entity-write entry point (create / update / patch / batch);
+  the engine's CBD saves inherit it via `context.WithoutCancel`. A guard test asserts a
+  non-transactional `store.Save` (the only path without context keys) is never a user-write
+  path.
 - **SPI coordinated release** (`MAINTAINING.md`): the above land in `cyoda-go-spi` on `main`;
   cyoda-go pseudo-version-pins during the milestone; SPI tag + pin-bump as the final step.
   **No `replace` directive.**
