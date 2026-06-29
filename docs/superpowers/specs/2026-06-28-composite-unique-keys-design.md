@@ -375,7 +375,7 @@ across a CBD cascade that already durably committed a segment — rev-4 review F
   invalidation** (the current `ClusterBroadcaster.Broadcast` is fire-and-forget, `cluster.go:16`;
   an ack'd clear over the node `registry` + `dispatch` peer channel would let a relock confirm
   every online node has evicted before completing, closing this window and tightening schema
-  staleness too). Tracked as its own issue; **out of scope here** (building cluster
+  staleness too). Tracked as **`Cyoda/cyoda-go#353`**; **out of scope here** (building cluster
   coordination into this feature would balloon it beyond reviewability — Gate 6).
 
 ## 4. Unique-key definition & declaration surface
