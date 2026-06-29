@@ -1,5 +1,18 @@
 # Composite Unique Keys Implementation Plan
 
+> **⚠️ SUPERSEDED — DO NOT EXECUTE YET.** This plan reflects the *second* design draft
+> (transient `spi.Entity.UniqueKeys` field; keys stored inside `Schema` bytes). The design
+> has since been revised (commit `1954905`): keys live on `spi.ModelDescriptor.UniqueKeys`
+> (fold-proof) and the entity store reads them from the model descriptor on `Save`; plus
+> C2 error-routing and S1–S5 fixes. The spec
+> (`docs/superpowers/specs/2026-06-28-composite-unique-keys-design.md`) is authoritative.
+> This plan will be regenerated to match once the design passes its (in-progress) third
+> independent review. Key deltas to expect: Task 0.2 swaps the SPI field
+> (Entity→ModelDescriptor); Task 1.1's codec wrapper is dropped (keys no longer in schema
+> bytes); a new per-engine model-store-persistence phase is added; Tasks 5–7 read keys via
+> a cached model lookup instead of a transient field; Phase 3 gains the
+> `classifyWorkflowError` C2 wiring.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let an entity model declare composite UNIQUE keys over scalar fields, enforced on create/update across the memory, sqlite, and postgres engines.
