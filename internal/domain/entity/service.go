@@ -166,6 +166,29 @@ type UpdateCollectionResult struct {
 
 // --- Service methods ---
 
+// withUniqueKeys attaches the model's unique-key definitions to ctx and
+// pre-checks the input document before any transaction begins. If all
+// fields of any declared key are present and well-formed the keyed ctx is
+// returned; callers thread it into Begin/Execute/Save so the store can
+// enforce uniqueness later (Phases 5-7).
+//
+// Returns (ctx, 422 INVALID_UNIQUE_KEY) when the document satisfies only
+// some fields of a composite key (partial match). Returns (ctx, 5xx) for
+// malformed JSON or other internal failures. Returns (ctx, nil) unchanged
+// when the model has no unique keys or all keys are fully absent/null.
+func (h *Handler) withUniqueKeys(ctx context.Context, desc *spi.ModelDescriptor, inputDoc []byte) (context.Context, error) {
+	if len(desc.UniqueKeys) == 0 {
+		return ctx, nil
+	}
+	if _, err := spi.ComputeClaims(desc.UniqueKeys, inputDoc); err != nil {
+		if errors.Is(err, spi.ErrPartialUniqueKey) {
+			return ctx, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey, "composite unique key incomplete")
+		}
+		return ctx, common.Internal("failed to evaluate unique keys", err)
+	}
+	return spi.WithUniqueKeys(ctx, desc.UniqueKeys), nil
+}
+
 // CreateEntity creates a single entity with workflow execution and returns
 // the transaction result.
 func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*EntityTransactionResult, error) {
@@ -222,6 +245,14 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// Validate or extend model schema
 	if err := h.validateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 		return nil, classifyValidateOrExtendErr(err)
+	}
+
+	// Pre-check unique keys and thread them onto ctx. This runs before Begin so
+	// the keyed ctx propagates into Begin → txCtx → Execute → FinalCtx → Save.
+	// Partial keys are rejected here (422) before any transaction is opened.
+	ctx, err = h.withUniqueKeys(ctx, desc, bodyBytes)
+	if err != nil {
+		return nil, err
 	}
 
 	// Begin transaction
@@ -1067,6 +1098,15 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			h.txMgr.Rollback(txCtx, txID)
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
+	}
+
+	// Pre-check unique keys on the (possibly merged) document and thread them onto
+	// txCtx so they propagate into Execute and Save. Partial keys are rejected
+	// here (422) inside the already-open transaction so the TX is rolled back.
+	txCtx, err = h.withUniqueKeys(txCtx, desc, bodyBytes)
+	if err != nil {
+		h.txMgr.Rollback(txCtx, txID)
+		return nil, err
 	}
 
 	now := time.Now()
