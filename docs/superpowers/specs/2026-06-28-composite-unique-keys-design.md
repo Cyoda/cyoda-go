@@ -423,7 +423,10 @@ model sub-resource**, not the workflow surface:
   copying only `ChangeLevel` forward (`internal/domain/model/service.go` ~`:148-156`), so a
   re-import would **silently drop** `UniqueKeys`. It must **preserve** `UniqueKeys` across
   re-import (like `ChangeLevel`) and **re-validate** them against the merged schema (reject the
-  import if a re-imported schema removes a field a key references). **Export ≠ import path
+  import if a re-imported descriptor's key references a field absent from the merged schema —
+  a **defensive guard**: `schema.Merge` is strictly *additive* (it never removes an existing
+  field), so this cannot fire through the normal `SetUniqueKeys`+re-import path; it protects
+  against an out-of-band corrupted/migrated descriptor). **Export ≠ import path
   (#6):** export is `ExportModel` (`internal/domain/model/service.go` ~`:174-199`) over the
   schema node via an `Exporter`; import is `SAMPLE_DATA`-only and never re-ingests an exported
   doc. So preservation is **copy-from-existing-descriptor on re-import** (`UniqueKeys` carried
@@ -511,7 +514,7 @@ and `INVALID_UNIQUE_KEY_DEFINITION` if not reusing an existing code) requires:
 | CBD-segmenting violation (plain **and** If-Match) ⇒ 409 (not 400/WORKFLOW_FAILED, no raw text) (C2/Co-1) | | ✓ | | ✓ |
 | Over-bound numeric / non-scalar key value via a **processor** ⇒ 422 `INVALID_UNIQUE_KEY` through `classifyWorkflowError` (not 400/raw text) (F3) | ✓ | ✓ | | ✓ |
 | `ASYNC_NEW_TX` processor writes duplicate key ⇒ no duplicate persisted (constraint holds; 2xx + WARN) (S5) | | ✓ | | |
-| Re-import preserves `UniqueKeys` (copy-from-existing-descriptor); re-import dropping a key field is rejected (S2/#6) | | ✓ | | ✓ |
+| Re-import preserves `UniqueKeys` (copy-from-existing-descriptor); defensive re-validate rejects a key referencing a field absent from the merged schema (corrupt-descriptor guard; not reachable via additive merge) (S2/#6) | | ✓ | | ✓ |
 | Model export includes `UniqueKeys` (external visibility) (S2/#6) | | ✓ | | ✓ |
 | Concurrency: two concurrent creates same key ⇒ exactly one wins, other 409, no torn write | | ✓ (isolated, single-backend) | **never in shared parity** | |
 
