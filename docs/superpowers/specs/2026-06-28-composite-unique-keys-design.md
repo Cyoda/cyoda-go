@@ -52,28 +52,49 @@ fail-resurrect-vs-restore decision is explicitly **out of scope** here.
 
 ## 3. Architecture (Approach A — engine-internal enforcement)
 
-### 3.1 Claims computed in the service layer
+### 3.1 Claims computed in the store, from key definitions carried on the entity
 
-The service layer (cyoda-go) owns a single **signature helper**. Given a model's unique-key
-definitions and an entity doc it produces a list of **claims** `{keyId, signature}`:
+> **Revision (supersedes an earlier "claims computed in the service" draft).** The
+> workflow engine saves the **primary entity internally** during COMMIT_BEFORE_DISPATCH
+> segmenting (`internal/domain/workflow/engine_processors.go` ~`:311,:345`), *after* a
+> processor may have rewritten `entity.Data` (~`:294-296`) — and **processors can mutate a
+> unique-key field**. If the service pre-computed claims and attached them before its own
+> `Save`, those engine-internal saves (and any post-processor state) would carry **stale**
+> claims. The only chokepoint every save path funnels through is the **store's `Save`**, so
+> claims are computed *there*, from the **live** `entity.Data`, on every save. This is robust
+> to the engine's segmenting choreography without the service having to trace it.
 
-- A claim is emitted **only** when a key is *fully present*. All-null keys produce no claim
-  (⇒ exempt). Partially-filled keys are rejected *before* this point with a 422.
-- The `signature` is a **type-tagged canonical** encoding of the ordered scalar values.
-  Because it is computed in exactly one place, canonicalization is byte-identical across
-  every engine — there is no cross-engine drift surface.
+Mechanics:
 
-Claims ride on `spi.Entity` as an **additive, transient field** (not marshaled into the
-stored doc / `Data` bytes). Engines read it on the write path and enforce; they never
-compute signatures themselves. The field is provably non-persisted: memory stores
-`copyEntity(entity)` which copies only `Meta`+`Data` (`plugins/memory/entity_store.go`
-~`:37-41`), and postgres builds the doc from explicit `Meta` fields + `entity.Data` via
-`marshalEntityDoc` (`plugins/postgres/entity_doc.go` ~`:34-74`) — neither does
-`json.Marshal(entity)`, so a new struct field cannot leak into storage.
+- The model's **unique-key definitions** (stable, model-level) ride on `spi.Entity` as an
+  **additive, transient field** `UniqueKeys []spi.UniqueKey`. The service sets it once from
+  the model schema before `engine.Execute`; because the engine passes the *same* `*Entity`
+  to its internal saves, the definitions are present on every save of that entity.
+- A shared SPI helper **`spi.ComputeClaims(keys, doc) ([]UniqueClaim, error)`** turns
+  `(UniqueKeys + live Data)` into claims. It lives in **`cyoda-go-spi`** so all three engine
+  submodules (separate `go.mod`) can call it — canonicalization is single-source, so there
+  is no cross-engine drift. A claim is emitted **only** for a *fully-present* key; all-null
+  keys produce none (⇒ exempt); a *partially-filled* key returns `ErrPartialUniqueKey`.
+- The **store** calls `ComputeClaims(entity.UniqueKeys, entity.Data)` inside `Save`, then
+  enforces the resulting claims (side table / map). The `UniqueKeys` field is transient —
+  provably non-persisted: memory stores `copyEntity` (Meta+Data only,
+  `plugins/memory/entity_store.go` ~`:37-41`); postgres builds the doc via `marshalEntityDoc`
+  from explicit `Meta` + `Data` (`plugins/postgres/entity_doc.go` ~`:34-74`); neither does
+  `json.Marshal(entity)`, so a new struct field cannot leak into storage. `copyEntity` must
+  also copy the `UniqueKeys` slice so engine-internal saves retain it.
+- The service keeps a **partial-key pre-check** on the *input* doc (call `ComputeClaims`
+  before `engine.Execute`; `ErrPartialUniqueKey` → 422 `INVALID_UNIQUE_KEY`) so a client's
+  partial input fails fast and cleanly *even on a workflow that segments* (where the first
+  internal save would otherwise surface it as a wrapped 5xx). A partial key *produced by a
+  processor* (rare, misbehaving) surfaces from the store as a sanitized workflow 5xx — the
+  client input was valid, so this is correctly not a 422.
 
-**Why claims-in-service (not an SPI helper):** keeps the canonicalization in one Go code
-path, avoids plumbing model descriptors into every engine's `Save`, and keeps the SPI
-change purely additive (a struct field, not a new interface method). See §3.6.
+**Why store-computes (not service-attaches):** uniform enforcement across *every* save path
+— the service's final save **and** the engine's internal post-processor saves — without
+tracing engine internals; claims always reflect the committed doc. The cost is a slightly
+larger (still additive) SPI surface: the `UniqueKey`/`UniqueClaim` types, the `ComputeClaims`
+helper, and `ErrPartialUniqueKey` move into `cyoda-go-spi` alongside `ErrUniqueViolation` and
+the capability interface (§3.6).
 
 ### 3.2 Signature canonicalization (pinned)
 
@@ -181,13 +202,14 @@ Concrete mechanism (so an implementer can't accidentally make it retryable or a 
   `UNIQUE_VIOLATION` outcome, so constraint-name detection is the real fix, not a
   `40001` reclassification.)*
 - **sqlite / memory:** map their unique-conflict signal to the same sentinel.
-- **Service mapping:** add a branch to `common.Internal` (`internal/common/errors.go`
-  ~`:96`) mirroring the existing `ErrConflict` branch but returning
-  `Operational(409, UNIQUE_VIOLATION)` **without** `.AsRetryable()`.
+- **Service mapping:** add branches to `common.Internal` (`internal/common/errors.go`
+  ~`:96`), each more specific than the existing `ErrConflict` branch and placed before it:
+  `spi.ErrUniqueViolation` → `Operational(409, UNIQUE_VIOLATION)` **without** `.AsRetryable()`;
+  `spi.ErrPartialUniqueKey` → `Operational(422, INVALID_UNIQUE_KEY)`. Both non-retryable.
 
-`spi.ErrUniqueViolation` is a **new additive sentinel** in `cyoda-go-spi`. The 409 body
-names the violated `keyId` only — **never** the incumbent entity's id (need-to-know; avoids
-leaking another entity's existence even within a tenant).
+`spi.ErrUniqueViolation` and `spi.ErrPartialUniqueKey` are **new additive sentinels** in
+`cyoda-go-spi`. The 409 body names the violated `keyId` only — **never** the incumbent
+entity's id (need-to-know; avoids leaking another entity's existence even within a tenant).
 
 ### 3.6 Capability gate
 
@@ -272,17 +294,18 @@ back-compat handling.
 
 ## 5. Data flow
 
-**Create:** service computes claims → partial key ⇒ 422 `INVALID_UNIQUE_KEY`; else write
-entity + claim rows in one tx → unique primitive collision ⇒ `ErrUniqueViolation` ⇒ 409
-`UNIQUE_VIOLATION`. *This closes the First-Committer-Wins gap*: two concurrent creates of
-distinct entity ids sharing a value-set have disjoint write-sets, so the existing FCW check
-cannot catch them — the native unique index (sql) / `entityMu`-guarded map (memory)
-serializes them so exactly one commits.
+**Create:** service sets `entity.UniqueKeys` from the model + pre-checks the input doc
+(partial key ⇒ 422 `INVALID_UNIQUE_KEY`); the store, inside `Save`, computes claims from the
+**live** `entity.Data` via `spi.ComputeClaims` and writes entity + claim rows in one tx →
+unique primitive collision ⇒ `ErrUniqueViolation` ⇒ 409 `UNIQUE_VIOLATION`. *This closes the
+First-Committer-Wins gap*: two concurrent creates of distinct entity ids sharing a value-set
+have disjoint write-sets, so the existing FCW check cannot catch them — the native unique
+index (sql) / `entityMu`-guarded map (memory) serializes them so exactly one commits.
 
 **Update (moving a key):** recompute claims → delete-first old claim(s), insert new → 409 on
 collision; 412 `ENTITY_MODIFIED` still applies via `CompareAndSave`.
 
-**Soft-delete:** engine removes the entity's claim rows in the same tx → value freed.
+**Soft-delete:** the store removes the entity's claim rows in the same tx → value freed.
 
 ## 6. Error / status-code table
 
