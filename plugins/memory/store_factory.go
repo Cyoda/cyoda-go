@@ -167,6 +167,9 @@ func newStoreFactory() *StoreFactory {
 	return NewStoreFactory()
 }
 
+// SupportsCompositeUniqueKeys advertises composite-unique-key enforcement.
+func (f *StoreFactory) SupportsCompositeUniqueKeys() bool { return true }
+
 // initTransactionManager installs a TransactionManager on the factory.
 // Called by NewStoreFactory; also callable from tests via plugin wiring.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
