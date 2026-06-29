@@ -189,8 +189,19 @@ leaking another entity's existence even within a tenant).
 
 ### 3.6 Capability gate
 
-Composite-key support is advertised by an **additive optional interface** returning an
-explicit bool, e.g.:
+**Hard requirement:** it must be impossible to configure / persist a composite unique key
+on a storage engine that does not support it. The commercial backend will not support it
+for some time; any attempt to declare a key on an unsupported backend MUST be rejected with
+**422 `COMPOSITE_KEY_UNSUPPORTED`** — *never* silently accepted-and-unenforced. The
+rejection must fire on **every path that can introduce a key definition** — model
+registration / import (`ImportModel`) and the lock transition — not just one of them.
+
+The advertisement *mechanism* is an implementation detail (the engineer's call): presence
+of the optional interface is sufficient signal; the explicit bool below is retained only so
+a backend could implement-but-temporarily-disable. What matters is the hard requirement
+above, enforced at config time.
+
+Support is advertised by an **additive optional interface**, e.g.:
 
 ```go
 // Optional. Absence ⇒ composite unique keys unsupported.
@@ -199,21 +210,15 @@ type CompositeUniqueKeyCapable interface {
 }
 ```
 
-- Type-asserted for **presence** at **model-configuration / lock time** (not in the write
-  hot path), returning a **declared** yes/no.
-- memory / sqlite / postgres implement it (return true). The **commercial backend does
-  not implement it** ⇒ unsupported, until its own issue lands.
-- Declaring a unique key on an unsupported backend ⇒ **422 `COMPOSITE_KEY_UNSUPPORTED`**.
-- This is purely additive — it does **not** add a method to the existing `StoreFactory`
-  interface (which would be a breaking change for out-of-tree consumers, per
-  `MAINTAINING.md`).
-- **Out of scope:** a process-wide backend swap (supported → unsupported) under a model
-  that already declares keys would strand enforcement. The backend is process-wide, so this
+- Checked at **config time** (model registration/import and lock), never in the write hot
+  path.
+- memory / sqlite / postgres support it; the **commercial backend does not** ⇒ unsupported,
+  until its own issue lands.
+- Purely additive — it does **not** add a method to the existing `StoreFactory` interface
+  (which would be a breaking change for out-of-tree consumers, per `MAINTAINING.md`).
+- **Out of scope:** a process-wide backend swap (supported → unsupported) under a model that
+  already declares keys would strand enforcement. The backend is process-wide, so this
   requires a deliberate data migration; explicitly not handled here.
-- *On the explicit bool:* interface **presence** alone could signal capability (the
-  `Searcher` pattern). The bool is retained deliberately — it honours the declared-flag
-  decision and leaves room for an implement-but-disable backend — at the cost of being
-  marginally more than presence-detection strictly requires.
 
 ### 3.7 Collection create / `SaveAll` — intra-batch uniqueness
 
@@ -290,7 +295,6 @@ and `INVALID_UNIQUE_KEY_DEFINITION` if not reusing an existing code) requires:
 | PATCH that nulls/removes a key field ⇒ 422 (all-or-nothing on merged doc) | | ✓ | ✓ | ✓ |
 | Soft-delete frees value (re-create with same key succeeds) | | ✓ | ✓ | |
 | `DeleteAll` releases all claims (zero claim rows after; re-create succeeds) | | ✓ | ✓ | |
-| Model delete releases all claims; re-created `(name,version)` has no false collision | | ✓ | | |
 | `SaveAll` intra-batch duplicate ⇒ 409 (no torn write) | | ✓ | ✓ | |
 | Multiple independent keys per model | | ✓ | ✓ | |
 | Definition validation (non-scalar/array/unknown/dup) ⇒ 422 | ✓ | ✓ | | ✓ |
@@ -313,15 +317,16 @@ memory-backend parity-destabilization.
 - **Gate 4 docs:** OpenAPI / help topics for the new model-config `uniqueKeys` surface;
   help topics for the new error codes; `COMPATIBILITY.md` on the SPI bump;
   `docs/workflow-schema-versioning.md` bump per the import-surface change.
-- **`ModelStore.Delete`** is a physical delete with no cascade. Its claim-table safety
-  depends on the **claim-release-on-soft-delete invariant (§3.3), not the §2.1
-  zero-live-entities guard** — these are different properties, and the former is the more
-  fragile one. Because model identity is `deterministicID(name, version)`, a
-  `(tenant, model, version)` can be **re-created** after delete, so any leaked claim becomes
-  a *cross-incarnation false collision*. Therefore make model delete **defensive**: it must
-  also `DELETE FROM unique_claims WHERE (tenant, model, version)` (and/or an `ON DELETE
-  CASCADE` FK on postgres), with a guard test asserting **zero claim rows after model
-  delete** and **after `DeleteAll`**.
+- **`ModelStore.Delete`** requires zero live entities (the same guard as unlock, §2.1), and
+  soft-deleted entities hold no claims (released on soft-delete, §3.3) — so the claim set for
+  a `(tenant, model, version)` is **already empty** at delete time. No orphan is possible
+  unless the §3.3 release invariant is itself broken, which the §3.3 path tests already
+  cover. An `ON DELETE CASCADE` FK / explicit claim purge on model delete is therefore at
+  most a **cheap belt-and-suspenders sanity cleanup, not a correctness requirement** —
+  include it only if it falls out for free (e.g. an FK that exists anyway); do **not** build
+  dedicated machinery or tests for it. *(The `DeleteAll`-releases-claims requirement is
+  separate and real — that frees values for live entities bulk-deleted under a surviving
+  model.)*
 
 ## 9. Out of scope
 
