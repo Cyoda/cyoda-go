@@ -235,12 +235,15 @@ func (h *Handler) ExportModel(ctx context.Context, entityName, modelVersion, con
 		ukExports = append(ukExports, uniqueKeyExport{ID: k.ID, Fields: k.Fields})
 	}
 	var m map[string]any
-	if err2 := json.Unmarshal(exported, &m); err2 == nil {
-		m["uniqueKeys"] = ukExports
-		if b, err2 := json.Marshal(m); err2 == nil {
-			exported = b
-		}
+	if err2 := json.Unmarshal(exported, &m); err2 != nil {
+		return nil, common.Internal("failed to decode exported payload for unique-key annotation", err2)
 	}
+	m["uniqueKeys"] = ukExports
+	b, err2 := json.Marshal(m)
+	if err2 != nil {
+		return nil, common.Internal("failed to re-encode exported payload with unique keys", err2)
+	}
+	exported = b
 
 	return &ExportModelResult{Payload: exported, UniqueKeys: uks}, nil
 }

@@ -901,6 +901,25 @@ func TestSetUniqueKeys_422_BadField(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, "INVALID_UNIQUE_KEY_DEFINITION")
 }
 
+func TestSetUniqueKeys_422_Unsupported(t *testing.T) {
+	// incapableFactory embeds spi.StoreFactory as an interface so the
+	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
+	// promoted — the type assertion in SetUniqueKeys returns ok=false.
+	type incapableFactory struct{ spi.StoreFactory }
+	h := model.New(incapableFactory{memory.NewStoreFactory()})
+
+	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
+	r := httptest.NewRequest(http.MethodPut, "/model/UKUnsupported/1/unique-keys", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.SetEntityModelUniqueKeys(w, r, "UKUnsupported", 1)
+
+	resp := w.Result()
+	expectStatus(t, resp, http.StatusUnprocessableEntity)
+	commontest.ExpectErrorCode(t, resp, "COMPOSITE_KEY_UNSUPPORTED")
+}
+
 func TestExportIncludesUniqueKeys(t *testing.T) {
 	srv := newTestServer(t)
 

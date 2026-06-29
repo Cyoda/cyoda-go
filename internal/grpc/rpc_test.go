@@ -576,6 +576,48 @@ func TestRPC_ModelSetUniqueKeys_422_BadField(t *testing.T) {
 	}
 }
 
+func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Replace the model handler with one wired to an incapable factory.
+	// incapableFactory embeds spi.StoreFactory as an interface so the
+	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
+	// promoted — the type assertion in SetUniqueKeys returns ok=false.
+	type incapableFactory struct{ spi.StoreFactory }
+	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()})
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.name"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unsupported backend")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "COMPOSITE_KEY_UNSUPPORTED") {
+		t.Errorf("expected message to contain COMPOSITE_KEY_UNSUPPORTED, got %s", typed.Error.Message)
+	}
+}
+
 // --- Search tests ---
 
 func TestRPC_EntityGet(t *testing.T) {
