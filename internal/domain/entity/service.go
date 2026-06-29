@@ -855,6 +855,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	type parsedItem struct {
 		ref          spi.ModelRef
 		payloadBytes []byte
+		uniqueKeys   []spi.UniqueKey
 	}
 	parsed := make([]parsedItem, 0, len(items))
 	for i, item := range items {
@@ -892,7 +893,20 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
-		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes})
+		// Pre-check for partial unique key (pre-tx, fast path). Desc is in hand
+		// here so no extra read is needed. A partial key (some but not all fields
+		// present) is rejected immediately before any transaction is opened.
+		if len(desc.UniqueKeys) > 0 {
+			if _, err := spi.ComputeClaims(desc.UniqueKeys, payloadBytes); err != nil {
+				if errors.Is(err, spi.ErrPartialUniqueKey) {
+					return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey,
+						fmt.Sprintf("item %d: composite unique key incomplete", i))
+				}
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to evaluate unique keys", i), err)
+			}
+		}
+
+		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, uniqueKeys: desc.UniqueKeys})
 	}
 
 	// Begin transaction -- all entities in one transaction, all-or-nothing
@@ -944,6 +958,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			},
 			Data: item.payloadBytes,
 		}
+
+		// Stamp the current item's unique-key definitions onto the context
+		// BEFORE engine execution. Called unconditionally (even for models with
+		// no keys) so a keyed item never leaks its keys to the next item via the
+		// reused currentCtx. spi.WithUniqueKeys overwrites any previously set
+		// value, so passing nil/empty correctly clears a prior item's keys.
+		currentCtx = spi.WithUniqueKeys(currentCtx, item.uniqueKeys)
 
 		// Run workflow engine within the current segment's transaction
 		// context. Mirrors single CreateEntity's flow so initial-state
@@ -1402,6 +1423,24 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			_ = h.txMgr.Rollback(currentCtx, currentTxID)
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
+
+		// Pre-check for partial unique key. Called while desc is in hand so
+		// no extra model read is needed. Rolls back and fails the whole batch.
+		if len(desc.UniqueKeys) > 0 {
+			if _, err := spi.ComputeClaims(desc.UniqueKeys, item.bodyBytes); err != nil {
+				_ = h.txMgr.Rollback(currentCtx, currentTxID)
+				if errors.Is(err, spi.ErrPartialUniqueKey) {
+					return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey,
+						fmt.Sprintf("item %d: composite unique key incomplete", i))
+				}
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to evaluate unique keys", i), err)
+			}
+		}
+
+		// Stamp this item's unique-key definitions onto the context before
+		// engine execution. Called unconditionally so a keyed item never leaks
+		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
+		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
 		if err := h.validateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
 			_ = h.txMgr.Rollback(currentCtx, currentTxID)
