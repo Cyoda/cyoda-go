@@ -1535,6 +1535,12 @@ func classifyWorkflowError(err error) *common.AppError {
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)
 	}
+	if errors.Is(err, spi.ErrUniqueViolation) {
+		return common.Operational(http.StatusConflict, common.ErrCodeUniqueViolation, "a composite unique key constraint was violated")
+	}
+	if errors.Is(err, spi.ErrPartialUniqueKey) {
+		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey, "one or more unique key fields are null or invalid")
+	}
 	if errors.Is(err, wfengine.ErrTransitionNotFound) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
 	}

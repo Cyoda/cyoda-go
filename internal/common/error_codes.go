@@ -77,6 +77,27 @@ const (
 	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
 )
 
+// Composite unique-key errors
+const (
+	// ErrCodeUniqueViolation is returned when a save would duplicate a
+	// declared composite unique key. Non-retryable: the client must change
+	// the entity's key fields before retrying.
+	ErrCodeUniqueViolation = "UNIQUE_VIOLATION"
+	// ErrCodeInvalidUniqueKey is returned when the engine cannot compute a
+	// complete unique claim because a required key field is null or
+	// otherwise unusable. Non-retryable: the client must supply valid
+	// values for all declared key fields.
+	ErrCodeInvalidUniqueKey = "INVALID_UNIQUE_KEY"
+	// ErrCodeCompositeKeyUnsupported is returned when a request references
+	// a composite unique-key operation that the active storage backend does
+	// not support.
+	ErrCodeCompositeKeyUnsupported = "COMPOSITE_KEY_UNSUPPORTED"
+	// ErrCodeInvalidUniqueKeyDefinition is returned when a model's
+	// UniqueKey definition is structurally invalid (e.g. empty field list,
+	// unknown field path, or duplicate key name).
+	ErrCodeInvalidUniqueKeyDefinition = "INVALID_UNIQUE_KEY_DEFINITION"
+)
+
 // Help subsystem
 const (
 	ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
