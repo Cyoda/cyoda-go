@@ -52,6 +52,14 @@ type claimKey struct {
 	signature string
 }
 
+// entityTenantKey qualifies an entity ID by its tenant so that two tenants
+// with the same entity ID do not share a claim entry in claimsByEntity.
+// Guarded by entityMu.
+type entityTenantKey struct {
+	tenant string
+	id     string
+}
+
 type StoreFactory struct {
 	clock       Clock
 	entityMu    sync.RWMutex
@@ -73,8 +81,8 @@ type StoreFactory struct {
 
 	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
-	uniqueClaims   map[claimKey]string    // claimKey → entityID currently holding it
-	claimsByEntity map[string][]claimKey  // entityID → its claimKeys (for release)
+	uniqueClaims   map[claimKey]string              // claimKey → entityID currently holding it
+	claimsByEntity map[entityTenantKey][]claimKey   // (tenant,entityID) → its claimKeys (for release)
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {
@@ -92,7 +100,7 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		smAudit:        make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
 		blobDir:        blobDir,
 		uniqueClaims:   make(map[claimKey]string),
-		claimsByEntity: make(map[string][]claimKey),
+		claimsByEntity: make(map[entityTenantKey][]claimKey),
 	}
 	for _, o := range opts {
 		o(f)
@@ -169,13 +177,16 @@ func (f *StoreFactory) Close() error {
 	return os.RemoveAll(f.blobDir)
 }
 
-// releaseClaims removes all unique-key claims held by entityID from the claim
-// maps. Caller must hold entityMu (write lock).
-func (f *StoreFactory) releaseClaims(entityID string) {
-	for _, k := range f.claimsByEntity[entityID] {
+// releaseClaims removes all unique-key claims held by (tenantID, entityID) from
+// the claim maps. Caller must hold entityMu (write lock).
+// tenantID qualifies the lookup so that two tenants with the same entity ID
+// do not cross-contaminate each other's claim entries (ISSUE-2 tenant isolation).
+func (f *StoreFactory) releaseClaims(tenantID, entityID string) {
+	etk := entityTenantKey{tenant: tenantID, id: entityID}
+	for _, k := range f.claimsByEntity[etk] {
 		delete(f.uniqueClaims, k)
 	}
-	delete(f.claimsByEntity, entityID)
+	delete(f.claimsByEntity, etk)
 }
 
 // insertClaims records new unique-key claims for entityID. Caller must hold
@@ -190,7 +201,8 @@ func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, cla
 		f.uniqueClaims[k] = entityID
 		keys = append(keys, k)
 	}
-	f.claimsByEntity[entityID] = keys
+	etk := entityTenantKey{tenant: tenant, id: entityID}
+	f.claimsByEntity[etk] = keys
 }
 
 // TransactionManager implements spi.StoreFactory.

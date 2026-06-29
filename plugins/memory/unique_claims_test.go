@@ -256,6 +256,98 @@ func TestUniqueClaims_IntraBatchDuplicate(t *testing.T) {
 	}
 }
 
+// TestUniqueClaims_SameTransactionDeleteAndReclaim verifies that a tx which
+// soft-deletes entity A (currently holding value V) and creates entity B with
+// that same value V in the same Commit succeeds — the delete releases A's claim
+// before B's claim is validated (ISSUE-3 same-tx delete+reclaim).
+func TestUniqueClaims_SameTransactionDeleteAndReclaim(t *testing.T) {
+	factory, store := setupUCFactory(t)
+	baseCtx := ctxWithTenant("uc-tenant")
+	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
+
+	// Pre-condition: entity A holds "shared@x.com" (non-tx save).
+	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
+		t.Fatalf("pre-save A: %v", err)
+	}
+
+	tm, err := factory.TransactionManager(baseCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	// In the same transaction: delete A and create B with A's former value.
+	if err := store.Delete(txCtx, "a"); err != nil {
+		t.Fatalf("tx Delete a: %v", err)
+	}
+	if _, err := store.Save(spi.WithUniqueKeys(txCtx, ucEmailKeys()), ucEntity("b", "shared@x.com")); err != nil {
+		t.Fatalf("tx Save b: %v", err)
+	}
+
+	// Commit must succeed — A's claim is released by the delete, not held when B is validated.
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: expected success, got %v", err)
+	}
+
+	// Post-conditions: A is gone, B holds the value.
+	if exists, err := store.Exists(baseCtx, "a"); err != nil || exists {
+		t.Errorf("a should not exist after tx delete: exists=%v err=%v", exists, err)
+	}
+	b, err := store.Get(baseCtx, "b")
+	if err != nil {
+		t.Fatalf("Get b: %v", err)
+	}
+	if string(b.Data) != `{"email":"shared@x.com"}` {
+		t.Errorf("b.Data = %s, want {\"email\":\"shared@x.com\"}", b.Data)
+	}
+
+	// B's claim must be enforced: a third entity cannot steal the value.
+	_, err = store.Save(ctx, ucEntity("c", "shared@x.com"))
+	if !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
+	}
+}
+
+// TestUniqueClaims_TxDeleteReleasesClaimForNextTx verifies that a standalone
+// tx-mode Delete releases unique-key claims so a subsequent non-tx Save with the
+// same value succeeds (exercises the Deletes-loop releaseClaims in Commit step 5).
+func TestUniqueClaims_TxDeleteReleasesClaimForNextTx(t *testing.T) {
+	factory, store := setupUCFactory(t)
+	baseCtx := ctxWithTenant("uc-tenant")
+	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
+
+	// Non-tx save: A holds "v@x.com".
+	if _, err := store.Save(ctx, ucEntity("a", "v@x.com")); err != nil {
+		t.Fatalf("non-tx Save a: %v", err)
+	}
+
+	tm, err := factory.TransactionManager(baseCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+
+	// Tx: delete A (only Delete, no new entity).
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := store.Delete(txCtx, "a"); err != nil {
+		t.Fatalf("tx Delete a: %v", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// After commit, A's claim must be released so B can claim the same value.
+	if _, err := store.Save(ctx, ucEntity("b", "v@x.com")); err != nil {
+		t.Fatalf("non-tx Save b with freed value: %v", err)
+	}
+}
+
 // TestUniqueClaims_ConcurrentWinnerLoser verifies that when two goroutines each
 // create a distinct entity with the same key value concurrently, exactly one
 // commits and the other gets spi.ErrUniqueViolation; no torn write.

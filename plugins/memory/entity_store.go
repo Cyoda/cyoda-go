@@ -275,7 +275,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	})
 
 	// Apply unique-key claims: release old (handles update-moves-key) then insert new.
-	s.factory.releaseClaims(eid)
+	s.factory.releaseClaims(string(tid), eid)
 	s.factory.insertClaims(eid, string(tid), model, version, newClaims)
 
 	return nextVersion, nil
@@ -531,7 +531,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		user:          userName,
 	})
 	// Release unique-key claims so the freed values can be claimed immediately.
-	s.factory.releaseClaims(entityID)
+	s.factory.releaseClaims(string(s.tenant), entityID)
 	return nil
 }
 
@@ -607,7 +607,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 				user:          userName,
 			})
 			// Release unique-key claims so freed values can be claimed immediately.
-			s.factory.releaseClaims(eid)
+			s.factory.releaseClaims(string(s.tenant), eid)
 		}
 	}
 	return nil
