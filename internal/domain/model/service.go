@@ -46,7 +46,8 @@ type ImportModelResult struct {
 
 // ExportModelResult carries the result of a model export.
 type ExportModelResult struct {
-	Payload json.RawMessage
+	Payload    json.RawMessage
+	UniqueKeys []spi.UniqueKey
 }
 
 // ModelTransitionResult carries the result of a model state transition.
@@ -219,7 +220,29 @@ func (h *Handler) ExportModel(ctx context.Context, entityName, modelVersion, con
 		return nil, common.Internal("export failed", err)
 	}
 
-	return &ExportModelResult{Payload: exported}, nil
+	// Inject uniqueKeys into the exported payload as a sibling field.
+	// Always present (empty slice when no keys defined) for consumer consistency.
+	uks := desc.UniqueKeys
+	if uks == nil {
+		uks = []spi.UniqueKey{}
+	}
+	type uniqueKeyExport struct {
+		ID     string   `json:"id"`
+		Fields []string `json:"fields"`
+	}
+	ukExports := make([]uniqueKeyExport, 0, len(uks))
+	for _, k := range uks {
+		ukExports = append(ukExports, uniqueKeyExport{ID: k.ID, Fields: k.Fields})
+	}
+	var m map[string]any
+	if err2 := json.Unmarshal(exported, &m); err2 == nil {
+		m["uniqueKeys"] = ukExports
+		if b, err2 := json.Marshal(m); err2 == nil {
+			exported = b
+		}
+	}
+
+	return &ExportModelResult{Payload: exported, UniqueKeys: uks}, nil
 }
 
 // LockModel locks a model, preventing further imports.

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -220,4 +221,32 @@ func (h *Handler) ValidateEntityModel(w http.ResponseWriter, r *http.Request, en
 
 	result := successResult("Validation passed", entityName, modelVersion)
 	common.WriteJSON(w, http.StatusOK, result)
+}
+
+// SetEntityModelUniqueKeys handles PUT /model/{entityName}/{modelVersion}/unique-keys.
+func (h *Handler) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
+	var req genapi.SetUniqueKeysRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body"))
+		return
+	}
+
+	keys := make([]spi.UniqueKey, 0, len(req.UniqueKeys))
+	for _, k := range req.UniqueKeys {
+		keys = append(keys, spi.UniqueKey{
+			ID:     k.Id,
+			Fields: k.Fields,
+		})
+	}
+
+	_, err := h.SetUniqueKeys(r.Context(), entityName, strconv.Itoa(int(modelVersion)), keys)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+
+	common.WriteJSON(w, http.StatusOK, successResult(
+		fmt.Sprintf("unique keys set on model %s:%d", entityName, modelVersion),
+		entityName, modelVersion))
 }

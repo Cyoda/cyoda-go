@@ -10,12 +10,26 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
+
+// setUniqueKeysPayload is the CloudEvent payload for EntityModelSetUniqueKeysRequest.
+type setUniqueKeysPayload struct {
+	ID         string              `json:"id"`
+	Model      events.ModelSpecJson `json:"model"`
+	UniqueKeys []uniqueKeyPayload  `json:"uniqueKeys"`
+}
+
+// uniqueKeyPayload is a single unique key definition in the CloudEvent payload.
+type uniqueKeyPayload struct {
+	ID     string   `json:"id"`
+	Fields []string `json:"fields"`
+}
 
 // EntityModelManage handles unary model management CloudEvents (import, export,
 // lock/unlock, delete, get all) by calling model service methods directly.
@@ -40,6 +54,8 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 		return s.handleModelDelete(ctx, ce.Id, eventType, payload)
 	case EntityModelGetAllRequest:
 		return s.handleModelGetAll(ctx, ce.Id, eventType)
+	case EntityModelSetUniqueKeysRequest:
+		return s.handleModelSetUniqueKeys(ctx, ce.Id, eventType, payload)
 	default:
 		slog.Warn("unsupported event type", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType)
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported model event type: %s", eventType)
@@ -208,4 +224,33 @@ func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID str
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entityModelManage", "type", EntityModelGetAllResponse, "ceId", ceID, "success", true)
 	return NewCloudEvent(EntityModelGetAllResponse, resp)
+}
+
+func (s *CloudEventsServiceImpl) handleModelSetUniqueKeys(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req setUniqueKeysPayload
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	keys := make([]spi.UniqueKey, 0, len(req.UniqueKeys))
+	for _, k := range req.UniqueKeys {
+		keys = append(keys, spi.UniqueKey{ID: k.ID, Fields: k.Fields})
+	}
+
+	result, err := s.modelHandler.SetUniqueKeys(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), keys)
+	if err != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
+		return modelSetUniqueKeysError(ctx, ceID, err)
+	}
+
+	diag := common.GetDiagnostics(ctx)
+	resp := events.EntityModelTransitionResponseJson{
+		ID:       ceID,
+		Success:  true,
+		Warnings: diag.GetWarnings(),
+		ModelID:  result.ModelID,
+		State:    result.State,
+	}
+	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entityModelManage", "type", EntityModelSetUniqueKeysResponse, "ceId", ceID, "success", true)
+	return NewCloudEvent(EntityModelSetUniqueKeysResponse, resp)
 }
