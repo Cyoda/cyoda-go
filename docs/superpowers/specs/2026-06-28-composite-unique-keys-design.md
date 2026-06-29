@@ -2,6 +2,8 @@
 
 **Status:** Approved design (post independent review). Pending implementation plan.
 **Date:** 2026-06-28
+**Target:** v0.8.2 — purely **additive / non-breaking** for apps and users (opt-in schema
+field, new error codes only on use) and additive to the SPI; ships on `release/v0.8.2`.
 **Scope:** cyoda-go (memory, sqlite, postgres) + `cyoda-go-spi`. Commercial (Cassandra)
 backend deferred to a separate issue in its own repository.
 
@@ -85,10 +87,10 @@ so precision can be preserved. Rules:
   negative zero (`-0` ≡ `0`), large integers (> 2^53), high-exponent literals (`1e400`
   must not overflow or round), and trailing-fraction normalization. Do **not** reuse
   `cyoda_try_float8` (search-read helper; lossy above 2^53 and never present at write time).
-- **Strings:** byte-exact by default (SQL `UNIQUE` semantics). Unicode normalization (NFC)
-  and case-sensitivity are **decided in the helper** and documented there; default is
-  *no normalization, case-sensitive, no whitespace trimming* unless the plan justifies
-  otherwise. This is a tested concern (§7 unit row).
+- **Strings:** **byte-exact** (decided). Case-sensitive, **no** Unicode folding (NFC ≠ NFD),
+  **no** whitespace trimming — the bytes the app sent are what's compared (SQL `UNIQUE` under
+  a binary collation). Apps wanting looser matching (e.g. case-insensitive emails) normalize
+  before writing. This is a tested concern (§7 unit row).
 - **Booleans:** `true` / `false`.
 - Each value is type-tagged so `"1"` (string) and `1` (number) never collide.
 
