@@ -581,10 +581,14 @@ func TestImportModel_PreservesUniqueKeys_WhenReimporting(t *testing.T) {
 	}
 }
 
-// TestImportModel_DropsKeyField_Rejected verifies that a re-import that
-// removes a field referenced by an existing UniqueKey is rejected with
-// 422 INVALID_UNIQUE_KEY_DEFINITION, protecting the key's integrity.
-func TestImportModel_DropsKeyField_Rejected(t *testing.T) {
+// TestImportModel_KeyReferencesAbsentField_Rejected is a defensive guard test.
+// schema.Merge is strictly additive (every existing field is unconditionally
+// preserved), so a normal SetUniqueKeys + re-import sequence cannot produce a
+// descriptor whose key references a field absent from the schema. This test
+// exercises the re-validate branch to protect against out-of-band descriptor
+// corruption or future merge-semantics changes — it is not an API-reachable
+// "dropped field" scenario under current semantics.
+func TestImportModel_KeyReferencesAbsentField_Rejected(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
 
 	// Build a schema with $.name field only.
@@ -612,8 +616,9 @@ func TestImportModel_DropsKeyField_Rejected(t *testing.T) {
 
 	h := model.New(&fakeStoreFactory{modelStore: ms})
 
-	// Re-import only provides "name", not "score" — the merge won't add
-	// $.score back, so the unique key referencing $.score becomes invalid.
+	// The descriptor is pre-seeded with $.score in the key but NOT in the
+	// schema, simulating out-of-band corruption (additive merge cannot drop a
+	// field). Re-import must detect and reject this corrupted state.
 	_, err = h.ImportModel(context.Background(), model.ImportModelInput{
 		EntityName:   "Dataset",
 		ModelVersion: "1",

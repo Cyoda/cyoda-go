@@ -155,9 +155,10 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 		desc.ChangeLevel = existing.ChangeLevel
 		desc.UniqueKeys = existing.UniqueKeys
 
-		// Re-validate the carried-forward keys against the merged schema.
-		// If a re-import drops a field that a key references, reject the
-		// import immediately rather than silently storing an invalid descriptor.
+		// Defensive guard: re-validate carried-forward keys against the merged
+		// schema. schema.Merge is additive and cannot drop an existing field, so
+		// this targets out-of-band descriptor corruption or future
+		// merge-semantics changes — not a scenario reachable via normal API use.
 		if len(desc.UniqueKeys) > 0 {
 			if valErr := schema.ValidateUniqueKeys(finalNode, desc.UniqueKeys); valErr != nil {
 				var keyDefErr *schema.UniqueKeyDefError
