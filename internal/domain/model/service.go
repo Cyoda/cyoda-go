@@ -220,30 +220,33 @@ func (h *Handler) ExportModel(ctx context.Context, entityName, modelVersion, con
 		return nil, common.Internal("export failed", err)
 	}
 
-	// Inject uniqueKeys into the exported payload as a sibling field.
-	// Always present (empty slice when no keys defined) for consumer consistency.
+	// Inject uniqueKeys into the exported payload as a sibling field, but ONLY
+	// when the model actually declares composite keys (omitempty semantics). A
+	// model with no keys exports byte-identically to a pre-feature model — the
+	// change is purely additive, and it matches the omitempty convention the
+	// descriptor storage DTOs already use. The export response is free-form
+	// (OpenAPI: additionalProperties), so absence is the natural "no keys".
 	uks := desc.UniqueKeys
-	if uks == nil {
-		uks = []spi.UniqueKey{}
+	if len(uks) > 0 {
+		type uniqueKeyExport struct {
+			ID     string   `json:"id"`
+			Fields []string `json:"fields"`
+		}
+		ukExports := make([]uniqueKeyExport, 0, len(uks))
+		for _, k := range uks {
+			ukExports = append(ukExports, uniqueKeyExport{ID: k.ID, Fields: k.Fields})
+		}
+		var m map[string]any
+		if err2 := json.Unmarshal(exported, &m); err2 != nil {
+			return nil, common.Internal("failed to decode exported payload for unique-key annotation", err2)
+		}
+		m["uniqueKeys"] = ukExports
+		b, err2 := json.Marshal(m)
+		if err2 != nil {
+			return nil, common.Internal("failed to re-encode exported payload with unique keys", err2)
+		}
+		exported = b
 	}
-	type uniqueKeyExport struct {
-		ID     string   `json:"id"`
-		Fields []string `json:"fields"`
-	}
-	ukExports := make([]uniqueKeyExport, 0, len(uks))
-	for _, k := range uks {
-		ukExports = append(ukExports, uniqueKeyExport{ID: k.ID, Fields: k.Fields})
-	}
-	var m map[string]any
-	if err2 := json.Unmarshal(exported, &m); err2 != nil {
-		return nil, common.Internal("failed to decode exported payload for unique-key annotation", err2)
-	}
-	m["uniqueKeys"] = ukExports
-	b, err2 := json.Marshal(m)
-	if err2 != nil {
-		return nil, common.Internal("failed to re-encode exported payload with unique keys", err2)
-	}
-	exported = b
 
 	return &ExportModelResult{Payload: exported, UniqueKeys: uks}, nil
 }

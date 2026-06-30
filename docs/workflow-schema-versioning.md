@@ -48,7 +48,7 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 
 ### Model export surface — `uniqueKeys` field (v0.8.2)
 
-`GET /model/export/…` responses now include a top-level `uniqueKeys` array carrying the model's declared composite unique keys. This is a purely additive change to the **model export DTO** (`ExportModel`) — it is separate from `WorkflowConfigurationDto` and therefore does **not** trigger a workflow schema version bump per the rule above. No `CurrentSchemaVersion` change is required.
+`GET /model/export/…` responses carry a top-level `uniqueKeys` array listing the model's declared composite unique keys. The field uses **omitempty** semantics — it is present only when the model declares at least one key; a model with no keys exports byte-identically to a pre-feature model (matching the descriptor storage DTOs, which also omit the empty case). This is a purely additive change to the **model export DTO** (`ExportModel`) — it is separate from `WorkflowConfigurationDto` and therefore does **not** trigger a workflow schema version bump per the rule above. No `CurrentSchemaVersion` change is required.
 
 ## Required commit-/PR-time checks
 

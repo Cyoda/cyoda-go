@@ -661,6 +661,24 @@ func TestUniqueKeys_ExportIncludesKeys(t *testing.T) {
 	}
 }
 
+// TestUniqueKeys_ExportOmitsKeysWhenNoneDeclared verifies that a model with no
+// composite unique keys exports WITHOUT a uniqueKeys field (omitempty
+// semantics) — the field appears only when keys are declared, keeping the
+// export of a keyless model byte-identical to a pre-feature model.
+func TestUniqueKeys_ExportOmitsKeysWhenNoneDeclared(t *testing.T) {
+	const model = "e2e-uk-export-empty"
+
+	importModelWithSample(t, model, 1, ukSampleData)
+	// Deliberately do NOT declare any unique keys.
+	lockModelE2E(t, model, 1)
+
+	exported := exportModelE2E(t, model, 1)
+
+	if _, ok := exported["uniqueKeys"]; ok {
+		t.Errorf("keyless model export must omit 'uniqueKeys'; got keys: %v", mapKeys(exported))
+	}
+}
+
 // mapKeys returns the keys of a map[string]any for error messages.
 func mapKeys(m map[string]any) []string {
 	ks := make([]string, 0, len(m))
