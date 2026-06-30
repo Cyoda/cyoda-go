@@ -1,7 +1,12 @@
 # Cyoda-Go
 
 Lightweight, multi-node Go implementation of the Cyoda platform.
-cyoda-go defines the API and integration contract; Cyoda Cloud aligns to it.
+cyoda-go **defines** the API and integration contract; Cyoda Cloud follows it
+(`docs/cloud-parity/`). cyoda-go's behaviour *is* the spec — a storage backend
+(memory/sqlite/postgres) diverging on the same contract is a bug to fix, not an
+"accepted divergence"; cross-backend parity tests only guard that consistency,
+they neither define behaviour nor equate to Cloud parity. OSS-only features
+Cloud lacks (e.g. composite keys) carry no Cloud-parity duty.
 
 ## Development Gates
 
