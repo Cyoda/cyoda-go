@@ -58,7 +58,28 @@ func expectedSimpleViewFromBodies(bodies []map[string]string, currentState strin
 	if current == nil {
 		return nil, nil
 	}
-	return exporter.NewSimpleViewExporter(currentState).Export(current)
+	exported, err := exporter.NewSimpleViewExporter(currentState).Export(current)
+	if err != nil {
+		return nil, err
+	}
+	return withUniqueKeysEnvelope(exported)
+}
+
+// withUniqueKeysEnvelope mirrors ExportModel's always-present uniqueKeys
+// injection (internal/domain/model/service.go): the handler decodes the
+// SimpleViewExporter output into a map, sets uniqueKeys, and re-marshals.
+// These schema-extension oracles declare no composite keys, so the field
+// is always the empty array — but it MUST be present for the oracle bytes
+// to byte-match ExportModel's output. The decode→add→re-marshal is the
+// identical transform ExportModel applies, so key ordering and encoding
+// stay in lock-step.
+func withUniqueKeysEnvelope(exported []byte) ([]byte, error) {
+	var m map[string]any
+	if err := json.Unmarshal(exported, &m); err != nil {
+		return nil, fmt.Errorf("oracle: decode for unique-key envelope: %w", err)
+	}
+	m["uniqueKeys"] = []any{}
+	return json.Marshal(m)
 }
 
 // expectedSimpleViewFromSequence computes the canonical SIMPLE_VIEW
@@ -185,5 +206,9 @@ func expectedSimpleViewFromExtensions(extensions []any, currentState string) ([]
 	if err != nil {
 		return nil, accepted, fmt.Errorf("oracle: export: %w", err)
 	}
-	return out, accepted, nil
+	enveloped, err := withUniqueKeysEnvelope(out)
+	if err != nil {
+		return nil, accepted, fmt.Errorf("oracle: unique-key envelope: %w", err)
+	}
+	return enveloped, accepted, nil
 }
