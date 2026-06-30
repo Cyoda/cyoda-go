@@ -24,6 +24,8 @@ The entity payload contains field values that collide with an existing entity's 
 
 To resolve: change the values of the fields that form the unique key so they no longer duplicate an existing entity.
 
+On storage backends that enforce uniqueness at write time (PostgreSQL), this error can also occur **within a single transaction** when a value is claimed before its current holder is freed — for example a workflow that creates or re-keys an entity onto a value before deleting the entity that still holds it. Free the value first (delete or update the holder), then claim it. Backends that validate at commit (the in-memory and SQLite engines) accept either order; for portable behavior, always free before claiming. See the unique-keys section of `cyoda help models` for details.
+
 ## SEE ALSO
 
 - errors

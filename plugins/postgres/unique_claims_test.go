@@ -304,3 +304,37 @@ func TestUniqueClaims_SameTransactionDeleteAndReclaim(t *testing.T) {
 		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
 	}
 }
+
+// TestUniqueClaims_SameTxReclaimBeforeDelete_RejectedAtInsert documents that
+// postgres REJECTS the save-first (claim-before-free) ordering. Unlike the
+// buffered engines (memory/sqlite), postgres enforces the unique_claims_uq index
+// inline at insert time, so claiming value V on B while A still holds it fails AT
+// THE SAVE — A has not been deleted yet. This is the legitimate, stricter
+// interpretation (claim-before-free is an application smell). The divergence is
+// documented (models.md / errors/UNIQUE_VIOLATION.md / OpenAPI), not reconciled:
+// the buffered engines cannot replicate insert-time ordering without abandoning
+// commit-time validation.
+func TestUniqueClaims_SameTxReclaimBeforeDelete_RejectedAtInsert(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	baseCtx := ctxWithTenant("uc-tenant")
+	store, err := factory.EntityStore(baseCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+
+	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
+		t.Fatalf("pre-save A: %v", err)
+	}
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	// SAVE-FIRST: claim V on B before freeing it on A. Postgres enforces inline,
+	// so this fails AT THE SAVE (A still holds V) — not deferred to commit.
+	_, errSave := store.Save(spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("b", "shared@x.com"))
+	if !errors.Is(errSave, spi.ErrUniqueViolation) {
+		t.Fatalf("postgres save-before-delete: expected ErrUniqueViolation at Save, got %v", errSave)
+	}
+	_ = tm.Rollback(txCtx, txID)
+}

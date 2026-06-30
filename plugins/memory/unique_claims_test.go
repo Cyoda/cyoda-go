@@ -403,3 +403,42 @@ func TestUniqueClaims_ConcurrentWinnerLoser(t *testing.T) {
 		t.Errorf("expected exactly 1 winner and 1 ErrUniqueViolation, got %d wins %d violations", wins, violations)
 	}
 }
+
+// TestUniqueClaims_SameTxReclaimBeforeDelete_AcceptedAtCommit documents the
+// save-first (claim-before-free) ordering: creating B with value V BEFORE
+// deleting A (which holds V), in one tx. memory (like sqlite) validates the NET
+// claim state at commit and cannot distinguish save-first from delete-first —
+// both commit successfully. Postgres enforces inline and REJECTS this ordering
+// (see plugins/postgres). The divergence on this discouraged "claim-before-free"
+// wiring is documented (models.md / errors/UNIQUE_VIOLATION.md / OpenAPI).
+func TestUniqueClaims_SameTxReclaimBeforeDelete_AcceptedAtCommit(t *testing.T) {
+	factory, store := setupUCFactory(t)
+	baseCtx := ctxWithTenant("uc-tenant")
+	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
+
+	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
+		t.Fatalf("pre-save A: %v", err)
+	}
+	tm, err := factory.TransactionManager(baseCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	// SAVE-FIRST: claim V on B before freeing it on A. Buffered → no error here.
+	if _, err := store.Save(spi.WithUniqueKeys(txCtx, ucEmailKeys()), ucEntity("b", "shared@x.com")); err != nil {
+		t.Fatalf("buffered Save-before-Delete must not error at Save time: %v", err)
+	}
+	if err := store.Delete(txCtx, "a"); err != nil {
+		t.Fatalf("tx Delete a: %v", err)
+	}
+	// Commit succeeds: net state at commit is "A gone, B holds V" — order-blind.
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("buffered same-tx reclaim-before-delete: expected commit success, got %v", err)
+	}
+	if _, err := store.Save(ctx, ucEntity("c", "shared@x.com")); !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
+	}
+}

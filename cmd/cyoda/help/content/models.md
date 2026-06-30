@@ -153,6 +153,8 @@ Returns `200 OK` with `EntityModelActionResultDto` on success.
 - `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
 - `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.
 
+**Transactional ordering — freeing and reclaiming a value.** A unique-key value is freed when the entity holding it is deleted, or updated so its key field changes. When a single transaction both frees a value and claims it on another entity — e.g. an automated workflow whose processors delete and create/update entities in one transaction — **free the value before claiming it**: delete or update the holder, then create or update the claimant. Free-then-claim succeeds on every storage backend. The reverse order — claiming a value while its current holder is still live in the same transaction — is **rejected** by backends that enforce uniqueness at write time (PostgreSQL) and **accepted** by backends that validate at commit (the in-memory and SQLite engines). For backend-portable behavior always free before claiming; claim-before-free is a workflow-wiring smell.
+
 **GET /api/model/{entityName}/{modelVersion}/workflow/export**
 
 Export all workflow configurations for the model. Returns `404 WORKFLOW_NOT_FOUND` if no workflows exist.
