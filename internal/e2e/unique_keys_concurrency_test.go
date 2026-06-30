@@ -80,6 +80,10 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 	results := make([]result, 2)
 	var wg sync.WaitGroup
 
+	// Start barrier: both goroutines block here until released so they are
+	// guaranteed to be in-flight concurrently, not rapid-sequential.
+	ready := make(chan struct{})
+
 	for i := 0; i < 2; i++ {
 		i := i
 		wg.Add(1)
@@ -98,6 +102,10 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("Content-Type", "application/json")
 
+			// Block until the barrier is released so both goroutines reach the
+			// HTTP call at the same time, guaranteeing true concurrency.
+			<-ready
+
 			// Do NOT use doAuth: it auto-retries retryable 409s, which would
 			// mask whether the server returns UNIQUE_VIOLATION or a retryable
 			// CONFLICT. We observe the raw first response.
@@ -111,6 +119,8 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 			results[i] = result{status: resp.StatusCode, body: string(raw)}
 		}()
 	}
+	// Release both goroutines simultaneously now that both are blocked on ready.
+	close(ready)
 	wg.Wait()
 
 	// --- Consistency assertions (not tied to which goroutine wins) ---
@@ -161,8 +171,21 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 	if err := json.Unmarshal([]byte(listBody), &entities); err != nil {
 		t.Fatalf("list entities: parse error: %v\nbody: %s", err, listBody)
 	}
-	if len(entities) != 1 {
-		t.Errorf("expected exactly 1 live entity (no torn write), got %d\nentities: %v",
-			len(entities), entities)
+
+	// Count only entities whose email field equals the contested value.
+	// The list response shape is [{type, data:{email,...}, meta},...].
+	// importModelWithSample is schema-only and creates no seed entities, but
+	// filtering by the contested key is more robust against future test-setup
+	// changes.
+	contestedCount := 0
+	for _, e := range entities {
+		data, _ := e["data"].(map[string]any)
+		if emailVal, _ := data["email"].(string); emailVal == sharedEmail {
+			contestedCount++
+		}
+	}
+	if contestedCount != 1 {
+		t.Errorf("expected exactly 1 live entity with email %q (no torn write), got %d\nentities: %v",
+			sharedEmail, contestedCount, entities)
 	}
 }
