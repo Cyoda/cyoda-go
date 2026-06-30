@@ -9,7 +9,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Composite unique keys** — entity models can declare one or more composite unique keys via
   `PUT /model/{entityName}/{modelVersion}/unique-keys` (UNLOCKED models only). Each key is an
   ordered set of scalar field paths; uniqueness is scoped to `(tenant, model, version)` live
-  entities. All-or-nothing null rule: all fields absent ⇒ exempt; partial ⇒
+  entities. All-or-nothing null rule: all fields null or absent ⇒ exempt; partial ⇒
   `422 INVALID_UNIQUE_KEY`; all present ⇒ enforced on create and update. String comparison is
   byte-exact (case-sensitive, no normalization). Soft-delete frees the value-set.
   Supported by memory, sqlite, and postgres; the commercial backend returns

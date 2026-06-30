@@ -182,7 +182,7 @@ This call is idempotent — it replaces the model's entire key list. The keys ar
 - **Null rule (all-or-nothing):** if all fields in a key are absent or null, the entity is exempt. If some but not all fields are present, the write is rejected with `422 INVALID_UNIQUE_KEY`. If all fields are present, uniqueness is enforced.
 - **String comparison is byte-exact:** case-sensitive, no Unicode normalization, no whitespace trimming — the bytes the application wrote are what is compared. Applications that want case-insensitive matching must normalize before writing.
 - **Enforced on create and update.** Moving a key value to a free slot is allowed; moving it to a slot already taken by another entity returns `409 UNIQUE_VIOLATION`.
-- **Supported backends:** memory, sqlite, postgres. The commercial (Cassandra) backend returns `422 COMPOSITE_KEY_UNSUPPORTED` until its own support lands.
+- **Supported backends:** memory, sqlite, postgres. The commercial backend returns `422 COMPOSITE_KEY_UNSUPPORTED` until its own support lands.
 
 **Multi-node note:** see the `cluster` help topic — *Composite unique key staleness* — for a bounded operational limitation when changing a key on a live multi-node postgres deployment.
 
