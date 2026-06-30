@@ -727,10 +727,16 @@ In `app/config.go` add to `Config`:
 	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
 	SearchMaxSortKeys int
 ```
-In `DefaultConfig()` (near `statsGroupMax := envInt(...)`):
+In `DefaultConfig()` (near `statsGroupMax := envInt(...)`), with a `<=0`
+re-default guard (mirroring `statsGroupMax` at `app/config.go:163-165`, since
+`envInt` has none) — a `0` cap would otherwise 400 every sorted request:
 ```go
-		SearchMaxSortKeys: envInt("CYODA_SEARCH_MAX_SORT_KEYS", 16),
+	maxSortKeys := envInt("CYODA_SEARCH_MAX_SORT_KEYS", 16)
+	if maxSortKeys <= 0 {
+		maxSortKeys = 16
+	}
 ```
+and set `SearchMaxSortKeys: maxSortKeys` in the returned `Config`.
 In `internal/domain/search/handler.go`, thread the value:
 ```go
 func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory, maxSortKeys int) *Handler {
@@ -819,7 +825,12 @@ In `handler.go` sync path, after building `opts` and before `h.searchSvc.Search`
 		opts.OrderBy = keys
 	}
 ```
-Do the same in the async submit path. Confirm the error-code constant name via `grep -rn "InvalidFieldPath\|INVALID_FIELD_PATH" internal/domain/common/`; use that constant.
+Do the same in the async submit path. The error-code constant is
+`common.ErrCodeInvalidFieldPath` (`= "INVALID_FIELD_PATH"`) in
+`internal/common/error_codes.go:28` — the same `common` package the handler
+already imports for `ErrCodeBadRequest`. (Semantic resolution — unknown field,
+array, meta allowlist — runs in the service/`SubmitAsync`, Task 8; the handler
+just forwards the classified `*common.AppError`.)
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -1090,19 +1101,25 @@ func timeResult(t time.Time) (gjson.Result, bool) {
 	if t.IsZero() {
 		return gjson.Result{}, false
 	}
-	// RFC3339Nano string is monotonic with the instant for equal precision;
-	// the comparator uses cmpTime via a parallel path, so carry the unix nanos
-	// in the Num field for OrderTemporal.
-	return gjson.Result{Type: gjson.Number, Num: float64(t.UnixNano())}, true
+	// Canonical temporal resolution is MILLISECONDS (the coarsest floor common
+	// to every parity backend, incl. commercial Cassandra/HLC). Carry epoch-ms
+	// in Num; UnixMilli (~1.75e12) is exact in float64 (< 2^53). Never carry
+	// UnixNano — it exceeds 2^53 and loses precision. The SQL backends floor to
+	// ms too (Tasks 10/11), so all paths tie within the same millisecond.
+	return gjson.Result{Type: gjson.Number, Num: float64(t.UnixMilli())}, true
 }
 
 func cmpFloat(a, b float64) int { switch { case a < b: return -1; case a > b: return 1; default: return 0 } }
 func cmpBool(a, b bool) int { switch { case !a && b: return -1; case a && !b: return 1; default: return 0 } }
 ```
-`OrderTemporal` meta values are carried as unix-nanos in `gjson.Result.Num` (see
-`timeResult`), so `compareValues` compares them via `cmpFloat(av.Num, bv.Num)` —
-already wired above. Float64 has ample precision for nanosecond instants within
-the supported time range; note this in a comment on `timeResult`.
+`OrderTemporal` meta values are carried as epoch-**milliseconds** in
+`gjson.Result.Num` (see `timeResult`), so `compareValues` compares them via
+`cmpFloat(av.Num, bv.Num)` — already wired above. Epoch-ms is exact in float64
+(< 2^53); epoch-nanos would not be. The `TestSortEntities_MetaCreationDateAndTiebreaker`
+test must seed instants that differ by **whole milliseconds** (e.g. `t0`, `t1`
+one second apart) so it exercises the canonical comparison, and a separate
+assertion should confirm two sub-millisecond-apart instants tie (→ entity_id
+tiebreaker).
 
 - [ ] **Step 4: Apply in the fallback path**
 
@@ -1137,7 +1154,14 @@ git commit -m "feat(search): in-memory canonical sort for memory backend and fal
 
 - [ ] **Step 1: Write the failing tests**
 
-In `plugins/sqlite/searcher_test.go` (use the existing sqlite test harness pattern in that file — open an in-memory store, insert entities, Search with OrderBy, assert id order). Cover: numeric data field (9,10,100 ⇒ numeric not lexical), text data field, `creationDate` meta (chronological), `state` meta, multi-key + tiebreaker, NULLS LAST, point-in-time sort. Example:
+In `plugins/sqlite/searcher_test.go` (use the existing sqlite test harness
+pattern — open an in-memory store, insert entities, Search with OrderBy, assert
+id order). Cover: numeric data field (9,10,100 ⇒ numeric not lexical), text data
+field, `creationDate` meta (chronological, instants ≥1 ms apart), `state` meta,
+multi-key + tiebreaker, NULLS LAST, point-in-time sort. The existing
+SQL-injection order test lives in `plugins/sqlite/search_injection_test.go`
+(grammar validation, unchanged) — leave it and add the new ordering tests in
+`searcher_test.go`. Example:
 ```go
 func TestSearcher_OrderByNumericData(t *testing.T) {
 	// insert {n:9}=a, {n:10}=b, {n:100}=c
@@ -1155,20 +1179,17 @@ Expected: FAIL (lexical order, or wrong meta resolution).
 
 - [ ] **Step 3: Implement**
 
-Rewrite `orderByFieldExpr` to be Kind-aware and map meta canonical names. Add a `metaPhysical` map (canonical→physical), and wrap the extracted expression per Kind:
+Rewrite `orderByFieldExpr` to be Kind-aware and map meta canonical names. The
+meta blob key for each canonical name (`id` is the `entity_id` column):
 ```go
-// metaPhysical maps canonical meta sort names to this backend's storage.
-// Temporal fields resolve to the numeric-micros blob value; others to their
-// blob key or a direct column.
-var metaPhysical = map[string]struct {
-	expr func(qualify func(string) string) string
-}{
-	"state":                   {func(q func(string) string) string { return jsonExtract(q("meta"), "state") }},
-	"creationDate":            {func(q func(string) string) string { return jsonExtract(q("meta"), "creation_date") }},
-	"lastUpdateTime":          {func(q func(string) string) string { return jsonExtract(q("meta"), "last_modified_date") }},
-	"transitionForLatestSave": {func(q func(string) string) string { return jsonExtract(q("meta"), "transition_for_latest_save") }},
-	"transactionId":           {func(q func(string) string) string { return jsonExtract(q("meta"), "transaction_id") }},
-	"id":                      {func(q func(string) string) string { return q("entity_id") }},
+// metaBlobKey maps canonical meta sort names to this backend's blob key.
+// "id" is special-cased to the entity_id column.
+var metaBlobKey = map[string]string{
+	"state":                   "state",
+	"creationDate":            "creation_date",
+	"lastUpdateTime":          "last_modified_date",
+	"transitionForLatestSave": "transition_for_latest_save",
+	"transactionId":           "transaction_id",
 }
 
 func jsonExtract(col, key string) string { return fmt.Sprintf("json_extract(json(%s), '$.%s')", col, key) }
@@ -1181,14 +1202,25 @@ func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
 		return col
 	}
 	var base string
-	if spec.Source == spi.SourceMeta {
-		base = metaPhysical[spec.Path].expr(qualify) // spec.Path is allowlisted upstream
-	} else {
+	switch {
+	case spec.Source == spi.SourceMeta && spec.Path == "id":
+		base = qualify("entity_id")
+	case spec.Source == spi.SourceMeta:
+		// spec.Path is guaranteed canonical by validateOrderSpecs; the ok-guard
+		// is defense-in-depth (no nil/empty interpolation).
+		key, ok := metaBlobKey[spec.Path]
+		if !ok {
+			key = spec.Path
+		}
+		base = jsonExtract(qualify("meta"), key)
+	default:
 		base = fmt.Sprintf("json_extract(%s, '$.%s')", qualify("data"), spec.Path)
 	}
 	switch spec.Kind {
-	case spi.OrderNumeric, spi.OrderTemporal:
+	case spi.OrderNumeric:
 		return "CAST(" + base + " AS REAL)"
+	case spi.OrderTemporal:
+		return "(" + base + ") / 1000" // blob stores microseconds; floor to ms (int division)
 	case spi.OrderBool:
 		return base // json_extract yields 0/1
 	default: // OrderText
@@ -1196,6 +1228,10 @@ func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
 	}
 }
 ```
+Extend `validateOrderSpecs` (in `plugins/sqlite/path_validation.go`) to reject a
+`Source=meta` path that is neither `id` nor a `metaBlobKey` key (returns the
+existing invalid-path error) — closing the unmapped-meta hole at the boundary,
+before any SQL is built.
 Update `orderByClause` to add `NULLS LAST` to every key, append the `entity_id` tiebreaker, and skip it when the terminal key is `@id`:
 ```go
 func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
@@ -1248,7 +1284,15 @@ git commit -m "feat(sqlite): Kind-aware ORDER BY, canonical meta mapping, NULLS 
 
 - [ ] **Step 1: Write the failing tests**
 
-Extend `plugins/postgres/searcher_test.go` with the same scenarios as Task 10 (numeric-not-lexical, creationDate chronological, state, multi-key+tiebreaker, NULLS LAST, PIT). These require the postgres testcontainer (Docker).
+Extend `plugins/postgres/searcher_test.go` with the same scenarios as Task 10
+(numeric-not-lexical, creationDate chronological with instants ≥1 ms apart,
+state, multi-key+tiebreaker, NULLS LAST, PIT). **Also migrate the existing
+`TestPGSearcher_OrderByMetaDirectColumn`** (`searcher_test.go:271`, uses
+`Path:"entity_id", Source:SourceMeta`) to the canonical name `Path:"id"`, and set
+`Kind` on the existing `TestPGSearcher_OrderByDataPath*` tests (e.g. `OrderText`
+for a string field, `OrderNumeric` for a numeric one) since they predate `Kind`
+(zero value `OrderText` now means `COLLATE "C"`). These require the postgres
+testcontainer (Docker).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1258,13 +1302,15 @@ Expected: FAIL (TEXT lexical numeric order; meta name mismatch).
 - [ ] **Step 3: Implement**
 
 ```go
-var metaPhysical = map[string]string{
+// metaJSONKey maps canonical meta sort names to this backend's _meta JSONB key.
+// Note postgres uses "transition" where sqlite uses "transition_for_latest_save".
+// "id" is special-cased to the entity_id column.
+var metaJSONKey = map[string]string{
 	"state":                   "state",
 	"creationDate":            "creation_date",
 	"lastUpdateTime":          "last_modified_date",
 	"transitionForLatestSave": "transition",
 	"transactionId":           "transaction_id",
-	// "id" handled specially → entity_id column
 }
 
 func orderByFieldExpr(spec spi.OrderSpec) string {
@@ -1273,15 +1319,24 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 	case spec.Source == spi.SourceMeta && spec.Path == "id":
 		base = "entity_id"
 	case spec.Source == spi.SourceMeta:
-		base = jsonbExtractText("doc->'_meta'", metaPhysical[spec.Path])
+		key, ok := metaJSONKey[spec.Path] // canonical-guaranteed by validateOrderSpecs
+		if !ok {
+			key = spec.Path
+		}
+		base = jsonbExtractText("doc->'_meta'", key)
 	default:
 		base = jsonbExtractText("doc", spec.Path)
 	}
 	switch spec.Kind {
 	case spi.OrderNumeric:
-		return "(" + base + ")::double precision"
+		// cyoda_try_float8 returns NULL on non-numeric text (→ NULLS LAST),
+		// matching sqlite's lenient CAST; a raw ::double precision cast would
+		// error the whole query. (Helper already used in query_planner.go.)
+		return "cyoda_try_float8(" + base + ")"
 	case spi.OrderTemporal:
-		return "(" + base + ")::timestamptz"
+		// _meta value is RFC3339 text; floor the instant to epoch-milliseconds
+		// (the canonical resolution) for cross-backend agreement.
+		return "floor(extract(epoch from (" + base + ")::timestamptz)*1000)"
 	case spi.OrderBool:
 		return "(" + base + ")::boolean"
 	default: // OrderText
@@ -1289,7 +1344,10 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 	}
 }
 ```
-Update `orderByClause` exactly as sqlite (Task 10): `NULLS LAST` per key + `entity_id` tiebreaker, skipped when the terminal key is `@id`.
+Update `orderByClause` exactly as sqlite (Task 10): `NULLS LAST` per key +
+`entity_id` tiebreaker, skipped when the terminal key is `@id`. Extend
+`validateOrderSpecs` (`plugins/postgres/path_validation.go`) to reject a
+`Source=meta` path that is neither `id` nor a `metaJSONKey` key.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1305,44 +1363,67 @@ git commit -m "feat(postgres): Kind-aware ORDER BY casts, canonical meta mapping
 
 ---
 
-### Task 12: Async — serialize OrderBy so self-executing stores keep the sort
+### Task 12: Async — resolve sort keys at submit; persist typed OrderSpecs
+
+The async submit must (a) return `400 INVALID_FIELD_PATH` synchronously for bad
+sort fields (not a silently-FAILED background job), and (b) persist the
+**resolved, `Kind`-bearing** specs so a `SelfExecutingSearchStore` (commercial
+backend) — which executes from the persisted opts and never runs the domain
+resolver — orders with the correct classes.
 
 **Files:**
-- Modify: `internal/domain/search/service.go` (`SubmitAsync` opts struct ~209-217; and wherever persisted `SearchOpts` JSON is decoded for execution)
+- Modify: `internal/domain/search/service.go` (`SubmitAsync` ~190-217 and the persisted `SearchOpts` decode site)
 - Test: `internal/domain/search/service_test.go`
 
 **Interfaces:**
-- Consumes: `SearchOptions.OrderBy`.
-- Produces: `OrderBy` persisted in the job's `SearchOpts` JSON and reloaded on execution.
+- Consumes: `resolveSortKeys` (Task 8), `SearchOptions.OrderBy`, `spi.OrderSpec`.
+- Produces: resolved `[]spi.OrderSpec` persisted in the job's `SearchOpts` JSON and reloaded on execution; a 400-classified error returned from `SubmitAsync` on bad keys.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Add a test that marshals the async opts and asserts the JSON contains the order keys; and that decoding round-trips them. If a `SelfExecutingSearchStore` fake exists in tests, assert it receives the `OrderBy`. Otherwise assert the serialized struct includes `orderBy`.
+In `service_test.go`: (a) `SubmitAsync` with an unknown sort field returns an
+error that `errors.As` to `*common.AppError` with code `INVALID_FIELD_PATH`
+(before any job is created); (b) with valid keys, the persisted `SearchOpts`
+JSON unmarshals to `[]spi.OrderSpec` carrying the resolved `Kind` (e.g.
+`creationDate` ⇒ `OrderTemporal`); (c) if a `SelfExecutingSearchStore` fake is
+available, assert it is handed the typed specs.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/domain/search/ -run TestSubmitAsync_OrderBy -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Extend the anonymous opts struct in `SubmitAsync`:
+In `SubmitAsync`, after the existing synchronous `validateConditionPaths`
+(~`service.go:192`), resolve the sort keys synchronously and reuse the result:
+```go
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return "", oerr // 400 INVALID_FIELD_PATH, before CreateJob
+	}
+```
+Persist the **typed** specs (not raw keys):
 ```go
 	optsJSON, err := json.Marshal(struct {
-		Limit       int        `json:"limit"`
-		Offset      int        `json:"offset"`
-		PointInTime *time.Time `json:"pointInTime,omitempty"`
-		OrderBy     []OrderKey `json:"orderBy,omitempty"`
+		Limit       int             `json:"limit"`
+		Offset      int             `json:"offset"`
+		PointInTime *time.Time      `json:"pointInTime,omitempty"`
+		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
 	}{
 		Limit:       opts.Limit,
 		Offset:      opts.Offset,
 		PointInTime: opts.PointInTime,
-		OrderBy:     opts.OrderBy,
+		OrderBy:     orderBy,
 	})
 ```
-Find the decode site (grep `SearchOpts` unmarshal) and add `OrderBy []OrderKey` to that struct, populating `opts.OrderBy` before the search runs. (`OrderKey`'s `Source` is `spi.FieldSource` (a string) and serializes cleanly.) Confirm the in-process goroutine path still works (it re-runs `s.Search` with the live `opts`, which already carries `OrderBy`).
+Find the decode site (grep `SearchOpts` unmarshal in `service.go` and the
+self-executing/result executor) and add `OrderBy []spi.OrderSpec`, applying it as
+the already-resolved order (no re-resolution needed there). The in-process
+goroutine path is unaffected: it re-runs `s.Search` with the live `opts` whose
+`OrderBy []OrderKey` is re-resolved deterministically to the identical specs.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/domain/search/ -run TestSubmitAsync_OrderBy -v`
 Expected: PASS.
@@ -1351,7 +1432,7 @@ Expected: PASS.
 
 ```bash
 git add internal/domain/search/service.go internal/domain/search/service_test.go
-git commit -m "feat(search): persist OrderBy in async job opts for self-executing stores"
+git commit -m "feat(search): resolve sort keys at async submit; persist typed OrderSpecs"
 ```
 
 ---
@@ -1359,27 +1440,50 @@ git commit -m "feat(search): persist OrderBy in async job opts for self-executin
 ### Task 13: gRPC — `orderBy` on both search requests
 
 **Files:**
-- Modify: the CloudEvent request payload structs + `internal/grpc/search.go` (sync `handleEntitySearch*`/`DirectSearch` opts build ~148-150; async `handleSnapshotSearchRequest` ~325-330)
+- Modify (schema sources): `docs/cyoda/schema/search/EntitySearchRequest.json`, `docs/cyoda/schema/search/EntitySnapshotSearchRequest.json`
+- Regenerate: `api/grpc/events/types.go` (generated by go-jsonschema — `DO NOT EDIT`; never hand-edit)
+- Modify: `internal/grpc/search.go` (sync opts build ~148-150; async snapshot ~325-330)
 - Test: `internal/grpc/search_test.go`
 
 **Interfaces:**
-- Consumes: `SearchOptions.OrderBy`, `OrderKey`.
-- Produces: parsed `orderBy` array → `opts.OrderBy`; invalid sort → `InvalidArgument` envelope with code `INVALID_FIELD_PATH`.
+- Consumes: `SearchOptions.OrderBy`, `OrderKey`, the regenerated `events.EntitySearchRequestJson.OrderBy` / `events.EntitySnapshotSearchRequestJson.OrderBy`.
+- Produces: parsed `orderBy` array → `opts.OrderBy`; invalid sort → `InvalidArgument` envelope with code `INVALID_FIELD_PATH` on BOTH the direct and snapshot paths.
 
-- [ ] **Step 1: Locate the request payload struct**
+- [ ] **Step 1: Add `orderBy` to the JSON schema sources and regenerate**
 
-Run: `grep -rn "PointInTime\|Limit\b" internal/grpc/*.go | grep -i "req\." ` and find where `req` is decoded (`json.Unmarshal` of the CloudEvent payload into a typed struct). Add to that struct:
-```go
-	OrderBy []struct {
-		Path   string `json:"path"`
-		Source string `json:"source"`
-		Desc   bool   `json:"desc"`
-	} `json:"orderBy,omitempty"`
+`events.EntitySearchRequestJson`/`EntitySnapshotSearchRequestJson`
+(`api/grpc/events/types.go`) are generated and header-marked `DO NOT EDIT`. Add
+to BOTH `docs/cyoda/schema/search/EntitySearchRequest.json` and
+`EntitySnapshotSearchRequest.json` an optional `orderBy` array property:
+```json
+"orderBy": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "path":   { "type": "string" },
+      "source": { "type": "string", "enum": ["data", "meta"], "default": "data" },
+      "desc":   { "type": "boolean", "default": false }
+    },
+    "required": ["path"]
+  }
+}
 ```
+Regenerate the package (the project's codegen — check for a `//go:generate`
+go-jsonschema directive under `api/grpc/` and run `go generate ./api/grpc/...`).
+Confirm `events.EntitySearchRequestJson` and `EntitySnapshotSearchRequestJson`
+now expose an `OrderBy` slice field. Run `go test ./cmd/cyoda/... -run CloudEvents`
+to confirm the `cyoda help cloudevents json` surface picks it up.
 
 - [ ] **Step 2: Write the failing test**
 
-In `internal/grpc/search_test.go`, build a CloudEvent search request with `orderBy:[{"path":"surname","desc":true}]` against a model with `surname`, assert the envelope is `Success` and (via a recording fake searcher) that `opts.OrderBy` carries the key; and an `orderBy:[{"path":"nope"}]` yields `Error.Code == "INVALID_FIELD_PATH"`.
+In `internal/grpc/search_test.go`, build a direct search CloudEvent with
+`orderBy:[{"path":"surname","desc":true}]` against a model with `surname`, assert
+the envelope is `Success` and (via a recording fake searcher) that `opts.OrderBy`
+carries the key; an `orderBy:[{"path":"nope"}]` yields `Error.Code ==
+"INVALID_FIELD_PATH"`. Add the **same two assertions for the snapshot (async)
+request** — bad sort must 400 synchronously at submit (depends on Task 12), not
+produce a snapshot id.
 
 - [ ] **Step 3: Run test to verify it fails**
 
@@ -1388,17 +1492,23 @@ Expected: FAIL.
 
 - [ ] **Step 4: Implement the mapping**
 
-In both the sync and async handlers, after building `opts`:
+In both the sync and async handlers, after building `opts` (adapt field access
+to the generated types — go-jsonschema may emit `Source`/`Desc` as pointers for
+optional/defaulted fields; nil `Source` ⇒ data, nil `Desc` ⇒ false):
 ```go
 	for _, o := range req.OrderBy {
 		src := spi.SourceData
-		if o.Source == "meta" {
+		if o.Source != nil && *o.Source == "meta" {
 			src = spi.SourceMeta
 		}
-		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
+		desc := o.Desc != nil && *o.Desc
+		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: desc})
 	}
 ```
-Resolution/validation happens in `s.searchService` (Task 8), which returns the `INVALID_FIELD_PATH` AppError; ensure the gRPC error mapper surfaces its code in the envelope (follow the existing `snapshotSearchError`/`entityResponseError` pattern).
+Resolution/validation happens in `s.searchService` — `Search` for the direct
+path and `SubmitAsync` for the snapshot path (Tasks 8, 12) — which returns the
+`INVALID_FIELD_PATH` AppError; ensure both the `entityResponseError` and
+`snapshotSearchError` mappers surface its code in the envelope.
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -1428,6 +1538,11 @@ Add table-driven tests hitting `POST /search/direct/{model}/{v}?sort=...`:
 - happy: sort by a data string field asc/desc; by `@creationDate`; by `@state`; multi-key.
 - 400 `INVALID_FIELD_PATH`: unknown data field; array field; `@unknownMeta`; malformed token (`name:up`, `@`, empty); duplicate key; `>16` keys (use the default cap).
 - assert ordering of returned NDJSON entity ids for the happy cases; assert status + body `code` for the 400 cases.
+
+Also hit `POST /search/async/{model}/{v}?sort=...` (submit): a happy submit
+returns a snapshot id; an unknown data field / `@unknownMeta` returns
+**`400 INVALID_FIELD_PATH` synchronously** (not a snapshot id then a FAILED job) —
+this is the regression guard for the async synchronous-resolution fix (Task 12).
 
 - [ ] **Step 2: Run to verify (RED then GREEN as features already landed)**
 

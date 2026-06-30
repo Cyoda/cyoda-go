@@ -85,9 +85,14 @@ is today.
 
 ### 3.2 gRPC — structured `orderBy` array
 
-The CloudEvent search request payloads (`EntitySearchRequest`,
-`EntitySnapshotSearchRequest`, parsed in `internal/grpc/search.go`) gain an
-optional `orderBy` array of objects:
+The CloudEvent search request payloads gain an optional `orderBy` array of
+objects. The Go structs (`events.EntitySearchRequestJson`,
+`events.EntitySnapshotSearchRequestJson` in `api/grpc/events/types.go`) are
+**generated** (`DO NOT EDIT`) from JSON Schema sources
+`docs/cyoda/schema/search/{EntitySearchRequest,EntitySnapshotSearchRequest}.json`
+— so `orderBy` is added to **both schema sources and regenerated**, never
+hand-edited, and the CloudEvents schema surfaced by `cyoda help cloudevents json`
+updates with it:
 
 ```json
 "orderBy": [
@@ -116,23 +121,39 @@ the plugin and the in-memory comparator render it.
 
 | Kind | Applies to | sqlite `ORDER BY` expr | postgres `ORDER BY` expr | Go comparator |
 |------|-----------|------------------------|--------------------------|---------------|
-| **Numeric** | `IsNumeric` data types | `CAST(json_extract(<col>,'$.<p>') AS REAL)` | `(<extract>)::double precision` | compare as `float64` |
+| **Numeric** | `IsNumeric` data types | `CAST(json_extract(<col>,'$.<p>') AS REAL)` | `cyoda_try_float8(<extract>)` | compare as `float64` |
 | **Text** | `String`, `Character`, `UUIDType`, `TimeUUIDType`, **temporal data** types, meta `state`/`transitionForLatestSave`/`transactionId`/`id` | `json_extract(...) COLLATE BINARY` | `(<extract>) COLLATE "C"` | `bytes.Compare` |
 | **Bool** | `Boolean` | `json_extract(...)` (0/1) | `(<extract>)::boolean` | `false < true` |
-| **Temporal** | meta `creationDate`, `lastUpdateTime` (engine-normalized instants) | numeric micros (blob/column) | `(<extract>)::timestamptz` | compare `time.Time` |
+| **Temporal** | meta `creationDate`, `lastUpdateTime` (engine-normalized instants) | `creation_date µs / 1000` (int ms) | `floor(extract(epoch from (<extract>)::timestamptz)*1000)` (int ms) | `t.UnixMilli()` (int64) |
 
 Notes:
 - **Numeric canonical precision is IEEE-754 double.** Integers beyond 2^53 and
   high-precision decimals order by their double approximation. Documented limit;
-  it is the only representation all three backends render identically.
+  it is the only representation all three backends render identically. Postgres
+  uses the existing `cyoda_try_float8` helper (not a raw `::double precision`
+  cast) so a non-numeric value yields NULL (→ sorts last) instead of failing the
+  whole query — matching sqlite's lenient `CAST` and the Go comparator.
 - **Text canonical collation is byte order** (`BINARY` / `COLLATE "C"` /
   `bytes.Compare`). This is why locale collation is out of scope: byte order is
   the cross-backend canonical, not a missing feature.
+- **Temporal canonical resolution is MILLISECONDS.** All backends floor the
+  instant to whole milliseconds before comparing (int64 epoch-ms), because that
+  is the coarsest resolution common to every parity backend (the commercial
+  Cassandra/HLC backend; cf. the point-in-time canonicalization's ms cross-engine
+  floor). Without the floor, the in-memory comparator would distinguish
+  sub-millisecond instants that the SQL backends tie — a divergent total order.
+  `float64`-of-nanoseconds is explicitly NOT used (it cannot represent `UnixNano`
+  past 2^53). Two instants within the same millisecond tie and fall through to
+  the `entity_id` tiebreaker on every backend. The parity test seeds
+  sub-millisecond-apart instants to exercise the floor.
 - **Temporal is only ever an engine-controlled meta field.** Data temporal types
-  (`LocalDate`, …) are class **Text** (lexical on the normalized ISO string):
-  deterministic across backends, and chronological iff the stored value is
-  normalized ISO 8601 — documented, because sqlite cannot reliably cast arbitrary
-  ISO strings to instants the way postgres can, so casting would itself diverge.
+  (`LocalDate`, `LocalDateTime`, `LocalTime`, `ZonedDateTime`) are class **Text**
+  (lexical on the stored ISO string): deterministic across backends, and
+  chronological **only when** values are normalized ISO 8601. Note `ZonedDateTime`
+  is lexical on the *offset-bearing* string, so equal instants with different
+  offsets do not order chronologically — a documented limitation, not a bug
+  (sqlite cannot reliably cast arbitrary ISO strings to instants the way postgres
+  can, so casting would itself diverge).
 
 ### 4.2 NULL / missing placement
 
@@ -190,6 +211,14 @@ point-in-time queries (the PIT query projects different columns — §9 verifica
 item: do not map `creationDate` to a `created_at` row column that the PIT
 `entity_versions` projection lacks; use the meta value).
 
+The meta vocabulary at the plugin boundary is the **canonical client names**
+(this table's first column) — *not* the old physical names. The plugins'
+`validateOrderSpecs` is extended to **reject any `Source=meta` path outside this
+canonical set** (defense in depth: no unmapped-name panic, no broken empty SQL),
+and the existing meta-order tests migrate from physical names (e.g. `entity_id`,
+`state` blob key) to canonical (`id`, `state`). This is a deliberate, documented
+vocabulary change from the pre-existing verbatim behavior.
+
 ## 6. Domain plumbing
 
 ```
@@ -208,6 +237,13 @@ gRPC orderBy=[]obj ─┘
   negative-cache machinery in `path_validate.go` but with a **new scalar-leaf
   predicate** (the existing `isPathKnown` accepts object prefixes — correct for
   filters, wrong for sort).
+- **Sort keys resolve to typed `[]spi.OrderSpec` synchronously** — in `Search`
+  for the sync path and in `SubmitAsync` for the async path (mirroring the
+  synchronous `validateConditionPaths` at `service.go:192`). The async path
+  persists the **resolved, `Kind`-bearing** specs in the job opts (not the raw
+  pre-classification keys), so a `SelfExecutingSearchStore` (commercial backend)
+  executes with correct ordering classes and a bad sort field returns
+  `400 INVALID_FIELD_PATH` at submit — not a silently FAILED background job.
 
 ## 7. In-memory comparator (memory backend + fallback parity)
 
@@ -307,8 +343,9 @@ G=gRPC (`internal/grpc`).
 | NULL/missing placement (NULLS LAST) | ✓ | ✓ | ✓ | — |
 | pushdown vs in-memory-fallback agree (same backend, txn active) | ✓ | ✓ | — | — |
 | sort under point-in-time query | ✓ | ✓ | ✓ | — |
-| each 400 edge case (§9) | ✓ | ✓ (HTTP) | — | ✓ (gRPC env) |
-| async submit carries OrderBy (incl. self-executing store path) | ✓ | ✓ | ✓ | ✓ |
+| each 400 edge case (§9), sync AND async submit | ✓ | ✓ (HTTP sync+async) | — | ✓ (gRPC direct+snapshot) |
+| async submit returns 400 synchronously for bad sort (no FAILED job) | ✓ | ✓ | — | ✓ |
+| async submit persists typed OrderSpecs (self-executing store path) | ✓ | ✓ | ✓ | ✓ |
 | `data field named 'meta'` sorts as data (no `@` collision) | ✓ | ✓ | — | — |
 
 Concurrency: not applicable (read-only ordering); no parity-suite race test.
