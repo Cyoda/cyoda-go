@@ -546,6 +546,15 @@ func (m *transactionManager) CommittedLogLen() int {
 //
 // Tenant isolation: rejects callers whose UserContext tenant does not
 // match the transaction's tenant.
+//
+// NOTE: txUniqueKeys is intentionally not snapshotted here. Unique-key
+// DEFINITIONS are static per model (set once at model-lock time, never
+// mutated within a transaction), so a RollbackToSavepoint that reverts
+// the buffer cannot produce a situation where the keys for a re-saved
+// entity differ from the keys captured at the earlier Save call. The only
+// scenario that would require snapshotting — the same entity re-saved with
+// a different Fields set across a savepoint boundary — is not a supported
+// pattern. RollbackToSavepoint therefore also leaves txUniqueKeys untouched.
 func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()

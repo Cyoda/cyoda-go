@@ -11,23 +11,32 @@ import (
 // refreshes them in the unique_claims table within the caller's transaction.
 //
 // Flow:
-//  1. ComputeClaims derives one UniqueClaim per UniqueKey in context.
+//  1. Early-return if no unique keys are declared for this entity (optimization).
+//  2. ComputeClaims derives one UniqueClaim per UniqueKey in context.
 //     Returns ErrPartialUniqueKey if any key has a non-scalar or partially-
 //     populated value — propagated to the caller unchanged.
-//  2. DELETE the entity's existing claim rows (idempotent on first Save).
-//  3. INSERT one row per claim. The unique_claims_uq index enforces uniqueness;
-//     a duplicate INSERT arrives pre-wrapped as spi.ErrUniqueViolation via
-//     ctxQuerier / classifyError — no manual wrapping needed here.
+//  3. DELETE the entity's existing claim rows (always, when keys are declared).
+//     This frees the old value even when all key fields go null/absent on an
+//     update (the "all-null exempt" transition); skipping the DELETE here would
+//     leave an orphaned claim that blocks future entities from claiming that value.
+//  4. INSERT one row per claim (zero rows on all-null exempt). The
+//     unique_claims_uq index enforces uniqueness; a duplicate INSERT arrives
+//     pre-wrapped as spi.ErrUniqueViolation via ctxQuerier / classifyError —
+//     no manual wrapping needed here.
 //
 // Called at the end of Save (after the entity + version rows are written).
 func (s *entityStore) replaceClaims(ctx context.Context, e *spi.Entity) error {
-	claims, err := spi.ComputeClaims(spi.UniqueKeysFromContext(ctx), e.Data)
+	keys := spi.UniqueKeysFromContext(ctx)
+	if len(keys) == 0 {
+		return nil // no declared keys — no claim work (optimization)
+	}
+	claims, err := spi.ComputeClaims(keys, e.Data)
 	if err != nil {
 		return err // ErrPartialUniqueKey family — caller maps to 422
 	}
-	if len(claims) == 0 {
-		return nil // no keys declared — nothing to maintain
-	}
+	// ALWAYS delete-first when keys are declared: frees any old claim even
+	// when all key fields go null/absent on an update (all-null exempt).
+	// Then insert zero-or-more new claims.
 	tid := string(s.tenantID)
 	if _, err := s.q.Exec(ctx,
 		`DELETE FROM unique_claims WHERE tenant_id=$1 AND entity_id=$2`,

@@ -279,6 +279,7 @@ var allTests = []NamedTest{
 	{"UniqueKeys_AllNullExempt", RunUniqueKeys_AllNullExempt},
 	{"UniqueKeys_DeleteAllFreesValues", RunUniqueKeys_DeleteAllFreesValues},
 	{"UniqueKeys_MultipleKeys", RunUniqueKeys_MultipleKeys},
+	{"UniqueKeys_UpdateClearsAllKeyFields", RunUniqueKeys_UpdateClearsAllKeyFields},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend

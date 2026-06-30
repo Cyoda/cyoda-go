@@ -16,12 +16,13 @@ package parity
 //	postgres) support the feature and will run the assertions.
 //
 // Scenario list (spec §8.3 matrix):
-//  1. UniqueKeys_CreateDuplicate        — duplicate create → 409 UNIQUE_VIOLATION
-//  2. UniqueKeys_SoftDeleteFreesValue   — delete, then re-create same value → 201
-//  3. UniqueKeys_PartialKey             — some-but-not-all key fields present → 422 INVALID_UNIQUE_KEY
-//  4. UniqueKeys_AllNullExempt          — all key fields absent → both creates succeed (201)
-//  5. UniqueKeys_DeleteAllFreesValues   — DeleteAll, then re-create same values → 201
-//  6. UniqueKeys_MultipleKeys           — two independent keys, each enforced separately
+//  1. UniqueKeys_CreateDuplicate              — duplicate create → 409 UNIQUE_VIOLATION
+//  2. UniqueKeys_SoftDeleteFreesValue         — delete, then re-create same value → 201
+//  3. UniqueKeys_PartialKey                   — some-but-not-all key fields present → 422 INVALID_UNIQUE_KEY
+//  4. UniqueKeys_AllNullExempt                — all key fields absent → both creates succeed (201)
+//  5. UniqueKeys_DeleteAllFreesValues         — DeleteAll, then re-create same values → 201
+//  6. UniqueKeys_MultipleKeys                 — two independent keys, each enforced separately
+//  7. UniqueKeys_UpdateClearsAllKeyFields     — update clears all key fields → prior value reusable (B1 regression)
 //
 // What this suite does NOT cover:
 //   - Same-transaction delete+reclaim: backend-divergent, out of scope.
@@ -342,5 +343,49 @@ func RunUniqueKeys_MultipleKeys(t *testing.T, fixture BackendFixture) {
 	}
 	if status != http.StatusOK {
 		t.Fatalf("distinct values: expected 200, got %d: %s", status, string(raw))
+	}
+}
+
+// --- Scenario 7: update clears all key fields → prior value reusable ---
+
+// RunUniqueKeys_UpdateClearsAllKeyFields is the B1 regression scenario.
+// It verifies that when an entity is updated so that ALL declared key fields
+// become absent (the "all-null exempt" transition), the old claim is freed so
+// a DIFFERENT entity can claim the same value immediately.
+//
+// Without the B1 fix (delete-first gated on len(claims)==0 rather than
+// len(keys)==0), the update would leave an orphaned claim row and the
+// subsequent create would get a spurious 409 on postgres and sqlite, while
+// memory (which releases unconditionally) would succeed — cross-backend
+// divergence.
+func RunUniqueKeys_UpdateClearsAllKeyFields(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const model = "uk-upd-clr"
+	keysJSON := `{"uniqueKeys":[{"id":"name-key","fields":["$.name"]}]}`
+	setupUKModel(t, c, model, keysJSON)
+
+	// Create E1 with name="Alice" — claim written.
+	entityID, err := c.CreateEntity(t, model, 1, `{"name":"Alice","amount":100,"status":"draft"}`)
+	if err != nil {
+		t.Fatalf("create E1: %v", err)
+	}
+
+	// Update E1 so name is absent — all-null exempt, must NOT return 422.
+	// The key claim for "Alice" must be freed by this update.
+	if err := c.UpdateEntityData(t, entityID, `{"amount":999,"status":"updated"}`); err != nil {
+		t.Fatalf("all-null update of E1: expected success, got %v", err)
+	}
+
+	// Create E2 with the same name="Alice" — must succeed on ALL backends.
+	// On postgres/sqlite before the B1 fix this would return 409 because
+	// the old claim row for E1 was left orphaned.
+	status, raw, err := c.CreateEntityRaw(t, model, 1, `{"name":"Alice","amount":200,"status":"draft"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw transport error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("re-create after all-null update: expected 200, got %d: %s", status, string(raw))
 	}
 }

@@ -295,3 +295,43 @@ func TestUniqueClaims_ClassifyClaimError_Discrimination(t *testing.T) {
 		t.Errorf("classifyError: must NOT also be ErrUniqueViolation, got %v", entityResult)
 	}
 }
+
+// TestUniqueClaims_UpdateToAllNullFreesValue is the regression test for B1:
+// when an entity is updated so that ALL declared key fields go null/absent
+// (the "all-null exempt" case), the old claim row must be deleted.
+// A subsequent entity claiming the same value must succeed — not see a
+// spurious 409.
+func TestUniqueClaims_UpdateToAllNullFreesValue(t *testing.T) {
+	store, baseCtx, countClaims := setupUCStore(t)
+	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+
+	// e1 claims a@x.com.
+	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+		t.Fatalf("first Save: %v", err)
+	}
+	if n := countClaims(); n != 1 {
+		t.Fatalf("expected 1 claim after first Save, got %d", n)
+	}
+
+	// Update e1 so the email field is absent — all-null exempt.
+	// This must NOT be a 422 and must release the old claim.
+	nullEntity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:       "e1",
+			ModelRef: spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"},
+		},
+		Data: []byte(`{"status":"updated"}`), // no email field
+	}
+	if _, err := store.Save(ctx, nullEntity); err != nil {
+		t.Fatalf("all-null update: expected success, got %v", err)
+	}
+	// Old claim must be gone.
+	if n := countClaims(); n != 0 {
+		t.Errorf("expected 0 claim rows after all-null update, got %d", n)
+	}
+
+	// e2 must now be able to claim a@x.com (previously held by e1).
+	if _, err := store.Save(ctx, ucEntity("e2", "a@x.com")); err != nil {
+		t.Fatalf("Save e2 with freed value: %v", err)
+	}
+}
