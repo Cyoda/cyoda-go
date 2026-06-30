@@ -27,10 +27,13 @@ package parity
 //
 // What this suite does NOT cover:
 //   - Same-transaction delete+reclaim (delete A holding value V, create B
-//     wanting V, in one tx → commit succeeds). This is a STORE-LEVEL behaviour:
-//     no HTTP endpoint mixes a delete and a create in one transaction, so the
-//     parity suite cannot reach it. Covered identically on all three engines by
-//     TestUniqueClaims_SameTransactionDeleteAndReclaim in plugins/{memory,sqlite,postgres}.
+//     wanting V, in one tx → commit succeeds). Reachable in production via
+//     automated workflow traversal, where a processor/transition may delete and
+//     create entities within one engine transaction. Tested deterministically at
+//     the store level on all three engines by
+//     TestUniqueClaims_SameTransactionDeleteAndReclaim in plugins/{memory,sqlite,postgres}
+//     (a single plain HTTP call cannot stage a mixed delete+create, so it is not
+//     a parity HTTP scenario).
 //   - Concurrency/race tests: isolated single-backend (task 8.4).
 //   - COMPOSITE_KEY_UNSUPPORTED coverage: all in-repo backends support it;
 //     the negative case is covered by a unit test with a fake StoreFactory (task 8).

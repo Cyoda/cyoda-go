@@ -1,12 +1,9 @@
 # Cyoda-Go
 
 Lightweight, multi-node Go implementation of the Cyoda platform.
-cyoda-go **defines** the API and integration contract; Cyoda Cloud follows it
-(`docs/cloud-parity/`). cyoda-go's behaviour *is* the spec — a storage backend
-(memory/sqlite/postgres) diverging on the same contract is a bug to fix, not an
-"accepted divergence"; cross-backend parity tests only guard that consistency,
-they neither define behaviour nor equate to Cloud parity. OSS-only features
-Cloud lacks (e.g. composite keys) carry no Cloud-parity duty.
+A storage backend (memory/sqlite/postgres) diverging from the others on the same
+contract is a bug to fix, not an "accepted divergence"; cross-backend parity tests
+guard that consistency, they don't define behaviour.
 
 ## Development Gates
 
@@ -68,6 +65,12 @@ If the fix is structural, requires a design decision, or would significantly
 expand the change, **stop and surface the choice to the human** rather than
 silently leaving it broken. Recording a `TODO(...)` is the last resort, not
 the first response.
+
+### Gate 7: Cloud-parity — cyoda-go leads the contract
+cyoda-go **defines** the API and integration contract; Cyoda Cloud follows it.
+Any change to the integration contract (API shape, wire/error semantics, entity
+or workflow behaviour Cloud mirrors) must be reconciled with cyoda-cloud and the
+change logged in `docs/cloud-parity/` — one file per feature/behaviour, as shown there.
 
 ## External Storage Plugins
 
