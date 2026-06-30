@@ -238,3 +238,113 @@ func TestUniqueKeys_ProcessorOverBoundValue_422(t *testing.T) {
 	}
 	assertErrorCode(t, body, "INVALID_UNIQUE_KEY")
 }
+
+// TestUniqueKeys_ProcessorDeletesAndReclaims_SameTx proves the same-transaction
+// delete+reclaim works through the REAL reachable path. A SYNC processor runs
+// INSIDE the engine transaction (its ctx carries the tx-token, so a store call
+// joins that tx); it deletes entity A — freeing A's unique-key value — and
+// rewrites entity B's key onto that just-freed value, all committed atomically.
+// Must succeed (200): A's claim is released before B's claim is inserted, in one
+// tx. This is the production-reachable counterpart of
+// TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409, which is identical EXCEPT it
+// does not delete A and therefore 409s — so the delete is provably what frees the
+// value. Store-level equivalents live in plugins/{memory,sqlite,postgres}.
+func TestUniqueKeys_ProcessorDeletesAndReclaims_SameTx(t *testing.T) {
+	const model = "e2e-uk-proc-delete-reclaim"
+	const procName = "uk-delete-a-reclaim-b"
+
+	var aID string // A's id; set after A is created, read by the processor closure.
+
+	procSvc.RegisterProcessor(procName, func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
+		// ctx carries the engine transaction, so this Delete joins the SAME tx as
+		// B's pending update — releasing A's claim before B's claim is inserted.
+		store, err := testApp.StoreFactory().EntityStore(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.Delete(ctx, aID); err != nil {
+			return nil, err
+		}
+		var data map[string]any
+		if err := json.Unmarshal(entity.Data, &data); err != nil {
+			return nil, err
+		}
+		data["name"] = "shared" // B claims A's just-freed value
+		updated, err := json.Marshal(data)
+		if err != nil {
+			return nil, err
+		}
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
+	})
+	defer procSvc.Reset()
+
+	importModelWithSample(t, model, 1, ukSampleData)
+	keysJSON := `{"uniqueKeys":[{"id":"name-key","fields":["$.name"]}]}`
+	if status, body := setUniqueKeysE2E(t, model, 1, keysJSON); status != http.StatusOK {
+		t.Fatalf("setUniqueKeys: expected 200, got %d: %s", status, body)
+	}
+	lockModelE2E(t, model, 1)
+
+	// NONE -init(no proc)-> PENDING -reclaim(SYNC proc)-> DONE
+	wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "%s-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":    {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
+				"PENDING": {"transitions": [{"name": "reclaim", "next": "DONE", "manual": true,
+					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
+				}]},
+				"DONE":    {}
+			}
+		}]
+	}`, model, procName)
+	if status, body := importWorkflowE2E(t, model, 1, wf); status != http.StatusOK {
+		t.Fatalf("importWorkflow: expected 200, got %d: %s", status, body)
+	}
+
+	// Entity A claims "shared".
+	{
+		status, body := createEntityRaw(t, model, 1, `{"name":"shared","amount":1,"status":"draft"}`)
+		if status != http.StatusOK {
+			t.Fatalf("create A: expected 200, got %d: %s", status, body)
+		}
+		aID = extractEntityID(t, body)
+	}
+
+	// Entity B claims "b-orig".
+	status, body := createEntityRaw(t, model, 1, `{"name":"b-orig","amount":2,"status":"draft"}`)
+	if status != http.StatusOK {
+		t.Fatalf("create B: expected 200, got %d: %s", status, body)
+	}
+	bID := extractEntityID(t, body)
+
+	// If-Match PUT firing "reclaim": the SYNC processor deletes A (freeing
+	// "shared") and rewrites B's name to "shared", in ONE tx → must be 200, NOT 409.
+	ifMatch := getEntityTxID(t, bID)
+	path := fmt.Sprintf("/api/entity/JSON/%s/reclaim", bID)
+	req := authRequest(t, http.MethodPut, path, strings.NewReader(`{"name":"b-orig","amount":2,"status":"draft"}`))
+	req.Header.Set("If-Match", ifMatch)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("If-Match PUT reclaim failed: %v", err)
+	}
+	respBody := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("same-tx delete+reclaim: expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// A is gone (deleted in the same tx).
+	getA := doAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s", aID), "")
+	if getA.StatusCode != http.StatusNotFound {
+		t.Errorf("A after same-tx delete: expected 404, got %d: %s", getA.StatusCode, readBody(t, getA))
+	}
+
+	// B now holds "shared": a fresh create of "shared" collides → 409.
+	if st, body := createEntityRaw(t, model, 1, `{"name":"shared","amount":9,"status":"draft"}`); st != http.StatusConflict {
+		t.Errorf("reclaimed value must be enforced for B: expected 409, got %d: %s", st, body)
+	} else {
+		assertErrorCode(t, body, "UNIQUE_VIOLATION")
+	}
+}
