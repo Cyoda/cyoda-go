@@ -369,9 +369,6 @@ func TestUniqueKeys_UpdateMovesKey(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("create entity2: expected 200, got %d: %s", status, body)
 	}
-	entity2ID := extractEntityID(t, body)
-	_ = entity2ID
-
 	// Update entity1 to name="Bob" → collides with entity2 → 409 UNIQUE_VIOLATION.
 	status, body = updateEntityRaw(t, entity1ID, `{"name":"Bob","amount":10,"status":"updated"}`)
 	if status != http.StatusConflict {
@@ -506,10 +503,12 @@ func TestUniqueKeys_CollectionIntraBatchDuplicate(t *testing.T) {
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("list after rollback: expected 200, got %d: %s", listResp.StatusCode, listBody)
 	}
-	var page map[string]any
-	json.Unmarshal([]byte(listBody), &page)
-	if items, _ := page["items"].([]any); len(items) != 0 {
-		t.Errorf("expected 0 entities after rollback (no partial commit), got %d", len(items))
+	var entities []map[string]any
+	if err := json.Unmarshal([]byte(listBody), &entities); err != nil {
+		t.Fatalf("list after rollback: parse: %v; body: %s", err, listBody)
+	}
+	if len(entities) != 0 {
+		t.Errorf("expected 0 entities after rollback (no partial commit), got %d", len(entities))
 	}
 }
 
