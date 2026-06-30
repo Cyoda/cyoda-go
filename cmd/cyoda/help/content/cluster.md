@@ -61,6 +61,18 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - **Rolling restart.** Restart one node at a time, waiting for `/readyz` to report ready before moving on. Transactions in flight on the restarting node abort; clients retry.
 - **Network partitions.** A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. A node partitioned from PostgreSQL continues to pass `/readyz` (the current readiness check is a static initialization flag, not a live store probe — see `app/app.go ReadinessCheck`); individual requests fail at query time and the client retries. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
 
+## COMPOSITE UNIQUE KEY STALENESS
+
+Composite unique keys are part of the model descriptor. They inherit the descriptor's existing cross-cluster coherence: when a model is locked or unlocked, the node that performs the operation invalidates the local model cache and gossip-broadcasts `topicModelInvalidate` so every other node evicts and reloads the descriptor (keys included).
+
+**Changing a key on a live multi-node postgres deployment** requires a destructive teardown: unlock the model (requires zero live entities, so all entities must be deleted first), change the key definitions, then relock. This is an inherently disruptive operation. There is a bounded window during which a node that missed both the unlock and relock gossip messages may still enforce the **old** key set. Data written through that node in the window will carry claim rows under the old key IDs.
+
+**Operator guidance:** after changing a composite unique key on a multi-node deployment, pause writes and allow the cluster to settle for at least one cache-lease TTL before resuming. The cache TTL is the backstop that guarantees every node has reloaded the new descriptor.
+
+The proper fix — acknowledged model-cache invalidation where the relock waits for every online node to confirm eviction before completing — is tracked as [`Cyoda/cyoda-go#353`](https://github.com/cyoda/cyoda-go/issues/353) and is out of scope for v0.8.2.
+
+**Scope:** this limitation applies to multi-node postgres only. The memory and sqlite backends are single-process; their cache invalidation is synchronous.
+
 ## SEE ALSO
 
 - `config.database` — PostgreSQL is the only multi-node-capable backend

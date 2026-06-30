@@ -4,6 +4,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **Composite unique keys** — entity models can declare one or more composite unique keys via
+  `PUT /model/{entityName}/{modelVersion}/unique-keys` (UNLOCKED models only). Each key is an
+  ordered set of scalar field paths; uniqueness is scoped to `(tenant, model, version)` live
+  entities. All-or-nothing null rule: all fields absent ⇒ exempt; partial ⇒
+  `422 INVALID_UNIQUE_KEY`; all present ⇒ enforced on create and update. String comparison is
+  byte-exact (case-sensitive, no normalization). Soft-delete frees the value-set.
+  Supported by memory, sqlite, and postgres; the commercial backend returns
+  `422 COMPOSITE_KEY_UNSUPPORTED` until its own support lands.
+  New error codes: `UNIQUE_VIOLATION` (409), `INVALID_UNIQUE_KEY` (422),
+  `COMPOSITE_KEY_UNSUPPORTED` (422), `INVALID_UNIQUE_KEY_DEFINITION` (422).
+
 ### Changed
 
 - PostgreSQL search now pushes supported predicates into SQL (JSONB `->>`
