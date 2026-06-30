@@ -4364,11 +4364,11 @@ paths:
         - All declared fields must be scalar leaf fields in the model schema
 
 
-        Enforcement and transactional ordering:
+        Enforcement:
 
         - A duplicate value-set is rejected with 409 UNIQUE_VIOLATION (non-retryable).
 
-        - Within one transaction (e.g. an automated workflow that deletes and creates/updates entities), free a unique-key value before claiming it on another entity: delete or update the holder, then create or update the claimant. Free-then-claim succeeds on every backend. Claiming a value while its current holder is still live in the same transaction is rejected by write-time-enforcing backends (PostgreSQL) and accepted by commit-time backends (in-memory, SQLite); for portable behavior, free before claiming.
+        - In one transaction, free a unique-key value (delete/re-key the holder) before claiming it elsewhere. Free-then-claim is portable; claim-before-free is rejected on write-time backends (PostgreSQL), accepted on commit-time ones (in-memory, SQLite).
 
         \        "
       operationId: setEntityModelUniqueKeys
