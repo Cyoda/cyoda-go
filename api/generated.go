@@ -2693,6 +2693,11 @@ type RegisterTrustedKeyRequestDto struct {
 // RegisterTrustedKeyRequestDtoAudience defines model for RegisterTrustedKeyRequestDto.Audience.
 type RegisterTrustedKeyRequestDtoAudience string
 
+// SetUniqueKeysRequest defines model for SetUniqueKeysRequest.
+type SetUniqueKeysRequest struct {
+	UniqueKeys []UniqueKeyDto `json:"uniqueKeys"`
+}
+
 // SimpleConditionDto defines model for SimpleConditionDto.
 type SimpleConditionDto struct {
 	JsonPath     *string                         `json:"jsonPath,omitempty"`
@@ -3065,6 +3070,15 @@ type TrustedKeyResponseDto struct {
 
 // TrustedKeyResponseDtoAudience defines model for TrustedKeyResponseDto.Audience.
 type TrustedKeyResponseDtoAudience string
+
+// UniqueKeyDto A composite unique key definition over one or more scalar leaf fields.
+type UniqueKeyDto struct {
+	// Fields Ordered list of scalar leaf field paths.
+	Fields []string `json:"fields"`
+
+	// Id Unique identifier for this key definition.
+	Id string `json:"id"`
+}
 
 // UpdateOidcProviderRequestDto defines model for UpdateOidcProviderRequestDto.
 type UpdateOidcProviderRequestDto struct {
@@ -3820,6 +3834,9 @@ type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody
 
 // ValidateEntityModelJSONRequestBody defines body for ValidateEntityModel for application/json ContentType.
 type ValidateEntityModelJSONRequestBody = ValidateEntityModelJSONBody
+
+// SetEntityModelUniqueKeysJSONRequestBody defines body for SetEntityModelUniqueKeys for application/json ContentType.
+type SetEntityModelUniqueKeysJSONRequestBody = SetUniqueKeysRequest
 
 // ImportEntityModelWorkflowJSONRequestBody defines body for ImportEntityModelWorkflow for application/json ContentType.
 type ImportEntityModelWorkflowJSONRequestBody = WorkflowImportRequestDto
@@ -4942,6 +4959,9 @@ type ServerInterface interface {
 	// Lock Entity Model
 	// (PUT /model/{entityName}/{modelVersion}/lock)
 	LockEntityModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
+	// Set Entity Model Unique Keys
+	// (PUT /model/{entityName}/{modelVersion}/unique-keys)
+	SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
 	// Unlock Entity Model
 	// (PUT /model/{entityName}/{modelVersion}/unlock)
 	UnlockEntityModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
@@ -7228,6 +7248,47 @@ func (siw *ServerInterfaceWrapper) LockEntityModel(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// SetEntityModelUniqueKeys operation middleware
+func (siw *ServerInterfaceWrapper) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "entityName" -------------
+	var entityName string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityName", r.PathValue("entityName"), &entityName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityName", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "modelVersion" -------------
+	var modelVersion int32
+
+	err = runtime.BindStyledParameterWithOptions("simple", "modelVersion", r.PathValue("modelVersion"), &modelVersion, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int32"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "modelVersion", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetEntityModelUniqueKeys(w, r, entityName, modelVersion)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UnlockEntityModel operation middleware
 func (siw *ServerInterfaceWrapper) UnlockEntityModel(w http.ResponseWriter, r *http.Request) {
 
@@ -8383,6 +8444,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/model/{entityName}/{modelVersion}", wrapper.DeleteEntityModel)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}", wrapper.SetEntityModelChangeLevel)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/lock", wrapper.LockEntityModel)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/unique-keys", wrapper.SetEntityModelUniqueKeys)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/unlock", wrapper.UnlockEntityModel)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/workflow/export", wrapper.ExportEntityModelWorkflow)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/workflow/import", wrapper.ImportEntityModelWorkflow)

@@ -198,6 +198,25 @@ func modelDeleteError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 	return NewCloudEvent(EntityModelDeleteResponse, resp)
 }
 
+// modelSetUniqueKeysError builds a schema-valid set-unique-keys response error,
+// reusing the EntityModelTransitionResponse envelope.
+func modelSetUniqueKeysError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
+	code, msg, retryable := buildErrorFields(err)
+	resp := events.EntityModelTransitionResponseJson{
+		ID:       ceID,
+		Success:  false,
+		Warnings: ctxWarnings(ctx),
+		ModelID:  nilUUID,
+		State:    "",
+		Error: &events.EntityModelTransitionResponseJsonError{
+			Code:      code,
+			Message:   msg,
+			Retryable: retryable,
+		},
+	}
+	return NewCloudEvent(EntityModelSetUniqueKeysResponse, resp)
+}
+
 // modelGetAllError builds a schema-valid EntityModelGetAllResponse error.
 func modelGetAllError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
 	code, msg, retryable := buildErrorFields(err)

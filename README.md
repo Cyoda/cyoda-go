@@ -153,6 +153,39 @@ curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
 
 **Configuration:** see `cyoda help config.auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
 
+## Composite unique keys
+
+An entity model can declare one or more **composite unique keys** — each key is a set of scalar field paths that must be unique across all live entities of that model within a tenant.
+
+**Declaring keys** requires the model to be `UNLOCKED`:
+
+```
+PUT /api/model/{entityName}/{modelVersion}/unique-keys
+```
+
+Request body:
+
+```json
+{
+  "uniqueKeys": [
+    { "id": "by-email", "fields": ["$.email"] },
+    { "id": "by-org-and-handle", "fields": ["$.org", "$.handle"] }
+  ]
+}
+```
+
+This call is idempotent — it replaces the model's entire key list. The keys are validated immediately (field paths must be known scalar leaves in the inferred schema). After locking the model, no entity create or update can produce a duplicate value-set for any declared key.
+
+**Key semantics:**
+
+- **Scope:** per `(tenant, model name, model version)`, live entities only. Soft-deleting an entity frees its key value-set.
+- **Null rule (all-or-nothing):** if all fields in a key are absent or null, the entity is exempt. If some but not all fields are present, the write is rejected with `422 INVALID_UNIQUE_KEY`. If all fields are present, uniqueness is enforced.
+- **String comparison is byte-exact:** case-sensitive, no Unicode normalization, no whitespace trimming — the bytes the application wrote are what is compared. Applications that want case-insensitive matching must normalize before writing.
+- **Enforced on create and update.** Moving a key value to a free slot is allowed; moving it to a slot already taken by another entity returns `409 UNIQUE_VIOLATION`.
+- **Supported backends:** memory, sqlite, postgres. The commercial backend returns `422 COMPOSITE_KEY_UNSUPPORTED` until its own support lands.
+
+**Multi-node note:** see the `cluster` help topic — *Composite unique key staleness* — for a bounded operational limitation when changing a key on a live multi-node postgres deployment.
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.

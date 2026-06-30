@@ -260,6 +260,14 @@ func (s *Server) ValidateEntityModel(w http.ResponseWriter, r *http.Request, ent
 	s.Unimplemented.ValidateEntityModel(w, r, entityName, modelVersion)
 }
 
+func (s *Server) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+	if s.Model != nil {
+		s.Model.SetEntityModelUniqueKeys(w, r, entityName, modelVersion)
+		return
+	}
+	s.Unimplemented.SetEntityModelUniqueKeys(w, r, entityName, modelVersion)
+}
+
 // ---------------------------------------------------------------------------
 // Workflow delegation (2 methods)
 // ---------------------------------------------------------------------------

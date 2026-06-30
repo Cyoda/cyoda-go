@@ -39,7 +39,7 @@ type transactionManager struct {
 	factory  *StoreFactory
 	uuids    spi.UUIDGenerator
 	commitMu sync.Mutex // serializes the entire commit path for SI+FCW correctness
-	mu       sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints
+	mu       sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
 
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
@@ -47,6 +47,13 @@ type transactionManager struct {
 	submitTimes    map[string]time.Time
 	savepoints     map[string]map[string]savepointSnapshot
 	lastSubmitTime int64 // monotonic submit time in microseconds; written under commitMu, read under mu
+
+	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
+	// Keys are recorded when an entity is buffered so that flushToSQLite can
+	// apply the correct keys per entity even in a mixed-model batch where each
+	// Save may carry a different set of keys in its context.
+	// Protected by mu. Cleaned up after commit or rollback.
+	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 }
 
 // Verify interface compliance at compile time.
@@ -54,13 +61,34 @@ var _ spi.TransactionManager = (*transactionManager)(nil)
 
 func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *transactionManager {
 	return &transactionManager{
-		factory:     factory,
-		uuids:       uuids,
-		active:      make(map[string]*spi.TransactionState),
-		committing:  make(map[string]bool),
-		submitTimes: make(map[string]time.Time),
-		savepoints:  make(map[string]map[string]savepointSnapshot),
+		factory:      factory,
+		uuids:        uuids,
+		active:       make(map[string]*spi.TransactionState),
+		committing:   make(map[string]bool),
+		submitTimes:  make(map[string]time.Time),
+		savepoints:   make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys: make(map[string]map[string][]spi.UniqueKey),
 	}
+}
+
+// recordUniqueKeys stores the unique keys for entityID under txID so that
+// flushToSQLite can look them up per entity during commit. Last-write-wins,
+// matching the semantics of tx.Buffer. Protected by mu.
+func (m *transactionManager) recordUniqueKeys(txID, entityID string, keys []spi.UniqueKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.txUniqueKeys[txID] == nil {
+		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
+	}
+	m.txUniqueKeys[txID][entityID] = keys
+}
+
+// uniqueKeysFor retrieves the unique keys recorded for entityID under txID.
+// Returns nil if none were recorded. Protected by mu.
+func (m *transactionManager) uniqueKeysFor(txID, entityID string) []spi.UniqueKey {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.txUniqueKeys[txID][entityID]
 }
 
 // seedLastSubmitTime reads the maximum submit_time from entity_versions
@@ -237,8 +265,10 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.active, txID)
 			delete(m.committing, txID)
 			delete(m.savepoints, txID)
+			delete(m.txUniqueKeys, txID)
 		}()
-		// Classify SQLITE_BUSY as ErrConflict (retryable) before wrapping.
+		// ErrUniqueViolation from claim writes must not be re-classified —
+		// classifyError passes through non-sqlite errors unchanged.
 		return fmt.Errorf("flush to sqlite: %w", classifyError(err))
 	}
 
@@ -266,6 +296,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		delete(m.active, txID)
 		delete(m.committing, txID)
 		delete(m.savepoints, txID)
+		delete(m.txUniqueKeys, txID)
 		var oldest time.Time
 		for _, activeTx := range m.active {
 			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -373,6 +404,15 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		if err != nil {
 			return fmt.Errorf("insert version %s: %w", entityID, err)
 		}
+
+		// Maintain unique-key claims using keys captured at Save (buffer) time.
+		// Keys must not be read from ctx here: flushToSQLite runs once at Commit
+		// with a single context (the last committer's), which would be wrong for
+		// entities buffered with different key contexts in a mixed-model batch.
+		keys := m.uniqueKeysFor(tx.ID, entityID)
+		if err := replaceClaims(ctx, sqlTx, tid, entity, keys); err != nil {
+			return fmt.Errorf("replace claims %s: %w", entityID, err)
+		}
 	}
 
 	// Flush deletes.
@@ -408,6 +448,11 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			nextVersion, tx.ID, submitMicro)
 		if err != nil {
 			return fmt.Errorf("insert delete version %s: %w", entityID, err)
+		}
+
+		// Release unique-key claims so the freed values can be claimed immediately.
+		if err := releaseClaims(ctx, sqlTx, tid, entityID); err != nil {
+			return fmt.Errorf("release claims on delete %s: %w", entityID, err)
 		}
 	}
 
@@ -451,6 +496,7 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 		delete(m.active, txID)
 		delete(m.committing, txID)
 		delete(m.savepoints, txID)
+		delete(m.txUniqueKeys, txID)
 	}()
 	return nil
 }
@@ -500,6 +546,15 @@ func (m *transactionManager) CommittedLogLen() int {
 //
 // Tenant isolation: rejects callers whose UserContext tenant does not
 // match the transaction's tenant.
+//
+// NOTE: txUniqueKeys is intentionally not snapshotted here. Unique-key
+// DEFINITIONS are static per model (set once at model-lock time, never
+// mutated within a transaction), so a RollbackToSavepoint that reverts
+// the buffer cannot produce a situation where the keys for a re-saved
+// entity differ from the keys captured at the earlier Save call. The only
+// scenario that would require snapshotting — the same entity re-saved with
+// a different Fields set across a savepoint boundary — is not a supported
+// pattern. RollbackToSavepoint therefore also leaves txUniqueKeys untouched.
 func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()

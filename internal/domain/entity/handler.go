@@ -129,6 +129,23 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 		return fmt.Errorf("change level violation: %w", err)
 	}
 
+	// Guard: if any unique key field would become non-scalar in the extended
+	// schema, reject the write now. This catches the null-only-leaf → object/array
+	// widening case (a TYPE-level change permitted by Structural ChangeLevel)
+	// that would otherwise surface as an opaque Diff "kind change" 5xx. The
+	// unique keys were valid when declared; the schema extension must not
+	// silently invalidate them.
+	if len(desc.UniqueKeys) > 0 {
+		if vErr := schema.ValidateUniqueKeys(extended, desc.UniqueKeys); vErr != nil {
+			var de *schema.UniqueKeyDefError
+			if errors.As(vErr, &de) {
+				return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKeyDefinition,
+					"schema change would invalidate a composite unique key: "+de.Reason)
+			}
+			return fmt.Errorf("%w: re-validate unique keys: %w", errInternalSchema, vErr)
+		}
+	}
+
 	// Compute the additive delta. Diff returns (nil, nil) when the
 	// extension is a semantic no-op, which is the common case on
 	// every entity write.
@@ -252,6 +269,12 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 //   - anything else           → 4xx BAD_REQUEST (change-level violation,
 //     other validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
+	// Pass-through: validateOrExtend may return a *common.AppError directly
+	// for pre-classified operational errors (e.g. unique-key widening guard).
+	var preClassified *common.AppError
+	if errors.As(err, &preClassified) {
+		return preClassified
+	}
 	if errors.Is(err, schema.ErrPolymorphicSlot) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
 	}

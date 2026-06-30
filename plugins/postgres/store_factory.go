@@ -207,6 +207,9 @@ func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
 	f.setTransactionManager(tm)
 }
 
+// SupportsCompositeUniqueKeys advertises composite-unique-key enforcement.
+func (f *StoreFactory) SupportsCompositeUniqueKeys() bool { return true }
+
 // initTransactionManager is the in-package alias used by Plugin.NewFactory.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
 	f.InitTransactionManager(uuids)

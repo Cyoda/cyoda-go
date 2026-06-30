@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 163
+// Total parity scenarios: 164
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
@@ -268,6 +268,21 @@ var allTests = []NamedTest{
 	{"EntityPatchStrictRejectsUnknownField", RunEntityPatchStrictRejectsUnknownField},
 	// Cross-tenant isolation.
 	{"EntityPatchCrossTenantIsNotFound", RunEntityPatchCrossTenantIsNotFound},
+
+	// Composite unique keys — cross-backend parity matrix (spec §8.3).
+	// Capability gate in each scenario: SetUniqueKeysRaw on the unlocked model;
+	// if status==422+COMPOSITE_KEY_UNSUPPORTED → t.Skip (commercial backend
+	// safe skip). All three in-repo backends run all assertions.
+	{"UniqueKeys_CreateDuplicate", RunUniqueKeys_CreateDuplicate},
+	{"UniqueKeys_SoftDeleteFreesValue", RunUniqueKeys_SoftDeleteFreesValue},
+	{"UniqueKeys_PartialKey", RunUniqueKeys_PartialKey},
+	{"UniqueKeys_AllNullExempt", RunUniqueKeys_AllNullExempt},
+	{"UniqueKeys_DeleteAllFreesValues", RunUniqueKeys_DeleteAllFreesValues},
+	{"UniqueKeys_MultipleKeys", RunUniqueKeys_MultipleKeys},
+	{"UniqueKeys_UpdateClearsAllKeyFields", RunUniqueKeys_UpdateClearsAllKeyFields},
+	// Centerpiece: a processor rewrites the key field → enforcement is on the
+	// POST-MERGE value, not the input (two distinct inputs collide → 409).
+	{"UniqueKeys_ProcessorRewritesKeyField", RunUniqueKeys_ProcessorRewritesKeyField},
 
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend

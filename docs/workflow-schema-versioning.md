@@ -46,6 +46,10 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 - Bug-fixing a validator that was already supposed to reject something — i.e., the rejection was always documented and the validator was the bug. Add a test, ship the fix; no schema bump. (Borderline cases: if a validator was widely-relied-upon-via-its-absence, treat as a tightening release per §above.)
 - Internal refactoring of the engine, store, or audit shape. The wire contract is unchanged.
 
+### Model export surface — `uniqueKeys` field (v0.8.2)
+
+`GET /model/export/…` responses carry a top-level `uniqueKeys` array listing the model's declared composite unique keys. The field uses **omitempty** semantics — it is present only when the model declares at least one key; a model with no keys exports byte-identically to a pre-feature model (matching the descriptor storage DTOs, which also omit the empty case). This is a purely additive change to the **model export DTO** (`ExportModel`) — it is separate from `WorkflowConfigurationDto` and therefore does **not** trigger a workflow schema version bump per the rule above. No `CurrentSchemaVersion` change is required.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:

@@ -10,6 +10,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // refreshingModelStore is a ModelStore fake that:
@@ -337,6 +338,306 @@ func TestUnlockModel_AlreadyUnlocked_ReturnsModelAlreadyUnlocked(t *testing.T) {
 	if appErr.Code != common.ErrCodeModelAlreadyUnlocked {
 		t.Errorf("expected error code %q, got %q (message: %s)",
 			common.ErrCodeModelAlreadyUnlocked, appErr.Code, appErr.Message)
+	}
+}
+
+// capableStoreFactory wraps fakeStoreFactory and additionally implements
+// spi.CompositeUniqueKeyCapable. The supports field controls whether the
+// factory advertises composite-unique-key support.
+type capableStoreFactory struct {
+	fakeStoreFactory
+	supports bool
+}
+
+func (f *capableStoreFactory) SupportsCompositeUniqueKeys() bool { return f.supports }
+
+// mustBuildSchema builds and marshals a schema with two scalar leaf fields:
+//
+//	$.name (string) and $.age (integer)
+//
+// It is used by SetUniqueKeys tests that need a stored schema to validate keys against.
+func mustBuildSchema(t *testing.T) []byte {
+	t.Helper()
+	root := schema.NewObjectNode()
+	root.SetChild("name", schema.NewLeafNode(schema.String))
+	root.SetChild("age", schema.NewLeafNode(schema.Integer))
+	b, err := schema.Marshal(root)
+	if err != nil {
+		t.Fatalf("mustBuildSchema: marshal failed: %v", err)
+	}
+	return b
+}
+
+// TestSetUniqueKeys_UnsupportedBackend_Returns422 verifies that a factory
+// that does not implement spi.CompositeUniqueKeyCapable causes SetUniqueKeys
+// to return a 422 COMPOSITE_KEY_UNSUPPORTED error immediately without
+// touching the model store.
+func TestSetUniqueKeys_UnsupportedBackend_Returns422(t *testing.T) {
+	ms := &refreshingModelStore{}
+	// fakeStoreFactory does NOT implement CompositeUniqueKeyCapable.
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.name"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported backend, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 422 {
+		t.Errorf("expected HTTP 422, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeCompositeKeyUnsupported {
+		t.Errorf("expected code %q, got %q", common.ErrCodeCompositeKeyUnsupported, appErr.Code)
+	}
+}
+
+// TestSetUniqueKeys_ModelNotFound_Returns404 verifies that SetUniqueKeys
+// returns 404 MODEL_NOT_FOUND when the model store returns nil from
+// RefreshAndGet (the authoritative "no model" state).
+func TestSetUniqueKeys_ModelNotFound_Returns404(t *testing.T) {
+	ms := &refreshingModelStore{refreshDescriptor: nil}
+	h := model.New(&capableStoreFactory{
+		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
+		supports:         true,
+	})
+
+	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.name"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for not-found model, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 404 {
+		t.Errorf("expected HTTP 404, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeModelNotFound {
+		t.Errorf("expected code %q, got %q", common.ErrCodeModelNotFound, appErr.Code)
+	}
+}
+
+// TestSetUniqueKeys_LockedModel_Returns409 verifies that SetUniqueKeys
+// returns 409 MODEL_ALREADY_LOCKED when the model is in LOCKED state,
+// because unique-key definitions are only editable while the model is UNLOCKED.
+func TestSetUniqueKeys_LockedModel_Returns409(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	locked := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelLocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{refreshDescriptor: locked}
+	h := model.New(&capableStoreFactory{
+		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
+		supports:         true,
+	})
+
+	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.name"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for locked model, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 409 {
+		t.Errorf("expected HTTP 409, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeModelAlreadyLocked {
+		t.Errorf("expected code %q, got %q", common.ErrCodeModelAlreadyLocked, appErr.Code)
+	}
+}
+
+// TestSetUniqueKeys_UnknownField_Returns422_INVALID_UNIQUE_KEY_DEFINITION
+// verifies that referencing a field that does not exist as a scalar leaf in
+// the schema returns 422 INVALID_UNIQUE_KEY_DEFINITION.
+func TestSetUniqueKeys_UnknownField_Returns422_INVALID_UNIQUE_KEY_DEFINITION(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	unlocked := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelUnlocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{refreshDescriptor: unlocked}
+	h := model.New(&capableStoreFactory{
+		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
+		supports:         true,
+	})
+
+	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.nonexistent"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown field, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 422 {
+		t.Errorf("expected HTTP 422, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeInvalidUniqueKeyDefinition {
+		t.Errorf("expected code %q, got %q", common.ErrCodeInvalidUniqueKeyDefinition, appErr.Code)
+	}
+}
+
+// TestSetUniqueKeys_HappyPath_PersistsKeys verifies that SetUniqueKeys
+// saves the updated descriptor with the new UniqueKeys and returns a
+// ModelTransitionResult with the correct ModelID and State.
+func TestSetUniqueKeys_HappyPath_PersistsKeys(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	unlocked := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelUnlocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{refreshDescriptor: unlocked}
+	h := model.New(&capableStoreFactory{
+		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
+		supports:         true,
+	})
+
+	keys := []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.name", "$.age"}},
+	}
+	result, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", keys)
+	if err != nil {
+		t.Fatalf("SetUniqueKeys: unexpected error: %v", err)
+	}
+	if result == nil || result.ModelID == "" {
+		t.Fatal("expected non-empty ModelID in result")
+	}
+	if result.State != "UNLOCKED" {
+		t.Errorf("expected State=UNLOCKED, got %q", result.State)
+	}
+
+	saved := ms.Saved()
+	if saved == nil {
+		t.Fatal("expected ModelStore.Save to be called")
+	}
+	if len(saved.UniqueKeys) != 1 {
+		t.Fatalf("expected 1 UniqueKey persisted, got %d", len(saved.UniqueKeys))
+	}
+	if saved.UniqueKeys[0].ID != "uk1" {
+		t.Errorf("expected key ID %q, got %q", "uk1", saved.UniqueKeys[0].ID)
+	}
+}
+
+// TestImportModel_PreservesUniqueKeys_WhenReimporting verifies that when
+// an existing model already has UniqueKeys set, a re-import carries those
+// keys forward (analogous to how ChangeLevel is preserved).
+func TestImportModel_PreservesUniqueKeys_WhenReimporting(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	existingSchema := mustBuildSchema(t)
+	existing := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelUnlocked,
+		Schema: existingSchema,
+		UniqueKeys: []spi.UniqueKey{
+			{ID: "uk1", Fields: []string{"$.name"}},
+		},
+	}
+	ms := &refreshingModelStore{
+		getDescriptor:     existing,
+		refreshDescriptor: existing,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	// Re-import with a JSON sample that contains the same fields (no removal).
+	result, err := h.ImportModel(context.Background(), model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"name":"Alice","age":30}`),
+	})
+	if err != nil {
+		t.Fatalf("ImportModel: unexpected error on re-import: %v", err)
+	}
+	if result == nil || result.ModelID == "" {
+		t.Fatal("expected non-empty ModelID in result")
+	}
+
+	saved := ms.Saved()
+	if saved == nil {
+		t.Fatal("expected ModelStore.Save to be called")
+	}
+	if len(saved.UniqueKeys) != 1 {
+		t.Fatalf("expected 1 UniqueKey preserved, got %d", len(saved.UniqueKeys))
+	}
+	if saved.UniqueKeys[0].ID != "uk1" {
+		t.Errorf("expected key ID %q, got %q", "uk1", saved.UniqueKeys[0].ID)
+	}
+}
+
+// TestImportModel_KeyReferencesAbsentField_Rejected is a defensive guard test.
+// schema.Merge is strictly additive (every existing field is unconditionally
+// preserved), so a normal SetUniqueKeys + re-import sequence cannot produce a
+// descriptor whose key references a field absent from the schema. This test
+// exercises the re-validate branch to protect against out-of-band descriptor
+// corruption or future merge-semantics changes — it is not an API-reachable
+// "dropped field" scenario under current semantics.
+func TestImportModel_KeyReferencesAbsentField_Rejected(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+
+	// Build a schema with $.name field only.
+	nameOnly := schema.NewObjectNode()
+	nameOnly.SetChild("name", schema.NewLeafNode(schema.String))
+	nameOnlyBytes, err := schema.Marshal(nameOnly)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	// The existing model has a unique key on $.name and $.score, where $.score
+	// will be absent from the incoming sample data.
+	existing := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelUnlocked,
+		Schema: nameOnlyBytes,
+		UniqueKeys: []spi.UniqueKey{
+			{ID: "uk1", Fields: []string{"$.name", "$.score"}},
+		},
+	}
+	ms := &refreshingModelStore{
+		getDescriptor:     existing,
+		refreshDescriptor: existing,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	// The descriptor is pre-seeded with $.score in the key but NOT in the
+	// schema, simulating out-of-band corruption (additive merge cannot drop a
+	// field). Re-import must detect and reject this corrupted state.
+	_, err = h.ImportModel(context.Background(), model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"name":"Alice"}`),
+	})
+	if err == nil {
+		t.Fatal("expected error when re-import drops a key field, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 422 {
+		t.Errorf("expected HTTP 422, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeInvalidUniqueKeyDefinition {
+		t.Errorf("expected code %q, got %q", common.ErrCodeInvalidUniqueKeyDefinition, appErr.Code)
 	}
 }
 

@@ -12,6 +12,10 @@ see_also:
   - errors.MODEL_HAS_ENTITIES
   - errors.INVALID_CHANGE_LEVEL
   - errors.VALIDATION_FAILED
+  - errors.UNIQUE_VIOLATION
+  - errors.INVALID_UNIQUE_KEY
+  - errors.COMPOSITE_KEY_UNSUPPORTED
+  - errors.INVALID_UNIQUE_KEY_DEFINITION
   - openapi
 ---
 
@@ -32,6 +36,7 @@ DELETE /api/model/{entityName}/{modelVersion}
 POST   /api/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}
 PUT    /api/model/{entityName}/{modelVersion}/lock
 PUT    /api/model/{entityName}/{modelVersion}/unlock
+PUT    /api/model/{entityName}/{modelVersion}/unique-keys
 GET    /api/model/{entityName}/{modelVersion}/workflow/export
 POST   /api/model/{entityName}/{modelVersion}/workflow/import
 ```
@@ -120,6 +125,33 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 CONFLICT` if entities exist or model is not locked.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
+
+**PUT /api/model/{entityName}/{modelVersion}/unique-keys**
+
+Declare composite unique keys for a model. Allowed only while the model is `UNLOCKED`. This call is idempotent — it replaces the model's entire key list atomically.
+
+Request body (`application/json`):
+
+```json
+{
+  "uniqueKeys": [
+    { "id": "by-email", "fields": ["$.email"] },
+    { "id": "by-org-and-handle", "fields": ["$.org", "$.handle"] }
+  ]
+}
+```
+
+- `uniqueKeys` — array of key definitions; `[]` clears all keys.
+- `id` — stable string identifier, unique within the model.
+- `fields` — ordered array of scalar leaf field paths (dotted paths matching the model's inferred schema). Array, object, and wildcard paths are rejected.
+
+Validation is immediate: field paths must be known scalar leaves in the model's schema; duplicate `id` values and empty `fields` arrays are rejected.
+
+Returns `200 OK` with `EntityModelActionResultDto` on success.
+
+- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
+- `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.
 
 **GET /api/model/{entityName}/{modelVersion}/workflow/export**
 
@@ -275,6 +307,10 @@ The `changeLevel` field controls schema evolution on locked models. When set, en
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis)
 - `errors.BAD_REQUEST` — `400` — unsupported converter, malformed body
+- `errors.UNIQUE_VIOLATION` — `409` — entity write rejected because it would duplicate a composite unique key value-set held by another live entity
+- `errors.INVALID_UNIQUE_KEY` — `422` — entity write rejected because a key is partially filled (all-or-nothing rule), the numeric value exceeded the allowed precision bound, or a key field path resolves to a non-scalar value
+- `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — composite unique key declared on a backend that does not support the feature
+- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — key declaration rejected: non-scalar or unknown field path, duplicate key `id`, or empty `fields` array
 
 ## EXAMPLES
 
@@ -349,4 +385,8 @@ curl -s -X DELETE \
 - errors.MODEL_HAS_ENTITIES
 - errors.INVALID_CHANGE_LEVEL
 - errors.VALIDATION_FAILED
+- errors.UNIQUE_VIOLATION
+- errors.INVALID_UNIQUE_KEY
+- errors.COMPOSITE_KEY_UNSUPPORTED
+- errors.INVALID_UNIQUE_KEY_DEFINITION
 - openapi

@@ -460,6 +460,287 @@ func TestRPC_ModelUnsupportedType(t *testing.T) {
 	}
 }
 
+func TestRPC_ModelSetUniqueKeys_200(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	dataBytes, _ := json.Marshal(map[string]any{"name": "Alice", "age": 30})
+	_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   "product",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.name"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+}
+
+func TestRPC_ModelSetUniqueKeys_409_Locked(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "product", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.name"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for locked model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+}
+
+func TestRPC_ModelSetUniqueKeys_422_BadField(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	dataBytes, _ := json.Marshal(map[string]any{"name": "Alice"})
+	_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   "product",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.nonexistent_xyz"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for bad field")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+}
+
+func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Replace the model handler with one wired to an incapable factory.
+	// incapableFactory embeds spi.StoreFactory as an interface so the
+	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
+	// promoted — the type assertion in SetUniqueKeys returns ok=false.
+	type incapableFactory struct{ spi.StoreFactory }
+	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()})
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.name"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unsupported backend")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "COMPOSITE_KEY_UNSUPPORTED") {
+		t.Errorf("expected message to contain COMPOSITE_KEY_UNSUPPORTED, got %s", typed.Error.Message)
+	}
+}
+
+// importSetKeysAndLockModel imports a model, sets composite unique keys on it
+// (while still unlocked), then locks it. Use instead of importAndLockModel
+// whenever entity-write unique-key enforcement is needed in a test.
+func importSetKeysAndLockModel(t *testing.T, svc *CloudEventsServiceImpl, ctx context.Context, entityName, version string, sampleData map[string]any, keys []spi.UniqueKey) {
+	t.Helper()
+	dataBytes, err := json.Marshal(sampleData)
+	if err != nil {
+		t.Fatalf("failed to marshal sample data: %v", err)
+	}
+	_, err = svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   entityName,
+		ModelVersion: version,
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("failed to import model: %v", err)
+	}
+	_, err = svc.modelHandler.SetUniqueKeys(ctx, entityName, version, keys)
+	if err != nil {
+		t.Fatalf("failed to set unique keys: %v", err)
+	}
+	_, err = svc.modelHandler.LockModel(ctx, entityName, version)
+	if err != nil {
+		t.Fatalf("failed to lock model: %v", err)
+	}
+}
+
+// TestRPC_EntityCreate_UniqueViolation verifies that creating a second entity
+// with the same composite-key values returns Success=false with a message
+// containing UNIQUE_VIOLATION.
+func TestRPC_EntityCreate_UniqueViolation(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importSetKeysAndLockModel(t, svc, ctx, "order", "1",
+		map[string]any{"email": "a@b.com", "accountId": "acc-1"},
+		[]spi.UniqueKey{{ID: "uk1", Fields: []string{"$.email", "$.accountId"}}},
+	)
+
+	createPayload := func(id string) *cepb.CloudEvent {
+		return makeCE(EntityCreateRequest, map[string]any{
+			"id":         id,
+			"dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "order", "version": 1},
+				"data":  map[string]any{"email": "a@b.com", "accountId": "acc-1"},
+			},
+		})
+	}
+
+	// First create must succeed.
+	resp1, err := svc.EntityManage(ctx, createPayload("req-1"))
+	if err != nil {
+		t.Fatalf("first create: unexpected gRPC error: %v", err)
+	}
+	var typed1 events.EntityTransactionResponseJson
+	validateResponse(t, resp1, &typed1)
+	if !typed1.Success {
+		t.Fatalf("expected first create to succeed; got error: %v", typed1.Error)
+	}
+
+	// Second create with identical key values must fail.
+	resp2, err := svc.EntityManage(ctx, createPayload("req-2"))
+	if err != nil {
+		t.Fatalf("second create: unexpected gRPC error: %v", err)
+	}
+	var typed2 events.EntityTransactionResponseJson
+	validateResponse(t, resp2, &typed2)
+	if typed2.Success {
+		t.Fatal("expected second create to fail with UNIQUE_VIOLATION")
+	}
+	if typed2.Error == nil {
+		t.Fatal("expected error field to be populated")
+	}
+	if typed2.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed2.Error.Code)
+	}
+	if !strings.Contains(typed2.Error.Message, "UNIQUE_VIOLATION") {
+		t.Errorf("expected message to contain UNIQUE_VIOLATION, got %s", typed2.Error.Message)
+	}
+}
+
+// TestRPC_EntityCreate_InvalidUniqueKey verifies that creating an entity with
+// only some fields of a composite unique key returns Success=false with a
+// message containing INVALID_UNIQUE_KEY.
+func TestRPC_EntityCreate_InvalidUniqueKey(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importSetKeysAndLockModel(t, svc, ctx, "order", "1",
+		map[string]any{"email": "a@b.com", "accountId": "acc-1"},
+		[]spi.UniqueKey{{ID: "uk1", Fields: []string{"$.email", "$.accountId"}}},
+	)
+
+	// Provide only one of the two key fields — partial key.
+	ce := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "req-1",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "order", "version": 1},
+			"data":  map[string]any{"email": "a@b.com"}, // accountId absent
+		},
+	})
+	resp, err := svc.EntityManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Fatal("expected create to fail with INVALID_UNIQUE_KEY")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error field to be populated")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_UNIQUE_KEY") {
+		t.Errorf("expected message to contain INVALID_UNIQUE_KEY, got %s", typed.Error.Message)
+	}
+}
+
 // --- Search tests ---
 
 func TestRPC_EntityGet(t *testing.T) {

@@ -282,6 +282,9 @@ func (f *StoreFactory) Close() error {
 	return firstErr
 }
 
+// SupportsCompositeUniqueKeys advertises composite-unique-key enforcement.
+func (f *StoreFactory) SupportsCompositeUniqueKeys() bool { return true }
+
 // initTransactionManager installs the SI+FCW transaction manager on the factory.
 // Called by Plugin.NewFactory after the factory is created.
 // Seeds lastSubmitTime from the database to maintain monotonicity across restarts.

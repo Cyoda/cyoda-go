@@ -175,6 +175,10 @@ func (u *Unimplemented) ValidateEntityModel(w http.ResponseWriter, r *http.Reque
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
 	u.stub(w, r)
 }

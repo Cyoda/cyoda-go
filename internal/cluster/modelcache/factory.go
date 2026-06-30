@@ -77,6 +77,16 @@ func (f *CachingStoreFactory) TransactionManager(ctx context.Context) (spi.Trans
 }
 func (f *CachingStoreFactory) Close() error { return f.inner.Close() }
 
+// SupportsCompositeUniqueKeys forwards the optional capability check to the
+// inner factory. Returns false if the inner factory does not implement
+// spi.CompositeUniqueKeyCapable.
+func (f *CachingStoreFactory) SupportsCompositeUniqueKeys() bool {
+	if c, ok := f.inner.(spi.CompositeUniqueKeyCapable); ok {
+		return c.SupportsCompositeUniqueKeys()
+	}
+	return false
+}
+
 // SubscribeLocal registers an in-process invalidation handler on the
 // shared CachingModelStore. The handler receives (tenant, ref) for
 // every model invalidation — local mutations and gossip-received

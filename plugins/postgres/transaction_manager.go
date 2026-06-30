@@ -448,8 +448,13 @@ func classifyError(err error) error {
 		return nil
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && (pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected) {
-		return fmt.Errorf("%w: %w", spi.ErrConflict, err)
+	if errors.As(err, &pgErr) {
+		switch {
+		case pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected:
+			return fmt.Errorf("%w: %w", spi.ErrConflict, err)
+		case pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "unique_claims_uq":
+			return fmt.Errorf("%w: %w", spi.ErrUniqueViolation, err)
+		}
 	}
 	return err
 }

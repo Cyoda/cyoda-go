@@ -4338,6 +4338,110 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/InternalServerError'
+  /model/{entityName}/{modelVersion}/unique-keys:
+    put:
+      tags:
+        - Entity model
+      summary: Set Entity Model Unique Keys
+      description: "
+
+        Sets composite unique-key definitions on an unlocked entity model.
+
+
+        Path Parameters:
+
+        - entityName: The name of the entity model
+
+        - modelVersion: The version number of the model
+
+
+        Requirements:
+
+        - Model must be in UNLOCKED state
+
+        - Backend must support composite unique keys
+
+        - All declared fields must be scalar leaf fields in the model schema
+
+        \        "
+      operationId: setEntityModelUniqueKeys
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: entityName
+          in: path
+          description: The model name of the entity
+          required: true
+          schema:
+            type: string
+          example: nobel-prize
+        - name: modelVersion
+          in: path
+          description: The version number of the model
+          required: true
+          schema:
+            type: integer
+            format: int32
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetUniqueKeysRequest"
+            example:
+              uniqueKeys:
+                - id: uk1
+                  fields:
+                    - "$.name"
+                    - "$.email"
+      responses:
+        "200":
+          description: Unique keys successfully set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityModelActionResultDto"
+              examples:
+                success:
+                  description: success
+                  value:
+                    success: true
+                    modelKey:
+                      name: nobel-prize
+                      version: 1
+                    message: unique keys set on model nobel-prize:1
+                    modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "409":
+          description: Model is locked
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "422":
+          description: Unsupported backend or invalid field definition
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Unprocessable Entity
+                status: 422
+                detail: "INVALID_UNIQUE_KEY_DEFINITION: field not found in model schema"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/workflow/export:
     get:
       tags:
@@ -8012,6 +8116,34 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ReportAliasDef"
+    UniqueKeyDto:
+      type: object
+      description: A composite unique key definition over one or more scalar leaf fields.
+      required:
+        - id
+        - fields
+      properties:
+        id:
+          type: string
+          description: Unique identifier for this key definition.
+          example: uk1
+        fields:
+          type: array
+          description: Ordered list of scalar leaf field paths.
+          items:
+            type: string
+          example:
+            - "$.name"
+            - "$.email"
+    SetUniqueKeysRequest:
+      type: object
+      required:
+        - uniqueKeys
+      properties:
+        uniqueKeys:
+          type: array
+          items:
+            $ref: "#/components/schemas/UniqueKeyDto"
     EntityModelActionResultDto:
       type: object
       properties:

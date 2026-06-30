@@ -44,8 +44,10 @@ const (
 	EntityModelTransitionResponse = "EntityModelTransitionResponse"
 	EntityModelDeleteRequest      = "EntityModelDeleteRequest"
 	EntityModelDeleteResponse     = "EntityModelDeleteResponse"
-	EntityModelGetAllRequest      = "EntityModelGetAllRequest"
-	EntityModelGetAllResponse     = "EntityModelGetAllResponse"
+	EntityModelGetAllRequest         = "EntityModelGetAllRequest"
+	EntityModelGetAllResponse        = "EntityModelGetAllResponse"
+	EntityModelSetUniqueKeysRequest  = "EntityModelSetUniqueKeysRequest"
+	EntityModelSetUniqueKeysResponse = "EntityModelSetUniqueKeysResponse"
 )
 
 // Search / query types.

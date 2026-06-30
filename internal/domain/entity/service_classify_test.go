@@ -109,3 +109,39 @@ func TestClassifyWorkflowError_ConflictBypassesViaInternal(t *testing.T) {
 		t.Errorf("infra+conflict: expected 409, got %d", appErr.Status)
 	}
 }
+
+// TestClassifyWorkflowError_UniqueViolation409 verifies that a workflow error
+// wrapping spi.ErrUniqueViolation maps to 409 UNIQUE_VIOLATION, not 400
+// WORKFLOW_FAILED. The response message must not contain the raw error text.
+func TestClassifyWorkflowError_UniqueViolation409(t *testing.T) {
+	innerText := "unique-key-violation: fields=[name,tenant] clashed on txID=abc123"
+	wrapped := fmt.Errorf("processor save failed: %w", fmt.Errorf("%s: %w", innerText, spi.ErrUniqueViolation))
+	appErr := classifyWorkflowError(wrapped)
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("unique violation: expected 409, got %d", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeUniqueViolation {
+		t.Errorf("unique violation: expected code %q, got %q", common.ErrCodeUniqueViolation, appErr.Code)
+	}
+	if strings.Contains(appErr.Message, innerText) {
+		t.Errorf("unique violation: Message leaks raw error text: %q", appErr.Message)
+	}
+}
+
+// TestClassifyWorkflowError_PartialUniqueKey422 verifies that a workflow error
+// wrapping spi.ErrPartialUniqueKey maps to 422 INVALID_UNIQUE_KEY, not 400
+// WORKFLOW_FAILED. The response message must not contain the raw error text.
+func TestClassifyWorkflowError_PartialUniqueKey422(t *testing.T) {
+	innerText := "partial-key: field 'price' null, cannot compute claim"
+	wrapped := fmt.Errorf("processor save failed: %w", fmt.Errorf("%s: %w", innerText, spi.ErrPartialUniqueKey))
+	appErr := classifyWorkflowError(wrapped)
+	if appErr.Status != http.StatusUnprocessableEntity {
+		t.Errorf("partial key: expected 422, got %d", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeInvalidUniqueKey {
+		t.Errorf("partial key: expected code %q, got %q", common.ErrCodeInvalidUniqueKey, appErr.Code)
+	}
+	if strings.Contains(appErr.Message, innerText) {
+		t.Errorf("partial key: Message leaks raw error text: %q", appErr.Message)
+	}
+}
