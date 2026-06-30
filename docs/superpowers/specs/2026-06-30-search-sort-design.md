@@ -37,8 +37,13 @@ cross-backend order including NULL placement and a stable tiebreaker.
 Out of scope (rejected at the boundary, documented): ordering on arrays/objects,
 collation/locale options (canonical collation is byte order — see §4), computed
 expressions, `ByteArray` fields, union-typed scalar fields whose member types
-disagree on ordering class (§4.4), data-field sort on **unregistered/schemaless**
-models (§7 — open decision D1).
+disagree on ordering class (§4.4).
+
+Every entity model is registered and carries a schema (there is no
+schemaless/unregistered model), so a data field's ordering class is **always**
+resolvable from `FieldsMap`. A sort path absent from the schema is simply an
+invalid path ⇒ `400 INVALID_FIELD_PATH` (§9), the same outcome the condition-path
+validator produces.
 
 ## 3. Wire formats
 
@@ -217,11 +222,6 @@ Comparator: for each `OrderSpec` in order, extract the leaf value
 (gjson over `Entity.Data` for data; `EntityMeta` field for meta), compare per
 `Kind`, respect `Desc`, nulls last; final tiebreaker on `entity_id`.
 
-D1 (open): on an **unregistered/schemaless** model the domain cannot resolve a
-data field's `Kind`. Options: reject data-field sort with `INVALID_FIELD_PATH`
-(deterministic, principled — recommended) vs. best-effort `Text` ordering. Meta
-sort is unaffected (closed typed vocabulary). Flagged for review.
-
 ## 8. SPI change
 
 `spi.OrderSpec` gains an additive field:
@@ -258,7 +258,7 @@ validator, not generic `BAD_REQUEST`. No new error code.
 | data path not a registered scalar leaf / object / array / `[*]` / `ByteArray` / disagreeing union | 400 `INVALID_FIELD_PATH` |
 | `@<name>` not in §5 allowlist, or `@a.b.c` (nested meta) | 400 `INVALID_FIELD_PATH` |
 | same path appears twice (any directions) | 400 `INVALID_FIELD_PATH` (duplicate sort key) |
-| more than 16 sort keys | 400 `INVALID_FIELD_PATH` (bounded; documented cap) |
+| more than `CYODA_SEARCH_MAX_SORT_KEYS` keys (default 16) | 400 `INVALID_FIELD_PATH` (bounded; configurable cap) |
 
 PIT mapping verification (§5): confirm `creationDate`/`lastUpdateTime` resolve to
 the meta value in both current-state and `entity_versions` PIT queries on both
@@ -278,6 +278,9 @@ hyphenated example (pre-existing for filters; surfaced here).
 - Gate-7 cloud-parity: add `docs/cloud-parity/search-sort.md` (new contract
   surface Cloud mirrors).
 - Gate-4: `COMPATIBILITY.md` / CHANGELOG entries for the SPI `OrderKind` bump.
+- Gate-4 config: new env var `CYODA_SEARCH_MAX_SORT_KEYS` (default 16, §9) wired
+  into `DefaultConfig()`, the `cmd/cyoda/help/content/config/*.md` topic, and
+  `README.md` together.
 
 ## 11. Error/status-code table per endpoint
 
@@ -327,11 +330,13 @@ out-of-tree Cassandra plugin; the §12 parity rows propagate to it via
 `e2e/parity/registry.go`. A separate Cassandra issue (created alongside this work)
 tracks implementing `Kind`-aware ordering + the canonical meta mapping there.
 
-## 15. Open decisions for review
+## 15. Resolved decisions
 
-- **D1** — schemaless/unregistered model + data-field sort: reject with
-  `INVALID_FIELD_PATH` (recommended) vs best-effort Text. (§7)
-- **D2** — numeric canonical = IEEE-754 double (documented precision limit) vs
-  exact decimal (unachievable identically on sqlite). Recommend double. (§4.1)
-- **D3** — max sort keys cap = 16 (vs unbounded). Recommend a documented cap. (§9)
-- **D4** — duplicate sort key ⇒ 400 (vs last-wins). Recommend 400. (§9)
+- **D1** — there is no schemaless/unregistered model; a data field's ordering
+  class is always resolvable from the schema, and an unknown path is just a
+  `400 INVALID_FIELD_PATH`. No special-casing. (§2, §7)
+- **D2** — numeric canonical ordering is IEEE-754 double (documented precision
+  limit; exact decimal is not identically renderable on sqlite). (§4.1)
+- **D3** — sort-key count is capped, configurable via
+  `CYODA_SEARCH_MAX_SORT_KEYS` (default 16). (§9, §10)
+- **D4** — a duplicate sort key ⇒ `400 INVALID_FIELD_PATH`. (§9)
