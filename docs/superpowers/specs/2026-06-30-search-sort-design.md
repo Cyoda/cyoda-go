@@ -345,8 +345,12 @@ G=gRPC (`internal/grpc`).
 | sort under point-in-time query | ✓ | ✓ | ✓ | — |
 | each 400 edge case (§9), sync AND async submit | ✓ | ✓ (HTTP sync+async) | — | ✓ (gRPC direct+snapshot) |
 | async submit returns 400 synchronously for bad sort (no FAILED job) | ✓ | ✓ | — | ✓ |
-| async submit persists typed OrderSpecs (self-executing store path) | ✓ | ✓ | ✓ | ✓ |
+| async submit persists typed OrderSpecs (self-executing store path) | ✓ | — | — | — |
 | `data field named 'meta'` sorts as data (no `@` collision) | ✓ | ✓ | — | — |
+
+The self-executing-store row is unit-only in-tree (memory/sqlite/postgres are all
+in-process); the live self-executing path is exercised by the commercial Cassandra
+backend (§14, Task 20), not this repo's e2e/parity/gRPC suites.
 
 Concurrency: not applicable (read-only ordering); no parity-suite race test.
 The numeric/temporal/NULL parity rows are the regression guard for the review's

@@ -86,7 +86,7 @@ type OrderSpec struct {
 	Kind   OrderKind
 }
 ```
-(Remove the now-duplicated `OrderSpec` struct/comment that previously existed.)
+(`searcher.go` has a single `OrderSpec` — edit it in place; update its doc comment as shown. Do not add a second definition.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -148,6 +148,8 @@ func TestClassifyType(t *testing.T) {
 		{"string", []schema.DataType{schema.String}, spi.OrderText, false},
 		{"uuid", []schema.DataType{schema.UUIDType}, spi.OrderText, false},
 		{"localdate is text", []schema.DataType{schema.LocalDate}, spi.OrderText, false},
+		{"year is text", []schema.DataType{schema.Year}, spi.OrderText, false},
+		{"yearmonth is text", []schema.DataType{schema.YearMonth}, spi.OrderText, false},
 		{"bool", []schema.DataType{schema.Boolean}, spi.OrderBool, false},
 		{"nullable string", []schema.DataType{schema.String, schema.Null}, spi.OrderText, false},
 		{"bytearray rejected", []schema.DataType{schema.ByteArray}, 0, true},
@@ -249,7 +251,9 @@ func scalarClass(t schema.DataType) (spi.OrderKind, error) {
 		return spi.OrderBool, nil
 	case t == schema.String, t == schema.Character, t == schema.UUIDType,
 		t == schema.TimeUUIDType, t == schema.LocalDate, t == schema.LocalDateTime,
-		t == schema.LocalTime, t == schema.ZonedDateTime:
+		t == schema.LocalTime, t == schema.ZonedDateTime, t == schema.Year,
+		t == schema.YearMonth:
+		// All compared as their stored ISO/string form (Text/byte order).
 		return spi.OrderText, nil
 	default: // ByteArray and anything non-scalar
 		return 0, fmt.Errorf("type %s is not sortable", t)
@@ -987,6 +991,14 @@ func TestSortEntities_MetaCreationDateAndTiebreaker(t *testing.T) {
 		t.Fatalf("temporal+tiebreaker order = %v, want [c a b]", got)
 	}
 }
+
+func TestSortEntities_NoKeysOrdersByID(t *testing.T) {
+	es := []*spi.Entity{ent("c", `{}`, time.Time{}), ent("a", `{}`, time.Time{}), ent("b", `{}`, time.Time{})}
+	sortEntities(es, nil) // no sort keys ⇒ entity_id asc, matching the SQL backends
+	if got := ids(es); got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("no-keys order = %v, want [a b c]", got)
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1013,10 +1025,13 @@ import (
 // in precedence order, comparison fixed by Kind, missing/null last (both
 // directions), with a final entity_id ascending tiebreaker. Stable so the
 // tiebreaker resolves equal rows deterministically.
+//
+// It runs UNCONDITIONALLY, even with no specs: the SQL backends default to
+// "ORDER BY entity_id", but the memory backend's GetAll returns Go
+// map-iteration order, so without this the no-sort case would diverge
+// (non-deterministic memory order vs entity_id on SQL). With no specs the loop
+// body is skipped and rows order by the entity_id tiebreaker — matching SQL.
 func sortEntities(entities []*spi.Entity, specs []spi.OrderSpec) {
-	if len(specs) == 0 {
-		return
-	}
 	sort.SliceStable(entities, func(i, j int) bool {
 		for _, s := range specs {
 			if decided, less := lessByKey(entities[i], entities[j], s); decided {
@@ -1106,6 +1121,9 @@ func timeResult(t time.Time) (gjson.Result, bool) {
 	// in Num; UnixMilli (~1.75e12) is exact in float64 (< 2^53). Never carry
 	// UnixNano — it exceeds 2^53 and loses precision. The SQL backends floor to
 	// ms too (Tasks 10/11), so all paths tie within the same millisecond.
+	// (Go UnixMilli truncates toward zero while postgres floor() rounds toward
+	// -inf; they differ only for pre-1970 instants, which engine meta dates
+	// never are — no fix needed.)
 	return gjson.Result{Type: gjson.Number, Num: float64(t.UnixMilli())}, true
 }
 
@@ -1580,6 +1598,7 @@ In `search_sort.go`, scenarios (each seeds entities, runs a sorted search, asser
 - `SearchSortNullsLast` (some entities missing the field)
 - `SearchSortPointInTime` (sort under a PIT query)
 - `SearchSortDataFieldNamedMeta` (entity with top-level `meta` object sorts as data)
+- `SearchNoSortDefaultOrder` (NO sort param — assert all backends return `entity_id` ascending; guards the MAJOR-1 memory-vs-SQL default-order divergence)
 
 - [ ] **Step 2: Register and run**
 
