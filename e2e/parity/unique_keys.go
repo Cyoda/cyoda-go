@@ -23,12 +23,18 @@ package parity
 //  5. UniqueKeys_DeleteAllFreesValues         — DeleteAll, then re-create same values → 201
 //  6. UniqueKeys_MultipleKeys                 — two independent keys, each enforced separately
 //  7. UniqueKeys_UpdateClearsAllKeyFields     — update clears all key fields → prior value reusable (B1 regression)
+//  8. UniqueKeys_ProcessorRewritesKeyField    — processor overwrites the key field → enforcement on the POST-MERGE value (two distinct inputs collide → 409)
 //
 // What this suite does NOT cover:
 //   - Same-transaction delete+reclaim: backend-divergent, out of scope.
 //   - Concurrency/race tests: isolated single-backend (task 8.4).
 //   - COMPOSITE_KEY_UNSUPPORTED coverage: all in-repo backends support it;
 //     the negative case is covered by a unit test with a fake StoreFactory (task 8).
+//   - ASYNC_NEW_TX processor writing a duplicate (spec §7): the parity compute
+//     harness has no async-new-tx (savepoint) processor infrastructure. This is
+//     waived here, consistent with the existing TODO(#172) deferrals in
+//     contracts.go (RunProcessorAsyncNewTxRollback) which block on the same
+//     missing ASYNC_NEW_TX semantics. Re-instate when that harness lands.
 
 import (
 	"encoding/json"
@@ -388,4 +394,102 @@ func RunUniqueKeys_UpdateClearsAllKeyFields(t *testing.T, fixture BackendFixture
 	if status != http.StatusOK {
 		t.Fatalf("re-create after all-null update: expected 200, got %d: %s", status, string(raw))
 	}
+}
+
+// --- Scenario 8: processor rewrites the key field → post-merge enforcement ---
+
+// ukProcRewriteSample seeds the schema with a "tag" string field so a unique
+// key can be declared on $.tag. The built-in "tag-with-foo" compute processor
+// overwrites tag to the constant "foo" on every entity, regardless of the
+// input value — this is the lever that forces two distinct inputs to collide
+// on their POST-MERGE key value.
+const ukProcRewriteSample = `{"name":"Sample","amount":1,"status":"draft","tag":"seed"}`
+
+// ukProcRewriteWorkflow runs the "tag-with-foo" processor (sets tag="foo")
+// on the create transition. Every created entity therefore lands with
+// tag="foo" no matter what tag value the client supplied.
+const ukProcRewriteWorkflow = `{
+	"importMode": "REPLACE",
+	"workflows": [{
+		"version": "1.1",
+		"name": "uk-proc-rewrite-wf",
+		"initialState": "NONE",
+		"active": true,
+		"states": {
+			"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
+				"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+					"config": {"attachEntity": true, "calculationNodesTags": ""}}]
+			}]},
+			"CREATED": {}
+		}
+	}]
+}`
+
+// RunUniqueKeys_ProcessorRewritesKeyField is the centerpiece cross-backend
+// scenario: it proves composite unique-key enforcement runs on the
+// POST-MERGE document (the live entity.Data after processors mutate it), not
+// on the client-supplied input.
+//
+// A unique key is declared on $.tag. A workflow processor ("tag-with-foo")
+// overwrites tag to the constant "foo" during the create cascade. Two entities
+// are created with DIFFERENT input tag values ("a-unique" vs "b-different") —
+// so a pre-processor (input-time) uniqueness check would let both through.
+// Because enforcement is on the processor's OUTPUT, both documents end up with
+// tag="foo": the first create succeeds, the second collides → 409
+// UNIQUE_VIOLATION. The differing inputs are the proof: the only source of the
+// collision is the processor's rewrite.
+//
+// Capability-gated like every other unique-key parity scenario: a backend that
+// returns 422 COMPOSITE_KEY_UNSUPPORTED on SetUniqueKeys skips cleanly before
+// any entity is created (so a backend lacking composite-key support never
+// reaches the processor).
+//
+// Uses ComputeTenant because the scenario depends on the compute-test-client
+// serving the "tag-with-foo" processor over gRPC.
+func RunUniqueKeys_ProcessorRewritesKeyField(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const model = "uk-proc-rewrite"
+
+	// Import the tag-bearing sample so $.tag exists in the inferred schema.
+	if err := c.ImportModel(t, model, 1, ukProcRewriteSample); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+
+	// Capability gate (on the UNLOCKED model): declare the unique key on $.tag.
+	keysJSON := `{"uniqueKeys":[{"id":"tag-key","fields":["$.tag"]}]}`
+	status, raw := ukCapabilityGateOrSkip(t, c, model, 1, keysJSON)
+	if status != http.StatusOK {
+		t.Fatalf("SetUniqueKeys on unlocked model: expected 200, got %d: %s", status, string(raw))
+	}
+
+	if err := c.LockModel(t, model, 1); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.ImportWorkflow(t, model, 1, ukProcRewriteWorkflow); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+
+	// Entity A: input tag="a-unique" → processor rewrites to "foo" → claims "foo".
+	statusA, rawA, err := c.CreateEntityRaw(t, model, 1, `{"name":"A","amount":1,"status":"draft","tag":"a-unique"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw A transport error: %v", err)
+	}
+	if statusA != http.StatusOK {
+		t.Fatalf("create A: expected 200, got %d: %s", statusA, string(rawA))
+	}
+
+	// Entity B: input tag="b-different" (DISTINCT from A's input) → processor
+	// rewrites to "foo" → collides with A's post-merge claim → 409.
+	// The differing inputs prove enforcement is on the processor OUTPUT: an
+	// input-time check would have admitted B.
+	statusB, rawB, err := c.CreateEntityRaw(t, model, 1, `{"name":"B","amount":2,"status":"draft","tag":"b-different"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw B transport error: %v", err)
+	}
+	if statusB != http.StatusConflict {
+		t.Fatalf("create B (processor-collided key): expected 409, got %d: %s", statusB, string(rawB))
+	}
+	ukAssertErrCode(t, rawB, "UNIQUE_VIOLATION")
 }
