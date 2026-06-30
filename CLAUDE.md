@@ -64,6 +64,12 @@ expand the change, **stop and surface the choice to the human** rather than
 silently leaving it broken. Recording a `TODO(...)` is the last resort, not
 the first response.
 
+### Gate 7: Cloud-parity — cyoda-go leads the contract
+cyoda-go **defines** the API and integration contract; Cyoda Cloud follows it.
+Any change to the integration contract (API shape, wire/error semantics, entity
+or workflow behaviour Cloud mirrors) must be reconciled with cyoda-cloud and the
+change logged in `docs/cloud-parity/` — one file per feature/behaviour.
+
 ## External Storage Plugins
 
 The Cassandra storage plugin lives in a separate repository:
@@ -75,6 +81,10 @@ shared contracts), verify the change does not break the Cassandra plugin. The
 parity test registry (`e2e/parity/registry.go`) is picked up by all backends
 including Cassandra — new parity tests will surface there on their next
 dependency update.
+
+A storage backend (memory/sqlite/postgres) diverging from the others on the same
+contract is a bug to fix, not an "accepted divergence"; cross-backend parity tests
+guard that consistency, they don't define behaviour.
 
 ## Go Conventions
 

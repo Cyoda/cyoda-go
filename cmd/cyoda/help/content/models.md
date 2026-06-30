@@ -153,6 +153,8 @@ Returns `200 OK` with `EntityModelActionResultDto` on success.
 - `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
 - `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.
 
+**Transactional ordering.** When one transaction (e.g. a workflow) both frees a unique-key value — by deleting or re-keying its holder — and claims it on another entity, free it before claiming. Free-then-claim works on every backend; the reverse is rejected on write-time backends (PostgreSQL) and accepted on commit-time ones (in-memory, SQLite), so free-before-claim for portable behavior.
+
 **GET /api/model/{entityName}/{modelVersion}/workflow/export**
 
 Export all workflow configurations for the model. Returns `404 WORKFLOW_NOT_FOUND` if no workflows exist.

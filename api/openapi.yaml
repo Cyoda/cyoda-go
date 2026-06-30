@@ -4363,6 +4363,13 @@ paths:
 
         - All declared fields must be scalar leaf fields in the model schema
 
+
+        Enforcement:
+
+        - A duplicate value-set is rejected with 409 UNIQUE_VIOLATION (non-retryable).
+
+        - In one transaction, free a unique-key value (delete/re-key the holder) before claiming it elsewhere. Free-then-claim is portable; claim-before-free is rejected on write-time backends (PostgreSQL), accepted on commit-time ones (in-memory, SQLite).
+
         \        "
       operationId: setEntityModelUniqueKeys
       security:

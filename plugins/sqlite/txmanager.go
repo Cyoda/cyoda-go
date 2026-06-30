@@ -338,6 +338,19 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 	submitMicro := timeToMicro(submitTime)
 	tid := string(tx.TenantID)
 
+	// Release unique-key claims held by entities deleted in THIS transaction
+	// BEFORE flushing buffered creates/updates (which insert claims). Otherwise a
+	// same-transaction "delete A holding value V, create B wanting V" sees A's
+	// claim still present when B's is inserted and wrongly fails with a unique
+	// violation. The whole flush is one sqlite tx, so this early release rolls
+	// back atomically with everything else on any later error. releaseClaims is a
+	// no-op (idempotent DELETE) for a delete target that holds no claims.
+	for entityID := range tx.Deletes {
+		if err := releaseClaims(ctx, sqlTx, tid, entityID); err != nil {
+			return fmt.Errorf("release claims on delete %s: %w", entityID, err)
+		}
+	}
+
 	// Flush buffered entities.
 	for entityID, entity := range tx.Buffer {
 		var existingVersion sql.NullInt64
@@ -449,11 +462,8 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		if err != nil {
 			return fmt.Errorf("insert delete version %s: %w", entityID, err)
 		}
-
-		// Release unique-key claims so the freed values can be claimed immediately.
-		if err := releaseClaims(ctx, sqlTx, tid, entityID); err != nil {
-			return fmt.Errorf("release claims on delete %s: %w", entityID, err)
-		}
+		// (Claims for deleted entities are released in the pre-pass above, before
+		// the buffer flush, so a same-tx delete+reclaim does not falsely conflict.)
 	}
 
 	// Record submit time.
