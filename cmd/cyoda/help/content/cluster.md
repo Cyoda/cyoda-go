@@ -69,7 +69,7 @@ Composite unique keys are part of the model descriptor. They inherit the descrip
 
 **Operator guidance:** after changing a composite unique key on a multi-node deployment, pause writes and allow the cluster to settle for at least one cache-lease TTL before resuming. The cache TTL is the backstop that guarantees every node has reloaded the new descriptor.
 
-The proper fix — acknowledged model-cache invalidation where the relock waits for every online node to confirm eviction before completing — is tracked as [`Cyoda/cyoda-go#353`](https://github.com/cyoda/cyoda-go/issues/353) and is out of scope for v0.8.2.
+The proper fix — acknowledged model-cache invalidation, where the relock waits for every online node to confirm eviction before completing — is a planned cluster enhancement and is out of scope for v0.8.2.
 
 **Scope:** this limitation applies to multi-node postgres only. The memory and sqlite backends are single-process; their cache invalidation is synchronous.
 
