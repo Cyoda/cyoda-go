@@ -26,7 +26,11 @@ package parity
 //  8. UniqueKeys_ProcessorRewritesKeyField    — processor overwrites the key field → enforcement on the POST-MERGE value (two distinct inputs collide → 409)
 //
 // What this suite does NOT cover:
-//   - Same-transaction delete+reclaim: backend-divergent, out of scope.
+//   - Same-transaction delete+reclaim (delete A holding value V, create B
+//     wanting V, in one tx → commit succeeds). This is a STORE-LEVEL behaviour:
+//     no HTTP endpoint mixes a delete and a create in one transaction, so the
+//     parity suite cannot reach it. Covered identically on all three engines by
+//     TestUniqueClaims_SameTransactionDeleteAndReclaim in plugins/{memory,sqlite,postgres}.
 //   - Concurrency/race tests: isolated single-backend (task 8.4).
 //   - COMPOSITE_KEY_UNSUPPORTED coverage: all in-repo backends support it;
 //     the negative case is covered by a unit test with a fake StoreFactory (task 8).

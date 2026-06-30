@@ -335,3 +335,71 @@ func TestUniqueClaims_UpdateToAllNullFreesValue(t *testing.T) {
 		t.Fatalf("Save e2 with freed value: %v", err)
 	}
 }
+
+// TestUniqueClaims_SameTransactionDeleteAndReclaim verifies that within ONE
+// transaction, deleting entity A (which holds a key value) and creating entity B
+// with that same value commits successfully — A's delete frees the value for B.
+// Mirrors plugins/memory/unique_claims_test.go and plugins/postgres. The sqlite
+// flush must release deleted entities' claims BEFORE inserting buffered entities'
+// claims; otherwise B's claim insert collides with A's not-yet-released row.
+func TestUniqueClaims_SameTransactionDeleteAndReclaim(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "delete-reclaim.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	t.Cleanup(func() { _ = factory.Close() })
+
+	baseCtx := testCtx("uc-tenant")
+	store, err := factory.EntityStore(baseCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	tm, err := factory.TransactionManager(baseCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+
+	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+
+	// Pre-condition (non-tx): entity A holds "shared@x.com".
+	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
+		t.Fatalf("pre-save A: %v", err)
+	}
+
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	// Same transaction: delete A, then create B with A's former value.
+	if err := store.Delete(txCtx, "a"); err != nil {
+		t.Fatalf("tx Delete a: %v", err)
+	}
+	if _, err := store.Save(spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("b", "shared@x.com")); err != nil {
+		t.Fatalf("tx Save b: %v", err)
+	}
+
+	// Commit must succeed: A's claim is released by the delete, so B may hold it.
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: expected success (delete-then-reclaim), got %v", err)
+	}
+
+	// Post-conditions: A is gone, B holds the value.
+	if exists, err := store.Exists(baseCtx, "a"); err != nil || exists {
+		t.Errorf("a should not exist after tx delete: exists=%v err=%v", exists, err)
+	}
+	b, err := store.Get(baseCtx, "b")
+	if err != nil {
+		t.Fatalf("Get b: %v", err)
+	}
+	if string(b.Data) != `{"email":"shared@x.com"}` {
+		t.Errorf("b.Data = %s, want {\"email\":\"shared@x.com\"}", b.Data)
+	}
+
+	// B's claim is enforced: a third entity cannot steal the value.
+	if _, err := store.Save(ctx, ucEntity("c", "shared@x.com")); !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
+	}
+}
