@@ -269,6 +269,17 @@ var allTests = []NamedTest{
 	// Cross-tenant isolation.
 	{"EntityPatchCrossTenantIsNotFound", RunEntityPatchCrossTenantIsNotFound},
 
+	// Composite unique keys — cross-backend parity matrix (spec §8.3).
+	// Capability gate in each scenario: SetUniqueKeysRaw on the unlocked model;
+	// if status==422+COMPOSITE_KEY_UNSUPPORTED → t.Skip (commercial backend
+	// safe skip). All three in-repo backends run all assertions.
+	{"UniqueKeys_CreateDuplicate", RunUniqueKeys_CreateDuplicate},
+	{"UniqueKeys_SoftDeleteFreesValue", RunUniqueKeys_SoftDeleteFreesValue},
+	{"UniqueKeys_PartialKey", RunUniqueKeys_PartialKey},
+	{"UniqueKeys_AllNullExempt", RunUniqueKeys_AllNullExempt},
+	{"UniqueKeys_DeleteAllFreesValues", RunUniqueKeys_DeleteAllFreesValues},
+	{"UniqueKeys_MultipleKeys", RunUniqueKeys_MultipleKeys},
+
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the

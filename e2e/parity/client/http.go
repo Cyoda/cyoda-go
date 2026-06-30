@@ -1623,3 +1623,43 @@ func (c *Client) PatchEntityMerge(t *testing.T, entityID uuid.UUID, transition, 
 	t.Helper()
 	return c.PatchEntityRaw(t, entityID, "JSON", transition, "application/merge-patch+json", ifMatch, body)
 }
+
+// SetUniqueKeys issues PUT /api/model/{name}/{version}/unique-keys with the
+// given raw JSON body (must be a valid SetUniqueKeysRequest). Returns nil on
+// 2xx; returns a descriptive error on non-2xx or transport failure.
+//
+// Call this on an UNLOCKED model, after ImportModel and before LockModel.
+// Mirrors the helper pattern of ImportModel and LockModel.
+func (c *Client) SetUniqueKeys(t *testing.T, modelName string, modelVersion int, keysJSON string) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unique-keys", modelName, modelVersion)
+	_, err := c.doRaw(t, http.MethodPut, path, keysJSON)
+	return err
+}
+
+// SetUniqueKeysRaw issues PUT /api/model/{name}/{version}/unique-keys and
+// returns (status, body, transportErr) without raising on non-2xx. Used by
+// capability-gate detection and negative-path parity scenarios.
+//
+// Call pattern: if status == 422 && strings.Contains(body, "COMPOSITE_KEY_UNSUPPORTED")
+// → t.Skip("backend does not support composite unique keys").
+// Mirrors the *Raw helpers LockModelRaw / ImportModelRaw.
+func (c *Client) SetUniqueKeysRaw(t *testing.T, modelName string, modelVersion int, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unique-keys", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
