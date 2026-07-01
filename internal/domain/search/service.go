@@ -164,6 +164,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		}
 	}
 
+	sortEntities(matches, orderBy)
+
 	// Apply offset.
 	if opts.Offset > 0 {
 		if opts.Offset >= len(matches) {
