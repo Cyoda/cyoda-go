@@ -82,6 +82,7 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 
 - `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
 - `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval.
+- `CYODA_SEARCH_MAX_SORT_KEYS` (int, default: `16`) — maximum number of `sort` keys per search request. Requests exceeding this cap are rejected with `400 INVALID_FIELD_PATH`. Values `<= 0` are clamped to the default.
 - `CYODA_TX_TTL` (duration, default: `60s`) — transaction TTL.
 - `CYODA_TX_REAP_INTERVAL` (duration, default: `10s`) — transaction reap interval.
 - `CYODA_TX_OUTCOME_TTL` (duration, default: `5m`) — transaction outcome TTL.

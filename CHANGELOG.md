@@ -17,6 +17,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   New error codes: `UNIQUE_VIOLATION` (409), `INVALID_UNIQUE_KEY` (422),
   `COMPOSITE_KEY_UNSUPPORTED` (422), `INVALID_UNIQUE_KEY_DEFINITION` (422).
 
+- **Search result sorting** — both search endpoints (`POST /api/entity/{entityName}/{modelVersion}/search`
+  and the async variant) now accept one or more `sort` query parameters (HTTP) or a structured
+  `orderBy` array (gRPC) to control result order. HTTP grammar: `[@]path[:asc|desc]` — bare
+  dotted path for scalar data fields; `@`-prefixed name for meta fields (`state`, `creationDate`,
+  `lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`). Ordering is canonical
+  across all backends: Text (byte order), Numeric (IEEE-754 double), Bool (`false < true`),
+  Temporal (ms-floored chronological for meta date fields). Absent/null values sort last;
+  `entity_id` is always the final tiebreaker. Unsortable, array, or unknown paths return
+  `400 INVALID_FIELD_PATH`. Sort key count is capped at `CYODA_SEARCH_MAX_SORT_KEYS`
+  (default `16`). New SPI field: `OrderSpec.Kind OrderKind` (enum: `OrderText`, `OrderNumeric`,
+  `OrderBool`, `OrderTemporal`); ships with `cyoda-go-spi v0.8.2`.
+
 ### Changed
 
 - PostgreSQL search now pushes supported predicates into SQL (JSONB `->>`
