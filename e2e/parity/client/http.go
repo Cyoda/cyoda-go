@@ -1188,6 +1188,71 @@ func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersi
 	return resp.StatusCode, raw, nil
 }
 
+// SyncSearchSorted issues POST /api/search/direct/{name}/{version}?sort=k1&sort=k2...
+// with the given condition JSON and ordered sort keys. Returns entity results in
+// the server-applied sort order.  An empty sortKeys slice is equivalent to
+// SyncSearch (no sort params — entity_id ascending default).
+// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
+func (c *Client) SyncSearchSorted(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	if len(sortKeys) > 0 {
+		vals := url.Values{}
+		for _, k := range sortKeys {
+			vals.Add("sort", k)
+		}
+		path += "?" + vals.Encode()
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	var results []EntityResult
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var r EntityResult
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err != nil {
+			return nil, fmt.Errorf("decode NDJSON line: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
+// SyncSearchSortedAt is like SyncSearchSorted but also adds a pointInTime
+// query parameter so the search operates on the snapshot at the given instant.
+func (c *Client) SyncSearchSortedAt(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string, at time.Time) ([]EntityResult, error) {
+	t.Helper()
+	vals := url.Values{}
+	vals.Set("pointInTime", at.UTC().Format(time.RFC3339Nano))
+	for _, k := range sortKeys {
+		vals.Add("sort", k)
+	}
+	path := fmt.Sprintf("/api/search/direct/%s/%d?%s", modelName, modelVersion, vals.Encode())
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	var results []EntityResult
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var r EntityResult
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err != nil {
+			return nil, fmt.Errorf("decode NDJSON line: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
 // SyncSearch issues POST /api/search/direct/{name}/{version} with the
 // given condition JSON. Returns the entity results.
 // The sync search endpoint returns application/x-ndjson. This method

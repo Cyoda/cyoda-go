@@ -284,6 +284,21 @@ var allTests = []NamedTest{
 	// POST-MERGE value, not the input (two distinct inputs collide → 409).
 	{"UniqueKeys_ProcessorRewritesKeyField", RunUniqueKeys_ProcessorRewritesKeyField},
 
+	// Search sort — cross-backend sort ordering contract (Task 15).
+	// Each scenario seeds entities, issues a sorted sync search, and asserts
+	// the exact entity-id sequence.  Divergence here is a real bug in the
+	// backend comparator or default-order path, not a test weakness.
+	{"SearchSortDataText", RunSearchSortDataText},
+	{"SearchSortDataNumeric", RunSearchSortDataNumeric},
+	{"SearchSortDataBool", RunSearchSortDataBool},
+	{"SearchSortMetaCreationDate", RunSearchSortMetaCreationDate},
+	{"SearchSortMetaState", RunSearchSortMetaState},
+	{"SearchSortMultiKeyTiebreaker", RunSearchSortMultiKeyTiebreaker},
+	{"SearchSortNullsLast", RunSearchSortNullsLast},
+	{"SearchSortPointInTime", RunSearchSortPointInTime},
+	{"SearchSortDataFieldNamedMeta", RunSearchSortDataFieldNamedMeta},
+	{"SearchNoSortDefaultOrder", RunSearchNoSortDefaultOrder},
+
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the
