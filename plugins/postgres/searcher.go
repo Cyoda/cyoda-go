@@ -105,37 +105,95 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	return results, nil
 }
 
-// orderByClause builds the SQL ORDER BY from opts.OrderBy. Empty → default
-// "ORDER BY entity_id" (a unique, never-null key, so pages are deterministic).
-// Bare column names resolve against the entities table (current-state) or the
-// `latest` derived table (point-in-time), both of which expose entity_id.
+// metaJSONKey maps canonical meta sort-path names (as used in spi.OrderSpec)
+// to the corresponding key in the _meta JSONB block stored on disk. The "id"
+// path is special-cased to the entity_id column — it is not in this map.
+// Note: postgres stores the transition as "transition" (not
+// "transition_for_latest_save" as sqlite does — postgres diverges here).
+var metaJSONKey = map[string]string{
+	"state":                   "state",
+	"creationDate":            "creation_date",
+	"lastUpdateTime":          "last_modified_date",
+	"transitionForLatestSave": "transition",
+	"transactionId":           "transaction_id",
+}
+
+// orderByClause builds the SQL ORDER BY from opts.OrderBy.
+//
+//   - Empty → default "ORDER BY entity_id" (unique, deterministic).
+//   - Every key gets NULLS LAST so absent/null values sort after real values
+//     regardless of ASC/DESC.
+//   - An entity_id tiebreaker is appended unless the terminal key already
+//     resolves to entity_id (Path="id", Source=SourceMeta), avoiding duplicates.
+//
+// entity_id and other bare column names resolve against the entities table
+// (current-state) or the `latest` derived table (point-in-time), both of
+// which expose entity_id in their outer SELECT.
 func orderByClause(opts spi.SearchOptions) string {
 	if len(opts.OrderBy) == 0 {
 		return " ORDER BY entity_id"
 	}
-	clauses := make([]string, 0, len(opts.OrderBy))
+	clauses := make([]string, 0, len(opts.OrderBy)+1)
 	for _, spec := range opts.OrderBy {
 		expr := orderByFieldExpr(spec)
 		if spec.Desc {
 			expr += " DESC"
 		}
-		clauses = append(clauses, expr)
+		clauses = append(clauses, expr+" NULLS LAST")
+	}
+	// Append entity_id tiebreaker unless the last spec already IS entity_id.
+	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
+		clauses = append(clauses, "entity_id")
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")
 }
 
-// orderByFieldExpr returns the SQL ordering expression for an OrderSpec,
-// reusing the filter field rules (directMetaColumns / doc->'_meta'->>'p' /
-// doc->>'p').
+// orderByFieldExpr returns the SQL ordering expression for an OrderSpec.
+//
+// SourceMeta "id" → entity_id column (direct, no JSONB extraction).
+// SourceMeta other → JSONB extraction on doc->'_meta' with the canonical key
+// from metaJSONKey (guaranteed valid by validateOrderSpecs).
+// SourceData → JSONB extraction on doc.
+//
+// Kind wraps the base expression:
+//   - OrderNumeric  → cyoda_try_float8(base): NULL-safe coercion (not a raw
+//     ::double precision cast which would error on non-numeric text); the
+//     helper is already used elsewhere in this plugin.
+//   - OrderTemporal → floor(extract(epoch from (base)::timestamptz)*1000):
+//     converts RFC3339 text to epoch-milliseconds (canonical resolution for
+//     cross-backend parity).
+//   - OrderBool     → (base)::boolean
+//   - OrderText     → (base) COLLATE "C" (byte-order comparison)
 //
 // Safety invariant: spec.Path is interpolated into a JSON-key literal and
 // MUST have been validated by validateOrderSpecs at the Search() boundary.
 func orderByFieldExpr(spec spi.OrderSpec) string {
-	if spec.Source == spi.SourceMeta {
-		if directMetaColumns[spec.Path] {
-			return spec.Path
+	var base string
+	switch {
+	case spec.Source == spi.SourceMeta && spec.Path == "id":
+		base = "entity_id"
+	case spec.Source == spi.SourceMeta:
+		key, ok := metaJSONKey[spec.Path] // canonical-guaranteed by validateOrderSpecs
+		if !ok {
+			key = spec.Path
 		}
-		return jsonbExtractText("doc->'_meta'", spec.Path)
+		base = jsonbExtractText("doc->'_meta'", key)
+	default:
+		base = jsonbExtractText("doc", spec.Path)
 	}
-	return jsonbExtractText("doc", spec.Path)
+	switch spec.Kind {
+	case spi.OrderNumeric:
+		// cyoda_try_float8 returns NULL on non-numeric text (→ NULLS LAST),
+		// matching sqlite's lenient CAST; a raw ::double precision cast would
+		// error the whole query on non-numeric stored values.
+		return "cyoda_try_float8(" + base + ")"
+	case spi.OrderTemporal:
+		// _meta value is RFC3339 text; floor the instant to epoch-milliseconds
+		// (the canonical cross-backend resolution) so all backends agree.
+		return "floor(extract(epoch from (" + base + ")::timestamptz)*1000)"
+	case spi.OrderBool:
+		return "(" + base + ")::boolean"
+	default: // OrderText (zero value)
+		return "(" + base + ") COLLATE \"C\""
+	}
 }

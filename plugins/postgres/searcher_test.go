@@ -234,7 +234,7 @@ func TestPGSearcher_UnboundedOffsetWithResidual(t *testing.T) {
 func TestPGSearcher_OrderByDataPathDesc(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	opts := baseOpts()
-	opts.OrderBy = []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true}}
+	opts.OrderBy = []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}}
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -251,7 +251,7 @@ func TestPGSearcher_OrderByDataPathDesc(t *testing.T) {
 func TestPGSearcher_OrderByDataPathAsc(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	opts := baseOpts()
-	opts.OrderBy = []spi.OrderSpec{{Path: "name", Source: spi.SourceData}} // Desc omitted → ascending
+	opts.OrderBy = []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Kind: spi.OrderText}} // Desc omitted → ascending
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -269,37 +269,35 @@ func TestPGSearcher_OrderByDataPathAsc(t *testing.T) {
 }
 
 func TestPGSearcher_OrderByMetaDirectColumn(t *testing.T) {
-	// entity_id is in directMetaColumns so orderByFieldExpr emits the bare column
-	// name instead of a doc->'_meta'->>'entity_id' expression. Exercises that branch.
+	// "id" is the canonical meta sort name for the entity identifier; the
+	// implementation maps it to the entity_id column directly (not a JSONB
+	// extraction). Exercises the special-case branch in orderByFieldExpr.
 	store, ctx := setupSearcher(t)
 	opts := baseOpts()
-	opts.OrderBy = []spi.OrderSpec{{Path: "entity_id", Source: spi.SourceMeta}}
+	opts.OrderBy = []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}}
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(got) != 5 {
-		t.Fatalf("asc by entity_id: want 5, got %d", len(got))
+		t.Fatalf("asc by id: want 5, got %d", len(got))
 	}
 	// Lexicographic asc over "e1".."e5" → e1 first, e5 last.
 	if got[0].Meta.ID != "e1" {
-		t.Errorf("asc by entity_id: want first=e1, got %s", got[0].Meta.ID)
+		t.Errorf("asc by id: want first=e1, got %s", got[0].Meta.ID)
 	}
 	if got[4].Meta.ID != "e5" {
-		t.Errorf("asc by entity_id: want last=e5, got %s", got[4].Meta.ID)
+		t.Errorf("asc by id: want last=e5, got %s", got[4].Meta.ID)
 	}
 }
 
 func TestPGSearcher_OrderByMetaJSONPath(t *testing.T) {
-	// "state" is NOT in directMetaColumns, so orderByFieldExpr emits
-	// doc->'_meta'->>'state' — the SourceMeta non-direct branch. All five seed
-	// rows have state="NEW", so ordering is uniform; this test's purpose is to
-	// confirm the meta-JSONPath ORDER BY expression is valid SQL and executes
-	// without error. A meaningful ordering assertion is deferred until the seed
-	// carries state variation (all current seed states are uniform).
+	// "state" maps to _meta.state key; ordering uses COLLATE "C" (OrderText).
+	// All five seed rows have state="NEW", so ordering is uniform; this test
+	// confirms the meta-JSONPath ORDER BY expression is valid SQL without error.
 	store, ctx := setupSearcher(t)
 	opts := baseOpts()
-	opts.OrderBy = []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta}}
+	opts.OrderBy = []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}}
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -307,6 +305,327 @@ func TestPGSearcher_OrderByMetaJSONPath(t *testing.T) {
 	if len(got) != 5 {
 		t.Fatalf("order by meta state: want 5, got %d", len(got))
 	}
+}
+
+// assertIDOrder checks that got matches want by entity ID position.
+func assertIDOrder(t *testing.T, got []*spi.Entity, want []string) {
+	t.Helper()
+	gotIDs := make([]string, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.Meta.ID
+	}
+	if len(gotIDs) != len(want) {
+		t.Fatalf("length mismatch: got %v (len=%d), want %v (len=%d)", gotIDs, len(gotIDs), want, len(want))
+	}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Errorf("wrong order: got %v, want %v", gotIDs, want)
+			return
+		}
+	}
+}
+
+// TestPGSearcher_OrderByNumericData verifies that OrderNumeric applies
+// cyoda_try_float8 so that string-encoded numbers sort by magnitude, not
+// byte order. Without the cast: "10" < "100" < "9" (lexical). With the
+// cast: 9 < 10 < 100 (numeric) → order a, b, c.
+func TestPGSearcher_OrderByNumericData(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("orderby-numeric-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, e := range []struct{ id, data string }{
+		{"a", `{"n":"9"}`},
+		{"b", `{"n":"10"}`},
+		{"c", `{"n":"100"}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Numeric: 9 < 10 < 100 → a, b, c.
+	assertIDOrder(t, results, []string{"a", "b", "c"})
+}
+
+// TestPGSearcher_OrderByCreationDateMeta verifies that the canonical meta path
+// "creationDate" is mapped to the blob key "creation_date", enabling temporal
+// ordering by entity creation time.
+func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
+	factory := setupEntityTest(t)
+	const tenant = "orderby-creation-tenant"
+	ctx := ctxWithTenant(spi.TenantID(tenant))
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, id := range []string{"e1", "e2", "e3"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"v":1}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+	}
+	// Patch creation_date directly so each entity has a distinct, ordered
+	// timestamp (instants ≥ 1 ms apart). This avoids relying on wall-clock
+	// ordering from CURRENT_TIMESTAMP when saves are fast.
+	pool := factory.Pool()
+	for _, pair := range []struct{ id, ts string }{
+		{"e1", "2020-01-01T00:00:00.000Z"},
+		{"e2", "2020-06-15T12:00:00.000Z"},
+		{"e3", "2021-01-01T00:00:00.000Z"},
+	} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE entities SET doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($1::text))
+			 WHERE tenant_id = $2 AND entity_id = $3`,
+			pair.ts, tenant, pair.id); err != nil {
+			t.Fatalf("patch creation_date %s: %v", pair.id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// e1 earliest, e3 latest → ascending creationDate: e1, e2, e3.
+	assertIDOrder(t, results, []string{"e1", "e2", "e3"})
+}
+
+// TestPGSearcher_OrderByStateMeta verifies that meta state field sorts
+// correctly using COLLATE "C" (OrderText).
+func TestPGSearcher_OrderByStateMeta(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("orderby-state-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, e := range []struct {
+		id    string
+		state string
+	}{
+		{"pending-ent", "PENDING"},
+		{"active-ent", "ACTIVE"},
+		{"new-ent", "NEW"},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: e.state},
+			Data: []byte(`{"tag":"x"}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// "C" locale alphabetical: "ACTIVE" < "NEW" < "PENDING".
+	assertIDOrder(t, results, []string{"active-ent", "new-ent", "pending-ent"})
+}
+
+// TestPGSearcher_OrderByNullsLast verifies that missing fields sort after all
+// non-null values (NULLS LAST). Without NULLS LAST, PostgreSQL places NULLs
+// first for ascending sorts, so "no-score" would appear before scored entities.
+func TestPGSearcher_OrderByNullsLast(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("orderby-nullslast-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, e := range []struct{ id, data string }{
+		{"has-score", `{"score":"50","present":true}`},
+		{"high-score", `{"score":"90","present":true}`},
+		{"no-score", `{"present":true}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+	// FilterNotNull on "present" matches all three entities (all have the field).
+	// Sorting by "score" ASC with NULLS LAST puts the null score last.
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "present", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// "50" < "90" lexically; no-score (NULL score) must be LAST.
+	assertIDOrder(t, results, []string{"has-score", "high-score", "no-score"})
+}
+
+// TestPGSearcher_OrderByTiebreaker verifies that when all sort-key values are
+// equal, a secondary entity_id tiebreaker ensures deterministic output.
+// Entities are inserted in z-ent, a-ent, m-ent order; without tiebreaker
+// PostgreSQL may return in any order. Expected: a-ent, m-ent, z-ent.
+func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("orderby-tiebreaker-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, id := range []string{"z-ent", "a-ent", "m-ent"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"city":"Berlin"}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// All have same city → tiebreaker by entity_id → alphabetical: a-ent, m-ent, z-ent.
+	assertIDOrder(t, results, []string{"a-ent", "m-ent", "z-ent"})
+}
+
+// TestPGSearcher_OrderByPointInTime verifies that ORDER BY works correctly
+// for point-in-time queries (the doc column comes from entity_versions).
+func TestPGSearcher_OrderByPointInTime(t *testing.T) {
+	const tenant = "pit-orderby-tenant"
+	const baseTS = "2026-04-01T00:00:00Z"
+
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant(spi.TenantID(tenant))
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, id := range []string{"pit-1", "pit-2"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"v":1}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+	}
+	// Patch entity_versions: set valid_time before the PIT snapshot and set
+	// distinct creation_date values so temporal ordering is deterministic.
+	pool := factory.Pool()
+	for _, pair := range []struct{ id, ts, createdAt string }{
+		{"pit-1", baseTS, "2020-01-01T00:00:00Z"},
+		{"pit-2", baseTS, "2020-06-01T00:00:00Z"},
+	} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE entity_versions
+			 SET valid_time = $1,
+			     doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($2::text))
+			 WHERE tenant_id = $3 AND entity_id = $4`,
+			pair.ts, pair.createdAt, tenant, pair.id); err != nil {
+			t.Fatalf("patch entity_versions %s: %v", pair.id, err)
+		}
+	}
+	pit, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	sr := store.(spi.Searcher)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			PointInTime:  &pit,
+			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+		})
+	if err != nil {
+		t.Fatalf("Search PIT: %v", err)
+	}
+	// pit-1 has earlier creationDate → should appear first.
+	assertIDOrder(t, results, []string{"pit-1", "pit-2"})
+}
+
+// TestPGSearcher_ValidateOrderSpecsRejectsUnknownMetaPath verifies that an
+// unrecognised SourceMeta path is rejected by validateOrderSpecs before any
+// SQL is constructed.
+func TestPGSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	sr := searcherOf(t, store)
+	_, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "person",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
+		})
+	if err == nil {
+		t.Fatal("expected error for unknown meta sort path, got nil")
+	}
+	if !errors.Is(err, postgres.ErrInvalidFilterPath) {
+		t.Fatalf("expected ErrInvalidFilterPath, got: %v", err)
+	}
+}
+
+// TestPGSearcher_OrderByMetaIDNoTiebreaker verifies that sorting by the "id"
+// meta path (which maps to entity_id column) does not add a duplicate
+// entity_id tiebreaker, and results are in correct order.
+func TestPGSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	sr := searcherOf(t, store)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "person",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search by meta id: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	// Results should be in ascending entity_id order: e1, e2, e3, e4, e5.
+	assertIDOrder(t, results, []string{"e1", "e2", "e3", "e4", "e5"})
 }
 
 func TestPGSearcher_InjectionFilterPath(t *testing.T) {
