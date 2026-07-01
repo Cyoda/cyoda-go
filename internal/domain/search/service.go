@@ -32,6 +32,7 @@ type SearchOptions struct {
 	Offset          int
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
+	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
 }
 
 // ResultOptions controls pagination when retrieving async search results.
