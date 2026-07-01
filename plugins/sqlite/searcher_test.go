@@ -530,6 +530,13 @@ func TestSearcher_OrderByNumericData(t *testing.T) {
 // TestSearcher_OrderByCreationDateMeta verifies that the canonical meta path
 // "creationDate" is mapped to the blob key "creation_date", enabling temporal
 // ordering by entity creation time.
+//
+// Entity IDs are assigned so that chronological (creationDate) order DIFFERS
+// from entity_id lexicographic order: "z" is saved first (oldest clock), "m"
+// second, "a" last (newest). Expected ascending result is [z, m, a]. If the
+// meta key mapping is wrong (returns NULL for all rows), the entity_id
+// tiebreaker takes over and produces [a, m, z] — the test would FAIL, proving
+// genuine RED capability.
 func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 	clock := sqlite.NewTestClock()
 	dir := t.TempDir()
@@ -544,7 +551,9 @@ func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 	store, _ := factory.EntityStore(ctx)
 
-	for _, id := range []string{"e1", "e2", "e3"} {
+	// "z" saved at t0 (oldest), "m" at t1, "a" at t2 (newest) —
+	// the inverse of entity_id lexicographic order.
+	for _, id := range []string{"z", "m", "a"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
 			Data: []byte(`{"v":1}`),
@@ -565,8 +574,9 @@ func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// e1 saved first (earliest), e3 last → ascending creationDate: e1, e2, e3.
-	assertIDOrder(t, results, []string{"e1", "e2", "e3"})
+	// Chronological ascending: z (t0), m (t1), a (t2).
+	// If mapping were wrong (all-NULL → entity_id tiebreaker): a, m, z — FAIL.
+	assertIDOrder(t, results, []string{"z", "m", "a"})
 }
 
 // TestSearcher_OrderByStateMeta verifies that meta state field sorts correctly

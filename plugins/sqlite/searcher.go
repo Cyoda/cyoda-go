@@ -223,11 +223,12 @@ func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
 	case spec.Source == spi.SourceMeta && spec.Path == "id":
 		base = qualify("entity_id")
 	case spec.Source == spi.SourceMeta:
-		// spec.Path is guaranteed canonical by validateOrderSpecs; the ok-guard
-		// is defense-in-depth (no nil/empty interpolation).
 		key, ok := metaBlobKey[spec.Path]
 		if !ok {
-			key = spec.Path
+			// Unreachable: validateOrderSpecs rejects any meta path outside the
+			// canonical set before Search() builds SQL. Panic surfaces a bypass
+			// (e.g. a future refactor) instead of silently interpolating input.
+			panic(fmt.Sprintf("orderByFieldExpr: unmapped meta sort path %q", spec.Path))
 		}
 		base = jsonExtract(qualify("meta"), key)
 	default:

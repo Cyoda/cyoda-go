@@ -367,6 +367,12 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 // TestPGSearcher_OrderByCreationDateMeta verifies that the canonical meta path
 // "creationDate" is mapped to the blob key "creation_date", enabling temporal
 // ordering by entity creation time.
+//
+// Entity IDs are assigned so that chronological (creationDate) order DIFFERS
+// from entity_id lexicographic order: "z" is oldest, "m" is middle, "a" is
+// newest. Expected ascending result is [z, m, a]. If the meta key mapping is
+// wrong (returns NULL for all rows), the entity_id tiebreaker takes over and
+// produces [a, m, z] — the test would FAIL, proving genuine RED capability.
 func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant = "orderby-creation-tenant"
@@ -376,7 +382,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
-	for _, id := range []string{"e1", "e2", "e3"} {
+	for _, id := range []string{"z", "m", "a"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
 			Data: []byte(`{"v":1}`),
@@ -385,13 +391,13 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		}
 	}
 	// Patch creation_date directly so each entity has a distinct, ordered
-	// timestamp (instants ≥ 1 ms apart). This avoids relying on wall-clock
-	// ordering from CURRENT_TIMESTAMP when saves are fast.
+	// timestamp (instants ≥ 1 ms apart). "z" is oldest, "a" is newest —
+	// the inverse of entity_id lexicographic order.
 	pool := factory.Pool()
 	for _, pair := range []struct{ id, ts string }{
-		{"e1", "2020-01-01T00:00:00.000Z"},
-		{"e2", "2020-06-15T12:00:00.000Z"},
-		{"e3", "2021-01-01T00:00:00.000Z"},
+		{"z", "2020-01-01T00:00:00.000Z"},
+		{"m", "2020-06-15T12:00:00.000Z"},
+		{"a", "2021-01-01T00:00:00.000Z"},
 	} {
 		if _, err := pool.Exec(ctx,
 			`UPDATE entities SET doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($1::text))
@@ -411,8 +417,9 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// e1 earliest, e3 latest → ascending creationDate: e1, e2, e3.
-	assertIDOrder(t, results, []string{"e1", "e2", "e3"})
+	// Chronological ascending: z (2020-01-01), m (2020-06-15), a (2021-01-01).
+	// If mapping were wrong (all-NULL → entity_id tiebreaker): a, m, z — FAIL.
+	assertIDOrder(t, results, []string{"z", "m", "a"})
 }
 
 // TestPGSearcher_OrderByStateMeta verifies that meta state field sorts
