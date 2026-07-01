@@ -202,6 +202,17 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", vErr
 	}
 
+	// Resolve sort keys synchronously so a bad field path returns 400
+	// before the job is ever created — the client gets an actionable error
+	// without a polling round-trip. The resolved, Kind-bearing specs are
+	// what we persist so a SelfExecutingSearchStore (which executes from
+	// the persisted opts and never runs the domain resolver) orders with
+	// the correct comparison class.
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return "", oerr
+	}
+
 	if opts.PointInTime == nil {
 		now := time.Now()
 		opts.PointInTime = &now
@@ -216,13 +227,15 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	}
 
 	optsJSON, err := json.Marshal(struct {
-		Limit       int        `json:"limit"`
-		Offset      int        `json:"offset"`
-		PointInTime *time.Time `json:"pointInTime,omitempty"`
+		Limit       int             `json:"limit"`
+		Offset      int             `json:"offset"`
+		PointInTime *time.Time      `json:"pointInTime,omitempty"`
+		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
 	}{
 		Limit:       opts.Limit,
 		Offset:      opts.Offset,
 		PointInTime: opts.PointInTime,
+		OrderBy:     orderBy,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal search options: %w", err)
