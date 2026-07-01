@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+func TestDefaultConfig_SearchMaxSortKeys(t *testing.T) {
+	t.Setenv("CYODA_SEARCH_MAX_SORT_KEYS", "")
+	if got := DefaultConfig().SearchMaxSortKeys; got != 16 {
+		t.Fatalf("default SearchMaxSortKeys = %d, want 16", got)
+	}
+	t.Setenv("CYODA_SEARCH_MAX_SORT_KEYS", "4")
+	if got := DefaultConfig().SearchMaxSortKeys; got != 4 {
+		t.Fatalf("env SearchMaxSortKeys = %d, want 4", got)
+	}
+}
+
 func TestDefaultConfig_OIDCDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.IAM.OIDC.RequireHTTPS {

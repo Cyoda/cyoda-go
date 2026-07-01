@@ -49,6 +49,9 @@ type Config struct {
 	// the request fails with 422 GROUP_CARDINALITY_EXCEEDED. Defaults to
 	// 10000; tune via CYODA_STATS_GROUP_MAX. See spec D2.
 	StatsGroupMax int
+	// SearchMaxSortKeys caps the number of sort keys per search request.
+	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
+	SearchMaxSortKeys int
 }
 
 type AdminConfig struct {
@@ -164,6 +167,10 @@ func DefaultConfig() Config {
 	if statsGroupMax <= 0 {
 		statsGroupMax = 10000
 	}
+	maxSortKeys := envInt("CYODA_SEARCH_MAX_SORT_KEYS", 16)
+	if maxSortKeys <= 0 {
+		maxSortKeys = 16
+	}
 
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
@@ -198,6 +205,7 @@ func DefaultConfig() Config {
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		StatsGroupMax:      statsGroupMax,
+		SearchMaxSortKeys:  maxSortKeys,
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),

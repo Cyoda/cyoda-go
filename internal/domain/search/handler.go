@@ -37,21 +37,23 @@ func jobLookupError(err error) *common.AppError {
 
 // Handler handles search-related HTTP endpoints.
 type Handler struct {
-	searchSvc *SearchService
-	factory   spi.StoreFactory
+	searchSvc   *SearchService
+	factory     spi.StoreFactory
+	maxSortKeys int
 }
 
 // NewHandler creates a new search handler wired to the given SearchService.
+// Uses a default cap of 16 sort keys per request.
 func NewHandler(searchSvc *SearchService) *Handler {
-	return &Handler{searchSvc: searchSvc}
+	return &Handler{searchSvc: searchSvc, maxSortKeys: 16}
 }
 
 // NewHandlerWithModel creates a search handler that additionally validates
 // condition value types against the model schema before executing search.
 // Pass a nil factory to disable condition-type validation (e.g. in tests
-// that don't need it).
-func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory) *Handler {
-	return &Handler{searchSvc: searchSvc, factory: factory}
+// that don't need it). maxSortKeys caps the number of sort keys per request.
+func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory, maxSortKeys int) *Handler {
+	return &Handler{searchSvc: searchSvc, factory: factory, maxSortKeys: maxSortKeys}
 }
 
 // lookupModelSchema fetches the parsed model schema for the given entity/version.
