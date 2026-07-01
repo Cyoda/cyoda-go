@@ -146,6 +146,12 @@ Notes:
   past 2^53). Two instants within the same millisecond tie and fall through to
   the `entity_id` tiebreaker on every backend. The parity test seeds
   sub-millisecond-apart instants to exercise the floor.
+- **Ordering assumes data conforms to its declared type.** A value physically
+  stored off-type (e.g. a string in a `Numeric`-typed field — a schema-on-write
+  violation) may order differently across backends (`gjson.Float()` vs
+  sqlite `CAST` vs `cyoda_try_float8`). This is out-of-contract data, not a
+  supported case; the canonical semantic guarantees agreement only for
+  schema-conformant values.
 - **Temporal is only ever an engine-controlled meta field.** Data temporal types
   (`LocalDate`, `LocalDateTime`, `LocalTime`, `ZonedDateTime`) are class **Text**
   (lexical on the stored ISO string): deterministic across backends, and
@@ -337,6 +343,7 @@ G=gRPC (`internal/grpc`).
 |----------|---|---|---|---|
 | sort data field asc/desc (Text) | ✓ sqlite+pg `orderByFieldExpr` | ✓ | ✓ | ✓ |
 | sort numeric data field (lexical-vs-numeric regression) | ✓ | ✓ | ✓ | — |
+| sort boolean data field (Bool class: 0/1 vs `::boolean` vs `cmpBool`) | ✓ | ✓ | ✓ | — |
 | sort by `@creationDate` / `@lastUpdateTime` (Temporal, cross-backend chronological) | ✓ | ✓ | ✓ | ✓ |
 | sort by `@state` (Text meta) | ✓ | ✓ | ✓ | — |
 | multi-key precedence + `entity_id` tiebreaker determinism | ✓ | ✓ | ✓ | — |
