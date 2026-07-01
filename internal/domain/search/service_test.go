@@ -1097,6 +1097,54 @@ func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestSubmitAsync_SortKeyCap_ReturnsError verifies that SubmitAsync returns a
+// 400 INVALID_FIELD_PATH AppError synchronously when the number of sort keys
+// exceeds the configured cap. The cap check fires before the job is created,
+// so CreateJob must not be called.
+func TestSubmitAsync_SortKeyCap_ReturnsError(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	baseStore, _ := factory.AsyncSearchStore(context.Background())
+	capture := newCaptureSearchStore(baseStore)
+	// Cap set to 2 — sending 3 keys must be rejected.
+	svc := search.NewSearchService(factory, uuids, capture).WithMaxSortKeys(2)
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	orderBy := []search.OrderKey{
+		{Path: "a", Source: spi.SourceData},
+		{Path: "b", Source: spi.SourceData},
+		{Path: "c", Source: spi.SourceData},
+	}
+	cond := &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "ACTIVE",
+	}
+
+	_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{OrderBy: orderBy})
+	if err == nil {
+		t.Fatal("expected error for too many sort keys, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want 400", appErr.Status)
+	}
+
+	// No job must have been created before the error was returned.
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.createJobCalls != 0 {
+		t.Errorf("CreateJob called %d time(s), want 0 (cap error must precede job creation)", capture.createJobCalls)
+	}
+}
+
 // TestSearch_DuplicateSortKeys_ReturnsError verifies that Search returns a
 // 400 INVALID_FIELD_PATH AppError when two OrderKeys share the same
 // source+path combination.
