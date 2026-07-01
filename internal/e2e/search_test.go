@@ -687,6 +687,129 @@ func TestSearchSort_Async_Submit_Happy(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Pushdown vs in-memory fallback agreement (isolated, single-backend)
+// ---------------------------------------------------------------------------
+
+// setupSortModelWithAmountAndArray imports a model whose sample schema includes
+// a numeric field "amount", a string field "name", and a string-array field
+// "tags". It locks the model and attaches a trivial two-state workflow.
+//
+// The "tags" array field makes "$.tags[*]" appear in the schema's FieldsMap,
+// which is necessary for the fallback-path test below to pass path validation
+// while still failing ConditionToFilter's stripDollarDot check.
+func setupSortModelWithAmountAndArray(t *testing.T, model string) {
+	t.Helper()
+	importPath := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", model)
+	resp := doAuth(t, http.MethodPost, importPath, `{"name":"Sample","amount":0,"tags":["a"]}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("import model %s: expected 200, got %d: %s", model, resp.StatusCode, body)
+	}
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, `{
+		"importMode": "REPLACE",
+		"workflows": [{"version": "1.1", "name": "sort-wf", "initialState": "NONE", "active": true,
+			"states": {"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
+			           "CREATED": {}}}]
+	}`)
+	if status != http.StatusOK {
+		t.Fatalf("workflow import for %s: expected 200, got %d: %s", model, status, body)
+	}
+}
+
+// TestSearchSort_PushdownFallbackAgree verifies that the SQL pushdown path
+// (spi.Searcher) and the in-memory fallback path (GetAll + sortEntities)
+// produce identical entity-id sequences for the same sort key on the same
+// entity set.
+//
+// Forcing the fallback: the Postgres plugin implements spi.Searcher, so the
+// only HTTP-expressible way to bypass it is an untranslatable condition —
+// specifically a SimpleCondition whose JSONPath contains a character that
+// ConditionToFilter's stripDollarDot rejects (e.g. '[').  The condition
+// "$.tags[*] NOT_NULL" satisfies all three requirements:
+//   (1) passes path validation ($.tags[*] is in the schema FieldsMap for
+//       array-field models);
+//   (2) fails ConditionToFilter (stripDollarDot rejects '[');
+//   (3) match.Match handles it correctly: convertJSONPath("$.tags[*]") →
+//       gjson path "tags.#" (array count), which is NOT_NULL for any entity
+//       that carries the tags field.
+//
+// This is an isolated single-backend e2e test (Postgres only). It is not in
+// the shared cross-backend parity suite because concurrency/race tests must
+// not destabilize unrelated parity scenarios (see .claude/rules/test-coverage.md).
+func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
+	const model = "e2e-search-sort-pushdown-fallback"
+
+	// Model has name (string), amount (numeric, sortable), tags (array —
+	// provides $.tags[*] in the FieldsMap for the fallback condition below).
+	setupSortModelWithAmountAndArray(t, model)
+
+	// Seed five entities with deliberately non-monotone amounts.
+	// All carry tags so that NOT_NULL on $.tags[*] returns true for each.
+	id1 := createEntityE2E(t, model, 1, `{"name":"E","amount":50,"tags":["x"]}`)
+	id2 := createEntityE2E(t, model, 1, `{"name":"B","amount":10,"tags":["x"]}`)
+	id3 := createEntityE2E(t, model, 1, `{"name":"C","amount":30,"tags":["x"]}`)
+	id4 := createEntityE2E(t, model, 1, `{"name":"D","amount":20,"tags":["x"]}`)
+	id5 := createEntityE2E(t, model, 1, `{"name":"A","amount":40,"tags":["x"]}`)
+
+	sortKeys := []string{"amount:asc"}
+
+	// --- Pushdown path ---
+	// matchAllCond is an empty AND group, which ConditionToFilter translates
+	// to a tautology filter. The Postgres Searcher executes
+	// "ORDER BY (data->>'amount')::float ASC" directly in SQL.
+	status, pushdownResults := directSearchSorted(t, model, 1, matchAllCond, sortKeys)
+	if status != http.StatusOK {
+		t.Fatalf("pushdown: expected 200, got %d", status)
+	}
+	if len(pushdownResults) != 5 {
+		t.Fatalf("pushdown: expected 5 results, got %d", len(pushdownResults))
+	}
+
+	// --- Fallback path ---
+	// "$.tags[*] NOT_NULL" passes path validation ($.tags[*] is in the
+	// FieldsMap) but fails ConditionToFilter (stripDollarDot rejects '['),
+	// forcing the GetAll + in-memory sortEntities path.
+	const fallbackCond = `{"type":"simple","jsonPath":"$.tags[*]","operatorType":"NOT_NULL","value":null}`
+	status, fallbackResults := directSearchSorted(t, model, 1, fallbackCond, sortKeys)
+	if status != http.StatusOK {
+		t.Fatalf("fallback: expected 200, got %d", status)
+	}
+	if len(fallbackResults) != 5 {
+		t.Fatalf("fallback: expected 5 results, got %d", len(fallbackResults))
+	}
+
+	// Extract entity IDs in search-result order from both paths.
+	pushdownIDs := make([]string, len(pushdownResults))
+	for i, r := range pushdownResults {
+		pushdownIDs[i] = resultMetaID(t, r)
+	}
+	fallbackIDs := make([]string, len(fallbackResults))
+	for i, r := range fallbackResults {
+		fallbackIDs[i] = resultMetaID(t, r)
+	}
+
+	// Both paths must agree on every position.
+	for i := range pushdownIDs {
+		if pushdownIDs[i] != fallbackIDs[i] {
+			t.Errorf("result[%d] mismatch: pushdown=%s fallback=%s\n pushdownIDs: %v\n fallbackIDs:  %v",
+				i, pushdownIDs[i], fallbackIDs[i], pushdownIDs, fallbackIDs)
+		}
+	}
+
+	// Additionally verify that both paths return the expected amount-ascending
+	// order, so we catch "both wrong but consistently so" divergences.
+	// amounts: id2=10, id4=20, id3=30, id5=40, id1=50
+	wantIDs := []string{id2, id4, id3, id5, id1}
+	for i, wantID := range wantIDs {
+		if pushdownIDs[i] != wantID {
+			t.Errorf("pushdown result[%d]: got id %s, want %s (expected amount-asc order: 10,20,30,40,50)",
+				i, pushdownIDs[i], wantID)
+		}
+	}
+}
+
 // TestSearchSort_Async_InvalidSort_Returns400 is the regression guard for the
 // async synchronous-resolution fix: an invalid sort key must return 400
 // INVALID_FIELD_PATH before a job is ever created, not a job ID followed by a
