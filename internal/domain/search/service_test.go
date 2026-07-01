@@ -3,7 +3,9 @@ package search_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -768,6 +770,155 @@ func TestSearchFallsBackWhenInTransaction(t *testing.T) {
 	// Should get result from the fallback path.
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
 		t.Fatalf("expected 1 result (e1) from fallback, got %d results", len(results))
+	}
+}
+
+// sortTestFactory returns a fixed Searcher entity store AND a fixed model store.
+// Used by the sort-pushdown tests that need both dimensions controlled.
+type sortTestFactory struct {
+	spi.StoreFactory
+	entityStore *searcherEntityStore
+	modelStore  spi.ModelStore
+}
+
+func (f *sortTestFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+func (f *sortTestFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {
+	return f.modelStore, nil
+}
+
+// TestSearch_SortByDataField_PushesOrderSpecToSearcher verifies that Search
+// with opts.OrderBy resolves the sort key against the model schema and passes
+// the fully-typed spi.OrderSpec (including Kind) down to the spi.Searcher.
+func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Model declares "surname" as a String field.
+	desc := buildSearchDescriptor(t, ref, "surname")
+	ms := &refreshingModelStore{
+		// validateConditionPaths (for $.surname) + resolveSortKeys each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc},
+	}
+
+	var capturedOpts spi.SearchOptions
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			capturedOpts = opts
+			return nil, nil
+		},
+	}
+
+	factory := &sortTestFactory{
+		StoreFactory: base,
+		entityStore:  ses,
+		modelStore:   ms,
+	}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.surname",
+		OperatorType: "EQUALS",
+		Value:        "Smith",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{
+		OrderBy: []search.OrderKey{{Path: "surname", Source: spi.SourceData, Desc: true}},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if ses.searchCalls != 1 {
+		t.Fatalf("expected searcher to be called once, got %d", ses.searchCalls)
+	}
+	if len(capturedOpts.OrderBy) != 1 {
+		t.Fatalf("expected 1 OrderSpec pushed to searcher, got %d", len(capturedOpts.OrderBy))
+	}
+	spec := capturedOpts.OrderBy[0]
+	if spec.Path != "surname" {
+		t.Errorf("spec.Path = %q, want %q", spec.Path, "surname")
+	}
+	if spec.Source != spi.SourceData {
+		t.Errorf("spec.Source = %q, want %q", spec.Source, spi.SourceData)
+	}
+	if !spec.Desc {
+		t.Error("spec.Desc = false, want true")
+	}
+	if spec.Kind != spi.OrderText {
+		t.Errorf("spec.Kind = %v, want spi.OrderText", spec.Kind)
+	}
+}
+
+// TestSearch_UnknownSortField_ReturnsInvalidFieldPath verifies that Search
+// with an OrderKey whose path is not in the model schema returns a
+// 400-classified *common.AppError with code INVALID_FIELD_PATH.
+func TestSearch_UnknownSortField_ReturnsInvalidFieldPath(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Model has "surname" but NOT "nonexistent".
+	desc := buildSearchDescriptor(t, ref, "surname")
+	ms := &refreshingModelStore{
+		// validateConditionPaths is skipped (lifecycle condition has no data paths);
+		// resolveSortKeys needs exactly one Get call.
+		getQueue: []*spi.ModelDescriptor{desc},
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil
+		},
+	}
+
+	factory := &sortTestFactory{
+		StoreFactory: base,
+		entityStore:  ses,
+		modelStore:   ms,
+	}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// LifecycleCondition: extractFieldPaths returns [] so validateConditionPaths
+	// exits early without touching the model store.
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "ACTIVE",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{
+		OrderBy: []search.OrderKey{{Path: "nonexistent", Source: spi.SourceData, Desc: false}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown sort field, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want %d", appErr.Status, http.StatusBadRequest)
 	}
 }
 

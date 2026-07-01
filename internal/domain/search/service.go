@@ -111,6 +111,11 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, vErr
 	}
 
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	store, err := s.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
@@ -129,6 +134,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				PointInTime:  opts.PointInTime,
 				Limit:        opts.Limit,
 				Offset:       opts.Offset,
+				OrderBy:      orderBy,
 			})
 		}
 		// Fall through to in-memory filtering if translation fails.
@@ -584,6 +590,28 @@ func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths 
 	for _, p := range paths {
 		s.pathCache.MarkPresent(tenant, ref, p)
 	}
+}
+
+// resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating
+// scalar-leaf data paths and the meta allowlist. Returns a 400-classified
+// AppError on bad input.
+func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get model store: %w", err)
+	}
+	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load schema for sort validation: %w", err)
+	}
+	specs, rerr := resolveOrderBy(keys, fields)
+	if rerr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+	}
+	return specs, nil
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more
