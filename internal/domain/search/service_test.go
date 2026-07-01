@@ -1057,6 +1057,101 @@ func TestSubmitAsync_OrderBy_PersistsTypedSpecs(t *testing.T) {
 	}
 }
 
+// TestSearch_SortKeyCap_ReturnsError verifies that Search returns a 400
+// INVALID_FIELD_PATH AppError when the number of sort keys exceeds the
+// configured cap. The cap check must fire before the model store is
+// consulted so the model need not be registered.
+func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	// Cap set to 2 — sending 3 keys must be rejected.
+	svc := search.NewSearchService(factory, uuids, searchStore).WithMaxSortKeys(2)
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	orderBy := []search.OrderKey{
+		{Path: "a", Source: spi.SourceData},
+		{Path: "b", Source: spi.SourceData},
+		{Path: "c", Source: spi.SourceData},
+	}
+	cond := &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "ACTIVE",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{OrderBy: orderBy})
+	if err == nil {
+		t.Fatal("expected error for too many sort keys, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want 400", appErr.Status)
+	}
+}
+
+// TestSearch_DuplicateSortKeys_ReturnsError verifies that Search returns a
+// 400 INVALID_FIELD_PATH AppError when two OrderKeys share the same
+// source+path combination.
+func TestSearch_DuplicateSortKeys_ReturnsError(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	// Model declares "tag" as a scalar string field.
+	desc := buildSearchDescriptor(t, ref, "tag")
+	ms := &refreshingModelStore{
+		// resolveSortKeys calls Get once.
+		getQueue: []*spi.ModelDescriptor{desc},
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil
+		},
+	}
+	factory := &sortTestFactory{StoreFactory: base, entityStore: ses, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// Two identical keys — same source+path must be rejected.
+	orderBy := []search.OrderKey{
+		{Path: "tag", Source: spi.SourceData},
+		{Path: "tag", Source: spi.SourceData},
+	}
+	cond := &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "ACTIVE",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{OrderBy: orderBy})
+	if err == nil {
+		t.Fatal("expected error for duplicate sort keys, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want 400", appErr.Status)
+	}
+}
+
 // I-3 variant: ensure the fix doesn't break normal successful flow.
 func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	factory := memory.NewStoreFactory()

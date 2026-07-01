@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -260,6 +261,60 @@ func TestEntitySearch_SnapshotSearch_OrderBy_ValidField(t *testing.T) {
 	}
 	if typed.Status.SnapshotID == "" {
 		t.Error("expected non-empty snapshotId")
+	}
+}
+
+// TestEntitySearch_DirectSearch_OrderBy_ExceedsCap verifies that a direct
+// search with more than 16 sort keys (the default cap) is rejected with
+// CLIENT_ERROR / INVALID_FIELD_PATH via the gRPC envelope. The model is
+// seeded with 17 scalar fields so all sort keys are otherwise valid — the
+// only reason for rejection must be the cap.
+func TestEntitySearch_DirectSearch_OrderBy_ExceedsCap(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Build a model with 17 scalar string fields (field0 … field16) so that
+	// every sort key in the request is schema-valid. The cap (16) is the
+	// only reason the request should be rejected.
+	sampleData := make(map[string]any, 17)
+	for i := 0; i < 17; i++ {
+		sampleData[fmt.Sprintf("field%d", i)] = "value"
+	}
+	importAndLockModel(t, svc, ctx, "widget", "1", sampleData)
+
+	// 17 sort keys — one beyond the default cap of 16.
+	orderBy := make([]any, 17)
+	for i := range orderBy {
+		orderBy[i] = map[string]any{"path": fmt.Sprintf("field%d", i)}
+	}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "s-cap-1",
+		"model": map[string]any{"name": "widget", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+		"orderBy": orderBy,
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected at least one response")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for exceeding sort key cap")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_FIELD_PATH") {
+		t.Errorf("expected INVALID_FIELD_PATH in message, got %q", typed.Error.Message)
 	}
 }
 

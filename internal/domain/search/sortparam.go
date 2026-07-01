@@ -13,22 +13,32 @@ import (
 // Duplicate paths and >maxKeys keys are rejected. Semantic validation
 // (schema scalar-leaf, meta allowlist) happens later in the service.
 func ParseSortParam(values []string, maxKeys int) ([]OrderKey, error) {
-	if len(values) > maxKeys {
-		return nil, fmt.Errorf("too many sort keys: %d (max %d)", len(values), maxKeys)
-	}
 	keys := make([]OrderKey, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
 	for _, raw := range values {
 		k, err := parseSortToken(raw)
 		if err != nil {
 			return nil, err
 		}
+		keys = append(keys, k)
+	}
+	return capAndDedupOrderKeys(keys, maxKeys)
+}
+
+// capAndDedupOrderKeys enforces the per-request sort-key cap and rejects
+// duplicate keys (same source+path). Shared by the HTTP grammar parser and
+// the service-layer resolver so every entry point (HTTP, gRPC, sync, async)
+// is bounded uniformly.
+func capAndDedupOrderKeys(keys []OrderKey, maxKeys int) ([]OrderKey, error) {
+	if len(keys) > maxKeys {
+		return nil, fmt.Errorf("too many sort keys: %d (max %d)", len(keys), maxKeys)
+	}
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
 		dedup := string(k.Source) + ":" + k.Path
 		if _, dup := seen[dedup]; dup {
 			return nil, fmt.Errorf("duplicate sort key: %q", k.Path)
 		}
 		seen[dedup] = struct{}{}
-		keys = append(keys, k)
 	}
 	return keys, nil
 }

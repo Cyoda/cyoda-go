@@ -69,6 +69,11 @@ type SearchService struct {
 	// validation. nil-safe: when unset, validation falls back to the
 	// inner-store Get + bounded RefreshAndGet pair on every request.
 	pathCache *PathValidationCache
+
+	// maxSortKeys caps the number of sort keys accepted per request across
+	// all entry points (HTTP, gRPC, sync, async). Zero means use the
+	// built-in default of 16.
+	maxSortKeys int
 }
 
 // NewSearchService creates a SearchService backed by the given store factory.
@@ -88,6 +93,14 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 // invalidates the (tenant, modelRef) bucket.
 func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchService {
 	s.pathCache = c
+	return s
+}
+
+// WithMaxSortKeys sets the per-request sort-key cap enforced by
+// resolveSortKeys. A value ≤ 0 restores the built-in default (16).
+// Returns the receiver for chaining after NewSearchService.
+func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
+	s.maxSortKeys = n
 	return s
 }
 
@@ -614,6 +627,19 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	if len(keys) == 0 {
 		return nil, nil
 	}
+
+	// Enforce the sort-key cap and reject duplicates before touching the
+	// model store. This bounds every entry point (HTTP, gRPC, sync, async)
+	// uniformly and fails fast on clearly-invalid requests.
+	effMax := s.maxSortKeys
+	if effMax <= 0 {
+		effMax = 16
+	}
+	keys, cerr := capAndDedupOrderKeys(keys, effMax)
+	if cerr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, cerr.Error())
+	}
+
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get model store: %w", err)

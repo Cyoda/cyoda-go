@@ -389,7 +389,8 @@ func New(cfg Config) *App {
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
-		WithPathValidationCache(pathValidationCache)
+		WithPathValidationCache(pathValidationCache).
+		WithMaxSortKeys(a.config.SearchMaxSortKeys)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
