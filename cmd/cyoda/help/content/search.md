@@ -316,7 +316,7 @@ Both sync and async search accept one or more `sort` query parameters. Repeat th
 
 **Tiebreaker:** `entity_id` ascending is always appended as the final key.
 
-**Key cap:** configurable via `CYODA_SEARCH_MAX_SORT_KEYS` (default 16); exceeding the cap returns `400 BAD_REQUEST`.
+**Key cap:** configurable via `CYODA_SEARCH_MAX_SORT_KEYS` (default 16); exceeding the cap returns `errors.INVALID_FIELD_PATH` (`400`), like any other malformed `sort` value.
 
 **Invalid paths:** unsortable, unknown, array, or non-scalar paths return `errors.INVALID_FIELD_PATH` (`400`).
 
