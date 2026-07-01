@@ -120,7 +120,7 @@ var metaJSONKey = map[string]string{
 
 // orderByClause builds the SQL ORDER BY from opts.OrderBy.
 //
-//   - Empty → default "ORDER BY entity_id COLLATE "C"" (unique, deterministic).
+//   - Empty → default `ORDER BY entity_id COLLATE "C"` (unique, deterministic).
 //   - Every key gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.
 //   - An entity_id tiebreaker is appended unless the terminal key already
