@@ -189,14 +189,22 @@ func RunSearchSortDataBool(t *testing.T, fixture BackendFixture) {
 // that sort=@creationDate:asc returns them in the canonical millisecond-floor
 // order with entity_id as the tiebreaker.
 //
-// Sub-millisecond guard design: B and C are created with no sleep between them
-// so they are likely to share the same millisecond-floored creation timestamp.
-// A and D are separated by ≥1 ms sleeps to guarantee distinct millisecond
-// buckets.  The expected order is computed AFTER creation by reading each
-// entity's actual creationDate from the server, truncating to milliseconds, and
-// applying the canonical (ms, entity_id-asc) sort.  A backend that does NOT
-// floor timestamps to milliseconds would use sub-ms precision and might order B
-// and C differently from the entity_id tiebreaker — causing a test failure.
+// What this scenario guards: cross-backend agreement on CHRONOLOGICAL ordering
+// by @creationDate plus the entity_id tiebreaker. Every backend must return the
+// same sequence.
+//
+// What it does NOT robustly guard: the canonical millisecond FLOOR itself. B and
+// C are created back-to-back so they *may* share a millisecond bucket, but
+// creationDate is server-assigned and two HTTP round-trips can straddle a ms
+// boundary, so the same-ms case is not guaranteed on any given run. The expected
+// order is computed AFTER creation by reading each entity's actual creationDate
+// back, truncating to milliseconds, and applying the canonical (ms, entity_id-asc)
+// sort — so a correctly-flooring backend always matches (deterministic, never
+// flaky), but a hypothetical non-flooring backend is only caught when B and C
+// happen to share a ms AND their UUID order disagrees with their sub-ms order.
+// The authoritative, deterministic ms-floor guard is the unit test
+// TestSortEntities_SubMillisecondTemporalTie (internal/domain/search); a stronger
+// black-box floor guard is not achievable here (server assigns the timestamps).
 func RunSearchSortMetaCreationDate(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
