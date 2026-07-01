@@ -296,6 +296,30 @@ On successful cancellation, response: `200 OK`, `application/json`:
 }
 ```
 
+## SORTING
+
+Both sync and async search accept one or more `sort` query parameters. Repeat the parameter for multi-key sorting; precedence follows declaration order.
+
+**Grammar:** `[@]path[:asc|desc]`
+
+- Direction defaults to `asc` when omitted.
+- A leading `$.` on a data path is tolerated and stripped: `$.year:desc` equals `year:desc`.
+- Prefix `@` to sort by a meta field: `@creationDate:asc`.
+
+**Meta field allowlist** (only these are accepted with `@`): `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`.
+
+**Order semantics:**
+- Strings: byte (lexicographic) order.
+- Numbers: numeric order.
+- Meta dates (`creationDate`, `lastUpdateTime`, `transitionForLatestSave`): chronological; millisecond resolution is the minimum precision enforced cross-engine.
+- Absent or null values sort last regardless of direction.
+
+**Tiebreaker:** `entity_id` ascending is always appended as the final key.
+
+**Key cap:** configurable via `CYODA_SEARCH_MAX_SORT_KEYS` (default 16); exceeding the cap returns `400 BAD_REQUEST`.
+
+**Invalid paths:** unsortable, unknown, array, or non-scalar paths return `errors.INVALID_FIELD_PATH` (`400`).
+
 ## PAGINATION
 
 Async search results use page-number pagination: `pageNumber=0` is the first page, `offset = pageNumber * pageSize`. `pageNumber` and `pageSize` are both string-encoded integers in query parameters.

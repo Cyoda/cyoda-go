@@ -6317,7 +6317,7 @@ paths:
         endpoint.
 
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
 
         The results are returned in a paginated format, with:
@@ -6505,7 +6505,7 @@ paths:
         - Supports point-in-time querying
 
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
 
         If no request body is provided or an empty request body is sent, all
