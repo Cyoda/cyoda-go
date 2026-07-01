@@ -2799,6 +2799,9 @@ type EntitySearchRequestJson struct {
 	// Entity model to use for building this snapshot.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
+	// OrderBy corresponds to the JSON schema field "orderBy".
+	OrderBy []EntitySearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
+
 	// point in time
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
@@ -2849,6 +2852,71 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type EntitySearchRequestJsonOrderByElem struct {
+	// Desc corresponds to the JSON schema field "desc".
+	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
+
+	// Path corresponds to the JSON schema field "path".
+	Path string `json:"path" yaml:"path" mapstructure:"path"`
+
+	// Source corresponds to the JSON schema field "source".
+	Source EntitySearchRequestJsonOrderByElemSource `json:"source,omitempty" yaml:"source,omitempty" mapstructure:"source,omitempty"`
+}
+
+type EntitySearchRequestJsonOrderByElemSource string
+
+const EntitySearchRequestJsonOrderByElemSourceData EntitySearchRequestJsonOrderByElemSource = "data"
+const EntitySearchRequestJsonOrderByElemSourceMeta EntitySearchRequestJsonOrderByElemSource = "meta"
+
+var enumValues_EntitySearchRequestJsonOrderByElemSource = []interface{}{
+	"data",
+	"meta",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_EntitySearchRequestJsonOrderByElemSource {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySearchRequestJsonOrderByElemSource, v)
+	}
+	*j = EntitySearchRequestJsonOrderByElemSource(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["path"]; raw != nil && !ok {
+		return fmt.Errorf("field path in EntitySearchRequestJsonOrderByElem: required")
+	}
+	type Plain EntitySearchRequestJsonOrderByElem
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["desc"]; !ok || v == nil {
+		plain.Desc = false
+	}
+	if v, ok := raw["source"]; !ok || v == nil {
+		plain.Source = "data"
+	}
+	*j = EntitySearchRequestJsonOrderByElem(plain)
+	return nil
+}
+
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
@@ -2888,6 +2956,9 @@ type EntitySnapshotSearchRequestJson struct {
 
 	// Entity model to use for building this snapshot.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
+
+	// OrderBy corresponds to the JSON schema field "orderBy".
+	OrderBy []EntitySnapshotSearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
 	// point in time
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
@@ -2933,6 +3004,71 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 		return err
 	}
 	*j = EntitySnapshotSearchRequestJsonError(plain)
+	return nil
+}
+
+type EntitySnapshotSearchRequestJsonOrderByElem struct {
+	// Desc corresponds to the JSON schema field "desc".
+	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
+
+	// Path corresponds to the JSON schema field "path".
+	Path string `json:"path" yaml:"path" mapstructure:"path"`
+
+	// Source corresponds to the JSON schema field "source".
+	Source EntitySnapshotSearchRequestJsonOrderByElemSource `json:"source,omitempty" yaml:"source,omitempty" mapstructure:"source,omitempty"`
+}
+
+type EntitySnapshotSearchRequestJsonOrderByElemSource string
+
+const EntitySnapshotSearchRequestJsonOrderByElemSourceData EntitySnapshotSearchRequestJsonOrderByElemSource = "data"
+const EntitySnapshotSearchRequestJsonOrderByElemSourceMeta EntitySnapshotSearchRequestJsonOrderByElemSource = "meta"
+
+var enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource = []interface{}{
+	"data",
+	"meta",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySnapshotSearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource, v)
+	}
+	*j = EntitySnapshotSearchRequestJsonOrderByElemSource(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySnapshotSearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["path"]; raw != nil && !ok {
+		return fmt.Errorf("field path in EntitySnapshotSearchRequestJsonOrderByElem: required")
+	}
+	type Plain EntitySnapshotSearchRequestJsonOrderByElem
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["desc"]; !ok || v == nil {
+		plain.Desc = false
+	}
+	if v, ok := raw["source"]; !ok || v == nil {
+		plain.Source = "data"
+	}
+	*j = EntitySnapshotSearchRequestJsonOrderByElem(plain)
 	return nil
 }
 

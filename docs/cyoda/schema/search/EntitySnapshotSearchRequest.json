@@ -20,6 +20,18 @@
       "type": "string",
       "format": "date-time",
       "description": "point in time"
+    },
+    "orderBy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path":   { "type": "string" },
+          "source": { "type": "string", "enum": ["data", "meta"], "default": "data" },
+          "desc":   { "type": "boolean", "default": false }
+        },
+        "required": ["path"]
+      }
     }
   },
   "required": [
