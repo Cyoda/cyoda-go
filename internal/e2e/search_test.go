@@ -736,8 +736,9 @@ func setupSortModelWithAmountAndArray(t *testing.T, model string) {
 //       that carries the tags field.
 //
 // This is an isolated single-backend e2e test (Postgres only). It is not in
-// the shared cross-backend parity suite because concurrency/race tests must
-// not destabilize unrelated parity scenarios (see .claude/rules/test-coverage.md).
+// the shared cross-backend parity suite because it asserts Postgres-specific
+// pushdown-vs-fallback behaviour; the parity suite is for backend-agnostic
+// behaviour that must hold consistently across all backends.
 func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 	const model = "e2e-search-sort-pushdown-fallback"
 
@@ -745,13 +746,15 @@ func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 	// provides $.tags[*] in the FieldsMap for the fallback condition below).
 	setupSortModelWithAmountAndArray(t, model)
 
-	// Seed five entities with deliberately non-monotone amounts.
+	// Seed four entities with amounts chosen so that numeric order differs from
+	// lexical order: numeric asc = 9,10,20,100; lexical asc = "10","100","20","9".
+	// Any path that sorts by string comparison rather than numeric value will
+	// produce a different sequence and fail the wantIDs assertion below.
 	// All carry tags so that NOT_NULL on $.tags[*] returns true for each.
-	id1 := createEntityE2E(t, model, 1, `{"name":"E","amount":50,"tags":["x"]}`)
-	id2 := createEntityE2E(t, model, 1, `{"name":"B","amount":10,"tags":["x"]}`)
-	id3 := createEntityE2E(t, model, 1, `{"name":"C","amount":30,"tags":["x"]}`)
-	id4 := createEntityE2E(t, model, 1, `{"name":"D","amount":20,"tags":["x"]}`)
-	id5 := createEntityE2E(t, model, 1, `{"name":"A","amount":40,"tags":["x"]}`)
+	id1 := createEntityE2E(t, model, 1, `{"name":"D","amount":100,"tags":["x"]}`)
+	id2 := createEntityE2E(t, model, 1, `{"name":"B","amount":9,"tags":["x"]}`)
+	id3 := createEntityE2E(t, model, 1, `{"name":"C","amount":20,"tags":["x"]}`)
+	id4 := createEntityE2E(t, model, 1, `{"name":"A","amount":10,"tags":["x"]}`)
 
 	sortKeys := []string{"amount:asc"}
 
@@ -763,8 +766,8 @@ func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("pushdown: expected 200, got %d", status)
 	}
-	if len(pushdownResults) != 5 {
-		t.Fatalf("pushdown: expected 5 results, got %d", len(pushdownResults))
+	if len(pushdownResults) != 4 {
+		t.Fatalf("pushdown: expected 4 results, got %d", len(pushdownResults))
 	}
 
 	// --- Fallback path ---
@@ -776,8 +779,8 @@ func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("fallback: expected 200, got %d", status)
 	}
-	if len(fallbackResults) != 5 {
-		t.Fatalf("fallback: expected 5 results, got %d", len(fallbackResults))
+	if len(fallbackResults) != 4 {
+		t.Fatalf("fallback: expected 4 results, got %d", len(fallbackResults))
 	}
 
 	// Extract entity IDs in search-result order from both paths.
@@ -798,13 +801,14 @@ func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 		}
 	}
 
-	// Additionally verify that both paths return the expected amount-ascending
+	// Additionally verify that both paths return the expected numeric amount-ascending
 	// order, so we catch "both wrong but consistently so" divergences.
-	// amounts: id2=10, id4=20, id3=30, id5=40, id1=50
-	wantIDs := []string{id2, id4, id3, id5, id1}
+	// amounts: id2=9, id4=10, id3=20, id1=100
+	// Lexical order would be: id4("10"), id1("100"), id3("20"), id2("9") — different.
+	wantIDs := []string{id2, id4, id3, id1}
 	for i, wantID := range wantIDs {
 		if pushdownIDs[i] != wantID {
-			t.Errorf("pushdown result[%d]: got id %s, want %s (expected amount-asc order: 10,20,30,40,50)",
+			t.Errorf("pushdown result[%d]: got id %s, want %s (expected numeric amount-asc order: 9,10,20,100)",
 				i, pushdownIDs[i], wantID)
 		}
 	}
