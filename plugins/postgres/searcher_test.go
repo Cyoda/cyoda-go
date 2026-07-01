@@ -462,6 +462,65 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 	assertIDOrder(t, results, []string{"active-ent", "new-ent", "pending-ent"})
 }
 
+// TestPGSearcher_OrderByMetaEmptyTransitionLast verifies that a meta text field
+// whose stored value is "" (empty string) sorts LAST, matching the sqlite and
+// in-memory comparator behaviour (both treat empty/absent as MISSING → LAST).
+//
+// The divergence: postgres serialises state/transition/transaction_id without
+// omitempty, so a zero-value field lands as `"transition":""` in the _meta
+// JSONB blob — a PRESENT, non-null empty string.  Without NULLIF the "C"
+// collation places "" before any non-empty string, so the empty entity would
+// appear FIRST ascending — wrong.  NULLIF("", '') → NULL → NULLS LAST restores
+// cross-backend parity.
+//
+// Why this test would FAIL against the pre-fix code:
+// Before the NULLIF wrap, ORDER BY on transition sorts "" < "nonblank" under
+// COLLATE "C", placing e-empty first.  The assertion expects e-empty last, so
+// the test FAILs, proving genuine RED capability.
+func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
+	const tenant = "orderby-empty-trans-tenant"
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant(spi.TenantID(tenant))
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	// Both entities start with transition="" (zero value, stored without omitempty).
+	// We then patch e-has to a non-empty value so the two entities differ.
+	for _, id := range []string{"e-has", "e-empty"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"tag":"y"}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+	}
+	// Patch e-has to have a non-empty transition so it differs from e-empty.
+	pool := factory.Pool()
+	if _, err := pool.Exec(ctx,
+		`UPDATE entities SET doc = jsonb_set(doc, '{_meta,transition}', to_jsonb($1::text))
+		 WHERE tenant_id = $2 AND entity_id = $3`,
+		"nonblank", tenant, "e-has"); err != nil {
+		t.Fatalf("patch transition e-has: %v", err)
+	}
+
+	sr := store.(spi.Searcher)
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "transitionForLatestSave", Source: spi.SourceMeta, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Non-empty "nonblank" sorts before empty (NULL-treated) "".
+	// Empty entity must be LAST; without NULLIF it would be FIRST (wrong).
+	assertIDOrder(t, results, []string{"e-has", "e-empty"})
+}
+
 // TestPGSearcher_OrderByNullsLast verifies that missing fields sort after all
 // non-null values (NULLS LAST). Without NULLS LAST, PostgreSQL places NULLs
 // first for ascending sorts, so "no-score" would appear before scored entities.

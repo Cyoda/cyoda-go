@@ -120,18 +120,25 @@ var metaJSONKey = map[string]string{
 
 // orderByClause builds the SQL ORDER BY from opts.OrderBy.
 //
-//   - Empty → default "ORDER BY entity_id" (unique, deterministic).
+//   - Empty → default "ORDER BY entity_id COLLATE "C"" (unique, deterministic).
 //   - Every key gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.
 //   - An entity_id tiebreaker is appended unless the terminal key already
 //     resolves to entity_id (Path="id", Source=SourceMeta), avoiding duplicates.
+//
+// Both the default ORDER BY and the appended tiebreaker use COLLATE "C" for
+// byte-order semantics, consistent with the explicit @id sort key and the
+// sqlite/memory paths. This guards against a nondeterministic ICU database
+// collation if the cluster is provisioned with a non-C default collation.
 //
 // entity_id and other bare column names resolve against the entities table
 // (current-state) or the `latest` derived table (point-in-time), both of
 // which expose entity_id in their outer SELECT.
 func orderByClause(opts spi.SearchOptions) string {
 	if len(opts.OrderBy) == 0 {
-		return " ORDER BY entity_id"
+		// COLLATE "C": byte-order semantics, consistent with @id sort key and
+		// sqlite/memory paths; guards against nondeterministic ICU DB collation.
+		return ` ORDER BY entity_id COLLATE "C"`
 	}
 	clauses := make([]string, 0, len(opts.OrderBy)+1)
 	for _, spec := range opts.OrderBy {
@@ -142,8 +149,10 @@ func orderByClause(opts spi.SearchOptions) string {
 		clauses = append(clauses, expr+" NULLS LAST")
 	}
 	// Append entity_id tiebreaker unless the last spec already IS entity_id.
+	// COLLATE "C": byte-order semantics consistent with @id sort key and
+	// sqlite/memory paths; guards against nondeterministic ICU DB collation.
 	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
-		clauses = append(clauses, "entity_id")
+		clauses = append(clauses, `entity_id COLLATE "C"`)
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")
 }
@@ -197,6 +206,17 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 	case spi.OrderBool:
 		return "(" + base + ")::boolean"
 	default: // OrderText (zero value)
-		return "(" + base + ") COLLATE \"C\""
+		// For non-id meta text fields, postgres stores state/transition/transaction_id
+		// without omitempty, so an empty value lands as "" (a present, non-null empty
+		// string) rather than an absent key. Under COLLATE "C", "" sorts FIRST
+		// ascending, diverging from sqlite (absent key → NULL → NULLS LAST) and the
+		// in-memory comparator (metaLeaf treats empty string as MISSING → LAST).
+		// NULLIF converts "" to NULL so NULLS LAST takes effect, restoring parity.
+		// Data paths and the entity_id column never store empty-means-missing values
+		// this way, so NULLIF is not applied to them.
+		if spec.Source == spi.SourceMeta && spec.Path != "id" {
+			return `NULLIF(` + base + `, '') COLLATE "C"`
+		}
+		return "(" + base + `) COLLATE "C"`
 	}
 }
