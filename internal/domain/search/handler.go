@@ -128,6 +128,15 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		PointInTime: params.PointInTime,
 	}
 
+	if params.Sort != nil {
+		keys, perr := ParseSortParam(*params.Sort, h.maxSortKeys)
+		if perr != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, perr.Error()))
+			return
+		}
+		opts.OrderBy = keys
+	}
+
 	// Parse limit from string parameter.
 	if params.Limit != nil {
 		lim, err := strconv.Atoi(*params.Limit)
@@ -209,6 +218,15 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
+	}
+
+	if params.Sort != nil {
+		keys, perr := ParseSortParam(*params.Sort, h.maxSortKeys)
+		if perr != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, perr.Error()))
+			return
+		}
+		opts.OrderBy = keys
 	}
 
 	modelRef := spi.ModelRef{
