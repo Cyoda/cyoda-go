@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -459,4 +460,347 @@ func TestSearcher_TenantIsolation(t *testing.T) {
 	if len(resultsB) != 1 || resultsB[0].Meta.ID != "e2" {
 		t.Errorf("tenant B should see e2 only, got %d results", len(resultsB))
 	}
+}
+
+// ---- ORDER BY tests (Task 10: Kind-aware ORDER BY) -------------------------
+
+// assertIDOrder checks that got matches want by entity ID position.
+func assertIDOrder(t *testing.T, got []*spi.Entity, want []string) {
+	t.Helper()
+	gotIDs := make([]string, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.Meta.ID
+	}
+	if len(gotIDs) != len(want) {
+		t.Fatalf("length mismatch: got %v (len=%d), want %v (len=%d)", gotIDs, len(gotIDs), want, len(want))
+	}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Errorf("wrong order: got %v, want %v", gotIDs, want)
+			return
+		}
+	}
+}
+
+// TestSearcher_OrderByNumericData verifies that OrderNumeric applies CAST AS
+// REAL so that string-encoded numbers sort by magnitude, not byte order.
+// Without CAST: "10" < "100" < "9" (lexical) → order b, c, a.
+// With CAST:    9 < 10 < 100 (numeric) → order a, b, c.
+func TestSearcher_OrderByNumericData(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "numeric_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	for _, e := range []struct{ id, data string }{
+		{"a", `{"n":"9"}`},
+		{"b", `{"n":"10"}`},
+		{"c", `{"n":"100"}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Numeric: 9 < 10 < 100 → a, b, c.
+	assertIDOrder(t, results, []string{"a", "b", "c"})
+}
+
+// TestSearcher_OrderByCreationDateMeta verifies that the canonical meta path
+// "creationDate" is mapped to the blob key "creation_date", enabling temporal
+// ordering by entity creation time.
+func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
+	clock := sqlite.NewTestClock()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "creationdate_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath, sqlite.WithClock(clock))
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	for _, id := range []string{"e1", "e2", "e3"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"v":1}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+		clock.Advance(10 * time.Millisecond)
+	}
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// e1 saved first (earliest), e3 last → ascending creationDate: e1, e2, e3.
+	assertIDOrder(t, results, []string{"e1", "e2", "e3"})
+}
+
+// TestSearcher_OrderByStateMeta verifies that meta state field sorts correctly
+// using COLLATE BINARY (OrderText).
+func TestSearcher_OrderByStateMeta(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	// Insert in reverse alphabetical order to confirm correct sorting.
+	for _, e := range []struct {
+		id    string
+		state string
+	}{
+		{"pending-ent", "PENDING"},
+		{"active-ent", "ACTIVE"},
+		{"new-ent", "NEW"},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: e.state},
+			Data: []byte(`{"tag":"x"}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// BINARY alphabetical: "ACTIVE" < "NEW" < "PENDING".
+	assertIDOrder(t, results, []string{"active-ent", "new-ent", "pending-ent"})
+}
+
+// TestSearcher_OrderByNullsLast verifies that missing fields sort after all
+// non-null values (NULLS LAST). Without NULLS LAST, SQLite places NULLs first
+// for ascending sorts, making "no-score" appear before scored entities.
+func TestSearcher_OrderByNullsLast(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "nullslast_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	// All entities share "present":true so they all pass the filter.
+	// "no-score" has no "score" field → NULL for the sort key.
+	for _, e := range []struct{ id, data string }{
+		{"has-score", `{"score":"50","present":true}`},
+		{"high-score", `{"score":"90","present":true}`},
+		{"no-score", `{"present":true}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	// Filter by "present" so all 3 entities are returned; sort by "score" ASC.
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "present", Source: spi.SourceData, Value: true},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// "50" < "90" lexically; no-score (NULL score) must be LAST.
+	assertIDOrder(t, results, []string{"has-score", "high-score", "no-score"})
+}
+
+// TestSearcher_OrderByTiebreaker verifies that when all sort-key values are
+// equal, a secondary entity_id tiebreaker ensures deterministic output.
+// Without the tiebreaker SQLite returns rows in scan (insertion) order.
+// We insert z-ent, a-ent, m-ent and expect alphabetical a-ent, m-ent, z-ent.
+func TestSearcher_OrderByTiebreaker(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tiebreaker_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	// Deliberate insertion order: z first, then a, then m.
+	// Without a tiebreaker, SQLite returns in scan order: z, a, m.
+	for _, id := range []string{"z-ent", "a-ent", "m-ent"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"city":"Berlin"}`),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// All have same city → tiebreaker by entity_id → alphabetical: a-ent, m-ent, z-ent.
+	assertIDOrder(t, results, []string{"a-ent", "m-ent", "z-ent"})
+}
+
+// TestSearcher_OrderByPointInTime verifies that OrderBy works correctly for
+// point-in-time queries (table alias "ev").
+func TestSearcher_OrderByPointInTime(t *testing.T) {
+	clock := sqlite.NewTestClock()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pit_order_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath, sqlite.WithClock(clock))
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	// Save pit-1 at t0.
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "pit-1", ModelRef: ref, State: "NEW"},
+		Data: []byte(`{"v":1}`),
+	}); err != nil {
+		t.Fatalf("Save pit-1: %v", err)
+	}
+	clock.Advance(10 * time.Millisecond) // → t1
+
+	// Save pit-2 at t1.
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "pit-2", ModelRef: ref, State: "NEW"},
+		Data: []byte(`{"v":2}`),
+	}); err != nil {
+		t.Fatalf("Save pit-2: %v", err)
+	}
+	clock.Advance(10 * time.Millisecond) // → t2
+	t2 := clock.Now()
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			PointInTime:  &t2,
+			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+		})
+	if err != nil {
+		t.Fatalf("Search PIT: %v", err)
+	}
+	// pit-1 created at t0 (earlier) → appears first.
+	assertIDOrder(t, results, []string{"pit-1", "pit-2"})
+}
+
+// TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath verifies that an
+// unrecognised SourceMeta path is rejected by validateOrderSpecs before any
+// SQL is constructed.
+func TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
+	factory, ctx := setupSearcherTest(t)
+	store, _ := factory.EntityStore(ctx)
+	searcher := store.(spi.Searcher)
+
+	_, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "person",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
+		})
+	if err == nil {
+		t.Fatal("expected error for unknown meta sort path, got nil")
+	}
+	if !errors.Is(err, sqlite.ErrInvalidFilterPath) {
+		t.Fatalf("expected ErrInvalidFilterPath, got: %v", err)
+	}
+}
+
+// TestSearcher_OrderByMetaIDNoTiebreaker verifies that sorting by the "id"
+// meta path (which maps to the entity_id column) does not add a duplicate
+// entity_id tiebreaker, and that results are returned in correct order.
+func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
+	factory, ctx := setupSearcherTest(t)
+	store, _ := factory.EntityStore(ctx)
+	searcher := store.(spi.Searcher)
+
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "person",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta}},
+		})
+	if err != nil {
+		t.Fatalf("Search by meta id: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	// Results should be in ascending entity_id order: e1, e2, e3, e4, e5.
+	assertIDOrder(t, results, []string{"e1", "e2", "e3", "e4", "e5"})
 }

@@ -93,10 +93,21 @@ func validateFilterPaths(f spi.Filter) error {
 	return validateJSONPath(f.Path)
 }
 
-// validateOrderSpecs checks every OrderSpec.Path.
+// validateOrderSpecs checks every OrderSpec path. For SourceMeta paths,
+// the canonical name must be in the metaBlobKey allowlist (or "id");
+// unknown meta names are rejected before any SQL is built. For SourceData
+// paths, the existing validateJSONPath SQL-injection guard applies.
 func validateOrderSpecs(specs []spi.OrderSpec) error {
 	for _, s := range specs {
 		if s.Path == "" {
+			continue
+		}
+		if s.Source == spi.SourceMeta {
+			if s.Path != "id" {
+				if _, ok := metaBlobKey[s.Path]; !ok {
+					return fmt.Errorf("%w: unknown meta sort path %q", ErrInvalidFilterPath, s.Path)
+				}
+			}
 			continue
 		}
 		if err := validateJSONPath(s.Path); err != nil {
