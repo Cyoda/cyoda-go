@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,9 +125,11 @@ type callbackHarness struct {
 	mu    sync.Mutex
 	procs map[string]callbackProc
 
-	// bearer is a cached client-credentials JWT for this stack (ROLE_ADMIN,ROLE_M2M).
+	// bearerVal caches the client-credentials JWT for this stack (ROLE_ADMIN,ROLE_M2M).
+	// atomic.Value synchronises the writer (test goroutine, bearerOnce.Do) and the
+	// reader (member goroutine, callback()), keeping go test -race clean.
 	bearerOnce sync.Once
-	bearer     string
+	bearerVal  atomic.Value // stores string
 }
 
 // newCallbackHarness stands up the full stack + connected member and registers
@@ -212,11 +215,12 @@ func (h *callbackHarness) lookupProc(name string) (callbackProc, bool) {
 // token returns a cached client-credentials bearer for this stack.
 func (h *callbackHarness) token(t *testing.T) string {
 	t.Helper()
-	h.bearerOnce.Do(func() { h.bearer = h.fetchToken(t) })
-	if h.bearer == "" {
+	h.bearerOnce.Do(func() { h.bearerVal.Store(h.fetchToken(t)) })
+	tok, _ := h.bearerVal.Load().(string)
+	if tok == "" {
 		t.Fatal("callbackHarness: empty bearer token")
 	}
-	return h.bearer
+	return tok
 }
 
 func (h *callbackHarness) fetchToken(t *testing.T) string {
@@ -280,7 +284,8 @@ func (h *callbackHarness) callback(method, path, body, txToken string) (callback
 	if err != nil {
 		return callbackResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+h.bearer)
+	tok, _ := h.bearerVal.Load().(string)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	if txToken != "" {
 		req.Header.Set("X-Tx-Token", txToken)
@@ -310,6 +315,7 @@ func (h *callbackHarness) readBody(t *testing.T, resp *http.Response) string {
 func (h *callbackHarness) SetupModelWithWorkflow(t *testing.T, entityName, workflowJSON string) {
 	t.Helper()
 	// Import model (SAMPLE_DATA converter, same sample as the other workflow tests).
+	// workflowSampleModel is defined in workflow_test.go
 	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", entityName), workflowSampleModel, "")
 	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
 		t.Fatalf("import model %s: %d %s", entityName, resp.StatusCode, body)

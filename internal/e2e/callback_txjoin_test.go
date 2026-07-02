@@ -144,7 +144,7 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 	if failStatus == http.StatusOK {
 		t.Fatalf("primary create (failure branch) unexpectedly succeeded: %s", failBody)
 	}
-	_ = failID
+	_ = failID // empty on failure — nothing to look up
 
 	var doomedSecondaryID string
 	select {
