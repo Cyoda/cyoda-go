@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"google.golang.org/grpc/metadata"
@@ -13,6 +14,11 @@ import (
 
 // GRPCTxTokenKey is the gRPC metadata key carrying the transaction routing token.
 const GRPCTxTokenKey = "tx-token"
+
+// ErrNodeUnavailable is returned (wrapped) by ResolveTarget when a token names
+// a peer that is dead or unknown to the registry. Callers use errors.Is to map
+// it to a TRANSACTION_NODE_UNAVAILABLE operational error without string-matching.
+var ErrNodeUnavailable = errors.New(common.ErrCodeTransactionNodeUnavailable + ": transaction node is not available")
 
 // ExtractGRPCToken reads the transaction token from gRPC incoming metadata.
 // Returns an empty string if the key is absent or the metadata is missing.
@@ -55,8 +61,7 @@ func ResolveTarget(ctx context.Context, signer *token.Signer, registry contract.
 		return "", false, fmt.Errorf("registry lookup: %w", err)
 	}
 	if !alive || nodeAddr == "" {
-		return "", false, fmt.Errorf("%s: node %s is not available",
-			common.ErrCodeTransactionNodeUnavailable, claims.NodeID)
+		return "", false, fmt.Errorf("%w (node %s)", ErrNodeUnavailable, claims.NodeID)
 	}
 
 	return nodeAddr, true, nil

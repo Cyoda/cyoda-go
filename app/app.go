@@ -681,7 +681,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, cfg.OTelEnabled)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled)
 
 	return a
 }

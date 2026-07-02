@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
@@ -44,15 +45,22 @@ func NewServer(
 	entityHandler *entity.Handler,
 	modelHandler *model.Handler,
 	searchService *search.SearchService,
+	tokenSigner *token.Signer,
+	nodeRegistry contract.NodeRegistry,
+	selfNodeID string,
 	otelEnabled bool,
 ) *Server {
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
 		opts = append(opts, googlegrpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
+	// Auth runs first so the tx-route interceptor sees the authenticated
+	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
+	// second, joining the referenced transaction or forwarding to its owner.
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr)
 	opts = append(opts,
-		googlegrpc.UnaryInterceptor(UnaryAuthInterceptor(authSvc)),
-		googlegrpc.StreamInterceptor(StreamAuthInterceptor(authSvc)),
+		googlegrpc.ChainUnaryInterceptor(UnaryAuthInterceptor(authSvc), txRoute.unary()),
+		googlegrpc.ChainStreamInterceptor(StreamAuthInterceptor(authSvc), txRoute.stream()),
 	)
 	grpcServer := googlegrpc.NewServer(opts...)
 	svc := &CloudEventsServiceImpl{
