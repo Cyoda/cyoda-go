@@ -370,3 +370,123 @@ func RunCallbackEmptyTokenStandalone(t *testing.T, fixture BackendFixture) {
 func cbStatusEquals(value string) string {
 	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, value)
 }
+
+// RunCallback_CBDPostJoinsTxPost proves that COMMIT_BEFORE_DISPATCH with
+// startNewTxOnDispatch=true opens TX_post and mints a real tx-token: the
+// callback joins TX_post and writes a secondary entity atomically. After success
+// the secondary is durable, the primary carries secondaryId, and tokenWasEmpty
+// is false (the dispatcher DID mint a real token — unlike the CBD-default branch).
+//
+// This is the parity counterpart to TestCallback_CBDPost_JoinsTxPost in
+// internal/e2e (single-backend, live harness). Cross-backend proof: the engine's
+// TX_post plumbing and the TxJoin middleware must behave identically on every
+// backend.
+func RunCallback_CBDPostJoinsTxPost(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const secondary = "cbtj-cbd-post-secondary"
+	const primary = "cbtj-cbd-post-primary"
+	const marker = "cbtj-cbd-post"
+
+	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+
+	// Build the workflow inline: COMMIT_BEFORE_DISPATCH + startNewTxOnDispatch=true.
+	// cbPrimaryProcWorkflow does not support startNewTxOnDispatch, so inline here.
+	ctxVal := cbContext(secondary, marker)
+	wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "cbtj-cbd-post-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
+					"processors": [{"type": "calculator", "name": "cb-create-secondary",
+						"executionMode": "COMMIT_BEFORE_DISPATCH",
+						"config": {"attachEntity": true, "calculationNodesTags": "",
+						           "startNewTxOnDispatch": true, "context": %s}}]
+				}]},
+				"ACTIVE": {}
+			}
+		}]
+	}`, ctxVal)
+	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`, wf)
+
+	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create (CBD+TX_post): %v", err)
+	}
+	prim, err := c.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
+	}
+	if prim.Meta.State != "ACTIVE" {
+		t.Fatalf("primary state = %q; want ACTIVE", prim.Meta.State)
+	}
+	// TX_post must have minted a real token — the processor must NOT see an empty token.
+	if empty, _ := prim.Data["tokenWasEmpty"].(bool); empty {
+		t.Errorf("CBD+TX_post: tokenWasEmpty=true; want false (TX_post must mint a real routing token)")
+	}
+	secIDStr, _ := prim.Data["secondaryId"].(string)
+	if secIDStr == "" {
+		t.Fatalf("primary data missing secondaryId (CBD+TX_post callback did not create secondary): data=%+v", prim.Data)
+	}
+	secID, err := uuid.Parse(secIDStr)
+	if err != nil {
+		t.Fatalf("parse secondaryId %q: %v", secIDStr, err)
+	}
+	// Secondary committed atomically with TX_post.
+	sec, err := c.GetEntity(t, secID)
+	if err != nil {
+		t.Fatalf("secondary GET: %v (callback write must be durable after TX_post commit)", err)
+	}
+	if sec.Meta.State != "STORED" {
+		t.Errorf("secondary state = %q; want STORED", sec.Meta.State)
+	}
+}
+
+// RunCallback_AsyncNewTxDiscardOnFailure proves ASYNC_NEW_TX savepoint semantics
+// for the failure branch:
+//
+//  1. The secondary entity the callback created inside the savepoint is DISCARDED
+//     when the processor fails (savepoint rollback, NOT full T abort).
+//  2. The pipeline CONTINUES: ASYNC_NEW_TX failure is non-fatal — primary reaches ACTIVE.
+//  3. The primary commits WITHOUT the secondary — the doomed marker search returns 0.
+//
+// This distinguishes ASYNC_NEW_TX from SYNC: a SYNC failure aborts T entirely
+// (primary fails too). Here the primary succeeds while the secondary is silently
+// discarded. If the secondary survived the rollback, the doomed-marker search would
+// return 1, proving the savepoint semantics are broken.
+func RunCallback_AsyncNewTxDiscardOnFailure(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const secondary = "cbtj-anytx-fail-secondary"
+	const primary = "cbtj-anytx-fail-primary"
+	const marker = "cbtj-anytx-doomed"
+
+	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+		cbPrimaryProcWorkflow("cbtj-anytx-fail-wf", "cb-create-then-fail", "ASYNC_NEW_TX", cbContext(secondary, marker)))
+
+	// Pipeline must continue — ASYNC_NEW_TX failure is non-fatal → primary succeeds.
+	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create (ASYNC_NEW_TX non-fatal failure): %v", err)
+	}
+	prim, err := c.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
+	}
+	if prim.Meta.State != "ACTIVE" {
+		t.Fatalf("primary state = %q; want ACTIVE (ASYNC_NEW_TX failure is non-fatal, pipeline must continue)", prim.Meta.State)
+	}
+	// Savepoint rolled back — secondary written inside savepoint must be gone.
+	// A hit here means the write survived the rollback → savepoint semantics broken.
+	doomedHits, err := c.SyncSearch(t, secondary, 1, cbStatusEquals(marker))
+	if err != nil {
+		t.Fatalf("search doomed marker: %v", err)
+	}
+	if len(doomedHits) != 0 {
+		t.Fatalf("doomed secondary search = %d; want 0 — savepoint NOT rolled back on ASYNC_NEW_TX failure", len(doomedHits))
+	}
+}

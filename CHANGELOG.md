@@ -43,7 +43,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   cascade. An absent token causes the callback to run standalone (`Begin`), which
   is the normal behaviour for `COMMIT_BEFORE_DISPATCH` with
   `startNewTxOnDispatch=false`. New env vars: `CYODA_TX_TOKEN_TTL` (token
-  validity, default `60s`), `CYODA_GRPC_NODE_ADDR` (gRPC address advertised in
+  validity, default `90s`), `CYODA_GRPC_NODE_ADDR` (gRPC address advertised in
   tokens for B→A forwarding), `CYODA_COMPUTE_HTTP_BASE` (base URL for
   compute-test-client HTTP callbacks).
 

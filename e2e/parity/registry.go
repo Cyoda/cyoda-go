@@ -113,6 +113,8 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_CriteriaReadYourWrites", RunCallbackCriteriaReadYourWrites},
 	{"CallbackTxJoin_IfMatchUpdate", RunCallbackIfMatchUpdate},
 	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
+	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
+	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},

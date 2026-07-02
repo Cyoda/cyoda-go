@@ -81,7 +81,7 @@ func handleTokenError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, token.ErrTokenExpired):
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
+			http.StatusGone,
 			common.ErrCodeTransactionExpired,
 			"transaction token has expired",
 		))

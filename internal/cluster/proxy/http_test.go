@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,7 +175,7 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 	}
 }
 
-func TestHTTPProxy_ExpiredToken_Returns400(t *testing.T) {
+func TestHTTPProxy_ExpiredToken_Returns410(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
@@ -192,8 +193,11 @@ func TestHTTPProxy_ExpiredToken_Returns400(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "TRANSACTION_EXPIRED") {
+		t.Errorf("expected TRANSACTION_EXPIRED error code, got: %s", body)
 	}
 }
 
