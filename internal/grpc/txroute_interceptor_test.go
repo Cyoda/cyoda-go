@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,17 @@ type fakeJoinTM struct {
 
 func (fakeJoinTM) Join(ctx context.Context, txID string) (context.Context, error) {
 	return spi.WithTransaction(ctx, &spi.TransactionState{ID: txID}), nil
+}
+
+// fakeErrTM satisfies spi.TransactionManager, failing Join with a fixed error so
+// the local-join path exercises JoinFromToken's error mapping in the interceptor.
+type fakeErrTM struct {
+	spi.TransactionManager
+	err error
+}
+
+func (f fakeErrTM) Join(context.Context, string) (context.Context, error) {
+	return nil, f.err
 }
 
 // fakeServerStream is a minimal googlegrpc.ServerStream double.
@@ -230,6 +242,103 @@ func TestTxRouteInterceptor_BadTokenEnvelope(t *testing.T) {
 	if r.Error == nil || r.Error.Message == "" {
 		t.Fatalf("expected error detail, got %+v", r.Error)
 	}
+}
+
+// assertEnvelopeCode decodes an EntityManage error envelope and asserts it is a
+// failure whose operational code (rendered as the "CODE: detail" message prefix
+// on the CLIENT_ERROR class) matches wantCode. Covers the gRPC entry point's
+// loud-fail contract for one callback-token error class (feature #287).
+func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
+	t.Helper()
+	ce, ok := resp.(*cepb.CloudEvent)
+	if !ok {
+		t.Fatalf("expected *cepb.CloudEvent, got %T", resp)
+	}
+	r := decodeTxResp(t, ce)
+	if r.Success {
+		t.Fatal("expected Success=false")
+	}
+	if r.RequestID != wantReqID {
+		t.Fatalf("RequestID = %q; want %q", r.RequestID, wantReqID)
+	}
+	if r.Error == nil {
+		t.Fatal("expected error detail, got nil")
+	}
+	if !strings.HasPrefix(r.Error.Message, wantCode+":") {
+		t.Fatalf("Error.Message = %q; want %q prefix", r.Error.Message, wantCode)
+	}
+}
+
+// An expired token yields the EntityManage error envelope carrying
+// TRANSACTION_EXPIRED (mapped from token.ErrTokenExpired), never a raw status.
+func TestTxRouteInterceptor_ExpiredEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("local", "tx-exp", time.Now().Add(-time.Second))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-exp"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run for an expired token")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-exp", "TRANSACTION_EXPIRED")
+}
+
+// A token signed by a foreign secret yields UNAUTHORIZED in the envelope.
+func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	forger, _ := token.NewSigner([]byte("forged-secret-key-at-least-32-byte!"))
+	tok, _ := forger.Issue("local", "tx-forged", time.Now().Add(time.Minute))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-forged"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run for a forged token")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-forged", "UNAUTHORIZED")
+}
+
+// A valid self-node token whose transaction is unknown/closed yields
+// TRANSACTION_NOT_FOUND (mapped from spi.ErrTxNotFound in JoinFromToken).
+func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("local", "tx-gone", time.Now().Add(time.Minute))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxNotFound}, 9090)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-nf"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run when the tx is not found")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-nf", "TRANSACTION_NOT_FOUND")
+}
+
+// A valid self-node token for a transaction owned by a different tenant yields
+// FORBIDDEN (mapped from spi.ErrTxTenantMismatch in JoinFromToken).
+func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("local", "tx-other-tenant", time.Now().Add(time.Minute))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxTenantMismatch}, 9090)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-tenant"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run for a cross-tenant token")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-tenant", "FORBIDDEN")
 }
 
 // Non-EntityManage methods pass through untouched (no token processing).
