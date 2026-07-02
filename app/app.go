@@ -37,6 +37,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
+	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -593,9 +594,11 @@ func New(cfg Config) *App {
 	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
 	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleSetTraceSampler)))
 
-	// Entity transition routes (with auth, outside generated API mux)
-	mux.Handle("GET /entity/{entityId}/transitions", authMW(http.HandlerFunc(entityHandler.HandleGetTransitions)))
-	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(http.HandlerFunc(entityHandler.HandleFetchTransitions)))
+	// Entity transition routes (with auth, outside generated API mux).
+	// TxJoin is nested inside authMW so UserContext is available for tenant checks.
+	txJoinMW := httpmw.TxJoin(a.tokenSigner, a.transactionManager)
+	mux.Handle("GET /entity/{entityId}/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleGetTransitions))))
+	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
@@ -625,7 +628,7 @@ func New(cfg Config) *App {
 		return entityStore, ref, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
-	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(groupedStatsHandler))
+	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
 
 	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths.
@@ -634,7 +637,7 @@ func New(cfg Config) *App {
 		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}
 	mux.Handle("/", middleware.Recovery(healthFlag)(
-		middleware.Auth(a.authService)(apiHandler),
+		middleware.Auth(a.authService)(txJoinMW(apiHandler)),
 	))
 
 	// Context path — wrap all routes under configurable prefix

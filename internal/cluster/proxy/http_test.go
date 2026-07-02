@@ -197,6 +197,30 @@ func TestHTTPProxy_ExpiredToken_Returns400(t *testing.T) {
 	}
 }
 
+func TestHTTPProxy_TamperedToken_Returns401(t *testing.T) {
+	// Issue a token with one signer and verify with another → tampered.
+	signer1 := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	signer2 := mustNewSigner([]byte("other-secret-key-at-least-32-bytes"))
+	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
+
+	tok, err := signer2.Issue("node-2", "tx-tampered", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mw := proxy.HTTPRouting(signer1, reg, "node-1", 5*time.Second)
+	handler := mw(localHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
 // TestHTTPProxy_RoundTrip_SingleACAO verifies that when a request with an
 // Origin header is proxied from node A to a peer (node B) that itself emits
 // Access-Control-Allow-Origin, the final response contains exactly one

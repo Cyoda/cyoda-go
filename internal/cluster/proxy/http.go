@@ -87,14 +87,14 @@ func handleTokenError(w http.ResponseWriter, r *http.Request, err error) {
 		))
 	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
-			common.ErrCodeBadRequest,
+			http.StatusUnauthorized,
+			common.ErrCodeUnauthorized,
 			"invalid transaction token",
 		))
 	default:
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
-			common.ErrCodeBadRequest,
+			http.StatusUnauthorized,
+			common.ErrCodeUnauthorized,
 			"transaction token verification failed",
 		))
 	}
