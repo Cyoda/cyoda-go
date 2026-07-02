@@ -168,6 +168,8 @@ func DefaultConfig() Config {
 		statsGroupMax = 10000
 	}
 	maxSortKeys := envInt("CYODA_SEARCH_MAX_SORT_KEYS", 16)
+	// A 0 or negative cap would 400 every sorted request (cap enforced by
+	// resolveSortKeys); clamp to the documented default instead.
 	if maxSortKeys <= 0 {
 		maxSortKeys = 16
 	}

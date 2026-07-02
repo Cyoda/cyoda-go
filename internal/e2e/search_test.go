@@ -501,9 +501,9 @@ func TestSearchSort_MetaCreationDate(t *testing.T) {
 	setupSearchModel(t, model)
 
 	id1 := createEntityE2E(t, model, 1, `{"name":"First","amount":1,"status":"new"}`)
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	id2 := createEntityE2E(t, model, 1, `{"name":"Second","amount":2,"status":"new"}`)
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	id3 := createEntityE2E(t, model, 1, `{"name":"Third","amount":3,"status":"new"}`)
 
 	status, results := directSearchSorted(t, model, 1, matchAllCond, []string{"@creationDate:asc"})

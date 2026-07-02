@@ -1188,6 +1188,28 @@ func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersi
 	return resp.StatusCode, raw, nil
 }
 
+
+// decodeEntityResultNDJSON parses an application/x-ndjson response body into
+// a slice of EntityResult. Each non-empty line is decoded as one object using
+// DisallowUnknownFields to catch API drift. Used by SyncSearch, SyncSearchAt,
+// SyncSearchSorted, and SyncSearchSortedAt.
+func decodeEntityResultNDJSON(raw []byte) ([]EntityResult, error) {
+	var results []EntityResult
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var r EntityResult
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err != nil {
+			return nil, fmt.Errorf("decode NDJSON line: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
 // SyncSearchSorted issues POST /api/search/direct/{name}/{version}?sort=k1&sort=k2...
 // with the given condition JSON and ordered sort keys. Returns entity results in
 // the server-applied sort order.  An empty sortKeys slice is equivalent to
@@ -1207,20 +1229,7 @@ func (c *Client) SyncSearchSorted(t *testing.T, modelName string, modelVersion i
 	if err != nil {
 		return nil, err
 	}
-	var results []EntityResult
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var r EntityResult
-		dec := json.NewDecoder(strings.NewReader(line))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&r); err != nil {
-			return nil, fmt.Errorf("decode NDJSON line: %w", err)
-		}
-		results = append(results, r)
-	}
-	return results, nil
+	return decodeEntityResultNDJSON(raw)
 }
 
 // SyncSearchSortedAt is like SyncSearchSorted but also adds a pointInTime
@@ -1237,20 +1246,7 @@ func (c *Client) SyncSearchSortedAt(t *testing.T, modelName string, modelVersion
 	if err != nil {
 		return nil, err
 	}
-	var results []EntityResult
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var r EntityResult
-		dec := json.NewDecoder(strings.NewReader(line))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&r); err != nil {
-			return nil, fmt.Errorf("decode NDJSON line: %w", err)
-		}
-		results = append(results, r)
-	}
-	return results, nil
+	return decodeEntityResultNDJSON(raw)
 }
 
 // SyncSearch issues POST /api/search/direct/{name}/{version} with the
@@ -1265,21 +1261,7 @@ func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, co
 	if err != nil {
 		return nil, err
 	}
-	// Parse NDJSON: one EntityResult per line.
-	var results []EntityResult
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var r EntityResult
-		dec := json.NewDecoder(strings.NewReader(line))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&r); err != nil {
-			return nil, fmt.Errorf("decode NDJSON line: %w", err)
-		}
-		results = append(results, r)
-	}
-	return results, nil
+	return decodeEntityResultNDJSON(raw)
 }
 
 // SyncSearchAt issues POST /api/search/direct/{name}/{version}?pointInTime=<t>
@@ -1294,20 +1276,7 @@ func (c *Client) SyncSearchAt(t *testing.T, modelName string, modelVersion int, 
 	if err != nil {
 		return nil, err
 	}
-	var results []EntityResult
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var r EntityResult
-		dec := json.NewDecoder(strings.NewReader(line))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&r); err != nil {
-			return nil, fmt.Errorf("decode NDJSON line: %w", err)
-		}
-		results = append(results, r)
-	}
-	return results, nil
+	return decodeEntityResultNDJSON(raw)
 }
 
 // GetAuditEvents issues GET /api/audit/entity/{entityId} with optional

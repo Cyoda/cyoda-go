@@ -64,14 +64,17 @@ type metaField struct {
 // sortableMetaFields is the closed set of meta sort keys (canonical client
 // names from the result envelope). The plugins map these to physical storage.
 var sortableMetaFields = map[string]metaField{
-	"state":                   {spi.SourceMeta, "state", spi.OrderText},
-	"creationDate":            {spi.SourceMeta, "creationDate", spi.OrderTemporal},
-	"lastUpdateTime":          {spi.SourceMeta, "lastUpdateTime", spi.OrderTemporal},
-	"transitionForLatestSave": {spi.SourceMeta, "transitionForLatestSave", spi.OrderText},
-	"transactionId":           {spi.SourceMeta, "transactionId", spi.OrderText},
-	"id":                      {spi.SourceMeta, "id", spi.OrderText},
+	"state":                   {Source: spi.SourceMeta, Path: "state", Kind: spi.OrderText},
+	"creationDate":            {Source: spi.SourceMeta, Path: "creationDate", Kind: spi.OrderTemporal},
+	"lastUpdateTime":          {Source: spi.SourceMeta, Path: "lastUpdateTime", Kind: spi.OrderTemporal},
+	"transitionForLatestSave": {Source: spi.SourceMeta, Path: "transitionForLatestSave", Kind: spi.OrderText},
+	"transactionId":           {Source: spi.SourceMeta, Path: "transactionId", Kind: spi.OrderText},
+	"id":                      {Source: spi.SourceMeta, Path: "id", Kind: spi.OrderText},
 }
 
+// resolveMetaField looks up name in sortableMetaFields. The map-key lookup is
+// what enforces "no nested meta paths": a dotted name (e.g. "a.b") is simply
+// not a key in the map and returns ok=false.
 func resolveMetaField(name string) (metaField, bool) {
 	mf, ok := sortableMetaFields[name]
 	return mf, ok

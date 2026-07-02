@@ -903,3 +903,96 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 		t.Fatalf("status=inactive @base: want 0 (v2 not yet visible), got %d", len(inactive))
 	}
 }
+
+// TestPGSearcher_OrderByNullsLastDesc verifies NULLS LAST for DESC ordering.
+// In PostgreSQL the default for DESC is NULLS FIRST, so a missing-field row
+// would appear FIRST without an explicit "NULLS LAST" clause. This test FAILS
+// against code that omits "NULLS LAST" for DESC, proving genuine RED capability.
+func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("orderby-nullslast-desc-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, e := range []struct{ id, data string }{
+		{"has-score", `{"score":"50","present":true}`},
+		{"high-score", `{"score":"90","present":true}`},
+		{"no-score", `{"present":true}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+	// DESC on "score": "90" > "50" lexically, so order is high-score, has-score.
+	// no-score (NULL) must still be LAST. Without "NULLS LAST", DESC puts it
+	// FIRST — the assertion on the last element proves "NULLS LAST" is present.
+	results, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "present", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Desc: "90" > "50"; NULL must still be last.
+	assertIDOrder(t, results, []string{"high-score", "has-score", "no-score"})
+}
+
+// TestPGSearcher_OrderByBool verifies that OrderBool sorts false < true (asc)
+// and true first (desc). Without Kind=OrderBool the implementation may treat
+// the stored JSON boolean as text; the DESC case is the sensitive discriminator.
+func TestPGSearcher_OrderByBool(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("orderby-bool-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	for _, e := range []struct{ id, data string }{
+		{"t", `{"active":true,"tag":"y"}`},
+		{"f", `{"active":false,"tag":"y"}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+	sr := store.(spi.Searcher)
+
+	// ASC: false < true → f, t.
+	asc, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
+		})
+	if err != nil {
+		t.Fatalf("Search asc: %v", err)
+	}
+	assertIDOrder(t, asc, []string{"f", "t"})
+
+	// DESC: true > false → t, f.
+	desc, err := sr.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
+		})
+	if err != nil {
+		t.Fatalf("Search desc: %v", err)
+	}
+	assertIDOrder(t, desc, []string{"t", "f"})
+}

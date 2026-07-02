@@ -14,6 +14,16 @@ func TestDefaultConfig_SearchMaxSortKeys(t *testing.T) {
 	if got := DefaultConfig().SearchMaxSortKeys; got != 4 {
 		t.Fatalf("env SearchMaxSortKeys = %d, want 4", got)
 	}
+	// The <=0 guard re-defaults to 16: a zero or negative cap would 400
+	// every sorted request. Removing the guard must cause these to fail.
+	t.Setenv("CYODA_SEARCH_MAX_SORT_KEYS", "0")
+	if got := DefaultConfig().SearchMaxSortKeys; got != 16 {
+		t.Fatalf("SearchMaxSortKeys(0) = %d, want 16 (<=0 guard)", got)
+	}
+	t.Setenv("CYODA_SEARCH_MAX_SORT_KEYS", "-3")
+	if got := DefaultConfig().SearchMaxSortKeys; got != 16 {
+		t.Fatalf("SearchMaxSortKeys(-3) = %d, want 16 (<=0 guard)", got)
+	}
 }
 
 func TestDefaultConfig_OIDCDefaults(t *testing.T) {

@@ -77,7 +77,7 @@ func parseSortToken(raw string) (OrderKey, error) {
 }
 
 // isValidSortPath allows dotted identifiers (letters/digits/_/-), no empty
-// segments — the same safe subset filters use.
+// segments — same dotted-identifier charset the search filter path parser accepts.
 func isValidSortPath(p string) bool {
 	if p == "" {
 		return false

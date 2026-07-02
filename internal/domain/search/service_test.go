@@ -873,7 +873,8 @@ func TestSearch_UnknownSortField_ReturnsInvalidFieldPath(t *testing.T) {
 	// Model has "surname" but NOT "nonexistent".
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// validateConditionPaths is skipped (lifecycle condition has no data paths);
+		// validateConditionPaths is called but returns early with nil —
+		// LifecycleCondition has no data paths, so it makes no model-store call.
 		// resolveSortKeys needs exactly one Get call.
 		getQueue: []*spi.ModelDescriptor{desc},
 	}
@@ -897,7 +898,7 @@ func TestSearch_UnknownSortField_ReturnsInvalidFieldPath(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	// LifecycleCondition: extractFieldPaths returns [] so validateConditionPaths
-	// exits early without touching the model store.
+	// returns early without touching the model store.
 	cond := &predicate.LifecycleCondition{
 		Field:        "state",
 		OperatorType: "EQUALS",

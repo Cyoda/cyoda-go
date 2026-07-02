@@ -814,3 +814,88 @@ func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 	// Results should be in ascending entity_id order: e1, e2, e3, e4, e5.
 	assertIDOrder(t, results, []string{"e1", "e2", "e3", "e4", "e5"})
 }
+
+// TestSearcher_OrderByDesc verifies that Desc:true reverses the sort order.
+// Without Desc:true the names are Alice, Bob, Charlie, Diana, Eve (ascending).
+// With Desc:true we expect the reverse: Eve, Diana, Charlie, Bob, Alice.
+// If Desc is silently ignored the test fails, proving genuine RED capability.
+func TestSearcher_OrderByDesc(t *testing.T) {
+	factory, ctx := setupSearcherTest(t)
+	store, _ := factory.EntityStore(ctx)
+	searcher := store.(spi.Searcher)
+
+	results, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
+		spi.SearchOptions{
+			ModelName:    "person",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("want 5, got %d", len(results))
+	}
+	// Desc alphabetical: Eve > Diana > Charlie > Bob > Alice.
+	assertIDOrder(t, results, []string{"e5", "e4", "e3", "e2", "e1"})
+}
+
+// TestSearcher_OrderByBool verifies that OrderBool sorts false < true (asc)
+// and true < false (desc — i.e. true appears first).
+// Without Kind=OrderBool the implementation may treat booleans as text
+// ("false" < "true" lexically happens to agree for asc, but the DESC case
+// would also expose wrong behaviour if Desc is broken); this test pins both.
+func TestSearcher_OrderByBool(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "bool_test.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	for _, e := range []struct{ id, data string }{
+		{"t", `{"active":true,"tag":"x"}`},
+		{"f", `{"active":false,"tag":"x"}`},
+	} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: e.id, ModelRef: ref, State: "NEW"},
+			Data: []byte(e.data),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", e.id, err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+
+	// ASC: false < true → f, t.
+	asc, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
+		})
+	if err != nil {
+		t.Fatalf("Search asc: %v", err)
+	}
+	assertIDOrder(t, asc, []string{"f", "t"})
+
+	// DESC: true > false → t, f.
+	desc, err := searcher.Search(ctx,
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.SearchOptions{
+			ModelName:    "item",
+			ModelVersion: "1",
+			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
+		})
+	if err != nil {
+		t.Fatalf("Search desc: %v", err)
+	}
+	assertIDOrder(t, desc, []string{"t", "f"})
+}

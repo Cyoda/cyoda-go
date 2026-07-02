@@ -49,16 +49,41 @@ func TestClassifyType(t *testing.T) {
 }
 
 func TestResolveMetaField(t *testing.T) {
-	mf, ok := resolveMetaField("creationDate")
-	if !ok || mf.Source != spi.SourceMeta || mf.Kind != spi.OrderTemporal || mf.Path != "creationDate" {
-		t.Fatalf("creationDate resolved to %+v ok=%v", mf, ok)
+	// All six canonical meta sort fields must resolve with exact Source, Path, and Kind.
+	// A copy-paste error on Kind (e.g. Text vs Temporal) will fail this table.
+	cases := []struct {
+		name string
+		kind spi.OrderKind
+	}{
+		{"state", spi.OrderText},
+		{"creationDate", spi.OrderTemporal},
+		{"lastUpdateTime", spi.OrderTemporal},
+		{"transitionForLatestSave", spi.OrderText},
+		{"transactionId", spi.OrderText},
+		{"id", spi.OrderText},
 	}
-	if _, ok := resolveMetaField("state"); !ok {
-		t.Fatal("state should resolve")
+	for _, c := range cases {
+		mf, ok := resolveMetaField(c.name)
+		if !ok {
+			t.Errorf("%s: should resolve, got ok=false", c.name)
+			continue
+		}
+		if mf.Source != spi.SourceMeta {
+			t.Errorf("%s: Source = %v, want SourceMeta", c.name, mf.Source)
+		}
+		if mf.Path != c.name {
+			t.Errorf("%s: Path = %q, want %q", c.name, mf.Path, c.name)
+		}
+		if mf.Kind != c.kind {
+			t.Errorf("%s: Kind = %v, want %v", c.name, mf.Kind, c.kind)
+		}
 	}
+
+	// Negative: unknown and nested paths must not resolve.
 	if _, ok := resolveMetaField("nope"); ok {
 		t.Fatal("unknown meta field must not resolve")
 	}
+	// A dotted name is not a map key — this enforces "no nested meta paths".
 	if _, ok := resolveMetaField("label.position.x"); ok {
 		t.Fatal("nested meta path must not resolve")
 	}

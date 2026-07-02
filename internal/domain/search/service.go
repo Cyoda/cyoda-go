@@ -239,6 +239,9 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", fmt.Errorf("failed to marshal search condition: %w", err)
 	}
 
+	// spi.OrderSpec has no json tags, so the OrderBy slice serializes with
+	// PascalCase field names (Path/Source/Desc/Kind). SelfExecutingSearchStore
+	// implementations that decode this blob must expect that casing.
 	optsJSON, err := json.Marshal(struct {
 		Limit       int             `json:"limit"`
 		Offset      int             `json:"offset"`
