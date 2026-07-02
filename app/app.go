@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -61,6 +62,7 @@ type App struct {
 	grpcServer         *internalgrpc.Server
 	handler            http.Handler
 	tokenSigner        *token.Signer
+	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	txLifecycle        *lifecycle.Manager
 	stopReaper         chan struct{}
@@ -109,15 +111,28 @@ func New(cfg Config) *App {
 	// registry later in this function. In single-node mode gossipReg stays
 	// nil and plugins receive no broadcaster.
 	var gossipReg *registry.Gossip
+	// Transaction routing token signer. Always present: in cluster mode it uses
+	// the configured HMAC secret so tokens verify across nodes; in single-node
+	// mode it uses a per-process ephemeral secret (tokens only round-trip
+	// through this process, and a tx never outlives the process).
+	a.selfNodeID = "local"
+	secret := cfg.Cluster.HMACSecret
 	if cfg.Cluster.Enabled {
 		validateClusterConfig(cfg.Cluster)
-		var signerErr error
-		a.tokenSigner, signerErr = token.NewSigner(cfg.Cluster.HMACSecret)
-		if signerErr != nil {
-			slog.Error("failed to create token signer", "pkg", "cluster", "err", signerErr)
+		a.selfNodeID = cfg.Cluster.NodeID
+		gossipReg = mustNewGossip(cfg.Cluster)
+	} else {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			slog.Error("failed to generate ephemeral token secret", "pkg", "cluster", "err", err)
 			os.Exit(1)
 		}
-		gossipReg = mustNewGossip(cfg.Cluster)
+	}
+	var signerErr error
+	a.tokenSigner, signerErr = token.NewSigner(secret)
+	if signerErr != nil {
+		slog.Error("failed to create token signer", "pkg", "cluster", "err", signerErr)
+		os.Exit(1)
 	}
 
 	var factoryOpts []spi.FactoryOption
