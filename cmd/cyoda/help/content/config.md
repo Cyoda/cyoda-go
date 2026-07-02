@@ -99,6 +99,7 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 - `CYODA_PROXY_TIMEOUT` (duration, default: `30s`) — request proxy timeout.
 - `CYODA_DISPATCH_WAIT_TIMEOUT` (duration, default: `5s`) — how long the dispatcher polls gossip for a compute member with matching tags.
 - `CYODA_DISPATCH_FORWARD_TIMEOUT` (duration, default: `30s`) — HTTP timeout for the cross-node forwarding call.
+- `CYODA_TX_TOKEN_TTL` (duration, default: `60s`) — TTL of the signed transaction routing token minted on processor/criteria dispatch; must be ≥ `CYODA_DISPATCH_FORWARD_TIMEOUT` so the token remains valid through the full round-trip and callback verification.
 - `CYODA_KEEPALIVE_INTERVAL` (int, default: `10`) — keep-alive send interval in seconds.
 - `CYODA_KEEPALIVE_TIMEOUT` (int, default: `30`) — keep-alive timeout in seconds.
 
