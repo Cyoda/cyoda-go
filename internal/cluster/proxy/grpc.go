@@ -66,3 +66,36 @@ func ResolveTarget(ctx context.Context, signer *token.Signer, registry contract.
 
 	return nodeAddr, true, nil
 }
+
+// ResolveNodeInfo is like ResolveTarget but returns the peer's full NodeInfo
+// so the caller can resolve transport-layer details (e.g. the gRPC endpoint).
+// shouldProxy is true only when the token names a live peer other than self.
+// The returned NodeInfo is only meaningful when shouldProxy is true.
+func ResolveNodeInfo(ctx context.Context, signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, tok string) (ni contract.NodeInfo, shouldProxy bool, err error) {
+	if tok == "" {
+		return contract.NodeInfo{}, false, nil
+	}
+
+	claims, err := signer.Verify(tok)
+	if err != nil {
+		return contract.NodeInfo{}, false, fmt.Errorf("%s: %w", common.ErrCodeBadRequest, err)
+	}
+
+	if claims.NodeID == selfNodeID {
+		return contract.NodeInfo{}, false, nil
+	}
+
+	nodes, err := reg.List(ctx)
+	if err != nil {
+		return contract.NodeInfo{}, false, fmt.Errorf("registry list: %w", err)
+	}
+	for _, n := range nodes {
+		if n.NodeID == claims.NodeID {
+			if !n.Alive {
+				return contract.NodeInfo{}, false, fmt.Errorf("%w (node %s)", ErrNodeUnavailable, claims.NodeID)
+			}
+			return n, true, nil
+		}
+	}
+	return contract.NodeInfo{}, false, fmt.Errorf("%w (node %s)", ErrNodeUnavailable, claims.NodeID)
+}

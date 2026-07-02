@@ -27,24 +27,26 @@ import (
 // EntityManage error envelope (Success=false), never as a raw gRPC status, so
 // clients read them the same way as any other EntityManage failure.
 type txRouteInterceptor struct {
-	signer     *token.Signer
-	registry   contract.NodeRegistry
-	selfNodeID string
-	txMgr      spi.TransactionManager
-	pool       *proxy.ClientPool
+	signer        *token.Signer
+	registry      contract.NodeRegistry
+	selfNodeID    string
+	txMgr         spi.TransactionManager
+	pool          *proxy.ClientPool
+	localGRPCPort int
 
 	// forward seams — overridable in tests.
 	forwardUnary  func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (*cepb.CloudEvent, error)
 	forwardStream func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error)
 }
 
-func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager) *txRouteInterceptor {
+func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager, localGRPCPort int) *txRouteInterceptor {
 	return &txRouteInterceptor{
 		signer:        signer,
 		registry:      reg,
 		selfNodeID:    selfNodeID,
 		txMgr:         txMgr,
 		pool:          proxy.NewClientPool(),
+		localGRPCPort: localGRPCPort,
 		forwardUnary:  proxy.ForwardEntityManage,
 		forwardStream: proxy.ForwardEntityManageCollection,
 	}
@@ -86,7 +88,7 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 		ce, _ := req.(*cepb.CloudEvent)
 
 		tok := proxy.ExtractGRPCToken(ctx)
-		addr, shouldProxy, err := proxy.ResolveTarget(ctx, i.signer, i.registry, i.selfNodeID, tok)
+		ni, shouldProxy, err := proxy.ResolveNodeInfo(ctx, i.signer, i.registry, i.selfNodeID, tok)
 		if err != nil {
 			return i.unaryErr(ctx, ce, classifyRouteErr(err))
 		}
@@ -94,7 +96,11 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			if ce == nil {
 				return i.unaryErr(ctx, nil, fmt.Errorf("proxy path: request is not a CloudEvent"))
 			}
-			resp, fwdErr := i.forwardUnary(ctx, i.pool, addr, ce)
+			grpcAddr, addrErr := resolveGRPCAddr(ni, i.localGRPCPort)
+			if addrErr != nil {
+				return i.unaryErr(ctx, ce, fmt.Errorf("resolve peer gRPC addr: %w", addrErr))
+			}
+			resp, fwdErr := i.forwardUnary(ctx, i.pool, grpcAddr, ce)
 			if fwdErr != nil {
 				return i.unaryErr(ctx, ce, fwdErr)
 			}
@@ -128,12 +134,16 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		ctx := ss.Context()
 
 		tok := proxy.ExtractGRPCToken(ctx)
-		addr, shouldProxy, err := proxy.ResolveTarget(ctx, i.signer, i.registry, i.selfNodeID, tok)
+		ni, shouldProxy, err := proxy.ResolveNodeInfo(ctx, i.signer, i.registry, i.selfNodeID, tok)
 		if err != nil {
 			return i.streamErr(ss, "", classifyRouteErr(err))
 		}
 		if shouldProxy {
-			return i.proxyStream(ctx, ss, addr)
+			grpcAddr, addrErr := resolveGRPCAddr(ni, i.localGRPCPort)
+			if addrErr != nil {
+				return i.streamErr(ss, "", fmt.Errorf("resolve peer gRPC addr: %w", addrErr))
+			}
+			return i.proxyStream(ctx, ss, grpcAddr)
 		}
 
 		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)

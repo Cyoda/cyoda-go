@@ -164,6 +164,77 @@ func TestGossipRegistry_TagPropagation(t *testing.T) {
 	}
 }
 
+func TestGossipRegistry_GRPCAddrPropagation(t *testing.T) {
+	ctx := context.Background()
+
+	r1, err := registry.NewGossip(registry.GossipConfig{
+		NodeID:          "grpc-node-1",
+		NodeAddr:        "http://localhost:21080",
+		GRPCNodeAddr:    "localhost:21090",
+		BindAddr:        "127.0.0.1",
+		BindPort:        21946,
+		Seeds:           nil,
+		StabilityWindow: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGossip grpc-node-1: %v", err)
+	}
+	defer r1.Deregister(ctx, "grpc-node-1")
+	if err := r1.Register(ctx, "grpc-node-1", "http://localhost:21080"); err != nil {
+		t.Fatalf("Register grpc-node-1: %v", err)
+	}
+
+	r2, err := registry.NewGossip(registry.GossipConfig{
+		NodeID:          "grpc-node-2",
+		NodeAddr:        "http://localhost:21081",
+		GRPCNodeAddr:    "",
+		BindAddr:        "127.0.0.1",
+		BindPort:        21947,
+		Seeds:           []string{"127.0.0.1:21946"},
+		StabilityWindow: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGossip grpc-node-2: %v", err)
+	}
+	defer r2.Deregister(ctx, "grpc-node-2")
+	if err := r2.Register(ctx, "grpc-node-2", "http://localhost:21081"); err != nil {
+		t.Fatalf("Register grpc-node-2: %v", err)
+	}
+
+	// Poll until r2 sees r1's gRPC addr via gossip.
+	var grpcAddr string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes, listErr := r2.List(ctx)
+		if listErr != nil {
+			t.Fatalf("List: %v", listErr)
+		}
+		for _, n := range nodes {
+			if n.NodeID == "grpc-node-1" {
+				grpcAddr = n.GRPCAddr
+			}
+		}
+		if grpcAddr != "" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if grpcAddr != "localhost:21090" {
+		t.Fatalf("expected gRPC addr %q, got %q", "localhost:21090", grpcAddr)
+	}
+
+	// r2 has no advertised gRPC addr; confirm it round-trips as empty.
+	nodes, err := r1.List(ctx)
+	if err != nil {
+		t.Fatalf("r1.List: %v", err)
+	}
+	for _, n := range nodes {
+		if n.NodeID == "grpc-node-2" && n.GRPCAddr != "" {
+			t.Fatalf("expected empty gRPC addr for grpc-node-2, got %q", n.GRPCAddr)
+		}
+	}
+}
+
 func TestGossipRegistry_LookupUnknown(t *testing.T) {
 	ctx := context.Background()
 

@@ -38,6 +38,8 @@ type Server struct {
 // NewServer creates a new gRPC server with auth interceptors and the
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
+// localGRPCPort is this node's gRPC listen port; it is used as the fallback
+// when deriving a peer's gRPC address from its HTTP address (advertise-or-derive).
 func NewServer(
 	authSvc contract.AuthenticationService,
 	registry *MemberRegistry,
@@ -49,6 +51,7 @@ func NewServer(
 	nodeRegistry contract.NodeRegistry,
 	selfNodeID string,
 	otelEnabled bool,
+	localGRPCPort int,
 ) *Server {
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
@@ -57,7 +60,7 @@ func NewServer(
 	// Auth runs first so the tx-route interceptor sees the authenticated
 	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
 	// second, joining the referenced transaction or forwarding to its owner.
-	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr)
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(UnaryAuthInterceptor(authSvc), txRoute.unary()),
 		googlegrpc.ChainStreamInterceptor(StreamAuthInterceptor(authSvc), txRoute.stream()),

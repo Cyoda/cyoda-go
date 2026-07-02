@@ -247,6 +247,7 @@ func DefaultConfig() Config {
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
 			NodeID:                 envString("CYODA_NODE_ID", ""),
 			NodeAddr:               envString("CYODA_NODE_ADDR", "http://localhost:8080"),
+			GRPCNodeAddr:           envString("CYODA_GRPC_NODE_ADDR", ""),
 			GossipAddr:             envString("CYODA_GOSSIP_ADDR", ":7946"),
 			SeedNodes:              splitCSV(envString("CYODA_SEED_NODES", "")),
 			StabilityWindow:        envDuration("CYODA_GOSSIP_STABILITY_WINDOW", 2*time.Second),

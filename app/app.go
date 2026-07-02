@@ -684,7 +684,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port)
 
 	return a
 }
@@ -905,6 +905,7 @@ func mustNewGossip(c cluster.Config) *registry.Gossip {
 	g, err := registry.NewGossip(registry.GossipConfig{
 		NodeID:          c.NodeID,
 		NodeAddr:        c.NodeAddr,
+		GRPCNodeAddr:    c.GRPCNodeAddr,
 		BindAddr:        gossipHost,
 		BindPort:        gossipPort,
 		Seeds:           c.SeedNodes,
