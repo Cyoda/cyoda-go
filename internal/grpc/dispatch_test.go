@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -24,7 +26,12 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 		return nil
 	})
 	uuids := common.NewTestUUIDGenerator()
-	dispatcher := NewProcessorDispatcher(registry, uuids)
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+	signer, _ := token.NewSigner(secret)
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
 	return dispatcher, registry, memberID, sentCh
 }
 
@@ -175,7 +182,12 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 func TestDispatchProcessor_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
 	uuids := common.NewTestUUIDGenerator()
-	dispatcher := NewProcessorDispatcher(registry, uuids)
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+	signer, _ := token.NewSigner(secret)
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
 	ctx := testContext()
 	entity := testEntity()
 

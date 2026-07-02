@@ -12,6 +12,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
@@ -26,16 +27,41 @@ const defaultResponseTimeoutMs = 30000
 // ProcessorDispatcher dispatches processor and criteria calculations to external
 // calculation members via the MemberRegistry.
 type ProcessorDispatcher struct {
-	registry *MemberRegistry
-	uuids    spi.UUIDGenerator
+	registry   *MemberRegistry
+	uuids      spi.UUIDGenerator
+	signer     *token.Signer
+	selfNodeID string
+	tokenTTL   time.Duration
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, uuids spi.UUIDGenerator) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
-		registry: registry,
-		uuids:    uuids,
+		registry:   registry,
+		uuids:      uuids,
+		signer:     signer,
+		selfNodeID: selfNodeID,
+		tokenTTL:   tokenTTL,
 	}
+}
+
+// resolveTxToken returns the tx-token to attach to a calc request. A token
+// pre-minted by an upstream ClusterDispatcher (carried on ctx, NodeID = owner)
+// wins so a forwarded dispatch routes callbacks to the owner, not this node.
+// Otherwise self-mint {selfNodeID, txID}. Empty txID → no token (standalone).
+func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID string) string {
+	if tok := TxTokenFromContext(ctx); tok != "" {
+		return tok
+	}
+	if txID == "" || d.signer == nil {
+		return ""
+	}
+	tok, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL))
+	if err != nil {
+		slog.Error("failed to mint tx-token", "pkg", "grpc", "err", err)
+		return ""
+	}
+	return tok
 }
 
 // DispatchProcessor sends an entity processor calculation request to a matching
@@ -96,6 +122,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		return nil, fmt.Errorf("failed to build processor cloud event: %w", err)
 	}
 	AttachAuthContext(ctx, ce)
+	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
 
 	ceData := ce.GetTextData()
 	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
@@ -246,6 +273,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		return false, fmt.Errorf("failed to build criteria cloud event: %w", err)
 	}
 	AttachAuthContext(ctx, ce)
+	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
 
 	ceData := ce.GetTextData()
 	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))

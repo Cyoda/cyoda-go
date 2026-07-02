@@ -257,6 +257,7 @@ func DefaultConfig() Config {
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
+			TxTokenTTL:             envDuration("CYODA_TX_TOKEN_TTL", 30*time.Second),
 		},
 	}
 }

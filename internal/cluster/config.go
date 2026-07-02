@@ -16,4 +16,5 @@ type Config struct {
 	HMACSecret             []byte
 	DispatchWaitTimeout    time.Duration
 	DispatchForwardTimeout time.Duration
+	TxTokenTTL             time.Duration
 }
