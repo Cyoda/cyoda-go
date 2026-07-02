@@ -3,7 +3,9 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	googlegrpc "google.golang.org/grpc"
@@ -90,9 +92,13 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 		}
 		if shouldProxy {
 			if ce == nil {
-				return handler(ctx, req)
+				return i.unaryErr(ctx, nil, fmt.Errorf("proxy path: request is not a CloudEvent"))
 			}
-			return i.forwardUnary(ctx, i.pool, addr, ce)
+			resp, fwdErr := i.forwardUnary(ctx, i.pool, addr, ce)
+			if fwdErr != nil {
+				return i.unaryErr(ctx, ce, fwdErr)
+			}
+			return resp, nil
 		}
 
 		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)
@@ -124,7 +130,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		tok := proxy.ExtractGRPCToken(ctx)
 		addr, shouldProxy, err := proxy.ResolveTarget(ctx, i.signer, i.registry, i.selfNodeID, tok)
 		if err != nil {
-			return i.streamErr(ss, classifyRouteErr(err))
+			return i.streamErr(ss, "", classifyRouteErr(err))
 		}
 		if shouldProxy {
 			return i.proxyStream(ctx, ss, addr)
@@ -132,7 +138,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 
 		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)
 		if jerr != nil {
-			return i.streamErr(ss, jerr)
+			return i.streamErr(ss, "", jerr)
 		}
 		return handler(srv, &wrappedStream{ServerStream: ss, ctx: joinedCtx})
 	}
@@ -148,7 +154,7 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	}
 	cs, err := i.forwardStream(ctx, i.pool, addr, &ce)
 	if err != nil {
-		return i.streamErr(ss, err)
+		return i.streamErr(ss, ce.Id, err)
 	}
 	for {
 		frame, err := cs.Recv()
@@ -164,14 +170,13 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	}
 }
 
-// streamErr sends err as an EntityManage error envelope on the stream. It
-// best-effort reads the inbound request id first (so the envelope echoes it),
-// ignoring a read failure since we are already aborting.
-func (i *txRouteInterceptor) streamErr(ss googlegrpc.ServerStream, err error) error {
-	var ce cepb.CloudEvent
-	_ = ss.RecvMsg(&ce)
-	respCE, buildErr := entityTransactionError(common.WithDiagnostics(ss.Context()), ce.Id, err)
+// streamErr sends err as an EntityManage error envelope on the stream. reqID
+// is the already-consumed request id (empty string when no request has been
+// read yet — pre-body token rejections legitimately have no request id).
+func (i *txRouteInterceptor) streamErr(ss googlegrpc.ServerStream, reqID string, err error) error {
+	respCE, buildErr := entityTransactionError(common.WithDiagnostics(ss.Context()), reqID, err)
 	if buildErr != nil {
+		slog.Error("failed to build EntityManage error envelope", "err", buildErr)
 		return buildErr
 	}
 	return ss.SendMsg(respCE)

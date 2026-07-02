@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -241,6 +242,34 @@ func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 	}
 }
 
+// A non-EntityManageCollection stream method with a bad token must pass through
+// untouched — no routing, no envelope, handler invoked directly.
+func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{})
+	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
+	ss := &fakeServerStream{ctx: baseCtx}
+
+	called := false
+	handler := func(_ any, stream googlegrpc.ServerStream) error {
+		called = true
+		if spi.GetTransaction(stream.Context()) != nil {
+			t.Fatal("no join expected for non-routed stream method")
+		}
+		return nil
+	}
+	info := &googlegrpc.StreamServerInfo{FullMethod: cyodapb.CloudEventsService_EntitySearch_FullMethodName}
+	if err := ic.stream()(nil, ss, info, handler); err != nil {
+		t.Fatalf("expected passthrough, got err: %v", err)
+	}
+	if !called {
+		t.Fatal("expected handler to be called for non-routed stream method")
+	}
+	if len(ss.sent) != 0 {
+		t.Fatalf("expected no frames sent for passthrough, got %d", len(ss.sent))
+	}
+}
+
 // A token for a foreign node re-issues the server-stream to the owner and
 // copies frames back to the caller's stream.
 func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
@@ -271,5 +300,73 @@ func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
 	}
 	if len(ss.sent) != 2 || ss.sent[0].Id != "f1" || ss.sent[1].Id != "f2" {
 		t.Fatalf("expected 2 forwarded frames f1,f2; got %+v", ss.sent)
+	}
+}
+
+// A transport error from forwardUnary must be enveloped (not returned as a raw
+// gRPC status), and the envelope must echo the original RequestID.
+func TestTxRouteInterceptor_ForeignProxiesForwardErr(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("node-B", "tx-99", time.Now().Add(time.Minute))
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{})
+	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+		return nil, errors.New("peer unreachable")
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-fwd-err"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got raw gRPC err: %v", err)
+	}
+	ce, ok := resp.(*cepb.CloudEvent)
+	if !ok {
+		t.Fatalf("expected *cepb.CloudEvent, got %T", resp)
+	}
+	r := decodeTxResp(t, ce)
+	if r.Success {
+		t.Fatal("expected Success=false")
+	}
+	if r.RequestID != "req-fwd-err" {
+		t.Fatalf("expected RequestID req-fwd-err, got %q", r.RequestID)
+	}
+}
+
+// A transport error from forwardStream must be enveloped with the RequestID
+// of the already-consumed inbound message (not empty from a second RecvMsg).
+func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("node-B", "tx-88", time.Now().Add(time.Minute))
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{})
+	ic.forwardStream = func(_ context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
+		return nil, errors.New("peer unreachable")
+	}
+	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	ss := &fakeServerStream{ctx: baseCtx, recv: []*cepb.CloudEvent{{Id: "stream-req-42"}}}
+
+	handler := func(any, googlegrpc.ServerStream) error {
+		t.Fatal("handler must not run")
+		return nil
+	}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), handler); err != nil {
+		t.Fatalf("expected envelope on stream, got raw err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("expected 1 envelope frame, got %d", len(ss.sent))
+	}
+	r := decodeTxResp(t, ss.sent[0])
+	if r.Success {
+		t.Fatal("expected Success=false")
+	}
+	if r.RequestID != "stream-req-42" {
+		t.Fatalf("expected RequestID stream-req-42, got %q", r.RequestID)
 	}
 }
