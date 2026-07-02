@@ -32,7 +32,7 @@ type refreshingModelStore struct {
 	// authoritative post-delete state where no model exists upstream.
 	refreshDescriptor *spi.ModelDescriptor
 	refreshErr        error
-	refreshCount     int
+	refreshCount      int
 
 	// saved is the last descriptor passed to Save, if any.
 	saved     *spi.ModelDescriptor
@@ -61,11 +61,13 @@ func (s *refreshingModelStore) Save(_ context.Context, d *spi.ModelDescriptor) e
 	return nil
 }
 
-func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
-func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error           { return nil }
-func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error             { return nil }
-func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
-func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return true, nil }
+func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error) { return nil, nil }
+func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error     { return nil }
+func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error     { return nil }
+func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) {
+	return true, nil
+}
 func (s *refreshingModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
 	return nil
 }

@@ -530,8 +530,8 @@ func TestUniqueKeys_MixedModelBatch(t *testing.T) {
 	}
 
 	// Batch: modelB item (unique "Ivan" in modelB) + modelA item (dup "Ivan" in modelA).
-	itemA := collectionItem(modelA, 1, `{"name":"Ivan","amount":2,"status":"draft"}`)  // dup in modelA
-	itemB := collectionItem(modelB, 1, `{"name":"Ivan","amount":1,"status":"draft"}`)  // unique in modelB
+	itemA := collectionItem(modelA, 1, `{"name":"Ivan","amount":2,"status":"draft"}`) // dup in modelA
+	itemB := collectionItem(modelB, 1, `{"name":"Ivan","amount":1,"status":"draft"}`) // unique in modelB
 
 	// The modelA item duplicates, so the batch must fail.
 	status, body = collectionCreate(t, []string{itemB, itemA})

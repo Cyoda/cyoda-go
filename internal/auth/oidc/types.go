@@ -35,8 +35,8 @@ func (p *OidcProvider) Active() bool { return p.InvalidatedAt == nil }
 // KV key "_history:<sha256(uri)>" in namespace "oidc-providers". The leading
 // underscore disambiguates from tenant-UUID-prefixed keys (UUIDs are hex+dashes).
 type UriOwnershipHistory struct {
-	CurrentOwner *Owner `json:"currentOwner,omitempty"` // nil after every owner has Deleted
-	Past         []Owner `json:"past"`                  // every deleted-or-superseded owner, oldest first
+	CurrentOwner *Owner  `json:"currentOwner,omitempty"` // nil after every owner has Deleted
+	Past         []Owner `json:"past"`                   // every deleted-or-superseded owner, oldest first
 }
 
 // Owner is a single registration record within UriOwnershipHistory.

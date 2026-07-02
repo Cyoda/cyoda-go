@@ -583,10 +583,11 @@ func TestWorkflowProc_PostTxIdMatchesAuditEndpoint(t *testing.T) {
 // audit-lookup semantics for /audit/entity/{id}/workflow/{txId}/finished.
 //
 // Test contract: a POST that triggers a CBD-segmented cascade must
-//   (a) succeed (200 OK),
-//   (b) advertise the cascade-entry txID in the response (non-empty),
-//   (c) leave the entity durably in the post-cascade state with the
-//       processor's enrichment visible on a fresh GET.
+//
+//	(a) succeed (200 OK),
+//	(b) advertise the cascade-entry txID in the response (non-empty),
+//	(c) leave the entity durably in the post-cascade state with the
+//	    processor's enrichment visible on a fresh GET.
 func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T) {
 	const model = "e2e-wfproc-cbd-create"
 
@@ -1097,4 +1098,3 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 func TestWorkflowProc_UpdateWithCBD_EngineCrashLeavesEntityInPreCalloutState(t *testing.T) {
 	t.Skip("requires engine-side fault-injection hook — pre-callout durability is structurally guaranteed by TX_pre commit boundary, covered at engine layer by TestEngine_CommitBeforeDispatch_AuditEventPlacement; see issue #27 Task 23 TODO")
 }
-

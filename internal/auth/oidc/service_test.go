@@ -579,12 +579,12 @@ func TestService_Register_CrossTenantDistinctAudiencesNoWARN(t *testing.T) {
 // TestService_Reactivate_KeysFalse_PreservesJWKSCache verifies D19 §2 spec:
 // when ReactivateKeys=false, reloadDiscoveryOnly is called — the JWKS endpoint
 // is NOT contacted during the reactivate. We verify this by:
-//   1. Installing a cached keySource via reloadOne (through Register), which
-//      triggers an initial JWKS fetch during the lazy ResolveKey dial.
-//   2. Invalidating (drops the source).
-//   3. Reactivating with keys=false — must NOT trigger a JWKS fetch.
-//   4. Asserting the JWKS endpoint received zero additional hits beyond
-//      what already happened during the initial warm (step 1).
+//  1. Installing a cached keySource via reloadOne (through Register), which
+//     triggers an initial JWKS fetch during the lazy ResolveKey dial.
+//  2. Invalidating (drops the source).
+//  3. Reactivating with keys=false — must NOT trigger a JWKS fetch.
+//  4. Asserting the JWKS endpoint received zero additional hits beyond
+//     what already happened during the initial warm (step 1).
 //
 // The JWKS hit count is tracked by a counter incremented in the handler
 // so we can distinguish fetch vs. no-fetch regardless of cache state.

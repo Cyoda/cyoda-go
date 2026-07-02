@@ -19,8 +19,8 @@ import (
 
 // GossipConfig holds the configuration for a gossip-based NodeRegistry.
 type GossipConfig struct {
-	NodeID          string
-	NodeAddr        string
+	NodeID   string
+	NodeAddr string
 	// GRPCNodeAddr is the gRPC endpoint (host:port) this node advertises to peers.
 	// Empty means peers will derive the gRPC addr from NodeAddr's host + their local gRPC port.
 	GRPCNodeAddr    string
