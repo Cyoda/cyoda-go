@@ -217,9 +217,11 @@ func decodeData(entity *Entity) (map[string]any, error) {
 	return data, nil
 }
 
-// newCallbackCatalog returns the callback processors + criteria. cb may be nil
-// (no HTTP base configured); the processors then fail loudly on first use.
-func newCallbackCatalog() (map[string]callbackProcessorFunc, map[string]callbackCriterionFunc) {
+// newCallbackCatalog returns the callback processors + criteria. The HTTP
+// callback client is passed per-dispatch (may be nil); gcb is the gRPC
+// EntityManage callback client captured by the cross-node gRPC-callback
+// processor (may be nil). Processors fail loudly when their transport is nil.
+func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFunc, map[string]callbackCriterionFunc) {
 	requireCB := func(cb *callbackClient) error {
 		if cb == nil {
 			return fmt.Errorf("callback client unavailable: CYODA_COMPUTE_HTTP_BASE not set")
@@ -250,6 +252,49 @@ func newCallbackCatalog() (map[string]callbackProcessorFunc, map[string]callback
 			data["secondaryTxId"] = secTx
 			data["tokenWasEmpty"] = token == ""
 			return withData(entity, data)
+		},
+
+		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined
+		// callback over gRPC (EntityManage) instead of HTTP. When the calc request
+		// was forwarded to this member from a remote owner, the tx-token names that
+		// owner, so the EntityManage call — landing on this (non-owner) node —
+		// forwards B→A to the owner and joins T there. Records lineage + the derived
+		// tokenWasEmpty flag into the primary's data.
+		"cb-grpc-create-secondary": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if gcb == nil {
+				return nil, fmt.Errorf("gRPC callback client unavailable: CYODA_COMPUTE_GRPC_ENDPOINT not set")
+			}
+			res, err := gcb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("grpc callback create: %w", err)
+			}
+			if !res.Success {
+				return nil, fmt.Errorf("grpc callback create failed: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["secondaryId"] = res.EntityID
+			data["secondaryTxId"] = res.TxID
+			data["tokenWasEmpty"] = token == ""
+			return withData(entity, data)
+		},
+
+		// cb-grpc-create-then-fail — creates a secondary via a joined gRPC callback,
+		// then deliberately fails so T rolls back (cross-node atomicity proof).
+		"cb-grpc-create-then-fail": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if gcb == nil {
+				return nil, fmt.Errorf("gRPC callback client unavailable: CYODA_COMPUTE_GRPC_ENDPOINT not set")
+			}
+			res, err := gcb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("grpc callback create: %w", err)
+			}
+			if !res.Success {
+				return nil, fmt.Errorf("grpc callback create failed: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
+			}
+			return nil, fmt.Errorf("processor deliberately fails after gRPC callback write")
 		},
 
 		// cb-create-then-fail — creates a secondary via a joined callback, then

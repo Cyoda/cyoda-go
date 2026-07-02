@@ -261,6 +261,10 @@ func DefaultConfig() Config {
 			// TxTokenTTL must outlive the full dispatch round-trip plus the callback's
 			// verify step, so default to ≥2× the dispatch/forward timeout (30s).
 			TxTokenTTL: envDuration("CYODA_TX_TOKEN_TTL", 60*time.Second),
+			// Test-only: allow the dispatch HTTP forwarder to target loopback peers.
+			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
+			// this false so the SSRF guard stays active.
+			DispatchAllowLoopback: envBool("CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING", false),
 		},
 	}
 }

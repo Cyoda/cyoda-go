@@ -37,10 +37,11 @@ type catalog struct {
 }
 
 // newCatalog returns a catalog populated with all registered entries. cb is the
-// callback HTTP client used by the #287 callback-join processors/criteria; pass
-// nil when no HTTP base URL is configured.
-func newCatalog(cb *callbackClient) *catalog {
-	callbackProcs, callbackCrit := newCallbackCatalog()
+// callback HTTP client used by the #287 callback-join processors/criteria; gcb is
+// the gRPC EntityManage callback client used by the cross-node gRPC-callback
+// processor. Pass nil for either when the corresponding transport is unconfigured.
+func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
+	callbackProcs, callbackCrit := newCallbackCatalog(gcb)
 	return &catalog{
 		callbackProcessors: callbackProcs,
 		callbackCriteria:   callbackCrit,

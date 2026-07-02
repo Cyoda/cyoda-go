@@ -323,6 +323,32 @@ func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 	assertEnvelopeCode(t, resp, "req-nf", "TRANSACTION_NOT_FOUND")
 }
 
+// A valid token naming a peer that the registry reports as dead yields
+// TRANSACTION_NODE_UNAVAILABLE (503) in the envelope — the gRPC-entry-point
+// counterpart of the HTTP proxy's TestHTTPProxy_TokenForDeadNode_Returns503.
+// This is the "owner node down" callback case (#287): a compute-node callback
+// (EntityManage) lands on a non-owner node, but the owner is unreachable, so the
+// B→A forward cannot proceed and the client sees a clean operational code rather
+// than a raw gRPC error. Covers classifyRouteErr's proxy.ErrNodeUnavailable arm.
+func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("node-owner", "tx-owner-down", time.Now().Add(time.Minute))
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-owner": {NodeID: "node-owner", Addr: "http://node-owner:8080", Alive: false},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "local", fakeJoinTM{}, 9090)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-down"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run when the owner node is unavailable")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-down", "TRANSACTION_NODE_UNAVAILABLE")
+}
+
 // A valid self-node token for a transaction owned by a different tenant yields
 // FORBIDDEN (mapped from spi.ErrTxTenantMismatch in JoinFromToken).
 func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {

@@ -703,6 +703,16 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			fmt.Sprintf("CYODA_GOSSIP_ADDR=127.0.0.1:%d", gossipPorts[i]),
 			fmt.Sprintf("CYODA_SEED_NODES=%s", seedNodes),
 			fmt.Sprintf("CYODA_HMAC_SECRET=%s", hmacSecret),
+			// Advertise each node's real gRPC endpoint so cross-node EntityManage
+			// forwarding (tx-token callbacks landing on a non-owner node) resolves
+			// the owner's gRPC port directly instead of deriving it from the
+			// forwarding node's own port — the fixture assigns a distinct gRPC port
+			// per node, so the uniform-deployment derive fallback would misroute.
+			fmt.Sprintf("CYODA_GRPC_NODE_ADDR=127.0.0.1:%d", grpcPorts[i]),
+			// Test-only: every node runs on 127.0.0.1, so the dispatch HTTP
+			// forwarder must be allowed to target loopback peers to exercise
+			// forwarded processor/criteria dispatch (A→B) between nodes.
+			"CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING=true",
 		)
 		cmd.Env = env
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
