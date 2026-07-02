@@ -244,6 +244,10 @@ func DefaultConfig() Config {
 			},
 		},
 		Cluster: cluster.Config{
+			// Enabled defaults false for easier onboarding — NOT because multi-node is
+			// secondary. Cluster/HA correctness (tx-affinity, cross-node callback join,
+			// proxy routing, peer failover) is a primary design target.
+			// See .claude/rules/multi-node-primary.md.
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
 			NodeID:                 envString("CYODA_NODE_ID", ""),
 			NodeAddr:               envString("CYODA_NODE_ADDR", "http://localhost:8080"),
