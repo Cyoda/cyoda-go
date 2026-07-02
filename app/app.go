@@ -389,7 +389,8 @@ func New(cfg Config) *App {
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
-		WithPathValidationCache(pathValidationCache)
+		WithPathValidationCache(pathValidationCache).
+		WithMaxSortKeys(a.config.SearchMaxSortKeys)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
@@ -510,7 +511,7 @@ func New(cfg Config) *App {
 	server.Entity = entityHandler
 	server.Model = modelHandler
 	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine)
-	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory)
+	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory, a.config.SearchMaxSortKeys)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore

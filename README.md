@@ -186,6 +186,22 @@ This call is idempotent — it replaces the model's entire key list. The keys ar
 
 **Multi-node note:** see the `cluster` help topic — *Composite unique key staleness* — for a bounded operational limitation when changing a key on a live multi-node postgres deployment.
 
+## Search result sorting
+
+Search endpoints accept one or more `sort` query parameters to order results by scalar data or meta fields:
+
+```
+GET /api/entity/{entityName}/{modelVersion}/search?sort=price:asc&sort=@creationDate:desc
+```
+
+Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-data field; the `@` prefix sorts by a meta field. Direction defaults to `asc`. Repetition order is sort precedence; `entity_id` is always the final tiebreaker. Absent/null values sort last.
+
+**Sortable meta fields:** `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`.
+
+**Error:** unsortable, unknown, or non-scalar paths return `400 INVALID_FIELD_PATH`.
+
+**Key cap:** `CYODA_SEARCH_MAX_SORT_KEYS` (default `16`) — see `cyoda help config` (Search and transaction internals).
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.

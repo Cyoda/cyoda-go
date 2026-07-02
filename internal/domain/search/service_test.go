@@ -3,7 +3,9 @@ package search_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -768,6 +770,434 @@ func TestSearchFallsBackWhenInTransaction(t *testing.T) {
 	// Should get result from the fallback path.
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
 		t.Fatalf("expected 1 result (e1) from fallback, got %d results", len(results))
+	}
+}
+
+// sortTestFactory returns a fixed Searcher entity store AND a fixed model store.
+// Used by the sort-pushdown tests that need both dimensions controlled.
+type sortTestFactory struct {
+	spi.StoreFactory
+	entityStore *searcherEntityStore
+	modelStore  spi.ModelStore
+}
+
+func (f *sortTestFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+func (f *sortTestFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {
+	return f.modelStore, nil
+}
+
+// TestSearch_SortByDataField_PushesOrderSpecToSearcher verifies that Search
+// with opts.OrderBy resolves the sort key against the model schema and passes
+// the fully-typed spi.OrderSpec (including Kind) down to the spi.Searcher.
+func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Model declares "surname" as a String field.
+	desc := buildSearchDescriptor(t, ref, "surname")
+	ms := &refreshingModelStore{
+		// validateConditionPaths (for $.surname) + resolveSortKeys each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc},
+	}
+
+	var capturedOpts spi.SearchOptions
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			capturedOpts = opts
+			return nil, nil
+		},
+	}
+
+	factory := &sortTestFactory{
+		StoreFactory: base,
+		entityStore:  ses,
+		modelStore:   ms,
+	}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.surname",
+		OperatorType: "EQUALS",
+		Value:        "Smith",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{
+		OrderBy: []search.OrderKey{{Path: "surname", Source: spi.SourceData, Desc: true}},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if ses.searchCalls != 1 {
+		t.Fatalf("expected searcher to be called once, got %d", ses.searchCalls)
+	}
+	if len(capturedOpts.OrderBy) != 1 {
+		t.Fatalf("expected 1 OrderSpec pushed to searcher, got %d", len(capturedOpts.OrderBy))
+	}
+	spec := capturedOpts.OrderBy[0]
+	if spec.Path != "surname" {
+		t.Errorf("spec.Path = %q, want %q", spec.Path, "surname")
+	}
+	if spec.Source != spi.SourceData {
+		t.Errorf("spec.Source = %q, want %q", spec.Source, spi.SourceData)
+	}
+	if !spec.Desc {
+		t.Error("spec.Desc = false, want true")
+	}
+	if spec.Kind != spi.OrderText {
+		t.Errorf("spec.Kind = %v, want spi.OrderText", spec.Kind)
+	}
+}
+
+// TestSearch_UnknownSortField_ReturnsInvalidFieldPath verifies that Search
+// with an OrderKey whose path is not in the model schema returns a
+// 400-classified *common.AppError with code INVALID_FIELD_PATH.
+func TestSearch_UnknownSortField_ReturnsInvalidFieldPath(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Model has "surname" but NOT "nonexistent".
+	desc := buildSearchDescriptor(t, ref, "surname")
+	ms := &refreshingModelStore{
+		// validateConditionPaths is called but returns early with nil —
+		// LifecycleCondition has no data paths, so it makes no model-store call.
+		// resolveSortKeys needs exactly one Get call.
+		getQueue: []*spi.ModelDescriptor{desc},
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil
+		},
+	}
+
+	factory := &sortTestFactory{
+		StoreFactory: base,
+		entityStore:  ses,
+		modelStore:   ms,
+	}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// LifecycleCondition: extractFieldPaths returns [] so validateConditionPaths
+	// returns early without touching the model store.
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "ACTIVE",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{
+		OrderBy: []search.OrderKey{{Path: "nonexistent", Source: spi.SourceData, Desc: false}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown sort field, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want %d", appErr.Status, http.StatusBadRequest)
+	}
+}
+
+// TestSubmitAsync_OrderBy_InvalidField verifies that SubmitAsync returns a
+// 400 INVALID_FIELD_PATH error synchronously when a sort key is not known by
+// the model schema — no job must be created before the error is returned.
+func TestSubmitAsync_OrderBy_InvalidField(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Model declares "surname" but NOT "nonexistent".
+	desc := buildSearchDescriptor(t, ref, "surname")
+	ms := &refreshingModelStore{getQueue: []*spi.ModelDescriptor{desc}}
+
+	realEntityStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realEntityStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil
+		},
+	}
+	factory := &sortTestFactory{StoreFactory: base, entityStore: ses, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	baseStore, _ := base.AsyncSearchStore(context.Background())
+	capture := newCaptureSearchStore(baseStore)
+	svc := search.NewSearchService(factory, uuids, capture)
+
+	// LifecycleCondition has no data paths — validateConditionPaths exits
+	// early without consuming from the model store queue.
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "ACTIVE",
+	}
+
+	_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{
+		OrderBy: []search.OrderKey{{Path: "nonexistent", Source: spi.SourceData}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown sort field, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", appErr.Status, http.StatusBadRequest)
+	}
+
+	// No job must have been created before the error was returned.
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.createJobCalls != 0 {
+		t.Errorf("CreateJob called %d time(s), want 0 (error must precede job creation)", capture.createJobCalls)
+	}
+}
+
+// TestSubmitAsync_OrderBy_PersistsTypedSpecs verifies that with valid sort keys
+// the persisted SearchOpts JSON carries a typed []spi.OrderSpec with Kind set.
+// Uses the self-executing store so no goroutine is launched and the job can be
+// inspected synchronously right after SubmitAsync returns.
+func TestSubmitAsync_OrderBy_PersistsTypedSpecs(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Any descriptor suffices — creationDate is a meta key resolved without
+	// consulting the data-field map, but loadFieldsMap must still succeed.
+	desc := buildSearchDescriptor(t, ref, "surname")
+	ms := &refreshingModelStore{getQueue: []*spi.ModelDescriptor{desc}}
+
+	realEntityStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realEntityStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil
+		},
+	}
+	factory := &sortTestFactory{StoreFactory: base, entityStore: ses, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	baseStore, _ := base.AsyncSearchStore(context.Background())
+	capture := newCaptureSearchStore(baseStore)
+	selfExec := &selfExecutingCaptureStore{captureSearchStore: capture}
+	svc := search.NewSearchService(factory, uuids, selfExec)
+
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "ACTIVE",
+	}
+
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{
+		// creationDate is a canonical meta field → resolves to Kind=OrderTemporal.
+		OrderBy: []search.OrderKey{{Path: "creationDate", Source: spi.SourceMeta}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	job, err := baseStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(job.SearchOpts) == 0 {
+		t.Fatal("SearchOpts is empty")
+	}
+
+	var decoded struct {
+		OrderBy []spi.OrderSpec `json:"orderBy"`
+	}
+	if err := json.Unmarshal(job.SearchOpts, &decoded); err != nil {
+		t.Fatalf("Unmarshal SearchOpts: %v", err)
+	}
+	if len(decoded.OrderBy) != 1 {
+		t.Fatalf("decoded.OrderBy len = %d, want 1", len(decoded.OrderBy))
+	}
+	spec := decoded.OrderBy[0]
+	if spec.Path != "creationDate" {
+		t.Errorf("spec.Path = %q, want %q", spec.Path, "creationDate")
+	}
+	if spec.Source != spi.SourceMeta {
+		t.Errorf("spec.Source = %v, want SourceMeta", spec.Source)
+	}
+	if spec.Kind != spi.OrderTemporal {
+		t.Errorf("spec.Kind = %v, want OrderTemporal (%v)", spec.Kind, spi.OrderTemporal)
+	}
+}
+
+// TestSearch_SortKeyCap_ReturnsError verifies that Search returns a 400
+// INVALID_FIELD_PATH AppError when the number of sort keys exceeds the
+// configured cap. The cap check must fire before the model store is
+// consulted so the model need not be registered.
+func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	// Cap set to 2 — sending 3 keys must be rejected.
+	svc := search.NewSearchService(factory, uuids, searchStore).WithMaxSortKeys(2)
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	orderBy := []search.OrderKey{
+		{Path: "a", Source: spi.SourceData},
+		{Path: "b", Source: spi.SourceData},
+		{Path: "c", Source: spi.SourceData},
+	}
+	cond := &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "ACTIVE",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{OrderBy: orderBy})
+	if err == nil {
+		t.Fatal("expected error for too many sort keys, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want 400", appErr.Status)
+	}
+}
+
+// TestSubmitAsync_SortKeyCap_ReturnsError verifies that SubmitAsync returns a
+// 400 INVALID_FIELD_PATH AppError synchronously when the number of sort keys
+// exceeds the configured cap. The cap check fires before the job is created,
+// so CreateJob must not be called.
+func TestSubmitAsync_SortKeyCap_ReturnsError(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	baseStore, _ := factory.AsyncSearchStore(context.Background())
+	capture := newCaptureSearchStore(baseStore)
+	// Cap set to 2 — sending 3 keys must be rejected.
+	svc := search.NewSearchService(factory, uuids, capture).WithMaxSortKeys(2)
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	orderBy := []search.OrderKey{
+		{Path: "a", Source: spi.SourceData},
+		{Path: "b", Source: spi.SourceData},
+		{Path: "c", Source: spi.SourceData},
+	}
+	cond := &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "ACTIVE",
+	}
+
+	_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{OrderBy: orderBy})
+	if err == nil {
+		t.Fatal("expected error for too many sort keys, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want 400", appErr.Status)
+	}
+
+	// No job must have been created before the error was returned.
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.createJobCalls != 0 {
+		t.Errorf("CreateJob called %d time(s), want 0 (cap error must precede job creation)", capture.createJobCalls)
+	}
+}
+
+// TestSearch_DuplicateSortKeys_ReturnsError verifies that Search returns a
+// 400 INVALID_FIELD_PATH AppError when two OrderKeys share the same
+// source+path combination.
+func TestSearch_DuplicateSortKeys_ReturnsError(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	// Model declares "tag" as a scalar string field.
+	desc := buildSearchDescriptor(t, ref, "tag")
+	ms := &refreshingModelStore{
+		// resolveSortKeys calls Get once.
+		getQueue: []*spi.ModelDescriptor{desc},
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil
+		},
+	}
+	factory := &sortTestFactory{StoreFactory: base, entityStore: ses, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// Two identical keys — same source+path must be rejected.
+	orderBy := []search.OrderKey{
+		{Path: "tag", Source: spi.SourceData},
+		{Path: "tag", Source: spi.SourceData},
+	}
+	cond := &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "ACTIVE",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{OrderBy: orderBy})
+	if err == nil {
+		t.Fatal("expected error for duplicate sort keys, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("appErr.Code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("appErr.Status = %d, want 400", appErr.Status)
 	}
 }
 

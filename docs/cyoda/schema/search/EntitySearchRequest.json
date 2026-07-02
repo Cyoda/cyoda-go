@@ -28,6 +28,18 @@
     "limit": {
       "type": "integer",
       "description": "The maximum number of rows to return."
+    },
+    "orderBy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path":   { "type": "string" },
+          "source": { "type": "string", "enum": ["data", "meta"], "default": "data" },
+          "desc":   { "type": "boolean", "default": false }
+        },
+        "required": ["path"]
+      }
     }
   },
   "required": [

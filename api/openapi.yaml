@@ -6249,6 +6249,22 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: sort
+          in: query
+          description: >
+            Repeatable sort key. Grammar: [@]path[:asc|desc], direction
+            defaults to asc. A bare path sorts by a scalar entity-data field;
+            a leading '@' selects a meta field (state, creationDate,
+            lastUpdateTime, transitionForLatestSave, transactionId, id).
+            Repetition order is sort precedence; entity id is the final
+            tiebreaker. Absent/null values sort last.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       requestBody:
         content:
           application/json:
@@ -6301,7 +6317,7 @@ paths:
         endpoint.
 
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
 
         The results are returned in a paginated format, with:
@@ -6489,7 +6505,7 @@ paths:
         - Supports point-in-time querying
 
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
 
         If no request body is provided or an empty request body is sent, all
@@ -6553,6 +6569,22 @@ paths:
           required: false
           schema:
             type: string
+        - name: sort
+          in: query
+          description: >
+            Repeatable sort key. Grammar: [@]path[:asc|desc], direction
+            defaults to asc. A bare path sorts by a scalar entity-data field;
+            a leading '@' selects a meta field (state, creationDate,
+            lastUpdateTime, transitionForLatestSave, transactionId, id).
+            Repetition order is sort precedence; entity id is the final
+            tiebreaker. Absent/null values sort last.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       requestBody:
         content:
           application/json:

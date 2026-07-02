@@ -148,6 +148,13 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 	opts := search.SearchOptions{
 		PointInTime: req.PointInTime,
 	}
+	for _, o := range req.OrderBy {
+		src := spi.SourceData
+		if o.Source == events.EntitySnapshotSearchRequestJsonOrderByElemSourceMeta {
+			src = spi.SourceMeta
+		}
+		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
+	}
 
 	snapshotID, err := s.searchService.SubmitAsyncSearch(ctx, modelRef, cond, opts)
 	if err != nil {
@@ -327,6 +334,13 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	}
 	if req.Limit != nil {
 		opts.Limit = *req.Limit
+	}
+	for _, o := range req.OrderBy {
+		src := spi.SourceData
+		if o.Source == events.EntitySearchRequestJsonOrderByElemSourceMeta {
+			src = spi.SourceMeta
+		}
+		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
 	}
 
 	results, err := s.searchService.DirectSearch(ctx, modelRef, cond, opts)

@@ -222,7 +222,7 @@ paths:
         Retrieves a page of results from a previously submitted async search job.
         To find out how many entities were found, call the search job status endpoint.
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
         The results are returned in a paginated format, with:
         - Configurable page size (default: 10)
@@ -481,7 +481,7 @@ paths:
         - Has configurable timeout and result limits
         - Supports point-in-time querying
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
         If no request body is provided or an empty request body is sent, all entities of the specified model and version
         will be returned (subject to the limit parameter).

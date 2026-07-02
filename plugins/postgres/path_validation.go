@@ -98,13 +98,31 @@ func validateFilterPaths(f spi.Filter) error {
 	return validateJSONPath(f.Path)
 }
 
-// validateOrderSpecs checks every OrderSpec.Path against the same dotted-
-// identifier grammar as filter paths. Empty paths (direct-column / default
-// ordering) are skipped. MUST be called at the Search() boundary before any
-// OrderSpec.Path is interpolated into SQL (injection invariant).
+// validateOrderSpecs checks every OrderSpec before any path is interpolated
+// into SQL. Two checks are applied, in order:
+//
+//  1. SourceMeta paths: only "id" (special) and the keys of metaJSONKey are
+//     accepted; anything else is rejected with ErrInvalidFilterPath. This is
+//     an additive check that runs BEFORE the injection guard below.
+//
+//  2. SourceData paths: validated against the dotted-identifier grammar by
+//     validateJSONPath (injection guard). Empty paths are skipped.
+//
+// MUST be called at the Search() boundary before any OrderSpec.Path is
+// interpolated into SQL (injection invariant).
 func validateOrderSpecs(specs []spi.OrderSpec) error {
 	for _, sp := range specs {
 		if sp.Path == "" {
+			continue
+		}
+		if sp.Source == spi.SourceMeta {
+			// "id" is special-cased to the entity_id column; all other meta
+			// paths must be in the canonical set.
+			if sp.Path != "id" {
+				if _, ok := metaJSONKey[sp.Path]; !ok {
+					return fmt.Errorf("%w: unknown meta sort path %q", ErrInvalidFilterPath, sp.Path)
+				}
+			}
 			continue
 		}
 		if err := validateJSONPath(sp.Path); err != nil {

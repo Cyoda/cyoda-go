@@ -32,6 +32,7 @@ type SearchOptions struct {
 	Offset          int
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
+	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
 }
 
 // ResultOptions controls pagination when retrieving async search results.
@@ -68,6 +69,11 @@ type SearchService struct {
 	// validation. nil-safe: when unset, validation falls back to the
 	// inner-store Get + bounded RefreshAndGet pair on every request.
 	pathCache *PathValidationCache
+
+	// maxSortKeys caps the number of sort keys accepted per request across
+	// all entry points (HTTP, gRPC, sync, async). Zero means use the
+	// built-in default of 16.
+	maxSortKeys int
 }
 
 // NewSearchService creates a SearchService backed by the given store factory.
@@ -87,6 +93,14 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 // invalidates the (tenant, modelRef) bucket.
 func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchService {
 	s.pathCache = c
+	return s
+}
+
+// WithMaxSortKeys sets the per-request sort-key cap enforced by
+// resolveSortKeys. A value ≤ 0 restores the built-in default (16).
+// Returns the receiver for chaining after NewSearchService.
+func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
+	s.maxSortKeys = n
 	return s
 }
 
@@ -110,6 +124,11 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, vErr
 	}
 
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	store, err := s.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
@@ -128,6 +147,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				PointInTime:  opts.PointInTime,
 				Limit:        opts.Limit,
 				Offset:       opts.Offset,
+				OrderBy:      orderBy,
 			})
 		}
 		// Fall through to in-memory filtering if translation fails.
@@ -156,6 +176,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			matches = append(matches, e)
 		}
 	}
+
+	sortEntities(matches, orderBy)
 
 	// Apply offset.
 	if opts.Offset > 0 {
@@ -193,6 +215,17 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", vErr
 	}
 
+	// Resolve sort keys synchronously so a bad field path returns 400
+	// before the job is ever created — the client gets an actionable error
+	// without a polling round-trip. The resolved, Kind-bearing specs are
+	// what we persist so a SelfExecutingSearchStore (which executes from
+	// the persisted opts and never runs the domain resolver) orders with
+	// the correct comparison class.
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return "", oerr
+	}
+
 	if opts.PointInTime == nil {
 		now := time.Now()
 		opts.PointInTime = &now
@@ -206,14 +239,19 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", fmt.Errorf("failed to marshal search condition: %w", err)
 	}
 
+	// spi.OrderSpec has no json tags, so the OrderBy slice serializes with
+	// PascalCase field names (Path/Source/Desc/Kind). SelfExecutingSearchStore
+	// implementations that decode this blob must expect that casing.
 	optsJSON, err := json.Marshal(struct {
-		Limit       int        `json:"limit"`
-		Offset      int        `json:"offset"`
-		PointInTime *time.Time `json:"pointInTime,omitempty"`
+		Limit       int             `json:"limit"`
+		Offset      int             `json:"offset"`
+		PointInTime *time.Time      `json:"pointInTime,omitempty"`
+		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
 	}{
 		Limit:       opts.Limit,
 		Offset:      opts.Offset,
 		PointInTime: opts.PointInTime,
+		OrderBy:     orderBy,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal search options: %w", err)
@@ -583,6 +621,41 @@ func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths 
 	for _, p := range paths {
 		s.pathCache.MarkPresent(tenant, ref, p)
 	}
+}
+
+// resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating
+// scalar-leaf data paths and the meta allowlist. Returns a 400-classified
+// AppError on bad input.
+func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	// Enforce the sort-key cap and reject duplicates before touching the
+	// model store. This bounds every entry point (HTTP, gRPC, sync, async)
+	// uniformly and fails fast on clearly-invalid requests.
+	effMax := s.maxSortKeys
+	if effMax <= 0 {
+		effMax = 16
+	}
+	keys, cerr := capAndDedupOrderKeys(keys, effMax)
+	if cerr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, cerr.Error())
+	}
+
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get model store: %w", err)
+	}
+	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load schema for sort validation: %w", err)
+	}
+	specs, rerr := resolveOrderBy(keys, fields)
+	if rerr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+	}
+	return specs, nil
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more

@@ -775,8 +775,8 @@ type CollectionChunkError struct {
 // NOT roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
 // carrying an IfMatch precondition (issue #228).
 type CollectionChunkItemFailure struct {
-	EntityID string                  `json:"entityId"`
-	Error    CollectionChunkItemErr  `json:"error"`
+	EntityID string                 `json:"entityId"`
+	Error    CollectionChunkItemErr `json:"error"`
 }
 
 // CollectionChunkItemErr is the per-item failure inner object.
@@ -1188,19 +1188,11 @@ func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersi
 	return resp.StatusCode, raw, nil
 }
 
-// SyncSearch issues POST /api/search/direct/{name}/{version} with the
-// given condition JSON. Returns the entity results.
-// The sync search endpoint returns application/x-ndjson. This method
-// reads the response line-by-line (NDJSON).
-// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
-func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, condition string) ([]EntityResult, error) {
-	t.Helper()
-	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
-	raw, err := c.doRaw(t, http.MethodPost, path, condition)
-	if err != nil {
-		return nil, err
-	}
-	// Parse NDJSON: one EntityResult per line.
+// decodeEntityResultNDJSON parses an application/x-ndjson response body into
+// a slice of EntityResult. Each non-empty line is decoded as one object using
+// DisallowUnknownFields to catch API drift. Used by SyncSearch, SyncSearchAt,
+// SyncSearchSorted, and SyncSearchSortedAt.
+func decodeEntityResultNDJSON(raw []byte) ([]EntityResult, error) {
 	var results []EntityResult
 	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
 		if line == "" {
@@ -1217,6 +1209,60 @@ func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, co
 	return results, nil
 }
 
+// SyncSearchSorted issues POST /api/search/direct/{name}/{version}?sort=k1&sort=k2...
+// with the given condition JSON and ordered sort keys. Returns entity results in
+// the server-applied sort order.  An empty sortKeys slice is equivalent to
+// SyncSearch (no sort params — entity_id ascending default).
+// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
+func (c *Client) SyncSearchSorted(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	if len(sortKeys) > 0 {
+		vals := url.Values{}
+		for _, k := range sortKeys {
+			vals.Add("sort", k)
+		}
+		path += "?" + vals.Encode()
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
+// SyncSearchSortedAt is like SyncSearchSorted but also adds a pointInTime
+// query parameter so the search operates on the snapshot at the given instant.
+func (c *Client) SyncSearchSortedAt(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string, at time.Time) ([]EntityResult, error) {
+	t.Helper()
+	vals := url.Values{}
+	vals.Set("pointInTime", at.UTC().Format(time.RFC3339Nano))
+	for _, k := range sortKeys {
+		vals.Add("sort", k)
+	}
+	path := fmt.Sprintf("/api/search/direct/%s/%d?%s", modelName, modelVersion, vals.Encode())
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
+// SyncSearch issues POST /api/search/direct/{name}/{version} with the
+// given condition JSON. Returns the entity results.
+// The sync search endpoint returns application/x-ndjson. This method
+// reads the response line-by-line (NDJSON).
+// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
+func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, condition string) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
 // SyncSearchAt issues POST /api/search/direct/{name}/{version}?pointInTime=<t>
 // with the given condition JSON and returns the entity results at the snapshot.
 // Mirrors SyncSearch (NDJSON response); the direct-search handler honours the
@@ -1229,20 +1275,7 @@ func (c *Client) SyncSearchAt(t *testing.T, modelName string, modelVersion int, 
 	if err != nil {
 		return nil, err
 	}
-	var results []EntityResult
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var r EntityResult
-		dec := json.NewDecoder(strings.NewReader(line))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&r); err != nil {
-			return nil, fmt.Errorf("decode NDJSON line: %w", err)
-		}
-		results = append(results, r)
-	}
-	return results, nil
+	return decodeEntityResultNDJSON(raw)
 }
 
 // GetAuditEvents issues GET /api/audit/entity/{entityId} with optional
