@@ -54,8 +54,12 @@ func JoinFromToken(ctx context.Context, signer *token.Signer, txMgr spi.Transact
 		switch {
 		case errors.Is(err, spi.ErrTxTenantMismatch):
 			return ctx, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "transaction belongs to a different tenant")
-		default: // ErrTxNotFound / ErrTxRolledBack / ErrTxAlreadyCommitted
+		case errors.Is(err, spi.ErrTxNotFound),
+			errors.Is(err, spi.ErrTxRolledBack),
+			errors.Is(err, spi.ErrTxAlreadyCommitted):
 			return ctx, common.Operational(http.StatusNotFound, common.ErrCodeTransactionNotFound, "transaction not found or no longer active")
+		default:
+			return ctx, common.Internal("failed to join transaction", err)
 		}
 	}
 

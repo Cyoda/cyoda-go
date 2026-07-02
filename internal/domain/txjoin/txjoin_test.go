@@ -181,6 +181,26 @@ func TestJoinFromToken_AlreadyCommittedMaps404(t *testing.T) {
 	}
 }
 
+func TestJoinFromToken_UnknownJoinErrorMaps5xx(t *testing.T) {
+	s, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	tok, err := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	unknownErr := errors.New("db unavailable")
+	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: unknownErr}, tok)
+	var op *common.AppError
+	if !errors.As(err, &op) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if op.Status != http.StatusInternalServerError {
+		t.Fatalf("expected 500 Internal Server Error, got %d", op.Status)
+	}
+}
+
 func TestJoinFromToken_TenantMismatchMaps403(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
