@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -165,7 +166,7 @@ func TestCreateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -213,7 +214,7 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -288,7 +289,7 @@ func newOrderTestHandler(t *testing.T) (*Handler, context.Context) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	registerOrderModel(t, ctx, factory)
 	return h, ctx
@@ -308,7 +309,7 @@ func newOrderTestHandlerWithSpy(t *testing.T) (*Handler, context.Context, *ctxRe
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	registerOrderModel(t, ctx, spy)
 	return h, ctx, rec
@@ -370,8 +371,8 @@ func registerProductModel(t *testing.T, ctx context.Context, factory spi.StoreFa
 		t.Fatalf("ModelStore: %v", err)
 	}
 	if err := modelStore.Save(ctx, &spi.ModelDescriptor{
-		Ref:   spi.ModelRef{EntityName: "Product", ModelVersion: "1"},
-		State: spi.ModelLocked,
+		Ref:    spi.ModelRef{EntityName: "Product", ModelVersion: "1"},
+		State:  spi.ModelLocked,
 		Schema: raw,
 		// No unique keys — used to verify no leakage from a preceding keyed item.
 	}); err != nil {

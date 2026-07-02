@@ -45,6 +45,7 @@ import (
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 type App struct {
@@ -55,6 +56,7 @@ type App struct {
 	authzService       contract.AuthorizationService
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
+	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
 	searchService      *search.SearchService
 	auditService       contract.AuditService
 	clusterService     contract.ClusterService
@@ -522,7 +524,8 @@ func New(cfg Config) *App {
 	}
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine)
+	a.txGate = txgate.New()
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
 	modelHandler := model.New(a.storeFactory)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler

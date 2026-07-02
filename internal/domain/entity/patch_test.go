@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -99,7 +100,7 @@ func newPatchTestHandler(t *testing.T) (*Handler, context.Context) {
 	}
 
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	// Build a strict (ChangeLevel == "") schema for Person: {name: String, age: Integer}.
 	node := schema.NewObjectNode()
