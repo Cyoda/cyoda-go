@@ -26,11 +26,7 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 		return nil
 	})
 	uuids := common.NewTestUUIDGenerator()
-	secret := make([]byte, 32)
-	for i := range secret {
-		secret[i] = byte(i + 1)
-	}
-	signer, _ := token.NewSigner(secret)
+	signer, _ := token.NewSigner(make32(t))
 	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
 	return dispatcher, registry, memberID, sentCh
 }
@@ -182,11 +178,7 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 func TestDispatchProcessor_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
 	uuids := common.NewTestUUIDGenerator()
-	secret := make([]byte, 32)
-	for i := range secret {
-		secret[i] = byte(i + 1)
-	}
-	signer, _ := token.NewSigner(secret)
+	signer, _ := token.NewSigner(make32(t))
 	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
 	ctx := testContext()
 	entity := testEntity()
