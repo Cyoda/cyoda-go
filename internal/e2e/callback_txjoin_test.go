@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -106,6 +107,19 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 		t.Fatalf("secondary GET after success: http %d; want 200 (callback write must be durable)", code)
 	} else if st != "STORED" {
 		t.Errorf("secondary state = %q; want STORED", st)
+	}
+
+	// Same-transaction assertion: the primary's processor-launching transition
+	// and the secondary create must carry the IDENTICAL transactionId. This is
+	// the unambiguous proof that the callback joined T — it would FAIL under the
+	// pre-#287 behaviour where the callback ran its own Begin/Commit.
+	primTxID := extractTxIDFromAudit(t, h, primaryID)
+	secTxID := extractTxIDFromAudit(t, h, secondaryID)
+	if primTxID == "" || secTxID == "" {
+		t.Errorf("expected non-empty transactionIds from audit: primary=%q secondary=%q", primTxID, secTxID)
+	} else if primTxID != secTxID {
+		t.Errorf("primary transition txID %q != secondary create txID %q — the callback did NOT join the originating transaction (separate transactions)",
+			primTxID, secTxID)
 	}
 
 	// --- failure branch ---
@@ -245,4 +259,33 @@ func TestCallback_SyncRead_SeesUncommittedCascadeWrite(t *testing.T) {
 	} else if st != "STORED" {
 		t.Errorf("secondary state = %q; want STORED", st)
 	}
+}
+
+// extractTxIDFromAudit issues GET /api/audit/entity/{entityId} against
+// the callback harness and returns the first non-empty transactionId from
+// the audit response. Used to assert that the primary transition and the
+// secondary create share the same transactionId (same-transaction membership
+// proof for feature #287).
+func extractTxIDFromAudit(t *testing.T, h *callbackHarness, entityID string) string {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodGet, "/api/audit/entity/"+entityID, "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/audit/entity/%s: status %d body=%s", entityID, resp.StatusCode, body)
+	}
+	var auditResp struct {
+		Items []struct {
+			TransactionID string `json:"transactionId"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(body), &auditResp); err != nil {
+		t.Fatalf("decode audit response for entity %s: %v (body=%s)", entityID, err, body)
+	}
+	for _, ev := range auditResp.Items {
+		if ev.TransactionID != "" {
+			return ev.TransactionID
+		}
+	}
+	t.Fatalf("no audit event with transactionId for entity %s (body=%s)", entityID, body)
+	return ""
 }

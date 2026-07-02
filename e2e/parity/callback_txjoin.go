@@ -171,6 +171,13 @@ func RunCallbackSyncWriteAtomic(t *testing.T, fixture BackendFixture) {
 		t.Errorf("ok-marker secondary search = %d; want 1", len(okHits))
 	}
 
+	// Same-transaction assertion: the primary's processor-launching transition
+	// and the secondary create must carry the IDENTICAL transactionId. This is
+	// the unambiguous proof that the callback joined T rather than opening a
+	// separate transaction — it would FAIL under the pre-#287 behaviour where
+	// the callback ran its own Begin/Commit.
+	cbAssertSameTxID(t, c, primaryID, secID)
+
 	// --- failure branch (THE ATOMICITY PROOF) ---
 	cbSetupModel(t, c, primaryFail, `{"name":"Test","amount":10,"status":"new"}`,
 		cbPrimaryProcWorkflow("cbtj-atomic-fail-wf", "cb-create-then-fail", "SYNC", cbContext(secondary, doomedMarker)))
@@ -488,5 +495,46 @@ func RunCallback_AsyncNewTxDiscardOnFailure(t *testing.T, fixture BackendFixture
 	}
 	if len(doomedHits) != 0 {
 		t.Fatalf("doomed secondary search = %d; want 0 — savepoint NOT rolled back on ASYNC_NEW_TX failure", len(doomedHits))
+	}
+}
+
+// cbFirstTxID returns the first non-empty transactionId from an audit
+// response, scanning all items in order. The caller decides which event
+// type to look for — in practice the first non-empty txID is from the
+// transition that wrote the entity, which is the same T for both the
+// primary (processor-launching transition) and the secondary (callback
+// create within T).
+func cbFirstTxID(resp client.EntityAuditEventsResponse) string {
+	for _, ev := range resp.Items {
+		if ev.TransactionID != "" {
+			return ev.TransactionID
+		}
+	}
+	return ""
+}
+
+// cbAssertSameTxID queries the audit REST endpoint for both the primary
+// and secondary entities and asserts that each carries a non-empty
+// transactionId and that both transactionIds are IDENTICAL. A mismatch
+// means the callback ran in a separate transaction (pre-#287 behaviour),
+// not the expected join into T.
+func cbAssertSameTxID(t *testing.T, c *client.Client, primaryID, secondaryID uuid.UUID) {
+	t.Helper()
+	primAudit, err := c.GetAuditEvents(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetAuditEvents primary %s: %v", primaryID, err)
+	}
+	secAudit, err := c.GetAuditEvents(t, secondaryID)
+	if err != nil {
+		t.Fatalf("GetAuditEvents secondary %s: %v", secondaryID, err)
+	}
+	primTxID := cbFirstTxID(primAudit)
+	secTxID := cbFirstTxID(secAudit)
+	if primTxID == "" || secTxID == "" {
+		t.Fatalf("expected non-empty transactionIds from audit: primary=%q secondary=%q", primTxID, secTxID)
+	}
+	if primTxID != secTxID {
+		t.Fatalf("primary transition txID %q != secondary create txID %q — the callback did NOT join the originating transaction (separate transactions)",
+			primTxID, secTxID)
 	}
 }

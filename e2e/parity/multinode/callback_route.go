@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
@@ -189,6 +191,16 @@ func RunCallback_ForwardedDispatch_HTTP(t *testing.T, fixture MultiNodeFixture) 
 		}
 	}
 
+	// Same-transaction assertion: the primary's processor-launching transition
+	// and the secondary create (written via the cross-node proxied callback) must
+	// carry the IDENTICAL transactionId — unambiguous proof that the callback joined
+	// T cluster-wide and was not a separate independent transaction.
+	secParsed, errParse := uuid.Parse(secID)
+	if errParse != nil {
+		t.Fatalf("parse secondaryId %q as UUID: %v", secID, errParse)
+	}
+	cbRouteSameTxID(t, cOwner, primaryID, secParsed)
+
 	// --- failure branch (cross-node atomicity proof) ---
 	status, body, err := cOwner.CreateEntityRaw(t, primaryFail, 1, `{"name":"parent2","amount":100,"status":"new"}`)
 	if err != nil {
@@ -288,6 +300,16 @@ func RunCallback_ForwardedDispatch_GRPC(t *testing.T, fixture MultiNodeFixture) 
 		}
 	}
 
+	// Same-transaction assertion: the primary's processor-launching transition and
+	// the secondary create (written via the cross-node gRPC B→A callback) must carry
+	// the IDENTICAL transactionId — proof that the gRPC forwarded callback joined T
+	// rather than opening a separate transaction.
+	secParsedGRPC, errParseGRPC := uuid.Parse(secID)
+	if errParseGRPC != nil {
+		t.Fatalf("parse secondaryId %q as UUID: %v", secID, errParseGRPC)
+	}
+	cbRouteSameTxID(t, cOwner, primaryID, secParsedGRPC)
+
 	// --- failure branch (cross-node gRPC atomicity proof) ---
 	status, body, err := cOwner.CreateEntityRaw(t, primaryFail, 1, `{"name":"parent2","amount":100,"status":"new"}`)
 	if err != nil {
@@ -313,4 +335,41 @@ func RunCallback_ForwardedDispatch_GRPC(t *testing.T, fixture MultiNodeFixture) 
 // cbRouteStatusEquals builds a simple search condition matching data.status.
 func cbRouteStatusEquals(value string) string {
 	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, value)
+}
+
+// cbRouteSameTxID queries the audit REST endpoint for both entities and
+// asserts that each carries a non-empty transactionId and that both are
+// IDENTICAL — proving the cross-node callback joined the originating
+// transaction T rather than opening a separate transaction. A mismatch
+// indicates the cluster routing did not propagate the tx-token correctly.
+func cbRouteSameTxID(t *testing.T, c *client.Client, primaryID, secondaryID uuid.UUID) {
+	t.Helper()
+	primAudit, err := c.GetAuditEvents(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetAuditEvents primary %s: %v", primaryID, err)
+	}
+	secAudit, err := c.GetAuditEvents(t, secondaryID)
+	if err != nil {
+		t.Fatalf("GetAuditEvents secondary %s: %v", secondaryID, err)
+	}
+	var primTxID, secTxID string
+	for _, ev := range primAudit.Items {
+		if ev.TransactionID != "" {
+			primTxID = ev.TransactionID
+			break
+		}
+	}
+	for _, ev := range secAudit.Items {
+		if ev.TransactionID != "" {
+			secTxID = ev.TransactionID
+			break
+		}
+	}
+	if primTxID == "" || secTxID == "" {
+		t.Fatalf("expected non-empty transactionIds from audit: primary=%q secondary=%q", primTxID, secTxID)
+	}
+	if primTxID != secTxID {
+		t.Fatalf("primary transition txID %q != secondary create txID %q — the callback did NOT join the originating transaction (separate transactions)",
+			primTxID, secTxID)
+	}
 }
