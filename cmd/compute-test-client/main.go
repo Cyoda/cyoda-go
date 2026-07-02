@@ -37,9 +37,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	cat := newCatalog()
+	// Optional HTTP base URL for feature #287 callback-join processors. When
+	// unset, callback processors report a clear error rather than panicking;
+	// the non-callback catalog still serves. The M2M token doubles as the
+	// callback bearer (same tenant as dispatch).
+	httpBase := os.Getenv("CYODA_COMPUTE_HTTP_BASE")
+	cb := newCallbackClient(httpBase, token)
+
+	cat := newCatalog(cb)
 	slog.Info("catalog loaded", "pkg", "compute-test-client",
-		"processors", len(cat.processors), "criteria", len(cat.criteria))
+		"processors", len(cat.processors), "criteria", len(cat.criteria),
+		"callbackProcessors", len(cat.callbackProcessors), "callbackCriteria", len(cat.callbackCriteria),
+		"callbackEnabled", cb != nil)
 
 	// Start the health server first so the fixture can poll it before
 	// the gRPC connection settles.

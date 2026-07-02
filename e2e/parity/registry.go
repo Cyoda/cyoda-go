@@ -105,6 +105,15 @@ var allTests = []NamedTest{
 	{"ConcurrentConflictingUpdate", RunConcurrentConflictingUpdate},
 	{"ConcurrentTransitionsDifferentEntities", RunConcurrentTransitionsDifferentEntities},
 
+	// Compute-node callback transaction-join (#287) — backend-agnostic join
+	// invariants driven through the callback-capable compute-test-client.
+	// Concurrency/torn-write cases are intentionally NOT here (isolated e2e).
+	{"CallbackTxJoin_SyncWriteAtomic", RunCallbackSyncWriteAtomic},
+	{"CallbackTxJoin_SyncReadYourWrites", RunCallbackSyncReadYourWrites},
+	{"CallbackTxJoin_CriteriaReadYourWrites", RunCallbackCriteriaReadYourWrites},
+	{"CallbackTxJoin_IfMatchUpdate", RunCallbackIfMatchUpdate},
+	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
+
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
 	{"NumericClassification20DigitDecimal", RunNumericClassification20DigitDecimal},

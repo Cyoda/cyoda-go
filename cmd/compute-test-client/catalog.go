@@ -27,11 +27,24 @@ type criterionFunc func(ctx context.Context, entity *Entity, config json.RawMess
 type catalog struct {
 	processors map[string]processorFunc
 	criteria   map[string]criterionFunc
+
+	// Callback-capable entries (feature #287): these issue joined HTTP
+	// callbacks presenting the calc request's tx-token. cb may be nil when
+	// no CYODA_COMPUTE_HTTP_BASE is configured, in which case they fail loudly.
+	callbackProcessors map[string]callbackProcessorFunc
+	callbackCriteria   map[string]callbackCriterionFunc
+	cb                 *callbackClient
 }
 
-// newCatalog returns a catalog populated with all registered entries.
-func newCatalog() *catalog {
+// newCatalog returns a catalog populated with all registered entries. cb is the
+// callback HTTP client used by the #287 callback-join processors/criteria; pass
+// nil when no HTTP base URL is configured.
+func newCatalog(cb *callbackClient) *catalog {
+	callbackProcs, callbackCrit := newCallbackCatalog()
 	return &catalog{
+		callbackProcessors: callbackProcs,
+		callbackCriteria:   callbackCrit,
+		cb:                 cb,
 		processors: map[string]processorFunc{
 			"noop": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				return entity, nil
@@ -189,5 +202,15 @@ func (c *catalog) processor(name string) (processorFunc, bool) {
 
 func (c *catalog) criterion(name string) (criterionFunc, bool) {
 	fn, ok := c.criteria[name]
+	return fn, ok
+}
+
+func (c *catalog) callbackProcessor(name string) (callbackProcessorFunc, bool) {
+	fn, ok := c.callbackProcessors[name]
+	return fn, ok
+}
+
+func (c *catalog) callbackCriterion(name string) (callbackCriterionFunc, bool) {
+	fn, ok := c.callbackCriteria[name]
 	return fn, ok
 }
