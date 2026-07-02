@@ -168,10 +168,11 @@ simpler and matches the documented intent.
 
 The engine sends a tx-token to the compute node (same mechanism as `SYNC` —
 see §2 Transaction-bound callbacks). Callbacks that echo the token join `T`
-at the savepoint level: writes are scoped to savepoint `S`. If the processor
-fails, `RollbackToSavepoint(T, S)` undoes those writes and the pipeline
-continues. If the processor succeeds, `ReleaseSavepoint(T, S)` retains them
-inside `T` (subject to `T`'s eventual commit).
+directly (via `txMgr.Join`). The engine independently scopes the entire
+dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
+undoes all callback writes and the pipeline continues; if the processor
+succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
+to `T`'s eventual commit).
 
 ### Pitfalls
 

@@ -52,3 +52,16 @@ func TestRegistry_ReleasesMapEntry(t *testing.T) {
 		t.Fatalf("expected empty gate map after release, got %d", n)
 	}
 }
+
+func TestRegistry_EmptyTxID_Noop(t *testing.T) {
+	r := New()
+	// Acquire("") must return a callable no-op immediately without adding a map entry.
+	rel := r.Acquire("")
+	if n := r.len(); n != 0 {
+		t.Fatalf("expected empty gate map for empty txID, got %d", n)
+	}
+	rel() // must not panic
+	if n := r.len(); n != 0 {
+		t.Fatalf("expected empty gate map after release of empty txID, got %d", n)
+	}
+}

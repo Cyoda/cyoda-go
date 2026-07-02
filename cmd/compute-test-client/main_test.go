@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -248,6 +249,26 @@ func TestCatalog_EchoContextToField(t *testing.T) {
 	// Malformed (non-string JSON) surfaces as an error.
 	if _, err := proc(context.Background(), &Entity{ID: "e-3", Data: json.RawMessage(`{"k":1}`)}, json.RawMessage(`{"role":"premium"}`)); err == nil {
 		t.Error("expected error for non-string JSON config")
+	}
+}
+
+// TestCatalog_CallbackProcessorFailsWhenNoCB verifies that a cb-* callback
+// processor returns the "callback client unavailable" error when the catalog
+// is constructed with a nil HTTP callback client.
+func TestCatalog_CallbackProcessorFailsWhenNoCB(t *testing.T) {
+	cat := newCatalog(nil, nil)
+	proc, ok := cat.callbackProcessor("cb-create-secondary")
+	if !ok {
+		t.Fatal("cb-create-secondary callback processor not registered")
+	}
+	entity := &Entity{ID: "ent-cb", Data: []byte(`{}`)}
+	_, err := proc(context.Background(), entity, cbConfig{}, "", nil)
+	if err == nil {
+		t.Fatal("expected error for nil callback client, got nil")
+	}
+	const want = "callback client unavailable"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err.Error(), want)
 	}
 }
 

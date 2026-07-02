@@ -164,7 +164,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	// expired token → 410 TRANSACTION_EXPIRED. HMAC-valid but past its deadline,
 	// so Verify fails ErrTokenExpired before any Join is attempted.
 	t.Run("Expired_410", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "tx-"+randSuffix(t), time.Now().Add(-time.Second))
+		tok, err := h.app.TokenSigner().Issue("local", "tx-"+randSuffix(t), time.Now().Add(-10*time.Second))
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}

@@ -31,11 +31,11 @@ import (
 // TestCallback_AsyncNewTx_DiscardedOnProcessorFailure proves the ASYNC_NEW_TX
 // savepoint semantics for the failure branch:
 //
-//   (a) The secondary entity the callback created inside the savepoint is
-//       DISCARDED when the processor fails (savepoint rollback).
-//   (b) The pipeline CONTINUES: ASYNC_NEW_TX failure is non-fatal.
-//   (c) The PRIMARY transition COMMITS: entity reaches ACTIVE without the
-//       secondary write.
+//	(a) The secondary entity the callback created inside the savepoint is
+//	    DISCARDED when the processor fails (savepoint rollback).
+//	(b) The pipeline CONTINUES: ASYNC_NEW_TX failure is non-fatal.
+//	(c) The PRIMARY transition COMMITS: entity reaches ACTIVE without the
+//	    secondary write.
 //
 // This distinguishes ASYNC_NEW_TX from SYNC: a SYNC failure rolls back T
 // entirely (primary fails too); ASYNC_NEW_TX only rolls back the savepoint

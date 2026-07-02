@@ -353,6 +353,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if res.Status != http.StatusOK {
 				return nil, fmt.Errorf("callback create status=%d body=%s", res.Status, res.Body)
 			}
+			if secTx == "" {
+				return nil, fmt.Errorf("create response missing transactionId")
+			}
 			upd, err := cb.loopbackUpdate(ctx, secID, secTx, token, cfg.Marker+"-updated")
 			if err != nil {
 				return nil, fmt.Errorf("callback if-match update: %w", err)
