@@ -837,6 +837,7 @@ func TestSearcher_OrderByDesc(t *testing.T) {
 	if len(results) != 5 {
 		t.Fatalf("want 5, got %d", len(results))
 	}
+	// setupSearcherTest seeds e1=Alice, e2=Bob, e3=Charlie, e4=Diana, e5=Eve.
 	// Desc alphabetical: Eve > Diana > Charlie > Bob > Alice.
 	assertIDOrder(t, results, []string{"e5", "e4", "e3", "e2", "e1"})
 }

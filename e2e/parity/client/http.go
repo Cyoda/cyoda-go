@@ -775,8 +775,8 @@ type CollectionChunkError struct {
 // NOT roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
 // carrying an IfMatch precondition (issue #228).
 type CollectionChunkItemFailure struct {
-	EntityID string                  `json:"entityId"`
-	Error    CollectionChunkItemErr  `json:"error"`
+	EntityID string                 `json:"entityId"`
+	Error    CollectionChunkItemErr `json:"error"`
 }
 
 // CollectionChunkItemErr is the per-item failure inner object.
@@ -1187,7 +1187,6 @@ func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersi
 	resp.Body.Close()
 	return resp.StatusCode, raw, nil
 }
-
 
 // decodeEntityResultNDJSON parses an application/x-ndjson response body into
 // a slice of EntityResult. Each non-empty line is decoded as one object using
