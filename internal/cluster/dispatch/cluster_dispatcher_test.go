@@ -117,7 +117,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
 	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
+	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
 
 	t.Run("processor_local_success", func(t *testing.T) {
 		ctx := testContext()
@@ -145,7 +145,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 		localErr := &stubDispatcher{
 			otherErr: fmt.Errorf("connection reset"),
 		}
-		d2 := NewClusterDispatcher(localErr, registry, "self-node", selector, forwarder, 1*time.Second)
+		d2 := NewClusterDispatcher(localErr, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
 		ctx := testContext()
 
 		_, err := d2.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
@@ -186,7 +186,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
+		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
 
 		ctx := testContext()
 		result, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
@@ -218,7 +218,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
+		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
 
 		ctx := testContext()
 		matches, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
@@ -245,7 +245,7 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
 	// Use a very short wait timeout so the test completes quickly.
-	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 500*time.Millisecond)
+	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 500*time.Millisecond, nil, 0)
 
 	t.Run("processor_no_member_anywhere", func(t *testing.T) {
 		ctx := testContext()

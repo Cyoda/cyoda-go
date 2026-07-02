@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // DispatchHandler serves the internal dispatch endpoints for processor and
@@ -48,6 +49,7 @@ func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
+	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
 
 	entity := &spi.Entity{
 		Meta: req.EntityMeta,
@@ -84,6 +86,7 @@ func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request)
 	}
 
 	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
+	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
 
 	entity := &spi.Entity{
 		Meta: req.EntityMeta,

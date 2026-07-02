@@ -497,6 +497,8 @@ func New(cfg Config) *App {
 			clusterdispatch.NewRandomSelector(),
 			clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout),
 			cfg.Cluster.DispatchWaitTimeout,
+			a.tokenSigner,
+			cfg.Cluster.TxTokenTTL,
 		)
 	} else {
 		extProc = localDispatcher

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -29,6 +30,8 @@ type ClusterDispatcher struct {
 	selector    PeerSelector
 	forwarder   DispatchForwarder
 	waitTimeout time.Duration
+	signer      *token.Signer
+	tokenTTL    time.Duration
 }
 
 // NewClusterDispatcher constructs a ClusterDispatcher.
@@ -39,6 +42,8 @@ func NewClusterDispatcher(
 	selector PeerSelector,
 	forwarder DispatchForwarder,
 	waitTimeout time.Duration,
+	signer *token.Signer,
+	tokenTTL time.Duration,
 ) *ClusterDispatcher {
 	return &ClusterDispatcher{
 		local:       local,
@@ -47,12 +52,26 @@ func NewClusterDispatcher(
 		selector:    selector,
 		forwarder:   forwarder,
 		waitTimeout: waitTimeout,
+		signer:      signer,
+		tokenTTL:    tokenTTL,
 	}
 }
 
 // DispatchProcessor tries the local node first. If the local node has no matching
 // calculation member, it looks up peers via gossip and forwards the request.
 func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
+	// Mint the owner token once before the local-vs-forward split so that
+	// a callback landing on a peer node routes back to this (owner) node.
+	tok := ""
+	if txID != "" && d.signer != nil {
+		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
+			tok = t
+		} else {
+			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
+		}
+	}
+	ctx = internalgrpc.WithTxToken(ctx, tok)
+
 	// Try local first.
 	result, err := d.local.DispatchProcessor(ctx, entity, processor, workflowName, transitionName, txID)
 	if err == nil {
@@ -69,7 +88,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 	slog.Debug("local dispatch found no member, looking up cluster peers",
 		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
 
-	req := d.buildProcessorRequest(entity, processor, workflowName, transitionName, txID, uc, tags)
+	req := d.buildProcessorRequest(entity, processor, workflowName, transitionName, txID, uc, tags, tok)
 
 	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
 	if err != nil {
@@ -100,6 +119,18 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 // DispatchCriteria tries the local node first. If the local node has no matching
 // calculation member, it looks up peers via gossip and forwards the request.
 func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+	// Mint the owner token once before the local-vs-forward split so that
+	// a callback landing on a peer node routes back to this (owner) node.
+	tok := ""
+	if txID != "" && d.signer != nil {
+		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
+			tok = t
+		} else {
+			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
+		}
+	}
+	ctx = internalgrpc.WithTxToken(ctx, tok)
+
 	// Try local first.
 	matches, err := d.local.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
 	if err == nil {
@@ -116,7 +147,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 	slog.Debug("local criteria dispatch found no member, looking up cluster peers",
 		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
 
-	req := d.buildCriteriaRequest(entity, criterion, target, workflowName, transitionName, processorName, txID, uc, tags)
+	req := d.buildCriteriaRequest(entity, criterion, target, workflowName, transitionName, processorName, txID, uc, tags, tok)
 
 	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
 	if err != nil {
@@ -201,7 +232,7 @@ func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags 
 }
 
 // buildProcessorRequest constructs the cross-node dispatch request for a processor.
-func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string) *DispatchProcessorRequest {
+func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) *DispatchProcessorRequest {
 	return &DispatchProcessorRequest{
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
@@ -213,11 +244,12 @@ func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor 
 		Tags:           tags,
 		UserID:         uc.UserID,
 		Roles:          uc.Roles,
+		TxToken:        tok,
 	}
 }
 
 // buildCriteriaRequest constructs the cross-node dispatch request for criteria.
-func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string) *DispatchCriteriaRequest {
+func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string, tok string) *DispatchCriteriaRequest {
 	return &DispatchCriteriaRequest{
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
@@ -231,6 +263,7 @@ func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion j
 		Tags:           tags,
 		UserID:         uc.UserID,
 		Roles:          uc.Roles,
+		TxToken:        tok,
 	}
 }
 
