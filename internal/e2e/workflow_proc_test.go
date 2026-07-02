@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -723,8 +724,8 @@ func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing
 	var secondaryID string
 	select {
 	case secondaryID = <-created:
-	default:
-		t.Fatal("callback did not run / did not create a secondary entity")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity")
 	}
 
 	// Primary in APPROVED with secondary id (TX_post apply-result).

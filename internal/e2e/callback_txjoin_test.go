@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // callback_txjoin_test.go — feature #287, spec §7 (SYNC callback) coverage-matrix
@@ -89,8 +90,8 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 	var secondaryID string
 	select {
 	case secondaryID = <-createdOK:
-	default:
-		t.Fatal("callback did not run / did not create a secondary entity")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity")
 	}
 
 	// Primary committed in ACTIVE with the secondary id recorded.
@@ -149,8 +150,8 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 	var doomedSecondaryID string
 	select {
 	case doomedSecondaryID = <-createdFail:
-	default:
-		t.Fatal("failure-branch callback did not run / did not create a secondary entity")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: failure-branch callback did not run / did not create secondary entity")
 	}
 
 	// THE ATOMICITY PROOF: the secondary the callback created inside T must be

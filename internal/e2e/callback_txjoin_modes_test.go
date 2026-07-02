@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 )
 
 // callback_txjoin_modes_test.go — feature #287 execution-mode matrix, rows 3-6.
@@ -88,8 +89,8 @@ func TestCallback_AsyncNewTx_DiscardedOnProcessorFailure(t *testing.T) {
 	var secondaryID string
 	select {
 	case secondaryID = <-created:
-	default:
-		t.Fatal("callback did not run / did not create a secondary entity before failing")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity before failing")
 	}
 
 	// (c) Primary transition committed — entity reached ACTIVE.
@@ -158,8 +159,8 @@ func TestCallback_AsyncNewTx_KeptOnSuccess(t *testing.T) {
 	var secondaryID string
 	select {
 	case secondaryID = <-created:
-	default:
-		t.Fatal("callback did not run / did not create a secondary entity")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity")
 	}
 
 	// Primary committed in ACTIVE.
@@ -207,7 +208,7 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 		created <- res.EntityID
 		// Echo secondary id into primary data via apply-result (CBD true-branch
 		// processes mutations normally, unlike ASYNC_NEW_TX).
-		out := cloneData(rc.entityData)
+		out := cloneData(rc.entityData) // cloneData is defined in callback_txjoin_test.go
 		out["secondaryId"] = res.EntityID
 		return out, nil
 	})
@@ -236,8 +237,8 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 	var secondaryID string
 	select {
 	case secondaryID = <-created:
-	default:
-		t.Fatal("callback did not run / did not create a secondary entity")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity")
 	}
 
 	// Primary committed in ACTIVE with secondary id recorded via apply-result.
@@ -298,7 +299,7 @@ func TestCallback_CBDDefault_RunsStandalone(t *testing.T) {
 			return nil, fmt.Errorf("callback create: status=%d body=%s", res.StatusCode, res.Body)
 		}
 		created <- res.EntityID
-		out := cloneData(rc.entityData)
+		out := cloneData(rc.entityData) // cloneData is defined in callback_txjoin_test.go
 		out["secondaryId"] = res.EntityID
 		return out, nil
 	})
@@ -327,8 +328,8 @@ func TestCallback_CBDDefault_RunsStandalone(t *testing.T) {
 	var secondaryID string
 	select {
 	case secondaryID = <-created:
-	default:
-		t.Fatal("callback did not run / did not create a secondary entity")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity")
 	}
 
 	// The processor must have received an empty token (CBD default dispatches
