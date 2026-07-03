@@ -40,6 +40,9 @@ type Server struct {
 // is added via a stats handler before the auth interceptors.
 // localGRPCPort is this node's gRPC listen port; it is used as the fallback
 // when deriving a peer's gRPC address from its HTTP address (advertise-or-derive).
+// allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
+// peer-address SSRF guard on the gRPC forward path (symmetric with the
+// dispatch forwarder and HTTP proxy).
 func NewServer(
 	authSvc contract.AuthenticationService,
 	registry *MemberRegistry,
@@ -52,6 +55,7 @@ func NewServer(
 	selfNodeID string,
 	otelEnabled bool,
 	localGRPCPort int,
+	allowLoopback bool,
 ) *Server {
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
@@ -60,7 +64,7 @@ func NewServer(
 	// Auth runs first so the tx-route interceptor sees the authenticated
 	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
 	// second, joining the referenced transaction or forwarding to its owner.
-	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort)
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort, allowLoopback)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(UnaryAuthInterceptor(authSvc), txRoute.unary()),
 		googlegrpc.ChainStreamInterceptor(StreamAuthInterceptor(authSvc), txRoute.stream()),

@@ -39,13 +39,13 @@ type txRouteInterceptor struct {
 	forwardStream func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error)
 }
 
-func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager, localGRPCPort int) *txRouteInterceptor {
+func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
 	return &txRouteInterceptor{
 		signer:        signer,
 		registry:      reg,
 		selfNodeID:    selfNodeID,
 		txMgr:         txMgr,
-		pool:          proxy.NewClientPool(),
+		pool:          proxy.NewClientPool(allowLoopback),
 		localGRPCPort: localGRPCPort,
 		forwardUnary:  proxy.ForwardEntityManage,
 		forwardStream: proxy.ForwardEntityManageCollection,

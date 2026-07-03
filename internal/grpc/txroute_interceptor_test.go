@@ -133,7 +133,7 @@ func decodeTxResp(t *testing.T, ce *cepb.CloudEvent) events.EntityTransactionRes
 func TestTxRouteInterceptor_LocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue("local", "tx-1", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	var sawTx string
@@ -157,7 +157,7 @@ func TestTxRouteInterceptor_ForeignProxies(t *testing.T) {
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
 
 	var gotAddr string
 	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, addr string, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
@@ -192,7 +192,7 @@ func TestTxRouteInterceptor_ForeignProxiesAdvertisedGRPCAddr(t *testing.T) {
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", GRPCAddr: "node-b:19090", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
 
 	var gotAddr string
 	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, addr string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
@@ -217,7 +217,7 @@ func TestTxRouteInterceptor_ForeignProxiesAdvertisedGRPCAddr(t *testing.T) {
 // gRPC status, and never reaches the handler.
 func TestTxRouteInterceptor_BadTokenEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 
 	handler := func(context.Context, any) (any, error) {
@@ -274,7 +274,7 @@ func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
 func TestTxRouteInterceptor_ExpiredEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue("local", "tx-exp", time.Now().Add(-time.Second))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-exp"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -292,7 +292,7 @@ func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	forger, _ := token.NewSigner([]byte("forged-secret-key-at-least-32-byte!"))
 	tok, _ := forger.Issue("local", "tx-forged", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-forged"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -310,7 +310,7 @@ func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue("local", "tx-gone", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxNotFound}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxNotFound}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-nf"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -336,7 +336,7 @@ func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-owner": {NodeID: "node-owner", Addr: "http://node-owner:8080", Alive: false},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, reg, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-down"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -354,7 +354,7 @@ func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue("local", "tx-other-tenant", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxTenantMismatch}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxTenantMismatch}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-tenant"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -370,7 +370,7 @@ func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 // Non-EntityManage methods pass through untouched (no token processing).
 func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	// A bad token present, but on a method we don't route: must be ignored.
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 
@@ -395,7 +395,7 @@ func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue("local", "tx-7", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 	ss := &fakeServerStream{ctx: baseCtx}
 
@@ -418,7 +418,7 @@ func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 // untouched — no routing, no envelope, handler invoked directly.
 func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 	ss := &fakeServerStream{ctx: baseCtx}
 
@@ -450,7 +450,7 @@ func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
 
 	var gotAddr string
 	ic.forwardStream = func(_ context.Context, _ *proxy.ClientPool, addr string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
@@ -484,7 +484,7 @@ func TestTxRouteInterceptor_ForeignProxiesForwardErr(t *testing.T) {
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
 	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
 		return nil, errors.New("peer unreachable")
 	}
@@ -518,7 +518,7 @@ func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090)
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
 	ic.forwardStream = func(_ context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
 		return nil, errors.New("peer unreachable")
 	}

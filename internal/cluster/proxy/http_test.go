@@ -11,6 +11,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -75,7 +76,7 @@ func TestHTTPProxy_NoToken_ServesLocally(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -99,7 +100,7 @@ func TestHTTPProxy_TokenForSelf_ServesLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -134,7 +135,7 @@ func TestHTTPProxy_TokenForOtherNode_Proxies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -162,7 +163,7 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -185,7 +186,7 @@ func TestHTTPProxy_ExpiredToken_Returns410(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -212,7 +213,7 @@ func TestHTTPProxy_TamperedToken_Returns401(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer1, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer1, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -260,7 +261,7 @@ func TestHTTPProxy_RoundTrip_SingleACAO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -279,5 +280,75 @@ func TestHTTPProxy_RoundTrip_SingleACAO(t *testing.T) {
 	vals := rec.Header().Values("Access-Control-Allow-Origin")
 	if len(vals) > 1 {
 		t.Errorf("got %d Access-Control-Allow-Origin values %v, want at most 1 (browsers reject multi-valued ACAO)", len(vals), vals)
+	}
+}
+
+// TestHTTPProxy_SSRFGuard_RejectsLoopback verifies that when allowLoopback=false
+// the proxy returns 503 TRANSACTION_NODE_UNAVAILABLE rather than forwarding to a
+// loopback target, closing the SSRF pivot on the B→A callback path.
+func TestHTTPProxy_SSRFGuard_RejectsLoopback(t *testing.T) {
+	// Register node-2 with a loopback addr — simulates a maliciously or
+	// accidentally injected registry entry pointing at an internal service.
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://10.0.0.1:8080", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://127.0.0.1:9999", Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-ssrf", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// allowLoopback=false — production posture.
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, false)
+	handler := mw(localHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from SSRF guard, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, common.ErrCodeTransactionNodeUnavailable) {
+		t.Errorf("expected %s in body, got: %s", common.ErrCodeTransactionNodeUnavailable, body)
+	}
+}
+
+// TestHTTPProxy_SSRFGuard_AllowsLoopbackWhenPermitted verifies that
+// allowLoopback=true permits loopback targets (test-fixture posture).
+func TestHTTPProxy_SSRFGuard_AllowsLoopbackWhenPermitted(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "reached")
+	}))
+	defer remote.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://10.0.0.1:8080", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-loopback-ok", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// allowLoopback=true — test-fixture posture.
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	handler := mw(localHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when loopback allowed, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != "reached" {
+		t.Fatalf("expected 'reached', got %q", body)
 	}
 }

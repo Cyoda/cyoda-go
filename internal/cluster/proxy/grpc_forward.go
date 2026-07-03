@@ -11,6 +11,7 @@ import (
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
 )
 
 // ClientPool holds one lazily-dialled *grpc.ClientConn per peer address.
@@ -21,18 +22,34 @@ import (
 // carries the caller's JWT (re-authenticated by the owner) plus the HMAC
 // tx-token. If the cluster later adopts mTLS for peer traffic, swap the creds
 // here and in the HTTP forwarder together.
+//
+// Every dial is gated by the same peer-address SSRF guard used by the dispatch
+// forwarder and the HTTP reverse-proxy path — see peeraddr.Validate.
 type ClientPool struct {
-	mu    sync.Mutex
-	conns map[string]*grpc.ClientConn
+	mu            sync.Mutex
+	conns         map[string]*grpc.ClientConn
+	allowLoopback bool
 }
 
-// NewClientPool returns an empty pool.
-func NewClientPool() *ClientPool {
-	return &ClientPool{conns: make(map[string]*grpc.ClientConn)}
+// NewClientPool returns an empty pool. allowLoopback must match
+// cfg.Cluster.DispatchAllowLoopback; it gates whether 127.x/::1 targets are
+// permitted. Set true only in test fixtures — in production leave it false so
+// the SSRF guard rejects loopback dials.
+func NewClientPool(allowLoopback bool) *ClientPool {
+	return &ClientPool{conns: make(map[string]*grpc.ClientConn), allowLoopback: allowLoopback}
 }
 
 // Get returns a cached connection for addr, dialling one on first use.
+// The peer address is validated via the SSRF guard before any dial is
+// attempted; forbidden addresses (loopback when disallowed, link-local,
+// unspecified, multicast) are rejected with peeraddr.ErrForbiddenPeerAddress.
 func (p *ClientPool) Get(addr string) (*grpc.ClientConn, error) {
+	// Validate BEFORE converting to gRPC target — peeraddr.Validate handles
+	// both "http://host:port" and bare "host:port" forms.
+	if err := peeraddr.Validate(addr, p.allowLoopback); err != nil {
+		return nil, err
+	}
+
 	target := grpcTarget(addr)
 
 	p.mu.Lock()

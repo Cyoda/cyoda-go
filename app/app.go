@@ -678,7 +678,7 @@ func New(cfg Config) *App {
 	// The proxy forwards the original request including auth headers to the
 	// target node, where auth is applied locally.
 	if cfg.Cluster.Enabled {
-		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout)(a.handler)
+		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
 	}
 
 	// CORS middleware — outermost wrapper. Sits outside cluster-routing
@@ -690,7 +690,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback)
 
 	return a
 }
