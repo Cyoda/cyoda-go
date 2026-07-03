@@ -10146,23 +10146,6 @@ components:
               - POLYMORPHIC
       required:
         - typeReferences
-    ErrorResponse:
-      type: object
-      properties:
-        status:
-          type: integer
-          format: int32
-        message:
-          type: string
-        errorCode:
-          type: string
-          enum:
-            - "2"
-            - "10"
-            - "11"
-        timestamp:
-          type: string
-          format: date-time
     EntityChangeMeta:
       type: object
       properties:
