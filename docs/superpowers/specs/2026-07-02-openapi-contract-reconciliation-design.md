@@ -4,288 +4,283 @@
 **Status:** design / awaiting review
 **Reference evidence:** `docs/analysis/openapi/README.md` (full 87-op audit, six-pattern
 taxonomy, per-finding reconciliation direction).
+**Builds on:** ADR 0001 (`docs/adr/0001-openapi-server-spec-conformance.md`), the
+`internal/e2e/openapivalidator` package, and the #21 reconciliation seed.
 
 ---
 
 ## 1. Problem
 
-`api/openapi.yaml` is a deliberate, authored, `//go:embed`'d contract — the definitive
-common ground between `cyoda-go` and `cyoda-cloud`. It is intentionally **not** generated
-from Go. The cost of that choice is that nothing binds either side to the contract, and
-the audit (`docs/analysis/openapi/README.md`) found ~55 divergences across 87 operations,
-including a data-loss defect and a 25%-dead published surface. An app-builder generating a
-client from the spec reaches materially wrong conclusions — the trigger case: concluding
-from `GET /entity/{entityId}` that there is *no way to learn the entity model*, because
-`meta` is an opaque bag whose prose names a field (`previousTransition`) that does not
-exist.
+`api/openapi.yaml` is a deliberate, hand-authored, `//go:embed`'d OpenAPI 3.1 contract —
+the canonical common ground across `cyoda-go`, the commercial (Cassandra) plugin,
+`cyoda-docs`, and Cyoda Cloud. Per ADR 0001, **code is derived from the spec**, not the
+reverse. The audit (`docs/analysis/openapi/README.md`) found ~55 divergences across 87
+operations, including a data-loss defect and a 25%-dead published surface. An app-builder
+generating a client from the spec reaches materially wrong conclusions — the trigger case:
+concluding from `GET /entity/{entityId}` that there is *no way to learn the entity model*,
+because `meta` is an opaque bag whose prose names a field (`previousTransition`) that does
+not exist.
 
-The mess is not the 55 findings. It is that **any fix rots**, because there is no
-enforced binding. This effort installs the binding first, then reconciles under it.
+ADR 0001 already installed the *mechanism* to catch shape drift: runtime `kin-openapi`
+response validation at the E2E boundary (`internal/e2e/openapivalidator`, enforce mode).
+But two gaps remain: (a) the validator is only as strong as the spec is precise, and the
+loose `additionalProperties:true` bags let real drift through; (b) it validates response
+*shapes* but not *error-code coverage* (documented-but-fictional codes, emitted-but-
+undocumented codes). This effort closes both, and reconciles the entity group under them.
 
-## 2. Goals / Non-goals
+## 2. Reconciliation policy (refines the #21 "server is source of truth" framing)
+
+The #21 seed carries "server is source of truth" language (`entity_conformance_test.go:6`,
+`internal/domain/entity/handler.go:601` "Server is source of truth per design §3"). That
+was correct for the four #21 defects, where the server's behaviour was the intended one and
+the spec was stale. But it is **not** a universal reconciliation rule, and stating it as one
+contradicts ADR 0001's "spec is canonical."
+
+**Refined policy (this effort):** the *authored spec is the canonical contract and the
+source of intent*; when spec and server disagree it is a **defect on whichever side left
+the contract**, decided per finding:
+
+- `spec-stale` — server evolved correctly; fix the spec.
+- `spec-incomplete` — server is right and intended; enrich the spec.
+- `server-gap` — the spec expresses intended contract the server never implemented; fix the
+  **server**.
+- `needs-decision` — genuine ambiguity; record the decision, then it becomes one of the
+  above.
+
+~⅓ of audit findings are `server-gap`/`needs-decision`, so a mechanical "sync spec→server"
+would *destroy* contract intent (it would turn the `deleteEntities` data-loss bug into a
+documented feature). This policy refinement is itself recorded (Gate 6): the stale
+"server is source of truth" comments in the seed are corrected to point here as part of the
+entity slice.
+
+**Relationship to ADR 0001:** this effort stays within ADR 0001 (runtime validation, no
+strict-typing migration). It does not supersede it. It *does* move us toward one of ADR
+0001's stated reconsideration triggers (Cloud parity as a first-class argument); if that
+trigger fires later it gets its own superseding ADR — out of scope here.
+
+## 3. Goals / Non-goals
 
 **Goals**
-- A durable **conformance gate** that makes server↔spec drift fail CI, with a portable
-  core decoupled from `cyoda-go` internals (liftable to a shared cyoda-go/Cloud kit later).
-- A repeatable **reconciliation loop** (classify → fix losing side → lock → record) that
+- Extend the existing conformance validator with **error-code-coverage** enforcement and
+  **tighten** the entity-group schemas so drift there fails CI.
+- Establish a repeatable **reconciliation loop** (classify → fix losing side → lock → record)
   every follow-on group reuses.
 - Apply both to the **entity group** end-to-end as the proving vertical, including
   implementing the documented conditional `deleteEntities`.
 
 **Non-goals (this spec)**
-- Reconciling the other five groups (stats/audit/search, model, auth/oidc, message) — each
-  is its own spec→plan cycle fed through the loop established here.
-- The dead-surface disposition (22 excluded-tag ops + always-501 stubs) — a contract
-  decision deferred to its own spec.
-- Lifting the gate into a shared cross-repo kit — the core is *structured* to allow it;
-  extraction is future work.
-- Changing the authoring model: the spec stays hand-authored and owned. The gate binds the
-  **server** to the authored spec; it does not generate the spec.
+- Reconciling the other five groups (stats/audit/search, model, auth/oidc, message).
+- The dead-surface disposition (22 excluded-tag ops + always-501 stubs).
+- A strict-typing migration or extracting a portable cross-repo conformance kit — both are
+  explicitly out (ADR 0001 defers the former; the latter is speculative generality).
+- Changing the authoring model: the spec stays hand-authored and canonical.
 
-## 3. Architecture — two pillars
+## 4. Pillar A — extend the existing conformance validator
 
-```
-                 api/openapi.yaml  (authored contract, source of intent)
-                          │
-          ┌───────────────┴────────────────┐
-          │                                 │
-   PILLAR A: conformance gate        PILLAR B: reconciliation loop
-   (portable core + e2e harness)     (per-finding process + recording)
-          │                                 │
-          │  validates every e2e response   │  classify direction
-          │  against the op schema;         │  → fix losing side (TDD)
-          │  asserts error-code matrix      │  → tighten schema / matrix (locks it)
-          │  (bidirectional)                │  → record contract decision
-          └───────────────┬────────────────┘
-                          │
-              tightening a loose schema is simultaneously
-              the FIX (B) and what makes the GATE (A) enforceable
-```
+**Do not build a parallel system.** `internal/e2e/openapivalidator` already loads
+`api/openapi.yaml` via kin-openapi, validates every E2E response body + status against the
+operation schema, runs in `ModeEnforce`, accumulates a `collector`, emits a `report`, and
+tracks operation/status coverage (failing on uncovered *in-scope* ops via
+`zzz_openapi_conformance_test.go`'s `knownUncoveredOps`). ADR 0001 governs it.
 
-The two pillars are coupled by design: the gate without tightening validates nothing
-meaningful (an `additionalProperties:true` bag passes anything); tightening without the
-gate rots. They advance together, per finding.
+The **only genuinely new capability** is error-code coverage at **errorCode-string
+granularity** (the existing coverage is operation/status granularity). Scope Pillar A to
+exactly that delta plus schema tightening:
 
-## 4. Pillar A — the conformance gate
+### 4.1 Error-code matrix (extension of the collector)
+- Extend the `openapivalidator` collector to record, per response, the
+  `(operationId, status, errorCode)` triple. The `errorCode` is read from the response
+  body's `properties.errorCode` (the `ProblemDetail` shape produced by
+  `common.WriteError`); absent for success responses.
+- Add a static **`ErrorCodeMatrix`**: `operationId → {documented (status, errorCode)}`,
+  authored from the spec's per-endpoint error tables (§7), scoped to the **entity group**
+  in this spec (other ops listed as pending, reusing the existing `knownUncoveredOps`
+  mechanism — do not introduce a second pending list).
+- Two aggregate checks at suite end (bidirectional drift detection):
+  - **producible** — every documented `(status, errorCode)` in scope was observed by ≥1
+    E2E (catches *fictional* codes, audit pattern P5).
+  - **declared** — no in-scope E2E produced a `(status, errorCode)` absent from the matrix
+    (catches *missing* codes, P5).
 
-### 4.1 Portable core (`internal/e2e/conformance/`, no cyoda-go internals)
+### 4.2 Schema tightening (what makes the existing validator bite)
+The validator passes anything against `additionalProperties:true`. For each entity-group
+finding we tighten the relevant schema (add `properties`, set `additionalProperties:false`,
+correct types) so the *already-present* enforce-mode validator now fails on regression. No
+new validation engine — we feed the existing one a precise schema.
 
-A self-contained package that depends only on the spec file, an HTTP response, and a
-static error-code registry — deliberately free of cyoda-go domain types so it can later be
-lifted into a shared kit.
+### 4.3 Seed cleanup (Gate 6)
+Once `meta`/envelope are tightened under enforce mode, most hand-parsed key assertions in
+`entity_conformance_test.go` become redundant (the ambient validator enforces them). Thin
+that seed rather than migrating it into a new package; correct its "server is source of
+truth" comment per §2.
 
-- **`SpecSet`** — loads and indexes `api/openapi.yaml` (via the existing
-  `kin-openapi/openapi3` dependency already used by the e2e `openapivalidator`). Resolves
-  an `(method, path-template)` → operation, request schema, per-status response schema,
-  and declared content-types.
-- **`ValidateResponse(op, status, contentType, body) []Violation`** — asserts the response
-  body validates against the operation's schema for that status, the status is a declared
-  response, and the `Content-Type` matches a declared media type. Returns structured
-  violations (never panics; never mutates).
-- **`ErrorCodeMatrix`** — a static registry: `operationId → {documented status/error
-  codes}`, authored from the spec's per-endpoint error tables (§7). Exposes two checks used
-  by the harness aggregation:
-  - **producible**: every documented code was observed by ≥1 e2e (catches *fictional*
-    codes — P5).
-  - **declared**: no e2e produced a status/error-code absent from the registry (catches
-    *missing* codes — P5).
-
-The core is unit-tested in isolation (§8.1): a fixture spec + hand-built good/mutated
-responses prove both validation directions and both matrix directions fail exactly when
-they should. This is what makes the gate trustworthy enough to gate everything else.
-
-### 4.2 e2e harness integration (`internal/e2e/`, cyoda-go-aware)
-
-- A thin `recordAndAssert` helper wraps existing e2e request execution: after each call it
-  feeds `(op, status, contentType, body)` to the core validator and accumulates the
-  observed `(op, status/errorCode)` pairs into a run-scoped collector.
-- Builds on the existing e2e-only `openapivalidator` and the `entity_conformance_test.go`
-  seed rather than replacing them; the seed's ad-hoc assertions are migrated to the core.
-- A `TestConformance_ErrorCodeMatrix` aggregates the run-scoped collector at suite end and
-  runs the producible+declared checks **for the operations in scope** (entity group in this
-  spec). Out-of-scope operations are explicitly listed as `pending` so the matrix never
-  silently claims coverage it doesn't have (no-silent-caps).
-
-### 4.3 What the gate does *not* do
-
+### 4.4 What the validator does *not* do
 - It does not validate the polymorphic entity `data` payload — that stays
-  `additionalProperties:true` by contract (user-defined shape). The gate validates the
-  **envelope** (`type`/`data`/`meta`), not the user's document.
-- It is only as strong as the spec is precise. For the entity slice we tighten the relevant
-  schemas (§6); still-loose schemas in other groups will pass permissively until their own
-  plans tighten them — the gate must not false-fail on them.
+  `additionalProperties:true` by contract. Confirmed separable in code: `EntityEnvelope`
+  has `Data any` cleanly split from `Meta` (`internal/domain/entity/service.go:64-69`). We
+  tighten the **envelope/meta**, never `data`.
+- It remains only as strong as the spec is precise; still-loose out-of-scope schemas pass
+  permissively until their own plans tighten them (must not false-fail).
 
 ## 5. Pillar B — the reconciliation loop
 
-For each finding, in order:
-
-1. **Classify direction** — `spec-stale` (server right, fix spec) · `spec-incomplete`
-   (server right, enrich spec) · `server-gap` (spec is intended contract, fix server) ·
-   `needs-decision` (record the decision, then it becomes one of the above).
-2. **Fix the losing side** via red/green TDD (Gate 1). Spec-side fixes are edits to
-   `api/openapi.yaml` (+ `api/generated.go` regen where models change); server-side fixes
-   follow the bugfix TDD protocol.
-3. **Lock it** — tighten the schema (add `properties`, set `additionalProperties:false`,
-   correct types) and/or add the `ErrorCodeMatrix` entry, so the gate now fails if the
-   fix regresses.
-4. **Record the contract decision** in `docs/cloud-parity/` (Gate 7) — one file per
-   behaviour, stating the direction chosen and why, so Cloud mirrors the same contract.
+For each finding: **classify direction** (§2) → **fix the losing side** via red/green TDD
+(Gate 1) → **lock it** (tighten schema and/or add the matrix entry) → **record the contract
+decision** in `docs/cloud-parity/` (Gate 7).
 
 **Tightening policy:** tightened response objects use declared `properties` +
 `additionalProperties:false`. Consequence: adding a new field later fails CI until the spec
-is updated. In a spec-first world this is the intended binding, not a regression.
+is updated. In a spec-first world that is the intended binding.
+
+**Canonical-schema reconciliation:** several entity wire shapes have a *canonical* JSON
+schema under `docs/cyoda/schema/common/` (embedded, consumed by cyoda-docs/Cloud) **and** a
+mirror in `e2e/parity/client/types.go`. Fixes to these shapes must reconcile **all**
+definitions (canonical JSON schema ↔ OpenAPI ↔ parity client), not author a fourth. ADR
+0001 Consequences explicitly flags the `e2e/parity/client/types.go` update (it is the
+commercial plugin's import surface).
 
 ## 6. The entity slice — findings, directions, fixes
 
 | # | Finding | Direction | Fix | Lock |
 |---|---|---|---|---|
-| E1 | `Envelope.meta` opaque bag + `previousTransition` fossil (`getOneEntity`, `getAllEntities`) | spec-incomplete + spec-stale | Named `EntityMeta` schema: `id`, `modelKey{name,version}`, `state`, `creationDate`, `lastUpdateTime`, `transactionId`, optional `transitionForLatestSave`; `additionalProperties:false`; delete `previousTransition`; fix examples | response validation asserts meta shape on both ops |
-| E2 | `deleteEntities` ignores condition body + `pointInTime` + `verbose`; wipes whole model | server-gap (data loss) | **Implement** the documented contract (§6.1) | e2e (subset survives) + parity + matrix |
-| E3 | `getAllEntities` ignores `pointInTime` | server-gap | Plumb `pointInTime` into `ListEntities` reusing the existing PIT path (`getOneEntity` has it) | as-at e2e + parity |
-| E4 | `createCollection` / `create` request body `type:object` erases real shape | spec-incomplete | Tighten request schemas to the array-of-`{model{name,version},payload}` shape; document the batch/array `create` form | request validation |
+| E1 | `Envelope.meta` opaque bag + `previousTransition` fossil (`getOneEntity`, `getAllEntities`) | spec-incomplete + spec-stale | Add an `EntityMeta` OpenAPI schema **mirroring the canonical `docs/cyoda/schema/common/EntityMetadata.json`**: required `{id, state, creationDate, lastUpdateTime}`; **optional** `{modelKey, transactionId, transitionForLatestSave, pointInTime}`; `additionalProperties:false`; delete `previousTransition`; fix examples. Reconcile OpenAPI ↔ canonical JSON ↔ `e2e/parity/client/types.go` (S5). | enforce-mode response validation on both ops |
+| E2 | `deleteEntities` ignores condition body + `pointInTime` + `verbose`; wipes whole model | server-gap (data loss) | **Implement** the documented contract (§6.1) | e2e (subset survives) + parity (inside tx) + matrix |
+| E3 | `getAllEntities` ignores `pointInTime` | server-gap | Plumb `pointInTime` into the list read via **`GetAllAsAt`** (the model-scoped list-PIT primitive in all 3 backends, already used by search at `internal/domain/search/service.go:161`) — **not** `getOneEntity`'s single-entity `GetAsAt`. Also populate `meta.pointInTime` (E1). | as-at e2e + parity |
+| E4 | `createCollection` / `create` request body `type:object` erases real shape | spec-incomplete | Tighten request schemas to the array-of-`{model{name,version},payload}` shape; document the batch/array `create` form. Reconcile `e2e/parity/client/types.go` (S5). | request validation |
 | E5 | create/update/patch/collection composite-unique-key `409`/`422` codes undocumented | spec-incomplete | Add codes to the endpoints' error tables | error-code matrix (producible+declared) |
-| E6 | `EntityChangeMeta.fieldsChangedCount` advertised, never emitted | spec-stale | Remove `fieldsChangedCount` from schema + examples | response validation |
-| E7 | `getEntityChangesMetadata` ordering prose says chronological; server is newest-first | spec-stale | Fix prose to reverse-chronological (newest-first is the correct audit default) | (doc-only; no gate assertion) |
+| E6 | `EntityChangeMeta.fieldsChangedCount` advertised (in **canonical** `docs/cyoda/schema/common/EntityChangeMeta.json`), never emitted by server | **needs-decision** | See §6.2 | per decision |
+| E7 | `getEntityChangesMetadata` ordering prose says chronological; server is newest-first | spec-stale | Fix prose to reverse-chronological | (doc-only) |
 | E8 | `changeType` prose `CREATE/UPDATE/DELETE` vs enum/emit `CREATED/UPDATED/DELETED` | spec-stale | Fix prose to match enum | response validation (enum) |
-| E9 | `getOneEntity` 200 example shows only `{id,state}` | spec-incomplete | Enrich example to the full meta shape | (example; validated structurally by E1) |
+| E9 | `getOneEntity` 200 example shows only `{id,state}` | spec-incomplete | Enrich example to full meta shape | (validated structurally by E1) |
 
-### 6.1 `deleteEntities` — implementing the documented contract
+### 6.1 `deleteEntities` — implementing conditional delete
 
-The contract: delete only entities matching an `AbstractConditionDto` body, honouring
-`pointInTime` selection and `verbose` (return deleted ids). Implementation principle
-(no special engine rights — reuse existing primitives):
+Principle (no special engine rights — reuse existing primitives): **select-then-delete.**
+Evaluate the `AbstractConditionDto` to obtain matching entity ids (at `pointInTime` when
+supplied), then delete those ids; return them when `verbose`.
 
-> **select-then-delete.** Evaluate the condition using the *same condition-evaluation
-> primitive `searchEntities` already uses* to obtain the matching entity ids (at
-> `pointInTime` when supplied), then delete those ids. When `verbose`, return the deleted
-> ids in `StreamDeleteResult.ids`.
+Feasibility confirmed against code, with three implementation realities the plan must name:
+- **Reuse primitives:** `predicate.ParseCondition` parses the body; `match.Match(...)` is a
+  free function (`internal/match/match.go:17`); `SearchService.Search` returns `[]*spi.Entity`
+  with ids off `e.Meta.ID` and honours `pointInTime`. Selection reuses these.
+- **Handler wiring task (name it):** `entity.Handler` currently holds `StoreFactory` but not
+  search/match — wiring them in is mechanical but is a real task, not free.
+- **Transaction visibility (parity implication):** `SearchService.Search` bypasses backend
+  pushdown when a tx is on the context (`internal/domain/search/service.go:140-141`), and
+  delete runs *inside* a tx. Buffered-write visibility therefore differs by backend, so the
+  cross-backend parity test must exercise conditional delete **inside the tx** — parity is
+  *not* automatic. (Removes the earlier "parity is free" over-claim.)
+- **No batch delete:** `EntityStore` has no `DeleteByIDs` (SPI `persistence.go`); a per-id
+  `Delete` loop is required.
+- **Backward compatible:** absent/empty body ⇒ delete-all (today's behaviour, preserves
+  `TestDeleteEntities_ResponseShape`); a present condition scopes the delete; `verbose`
+  toggles id return. Data loss is closed by construction — present conditions are honoured,
+  never ignored.
+- **gRPC:** see §8 / decision D2.
 
-- No new engine capability, no new cross-node invariant. Condition evaluation already works
-  consistently across backends, so cross-backend parity follows from reusing it.
-- **Absent/empty body** preserves today's "delete all of the model" behaviour (backward
-  compatible). A **present** condition scopes the delete. `verbose` toggles id return.
-- Data-loss is eliminated structurally: a condition that is present is *honoured*, never
-  silently ignored.
-- Records a `docs/cloud-parity/` entry: "server now conforms to conditional delete."
+### 6.2 E6 `fieldsChangedCount` — the decision
+The field is declared in the **canonical, Cloud-consumed** `EntityChangeMeta.json`, but the
+cyoda-go server never emits it (`internal/domain/entity/handler.go:576-587`). Direction is
+genuinely ambiguous:
+- **(a) server-gap** — the contract intends it; **implement** emission (compute the
+  changed-field count on the change path). Keeps the canonical schema; small server addition.
+- **(b) spec-stale** — remove it from the canonical schema. **But** this is a Cloud-parity
+  contract change to an embedded, downstream-consumed CloudEvents schema; risky if Cloud
+  already emits it.
+
+**Recommendation:** (a) implement server-side — removing a field from a Cloud-consumed
+canonical schema is the higher-risk direction, and the field carries real audit-UI value. To
+be confirmed with the Cloud-parity check (does Cloud emit it?) before finalizing. Recorded in
+`docs/cloud-parity/`.
 
 ## 7. Per-endpoint error/status tables (in-scope endpoints)
 
 Authored into the `ErrorCodeMatrix`. `✎` = added/changed by this spec.
 
-**`GET /entity/{entityId}` (getOneEntity)**
+**`GET /entity/{entityId}` (getOneEntity)** — 200; 400 (both `pointInTime`+`transactionId`);
+404 ENTITY_NOT_FOUND; 401/403.
 
-| Status | Code | Producing scenario |
-|---|---|---|
-| 200 | — | entity found |
-| 400 | (conflicting `pointInTime`+`transactionId`) | both query params supplied |
-| 404 | ENTITY_NOT_FOUND | unknown id |
-| 401/403 | — | auth |
+**`GET /entity/{entityName}/{modelVersion}` (getAllEntities)** — 200 (now honouring
+`pointInTime` ✎); 400 invalid page; 404 MODEL_NOT_FOUND; 401/403.
 
-**`GET /entity/{entityName}/{modelVersion}` (getAllEntities)**
+**`DELETE /entity/{entityName}/{modelVersion}` (deleteEntities)** ✎ — 200 (all, or
+condition-scoped ✎; `ids` when `verbose` ✎); 400 MALFORMED_REQUEST / INVALID_CONDITION ✎;
+404 MODEL_NOT_FOUND; 401/403.
 
-| Status | Code | Producing scenario |
-|---|---|---|
-| 200 | — | list (now honouring `pointInTime` ✎) |
-| 400 | — | invalid page params |
-| 404 | MODEL_NOT_FOUND | unknown model |
-| 401/403 | — | auth |
+**`POST /entity/{format}/{entityName}/{modelVersion}` (create)**,
+**`POST|PUT /entity/{format}` (createCollection / updateCollection)** — 200; 400
+MALFORMED_REQUEST / INCOMPATIBLE_TYPE / POLYMORPHIC_SLOT (bad body shape ✎); 409
+UNIQUE_VIOLATION ✎; 422 INVALID_UNIQUE_KEY / INVALID_UNIQUE_KEY_DEFINITION ✎; 404
+MODEL_NOT_FOUND (create); 401/403.
 
-**`DELETE /entity/{entityName}/{modelVersion}` (deleteEntities)** ✎
-
-| Status | Code | Producing scenario |
-|---|---|---|
-| 200 | — | delete (all, or condition-scoped ✎); `ids` when `verbose` ✎ |
-| 400 | MALFORMED_REQUEST / INVALID_CONDITION ✎ | unparseable body / invalid condition |
-| 404 | MODEL_NOT_FOUND | unknown model |
-| 401/403 | — | auth |
-
-**`POST /entity/{format}/{entityName}/{modelVersion}` (create)** and
-**`POST|PUT /entity/{format}` (createCollection / updateCollection)**
-
-| Status | Code | Producing scenario |
-|---|---|---|
-| 200 | — | success |
-| 400 | MALFORMED_REQUEST / INCOMPATIBLE_TYPE / POLYMORPHIC_SLOT | bad body shape ✎ / type mismatch |
-| 409 | UNIQUE_VIOLATION ✎ | composite-unique-key conflict |
-| 422 | INVALID_UNIQUE_KEY / INVALID_UNIQUE_KEY_DEFINITION ✎ | null/invalid unique-key field or definition |
-| 404 | MODEL_NOT_FOUND | unknown model (create) |
-| 401/403 | — | auth |
-
-**`PUT|PATCH /entity/{format}/{entityId}[/{transition}]` (updateSingle[WithLoopback], patchSingle[WithLoopback])**
-
-| Status | Code | Producing scenario |
-|---|---|---|
-| 200 | — | success |
-| 400 / 404 / 409 / 412 | (existing) | as documented |
-| 415 / 428 / 501 | (existing, PATCH) | as documented |
-| 422 | INVALID_UNIQUE_KEY[_DEFINITION] ✎ | unique-key violation on the save path |
+**`PUT|PATCH /entity/{format}/{entityId}[/{transition}]`** — 200; 400/404/409/412 existing;
+415/428/501 existing (PATCH); 422 INVALID_UNIQUE_KEY[_DEFINITION] ✎.
 
 **`GET /entity/{entityId}/changes` (getEntityChangesMetadata)** — response-shape fixes
 (E6/E7/E8); error table unchanged (200/404/401/403).
 
 ## 8. Coverage matrix (scenario × layer)
 
-Per `.claude/rules/test-coverage.md`. `✓` required · `—` n/a · `waive` = waived with reason.
+Per `.claude/rules/test-coverage.md`. HTTP and gRPC are **separate entry points — both
+covered** (no false waivers; the gRPC meta and delete surfaces both exist).
 
 | Scenario | Unit | Running-backend e2e | Cross-backend parity | gRPC |
 |---|---|---|---|---|
-| Conformance core: response validation both directions | ✓ | — | — | — |
-| Conformance core: error-code matrix both directions | ✓ | — | — | — |
-| E1 meta shape (fields present, no `previousTransition`, `additionalProperties:false`) | — | ✓ | ✓ (backend-agnostic) | verify gRPC GetEntity meta if it returns one; else `waive`: gRPC entity read has no meta envelope |
-| E2 conditional delete (matching subset only) | condition→ids selection ✓ | ✓ | ✓ | verify gRPC delete if present; else `waive` |
-| E2 `pointInTime` + `verbose` (ids returned) | — | ✓ | ✓ | per above |
-| E3 `getAllEntities` as-at `pointInTime` | — | ✓ | ✓ | — |
+| Error-code matrix (producible + declared), entity scope | ✓ (collector logic) | ✓ (aggregate) | — | — |
+| E1 meta shape (mirror canonical; `additionalProperties:false`; no `previousTransition`) | — | ✓ | ✓ (backend-agnostic) | ✓ — assert `buildEntityMeta` output (`internal/grpc/search.go:377,577`) matches the tightened shape |
+| E2 conditional delete (matching subset only) | condition→ids selection ✓ | ✓ | ✓ (inside tx — §6.1) | per decision D2 |
+| E2 `pointInTime` + `verbose` (ids returned) | — | ✓ | ✓ | per D2 |
+| E3 `getAllEntities` as-at (`GetAllAsAt`) | — | ✓ | ✓ | — |
 | E4 request-body shape (array-of-`{model,payload}`) | — | ✓ | ✓ | — |
-| E5 unique-key `409`/`422` codes | — | ✓ (per code) | ✓ | ✓ (gRPC error envelope: `Success`,`Error.Code`) |
-| E6/E7/E8 changes shape/enum/ordering | — | ✓ (gate-validated) | — | — |
+| E5 unique-key `409`/`422` codes | — | ✓ (per code) | ✓ | ✓ — assert envelope; note N1: gRPC `Error.Code` is a coarse CLIENT/SERVER bucket, the unique-key code is in `Error.Message` (`internal/grpc/errors.go`), matching `TestRPC_EntityCreate_UniqueViolation` (`rpc_test.go:654`) |
+| E6 `fieldsChangedCount` (per §6.2 decision) | — | ✓ | ✓ | ✓ if emitted on gRPC change path |
+| E7/E8 changes ordering/enum | — | ✓ (gate-validated) | — | — |
 
-**Concurrency:** none of the entity-slice changes need the isolated concurrency-test
-treatment. `deleteEntities` is select-then-delete over a snapshot; parity asserts the
-correct subset survives, not an interleave (per `.claude/rules/test-coverage.md`, concurrency
-tests stay out of the shared parity suite).
+**Decision D2 — gRPC conditional delete.** gRPC exposes `EntityDeleteAllRequest`
+(unconditional; `internal/grpc/entity.go:391`) and per-entity `EntityDeleteRequest`, but no
+*conditional* delete. The OpenAPI conditional-delete is an **HTTP-contract** feature; the
+gRPC/proto contract does not promise conditional delete. **Recommendation:** implement E2 on
+HTTP only; keep gRPC `DeleteAll` as-is (it conforms to its own proto contract), and add/verify
+gRPC test coverage for the existing `DeleteAll` behaviour so the gRPC entry point is covered,
+not waived. Record the HTTP-only scope in `docs/cloud-parity/`. (Confirm with Cloud that gRPC
+parity is not expected before finalizing — Gate 7 / multi-node.)
 
-**gRPC applicability** is confirmed per row during implementation; any `waive` records a
-one-line reason in the plan (no silent gaps).
-
-### 8.1 Test infrastructure notes
-- Core unit tests live beside the core (`internal/e2e/conformance/`), runnable with
-  `-short` (no Docker).
-- e2e conformance assertions run in the existing `internal/e2e` suite (Postgres testcontainer).
-- Backend-agnostic scenarios register in `e2e/parity/registry.go` (picked up by all
-  backends incl. the commercial one).
+**Concurrency:** entity-slice changes need no isolated concurrency test; `deleteEntities` is
+select-then-delete over a snapshot; parity asserts the surviving subset, not an interleave.
 
 ## 9. Documentation & gate obligations
 
-- **Gate 4:** any new error code → `cmd/cyoda/help/content/errors/<CODE>.md`
-  (`TestErrCode_Parity` enforces the bijection). E2/E5 introduce/surface
-  `INVALID_CONDITION`, `UNIQUE_VIOLATION`, `INVALID_UNIQUE_KEY[_DEFINITION]` at these
-  endpoints — ensure topics exist.
-- **Gate 7:** `docs/cloud-parity/` entry per reconciled behaviour (E1 meta shape; E2
-  conditional-delete conformance; E3 as-at list). Each states the reconciliation direction
-  and rationale.
-- `api/generated.go` is regenerated (or hand-updated, per the existing oapi-codegen/Go 1.26
-  caveat) whenever request/response models change (E1, E4).
+- **Gate 4:** new error codes → `cmd/cyoda/help/content/errors/<CODE>.md`
+  (`TestErrCode_Parity` bijection). E2/E5 surface `INVALID_CONDITION`, `UNIQUE_VIOLATION`,
+  `INVALID_UNIQUE_KEY[_DEFINITION]` at these endpoints.
+- **Gate 7:** `docs/cloud-parity/` entry per reconciled behaviour (E1 meta; E2 conditional-
+  delete + D2 gRPC scope; E3 as-at; E6 decision). Each states direction + rationale.
+- **Canonical schemas / parity mirror:** reconcile `docs/cyoda/schema/common/EntityMetadata.json`
+  (E1) and `EntityChangeMeta.json` (E6) with the OpenAPI, and update `e2e/parity/client/types.go`
+  (S5) for E1/E4 wire-shape changes.
+- **Codegen:** `api/generated.go` regenerated (or hand-updated) on model changes (E1, E4).
+  Note: tree is on **oapi-codegen v2.7.0** with a `//go:generate` directive
+  (`api/generate.go`); re-verify whether the Go 1.26 regen caveat still applies before relying
+  on `go generate`.
+- **ADR:** reference ADR 0001; no superseding ADR needed (we stay within it).
 
 ## 10. Decomposition — follow-on plans (out of scope here)
 
-Each reuses the Pillar-B loop and the Pillar-A gate:
-1. stats / audit / search (fictional 404/408, page-size default, ndjson, `pointInTime`).
-2. entity-model & workflow (missing 409/422/404 on lock/unlock/delete/import).
-3. auth / OIDC (error-envelope family decision: problem+json vs OAuth `ErrorResponseDto`).
-4. message (mis-typed bodies, v1-UUID validation, `ValueMaps`).
-5. **dead-surface decision** — implement vs remove the 22 excluded-tag ops + always-501
-   stubs from the published contract. Highest single "scale" signal; it's a contract
-   decision, so it gets its own brainstorm.
+Each reuses the Pillar-B loop and the extended validator:
+1. stats / audit / search · 2. entity-model & workflow · 3. auth / OIDC (error-envelope
+family decision) · 4. message · 5. **dead-surface decision** (implement vs remove 22
+excluded-tag ops + always-501 stubs — its own brainstorm; highest single scale signal).
 
 ## 11. Risks
 
-- **Spec precision debt:** the gate only guards what the spec declares precisely. Mitigation:
-  in-scope schemas are tightened; the matrix explicitly lists out-of-scope ops as `pending`
-  so coverage is never overstated.
-- **`deleteEntities` blast radius:** implementing conditional delete touches a
-  destructive path. Mitigation: reuse the proven `searchEntities` condition primitive,
-  backward-compatible empty-body behaviour, parity asserts the surviving subset, and the
-  data-loss failure mode is closed by construction (present conditions are honoured).
-- **`api/generated.go` regen friction** (known oapi-codegen v2.6.0 / Go 1.26 incompatibility):
-  model changes may need the same manual-edit approach used in commit `9c721b4`.
-```
+- **Spec precision debt:** the validator only guards precisely-declared schemas. Mitigation:
+  in-scope schemas tightened; matrix reuses `knownUncoveredOps` so out-of-scope coverage is
+  never overstated.
+- **`deleteEntities` blast radius:** destructive path. Mitigation: reuse the proven search
+  condition primitive, backward-compatible empty-body behaviour, parity asserts the surviving
+  subset **inside the tx** (§6.1), per-id delete loop, data-loss closed by construction.
+- **Canonical-schema coupling:** E1/E6 touch embedded, Cloud-consumed schemas; changes must
+  reconcile all mirrors (§5) and be recorded in cloud-parity — mishandling risks silent
+  cross-repo drift.
+- **Two open decisions (E6 direction, D2 gRPC scope):** recommendations given; confirm the
+  Cloud-parity facts before finalizing.
