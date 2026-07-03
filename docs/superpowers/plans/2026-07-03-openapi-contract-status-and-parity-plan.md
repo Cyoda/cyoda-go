@@ -265,12 +265,17 @@ Per-op runtime status verified; OIDC group: <live vs 501 finding>. Refs #369."
 
 ---
 
-### Task 5: Give `fetchEntityTransitions` real e2e coverage
+### Task 5: e2e coverage for the now-known-live ops (`fetchEntityTransitions` + 7 OIDC provider ops)
 
 **Files:**
 - Test: `internal/e2e/entity_transitions_test.go` (create or extend an existing entity e2e test)
+- Test: `internal/e2e/oidc_providers_test.go` (create)
+
+**Scope note (from Task 4's finding):** Task 4's probe confirmed the 7 OIDC provider ops are **live** (`GET /oauth/oidc/providers` → 200 in JWT-mode e2e; adapter wired via `WithOIDCAdapter`), so they were NOT marked. The new gate (Task 6) requires every live op be *exercised*. This task therefore covers **both** `fetchEntityTransitions` **and** the 7 OIDC ops (`registerOidcProvider`, `listOidcProviders`, `reloadOidcProviders`, `updateOidcProvider`, `invalidateOidcProvider`, `reactivateOidcProvider`, `deleteOidcProvider`). Coverage here is **exercise-level** (hit each op, assert a sane status) — exhaustive OIDC error-code coverage is deferred to the auth/OIDC follow-on group.
 
 `fetchEntityTransitions` (`GET /platform-api/entity/fetch/transitions`) is **live** — routed at `app/app.go:607` outside the generated `ServerInterface`. It is exempted today only via `knownUncoveredOps`; the new gate requires it be *exercised*.
+
+**OIDC lifecycle test (`oidc_providers_test.go`):** authenticate with an admin token (reuse the existing e2e auth helper — see `helpers_test.go` / `clients_test.go` / `oauth_keys_test.go` for the admin-token pattern), then exercise all 7 ops in one flow: `registerOidcProvider` (create a provider) → `listOidcProviders` → `reloadOidcProviders` → `updateOidcProvider` → `invalidateOidcProvider` → `reactivateOidcProvider` → `deleteOidcProvider`, asserting each returns a success status (2xx). Model request bodies on the OIDC DTOs in `api/openapi.yaml` (`RegisterOidcProviderRequestDto`, etc.). Each op must be hit at least once so the conformance gate marks it exercised.
 
 - [ ] **Step 1: Write an e2e test** that creates an entity in a known state and calls the endpoint, asserting a `200` and a JSON array (`TransitionNameList`). Model it on the existing `getEntityTransitions` e2e test (search `internal/e2e` for `transitions`). Include the required query params the handler reads (`HandleFetchTransitions`, `internal/domain/entity/transitions_handler.go`).
 
