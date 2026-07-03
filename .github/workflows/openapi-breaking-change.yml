@@ -10,8 +10,10 @@ name: openapi-breaking-change
 #   schema.  oasdiff keys breaking-change detection on operations and the
 #   schemas they transitively reference.  A component that no operation resolves
 #   is invisible to the breaking-change analyser, so removing it does NOT
-#   trigger a failure here.  This was verified with the fixture test in
-#   internal/oasdiffcheck/ (additive_is_not_breaking / sealing… cases).
+#   trigger a failure here.  The expected additive-vs-breaking classification
+#   is documented by the local premise test in internal/oasdiffcheck/
+#   (additive_is_not_breaking / sealing cases); that test is a local check, not
+#   run by this job — this workflow invokes the oasdiff binary directly.
 #   If a future deletion touches a *referenced* component, the workflow will
 #   catch it correctly — no --exclude-elements override is needed for the
 #   current or anticipated schema cleanup.
@@ -34,7 +36,9 @@ jobs:
           go-version: "stable"
 
       - name: Install oasdiff
-        run: go install github.com/oasdiff/oasdiff@latest
+        # Pinned (not @latest): oasdiff is a merge gate; an unpinned release could
+        # shift breaking-change classification. Bump intentionally.
+        run: go install github.com/oasdiff/oasdiff@v1.21.0
 
       - name: Breaking-change check (base..PR)
         run: |
