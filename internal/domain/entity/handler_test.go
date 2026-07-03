@@ -434,7 +434,7 @@ func TestGetAllEntities(t *testing.T) {
 		t.Fatalf("expected 3 entities, got %d", len(result))
 	}
 
-	// Verify envelope shape: type=ENTITY, data present, meta present without modelKey
+	// Verify envelope shape: type=ENTITY, data present, meta present with modelKey.
 	for i, ent := range result {
 		if ent["type"] != "ENTITY" {
 			t.Errorf("entity %d: expected type=ENTITY, got %v", i, ent["type"])
@@ -450,8 +450,13 @@ func TestGetAllEntities(t *testing.T) {
 		if meta["id"] == nil || meta["id"] == "" {
 			t.Errorf("entity %d: expected non-empty id in meta", i)
 		}
-		if meta["modelKey"] != nil {
-			t.Errorf("entity %d: expected no modelKey in meta for GetAll, got %v", i, meta["modelKey"])
+		mk, ok := meta["modelKey"].(map[string]any)
+		if !ok {
+			t.Errorf("entity %d: expected modelKey in meta, got meta=%v", i, meta)
+			continue
+		}
+		if mk["name"] != "GetAllTest" {
+			t.Errorf("entity %d: modelKey.name = %v, want GetAllTest", i, mk["name"])
 		}
 	}
 }

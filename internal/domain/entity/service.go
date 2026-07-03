@@ -864,7 +864,6 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 	}
 	pageSlice := entities[start:end]
 
-	// Build envelopes without modelKey in meta
 	result := make([]EntityEnvelope, 0, len(pageSlice))
 	for _, ent := range pageSlice {
 		var data any
@@ -872,8 +871,10 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 			return nil, common.Internal("failed to parse entity data", err)
 		}
 
+		modelVersion, _ := strconv.Atoi(ent.Meta.ModelRef.ModelVersion)
 		entMeta := map[string]any{
 			"id":             ent.Meta.ID,
+			"modelKey":       map[string]any{"name": ent.Meta.ModelRef.EntityName, "version": modelVersion},
 			"state":          ent.Meta.State,
 			"creationDate":   ent.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
 			"lastUpdateTime": ent.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),

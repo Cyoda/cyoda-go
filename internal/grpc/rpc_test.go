@@ -1655,6 +1655,72 @@ func TestRPC_EntityPatch_WithTransition(t *testing.T) {
 	}
 }
 
+// TestRPC_EntityDirectSearch_MetaIncludesModelKey asserts that the gRPC direct-search
+// path (EntitySearchRequest via EntitySearchCollection) includes modelKey in the
+// entity meta — parity with the HTTP getOne shape (design §6.3).
+func TestRPC_EntityDirectSearch_MetaIncludesModelKey(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice", "age": 30})
+
+	// Create an entity so the search has something to return.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice", "age": 30},
+		},
+	})
+	if _, err := svc.EntityManage(ctx, createCE); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Direct search returns *spi.Entity results via buildEntityMeta.
+	searchCE := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":       "group",
+			"operator":   "AND",
+			"conditions": []any{},
+		},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(searchCE, stream); err != nil {
+		t.Fatalf("direct search: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected at least one search result")
+	}
+
+	meta := parseEntityResponseMeta(t, stream.sent[0])
+	mk, ok := meta["modelKey"].(map[string]any)
+	if !ok {
+		t.Fatalf("gRPC direct-search meta missing modelKey; got meta=%v", meta)
+	}
+	if mk["name"] != "person" {
+		t.Errorf("modelKey.name = %v, want person", mk["name"])
+	}
+}
+
+// parseEntityResponseMeta extracts the meta map from an EntityResponseJson CloudEvent.
+func parseEntityResponseMeta(t *testing.T, ce *cepb.CloudEvent) map[string]any {
+	t.Helper()
+	td, ok := ce.Data.(*cepb.CloudEvent_TextData)
+	if !ok {
+		t.Fatal("expected text_data in response")
+	}
+	var resp struct {
+		Payload struct {
+			Meta map[string]any `json:"meta"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(td.TextData), &resp); err != nil {
+		t.Fatalf("failed to unmarshal entity response: %v", err)
+	}
+	return resp.Payload.Meta
+}
+
 // --- mock stream implementations ---
 
 // mockManageStream implements CloudEventsService_EntityManageCollectionServer.

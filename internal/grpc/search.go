@@ -372,7 +372,7 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 			Payload: events.DataPayloadJson{
 				Type: "JSON",
 				Data: data,
-				Meta: buildEntityMeta(e),
+				Meta: buildEntityMeta(e, nil),
 			},
 		}
 		respCE, err := NewCloudEvent(EntityResponse, resp)
@@ -573,10 +573,14 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 // Helpers
 // ---------------------------------------------------------------------------
 
-// buildEntityMeta builds the meta map for an entity response.
-func buildEntityMeta(e *spi.Entity) map[string]any {
+// buildEntityMeta builds the meta map for an entity response. Mirrors the HTTP
+// meta shape (design §6.3): includes modelKey, and pointInTime when the read
+// was as-at a supplied point-in-time.
+func buildEntityMeta(e *spi.Entity, pointInTime *time.Time) map[string]any {
+	modelVersion, _ := strconv.Atoi(e.Meta.ModelRef.ModelVersion)
 	meta := map[string]any{
 		"id":             e.Meta.ID,
+		"modelKey":       map[string]any{"name": e.Meta.ModelRef.EntityName, "version": modelVersion},
 		"state":          e.Meta.State,
 		"creationDate":   e.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
 		"lastUpdateTime": e.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
@@ -584,6 +588,9 @@ func buildEntityMeta(e *spi.Entity) map[string]any {
 	}
 	if e.Meta.TransitionForLatestSave != "" {
 		meta["transitionForLatestSave"] = e.Meta.TransitionForLatestSave
+	}
+	if pointInTime != nil {
+		meta["pointInTime"] = pointInTime.UTC().Format(time.RFC3339Nano)
 	}
 	return meta
 }
@@ -659,7 +666,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 			Payload: events.DataPayloadJson{
 				Type: "JSON",
 				Data: data,
-				Meta: buildEntityMeta(e),
+				Meta: buildEntityMeta(e, nil),
 			},
 		}
 		respCE, err := NewCloudEvent(EntityResponse, resp)
