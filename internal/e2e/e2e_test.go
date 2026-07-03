@@ -176,15 +176,9 @@ func TestMain(m *testing.M) {
 	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(testApp.Handler())
 
 	// Capture the full operationId set so the conformance test can compute
-	// the uncovered list at end-of-suite.
-	//
-	// Build the exclude-tags set (mirrors api/config.yaml). Excluded ops aren't
-	// in cyoda-go's shipped API and shouldn't count toward coverage.
-	excludeTags := map[string]bool{
-		"Stream Data":              true,
-		"CQL Execution Statistics": true,
-		"SQL-Schema":               true,
-	}
+	// the uncovered list at end-of-suite. Every published operation is
+	// included; ops that aren't live must carry an x-cyoda-status marker
+	// (enforced by TestOpenAPIConformanceReport).
 	for _, item := range swagger.Paths.Map() {
 		for _, op := range item.Operations() {
 			if op.OperationID == "" {
@@ -192,17 +186,6 @@ func TestMain(m *testing.M) {
 			}
 			if s := readCyodaStatus(op); s != "" {
 				markedOps[op.OperationID] = s
-			}
-			// Skip ops whose tags are in the exclude list.
-			skip := false
-			for _, tag := range op.Tags {
-				if excludeTags[tag] {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
 			}
 			allOperationIds = append(allOperationIds, op.OperationID)
 		}
