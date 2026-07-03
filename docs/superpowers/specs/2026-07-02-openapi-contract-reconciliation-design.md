@@ -71,8 +71,9 @@ this slice corrects those comments to the per-finding policy above (Gate 6).
 **Do not build a parallel system.** `internal/e2e/openapivalidator` already loads
 `api/openapi.yaml` via kin-openapi, validates every E2E response body + status against the
 operation schema, runs in `ModeEnforce`, accumulates a `collector`, emits a `report`, and
-tracks operation/status coverage (failing on uncovered *in-scope* ops via
-`zzz_openapi_conformance_test.go`'s `knownUncoveredOps`). ADR 0001 governs it.
+tracks operation/status coverage (today via `zzz_openapi_conformance_test.go`'s
+`knownUncoveredOps`, which Spec 1 replaces with the `x-cyoda-status` marker gate). ADR 0003
+governs this conformance machinery.
 
 The **only genuinely new capability** is error-code coverage at **errorCode-string
 granularity** (the existing coverage is operation/status granularity). Scope Pillar A to
