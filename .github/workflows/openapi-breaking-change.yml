@@ -1,0 +1,42 @@
+name: openapi-breaking-change
+
+# Enforces the additive-only evolution discipline from ADR 0003:
+# api/openapi.yaml may gain new operations, parameters, and optional response
+# fields, but MUST NOT remove operations/parameters, narrow types, add required
+# fields to existing responses, or seal objects with additionalProperties:false.
+#
+# Deletion-interaction note (Task 7 / ErrorResponse removal):
+#   The prior task deleted the unreferenced `components/schemas/ErrorResponse`
+#   schema.  oasdiff keys breaking-change detection on operations and the
+#   schemas they transitively reference.  A component that no operation resolves
+#   is invisible to the breaking-change analyser, so removing it does NOT
+#   trigger a failure here.  This was verified with the fixture test in
+#   internal/oasdiffcheck/ (additive_is_not_breaking / sealing… cases).
+#   If a future deletion touches a *referenced* component, the workflow will
+#   catch it correctly — no --exclude-elements override is needed for the
+#   current or anticipated schema cleanup.
+
+on:
+  pull_request:
+    paths:
+      - "api/openapi.yaml"
+
+jobs:
+  oasdiff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Install oasdiff
+        run: go install github.com/oasdiff/oasdiff@latest
+
+      - name: Breaking-change check (base..PR)
+        run: |
+          git show origin/${{ github.base_ref }}:api/openapi.yaml > /tmp/base-openapi.yaml
+          oasdiff breaking /tmp/base-openapi.yaml api/openapi.yaml --fail-on ERR
