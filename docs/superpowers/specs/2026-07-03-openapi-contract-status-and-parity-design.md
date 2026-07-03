@@ -57,8 +57,10 @@ An OpenAPI specification extension on the operation object. Two values:
   "NOT YET IMPLEMENTED in cyoda-go — planned for Trino integration"), so a human reading the
   rendered spec (Scalar UI, cyoda-docs) sees it without inspecting extensions.
 - Live operations MUST NOT carry the marker.
-- Marked operations stay excluded from codegen (`api/config.yaml`) so no client method is
-  generated for a non-live operation.
+- `x-cyoda-status` is **orthogonal to codegen exclusion.** Only the `Stream Data` and
+  `SQL-Schema` tags are excluded from codegen (`api/config.yaml`); the IAM/OIDC/account stubs
+  are generated and routed yet still `planned`. So a marked operation may or may not have a
+  generated client method — the marker records *implementation status*, not codegen state.
 
 ## 4. The coverage gate (live-or-marked)
 
@@ -68,14 +70,20 @@ Replace the two current escape hatches with one spec-derived rule.
   (`internal/e2e/e2e_test.go`): the gate now sees every published operation.
 - **Retire `knownUncoveredOps`** (`internal/e2e/zzz_openapi_conformance_test.go`): its entries
   become `x-cyoda-status` markers in the spec (§6).
-- **New rule:** for each published operation, exactly one of must hold —
-  - *exercised* — hit by ≥1 e2e (proxy for "routed and live"); or
-  - *marked* — carries `x-cyoda-status`.
-  - **Unexercised and unmarked → CI fail** (a silent 404 or a live op with no coverage).
-  - **Exercised and marked → CI fail** (a marker on an operation that is actually live —
-    contradiction).
-- The marker is read from the embedded spec (same source the validator already loads), so the
-  gate needs no second source of truth.
+- **Marker set:** built in `TestMain` (`internal/e2e/e2e_test.go`, which already iterates
+  `swagger.Paths.Map()`) by reading each operation's `x-cyoda-status` from
+  `openapi3.Operation.Extensions`, and exported as a package var (`markedOps`) alongside
+  `allOperationIds`. The gate in `zzz_openapi_conformance_test.go` reads it — no second source
+  of truth.
+- **Rule 1 (coverage):** each published operation must be *exercised* (hit by ≥1 e2e — proxy for
+  routed-and-live) **or** *marked*. Unexercised and unmarked → CI fail (a silent 404, or a live
+  op with no coverage).
+- **Rule 2 (stale-marker guard):** a *marked* operation exercised **with a 2xx success** → CI
+  fail (the marker sits on an operation that is actually live). Exercising a marked op with only
+  `501`/`4xx` does **not** trip this — so a stub's documented `501` can be covered per
+  `.claude/rules/test-coverage.md` while the marker stands. This needs the collector to record
+  whether each operation ever returned a 2xx; add that minimal per-op flag (the entity slice's
+  richer `(op, status, errorCode)` matrix builds on it).
 
 This subsumes the entity slice's earlier plan to "reuse `knownUncoveredOps`": that list no
 longer exists after this spec; the entity slice's error-code matrix builds on the marker-aware gate.
@@ -119,13 +127,14 @@ generated Go model consumed by `api/generated.go` or handlers. Verify per schema
   reachability check, not by the earlier HTTP-path-only "orphan" scan (which false-flagged the
   `StateMachine*Dto`).
 
-## 8. Embedded spec-snapshot regeneration
+## 8. Spec embedding (no regeneration step)
 
-`api/generated.go` embeds a gzip+base64 snapshot of `api/openapi.yaml` returned by
-`api.GetSwagger()` — this is the source the runtime validator loads. Any spec edit in this work
-(markers, deletions) requires re-encoding that snapshot (oapi-codegen v2.7.0 / Go 1.26 caveat may
-require the manual re-encode path used previously). A test asserts the embedded snapshot matches
-the on-disk `api/openapi.yaml` so drift between them is caught.
+`GetSwagger()` embeds `api/openapi.yaml` **verbatim** via `//go:embed` (`api/spec.go`;
+`api/config.yaml` sets `embedded-spec: false`, so oapi-codegen does not emit its own re-encoded
+copy). Editing `api/openapi.yaml` is therefore the only step — the embed picks up the new bytes at
+build time, and no embedded-vs-source drift is possible. There is nothing to regenerate and no
+drift test is needed. (An earlier audit note describing a gzip+base64 snapshot referred to a
+since-replaced `embedded-spec: true` configuration.)
 
 ## 9. Cloud-parity hand-off (design-only in this repo)
 
@@ -156,8 +165,7 @@ adds no HTTP/gRPC endpoint or error code, so coverage is at the gate/infra layer
 | Coverage gate: unexercised+unmarked → fail | ✓ (gate logic) | ✓ (suite enforces) | — | — |
 | Coverage gate: exercised+marked → fail (contradiction) | ✓ | — | — | — |
 | Every published unrouted op carries a valid `x-cyoda-status` | ✓ (spec-lint test) | — | — | — |
-| oasdiff gate: breaking edit fails, additive edit passes | ✓ (fixture) | — | — | — |
-| Embedded snapshot matches on-disk spec | ✓ | — | — | — |
+| oasdiff gate: breaking edit fails, additive edit passes | ✓ (one fixture pair) | — | — | — |
 | `fetchEntityTransitions` now exercised | — | ✓ | — | — |
 
 No new error codes or endpoints → no per-endpoint error table and no gRPC error-envelope rows.
@@ -177,9 +185,16 @@ Concurrency: n/a.
 - **Sequencing:** this spec lands first. It converts the two silent escape hatches into an
   enforced live-or-marked contract, so when the entity slice adds response-shape tightening and
   the error-code matrix, the surface is already honest and the coverage gate already marker-aware.
-- **Risk — turning on full coverage surfaces gaps.** Making the gate see every operation may fail
-  CI for a live-but-uncovered op we hadn't noticed. Mitigation: that is the point; each such op
-  gets e2e coverage (if live) or a marker (if not) in this PR — no silent suppression.
+- **Risk — turning on full coverage surfaces gaps.** Making the gate see every operation
+  (~22 excluded-tag ops added to `allOperationIds`, ~9 `knownUncoveredOps` resolved → ~30 markers
+  + 1 new e2e) may fail CI for a live-but-uncovered op we hadn't noticed. Mitigation: that is the
+  point; each such op gets e2e coverage (if live) or a marker (if not) in this PR — no silent
+  suppression. The marker additions, the coverage-gate flip, and the `knownUncoveredOps`
+  retirement must land in the **same commit** so CI never observes an intermediate red state.
+- **Task — extension round-trip.** Confirm `scalar_test.go` / help-subsystem tests assert output
+  *prefixes* (not full-document byte equality) so the added `x-cyoda-status` extensions don't
+  break them; `/openapi.json` (`scalar.go`) round-trips extensions by design, which is intended
+  (Cloud/consumers see the status).
 - **Risk — marker misuse.** A marker on a live op, or a missing marker on an unrouted op, both
   fail the gate by construction (§4), so the marker cannot drift silently.
 - **Risk — Stream Data disposition still open.** `unimplemented` is honest for "undecided"; when
