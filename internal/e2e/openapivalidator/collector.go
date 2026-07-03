@@ -20,6 +20,7 @@ type collector struct {
 	mu         sync.Mutex
 	mismatches []Mismatch
 	exercised  map[string]struct{}
+	saw2xx     map[string]struct{}
 }
 
 // the package-level singleton used by the middleware. Tests may construct
@@ -27,7 +28,10 @@ type collector struct {
 var defaultCollector = newCollector()
 
 func newCollector() *collector {
-	return &collector{exercised: make(map[string]struct{})}
+	return &collector{
+		exercised: make(map[string]struct{}),
+		saw2xx:    make(map[string]struct{}),
+	}
 }
 
 func (c *collector) append(m Mismatch) {
@@ -41,6 +45,28 @@ func (c *collector) recordExercised(operationId string) {
 	defer c.mu.Unlock()
 	c.exercised[operationId] = struct{}{}
 }
+
+func (c *collector) recordStatus(operationId string, status int) {
+	if status < 200 || status >= 300 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.saw2xx[operationId] = struct{}{}
+}
+
+func (c *collector) success2xxSet() map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]bool, len(c.saw2xx))
+	for k := range c.saw2xx {
+		out[k] = true
+	}
+	return out
+}
+
+// Success2xxSet returns the set of operationIds that returned a 2xx during the run.
+func Success2xxSet() map[string]bool { return defaultCollector.success2xxSet() }
 
 // drain returns all accumulated mismatches and resets the slice.
 func (c *collector) drain() []Mismatch {

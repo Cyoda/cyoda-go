@@ -36,6 +36,20 @@ func TestCollector_RecordExercised(t *testing.T) {
 	}
 }
 
+func TestCollector_recordStatus_tracks2xx(t *testing.T) {
+	c := newCollector()
+	c.recordStatus("opA", 200)
+	c.recordStatus("opB", 501)
+	c.recordStatus("opC", 404)
+	got := c.success2xxSet()
+	if !got["opA"] {
+		t.Errorf("opA (200) should be in the 2xx set")
+	}
+	if got["opB"] || got["opC"] {
+		t.Errorf("opB (501) / opC (404) must not be in the 2xx set: %v", got)
+	}
+}
+
 func TestCollector_ConcurrentAppend(t *testing.T) {
 	c := newCollector()
 	var wg sync.WaitGroup
