@@ -35,8 +35,22 @@ var (
 	dbPool          *pgxpool.Pool                     // direct DB access for verification queries
 	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
-	testApp         *app.App // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
+	markedOps       = map[string]string{} // operationId → x-cyoda-status value
+	testApp         *app.App              // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
 )
+
+// readCyodaStatus returns the x-cyoda-status marker on an operation, or "".
+func readCyodaStatus(op *openapi3.Operation) string {
+	if op == nil || op.Extensions == nil {
+		return ""
+	}
+	if v, ok := op.Extensions["x-cyoda-status"]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
 
 func TestMain(m *testing.M) {
 	// flag.Parse must be called before testing.Short() is valid.
@@ -162,30 +176,16 @@ func TestMain(m *testing.M) {
 	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(testApp.Handler())
 
 	// Capture the full operationId set so the conformance test can compute
-	// the uncovered list at end-of-suite.
-	//
-	// Build the exclude-tags set (mirrors api/config.yaml). Excluded ops aren't
-	// in cyoda-go's shipped API and shouldn't count toward coverage.
-	excludeTags := map[string]bool{
-		"Stream Data":              true,
-		"CQL Execution Statistics": true,
-		"SQL-Schema":               true,
-	}
+	// the uncovered list at end-of-suite. Every published operation is
+	// included; ops that aren't live must carry an x-cyoda-status marker
+	// (enforced by TestOpenAPIConformanceReport).
 	for _, item := range swagger.Paths.Map() {
 		for _, op := range item.Operations() {
 			if op.OperationID == "" {
 				continue
 			}
-			// Skip ops whose tags are in the exclude list.
-			skip := false
-			for _, tag := range op.Tags {
-				if excludeTags[tag] {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
+			if s := readCyodaStatus(op); s != "" {
+				markedOps[op.OperationID] = s
 			}
 			allOperationIds = append(allOperationIds, op.OperationID)
 		}

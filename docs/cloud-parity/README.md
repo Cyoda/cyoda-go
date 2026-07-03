@@ -20,3 +20,4 @@ Cloud needs to adopt.
 | File | Covers |
 |---|---|
 | `entity-patch.md` | PATCH single-entity contract (RFC 7386 merge patch) |
+| `openapi-conformance.md` | OpenAPI operation status, live common ground, tolerant-reader obligation, deferred open questions (E6, D2) |

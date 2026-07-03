@@ -68,9 +68,9 @@ func TestMiddleware_RecordsMismatchOnDriftedResponse(t *testing.T) {
 // OAuth discovery) are not recorded as mismatches.
 //
 // Note: /api/oauth/keys/ is NOT in this list — those paths ARE declared in the
-// spec (with 501 responses for #194 stubs) and must pass through the validator.
-// knownUncoveredOps in zzz_openapi_conformance_test.go is the single source of
-// "intentionally uncovered" for spec-declared operations.
+// spec and must pass through the validator. The conformance gate in
+// zzz_openapi_conformance_test.go requires each such op to be either exercised
+// or marked not-live via `x-cyoda-status` in api/openapi.yaml.
 func TestMiddleware_SkipsOperationalPaths(t *testing.T) {
 	v := newFixtureValidator(t)
 	defaultCollector = newCollector()

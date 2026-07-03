@@ -92,6 +92,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			// schema validation (we can't construct a full routers.Route without
 			// re-entering the broken router).
 			defaultCollector.recordExercised(opId)
+			defaultCollector.recordStatus(opId, resp.StatusCode)
 			return nil
 		}
 		// No matching route — the request hit a path the spec doesn't declare.
@@ -113,6 +114,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 	if !v.pathParamsSatisfied(route.Operation, pathParams) {
 		if opId, op := v.fallbackFindRoute(req); op != nil {
 			defaultCollector.recordExercised(opId)
+			defaultCollector.recordStatus(opId, resp.StatusCode)
 			return nil
 		}
 		return []Mismatch{{
@@ -126,6 +128,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 
 	opId := route.Operation.OperationID
 	defaultCollector.recordExercised(opId)
+	defaultCollector.recordStatus(opId, resp.StatusCode)
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.

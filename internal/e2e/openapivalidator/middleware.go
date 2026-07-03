@@ -18,9 +18,9 @@ import (
 //
 // Keep this list to genuinely non-spec paths only. Customer endpoints that
 // are spec-declared but not yet implemented must NOT appear here — they should
-// go through the validator so that knownUncoveredOps (in
-// zzz_openapi_conformance_test.go) remains the single authoritative source of
-// "intentionally uncovered" operations.
+// go through the validator so the conformance gate (in
+// zzz_openapi_conformance_test.go) sees them; a not-yet-implemented op is
+// declared not-live via its `x-cyoda-status` marker in api/openapi.yaml.
 var operationalPathPrefixes = []string{
 	"/api/health",
 	"/api/docs",

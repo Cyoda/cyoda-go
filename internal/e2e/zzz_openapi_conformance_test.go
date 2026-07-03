@@ -16,25 +16,23 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
-// knownUncoveredOps are operationIds that have no E2E coverage by design:
-// either they're stub-implemented (#194) or mounted outside the generated
-// ServerInterface dispatch (transitions handler — #21 design Section 8 noted
-// the wart). Audit table at docs/superpowers/audits/2026-04-29-openapi-
-// conformance-audit.md captures the full disposition for each.
-var knownUncoveredOps = map[string]bool{
-	// Stub IAM/account ops — implementation tracked in #194.
-	"accountSubscriptionsGet": true,
-	// OIDC provider ops — implementation tracked in #194.
-	"deleteOidcProvider":     true,
-	"invalidateOidcProvider": true,
-	"listOidcProviders":      true,
-	"reactivateOidcProvider": true,
-	"registerOidcProvider":   true,
-	"reloadOidcProviders":    true,
-	"updateOidcProvider":     true,
-	// Outside the generated ServerInterface dispatch — see #21 design
-	// Section 8, Task 5.1's Option B note. Tracked as future cleanup.
-	"fetchEntityTransitions": true,
+// uncoveredOps computes two disjoint problem sets from the full operation
+// list:
+//   - unmarkedUncovered: ops that were neither exercised by an E2E test nor
+//     carry an x-cyoda-status marker (silent 404 or untested live op).
+//   - staleMarkers: ops that carry an x-cyoda-status marker but returned a
+//     2xx response during the run (marker is stale — the op is now live).
+func uncoveredOps(all []string, exercised, success2xx map[string]bool, marked map[string]string) (unmarkedUncovered, staleMarkers []string) {
+	for _, op := range all {
+		_, isMarked := marked[op]
+		switch {
+		case !exercised[op] && !isMarked:
+			unmarkedUncovered = append(unmarkedUncovered, op) // silent 404 or untested live op
+		case isMarked && success2xx[op]:
+			staleMarkers = append(staleMarkers, op) // marker on an op that is actually live
+		}
+	}
+	return
 }
 
 // TestOpenAPIConformanceReport runs after every other E2E test, drains the
@@ -64,15 +62,12 @@ func TestOpenAPIConformanceReport(t *testing.T) {
 		// Enforce mode, no mismatches: also check coverage. Skip the
 		// coverage check when -run is set (single-test workflow).
 		if !openapivalidator.RunFilterActive() {
-			uncovered := []string{}
-			for _, op := range allOperationIds {
-				if !exercised[op] && !knownUncoveredOps[op] {
-					uncovered = append(uncovered, op)
-				}
+			unmarked, stale := uncoveredOps(allOperationIds, exercised, openapivalidator.Success2xxSet(), markedOps)
+			if len(unmarked) > 0 {
+				t.Fatalf("openapi conformance: %d published ops are neither exercised nor x-cyoda-status-marked (silent 404 or untested live op): %v", len(unmarked), unmarked)
 			}
-			if len(uncovered) > 0 {
-				t.Fatalf("openapi conformance: %d operations have no E2E coverage; see %s",
-					len(uncovered), reportPath)
+			if len(stale) > 0 {
+				t.Fatalf("openapi conformance: %d x-cyoda-status-marked ops returned 2xx (marker is stale — op is live): %v", len(stale), stale)
 			}
 		}
 		return
