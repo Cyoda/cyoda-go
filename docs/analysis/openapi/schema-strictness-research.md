@@ -92,8 +92,10 @@ is a recommended *pattern* (Stripe, protobuf) but not an AIP-126 mandate.
 - **kin-openapi enforce behaviour (load-bearing):** no source covered kin-openapi
   specifically. The rubric assumes standard JSON-Schema open-by-default semantics — that
   enforce mode **passes** an additive/unknown response field against a typed-but-open
-  schema and **fails** it against `additionalProperties: false`. **Verify empirically
-  against the pinned kin-openapi version before relying on this.** (See ADR 0003 gating.)
+  schema and **fails** it against `additionalProperties: false`. **Confirmed 2026-07-03**
+  via a probe against kin-openapi v0.140.0 (`Schema.VisitJSON`): additive field passes the
+  open schema, `additionalProperties: false` rejects it. A permanent fixture test lands with
+  the implementation (the probe was temporary). ADR 0003 records this as confirmed.
 - `x-extensible-enum` is deprecated by Zalando in favour of `examples` + "[Extensible
   enum]"; both express the same intent. Pick whichever cyoda-go's toolchain/consumers read
   best; note `x-extensible-enum` is a proprietary extension some validators reject.

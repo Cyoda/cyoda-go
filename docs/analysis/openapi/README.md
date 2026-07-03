@@ -168,7 +168,7 @@ Direction: `spec-stale` · `spec-incomplete` · `server-gap` · `needs-decision`
 | Op | Sev | Dir | Pattern | Detail |
 |---|---|---|---|---|
 | deleteEntities | High | server-gap | P2 | Condition body + `pointInTime` + `verbose` ignored; `DeleteAllEntities` wipes whole model (`handler.go:592-611`, `service.go:748`). **Data loss.** |
-| getAllEntities | High | server-gap | P2 | `pointInTime` parsed but never plumbed into `ListEntities` (`handler.go:613-654`, `service.go:825`). |
+| getAllEntities | High | server-gap | P2 | `pointInTime` never read by the handler / not plumbed into `ListEntities` (`handler.go:613-654`, `service.go:825`). |
 | getOneEntity, getAllEntities | High | spec-stale + spec-incomplete | P3/P4 | `Envelope.meta` opaque bag; desc names fossil `previousTransition`; server emits `modelKey`/`transactionId`/`lastUpdateTime`/`transitionForLatestSave` (`service.go:433-446`, `875-884`; `openapi.yaml:7913-7917`). |
 | createCollection | High | spec-incomplete | P6 | Request body `type:object` empty; server requires array of `{model{name,version}, payload:<json-string>}` (`handler.go:797-816`). |
 | getEntityChangesMetadata | Med | spec-stale | P4 | `EntityChangeMeta.fieldsChangedCount` advertised, never emitted (`handler.go:576-587`). |

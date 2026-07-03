@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-02
 **Status:** design / awaiting review
+**Runs after:** Spec 1 (`2026-07-03-openapi-contract-status-and-parity-design.md`), which
+establishes the marker-aware coverage gate (`markedOps`, replacing `knownUncoveredOps`) that
+this slice's error-code matrix builds on.
 **Reference evidence:** `docs/analysis/openapi/README.md` (full 87-op audit, six-pattern
 taxonomy, per-finding reconciliation direction).
 **Builds on:** ADR 0003 (`docs/adr/0003-openapi-contract-conformance-and-evolution.md`,
@@ -82,8 +85,9 @@ exactly that delta plus schema tightening:
   `common.WriteError`); absent for success responses.
 - Add a static **`ErrorCodeMatrix`**: `operationId → {documented (status, errorCode)}`,
   authored from the spec's per-endpoint error tables (§7), scoped to the **entity group**
-  in this spec (other ops listed as pending, reusing the existing `knownUncoveredOps`
-  mechanism — do not introduce a second pending list).
+  in this spec (out-of-scope ops are exempted via the **marker-aware coverage gate Spec 1
+  establishes** — `x-cyoda-status` / the `markedOps` set — which replaces the retired
+  `knownUncoveredOps`; this slice runs *after* Spec 1).
 - Two aggregate checks at suite end (bidirectional drift detection):
   - **producible** — every documented `(status, errorCode)` in scope was observed by ≥1
     E2E (catches *fictional* codes, audit pattern P5).
@@ -131,9 +135,9 @@ schema sealing.
 **Canonical-schema reconciliation:** several entity wire shapes have a *canonical* JSON
 schema under `docs/cyoda/schema/common/` (embedded, consumed by cyoda-docs/Cloud) **and** a
 mirror in `e2e/parity/client/types.go`. Fixes to these shapes must reconcile **all**
-definitions (canonical JSON schema ↔ OpenAPI ↔ parity client), not author a fourth. ADR
-0001 Consequences explicitly flags the `e2e/parity/client/types.go` update (it is the
-commercial plugin's import surface).
+definitions (canonical JSON schema ↔ OpenAPI ↔ parity client), not author a fourth. The
+`e2e/parity/client/types.go` mirror updates whenever a corrected wire shape changes it (it is
+the commercial plugin's import surface).
 
 ## 6. The entity slice — findings, directions, fixes
 
@@ -144,9 +148,9 @@ commercial plugin's import surface).
 | E3 | `getAllEntities` ignores `pointInTime` | server-gap | Plumb `pointInTime` into the list read via **`GetAllAsAt`** (the model-scoped list-PIT primitive in all 3 backends, already used by search at `internal/domain/search/service.go:161`) — **not** `getOneEntity`'s single-entity `GetAsAt`. Also populate `meta.pointInTime` (E1). | as-at e2e + parity |
 | E4 | `createCollection` / `create` request body `type:object` erases real shape | spec-incomplete | Tighten request schemas to the array-of-`{model{name,version},payload}` shape; document the batch/array `create` form. Reconcile `e2e/parity/client/types.go` (S5). | request validation |
 | E5 | create/update/patch/collection composite-unique-key `409`/`422` codes undocumented | spec-incomplete | Add codes to the endpoints' error tables | error-code matrix (producible+declared) |
-| E6 | `EntityChangeMeta.fieldsChangedCount` advertised (in **canonical** `docs/cyoda/schema/common/EntityChangeMeta.json`), never emitted by server | **needs-decision** | See §6.2 | per decision |
+| E6 | `EntityChangeMeta.fieldsChangedCount` advertised (in **canonical** `EntityChangeMeta.json`), never emitted | **needs-decision (deferred)** | **Out of this slice** — Cloud-fact-blocked; §6.2 | — |
 | E7 | `getEntityChangesMetadata` ordering prose says chronological; server is newest-first | spec-stale | Fix prose to reverse-chronological | (doc-only) |
-| E8 | `changeType` prose `CREATE/UPDATE/DELETE` vs enum/emit `CREATED/UPDATED/DELETED` | spec-stale | Fix prose to match enum | response validation (enum) |
+| E8 | `changeType` spelling diverges across surfaces: canonical `EntityChangeMeta.json` `CREATE/UPDATE/DELETE`, OpenAPI+HTTP `CREATED/UPDATED/DELETED`, **gRPC `CREATE/UPDATE/DELETE`** (`mapChangeType`, `grpc/search.go:591`) | **needs-decision** | Decide canonical spelling, then align canonical JSON ↔ OpenAPI ↔ HTTP ↔ gRPC (§6.3) | response validation (enum) + gRPC |
 | E9 | `getOneEntity` 200 example shows only `{id,state}` | spec-incomplete | Enrich example to full meta shape | (validated structurally by E1) |
 
 ### 6.1 `deleteEntities` — implementing conditional delete
@@ -174,20 +178,28 @@ Feasibility confirmed against code, with three implementation realities the plan
   never ignored.
 - **gRPC:** see §8 / decision D2.
 
-### 6.2 E6 `fieldsChangedCount` — the decision
-The field is declared in the **canonical, Cloud-consumed** `EntityChangeMeta.json`, but the
+### 6.2 E6 `fieldsChangedCount` — deferred (Cloud-fact-blocked)
+The field is declared in the **canonical, Cloud-consumed** `EntityChangeMeta.json` but the
 cyoda-go server never emits it (`internal/domain/entity/handler.go:576-587`). Direction is
-genuinely ambiguous:
-- **(a) server-gap** — the contract intends it; **implement** emission (compute the
-  changed-field count on the change path). Keeps the canonical schema; small server addition.
-- **(b) spec-stale** — remove it from the canonical schema. **But** this is a Cloud-parity
-  contract change to an embedded, downstream-consumed CloudEvents schema; risky if Cloud
-  already emits it.
+genuinely ambiguous — (a) `server-gap`: implement emission (compute the changed-field count);
+(b) `spec-stale`: remove it from the canonical schema (risky if Cloud emits it). Resolving it
+needs a Cloud-parity fact we do not yet have: **does Cloud emit `fieldsChangedCount`?**
+**This slice does not implement E6** — a `needs-decision` must not drive net-new speculative
+server code. E6 is recorded as an open question in `docs/cloud-parity/` and decided once the
+Cloud fact is gathered; the leaning is (a) implement (removing a Cloud-consumed canonical field
+is the higher-risk direction).
 
-**Recommendation:** (a) implement server-side — removing a field from a Cloud-consumed
-canonical schema is the higher-risk direction, and the field carries real audit-UI value. To
-be confirmed with the Cloud-parity check (does Cloud emit it?) before finalizing. Recorded in
-`docs/cloud-parity/`.
+### 6.3 HTTP ↔ gRPC divergences to reconcile
+Two entity shapes already differ between the HTTP and gRPC entry points; typed-but-open schemas
+would *mask* these, so — per the project's "an entry-point divergence is a bug" stance — the
+slice reconciles them explicitly rather than letting the open schema hide them:
+- **`changeType` spelling (E8):** HTTP emits `CREATED/UPDATED/DELETED`; gRPC emits
+  `CREATE/UPDATE/DELETE` (`mapChangeType`, `internal/grpc/search.go:591`); the canonical
+  `EntityChangeMeta.json` sides with gRPC. Decide one spelling and align all four surfaces.
+- **`meta` fields:** HTTP `meta` includes `modelKey` (and, after E3, `pointInTime`); gRPC
+  `buildEntityMeta` (`internal/grpc/search.go:577-589`) omits both. Add `modelKey` and
+  `pointInTime` to the gRPC builder so both entry points emit the same metadata (E1 fixes the
+  HTTP side).
 
 ## 7. Per-endpoint error/status tables (in-scope endpoints)
 
@@ -213,7 +225,7 @@ MODEL_NOT_FOUND (create); 401/403.
 415/428/501 existing (PATCH); 422 INVALID_UNIQUE_KEY[_DEFINITION] ✎.
 
 **`GET /entity/{entityId}/changes` (getEntityChangesMetadata)** — response-shape fixes
-(E6/E7/E8); error table unchanged (200/404/401/403).
+(E7/E8; E6 deferred); error table unchanged (200/404/401/403).
 
 ## 8. Coverage matrix (scenario × layer)
 
@@ -223,23 +235,23 @@ covered** (no false waivers; the gRPC meta and delete surfaces both exist).
 | Scenario | Unit | Running-backend e2e | Cross-backend parity | gRPC |
 |---|---|---|---|---|
 | Error-code matrix (producible + declared), entity scope | ✓ (collector logic) | ✓ (aggregate) | — | — |
-| E1 meta shape (mirror canonical; typed-but-open — no `additionalProperties:false`; no `previousTransition`) | — | ✓ | ✓ (backend-agnostic) | ✓ — assert `buildEntityMeta` output (`internal/grpc/search.go:377,577`) matches the tightened shape |
-| E2 conditional delete (matching subset only) | condition→ids selection ✓ | ✓ | ✓ (inside tx — §6.1) | per decision D2 |
-| E2 `pointInTime` + `verbose` (ids returned) | — | ✓ | ✓ | per D2 |
+| E1 meta shape (mirror canonical; typed-but-open — no `additionalProperties:false`; no `previousTransition`) | — | ✓ | ✓ (backend-agnostic) | ✓ — reconcile gRPC `buildEntityMeta` (`internal/grpc/search.go:577`) to add `modelKey`+`pointInTime` (§6.3), then assert it matches the tightened shape |
+| E2 conditional delete (matching subset only) | condition→ids selection ✓ | ✓ | ✓ (inside tx — §6.1) | gRPC stays unconditional (D2 deferred, §8) |
+| E2 `pointInTime` + `verbose` (ids returned) | — | ✓ | ✓ | — |
 | E3 `getAllEntities` as-at (`GetAllAsAt`) | — | ✓ | ✓ | — |
 | E4 request-body shape (array-of-`{model,payload}`) | — | ✓ | ✓ | — |
 | E5 unique-key `409`/`422` codes | — | ✓ (per code) | ✓ | ✓ — assert envelope; note N1: gRPC `Error.Code` is a coarse CLIENT/SERVER bucket, the unique-key code is in `Error.Message` (`internal/grpc/errors.go`), matching `TestRPC_EntityCreate_UniqueViolation` (`rpc_test.go:654`) |
-| E6 `fieldsChangedCount` (per §6.2 decision) | — | ✓ | ✓ | ✓ if emitted on gRPC change path |
-| E7/E8 changes ordering/enum | — | ✓ (gate-validated) | — | — |
+| E8 `changeType` spelling aligned across HTTP + gRPC (§6.3) | — | ✓ (gate-validated enum) | — | ✓ (gRPC enum) |
+| E7 changes ordering | — | ✓ (gate-validated) | — | — |
 
-**Decision D2 — gRPC conditional delete.** gRPC exposes `EntityDeleteAllRequest`
-(unconditional; `internal/grpc/entity.go:391`) and per-entity `EntityDeleteRequest`, but no
-*conditional* delete. The OpenAPI conditional-delete is an **HTTP-contract** feature; the
-gRPC/proto contract does not promise conditional delete. **Recommendation:** implement E2 on
-HTTP only; keep gRPC `DeleteAll` as-is (it conforms to its own proto contract), and add/verify
-gRPC test coverage for the existing `DeleteAll` behaviour so the gRPC entry point is covered,
-not waived. Record the HTTP-only scope in `docs/cloud-parity/`. (Confirm with Cloud that gRPC
-parity is not expected before finalizing — Gate 7 / multi-node.)
+**Decision D2 — gRPC conditional delete (deferred, Cloud-fact-blocked).** gRPC exposes
+`EntityDeleteAllRequest` (unconditional; `internal/grpc/entity.go:391`) and per-entity
+`EntityDeleteRequest`, but no *conditional* delete. The OpenAPI conditional-delete is an
+**HTTP-contract** feature; the gRPC/proto contract does not promise it. **This slice implements
+E2 on HTTP only**; gRPC `DeleteAll` stays unconditional and gets test coverage for its existing
+behaviour (so the gRPC entry point is covered, not waived). Whether Cloud expects gRPC
+conditional-delete parity is an **open question recorded in `docs/cloud-parity/`**, decided when
+the Cloud fact is gathered (Gate 7 / multi-node).
 
 **Concurrency:** entity-slice changes need no isolated concurrency test; `deleteEntities` is
 select-then-delete over a snapshot; parity asserts the surviving subset, not an interleave.
@@ -249,34 +261,40 @@ select-then-delete over a snapshot; parity asserts the surviving subset, not an 
 - **Gate 4:** new error codes → `cmd/cyoda/help/content/errors/<CODE>.md`
   (`TestErrCode_Parity` bijection). E2/E5 surface `INVALID_CONDITION`, `UNIQUE_VIOLATION`,
   `INVALID_UNIQUE_KEY[_DEFINITION]` at these endpoints.
-- **Gate 7:** `docs/cloud-parity/` entry per reconciled behaviour (E1 meta; E2 conditional-
-  delete + D2 gRPC scope; E3 as-at; E6 decision). Each states direction + rationale.
+- **Gate 7:** `docs/cloud-parity/` entry per reconciled behaviour (E1 meta; E2 conditional
+  delete; E3 as-at; E8 `changeType` spelling) — each states direction + rationale — **plus two
+  open questions** (E6 `fieldsChangedCount` direction; D2 gRPC conditional-delete parity),
+  decided when the Cloud facts are gathered.
 - **Canonical schemas / parity mirror:** reconcile `docs/cyoda/schema/common/EntityMetadata.json`
-  (E1) and `EntityChangeMeta.json` (E6) with the OpenAPI, and update `e2e/parity/client/types.go`
-  (S5) for E1/E4 wire-shape changes.
+  (E1) and `EntityChangeMeta.json` (E8 `changeType`; E6 deferred) with the OpenAPI, and update
+  `e2e/parity/client/types.go` (S5) for E1/E4 wire-shape changes.
 - **Codegen:** `api/generated.go` regenerated (or hand-updated) on model changes (E1, E4).
   Note: tree is on **oapi-codegen v2.7.0** with a `//go:generate` directive
   (`api/generate.go`); re-verify whether the Go 1.26 regen caveat still applies before relying
   on `go generate`.
-- **ADR:** reference ADR 0001; no superseding ADR needed (we stay within it).
+- **ADR:** governed by **ADR 0003** (typed-but-open, additive-only gate, reconciliation
+  direction); ADR 0003 supersedes 0001.
 
 ## 10. Decomposition — follow-on plans (out of scope here)
 
 Each reuses the Pillar-B loop and the extended validator:
 1. stats / audit / search · 2. entity-model & workflow · 3. auth / OIDC (error-envelope
-family decision) · 4. message · 5. **dead-surface decision** (implement vs remove 22
-excluded-tag ops + always-501 stubs — its own brainstorm; highest single scale signal).
+family decision) · 4. message · 5. **dead-surface disposition** — Spec 1 already assigns each
+not-live op a machine-readable `x-cyoda-status` (SQL-Schema `planned`/Trino, Stream Data
+`unimplemented`, IAM/OIDC stubs `planned`); the eventual *implement-vs-remove* call for the
+`unimplemented` set remains a follow-on decision.
 
 ## 11. Risks
 
 - **Spec precision debt:** the validator only guards precisely-declared schemas. Mitigation:
-  in-scope schemas tightened; matrix reuses `knownUncoveredOps` so out-of-scope coverage is
-  never overstated.
+  in-scope schemas tightened; out-of-scope coverage is exempted via Spec 1's marker-aware gate
+  (`markedOps`), so it is never overstated.
 - **`deleteEntities` blast radius:** destructive path. Mitigation: reuse the proven search
   condition primitive, backward-compatible empty-body behaviour, parity asserts the surviving
   subset **inside the tx** (§6.1), per-id delete loop, data-loss closed by construction.
 - **Canonical-schema coupling:** E1/E6 touch embedded, Cloud-consumed schemas; changes must
   reconcile all mirrors (§5) and be recorded in cloud-parity — mishandling risks silent
   cross-repo drift.
-- **Two open decisions (E6 direction, D2 gRPC scope):** recommendations given; confirm the
-  Cloud-parity facts before finalizing.
+- **Two deferred decisions (E6 `fieldsChangedCount`, D2 gRPC conditional-delete parity):**
+  both Cloud-fact-blocked and out of this slice (§6.2, §8); recorded as `docs/cloud-parity/`
+  open questions, decided when the Cloud facts are gathered.

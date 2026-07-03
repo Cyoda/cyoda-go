@@ -25,10 +25,11 @@ chosen:
   fidelity between the two implementations is now a first-class concern rather
   than an informal shared-document convention.
 
-An audit of the contract (`docs/analysis/openapi/README.md`) found roughly 55
-spec-vs-server divergences, including about 61 objects modelled as unspecified
-"loose bags" (`type: object` with no properties, or `additionalProperties: true`
-with no enumerated fields). A dedicated research pass
+An audit of the contract (`docs/analysis/openapi/README.md`) found that roughly 55
+of the 87 operations carry at least one spec-vs-server divergence, and that many
+response objects are modelled as unspecified "loose bags" (`type: object` with no
+properties, or `additionalProperties: true` with no enumerated fields) rather than
+as enumerated shapes. A dedicated research pass
 (`docs/analysis/openapi/schema-strictness-research.md`, whose claims were
 adversarially verified against the Zalando RESTful API Guidelines, Google API
 Improvement Proposals, Stripe, RFC 9457, protobuf, and JSON Schema 2020-12)
@@ -59,9 +60,10 @@ service knows it emits, but do not seal the object — leave `additionalProperti
 absent (or `true`), never `false`. Enumerating properties gives code generators
 and LLMs the true shape; leaving the object open keeps a later field addition
 additive and non-breaking, and such additions still pass runtime validation.
-(Empirically confirmed against the pinned validator: an object with an
+(Confirmed against the pinned validator via a probe — an object with an
 un-declared extra member validates against an open schema and fails against
-`additionalProperties: false`.) If a schema composed with `allOf` must ever be
+`additionalProperties: false`; a permanent fixture test lands with the
+implementation.) If a schema composed with `allOf` must ever be
 closed, close it with `unevaluatedProperties: false` at the composition point,
 never with `additionalProperties: false` on the base — the latter cannot see
 into `allOf` branches and would reject a child's own declared fields.
@@ -100,9 +102,10 @@ contract, classified per finding as: spec-stale (server is right, fix the spec),
 spec-incomplete (server is right, enrich the spec), server-gap (the spec states
 intended behaviour the server never implemented, fix the server), or
 needs-decision (record the decision, then it becomes one of the former). Some
-existing code comments in the entity domain assert that "the server is the source
-of truth"; those originate from an earlier defect-reconciliation effort (issue
-#21) in which the server's behaviour happened to be the intended one, and they
+existing code comments (in the entity handler and the e2e conformance test)
+assert that "the server is the source of truth"; those originate from an earlier
+defect-reconciliation effort (issue #21) in which the server's behaviour happened
+to be the intended one, and they
 are not a general rule — this ADR replaces that framing with the per-finding
 classification above.
 

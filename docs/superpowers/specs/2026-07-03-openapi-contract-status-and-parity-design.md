@@ -99,20 +99,33 @@ the gate, not by sealing. Adding `x-cyoda-status` to an existing operation, and 
 an operation goes live, are non-breaking and pass.
 
 - Wire as a dedicated CI job (mirrors the existing `per-module-hygiene` pattern).
-- Ship a fixture test proving the gate catches a representative breaking edit and passes a
+- Ship one fixture pair proving the gate catches a representative breaking edit and passes a
   representative additive one, so the gate itself is trusted.
+- **Interaction with §7 dead-schema deletion:** this same PR removes unreferenced component
+  schemas, and "removing a field/operation" is a breaking signal. Confirm whether the detector
+  flags removal of a genuinely *unreferenced* component (oasdiff generally does not, since no
+  operation resolves it) — if it does, allow-list the specific dead schemas being deleted, or
+  land the deletion in a separate commit ahead of the gate turning on. Resolve this before the
+  single-commit constraint (§12) so the gate does not flag its own PR.
 
 ## 6. Operation dispositions
 
 | Operation(s) | Disposition | `x-cyoda-status` |
 |---|---|---|
 | `Stream Data` tag (13 ops) | most likely not implemented; undecided | `unimplemented` |
-| `SQL-Schema` tag (9 ops) | committed — Trino / `trino-cyoda` connector | `planned` |
-| IAM/account + OIDC stubs (`accountSubscriptionsGet`, `registerOidcProvider`, `deleteOidcProvider`, `invalidateOidcProvider`, `reactivateOidcProvider`, `listOidcProviders`, `reloadOidcProviders`, `updateOidcProvider`) | stub-implemented, implementation tracked | `planned` |
+| `SQL-Schema` tag (9 ops) | committed — Trino / `trino-cyoda` connector (decision recorded in this effort) | `planned` |
+| `accountSubscriptionsGet` | genuine stub — always `501` (`internal/domain/account/handler.go:87`) | `planned` |
+| OIDC provider ops (`registerOidcProvider`, `deleteOidcProvider`, `invalidateOidcProvider`, `reactivateOidcProvider`, `listOidcProviders`, `reloadOidcProviders`, `updateOidcProvider`) | **status must be verified per op** — dispatched via `s.Account.<Op>` when wired, else `501` (`internal/api/server.go:531+`); the adapters carry real logic, so some may be live | verify then assign — see below |
 | `fetchEntityTransitions` | **live** — routed (mounted outside the generated `ServerInterface`), not a stub | none — add e2e coverage so it is *exercised*, not marked |
 
-`fetchEntityTransitions` moving from `knownUncoveredOps` to real coverage removes the last
-"routing wart" exemption; the marker is reserved strictly for not-live operations.
+**Per-op status verification (required before marking).** The `knownUncoveredOps` comment calls
+the OIDC group "stub-implemented," but the adapters carry real behaviour (e.g. duplicate →
+`400`, inactive → `409`); whether they return `501` or a real `2xx` depends on the e2e server
+wiring (`s.Account != nil`). Before assigning a marker, verify each op's **actual runtime status
+under the e2e config**: an op that returns `2xx` is **live** (cover it, do not mark — else Rule 2
+fails it); an op that returns `501` is `planned`. Do not trust the stale "stub" comment.
+`fetchEntityTransitions` moving to real coverage removes the last "routing wart" exemption; the
+marker is reserved strictly for not-live operations.
 
 ## 7. Dead-schema deletion (minimal, verified)
 
