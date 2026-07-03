@@ -1,6 +1,6 @@
 # 0003. OpenAPI Contract Conformance & Evolution
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-03
 **Supersedes:** 0001 (OpenAPI Server-Spec Conformance Approach)
 

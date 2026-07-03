@@ -1,6 +1,6 @@
 # 0001. OpenAPI Server-Spec Conformance Approach
 
-**Status:** Accepted
+**Status:** Superseded by 0003
 **Date:** 2026-04-29
 
 ## Context
