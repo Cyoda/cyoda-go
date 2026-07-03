@@ -344,9 +344,11 @@ paths:
       tags:
         - User, Account
       summary: Retrieve all subscriptions available for the current user's legal entity.
-      description: Fetch all subscription details associated with the legal entity of
-        the current user.
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go (tracked for implementation).
+        Fetch all subscription details associated with the legal entity of the current user.
       operationId: accountSubscriptionsGet
+      x-cyoda-status: planned
       responses:
         "200":
           description: Collection of all subscriptions for the user's legal entity
@@ -5644,8 +5646,11 @@ paths:
       tags:
         - Stream Data
       summary: Get a stream data configuration by ID
-      description: Retrieves a specific stream data configuration by its UUID.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Retrieves a specific stream data configuration by its UUID.
       operationId: getStreamDataConfig
+      x-cyoda-status: unimplemented
       parameters:
         - name: configId
           in: query
@@ -5673,8 +5678,11 @@ paths:
       tags:
         - Stream Data
       summary: Update an existing stream data configuration
-      description: Updates an existing stream data configuration definition.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Updates an existing stream data configuration definition.
       operationId: updateStreamDataConfig
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data configuration with updated values
         content:
@@ -5701,8 +5709,11 @@ paths:
       tags:
         - Stream Data
       summary: Save a new stream data configuration
-      description: Creates and persists a new stream data configuration definition.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Creates and persists a new stream data configuration definition.
       operationId: saveStreamDataConfig
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data configuration to save
         content:
@@ -5734,8 +5745,11 @@ paths:
       tags:
         - Stream Data
       summary: Delete a stream data configuration
-      description: Deletes a stream data configuration by its UUID.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Deletes a stream data configuration by its UUID.
       operationId: deleteStreamDataConfig
+      x-cyoda-status: unimplemented
       parameters:
         - name: configId
           in: query
@@ -5764,8 +5778,11 @@ paths:
       tags:
         - Stream Data
       summary: List all stream data configurations
-      description: Returns all available stream data configurations.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Returns all available stream data configurations.
       operationId: getAllConfigs
+      x-cyoda-status: unimplemented
       responses:
         "200":
           description: List of all stream data configurations
@@ -5792,8 +5809,11 @@ paths:
       tags:
         - Stream Data
       summary: Delete stream data
-      description: Deletes entities matching the stream data request criteria.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Deletes entities matching the stream data request criteria.
       operationId: delete
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data request defining the entities to delete
         content:
@@ -5825,9 +5845,11 @@ paths:
       tags:
         - Stream Data
       summary: Export all stream data configurations
-      description: Exports all stream data configurations as a container for backup or
-        transfer.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Exports all stream data configurations as a container for backup or transfer.
       operationId: exportAll_1
+      x-cyoda-status: unimplemented
       responses:
         "200":
           description: Container with all stream data configurations
@@ -5852,9 +5874,11 @@ paths:
       tags:
         - Stream Data
       summary: Export stream data configurations by entity class
-      description: Exports all stream data configurations associated with a specific
-        entity class.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Exports all stream data configurations associated with a specific entity class.
       operationId: exportAll
+      x-cyoda-status: unimplemented
       parameters:
         - name: entityClass
           in: query
@@ -5883,8 +5907,11 @@ paths:
       tags:
         - Stream Data
       summary: Export stream data configurations by IDs
-      description: Exports specific stream data configurations identified by their UUIDs.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Exports specific stream data configurations identified by their UUIDs.
       operationId: exportByIds
+      x-cyoda-status: unimplemented
       parameters:
         - name: includeIds
           in: query
@@ -5919,9 +5946,11 @@ paths:
       tags:
         - Stream Data
       summary: Fetch stream data
-      description: Retrieves paginated stream data based on the provided request
-        definition, including conditions, columns, and pagination parameters.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Retrieves paginated stream data based on the provided request definition, including conditions, columns, and pagination parameters.
       operationId: getStreamData
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data request containing definition, pagination, and
           point-in-time parameters
@@ -5954,9 +5983,11 @@ paths:
       tags:
         - Stream Data
       summary: Import stream data configurations
-      description: Imports stream data configurations from a container. Can optionally
-        fail if configurations already exist.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Imports stream data configurations from a container. Can optionally fail if configurations already exist.
       operationId: importContainer
+      x-cyoda-status: unimplemented
       parameters:
         - name: failOnExists
           in: query
@@ -5989,9 +6020,11 @@ paths:
       tags:
         - Stream Data
       summary: List index configurations for an entity class
-      description: Returns all index configurations available for the specified entity
-        class.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Returns all index configurations available for the specified entity class.
       operationId: getIndexs
+      x-cyoda-status: unimplemented
       parameters:
         - name: entityClass
           in: query
@@ -6022,9 +6055,11 @@ paths:
       tags:
         - Stream Data
       summary: Get query execution plan
-      description: Returns the original and optimized query execution plan for the
-        given entity class, condition, and alias definitions.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Returns the original and optimized query execution plan for the given entity class, condition, and alias definitions.
       operationId: getQueryPlan
+      x-cyoda-status: unimplemented
       requestBody:
         description: Query plan request containing entity class, condition, and alias
           definitions
@@ -6649,8 +6684,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Get schema by name
-      description: Retrieves a schema configuration using its name
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Retrieves a schema configuration using its name
       operationId: getSchemaByName
+      x-cyoda-status: planned
       parameters:
         - name: schemaName
           in: query
@@ -6804,8 +6842,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Save schema
-      description: Saves a new or updates an existing schema configuration
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Saves a new or updates an existing schema configuration
       operationId: saveSchema
+      x-cyoda-status: planned
       requestBody:
         content:
           application/json:
@@ -6961,8 +7002,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Delete schema by name
-      description: Deletes an existing schema configuration using its name
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Deletes an existing schema configuration using its name
       operationId: deleteSchemaByName
+      x-cyoda-status: planned
       parameters:
         - name: schemaName
           in: query
@@ -6995,8 +7039,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Generate SQL tables from an entity model
-      description: Generates table configurations based on entity model ID
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Generates table configurations based on entity model ID
       operationId: genTables
+      x-cyoda-status: planned
       parameters:
         - name: entityModelId
           in: path
@@ -7137,8 +7184,11 @@ paths:
       tags:
         - SQL-Schema
       summary: List all schemas
-      description: Retrieves all available schema configurations
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Retrieves all available schema configurations
       operationId: getSchemas
+      x-cyoda-status: planned
       responses:
         "200":
           description: List of schemas retrieved successfully
@@ -7273,9 +7323,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Create default schema
-      description: Creates a new schema configuration that includes all available
-        entity models with their complete field structures
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Creates a new schema configuration that includes all available entity models with their complete field structures
       operationId: putSchema
+      x-cyoda-status: planned
       parameters:
         - name: schemaName
           in: path
@@ -7431,10 +7483,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Synchronize given SQL table configurations with the current entity model
-      description: Synchronizes given table configurations with the current entity
-        model structure, preserving custom settings while incorporating any
-        model changes
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Synchronizes given table configurations with the current entity model structure, preserving custom settings while incorporating any model changes
       operationId: updateTables
+      x-cyoda-status: planned
       parameters:
         - name: entityModelId
           in: path
@@ -7703,8 +7756,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Get schema by ID
-      description: Retrieves a schema configuration using its UUID
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Retrieves a schema configuration using its UUID
       operationId: getSchema
+      x-cyoda-status: planned
       parameters:
         - name: schemaId
           in: path
@@ -7857,8 +7913,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Delete schema by ID
-      description: Deletes a schema configuration using its UUID
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Deletes a schema configuration using its UUID
       operationId: deleteSchema
+      x-cyoda-status: planned
       parameters:
         - name: schemaId
           in: path
