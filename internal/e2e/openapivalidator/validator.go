@@ -1,6 +1,7 @@
 package openapivalidator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -129,6 +130,19 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 	opId := route.Operation.OperationID
 	defaultCollector.recordExercised(opId)
 	defaultCollector.recordStatus(opId, resp.StatusCode)
+
+	// Error-code coverage (Pillar A): for error responses, record the
+	// (operationId, status, errorCode) triple from the ProblemDetail body
+	// (properties.errorCode). Buffer the body so ValidateResponse still sees
+	// it. Only >=400 — success and streaming bodies carry no errorCode.
+	if resp.StatusCode >= 400 && resp.Body != nil {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if code := extractErrorCode(bodyBytes); code != "" {
+			defaultCollector.recordErrorCode(opId, resp.StatusCode, code)
+		}
+	}
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.

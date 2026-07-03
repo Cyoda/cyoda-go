@@ -17,10 +17,11 @@ type Mismatch struct {
 // collector accumulates Mismatch entries and tracks which operationIds
 // were exercised during the run. Safe for concurrent use.
 type collector struct {
-	mu         sync.Mutex
-	mismatches []Mismatch
-	exercised  map[string]struct{}
-	saw2xx     map[string]struct{}
+	mu           sync.Mutex
+	mismatches   []Mismatch
+	exercised    map[string]struct{}
+	saw2xx       map[string]struct{}
+	errorTriples map[ErrorTriple]struct{}
 }
 
 // the package-level singleton used by the middleware. Tests may construct
@@ -29,8 +30,9 @@ var defaultCollector = newCollector()
 
 func newCollector() *collector {
 	return &collector{
-		exercised: make(map[string]struct{}),
-		saw2xx:    make(map[string]struct{}),
+		exercised:    make(map[string]struct{}),
+		saw2xx:       make(map[string]struct{}),
+		errorTriples: make(map[ErrorTriple]struct{}),
 	}
 }
 
