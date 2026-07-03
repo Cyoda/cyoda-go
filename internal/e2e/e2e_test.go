@@ -35,8 +35,22 @@ var (
 	dbPool          *pgxpool.Pool                     // direct DB access for verification queries
 	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
-	testApp         *app.App // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
+	markedOps       = map[string]string{} // operationId → x-cyoda-status value
+	testApp         *app.App              // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
 )
+
+// readCyodaStatus returns the x-cyoda-status marker on an operation, or "".
+func readCyodaStatus(op *openapi3.Operation) string {
+	if op == nil || op.Extensions == nil {
+		return ""
+	}
+	if v, ok := op.Extensions["x-cyoda-status"]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
 
 func TestMain(m *testing.M) {
 	// flag.Parse must be called before testing.Short() is valid.
@@ -175,6 +189,9 @@ func TestMain(m *testing.M) {
 		for _, op := range item.Operations() {
 			if op.OperationID == "" {
 				continue
+			}
+			if s := readCyodaStatus(op); s != "" {
+				markedOps[op.OperationID] = s
 			}
 			// Skip ops whose tags are in the exclude list.
 			skip := false
