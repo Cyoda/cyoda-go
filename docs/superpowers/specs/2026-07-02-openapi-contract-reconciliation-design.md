@@ -4,8 +4,11 @@
 **Status:** design / awaiting review
 **Reference evidence:** `docs/analysis/openapi/README.md` (full 87-op audit, six-pattern
 taxonomy, per-finding reconciliation direction).
-**Builds on:** ADR 0001 (`docs/adr/0001-openapi-server-spec-conformance.md`), the
-`internal/e2e/openapivalidator` package, and the #21 reconciliation seed.
+**Builds on:** ADR 0003 (`docs/adr/0003-openapi-contract-conformance-and-evolution.md`,
+which supersedes 0001 and codifies the reconciliation-direction and typed-but-open policies
+applied here), the `internal/e2e/openapivalidator` package, the schema-strictness research
+(`docs/analysis/openapi/schema-strictness-research.md`), and the earlier defect-reconciliation
+seed (issue #21).
 
 ---
 
@@ -28,35 +31,20 @@ loose `additionalProperties:true` bags let real drift through; (b) it validates 
 *shapes* but not *error-code coverage* (documented-but-fictional codes, emitted-but-
 undocumented codes). This effort closes both, and reconciles the entity group under them.
 
-## 2. Reconciliation policy (refines the #21 "server is source of truth" framing)
+## 2. Reconciliation policy (per ADR 0003)
 
-The #21 seed carries "server is source of truth" language (`entity_conformance_test.go:6`,
-`internal/domain/entity/handler.go:601` "Server is source of truth per design §3"). That
-was correct for the four #21 defects, where the server's behaviour was the intended one and
-the spec was stale. But it is **not** a universal reconciliation rule, and stating it as one
-contradicts ADR 0001's "spec is canonical."
+ADR 0003 (Decision 7) governs: the authored `api/openapi.yaml` is the canonical contract and
+source of intent; when spec and server disagree the defect is on whichever side left the
+contract, classified per finding — `spec-stale` (fix spec), `spec-incomplete` (enrich spec),
+`server-gap` (fix server), `needs-decision` (record, then reclassify). This spec applies that
+policy to the entity group.
 
-**Refined policy (this effort):** the *authored spec is the canonical contract and the
-source of intent*; when spec and server disagree it is a **defect on whichever side left
-the contract**, decided per finding:
-
-- `spec-stale` — server evolved correctly; fix the spec.
-- `spec-incomplete` — server is right and intended; enrich the spec.
-- `server-gap` — the spec expresses intended contract the server never implemented; fix the
-  **server**.
-- `needs-decision` — genuine ambiguity; record the decision, then it becomes one of the
-  above.
-
-~⅓ of audit findings are `server-gap`/`needs-decision`, so a mechanical "sync spec→server"
-would *destroy* contract intent (it would turn the `deleteEntities` data-loss bug into a
-documented feature). This policy refinement is itself recorded (Gate 6): the stale
-"server is source of truth" comments in the seed are corrected to point here as part of the
-entity slice.
-
-**Relationship to ADR 0001:** this effort stays within ADR 0001 (runtime validation, no
-strict-typing migration). It does not supersede it. It *does* move us toward one of ADR
-0001's stated reconsideration triggers (Cloud parity as a first-class argument); if that
-trigger fires later it gets its own superseding ADR — out of scope here.
+A mechanical "sync spec→server" is wrong here: ~⅓ of audit findings are
+`server-gap`/`needs-decision` (e.g. syncing would turn the `deleteEntities` data-loss bug into
+a documented feature). Some entity-domain code comments assert "the server is the source of
+truth" (`entity_conformance_test.go:6`, `internal/domain/entity/handler.go:601`) — inherited
+from the issue #21 defect-reconciliation, where the server happened to be the intended one;
+this slice corrects those comments to the per-finding policy above (Gate 6).
 
 ## 3. Goals / Non-goals
 
@@ -102,11 +90,15 @@ exactly that delta plus schema tightening:
   - **declared** — no in-scope E2E produced a `(status, errorCode)` absent from the matrix
     (catches *missing* codes, P5).
 
-### 4.2 Schema tightening (what makes the existing validator bite)
-The validator passes anything against `additionalProperties:true`. For each entity-group
-finding we tighten the relevant schema (add `properties`, set `additionalProperties:false`,
-correct types) so the *already-present* enforce-mode validator now fails on regression. No
-new validation engine — we feed the existing one a precise schema.
+### 4.2 Schema tightening — typed-but-open (per ADR 0003)
+The validator passes anything against an `additionalProperties:true` bag. For each
+entity-group finding we make the schema precise **without sealing it**: enumerate every
+property the server emits (correct types, required vs optional), but leave
+`additionalProperties` open (absent/`true`), never `false`. The enforce-mode validator then
+fails when a documented field is missing or mistyped, while a future additive field still
+validates — the binding is on the known shape, not on rejecting extras. A composed (`allOf`)
+schema that must ever close uses `unevaluatedProperties:false`, never `additionalProperties:false`
+on the base. No new validation engine — we feed the existing one a precise-but-open schema.
 
 ### 4.3 Seed cleanup (Gate 6)
 Once `meta`/envelope are tightened under enforce mode, most hand-parsed key assertions in
@@ -128,9 +120,13 @@ For each finding: **classify direction** (§2) → **fix the losing side** via r
 (Gate 1) → **lock it** (tighten schema and/or add the matrix entry) → **record the contract
 decision** in `docs/cloud-parity/` (Gate 7).
 
-**Tightening policy:** tightened response objects use declared `properties` +
-`additionalProperties:false`. Consequence: adding a new field later fails CI until the spec
-is updated. In a spec-first world that is the intended binding.
+**Tightening policy (typed-but-open, per ADR 0003):** enumerate every known property
+(correct types, required vs optional) but do **not** seal — `additionalProperties` stays open,
+never `false`. The validator binds the known shape (missing/mistyped documented fields fail)
+while additive fields stay non-breaking. Genuinely open values (entity `data`, error extension
+bags) stay open by design. Discipline against breaking edits (sealing, field removal, type
+narrowing) is an **additive-only CI gate** on `api/openapi.yaml` (ADR 0003, Decision 6), not
+schema sealing.
 
 **Canonical-schema reconciliation:** several entity wire shapes have a *canonical* JSON
 schema under `docs/cyoda/schema/common/` (embedded, consumed by cyoda-docs/Cloud) **and** a
@@ -143,7 +139,7 @@ commercial plugin's import surface).
 
 | # | Finding | Direction | Fix | Lock |
 |---|---|---|---|---|
-| E1 | `Envelope.meta` opaque bag + `previousTransition` fossil (`getOneEntity`, `getAllEntities`) | spec-incomplete + spec-stale | Add an `EntityMeta` OpenAPI schema **mirroring the canonical `docs/cyoda/schema/common/EntityMetadata.json`**: required `{id, state, creationDate, lastUpdateTime}`; **optional** `{modelKey, transactionId, transitionForLatestSave, pointInTime}`; `additionalProperties:false`; delete `previousTransition`; fix examples. Reconcile OpenAPI ↔ canonical JSON ↔ `e2e/parity/client/types.go` (S5). | enforce-mode response validation on both ops |
+| E1 | `Envelope.meta` opaque bag + `previousTransition` fossil (`getOneEntity`, `getAllEntities`) | spec-incomplete + spec-stale | Add an `EntityMeta` OpenAPI schema **mirroring the canonical `docs/cyoda/schema/common/EntityMetadata.json`**: required `{id, state, creationDate, lastUpdateTime}`; **optional** `{modelKey, transactionId, transitionForLatestSave, pointInTime}`; **typed-but-open** (`additionalProperties` absent, never `false`); delete `previousTransition`; fix examples. Reconcile OpenAPI ↔ canonical JSON ↔ `e2e/parity/client/types.go` (S5). | enforce-mode response validation on both ops |
 | E2 | `deleteEntities` ignores condition body + `pointInTime` + `verbose`; wipes whole model | server-gap (data loss) | **Implement** the documented contract (§6.1) | e2e (subset survives) + parity (inside tx) + matrix |
 | E3 | `getAllEntities` ignores `pointInTime` | server-gap | Plumb `pointInTime` into the list read via **`GetAllAsAt`** (the model-scoped list-PIT primitive in all 3 backends, already used by search at `internal/domain/search/service.go:161`) — **not** `getOneEntity`'s single-entity `GetAsAt`. Also populate `meta.pointInTime` (E1). | as-at e2e + parity |
 | E4 | `createCollection` / `create` request body `type:object` erases real shape | spec-incomplete | Tighten request schemas to the array-of-`{model{name,version},payload}` shape; document the batch/array `create` form. Reconcile `e2e/parity/client/types.go` (S5). | request validation |
@@ -227,7 +223,7 @@ covered** (no false waivers; the gRPC meta and delete surfaces both exist).
 | Scenario | Unit | Running-backend e2e | Cross-backend parity | gRPC |
 |---|---|---|---|---|
 | Error-code matrix (producible + declared), entity scope | ✓ (collector logic) | ✓ (aggregate) | — | — |
-| E1 meta shape (mirror canonical; `additionalProperties:false`; no `previousTransition`) | — | ✓ | ✓ (backend-agnostic) | ✓ — assert `buildEntityMeta` output (`internal/grpc/search.go:377,577`) matches the tightened shape |
+| E1 meta shape (mirror canonical; typed-but-open — no `additionalProperties:false`; no `previousTransition`) | — | ✓ | ✓ (backend-agnostic) | ✓ — assert `buildEntityMeta` output (`internal/grpc/search.go:377,577`) matches the tightened shape |
 | E2 conditional delete (matching subset only) | condition→ids selection ✓ | ✓ | ✓ (inside tx — §6.1) | per decision D2 |
 | E2 `pointInTime` + `verbose` (ids returned) | — | ✓ | ✓ | per D2 |
 | E3 `getAllEntities` as-at (`GetAllAsAt`) | — | ✓ | ✓ | — |

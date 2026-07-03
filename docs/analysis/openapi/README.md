@@ -106,6 +106,16 @@ The spec declares parameters/bodies expressing real intent that the handler neve
 - Message `transactionTimeoutMillis` / `transactionSize` are inert.
 
 ### P3 — Loose `additionalProperties:true` response bags hiding real fields  (`spec-incomplete`)
+
+> **Update 2026-07-03 (fix policy — see ADR 0003 + `schema-strictness-research.md`):** the fix
+> is **typed-but-open**, NOT `additionalProperties: false`. Enumerate the known properties so
+> consumers get the shape, but leave the object open so additive fields stay non-breaking.
+> Two consequences for this list: (1) genuinely-open values — entity `data`, `JsonNode`, and
+> RFC 9457 `ProblemDetail.properties` extension bags — are **correct as open** and come *off*
+> the tightenable set; (2) the state-machine audit-event union is tightened as a discriminated
+> `oneOf` + unknown/default variant + open-enum discriminator, not a sealed object. "Tighten"
+> below means "enumerate + keep open," never "seal."
+
 The class that triggered this audit.
 - **`Envelope.meta`** — documented as an opaque object; actually carries
   `modelKey{name,version}`, `state`, `creationDate`, `lastUpdateTime`, `transactionId`,
