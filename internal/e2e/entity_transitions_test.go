@@ -58,9 +58,20 @@ func TestFetchEntityTransitions(t *testing.T) {
 		t.Fatalf("fetchEntityTransitions: expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
-	// Response must be a JSON array (TransitionNameList).
-	var result []any
+	// Response is a TransitionNameList (JSON array of strings). The entity is in
+	// CREATED after the automated init; the available manual transitions are
+	// exactly "approve" and "reject".
+	var result []string
 	if err := json.Unmarshal([]byte(body), &result); err != nil {
-		t.Fatalf("fetchEntityTransitions: expected JSON array; parse error: %v; body: %s", err, body)
+		t.Fatalf("fetchEntityTransitions: expected JSON array of strings; parse error: %v; body: %s", err, body)
+	}
+	got := map[string]bool{}
+	for _, tr := range result {
+		got[tr] = true
+	}
+	for _, want := range []string{"approve", "reject"} {
+		if !got[want] {
+			t.Errorf("fetchEntityTransitions: expected transition %q in returned list %v", want, result)
+		}
 	}
 }

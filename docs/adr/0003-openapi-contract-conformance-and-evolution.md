@@ -91,9 +91,14 @@ Error schemas therefore enumerate their known members but are not sealed.
 
 **6. Enforce additive-only evolution with a CI gate.** A breaking-change
 detector (for example, `oasdiff`) runs against `api/openapi.yaml` as a merge
-gate and flags breaking edits — sealing a previously-open object, removing a
-field, narrowing a type, or adding a required field. Precision is thus maintained
-by tooling that catches regressions, rather than by sealing schemas.
+gate and flags client-breaking edits — narrowing a type, adding a required
+request field or parameter, removing an operation or parameter. Note that
+`oasdiff` does NOT flag sealing a response schema (`additionalProperties:
+false`) as breaking, because a stricter response is not client-breaking; the
+"never seal" rule (Decision 2) is therefore enforced by a separate direct check
+that fails if `api/openapi.yaml` contains `additionalProperties: false`.
+Precision is thus maintained by tooling that catches regressions, rather than by
+sealing schemas.
 
 **7. Reconcile drift by direction, per finding.** The authored `api/openapi.yaml`
 is the canonical contract and the source of intent. When the spec and the server

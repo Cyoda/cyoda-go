@@ -11,7 +11,9 @@ paths:
           in: path
           required: true
           schema:
-            type: string
+            # BREAKING vs base.yaml: request path-parameter type narrowed
+            # string -> integer. oasdiff classifies this as a breaking change.
+            type: integer
       responses:
         "200":
           description: OK
@@ -19,7 +21,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: false
                 properties:
                   id:
                     type: string

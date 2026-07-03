@@ -11,9 +11,12 @@ name: openapi-breaking-change
 #   schemas they transitively reference.  A component that no operation resolves
 #   is invisible to the breaking-change analyser, so removing it does NOT
 #   trigger a failure here.  The expected additive-vs-breaking classification
-#   is documented by the local premise test in internal/oasdiffcheck/
-#   (additive_is_not_breaking / sealing cases); that test is a local check, not
-#   run by this job — this workflow invokes the oasdiff binary directly.
+#   is checked by the premise test in internal/oasdiffcheck/
+#   (additive_is_not_breaking / request_param_type_change_is_breaking), run by
+#   the "Verify oasdiff classification premise" step below.
+#   Note: oasdiff does NOT classify sealing a response schema
+#   (additionalProperties: false) as breaking; the never-seal rule is enforced
+#   separately by TestSpecHasNoSealedSchemas in the normal go-test suite.
 #   If a future deletion touches a *referenced* component, the workflow will
 #   catch it correctly — no --exclude-elements override is needed for the
 #   current or anticipated schema cleanup.
@@ -22,6 +25,10 @@ on:
   pull_request:
     paths:
       - "api/openapi.yaml"
+      # Re-run when the gate itself changes (e.g. an oasdiff version bump) so the
+      # premise test re-validates the pinned oasdiff's classification behaviour.
+      - ".github/workflows/openapi-breaking-change.yml"
+      - "internal/oasdiffcheck/**"
 
 jobs:
   oasdiff:
@@ -39,6 +46,14 @@ jobs:
         # Pinned (not @latest): oasdiff is a merge gate; an unpinned release could
         # shift breaking-change classification. Bump intentionally.
         run: go install github.com/oasdiff/oasdiff@v1.21.0
+
+      - name: Verify oasdiff classification premise
+        # oasdiff is now on PATH, so the premise test actually RUNS (it t.Skips
+        # when the binary is absent). It guards that the pinned oasdiff still
+        # treats an additive change as non-breaking and a client-breaking change
+        # (a request-parameter type narrowing) as breaking — the assumption the
+        # gate rests on.
+        run: go test ./internal/oasdiffcheck/ -count=1 -v
 
       - name: Breaking-change check (base..PR)
         run: |
