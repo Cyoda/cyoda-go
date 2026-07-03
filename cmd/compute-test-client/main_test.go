@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
 // TestCatalog_NoopReturnsEntityUnchanged verifies the noop processor
 // dispatches without modifying the entity.
 func TestCatalog_NoopReturnsEntityUnchanged(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("noop")
 	if !ok {
 		t.Fatal("noop processor not registered")
@@ -29,7 +30,7 @@ func TestCatalog_NoopReturnsEntityUnchanged(t *testing.T) {
 
 // TestCatalog_AlwaysTrueReturnsTrue verifies the always-true criterion.
 func TestCatalog_AlwaysTrueReturnsTrue(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	crit, ok := cat.criterion("always-true")
 	if !ok {
 		t.Fatal("always-true criterion not registered")
@@ -45,7 +46,7 @@ func TestCatalog_AlwaysTrueReturnsTrue(t *testing.T) {
 
 // TestCatalog_AlwaysFalseReturnsFalse verifies the always-false criterion.
 func TestCatalog_AlwaysFalseReturnsFalse(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	crit, ok := cat.criterion("always-false")
 	if !ok {
 		t.Fatal("always-false criterion not registered")
@@ -61,7 +62,7 @@ func TestCatalog_AlwaysFalseReturnsFalse(t *testing.T) {
 
 // TestCatalog_TagWithFoo verifies tag-with-foo adds tag:"foo" to entity data.
 func TestCatalog_TagWithFoo(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("tag-with-foo")
 	if !ok {
 		t.Fatal("tag-with-foo processor not registered")
@@ -85,7 +86,7 @@ func TestCatalog_TagWithFoo(t *testing.T) {
 
 // TestCatalog_BumpAmount verifies bump-amount increments data.amount by 1.
 func TestCatalog_BumpAmount(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("bump-amount")
 	if !ok {
 		t.Fatal("bump-amount processor not registered")
@@ -109,7 +110,7 @@ func TestCatalog_BumpAmount(t *testing.T) {
 
 // TestCatalog_InjectError verifies inject-error returns a non-nil error.
 func TestCatalog_InjectError(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("inject-error")
 	if !ok {
 		t.Fatal("inject-error processor not registered")
@@ -122,7 +123,7 @@ func TestCatalog_InjectError(t *testing.T) {
 
 // TestCatalog_SlowConfigurableZeroMS verifies slow-configurable with 0ms returns immediately.
 func TestCatalog_SlowConfigurableZeroMS(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("slow-configurable")
 	if !ok {
 		t.Fatal("slow-configurable processor not registered")
@@ -139,7 +140,7 @@ func TestCatalog_SlowConfigurableZeroMS(t *testing.T) {
 
 // TestCatalog_SetField verifies set-field sets the specified field.
 func TestCatalog_SetField(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("set-field")
 	if !ok {
 		t.Fatal("set-field processor not registered")
@@ -161,7 +162,7 @@ func TestCatalog_SetField(t *testing.T) {
 
 // TestCatalog_AmountGt100 verifies amount-gt-100 returns true for 200 and false for 50.
 func TestCatalog_AmountGt100(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	crit, ok := cat.criterion("amount-gt-100")
 	if !ok {
 		t.Fatal("amount-gt-100 criterion not registered")
@@ -186,7 +187,7 @@ func TestCatalog_AmountGt100(t *testing.T) {
 
 // TestCatalog_FieldEquals verifies field-equals returns true for matching and false for non-matching.
 func TestCatalog_FieldEquals(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	crit, ok := cat.criterion("field-equals")
 	if !ok {
 		t.Fatal("field-equals criterion not registered")
@@ -213,7 +214,7 @@ func TestCatalog_FieldEquals(t *testing.T) {
 // TestCatalog_EchoContextToField verifies the pass-through Context (delivered
 // as a JSON-string in parameters) is recorded into _context.
 func TestCatalog_EchoContextToField(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	proc, ok := cat.processor("echo-context-to-field")
 	if !ok {
 		t.Fatal("echo-context-to-field processor not registered")
@@ -251,10 +252,30 @@ func TestCatalog_EchoContextToField(t *testing.T) {
 	}
 }
 
+// TestCatalog_CallbackProcessorFailsWhenNoCB verifies that a cb-* callback
+// processor returns the "callback client unavailable" error when the catalog
+// is constructed with a nil HTTP callback client.
+func TestCatalog_CallbackProcessorFailsWhenNoCB(t *testing.T) {
+	cat := newCatalog(nil, nil)
+	proc, ok := cat.callbackProcessor("cb-create-secondary")
+	if !ok {
+		t.Fatal("cb-create-secondary callback processor not registered")
+	}
+	entity := &Entity{ID: "ent-cb", Data: []byte(`{}`)}
+	_, err := proc(context.Background(), entity, cbConfig{}, "", nil)
+	if err == nil {
+		t.Fatal("expected error for nil callback client, got nil")
+	}
+	const want = "callback client unavailable"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err.Error(), want)
+	}
+}
+
 // TestCatalog_ContextEquals verifies the context-equals criterion matches only
 // when the pass-through Context equals the literal "match".
 func TestCatalog_ContextEquals(t *testing.T) {
-	cat := newCatalog()
+	cat := newCatalog(nil, nil)
 	crit, ok := cat.criterion("context-equals")
 	if !ok {
 		t.Fatal("context-equals criterion not registered")

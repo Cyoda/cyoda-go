@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -21,7 +22,11 @@ const TxTokenHeader = "X-Tx-Token"
 // node based on the transaction token. Requests without a token, or with a
 // token targeting the local node, are served locally. Requests targeting a
 // remote node are reverse-proxied transparently.
-func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, proxyTimeout time.Duration) func(http.Handler) http.Handler {
+//
+// allowLoopback gates the peer-address SSRF guard on the proxy path, matching
+// the same flag on the dispatch forwarder. Set true only in test fixtures that
+// run cluster nodes on 127.0.0.1; keep false in production.
+func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, proxyTimeout time.Duration, allowLoopback bool) func(http.Handler) http.Handler {
 	// Shared transport reused across all proxied requests.
 	transport := &http.Transport{
 		ResponseHeaderTimeout: proxyTimeout,
@@ -72,7 +77,7 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 				return
 			}
 
-			proxyTo(w, r, addr, transport)
+			proxyTo(w, r, addr, transport, allowLoopback)
 		})
 	}
 }
@@ -81,26 +86,44 @@ func handleTokenError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, token.ErrTokenExpired):
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
+			http.StatusGone,
 			common.ErrCodeTransactionExpired,
 			"transaction token has expired",
 		))
 	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
-			common.ErrCodeBadRequest,
+			http.StatusUnauthorized,
+			common.ErrCodeUnauthorized,
 			"invalid transaction token",
 		))
 	default:
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
-			common.ErrCodeBadRequest,
+			http.StatusUnauthorized,
+			common.ErrCodeUnauthorized,
 			"transaction token verification failed",
 		))
 	}
 }
 
-func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http.RoundTripper) {
+func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http.RoundTripper, allowLoopback bool) {
+	// SSRF guard: validate the resolved peer address before building the reverse
+	// proxy. Matches the same guard on the dispatch forwarder. On failure the
+	// request is rejected with 503 TRANSACTION_NODE_UNAVAILABLE — the node
+	// address is untrusted (same semantics as a dead node from the client's view).
+	if err := peeraddr.Validate(addr, allowLoopback); err != nil {
+		slog.Warn("proxy target address rejected by SSRF guard",
+			"pkg", "proxy",
+			"addr", addr,
+			"error", err,
+		)
+		common.WriteError(w, r, common.Operational(
+			http.StatusServiceUnavailable,
+			common.ErrCodeTransactionNodeUnavailable,
+			"transaction node address is not reachable",
+		))
+		return
+	}
+
 	if !strings.Contains(addr, "://") {
 		addr = "http://" + addr
 	}

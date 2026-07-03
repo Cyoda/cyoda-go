@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,9 +42,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 type App struct {
@@ -54,6 +57,7 @@ type App struct {
 	authzService       contract.AuthorizationService
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
+	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
 	searchService      *search.SearchService
 	auditService       contract.AuditService
 	clusterService     contract.ClusterService
@@ -61,6 +65,7 @@ type App struct {
 	grpcServer         *internalgrpc.Server
 	handler            http.Handler
 	tokenSigner        *token.Signer
+	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	txLifecycle        *lifecycle.Manager
 	stopReaper         chan struct{}
@@ -109,15 +114,28 @@ func New(cfg Config) *App {
 	// registry later in this function. In single-node mode gossipReg stays
 	// nil and plugins receive no broadcaster.
 	var gossipReg *registry.Gossip
+	// Transaction routing token signer. Always present: in cluster mode it uses
+	// the configured HMAC secret so tokens verify across nodes; in single-node
+	// mode it uses a per-process ephemeral secret (tokens only round-trip
+	// through this process, and a tx never outlives the process).
+	a.selfNodeID = "local"
+	secret := cfg.Cluster.HMACSecret
 	if cfg.Cluster.Enabled {
 		validateClusterConfig(cfg.Cluster)
-		var signerErr error
-		a.tokenSigner, signerErr = token.NewSigner(cfg.Cluster.HMACSecret)
-		if signerErr != nil {
-			slog.Error("failed to create token signer", "pkg", "cluster", "err", signerErr)
+		a.selfNodeID = cfg.Cluster.NodeID
+		gossipReg = mustNewGossip(cfg.Cluster)
+	} else {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			slog.Error("failed to generate ephemeral token secret", "pkg", "cluster", "err", err)
 			os.Exit(1)
 		}
-		gossipReg = mustNewGossip(cfg.Cluster)
+	}
+	var signerErr error
+	a.tokenSigner, signerErr = token.NewSigner(secret)
+	if signerErr != nil {
+		slog.Error("failed to create token signer", "pkg", "cluster", "err", signerErr)
+		os.Exit(1)
 	}
 
 	var factoryOpts []spi.FactoryOption
@@ -368,7 +386,7 @@ func New(cfg Config) *App {
 	a.authzService = mockiam.NewAuthorizationService()
 
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, common.NewDefaultUUIDGenerator())
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, common.NewDefaultUUIDGenerator(), a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",
@@ -475,13 +493,21 @@ func New(cfg Config) *App {
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
 	} else if cfg.Cluster.Enabled {
+		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout)
+		if cfg.Cluster.DispatchAllowLoopback {
+			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
+			// Never set in production (SSRF guard stays active by default).
+			forwarder = forwarder.AllowLoopbackForTesting()
+		}
 		extProc = clusterdispatch.NewClusterDispatcher(
 			localDispatcher,
 			a.nodeRegistry,
 			cfg.Cluster.NodeID,
 			clusterdispatch.NewRandomSelector(),
-			clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout),
+			forwarder,
 			cfg.Cluster.DispatchWaitTimeout,
+			a.tokenSigner,
+			cfg.Cluster.TxTokenTTL,
 		)
 	} else {
 		extProc = localDispatcher
@@ -505,7 +531,8 @@ func New(cfg Config) *App {
 	}
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine)
+	a.txGate = txgate.New()
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
 	modelHandler := model.New(a.storeFactory)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
@@ -573,9 +600,11 @@ func New(cfg Config) *App {
 	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
 	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleSetTraceSampler)))
 
-	// Entity transition routes (with auth, outside generated API mux)
-	mux.Handle("GET /entity/{entityId}/transitions", authMW(http.HandlerFunc(entityHandler.HandleGetTransitions)))
-	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(http.HandlerFunc(entityHandler.HandleFetchTransitions)))
+	// Entity transition routes (with auth, outside generated API mux).
+	// TxJoin is nested inside authMW so UserContext is available for tenant checks.
+	txJoinMW := httpmw.TxJoin(a.tokenSigner, a.transactionManager)
+	mux.Handle("GET /entity/{entityId}/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleGetTransitions))))
+	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
@@ -605,7 +634,7 @@ func New(cfg Config) *App {
 		return entityStore, ref, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
-	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(groupedStatsHandler))
+	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
 
 	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths.
@@ -614,7 +643,7 @@ func New(cfg Config) *App {
 		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}
 	mux.Handle("/", middleware.Recovery(healthFlag)(
-		middleware.Auth(a.authService)(apiHandler),
+		middleware.Auth(a.authService)(txJoinMW(apiHandler)),
 	))
 
 	// Context path — wrap all routes under configurable prefix
@@ -649,7 +678,7 @@ func New(cfg Config) *App {
 	// The proxy forwards the original request including auth headers to the
 	// target node, where auth is applied locally.
 	if cfg.Cluster.Enabled {
-		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout)(a.handler)
+		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
 	}
 
 	// CORS middleware — outermost wrapper. Sits outside cluster-routing
@@ -661,7 +690,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, cfg.OTelEnabled)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback)
 
 	return a
 }
@@ -882,6 +911,7 @@ func mustNewGossip(c cluster.Config) *registry.Gossip {
 	g, err := registry.NewGossip(registry.GossipConfig{
 		NodeID:          c.NodeID,
 		NodeAddr:        c.NodeAddr,
+		GRPCNodeAddr:    c.GRPCNodeAddr,
 		BindAddr:        gossipHost,
 		BindPort:        gossipPort,
 		Seeds:           c.SeedNodes,

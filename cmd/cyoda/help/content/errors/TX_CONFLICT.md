@@ -1,6 +1,6 @@
 ---
 topic: errors.TX_CONFLICT
-title: "TX_CONFLICT — transaction serialization conflict"
+title: "TX_CONFLICT — transaction-level conflict"
 stability: stable
 see_also:
   - errors
@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-TX_CONFLICT — the transaction was aborted because it conflicted with a concurrent transaction at the storage level.
+TX_CONFLICT — the operation was aborted because of a transaction-level conflict.
 
 ## SYNOPSIS
 
@@ -21,9 +21,16 @@ HTTP: `409` `Conflict`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-The underlying storage detected a serialization failure (e.g., PostgreSQL error 40001 or 40P01) and aborted the transaction. Normal occurrence under concurrent write load when using serializable or repeatable-read isolation.
+Reserved. Not currently emitted by any cyoda-go code path.
 
-Retryable. The entire transaction — including any data read inside it — must be restarted from the beginning.
+Storage-layer serialization failures (e.g., PostgreSQL `40001`/`40P01`) surface
+as `CONFLICT` (not `TX_CONFLICT`) in the current implementation. `TX_CONFLICT`
+is reserved to distinguish a future transaction-level conflict signal from the
+existing entity-level `CONFLICT` code — for example, a conflict detected at
+the transaction boundary rather than at an individual entity write.
+
+Retryable. The full transaction — including any reads performed inside it —
+must be restarted from the beginning.
 
 ## SEE ALSO
 

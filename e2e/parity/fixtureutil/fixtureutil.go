@@ -501,6 +501,9 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	computeCmd.Env = append(os.Environ(),
 		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
 		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
+		// HTTP base for feature #287 callback-join processors (callbacks target
+		// the same single node that dispatched them).
+		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=%s", baseURL),
 	)
 	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -700,6 +703,16 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			fmt.Sprintf("CYODA_GOSSIP_ADDR=127.0.0.1:%d", gossipPorts[i]),
 			fmt.Sprintf("CYODA_SEED_NODES=%s", seedNodes),
 			fmt.Sprintf("CYODA_HMAC_SECRET=%s", hmacSecret),
+			// Advertise each node's real gRPC endpoint so cross-node EntityManage
+			// forwarding (tx-token callbacks landing on a non-owner node) resolves
+			// the owner's gRPC port directly instead of deriving it from the
+			// forwarding node's own port — the fixture assigns a distinct gRPC port
+			// per node, so the uniform-deployment derive fallback would misroute.
+			fmt.Sprintf("CYODA_GRPC_NODE_ADDR=127.0.0.1:%d", grpcPorts[i]),
+			// Test-only: every node runs on 127.0.0.1, so the dispatch HTTP
+			// forwarder must be allowed to target loopback peers to exercise
+			// forwarded processor/criteria dispatch (A→B) between nodes.
+			"CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING=true",
 		)
 		cmd.Env = env
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -758,6 +771,10 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	computeCmd.Env = append(os.Environ(),
 		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
 		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
+		// HTTP base for feature #287 callback-join processors. Callbacks target
+		// node 0 (where the compute client connects and dispatch originates);
+		// cross-node callback forwarding is covered separately, not here.
+		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=http://127.0.0.1:%d", httpPorts[0]),
 	)
 	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

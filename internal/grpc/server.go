@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
@@ -37,6 +38,11 @@ type Server struct {
 // NewServer creates a new gRPC server with auth interceptors and the
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
+// localGRPCPort is this node's gRPC listen port; it is used as the fallback
+// when deriving a peer's gRPC address from its HTTP address (advertise-or-derive).
+// allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
+// peer-address SSRF guard on the gRPC forward path (symmetric with the
+// dispatch forwarder and HTTP proxy).
 func NewServer(
 	authSvc contract.AuthenticationService,
 	registry *MemberRegistry,
@@ -44,15 +50,24 @@ func NewServer(
 	entityHandler *entity.Handler,
 	modelHandler *model.Handler,
 	searchService *search.SearchService,
+	tokenSigner *token.Signer,
+	nodeRegistry contract.NodeRegistry,
+	selfNodeID string,
 	otelEnabled bool,
+	localGRPCPort int,
+	allowLoopback bool,
 ) *Server {
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
 		opts = append(opts, googlegrpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
+	// Auth runs first so the tx-route interceptor sees the authenticated
+	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
+	// second, joining the referenced transaction or forwarding to its owner.
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort, allowLoopback)
 	opts = append(opts,
-		googlegrpc.UnaryInterceptor(UnaryAuthInterceptor(authSvc)),
-		googlegrpc.StreamInterceptor(StreamAuthInterceptor(authSvc)),
+		googlegrpc.ChainUnaryInterceptor(UnaryAuthInterceptor(authSvc), txRoute.unary()),
+		googlegrpc.ChainStreamInterceptor(StreamAuthInterceptor(authSvc), txRoute.stream()),
 	)
 	grpcServer := googlegrpc.NewServer(opts...)
 	svc := &CloudEventsServiceImpl{

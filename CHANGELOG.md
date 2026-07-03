@@ -29,6 +29,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (default `16`). New SPI field: `OrderSpec.Kind OrderKind` (enum: `OrderText`, `OrderNumeric`,
   `OrderBool`, `OrderTemporal`); ships with `cyoda-go-spi v0.8.2`.
 
+- **Compute-node callback transaction-join** — processor and criteria-evaluation
+  callbacks from a compute node now join the originating workflow transaction
+  (`T`) rather than running in a standalone transaction. The engine mints a
+  signed HMAC tx-token `{NodeID, TxRef}` before each dispatch and attaches it
+  to the outbound CloudEvent as the `cyodatxtoken` extension attribute. Compute
+  nodes echo the token on callbacks (`X-Tx-Token` HTTP header / `tx-token` gRPC
+  metadata); the receiving node verifies the HMAC and routes the callback to the
+  owner — local `Join` when owner is self, HTTP reverse proxy or gRPC EntityManage
+  B→A forward otherwise. Callbacks see the cascade's uncommitted writes; callback
+  acks are provisional until `T` commits. `ASYNC_NEW_TX` callbacks join `T` via a
+  savepoint so writes are discarded on processor failure without aborting the
+  cascade. An absent token causes the callback to run standalone (`Begin`), which
+  is the normal behaviour for `COMMIT_BEFORE_DISPATCH` with
+  `startNewTxOnDispatch=false`. New env vars: `CYODA_TX_TOKEN_TTL` (token
+  validity, default `90s`), `CYODA_GRPC_NODE_ADDR` (gRPC address advertised in
+  tokens for B→A forwarding), `CYODA_COMPUTE_HTTP_BASE` (base URL for
+  compute-test-client HTTP callbacks).
+
 ### Changed
 
 - PostgreSQL search now pushes supported predicates into SQL (JSONB `->>`

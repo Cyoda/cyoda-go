@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -582,10 +583,11 @@ func TestWorkflowProc_PostTxIdMatchesAuditEndpoint(t *testing.T) {
 // audit-lookup semantics for /audit/entity/{id}/workflow/{txId}/finished.
 //
 // Test contract: a POST that triggers a CBD-segmented cascade must
-//   (a) succeed (200 OK),
-//   (b) advertise the cascade-entry txID in the response (non-empty),
-//   (c) leave the entity durably in the post-cascade state with the
-//       processor's enrichment visible on a fresh GET.
+//
+//	(a) succeed (200 OK),
+//	(b) advertise the cascade-entry txID in the response (non-empty),
+//	(c) leave the entity durably in the post-cascade state with the
+//	    processor's enrichment visible on a fresh GET.
 func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T) {
 	const model = "e2e-wfproc-cbd-create"
 
@@ -649,7 +651,7 @@ func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 	}
 }
 
-// --- Spec §16 case B (multi-entity TX_post cascade) — skipped, see reason ---
+// --- Spec §16 case B (multi-entity TX_post cascade, PUT entry point) ---
 
 // TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten covers
 // spec §4.4: a CBD processor running with startNewTxOnDispatch=true performs
@@ -657,22 +659,90 @@ func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 // secondary write and the engine's apply-result land atomically when
 // TX_post commits.
 //
-// Skipped in the E2E layer because the localproc dispatch fake (the
-// in-process processor harness used for these tests) does not currently
-// expose factory access to processor callbacks. Wiring a factory accessor
-// through localproc would be a non-trivial fixture change beyond the scope
-// of the per-task implementation. The same invariant is covered at the
-// engine layer by
-// internal/domain/workflow/engine_test.go::TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath
-// which performs the secondary write inside the dispatch fake and asserts
-// the in-memory cascade-anchor mutation. Once Task 17's E2E coverage is
-// wired, durability of both entities should be asserted via fresh GETs.
-//
-// TODO(issue-27, Task 17): expose factory access to localproc dispatch
-// callbacks and assert durability of e1 (cascade anchor) AND e2 (secondary)
-// after the PUT returns.
+// Previously skipped because the localproc dispatch fake did not expose
+// factory access to processor callbacks. Realized using the callback-capable
+// compute member harness (callback_harness_test.go) which exercises the full
+// gRPC dispatch + token round-trip. The POST entry-point variant is
+// TestCallback_CBDPost_JoinsTxPost in callback_txjoin_modes_test.go.
 func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing.T) {
-	t.Skip("requires localproc factory-access harness — engine-level coverage at TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath; see issue #27 Task 17 TODO")
+	h := newCallbackHarness(t)
+
+	const primary = "cbd-true-primary"
+	const secondary = "cbd-true-secondary"
+	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
+
+	created := make(chan string, 1)
+
+	h.RegisterProc("cbd-true-proc", func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.CreateEntity(secondary, 1, `{"name":"tx-post-child","amount":1,"status":"new"}`)
+		if err != nil {
+			return nil, fmt.Errorf("callback create: %w", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("callback create: status=%d body=%s", res.StatusCode, res.Body)
+		}
+		created <- res.EntityID
+		out := cloneData(rc.entityData)
+		out["secondaryId"] = res.EntityID
+		return out, nil
+	})
+
+	// Workflow: NONE -init-> PENDING -approve(CBD+startNewTxOnDispatch=true)-> APPROVED.
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "cbd-true-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
+				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
+					"processors": [{"type": "calculator", "name": "cbd-true-proc",
+						"executionMode": "COMMIT_BEFORE_DISPATCH",
+						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+				}]},
+				"APPROVED": {}
+			}
+		}]
+	}`
+	h.SetupModelWithWorkflow(t, primary, wf)
+
+	// Create entity — automated init lands it in PENDING.
+	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"anchor","amount":100,"status":"new"}`)
+	if status != http.StatusOK {
+		t.Fatalf("primary create: expected 200, got %d: %s", status, body)
+	}
+	if st, _ := h.GetEntityState(t, primaryID); st != "PENDING" {
+		t.Fatalf("expected PENDING after create, got %q", st)
+	}
+
+	// PUT approve — fires CBD+startNewTxOnDispatch=true processor.
+	approvePath := fmt.Sprintf("/api/entity/JSON/%s/approve", primaryID)
+	approveResp := h.DoAuth(t, http.MethodPut, approvePath, `{"name":"anchor","amount":100,"status":"approved"}`, "")
+	approveBody := h.readBody(t, approveResp)
+	if approveResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT approve: expected 200, got %d: %s", approveResp.StatusCode, approveBody)
+	}
+
+	var secondaryID string
+	select {
+	case secondaryID = <-created:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: callback did not run / did not create secondary entity")
+	}
+
+	// Primary in APPROVED with secondary id (TX_post apply-result).
+	if st, code := h.GetEntityState(t, primaryID); code != http.StatusOK || st != "APPROVED" {
+		t.Errorf("primary state = %q (http %d); want APPROVED", st, code)
+	}
+	if got := h.GetEntityData(t, primaryID)["secondaryId"]; got != secondaryID {
+		t.Errorf("primary.secondaryId = %v; want %q", got, secondaryID)
+	}
+
+	// Secondary durable (committed atomically with TX_post).
+	if st, code := h.GetEntityState(t, secondaryID); code != http.StatusOK {
+		t.Fatalf("secondary GET: http %d; want 200 (atomically committed with TX_post)", code)
+	} else if st != "STORED" {
+		t.Errorf("secondary state = %q; want STORED", st)
+	}
 }
 
 // --- Spec §16 case C (hot-entity livelock) — skipped, see reason ---
@@ -1028,4 +1098,3 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 func TestWorkflowProc_UpdateWithCBD_EngineCrashLeavesEntityInPreCalloutState(t *testing.T) {
 	t.Skip("requires engine-side fault-injection hook — pre-callout durability is structurally guaranteed by TX_pre commit boundary, covered at engine layer by TestEngine_CommitBeforeDispatch_AuditEventPlacement; see issue #27 Task 23 TODO")
 }
-

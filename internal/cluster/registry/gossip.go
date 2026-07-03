@@ -19,8 +19,11 @@ import (
 
 // GossipConfig holds the configuration for a gossip-based NodeRegistry.
 type GossipConfig struct {
-	NodeID          string
-	NodeAddr        string
+	NodeID   string
+	NodeAddr string
+	// GRPCNodeAddr is the gRPC endpoint (host:port) this node advertises to peers.
+	// Empty means peers will derive the gRPC addr from NodeAddr's host + their local gRPC port.
+	GRPCNodeAddr    string
 	BindAddr        string
 	BindPort        int
 	Seeds           []string
@@ -30,9 +33,10 @@ type GossipConfig struct {
 
 // nodeMeta is serialized as JSON in memberlist node metadata.
 type nodeMeta struct {
-	ID   string              `json:"id"`
-	Addr string              `json:"addr"`
-	Tags map[string][]string `json:"tags,omitempty"`
+	ID       string              `json:"id"`
+	Addr     string              `json:"addr"`
+	GRPCAddr string              `json:"grpcAddr,omitempty"`
+	Tags     map[string][]string `json:"tags,omitempty"`
 }
 
 // Gossip is a NodeRegistry backed by hashicorp/memberlist.
@@ -49,7 +53,7 @@ var _ contract.NodeRegistry = (*Gossip)(nil)
 // NewGossip creates a new gossip-based registry. It starts the memberlist
 // listener but does not join any cluster — call Register to join seeds.
 func NewGossip(cfg GossipConfig) (*Gossip, error) {
-	nm := nodeMeta{ID: cfg.NodeID, Addr: cfg.NodeAddr}
+	nm := nodeMeta{ID: cfg.NodeID, Addr: cfg.NodeAddr, GRPCAddr: cfg.GRPCNodeAddr}
 	metaBytes, err := json.Marshal(nm)
 	if err != nil {
 		return nil, fmt.Errorf("marshal node metadata: %w", err)
@@ -204,10 +208,11 @@ func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 			continue
 		}
 		nodes = append(nodes, contract.NodeInfo{
-			NodeID: nm.ID,
-			Addr:   nm.Addr,
-			Alive:  true,
-			Tags:   nm.Tags,
+			NodeID:   nm.ID,
+			Addr:     nm.Addr,
+			GRPCAddr: nm.GRPCAddr,
+			Alive:    true,
+			Tags:     nm.Tags,
 		})
 	}
 	return nodes, nil

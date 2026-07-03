@@ -514,8 +514,8 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 		mustContain string // substring required in 400 detail
 	}{
 		{
-			name: "H6.c empty workflow name",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
+			name:        "H6.c empty workflow name",
+			body:        `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"","initialState":"S1","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "name",
 		},
 		{
@@ -527,13 +527,13 @@ func TestImport_ValidationFailures_Return400(t *testing.T) {
 			mustContain: "duplicate",
 		},
 		{
-			name: "H6.a empty initialState",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"","active":true,"states":{"S1":{}}}]}`,
+			name:        "H6.a empty initialState",
+			body:        `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "initialState",
 		},
 		{
-			name: "H6.a initialState not in States",
-			body: `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"MISSING","active":true,"states":{"S1":{}}}]}`,
+			name:        "H6.a initialState not in States",
+			body:        `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"MISSING","active":true,"states":{"S1":{}}}]}`,
 			mustContain: "MISSING",
 		},
 		{

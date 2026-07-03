@@ -84,10 +84,32 @@ which of the two strings was used.
 
 ### Transaction-bound callbacks
 
-Because the engine holds `T` while the processor is running, gRPC callbacks
-from the processor back into Cyoda (entity Get/Save, etc.) can join `T` by
-presenting the txID. Inside `T` those callbacks see the cascade's
-uncommitted writes and other readers do not see them.
+Before dispatching to a compute node the engine mints a signed HMAC tx-token
+`{NodeID, TxRef}` and attaches it to the outbound CloudEvent as the
+`cyodatxtoken` extension attribute.
+
+**Compute node contract:** the compute node MUST echo the received token on
+every callback into cyoda-go:
+- HTTP CRUD callbacks: `X-Tx-Token: <token>` request header
+- gRPC EntityManage callbacks: `tx-token` metadata key
+
+When a callback arrives carrying the token, the receiving node verifies the
+HMAC and joins the transaction: if `NodeID` equals self, it calls
+`Join(TxRef)` locally; otherwise it forwards the full request to the owning
+node (HTTP: reverse proxy; gRPC EntityManage: B→A forward). Inside `T` the
+callback sees the cascade's uncommitted writes; other readers do not.
+
+A callback ack is **provisional** — it is not durable until the owning
+transaction commits. If the processor fails or the engine rolls back `T`,
+all callback writes are rolled back atomically with the rest of the cascade.
+
+When the token is absent (empty `cyodatxtoken`), the callback runs in a
+standalone transaction (`Begin`/`Commit`). This is the normal case for
+`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch=false` — the processor
+receives no token because no live transaction is held during the dispatch.
+
+The `cmd/compute-test-client` binary demonstrates the echo pattern for both
+HTTP and gRPC callbacks.
 
 ### When to use
 
@@ -141,6 +163,16 @@ simpler and matches the documented intent.
 - Auxiliary writes (audit pings, side-channel inserts) the processor performs
   via its own gRPC callbacks, where the savepoint isolates them from the
   cascade's main writes.
+
+### Transaction-bound callbacks in `ASYNC_NEW_TX`
+
+The engine sends a tx-token to the compute node (same mechanism as `SYNC` —
+see §2 Transaction-bound callbacks). Callbacks that echo the token join `T`
+directly (via `txMgr.Join`). The engine independently scopes the entire
+dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
+undoes all callback writes and the pipeline continues; if the processor
+succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
+to `T`'s eventual commit).
 
 ### Pitfalls
 
@@ -491,6 +523,10 @@ currently a labelling-only variant.
 | `If-Match` plumbing | `internal/domain/workflow/ifmatch.go` |
 | `TRANSITION_ABORTED` audit | `internal/domain/workflow/transition_aborted.go` |
 | gRPC processor dispatch | `internal/grpc/dispatch.go:43` |
+| Tx-token mint + attach to CloudEvent | `internal/grpc/dispatch.go` (token injected before dispatch) |
+| HTTP callback routing (X-Tx-Token) | `internal/cluster/proxy/` |
+| gRPC callback routing (tx-token metadata) | `internal/grpc/` (txRouteInterceptor) |
+| Compute-test-client echo example | `cmd/compute-test-client/callback.go`, `grpc_callback.go` |
 | Memory plugin txmanager | `plugins/memory/txmanager.go` |
 | SQLite plugin txmanager | `plugins/sqlite/txmanager.go` |
 | PostgreSQL plugin txmanager | `plugins/postgres/transaction_manager.go` |

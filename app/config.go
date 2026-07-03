@@ -244,9 +244,14 @@ func DefaultConfig() Config {
 			},
 		},
 		Cluster: cluster.Config{
+			// Enabled defaults false for easier onboarding — NOT because multi-node is
+			// secondary. Cluster/HA correctness (tx-affinity, cross-node callback join,
+			// proxy routing, peer failover) is a primary design target.
+			// See .claude/rules/multi-node-primary.md.
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
 			NodeID:                 envString("CYODA_NODE_ID", ""),
 			NodeAddr:               envString("CYODA_NODE_ADDR", "http://localhost:8080"),
+			GRPCNodeAddr:           envString("CYODA_GRPC_NODE_ADDR", ""),
 			GossipAddr:             envString("CYODA_GOSSIP_ADDR", ":7946"),
 			SeedNodes:              splitCSV(envString("CYODA_SEED_NODES", "")),
 			StabilityWindow:        envDuration("CYODA_GOSSIP_STABILITY_WINDOW", 2*time.Second),
@@ -257,6 +262,14 @@ func DefaultConfig() Config {
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
+			// TxTokenTTL must outlive the full dispatch round-trip plus the callback's
+			// verify step, including the forwarded-chain case where two budgets stack
+			// (local dispatch + peer forward). Default ≥3× the dispatch/forward timeout (30s).
+			TxTokenTTL: envDuration("CYODA_TX_TOKEN_TTL", 90*time.Second),
+			// Test-only: allow the dispatch HTTP forwarder to target loopback peers.
+			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
+			// this false so the SSRF guard stays active.
+			DispatchAllowLoopback: envBool("CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING", false),
 		},
 	}
 }

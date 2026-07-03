@@ -442,7 +442,17 @@ var envVarPattern = regexp.MustCompile(`CYODA_[A-Z][A-Z0-9_]*`)
 // documented in config/*.md.
 var testOnlyEnvPrefixes = []string{"CYODA_TEST_", "CYODA_MARKER", "CYODA_DEBUG_"}
 
+// testOnlyEnvSuffix marks env vars that are deliberately-undocumented test-only
+// escape hatches (e.g. CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING, which reopens
+// the dispatch-forwarder SSRF guard for loopback multi-node fixtures). These
+// must NOT be advertised in user-facing config docs — documenting them invites
+// production misuse — so any CYODA_*_FOR_TESTING var is exempt from coverage.
+const testOnlyEnvSuffix = "_FOR_TESTING"
+
 func isTestOnlyEnv(v string) bool {
+	if strings.HasSuffix(v, testOnlyEnvSuffix) {
+		return true
+	}
 	for _, p := range testOnlyEnvPrefixes {
 		if strings.HasPrefix(v, p) {
 			return true

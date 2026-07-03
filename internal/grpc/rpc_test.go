@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -38,7 +39,7 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	}
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)

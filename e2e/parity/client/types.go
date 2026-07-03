@@ -153,11 +153,11 @@ type GroupKeyEntry struct {
 // emit it as a raw string so callers can pass any JSON they like
 // without round-tripping through map[string]any.
 type GroupedStatsRequest struct {
-	GroupBy      []string            `json:"groupBy"`
-	Condition    *AggregationCond    `json:"condition,omitempty"`
-	Aggregations []AggregationExpr   `json:"aggregations,omitempty"`
-	PointInTime  *time.Time          `json:"pointInTime,omitempty"`
-	Limit        *int                `json:"limit,omitempty"`
+	GroupBy      []string          `json:"groupBy"`
+	Condition    *AggregationCond  `json:"condition,omitempty"`
+	Aggregations []AggregationExpr `json:"aggregations,omitempty"`
+	PointInTime  *time.Time        `json:"pointInTime,omitempty"`
+	Limit        *int              `json:"limit,omitempty"`
 }
 
 // AggregationCond is a passthrough for the predicate.Condition JSON

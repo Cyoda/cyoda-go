@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.TX_CONFLICT
-  - errors.TX_COORDINATOR_NOT_CONFIGURED
 ---
 
 # errors.TX_REQUIRED
@@ -20,12 +19,16 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Certain write operations that require atomic multi-step coordination mandate a transaction context. Returned when such an operation is called without a `transactionId` header or query parameter.
+Reserved. Not currently emitted by any cyoda-go code path.
 
-Not retryable without a transaction. The operation requires an open transaction ID passed as a header or query parameter.
+This error code is reserved for future capabilities where certain operations
+explicitly require an open transaction context. In the current model,
+transactions are opened automatically per request and the caller does not
+supply a pre-existing transaction ID to standard CRUD endpoints.
+
+Not retryable without a transaction context.
 
 ## SEE ALSO
 
 - errors
 - errors.TX_CONFLICT
-- errors.TX_COORDINATOR_NOT_CONFIGURED

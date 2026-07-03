@@ -21,6 +21,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
@@ -86,10 +87,53 @@ type Handler struct {
 	txMgr   spi.TransactionManager
 	uuids   spi.UUIDGenerator
 	engine  *wfengine.Engine
+	gate    *txgate.Registry
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine}
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry) *Handler {
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate}
+}
+
+// beginOrJoin decides whether this inbound request OWNS a fresh transaction or
+// PARTICIPATES in a transaction already on ctx.
+//
+// A joined tx on ctx (spi.GetTransaction(ctx) != nil) means we are servicing a
+// routed compute-node callback that a later task joined onto the owner's tx
+// (#287). In that case we return the joined tx's ID with owned=false and DO NOT
+// Begin — the write lands in the shared buffer for the owner to commit. When
+// there is no joined tx (the normal inbound case) we Begin our own tx and
+// return owned=true. The txCtx returned in the joined case is the caller's ctx
+// unchanged (it already carries the TransactionState); in the owned case it is
+// the Begin-derived context.
+func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, bool, error) {
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		return tx.ID, ctx, false, nil
+	}
+	txID, txCtx, err := h.txMgr.Begin(ctx)
+	return txID, txCtx, true, err
+}
+
+// commitOwned commits the transaction only when this request owns it. For a
+// joined callback (owned==false) the owner is responsible for the commit, so
+// this is a no-op. Callers gate the whole final Save+Commit critical section
+// (see the per-flow finalize blocks): the gate is acquired by the flow around
+// the final buffer mutation and released after this commit, so commitOwned
+// itself must NOT touch the gate (the gate is a non-reentrant per-tx mutex).
+func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) error {
+	if !owned {
+		return nil
+	}
+	return h.txMgr.Commit(ctx, txID)
+}
+
+// rollbackOwned rolls the transaction back only when this request owns it. A
+// joined callback must never roll back the owner's tx — an error on the joined
+// path surfaces to the owner, which decides the tx's fate.
+func (h *Handler) rollbackOwned(ctx context.Context, txID string, owned bool) {
+	if !owned {
+		return
+	}
+	_ = h.txMgr.Rollback(ctx, txID)
 }
 
 // validateOrExtend validates parsedData against the model schema. When
@@ -672,8 +716,8 @@ type collectionChunkError struct {
 // carrying an IfMatch precondition (issue #228). ItemIndex is the failing
 // item's zero-based position within its chunk's request slice.
 type collectionChunkItemFailure struct {
-	EntityID string                  `json:"entityId"`
-	Error    collectionChunkItemErr  `json:"error"`
+	EntityID string                 `json:"entityId"`
+	Error    collectionChunkItemErr `json:"error"`
 }
 
 // collectionChunkItemErr is the per-item failure inner object — code, message,
