@@ -159,6 +159,15 @@ func (c *callbackClient) loopbackUpdate(ctx context.Context, entityID, ifMatch, 
 	return c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, body, txToken, ifMatch)
 }
 
+// conditionalDelete issues DELETE /api/entity/{model}/{version} with a JSON
+// condition body, within the joined transaction. When txToken is non-empty the
+// request joins T, so SearchService.Search uses the tx-aware path (bypassing
+// pushdown, §6.1) and sees uncommitted writes in T.
+func (c *callbackClient) conditionalDelete(ctx context.Context, model string, version int, condition, txToken string) (cbResult, error) {
+	path := fmt.Sprintf("/api/entity/%s/%d", model, version)
+	return c.do(ctx, http.MethodDelete, path, condition, txToken, "")
+}
+
 // parseCreateResponse extracts the first entity id and transactionId from a
 // create/update response body: [{"transactionId":"...","entityIds":["uuid"]}].
 func parseCreateResponse(body string) (entityID, txID string) {
@@ -337,6 +346,64 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			data["readbackFound"] = got.Status == http.StatusOK
 			data["readbackMarker"] = entityDataStatus(got.Body)
 			data["secondaryId"] = secID
+			return withData(entity, data)
+		},
+
+		// cb-conditional-delete — proves (E2): creates a "to-delete" entity
+		// and a "to-keep" entity inside T (both uncommitted), then issues a
+		// conditional DELETE with a condition that matches only the "to-delete"
+		// entity. SearchService.Search bypasses pushdown when tx is on context
+		// (§6.1), so it sees the uncommitted "to-delete" entity and deletes it.
+		// After T commits: only the "to-keep" entity is durable.
+		"cb-conditional-delete": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			version := cfg.SecondaryVersion
+			if version == 0 {
+				version = 1
+			}
+			keepMarker := cfg.Marker + "-keep"
+
+			// Step 1: Create the "to-delete" entity inside T (uncommitted).
+			delRes, delID, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create (to-delete): %w", err)
+			}
+			if delRes.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback create (to-delete) status=%d body=%s", delRes.Status, delRes.Body)
+			}
+
+			// Step 2: Create the "to-keep" entity inside T (uncommitted).
+			keepCfg := cbConfig{SecondaryModel: cfg.SecondaryModel, SecondaryVersion: version, Marker: keepMarker}
+			keepRes, keepID, _, err := cb.createSecondary(ctx, keepCfg, token, keepMarker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create (to-keep): %w", err)
+			}
+			if keepRes.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback create (to-keep) status=%d body=%s", keepRes.Status, keepRes.Body)
+			}
+
+			// Step 3: Conditional delete inside T — condition matches only
+			// cfg.Marker. SearchService.Search (in-tx path, §6.1) sees the
+			// uncommitted "to-delete" entity created in step 1 and deletes it.
+			// The "to-keep" entity is not matched and survives.
+			condition := fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, cfg.Marker)
+			condRes, err := cb.conditionalDelete(ctx, cfg.SecondaryModel, version, condition, token)
+			if err != nil {
+				return nil, fmt.Errorf("callback conditional delete: %w", err)
+			}
+			if condRes.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback conditional delete status=%d body=%s", condRes.Status, condRes.Body)
+			}
+
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["deleteEntityId"] = delID
+			data["keepEntityId"] = keepID
+			data["tokenWasEmpty"] = token == ""
 			return withData(entity, data)
 		},
 
