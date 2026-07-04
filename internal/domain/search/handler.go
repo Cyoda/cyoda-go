@@ -402,8 +402,10 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 }
 
 func entityEnvelope(e *spi.Entity) map[string]any {
+	modelVersion, _ := strconv.Atoi(e.Meta.ModelRef.ModelVersion)
 	meta := map[string]any{
 		"id":             e.Meta.ID,
+		"modelKey":       map[string]any{"name": e.Meta.ModelRef.EntityName, "version": modelVersion},
 		"state":          e.Meta.State,
 		"creationDate":   e.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
 		"lastUpdateTime": e.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
