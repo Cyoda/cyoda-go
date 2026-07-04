@@ -1493,17 +1493,17 @@ paths:
                     - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-15T10:30:00Z
                       user: admin@cyoda.com
-                      changeType: CREATED
+                      changeType: CREATE
                       fieldsChangedCount: 5
                     - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-16T14:22:30Z
                       user: editor@cyoda.com
-                      changeType: UPDATED
+                      changeType: UPDATE
                       fieldsChangedCount: 2
                     - transactionId: 9c5d3ca0-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-17T09:15:45Z
                       user: admin@cyoda.com
-                      changeType: UPDATED
+                      changeType: UPDATE
                       fieldsChangedCount: 1
         "400":
           description: Invalid UUID format
@@ -10267,9 +10267,9 @@ components:
         changeType:
           type: string
           enum:
-            - CREATED
-            - UPDATED
-            - DELETED
+            - CREATE
+            - UPDATE
+            - DELETE
         fieldsChangedCount:
           type: integer
           format: int32
