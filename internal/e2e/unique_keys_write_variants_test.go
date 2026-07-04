@@ -198,8 +198,8 @@ func TestUniqueKeys_LoopbackPatchDuplicate(t *testing.T) {
 // TestUniqueKeys_CollectionUpdateDuplicate verifies that a collection update
 // (PUT /entity/JSON) moving an item's key onto a duplicate value returns
 // 409 UNIQUE_VIOLATION. A UNIQUE_VIOLATION is not the per-item-isolated
-// ENTITY_MODIFIED case (issue #228): it rolls the chunk back and, on chunk 0,
-// surfaces as an HTTP 409.
+// ENTITY_MODIFIED rollback case: it rolls the chunk back and, on the first
+// chunk, surfaces as an HTTP 409.
 func TestUniqueKeys_CollectionUpdateDuplicate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
