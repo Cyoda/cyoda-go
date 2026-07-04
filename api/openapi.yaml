@@ -2254,8 +2254,29 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              format: json
+              type: array
+              description: |
+                Batch of entities to create across one or more models. Each item
+                names its model and carries the entity payload as a JSON string.
+              items:
+                type: object
+                required:
+                  - model
+                  - payload
+                properties:
+                  model:
+                    type: object
+                    required:
+                      - name
+                      - version
+                    properties:
+                      name:
+                        type: string
+                      version:
+                        type: integer
+                        format: int32
+                  payload:
+                    type: string
             examples:
               Mixed Entity Collection:
                 summary: Example of multiple entities of different types
@@ -3089,7 +3110,17 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              description: |
+                A single entity JSON object, or a JSON array of entity objects
+                (batch create). The model is identified by the path; the payload
+                shape is polymorphic per model, so items stay open.
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
             examples:
               Single JSON Object example:
                 summary: Example of a single JSON Object
