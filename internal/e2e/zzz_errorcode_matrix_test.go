@@ -27,7 +27,7 @@ type codeCell struct {
 // coverage. Rows are added by later tasks as each endpoint gains codes.
 var EntityErrorCodeMatrix = map[string][]codeCell{
 	// Seeded row: getOneEntity's error surface, pinned by
-	// TestErrCodeMatrix_GetOneEntityNotFound below and existing lifecycle tests.
+	// TestErrCodeMatrix_GetOneEntity below and existing lifecycle tests.
 	"getOneEntity": {
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},
 		{Status: 400, Code: "BAD_REQUEST"}, // conflicting pointInTime+transactionId
@@ -50,7 +50,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	// abort emitted non-deterministically by any write op under concurrency and
 	// is therefore not a per-endpoint documented code (see universalConcurrencyCodes).
 	"create": {
-		{Status: 400, Code: "BAD_REQUEST"},       // invalid payload, transactionWindow out of range
+		{Status: 400, Code: "BAD_REQUEST"},        // invalid payload, transactionWindow out of range
 		{Status: 400, Code: "INCOMPATIBLE_TYPE"},  // payload type mismatches the model
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
@@ -70,11 +70,11 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	},
 	"updateSingle": {
 		{Status: 400, Code: "TRANSITION_NOT_FOUND"}, // named transition absent from the model
-		{Status: 400, Code: "WORKFLOW_FAILED"},       // workflow processor rejected the update
-		{Status: 404, Code: "ENTITY_NOT_FOUND"},      // entity UUID not found
-		{Status: 409, Code: "UNIQUE_VIOLATION"},      // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
-		{Status: 412, Code: "ENTITY_MODIFIED"},       // If-Match mismatch
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"},    // TestUniqueKeys_TransitionUpdatePartialKey
+		{Status: 400, Code: "WORKFLOW_FAILED"},      // workflow processor rejected the update
+		{Status: 404, Code: "ENTITY_NOT_FOUND"},     // entity UUID not found
+		{Status: 409, Code: "UNIQUE_VIOLATION"},     // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
+		{Status: 412, Code: "ENTITY_MODIFIED"},      // If-Match mismatch
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"},   // TestUniqueKeys_TransitionUpdatePartialKey
 	},
 	"patchSingleWithLoopback": {
 		{Status: 409, Code: "UNIQUE_VIOLATION"},       // TestUniqueKeys_LoopbackPatchDuplicate

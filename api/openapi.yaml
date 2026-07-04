@@ -1732,8 +1732,12 @@ paths:
                         year: "2024"
                       meta:
                         id: e4f14c38-34b2-11b2-92cb-fa754528b475
+                        modelKey:
+                          name: nobel-prize
+                          version: 1
                         state: VALIDATED
-                        creationDate: 2025-03-30T15:30:24.243Z
+                        creationDate: "2025-03-30T15:30:24.243Z"
+                        lastUpdateTime: "2025-03-30T15:30:24.243Z"
                     - type: ENTITY
                       data:
                         category: economics
@@ -1755,9 +1759,13 @@ paths:
                             share: "3"
                         year: "2024"
                       meta:
-                        id: e4f14c38-34b2-11b2-92cb-fa754528b475
+                        id: e4f14c38-34b2-11b2-92cb-fa754528b477
+                        modelKey:
+                          name: nobel-prize
+                          version: 1
                         state: VALIDATED
-                        creationDate: 2025-03-30T15:30:24.243Z
+                        creationDate: "2025-03-30T15:30:24.243Z"
+                        lastUpdateTime: "2025-03-30T15:30:24.243Z"
         "400":
           description: Invalid request parameters
           content:

@@ -133,18 +133,10 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 	defaultCollector.recordExercised(opId)
 	defaultCollector.recordStatus(opId, resp.StatusCode)
 
-	// Error-code coverage (Pillar A): for error responses, record the
-	// (operationId, status, errorCode) triple from the ProblemDetail body
-	// (properties.errorCode). Buffer the body so ValidateResponse still sees
-	// it. Only >=400 — success and streaming bodies carry no errorCode.
-	if resp.StatusCode >= 400 && resp.Body != nil {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		if code := extractErrorCode(bodyBytes); code != "" {
-			defaultCollector.recordErrorCode(opId, resp.StatusCode, code)
-		}
-	}
+	// Error-code coverage (Pillar A): record the (operationId, status, errorCode)
+	// triple from the ProblemDetail body. Uses the shared helper so the body is
+	// re-buffered identically whether we took the main or fallback branch.
+	maybeRecordErrorCode(opId, resp)
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.

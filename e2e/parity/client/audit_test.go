@@ -38,7 +38,7 @@ func TestAuditEvent_StateMachine_Decode(t *testing.T) {
 		t.Fatalf("AsStateMachine: %v", err)
 	}
 	if sm.State != "CREATED" {
-		t.Errorf("State: got %q, want \"CREATE\"", sm.State)
+		t.Errorf("State: got %q, want \"CREATED\"", sm.State)
 	}
 	if sm.EventType != "FINISHED" {
 		t.Errorf("EventType: got %q, want \"FINISHED\"", sm.EventType)

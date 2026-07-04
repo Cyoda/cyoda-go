@@ -225,4 +225,3 @@ func TestGetEntityAtRaw(t *testing.T) {
 		}
 	})
 }
-

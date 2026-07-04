@@ -591,7 +591,6 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 	common.WriteJSON(w, http.StatusOK, result)
 }
 
-
 func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
 	condBody, err := io.ReadAll(r.Body)
 	if err != nil {
