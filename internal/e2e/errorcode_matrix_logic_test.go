@@ -33,3 +33,21 @@ func TestDeclaredGaps(t *testing.T) {
 		t.Fatalf("expected 1 declared gap, got %d: %v", len(gaps), gaps)
 	}
 }
+
+// TestDeclaredGaps_ConflictExempt verifies that CONFLICT triples on in-scope
+// operations do not produce a declared gap. CONFLICT is a retryable
+// serialization abort that any write op may emit non-deterministically under
+// concurrency, so it is exempt from the per-endpoint declared check.
+func TestDeclaredGaps_ConflictExempt(t *testing.T) {
+	m := map[string][]codeCell{
+		"create": {{409, "UNIQUE_VIOLATION"}},
+	}
+	observed := []openapivalidator.ErrorTriple{
+		{Operation: "create", Status: 409, ErrorCode: "UNIQUE_VIOLATION"}, // declared → OK
+		{Operation: "create", Status: 409, ErrorCode: "CONFLICT"},         // universal concurrency code → exempt
+	}
+	gaps := declaredGaps(m, observed)
+	if len(gaps) != 0 {
+		t.Fatalf("expected 0 declared gaps (CONFLICT is exempt), got %d: %v", len(gaps), gaps)
+	}
+}

@@ -2356,13 +2356,13 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid JSON array or payload
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: One or more entity models not found
+          description: "Not Found — MODEL_NOT_FOUND: one or more entity models are not registered."
           content:
             application/problem+json:
               schema:
@@ -2678,13 +2678,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match transactionId no longer matches
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "415":
-          description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
           content:
             application/problem+json:
               schema:
@@ -2696,7 +2696,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "428":
-          description: Precondition Required — If-Match absent; supply a transactionId or "*"
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
           content:
             application/problem+json:
               schema:
@@ -2867,13 +2867,13 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, validation failure, or invalid transition
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity not found
+          description: "Not Found — ENTITY_NOT_FOUND: entity UUID does not exist."
           content:
             application/problem+json:
               schema:
@@ -2885,7 +2885,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match header does not match current version
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version."
           content:
             application/problem+json:
               schema:
@@ -3235,7 +3235,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, validation failure, or change level violation
+          description: "Bad request — BAD_REQUEST: invalid payload, parameter, or transactionWindow out of range; INCOMPATIBLE_TYPE: payload type mismatches the model; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:
@@ -3247,7 +3247,7 @@ paths:
                 detail: "validation failed: field x is required"
                 instance: /api/entity/JSON/nobel-prize/1
         "404":
-          description: Entity model not found
+          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
           content:
             application/problem+json:
               schema:
