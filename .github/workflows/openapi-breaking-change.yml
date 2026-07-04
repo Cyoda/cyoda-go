@@ -56,6 +56,14 @@ jobs:
         run: go test ./internal/oasdiffcheck/ -count=1 -v
 
       - name: Breaking-change check (base..PR)
+        # --err-ignore lists deliberate, reviewed breaking-change allowances: exact
+        # oasdiff singleline entries for spec-to-reality reconciliations (ADR 0003
+        # Decision 7) that break no working client because the prior spec never
+        # matched the server. oasdiff only suppresses a change whose full path+message
+        # is contained in an ignore line, so each entry is surgical and fail-closed —
+        # it cannot mask any other or future breaking change, and a wording change on
+        # an oasdiff bump re-flags it. See .github/oasdiff-err-ignore.txt for rationale.
         run: |
           git show origin/${{ github.base_ref }}:api/openapi.yaml > /tmp/base-openapi.yaml
-          oasdiff breaking /tmp/base-openapi.yaml api/openapi.yaml --fail-on ERR
+          oasdiff breaking /tmp/base-openapi.yaml api/openapi.yaml --fail-on ERR \
+            --err-ignore .github/oasdiff-err-ignore.txt

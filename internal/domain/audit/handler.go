@@ -71,7 +71,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		for _, v := range versions {
 			event := map[string]any{
 				"auditEventType": "EntityChange",
-				"changeType":     v.ChangeType,
+				"changeType":     common.CanonicalChangeType(v.ChangeType),
 				"severity":       "INFO",
 				"utcTime":        v.Timestamp.UTC().Format(time.RFC3339Nano),
 				"microsTime":     v.Timestamp.UnixMicro(),

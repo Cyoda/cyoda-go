@@ -229,6 +229,13 @@ func TestHandlerDirectSearchSimple(t *testing.T) {
 	if meta["state"] == nil || meta["state"] == "" {
 		t.Error("expected non-empty meta.state")
 	}
+	mk, ok := meta["modelKey"].(map[string]any)
+	if !ok {
+		t.Fatal("expected modelKey map in meta")
+	}
+	if mk["name"] != "Person" {
+		t.Errorf("expected modelKey.name=Person, got %v", mk["name"])
+	}
 }
 
 func TestHandlerDirectSearchGroup(t *testing.T) {

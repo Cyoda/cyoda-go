@@ -164,7 +164,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			// status/code stable; only the detail varies.
 			common.WriteError(w, r, common.Operational(
 				http.StatusBadRequest,
-				"INVALID_CONDITION",
+				common.ErrCodeInvalidCondition,
 				err.Error(),
 			))
 		default:

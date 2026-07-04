@@ -47,7 +47,31 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   tokens for B→A forwarding), `CYODA_COMPUTE_HTTP_BASE` (base URL for
   compute-test-client HTTP callbacks).
 
+- **Conditional `deleteEntities`** — `DELETE /api/entity/{entityName}/{modelVersion}` now honours
+  an `AbstractConditionDto` request body, deleting only matching entities (empty body ⇒ all).
+  `verbose=true` returns the deleted ids; `numberOfEntitites` (matched) and
+  `numberOfEntititesRemoved` (removed) are reported separately. Closes a data-loss defect where
+  the condition was ignored and the whole model was wiped. New error code `INVALID_CONDITION` (400).
+
+- **`getAllEntities` point-in-time** — the model-scoped list read honours `pointInTime`, returning
+  entities as-at the supplied time and stamping `meta.pointInTime`.
+
+- **OpenAPI error-code conformance** — the E2E conformance validator now enforces documented
+  error codes (`errorCode` string granularity) for the entity endpoints, in addition to response
+  shapes.
+
 ### Changed
+
+- **Entity `meta` is typed-but-open** — `Envelope.meta` mirrors the canonical `EntityMetadata`
+  (typed properties, never sealed); the obsolete `previousTransition` field is removed.
+
+- **`changeType` spelling** — entity change records now use the canonical `CREATE/UPDATE/DELETE`
+  across HTTP, gRPC, and the OpenAPI schema (HTTP previously emitted `CREATED/UPDATED/DELETED`).
+
+- **gRPC entity `meta`** — now includes `modelKey` (and `pointInTime` when as-at), matching HTTP.
+
+- Tightened the `create`/`createCollection` request-body schemas to their real shapes; documented
+  unique-key `409`/`422` codes and reverse-chronological change ordering on the entity endpoints.
 
 - PostgreSQL search now pushes supported predicates into SQL (JSONB `->>`
   extraction, numeric/range/string comparisons) instead of loading every entity

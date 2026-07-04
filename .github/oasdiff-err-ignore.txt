@@ -1,0 +1,15 @@
+# oasdiff err-ignore — deliberate, reviewed breaking-change allowances (ADR 0003 Decision 7:
+# reconcile drift by direction). Each entry below is the EXACT oasdiff singleline text of a
+# spec-to-reality reconciliation that oasdiff classifies as breaking but that breaks no working
+# client, because the prior spec never matched the server. oasdiff only suppresses a change when
+# an ignore line contains that change's full operation+path AND message, so each entry is
+# surgical — it cannot mask any other (or future) breaking change. Fail-closed: if the pinned
+# oasdiff's wording changes on a version bump, the entry stops matching and the gate re-flags it.
+# Entries are safe to prune once merged into the base branch (the corrected shape becomes the
+# baseline and no longer diffs).
+#
+# createCollection (POST entity/{format}) request body corrected from object to array-of-object:
+# the endpoint has always required a JSON array of {model, payload}; the prior object schema was
+# stale documentation the server never honoured (a bare object is rejected with 400). Correcting
+# the schema to the real shape is the reconciliation this PR performs (E4).
+error at api/openapi.yaml, in API POST /entity/{format} the request's body `type/format` changed from `object/json` to `array<object>` [request-body-type-changed].

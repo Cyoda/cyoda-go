@@ -166,7 +166,7 @@ func TestCreateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -214,7 +214,7 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -289,7 +289,7 @@ func newOrderTestHandler(t *testing.T) (*Handler, context.Context) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
 
 	registerOrderModel(t, ctx, factory)
 	return h, ctx
@@ -309,7 +309,7 @@ func newOrderTestHandlerWithSpy(t *testing.T) (*Handler, context.Context, *ctxRe
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
 
 	registerOrderModel(t, ctx, spy)
 	return h, ctx, rec

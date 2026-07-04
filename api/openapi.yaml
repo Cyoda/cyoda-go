@@ -1303,8 +1303,14 @@ paths:
                           share: "2"
                       year: "2024"
                     meta:
-                      id: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
-                      state: VALIDATED
+                      id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                      modelKey:
+                        name: Order
+                        version: 1
+                      state: CREATED
+                      creationDate: "2026-07-01T12:00:00.000Z"
+                      lastUpdateTime: "2026-07-01T12:00:00.000Z"
+                      transactionId: 9f1b0c2d-1111-2222-3333-444455556666
         "400":
           description: Conflicting request paramters (both pointInTime and transactionId
             provided)
@@ -1445,7 +1451,7 @@ paths:
 
         Note:
 
-        - Changes are returned in chronological order
+        - Changes are returned in reverse-chronological order (newest first)
 
         - The pointInTime parameter allows viewing the change history as it
         existed at a specific time
@@ -1487,17 +1493,17 @@ paths:
                     - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-15T10:30:00Z
                       user: admin@cyoda.com
-                      changeType: CREATED
+                      changeType: CREATE
                       fieldsChangedCount: 5
                     - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-16T14:22:30Z
                       user: editor@cyoda.com
-                      changeType: UPDATED
+                      changeType: UPDATE
                       fieldsChangedCount: 2
                     - transactionId: 9c5d3ca0-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-17T09:15:45Z
                       user: admin@cyoda.com
-                      changeType: UPDATED
+                      changeType: UPDATE
                       fieldsChangedCount: 1
         "400":
           description: Invalid UUID format
@@ -1726,9 +1732,12 @@ paths:
                         year: "2024"
                       meta:
                         id: e4f14c38-34b2-11b2-92cb-fa754528b475
+                        modelKey:
+                          name: nobel-prize
+                          version: 1
                         state: VALIDATED
-                        creationDate: 2025-03-30T15:30:24.243Z
-                        previousTransition: VALIDATE
+                        creationDate: "2025-03-30T15:30:24.243Z"
+                        lastUpdateTime: "2025-03-30T15:30:24.243Z"
                     - type: ENTITY
                       data:
                         category: economics
@@ -1750,10 +1759,13 @@ paths:
                             share: "3"
                         year: "2024"
                       meta:
-                        id: e4f14c38-34b2-11b2-92cb-fa754528b475
+                        id: e4f14c38-34b2-11b2-92cb-fa754528b477
+                        modelKey:
+                          name: nobel-prize
+                          version: 1
                         state: VALIDATED
-                        creationDate: 2025-03-30T15:30:24.243Z
-                        previousTransition: VALIDATE
+                        creationDate: "2025-03-30T15:30:24.243Z"
+                        lastUpdateTime: "2025-03-30T15:30:24.243Z"
         "400":
           description: Invalid request parameters
           content:
@@ -1801,9 +1813,18 @@ paths:
       tags:
         - Entity Management
       summary: Delete entities of a model and version
-      description: Deletes entities for a given model name and version which existed
-        at the consistency time of the system when the request is launched by
-        provided condition or all entities if condition is not provided.
+      description: >-
+        Deletes entities for a given model name and version.
+        An optional `AbstractConditionDto` request body scopes the delete to
+        matching entities only; an empty body (or no body) deletes all entities.
+        When `verbose=true` and a condition is given, the response `ids` array
+        lists every deleted entity ID. For a delete-all (empty body), `ids` is
+        always an empty array — enumerating a whole-model wipe is impractical at
+        scale; use statistics only. `deleteResult.numberOfEntitites` is the count
+        of entities that matched the condition (or all entities when no condition
+        is given); `deleteResult.numberOfEntititesRemoved` is the count actually
+        removed (may be lower if individual deletes failed).
+        A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
         - name: entityName
@@ -1915,7 +1936,9 @@ paths:
                       idToError:
                         cecbe400-7402-11ef-9e63-ae468cd3ed16: Some error message
         "400":
-          description: Invalid model name
+          description: >-
+            Invalid request. Returned for a malformed condition body
+            (`INVALID_CONDITION`) or an invalid model name (e.g., name too long).
           content:
             application/problem+json:
               schema:
@@ -1929,6 +1952,16 @@ paths:
                     status: 400
                     detail: String length of the schema name is outside of the bounds [1,1024]
                     instance: /api/entity/very-long-entity-model-name/1
+                Invalid Condition:
+                  description: Malformed AbstractConditionDto body
+                  value:
+                    type: about:blank
+                    title: Bad Request
+                    status: 400
+                    detail: "INVALID_CONDITION: unsupported condition type: NONSENSE"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: INVALID_CONDITION
         "404":
           description: Entity model not found
           content:
@@ -2142,7 +2175,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2229,8 +2268,29 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              format: json
+              type: array
+              description: |
+                Batch of entities to create across one or more models. Each item
+                names its model and carries the entity payload as a JSON string.
+              items:
+                type: object
+                required:
+                  - model
+                  - payload
+                properties:
+                  model:
+                    type: object
+                    required:
+                      - name
+                      - version
+                    properties:
+                      name:
+                        type: string
+                      version:
+                        type: integer
+                        format: int32
+                  payload:
+                    type: string
             examples:
               Mixed Entity Collection:
                 summary: Example of multiple entities of different types
@@ -2304,13 +2364,25 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid JSON array or payload
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: One or more entity models not found
+          description: "Not Found — MODEL_NOT_FOUND: one or more entity models are not registered."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2479,13 +2551,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
           description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2602,25 +2680,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — concurrent writer committed during the patch (retryable)
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match transactionId no longer matches
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "415":
-          description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "428":
-          description: Precondition Required — If-Match absent; supply a transactionId or "*"
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
           content:
             application/problem+json:
               schema:
@@ -2791,25 +2875,31 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, validation failure, or invalid transition
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity not found
+          description: "Not Found — ENTITY_NOT_FOUND: entity UUID does not exist."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match header does not match current version
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2936,25 +3026,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — concurrent writer committed during the patch (retryable)
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match transactionId no longer matches
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "415":
-          description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "428":
-          description: Precondition Required — If-Match absent; supply a transactionId or "*"
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
           content:
             application/problem+json:
               schema:
@@ -3064,7 +3160,17 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              description: |
+                A single entity JSON object, or a JSON array of entity objects
+                (batch create). The model is identified by the path; the payload
+                shape is polymorphic per model, so items stay open.
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
             examples:
               Single JSON Object example:
                 summary: Example of a single JSON Object
@@ -3137,7 +3243,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, validation failure, or change level violation
+          description: "Bad request — BAD_REQUEST: invalid payload, parameter, or transactionWindow out of range; INCOMPATIBLE_TYPE: payload type mismatches the model; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:
@@ -3149,7 +3255,7 @@ paths:
                 detail: "validation failed: field x is required"
                 instance: /api/entity/JSON/nobel-prize/1
         "404":
-          description: Entity model not found
+          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
           content:
             application/problem+json:
               schema:
@@ -3160,6 +3266,18 @@ paths:
                 status: 404
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
+        "409":
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -7970,10 +8088,7 @@ components:
             Polymorphic entity payload as supplied at create/update time.
             Exact fields depend on the entity model.
         meta:
-          type: object
-          additionalProperties: true
-          description: |
-            System-managed metadata: id, state, creationDate, previousTransition, etc.
+          $ref: "#/components/schemas/EntityMetadata"
     TransitionNameList:
       type: array
       description: >
@@ -10160,9 +10275,9 @@ components:
         changeType:
           type: string
           enum:
-            - CREATED
-            - UPDATED
-            - DELETED
+            - CREATE
+            - UPDATE
+            - DELETE
         fieldsChangedCount:
           type: integer
           format: int32
@@ -10170,6 +10285,52 @@ components:
         - changeType
         - timeOfChange
         - user
+    EntityMetadata:
+      type: object
+      description: |
+        System-managed entity metadata. Mirrors the canonical
+        docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
+        fields are enumerated and validated; the object is not sealed, so
+        additive fields remain non-breaking.
+      required:
+        - id
+        - state
+        - creationDate
+        - lastUpdateTime
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Entity id (invariant against point-in-time).
+        modelKey:
+          type: object
+          description: Model of the entity. Present on single-entity reads.
+          properties:
+            name:
+              type: string
+            version:
+              type: integer
+              format: int32
+        state:
+          type: string
+          description: Entity state at the given point-in-time.
+        creationDate:
+          type: string
+          format: date-time
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: Last update as-at the point-in-time; equals creationDate if never updated.
+        pointInTime:
+          type: string
+          format: date-time
+          description: The as-at point-in-time for which the entity was retrieved, when supplied.
+        transitionForLatestSave:
+          type: string
+          description: Transition applied when the entity was last saved as-at the point-in-time.
+        transactionId:
+          type: string
+          format: uuid
     ModelStatsDto:
       type: object
       properties:
@@ -10494,11 +10655,11 @@ components:
           properties:
             changeType:
               type: string
-              description: Type of change that occurred
+              description: Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
               enum:
-                - CREATED
-                - UPDATED
-                - DELETED
+                - CREATE
+                - UPDATE
+                - DELETE
             changes:
               $ref: "#/components/schemas/EntityChangesDto"
               description: Changes made to the entity

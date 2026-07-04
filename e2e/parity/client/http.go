@@ -389,11 +389,24 @@ func (c *Client) GetEntityChangesAt(t *testing.T, entityID uuid.UUID, pointInTim
 }
 
 // ListEntitiesByModel issues GET /api/entity/{name}/{version}.
-// Returns the entity list (each as EntityResult without modelKey per A2).
+// Returns the entity list; each EntityResult includes modelKey (A2 abandoned).
 // Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
 func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersion int) ([]EntityResult, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s/%d", modelName, modelVersion)
+	var entities []EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
+// ListEntitiesByModelAt issues GET /api/entity/{name}/{version}?pointInTime=<t>.
+// Returns the entity list as it existed at the given point in time (E3).
+// Canonical: docs/cyoda/openapi.yml (getAllEntities with pointInTime query param).
+func (c *Client) ListEntitiesByModelAt(t *testing.T, modelName string, modelVersion int, pointInTime time.Time) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", modelName, modelVersion, pointInTime.Format(time.RFC3339Nano))
 	var entities []EntityResult
 	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
 		return nil, err

@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -83,15 +84,16 @@ func deterministicModelID(ref spi.ModelRef) uuid.UUID {
 }
 
 type Handler struct {
-	factory spi.StoreFactory
-	txMgr   spi.TransactionManager
-	uuids   spi.UUIDGenerator
-	engine  *wfengine.Engine
-	gate    *txgate.Registry
+	factory   spi.StoreFactory
+	txMgr     spi.TransactionManager
+	uuids     spi.UUIDGenerator
+	engine    *wfengine.Engine
+	gate      *txgate.Registry
+	searchSvc *search.SearchService
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate}
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, searchSvc *search.SearchService) *Handler {
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, searchSvc: searchSvc}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or
@@ -576,7 +578,7 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 	result := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		entry := map[string]any{
-			"changeType":   e.ChangeType,
+			"changeType":   common.CanonicalChangeType(e.ChangeType),
 			"timeOfChange": e.TimeOfChange,
 			"user":         e.User,
 		}
@@ -590,22 +592,38 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
-	result, err := h.DeleteAllEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion))
+	condBody, err := io.ReadAll(r.Body)
 	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
+		return
+	}
+
+	verbose := params.Verbose != nil && *params.Verbose
+	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), condBody, params.PointInTime, verbose)
+	if err != nil {
+		if errors.Is(err, ErrInvalidCondition) {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()))
+			return
+		}
 		common.WriteError(w, r, classifyError(err))
 		return
 	}
 
-	// Spec declares StreamDeleteResult as a single object (not an array).
-	// The object has: entityModelClassId (uuid), deleteResult (nested object),
-	// and optional ids ([]uuid). Server is source of truth per design §3.
+	// StreamDeleteResult: single object with entityModelClassId, deleteResult,
+	// and optional ids (verbose). numberOfEntitites = matched, ...Removed =
+	// actually deleted (decoupled — a condition may match more than it removes
+	// if a per-id delete fails). Reconciled to the per-finding policy (design §2).
+	deleteResult := map[string]any{
+		"idToError":                result.IDToError,
+		"numberOfEntitites":        result.MatchedCount,
+		"numberOfEntititesRemoved": result.RemovedCount,
+	}
 	resp := map[string]any{
 		"entityModelClassId": result.EntityModelID,
-		"deleteResult": map[string]any{
-			"idToError":                map[string]any{},
-			"numberOfEntitites":        result.TotalCount,
-			"numberOfEntititesRemoved": result.TotalCount,
-		},
+		"deleteResult":       deleteResult,
+	}
+	if verbose {
+		resp["ids"] = result.IDs
 	}
 	common.WriteJSON(w, http.StatusOK, resp)
 }
@@ -635,7 +653,7 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	envelopes, err := h.ListEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), PaginationParams{
 		PageSize:   pageSize,
 		PageNumber: pageNumber,
-	})
+	}, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return

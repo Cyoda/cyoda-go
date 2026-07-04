@@ -28,12 +28,11 @@ type EntityResult struct {
 // Required by canonical: id, state, creationDate, lastUpdateTime.
 // Optional: modelKey, pointInTime, transitionForLatestSave, transactionId.
 //
-// modelKey asymmetry (approved deviation A2): getOneEntity includes
-// modelKey, getAllEntities and search responses do NOT. ModelKey is
-// therefore *ModelSpec with omitempty so a single type works for both
-// endpoints. Tests that receive a search/list response and assert on
-// entity.Meta.ModelKey get nil; tests that GET a single entity get the
-// populated model spec.
+// modelKey is emitted on ALL entity reads: single-get (getOneEntity),
+// getAllEntities, and search responses. Deviation A2 (which previously
+// omitted modelKey from list/search) has been abandoned. ModelKey remains
+// *ModelSpec with omitempty so the type is forward-compatible with any
+// future context where the field is genuinely absent.
 type EntityMetadata struct {
 	ID                      string     `json:"id"`
 	ModelKey                *ModelSpec `json:"modelKey,omitempty"`

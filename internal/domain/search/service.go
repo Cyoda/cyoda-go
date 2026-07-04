@@ -141,11 +141,17 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	if searcher, ok := store.(spi.Searcher); ok && tx == nil {
 		filter, translateErr := ConditionToFilter(cond)
 		if translateErr == nil {
+			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
+			// "no explicit limit" in all store implementations.
+			spiLimit := opts.Limit
+			if spiLimit < 0 {
+				spiLimit = 0
+			}
 			return searcher.Search(ctx, filter, spi.SearchOptions{
 				ModelName:    modelRef.EntityName,
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
-				Limit:        opts.Limit,
+				Limit:        spiLimit,
 				Offset:       opts.Offset,
 				OrderBy:      orderBy,
 			})
@@ -187,12 +193,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		matches = matches[opts.Offset:]
 	}
 
-	// Apply limit (default 1000).
+	// Apply limit. Default 1000 when zero; negative means unbounded (no cap).
 	limit := opts.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 1000
 	}
-	if limit < len(matches) {
+	if limit > 0 && limit < len(matches) {
 		matches = matches[:limit]
 	}
 

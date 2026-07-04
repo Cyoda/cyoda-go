@@ -1,6 +1,6 @@
 {
   "auditEventType": "EntityChange",
-  "changeType": "CREATED",
+  "changeType": "CREATE",
   "severity": "INFO",
   "utcTime": "2026-03-16T04:52:47.825Z",
   "microsTime": 1773636767825000,

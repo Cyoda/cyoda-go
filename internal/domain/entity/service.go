@@ -16,9 +16,11 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
@@ -821,8 +823,138 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	}, nil
 }
 
+// DeleteResult reports a conditional delete: MatchedCount entities matched the
+// condition (or all, for an empty body), RemovedCount were actually deleted,
+// IDToError maps any per-id delete failures, and IDs lists the matched ids when
+// verbose was requested.
+type DeleteResult struct {
+	EntityModelID string
+	MatchedCount  int
+	RemovedCount  int
+	IDToError     map[string]string
+	IDs           []string
+}
+
+// DeleteEntitiesConditional deletes entities of a model. An empty condBody
+// deletes all (backward-compatible). A present condBody is parsed and only
+// matching entities (as-at pointInTime, when supplied) are deleted — reusing
+// the search condition primitive so no special engine rights are claimed
+// (design §6.1). Selection and deletion run inside one transaction; because
+// SearchService.Search bypasses backend pushdown when a tx is on the context,
+// buffered writes are visible to the selection.
+func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
+	ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
+
+	// Parse the condition (if any) BEFORE opening a tx — a parse error is a
+	// 400 that must not start a transaction. Empty/whitespace body ⇒ delete-all.
+	var cond predicate.Condition
+	if len(bytes.TrimSpace(condBody)) > 0 {
+		c, err := predicate.ParseCondition(condBody)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, err)
+		}
+		cond = c
+	}
+
+	// Delete-all fast path preserves existing behaviour + response shape.
+	// IDs is always a non-nil empty slice: delete-all does not enumerate IDs even
+	// when verbose=true (enumerating a whole-model wipe is impractical at scale).
+	if cond == nil {
+		all, err := h.DeleteAllEntities(ctx, entityName, modelVersion)
+		if err != nil {
+			return nil, err
+		}
+		return &DeleteResult{
+			EntityModelID: all.EntityModelID,
+			MatchedCount:  all.TotalCount,
+			RemovedCount:  all.TotalCount,
+			IDToError:     map[string]string{},
+			IDs:           []string{},
+		}, nil
+	}
+
+	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to begin transaction", err)
+	}
+	if !owned {
+		defer h.gate.Acquire(txID)()
+	}
+
+	modelStore, err := h.factory.ModelStore(txCtx)
+	if err != nil {
+		h.rollbackOwned(txCtx, txID, owned)
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if _, err := modelStore.Get(txCtx, ref); err != nil {
+		h.rollbackOwned(txCtx, txID, owned)
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+		}
+		return nil, common.Internal("failed to load model", err)
+	}
+
+	entityStore, err := h.factory.EntityStore(txCtx)
+	if err != nil {
+		h.rollbackOwned(txCtx, txID, owned)
+		return nil, common.Internal("failed to access entity store", err)
+	}
+
+	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 disables
+	// the in-memory fallback's default 1000-entity cap so a scoped delete is never
+	// silently partial regardless of match-set size.
+	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
+	if err != nil {
+		h.rollbackOwned(txCtx, txID, owned)
+		return nil, common.Internal("failed to select entities for delete", err)
+	}
+
+	result := &DeleteResult{
+		EntityModelID: deterministicModelID(ref).String(),
+		MatchedCount:  len(matched),
+		IDToError:     map[string]string{},
+		IDs:           []string{},
+	}
+
+	// Finalize: gate the per-id deletes + commit against a concurrent joined
+	// callback's buffer write (mirror DeleteAllEntities).
+	if appErr := func() *common.AppError {
+		if owned {
+			defer h.gate.Acquire(txID)()
+		}
+		for _, e := range matched {
+			id := e.Meta.ID
+			if verbose {
+				result.IDs = append(result.IDs, id)
+			}
+			if err := entityStore.Delete(txCtx, id); err != nil {
+				result.IDToError[id] = err.Error()
+				continue
+			}
+			result.RemovedCount++
+		}
+		if err := h.commitOwned(txCtx, txID, owned); err != nil {
+			// Do NOT roll back here — a failed commit has already aborted the
+			// tx. Mirrors DeleteAllEntities (service.go), which returns
+			// the AppError directly on this path without an extra rollback.
+			if errors.Is(err, spi.ErrConflict) {
+				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+			}
+			return common.Internal("failed to commit transaction", err)
+		}
+		return nil
+	}(); appErr != nil {
+		return nil, appErr
+	}
+
+	return result, nil
+}
+
 // ListEntities retrieves all entities for a model with pagination.
-func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams) ([]EntityEnvelope, error) {
+// When pointInTime is non-nil the read is issued against the as-at snapshot
+// via GetAllAsAt, and meta.pointInTime is stamped on every envelope.
+func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams, pointInTime *time.Time) ([]EntityEnvelope, error) {
 	// Defense-in-depth: HTTP and gRPC handlers SHOULD validate before
 	// reaching the service, but enforce the same caps here so the
 	// `start := int(PageNumber * PageSize)` multiplication below cannot
@@ -842,7 +974,12 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		ModelVersion: modelVersion,
 	}
 
-	entities, err := entityStore.GetAll(ctx, ref)
+	var entities []*spi.Entity
+	if pointInTime != nil {
+		entities, err = entityStore.GetAllAsAt(ctx, ref, *pointInTime)
+	} else {
+		entities, err = entityStore.GetAll(ctx, ref)
+	}
 	if err != nil {
 		return nil, common.Internal("failed to get entities", err)
 	}
@@ -864,7 +1001,6 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 	}
 	pageSlice := entities[start:end]
 
-	// Build envelopes without modelKey in meta
 	result := make([]EntityEnvelope, 0, len(pageSlice))
 	for _, ent := range pageSlice {
 		var data any
@@ -872,8 +1008,10 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 			return nil, common.Internal("failed to parse entity data", err)
 		}
 
+		modelVersion, _ := strconv.Atoi(ent.Meta.ModelRef.ModelVersion)
 		entMeta := map[string]any{
 			"id":             ent.Meta.ID,
+			"modelKey":       map[string]any{"name": ent.Meta.ModelRef.EntityName, "version": modelVersion},
 			"state":          ent.Meta.State,
 			"creationDate":   ent.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
 			"lastUpdateTime": ent.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
@@ -881,6 +1019,9 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		}
 		if ent.Meta.TransitionForLatestSave != "" {
 			entMeta["transitionForLatestSave"] = ent.Meta.TransitionForLatestSave
+		}
+		if pointInTime != nil {
+			entMeta["pointInTime"] = pointInTime.UTC().Format(time.RFC3339Nano)
 		}
 
 		result = append(result, EntityEnvelope{

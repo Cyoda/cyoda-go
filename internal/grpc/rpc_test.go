@@ -39,10 +39,10 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	}
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	modelHandler := model.New(factory)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -1126,6 +1126,65 @@ func TestRPC_EntityDeleteAll(t *testing.T) {
 	}
 }
 
+// TestRPC_EntityDeleteAll_Unconditional documents that gRPC EntityDeleteAllRequest
+// is always unconditional (D2): it removes every entity of the model and returns
+// Success, with no condition field available at the gRPC layer (conditional delete
+// is HTTP-only). The test creates two entities, calls EntityDeleteAllRequest, asserts
+// Success=true, then confirms an EntityGetAllRequest returns zero results.
+func TestRPC_EntityDeleteAll_Unconditional(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice", "age": 30})
+
+	// Create two entities.
+	for _, name := range []string{"Alice", "Bob"} {
+		ce := makeCE(EntityCreateRequest, map[string]any{
+			"id": "test", "dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": name, "age": 30},
+			},
+		})
+		if _, err := svc.EntityManage(ctx, ce); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+
+	// Delete all — gRPC has no condition field, this is always delete-all (D2).
+	ce := makeCE(EntityDeleteAllRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+	})
+	stream := &mockManageStream{ctx: ctx}
+	if err := svc.EntityManageCollection(ce, stream); err != nil {
+		t.Fatalf("EntityDeleteAll: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(stream.sent))
+	}
+	if stream.sent[0].Type != EntityDeleteAllResponse {
+		t.Errorf("expected type %s, got %s", EntityDeleteAllResponse, stream.sent[0].Type)
+	}
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+
+	// Verify all entities are gone — gRPC unconditional delete-all must remove
+	// every entity; no condition field exists at this layer (D2).
+	getAllCE := makeCE(EntityGetAllRequest, map[string]any{
+		"id":    "verify",
+		"model": map[string]any{"name": "person", "version": 1},
+	})
+	verifyStream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(getAllCE, verifyStream); err != nil {
+		t.Fatalf("GetAll after DeleteAll: %v", err)
+	}
+	if len(verifyStream.sent) != 0 {
+		t.Errorf("expected 0 entities after DeleteAll, got %d (gRPC delete-all must be unconditional)", len(verifyStream.sent))
+	}
+}
+
 // --- Search unsupported type ---
 
 func TestRPC_SearchUnsupportedType(t *testing.T) {
@@ -1653,6 +1712,72 @@ func TestRPC_EntityPatch_WithTransition(t *testing.T) {
 	if dataMap["name"] != "Renamed" {
 		t.Errorf("expected name=Renamed, got %v", dataMap["name"])
 	}
+}
+
+// TestRPC_EntityDirectSearch_MetaIncludesModelKey asserts that the gRPC direct-search
+// path (EntitySearchRequest via EntitySearchCollection) includes modelKey in the
+// entity meta — parity with the HTTP getOne shape (design §6.3).
+func TestRPC_EntityDirectSearch_MetaIncludesModelKey(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice", "age": 30})
+
+	// Create an entity so the search has something to return.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice", "age": 30},
+		},
+	})
+	if _, err := svc.EntityManage(ctx, createCE); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Direct search returns *spi.Entity results via buildEntityMeta.
+	searchCE := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":       "group",
+			"operator":   "AND",
+			"conditions": []any{},
+		},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(searchCE, stream); err != nil {
+		t.Fatalf("direct search: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected at least one search result")
+	}
+
+	meta := parseEntityResponseMeta(t, stream.sent[0])
+	mk, ok := meta["modelKey"].(map[string]any)
+	if !ok {
+		t.Fatalf("gRPC direct-search meta missing modelKey; got meta=%v", meta)
+	}
+	if mk["name"] != "person" {
+		t.Errorf("modelKey.name = %v, want person", mk["name"])
+	}
+}
+
+// parseEntityResponseMeta extracts the meta map from an EntityResponseJson CloudEvent.
+func parseEntityResponseMeta(t *testing.T, ce *cepb.CloudEvent) map[string]any {
+	t.Helper()
+	td, ok := ce.Data.(*cepb.CloudEvent_TextData)
+	if !ok {
+		t.Fatal("expected text_data in response")
+	}
+	var resp struct {
+		Payload struct {
+			Meta map[string]any `json:"meta"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(td.TextData), &resp); err != nil {
+		t.Fatalf("failed to unmarshal entity response: %v", err)
+	}
+	return resp.Payload.Meta
 }
 
 // --- mock stream implementations ---
