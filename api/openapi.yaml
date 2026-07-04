@@ -1451,7 +1451,7 @@ paths:
 
         Note:
 
-        - Changes are returned in chronological order
+        - Changes are returned in reverse-chronological order (newest first)
 
         - The pointInTime parameter allows viewing the change history as it
         existed at a specific time
