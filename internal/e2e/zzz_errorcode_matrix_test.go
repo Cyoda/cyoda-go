@@ -36,6 +36,28 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 	},
+	// Entity write operations — unique-key error surface (E5).
+	// Producible cells pinned by TestUniqueKeys_* and TestUniqueKeys_Processor*
+	// (unique_keys_test.go and unique_keys_processor_test.go). Run the matrix
+	// with the filter below to include all producers without the concurrency test
+	// (which may emit either UNIQUE_VIOLATION or retryable CONFLICT non-deterministically):
+	//   go test ./internal/e2e/ -run 'TestZZZErrorCodeMatrix|TestErrCodeMatrix_GetOneEntity|TestDeleteEntities|TestUniqueKeys_' -v
+	"create": {
+		{Status: 409, Code: "UNIQUE_VIOLATION"},  // TestUniqueKeys_CreateDuplicate et al.
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric
+	},
+	"createCollection": {
+		{Status: 409, Code: "UNIQUE_VIOLATION"}, // TestUniqueKeys_CollectionIntraBatchDuplicate, TestUniqueKeys_MixedModelBatch
+	},
+	"updateSingleWithLoopback": {
+		{Status: 409, Code: "UNIQUE_VIOLATION"}, // TestUniqueKeys_UpdateMovesKey
+	},
+	"updateSingle": {
+		{Status: 409, Code: "UNIQUE_VIOLATION"}, // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
+	},
+	"patchSingleWithLoopback": {
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PatchNullsKeyField
+	},
 }
 
 func hasTriple(observed []openapivalidator.ErrorTriple, op string, c codeCell) bool {

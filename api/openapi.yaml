@@ -2167,7 +2167,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2361,6 +2367,18 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2525,13 +2543,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
           description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2648,7 +2672,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — concurrent writer committed during the patch (retryable)
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
@@ -2661,6 +2685,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "415":
           description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2849,13 +2879,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
           description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2982,7 +3018,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — concurrent writer committed during the patch (retryable)
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
@@ -2995,6 +3031,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "415":
           description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -3216,6 +3258,18 @@ paths:
                 status: 404
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
+        "409":
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
