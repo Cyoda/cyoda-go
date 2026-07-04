@@ -822,7 +822,9 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 }
 
 // ListEntities retrieves all entities for a model with pagination.
-func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams) ([]EntityEnvelope, error) {
+// When pointInTime is non-nil the read is issued against the as-at snapshot
+// via GetAllAsAt, and meta.pointInTime is stamped on every envelope.
+func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams, pointInTime *time.Time) ([]EntityEnvelope, error) {
 	// Defense-in-depth: HTTP and gRPC handlers SHOULD validate before
 	// reaching the service, but enforce the same caps here so the
 	// `start := int(PageNumber * PageSize)` multiplication below cannot
@@ -842,7 +844,12 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		ModelVersion: modelVersion,
 	}
 
-	entities, err := entityStore.GetAll(ctx, ref)
+	var entities []*spi.Entity
+	if pointInTime != nil {
+		entities, err = entityStore.GetAllAsAt(ctx, ref, *pointInTime)
+	} else {
+		entities, err = entityStore.GetAll(ctx, ref)
+	}
 	if err != nil {
 		return nil, common.Internal("failed to get entities", err)
 	}
@@ -882,6 +889,9 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		}
 		if ent.Meta.TransitionForLatestSave != "" {
 			entMeta["transitionForLatestSave"] = ent.Meta.TransitionForLatestSave
+		}
+		if pointInTime != nil {
+			entMeta["pointInTime"] = pointInTime.UTC().Format(time.RFC3339Nano)
 		}
 
 		result = append(result, EntityEnvelope{

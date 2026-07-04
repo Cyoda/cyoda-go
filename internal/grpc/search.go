@@ -275,7 +275,7 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	envelopes, err := s.entityHandler.ListEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), entity.PaginationParams{
 		PageSize:   int32(pageSize),
 		PageNumber: int32(pageNumber),
-	})
+	}, nil)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)

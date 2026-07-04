@@ -635,7 +635,7 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	envelopes, err := h.ListEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), PaginationParams{
 		PageSize:   pageSize,
 		PageNumber: pageNumber,
-	})
+	}, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return

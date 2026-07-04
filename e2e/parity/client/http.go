@@ -401,6 +401,19 @@ func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersio
 	return entities, nil
 }
 
+// ListEntitiesByModelAt issues GET /api/entity/{name}/{version}?pointInTime=<t>.
+// Returns the entity list as it existed at the given point in time (E3).
+// Canonical: docs/cyoda/openapi.yml (getAllEntities with pointInTime query param).
+func (c *Client) ListEntitiesByModelAt(t *testing.T, modelName string, modelVersion int, pointInTime time.Time) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", modelName, modelVersion, pointInTime.Format(time.RFC3339Nano))
+	var entities []EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
 // GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<t>.
 // Returns the entity as it was at the given point in time.
 // Canonical: docs/cyoda/openapi.yml:1055 (getOneEntity with pointInTime query param).

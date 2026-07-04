@@ -2,6 +2,7 @@ package parity
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -64,5 +65,41 @@ func RunEntityMetaShape(t *testing.T, fixture BackendFixture) {
 	}
 	if !found {
 		t.Errorf("ListEntitiesByModel: created entity %s not found in list", id)
+	}
+}
+
+// RunGetAllEntitiesAsAt asserts the model-scoped list read honours pointInTime
+// on every backend (E3).
+func RunGetAllEntitiesAsAt(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "getall-asat-parity"
+	const modelVersion = 1
+	setupSimpleWorkflow(t, c, modelName, modelVersion)
+
+	id, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Bob","amount":1,"status":"active"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	midpoint := time.Now().UTC()
+	time.Sleep(10 * time.Millisecond)
+	if err := c.UpdateEntityData(t, id, `{"name":"Bob","amount":2,"status":"active"}`); err != nil {
+		t.Fatalf("UpdateEntityData: %v", err)
+	}
+
+	asAt, err := c.ListEntitiesByModelAt(t, modelName, modelVersion, midpoint)
+	if err != nil {
+		t.Fatalf("ListEntitiesByModelAt: %v", err)
+	}
+	if len(asAt) != 1 {
+		t.Fatalf("expected 1 entity as-at midpoint, got %d", len(asAt))
+	}
+	if got := asAt[0].Data["amount"]; got != float64(1) {
+		t.Errorf("as-at amount = %v, want 1 (pre-update)", got)
+	}
+	if asAt[0].Meta.PointInTime == nil {
+		t.Error("meta.pointInTime not populated on as-at list read")
 	}
 }
