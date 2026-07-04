@@ -79,11 +79,13 @@ ADR 0003). Each states the direction and what Cloud must mirror.
   data-loss defect). Cloud MUST honour the condition — never ignore it.
 - **E3 — `getAllEntities` as-at.** The model-scoped list read honours `pointInTime`
   (via the list-PIT primitive) and stamps `meta.pointInTime`. Direction: server-gap.
-- **E8 — `changeType` spelling = `CREATE/UPDATE/DELETE`.** Canonical, gRPC, HTTP, and
-  OpenAPI now agree on the present-tense spelling (was `CREATED/UPDATED/DELETED` on
-  HTTP+OpenAPI). Direction: needs-decision → decided (canonical/gRPC already used it;
-  changing the Cloud-consumed canonical field was the higher-risk alternative).
-  Cloud MUST emit `CREATE/UPDATE/DELETE`.
+- **E8 — `changeType` spelling = `CREATE/UPDATE/DELETE`.** Every entity-change surface now
+  agrees on the present-tense spelling (was `CREATED/UPDATED/DELETED` on HTTP+OpenAPI): the
+  `EntityChangeMeta` enum + `getEntityChangesMetadata`, gRPC, the canonical schema, AND the
+  audit endpoint `GET /audit/entity/{entityId}` (`EntityChangeAuditEventDto`). Direction:
+  needs-decision → decided (canonical/gRPC already used it; changing the Cloud-consumed
+  canonical field was the higher-risk alternative). Cloud MUST emit `CREATE/UPDATE/DELETE`
+  on all these surfaces.
 
 ## Open questions (Cloud-fact-blocked)
 
