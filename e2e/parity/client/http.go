@@ -389,7 +389,7 @@ func (c *Client) GetEntityChangesAt(t *testing.T, entityID uuid.UUID, pointInTim
 }
 
 // ListEntitiesByModel issues GET /api/entity/{name}/{version}.
-// Returns the entity list (each as EntityResult without modelKey per A2).
+// Returns the entity list; each EntityResult includes modelKey (A2 abandoned).
 // Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
 func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersion int) ([]EntityResult, error) {
 	t.Helper()
