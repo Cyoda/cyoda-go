@@ -857,6 +857,8 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	}
 
 	// Delete-all fast path preserves existing behaviour + response shape.
+	// IDs is always a non-nil empty slice: delete-all does not enumerate IDs even
+	// when verbose=true (enumerating a whole-model wipe is impractical at scale).
 	if cond == nil {
 		all, err := h.DeleteAllEntities(ctx, entityName, modelVersion)
 		if err != nil {
@@ -867,6 +869,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 			MatchedCount:  all.TotalCount,
 			RemovedCount:  all.TotalCount,
 			IDToError:     map[string]string{},
+			IDs:           []string{},
 		}, nil
 	}
 
@@ -898,8 +901,10 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Select matching ids (tx-visible; honours pointInTime).
-	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime})
+	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 disables
+	// the in-memory fallback's default 1000-entity cap so a scoped delete is never
+	// silently partial regardless of match-set size.
+	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
 	if err != nil {
 		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to select entities for delete", err)
@@ -909,6 +914,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		EntityModelID: deterministicModelID(ref).String(),
 		MatchedCount:  len(matched),
 		IDToError:     map[string]string{},
+		IDs:           []string{},
 	}
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined

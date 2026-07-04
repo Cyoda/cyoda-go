@@ -1809,11 +1809,13 @@ paths:
         Deletes entities for a given model name and version.
         An optional `AbstractConditionDto` request body scopes the delete to
         matching entities only; an empty body (or no body) deletes all entities.
-        When `verbose=true`, the response includes the `ids` array of deleted
-        entity IDs in addition to statistics. `deleteResult.numberOfEntitites`
-        is the count of entities that matched the condition (or all entities when
-        no condition is given); `deleteResult.numberOfEntititesRemoved` is the
-        count actually removed (may be lower if individual deletes failed).
+        When `verbose=true` and a condition is given, the response `ids` array
+        lists every deleted entity ID. For a delete-all (empty body), `ids` is
+        always an empty array — enumerating a whole-model wipe is impractical at
+        scale; use statistics only. `deleteResult.numberOfEntitites` is the count
+        of entities that matched the condition (or all entities when no condition
+        is given); `deleteResult.numberOfEntititesRemoved` is the count actually
+        removed (may be lower if individual deletes failed).
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
