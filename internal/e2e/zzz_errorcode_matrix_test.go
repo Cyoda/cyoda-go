@@ -32,6 +32,10 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},
 		{Status: 400, Code: "BAD_REQUEST"}, // conflicting pointInTime+transactionId
 	},
+	"deleteEntities": {
+		{Status: 400, Code: "INVALID_CONDITION"},
+		{Status: 404, Code: "MODEL_NOT_FOUND"},
+	},
 }
 
 func hasTriple(observed []openapivalidator.ErrorTriple, op string, c codeCell) bool {

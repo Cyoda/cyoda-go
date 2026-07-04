@@ -100,7 +100,7 @@ func newPatchTestHandler(t *testing.T) (*Handler, context.Context) {
 	}
 
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
 
 	// Build a strict (ChangeLevel == "") schema for Person: {name: String, age: Integer}.
 	node := schema.NewObjectNode()

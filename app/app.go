@@ -532,7 +532,7 @@ func New(cfg Config) *App {
 
 	// Domain handlers
 	a.txGate = txgate.New()
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.searchService)
 	modelHandler := model.New(a.storeFactory)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler

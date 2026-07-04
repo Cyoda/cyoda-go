@@ -1805,9 +1805,16 @@ paths:
       tags:
         - Entity Management
       summary: Delete entities of a model and version
-      description: Deletes entities for a given model name and version which existed
-        at the consistency time of the system when the request is launched by
-        provided condition or all entities if condition is not provided.
+      description: >-
+        Deletes entities for a given model name and version.
+        An optional `AbstractConditionDto` request body scopes the delete to
+        matching entities only; an empty body (or no body) deletes all entities.
+        When `verbose=true`, the response includes the `ids` array of deleted
+        entity IDs in addition to statistics. `deleteResult.numberOfEntitites`
+        is the count of entities that matched the condition (or all entities when
+        no condition is given); `deleteResult.numberOfEntititesRemoved` is the
+        count actually removed (may be lower if individual deletes failed).
+        A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
         - name: entityName
@@ -1919,7 +1926,9 @@ paths:
                       idToError:
                         cecbe400-7402-11ef-9e63-ae468cd3ed16: Some error message
         "400":
-          description: Invalid model name
+          description: >-
+            Invalid request. Returned for a malformed condition body
+            (`INVALID_CONDITION`) or an invalid model name (e.g., name too long).
           content:
             application/problem+json:
               schema:
@@ -1933,6 +1942,16 @@ paths:
                     status: 400
                     detail: String length of the schema name is outside of the bounds [1,1024]
                     instance: /api/entity/very-long-entity-model-name/1
+                Invalid Condition:
+                  description: Malformed AbstractConditionDto body
+                  value:
+                    type: about:blank
+                    title: Bad Request
+                    status: 400
+                    detail: "INVALID_CONDITION: unsupported condition type: NONSENSE"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: INVALID_CONDITION
         "404":
           description: Entity model not found
           content:

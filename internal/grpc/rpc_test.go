@@ -39,10 +39,10 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	}
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	modelHandler := model.New(factory)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

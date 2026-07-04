@@ -35,6 +35,7 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 		common.NewDefaultUUIDGenerator(),
 		nil,
 		txgate.New(),
+		nil,
 	)
 
 	ctx := context.Background()
@@ -93,6 +94,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			common.NewDefaultUUIDGenerator(),
 			nil,
 			txgate.New(),
+			nil,
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -116,6 +118,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			common.NewDefaultUUIDGenerator(),
 			nil,
 			txgate.New(),
+			nil,
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -147,6 +150,7 @@ func TestGetEntity_NotFoundReturns404(t *testing.T) {
 		common.NewDefaultUUIDGenerator(),
 		nil,
 		txgate.New(),
+		nil,
 	)
 
 	ctx := context.Background()
@@ -193,7 +197,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -272,7 +276,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
@@ -538,7 +542,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
