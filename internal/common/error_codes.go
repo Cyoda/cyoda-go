@@ -75,6 +75,10 @@ const (
 	// type does not match the field's locked DataType (e.g. "abc" against a
 	// DOUBLE field). Equivalent to Cloud's InvalidTypesInClientConditionException.
 	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
+	// ErrCodeInvalidCondition is returned when a request body condition
+	// (AbstractConditionDto) cannot be parsed. Non-retryable: the client
+	// must fix the malformed condition.
+	ErrCodeInvalidCondition = "INVALID_CONDITION"
 )
 
 // Composite unique-key errors
