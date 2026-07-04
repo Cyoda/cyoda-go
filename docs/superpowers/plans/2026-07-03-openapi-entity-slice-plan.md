@@ -1986,6 +1986,13 @@ ADR 0003). Each states the direction and what Cloud must mirror.
   `modelKey/pointInTime/transitionForLatestSave/transactionId`); the
   `previousTransition` fossil is removed. Direction: spec-incomplete + spec-stale.
   Cloud MUST emit the same typed-but-open meta.
+- **E1b — `modelKey` on all reads (deviation A2 abandoned).** Previously by-model reads
+  (`getAllEntities`, search — HTTP and gRPC) omitted `modelKey` while by-id `getOneEntity`
+  included it (the "A2" optimization). That deviation is abandoned: `modelKey` is now emitted on
+  every entity read (single-get, list, search) across HTTP and gRPC — one uniform meta shape.
+  Direction: needs-decision → decided (byte-saving rationale negligible; uniform meta is simpler
+  and fully canonical). Cloud MUST emit `modelKey` on all entity reads. (The `EntityMetadata`
+  schema already marks `modelKey` optional, so this is additive/non-breaking for consumers.)
 - **E2 — conditional `deleteEntities` (HTTP).** `DELETE /entity/{name}/{version}`
   with an `AbstractConditionDto` body deletes only matching entities (empty body ⇒
   all); `verbose=true` returns deleted ids; `numberOfEntitites` (matched) and
