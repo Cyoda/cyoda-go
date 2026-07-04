@@ -36,7 +36,16 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 	},
-	// Entity write operations — full deterministic error surface (E5).
+	// Entity write operations (E5). The matrix tracks the ops with a bounded,
+	// bidirectionally-checkable error surface:
+	//   {getOneEntity, deleteEntities, create, createCollection, updateSingle,
+	//    updateSingleWithLoopback, patchSingleWithLoopback}.
+	// updateCollection and patchSingle are deliberately NOT matrix keys: tracking
+	// them would force declaring their entire transition-error surface (out of
+	// scope here). Their composite-unique-key codes (updateCollection 409/422,
+	// patchSingle 409/422) are instead proven by explicit e2e assertions in
+	// unique_keys_write_variants_test.go — a one-line waiver; their full
+	// transition-error surface belongs to a follow-on.
 	// CONFLICT (409) is exempt from all rows: it is a retryable serialization
 	// abort emitted non-deterministically by any write op under concurrency and
 	// is therefore not a per-endpoint documented code (see universalConcurrencyCodes).
@@ -49,12 +58,14 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric
 	},
 	"createCollection": {
-		{Status: 400, Code: "BAD_REQUEST"},      // invalid JSON array or parameter
-		{Status: 404, Code: "MODEL_NOT_FOUND"},  // one or more models not registered
-		{Status: 409, Code: "UNIQUE_VIOLATION"}, // TestUniqueKeys_CollectionIntraBatchDuplicate, TestUniqueKeys_MixedModelBatch
+		{Status: 400, Code: "BAD_REQUEST"},        // invalid JSON array or parameter
+		{Status: 404, Code: "MODEL_NOT_FOUND"},    // one or more models not registered
+		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CollectionIntraBatchDuplicate, TestUniqueKeys_MixedModelBatch
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_CollectionPartialKeyCreate
 	},
 	"updateSingleWithLoopback": {
-		{Status: 409, Code: "UNIQUE_VIOLATION"}, // TestUniqueKeys_UpdateMovesKey
+		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
 		// 409 CONFLICT is exempt (universalConcurrencyCodes)
 	},
 	"updateSingle": {
@@ -63,8 +74,10 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},      // entity UUID not found
 		{Status: 409, Code: "UNIQUE_VIOLATION"},      // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
 		{Status: 412, Code: "ENTITY_MODIFIED"},       // If-Match mismatch
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"},    // TestUniqueKeys_TransitionUpdatePartialKey
 	},
 	"patchSingleWithLoopback": {
+		{Status: 409, Code: "UNIQUE_VIOLATION"},       // TestUniqueKeys_LoopbackPatchDuplicate
 		{Status: 412, Code: "ENTITY_MODIFIED"},        // If-Match transactionId no longer matches
 		{Status: 415, Code: "UNSUPPORTED_MEDIA_TYPE"}, // non-JSON format or unrecognised Content-Type
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"},     // TestUniqueKeys_PatchNullsKeyField

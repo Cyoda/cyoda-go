@@ -3024,13 +3024,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match transactionId no longer matches
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "415":
-          description: Unsupported Media Type — non-JSON format or unrecognised Content-Type
+          description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
           content:
             application/problem+json:
               schema:
@@ -3042,7 +3042,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "428":
-          description: Precondition Required — If-Match absent; supply a transactionId or "*"
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
           content:
             application/problem+json:
               schema:
