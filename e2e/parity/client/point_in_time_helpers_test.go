@@ -132,8 +132,8 @@ func TestGetEntityChangesAt(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`[
-			{"timeOfChange":"2025-01-01T00:00:00Z","user":"alice","changeType":"CREATED","transactionId":"tx-1"},
-			{"timeOfChange":"2025-01-01T00:00:01Z","user":"alice","changeType":"UPDATED","transactionId":"tx-2"}
+			{"timeOfChange":"2025-01-01T00:00:00Z","user":"alice","changeType":"CREATE","transactionId":"tx-1"},
+			{"timeOfChange":"2025-01-01T00:00:01Z","user":"alice","changeType":"UPDATE","transactionId":"tx-2"}
 		]`))
 	}))
 	defer srv.Close()
@@ -158,7 +158,7 @@ func TestGetEntityChangesAt(t *testing.T) {
 	if len(changes) != 2 {
 		t.Fatalf("changes: got %d want 2", len(changes))
 	}
-	if changes[0].ChangeType != "CREATED" {
+	if changes[0].ChangeType != "CREATE" {
 		t.Errorf("changes[0].changeType: got %q", changes[0].ChangeType)
 	}
 	if changes[1].TransactionID != "tx-2" {
