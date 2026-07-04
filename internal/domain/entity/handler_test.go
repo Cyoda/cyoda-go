@@ -1387,8 +1387,8 @@ func TestGetEntityChangesMetadata(t *testing.T) {
 		t.Fatalf("expected 3 change entries, got %d", len(changes))
 	}
 
-	// Verify reverse chronological order: UPDATED, UPDATED, CREATED
-	expectedTypes := []string{"UPDATED", "UPDATED", "CREATED"}
+	// Verify reverse chronological order: canonical wire spelling UPDATE, UPDATE, CREATE
+	expectedTypes := []string{"UPDATE", "UPDATE", "CREATE"}
 	for i, expected := range expectedTypes {
 		ct, ok := changes[i]["changeType"].(string)
 		if !ok || ct != expected {
@@ -1469,14 +1469,14 @@ func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 		t.Fatalf("parse truncated: %v", err)
 	}
 	if len(truncated) != 2 {
-		t.Fatalf("truncated history: expected 2 entries (CREATED + UPDATED), got %d: %v", len(truncated), truncated)
+		t.Fatalf("truncated history: expected 2 entries (CREATE + UPDATE), got %d: %v", len(truncated), truncated)
 	}
-	// Newest-first order: [UPDATED, CREATED].
-	if ct, _ := truncated[0]["changeType"].(string); ct != "UPDATED" {
-		t.Errorf("truncated[0].changeType: got %v, want UPDATED", truncated[0]["changeType"])
+	// Newest-first order: [UPDATE, CREATE] (canonical wire spelling).
+	if ct, _ := truncated[0]["changeType"].(string); ct != "UPDATE" {
+		t.Errorf("truncated[0].changeType: got %v, want UPDATE", truncated[0]["changeType"])
 	}
-	if ct, _ := truncated[1]["changeType"].(string); ct != "CREATED" {
-		t.Errorf("truncated[1].changeType: got %v, want CREATED", truncated[1]["changeType"])
+	if ct, _ := truncated[1]["changeType"].(string); ct != "CREATE" {
+		t.Errorf("truncated[1].changeType: got %v, want CREATE", truncated[1]["changeType"])
 	}
 
 	// All returned entries must have timeOfChange <= cutoff.
@@ -1613,15 +1613,15 @@ func TestGetEntityChangesMetadata_PointInTimeExactBoundary(t *testing.T) {
 		t.Fatalf("exact-boundary pointInTime: expected 2 entries (boundary + older), got %d: %v",
 			len(atBoundary), atBoundary)
 	}
-	// Newest-first: [boundary UPDATED, CREATED].
+	// Newest-first: [boundary UPDATE, CREATE] (canonical wire spelling).
 	if got := atBoundary[0]["timeOfChange"]; got != boundaryStr {
 		t.Errorf("atBoundary[0].timeOfChange: got %v, want %s (boundary entry must be included)", got, boundaryStr)
 	}
-	if ct, _ := atBoundary[0]["changeType"].(string); ct != "UPDATED" {
-		t.Errorf("atBoundary[0].changeType: got %v, want UPDATED", atBoundary[0]["changeType"])
+	if ct, _ := atBoundary[0]["changeType"].(string); ct != "UPDATE" {
+		t.Errorf("atBoundary[0].changeType: got %v, want UPDATE", atBoundary[0]["changeType"])
 	}
-	if ct, _ := atBoundary[1]["changeType"].(string); ct != "CREATED" {
-		t.Errorf("atBoundary[1].changeType: got %v, want CREATED", atBoundary[1]["changeType"])
+	if ct, _ := atBoundary[1]["changeType"].(string); ct != "CREATE" {
+		t.Errorf("atBoundary[1].changeType: got %v, want CREATE", atBoundary[1]["changeType"])
 	}
 }
 

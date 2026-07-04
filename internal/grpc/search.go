@@ -597,18 +597,9 @@ func buildEntityMeta(e *spi.Entity, pointInTime *time.Time) map[string]any {
 
 // mapChangeType maps internal change type strings to the enum values expected
 // by the generated EntityChangeMetaJsonChangeType.
+// Delegates to common.CanonicalChangeType (E8 shared mapping).
 func mapChangeType(ct string) string {
-	switch ct {
-	case "CREATED":
-		return "CREATE"
-	case "UPDATED":
-		return "UPDATE"
-	case "DELETED":
-		return "DELETE"
-	default:
-		// Pass through if already in the correct format.
-		return ct
-	}
+	return common.CanonicalChangeType(ct)
 }
 
 // handleSnapshotGetRequestStreaming streams entity results from a completed snapshot.

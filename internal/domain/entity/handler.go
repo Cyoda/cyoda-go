@@ -578,7 +578,7 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 	result := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		entry := map[string]any{
-			"changeType":   canonicalChangeType(e.ChangeType),
+			"changeType":   common.CanonicalChangeType(e.ChangeType),
 			"timeOfChange": e.TimeOfChange,
 			"user":         e.User,
 		}
@@ -591,22 +591,6 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 	common.WriteJSON(w, http.StatusOK, result)
 }
 
-// canonicalChangeType maps the internal change-type spelling
-// (CREATED/UPDATED/DELETED) to the canonical wire spelling
-// (CREATE/UPDATE/DELETE) shared with the canonical schema, gRPC, and the
-// parity client (design §6.3 / E8). Unknown values pass through.
-func canonicalChangeType(ct string) string {
-	switch ct {
-	case "CREATED":
-		return "CREATE"
-	case "UPDATED":
-		return "UPDATE"
-	case "DELETED":
-		return "DELETE"
-	default:
-		return ct
-	}
-}
 
 func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
 	condBody, err := io.ReadAll(r.Body)

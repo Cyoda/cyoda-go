@@ -10647,11 +10647,11 @@ components:
           properties:
             changeType:
               type: string
-              description: Type of change that occurred
+              description: Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
               enum:
-                - CREATED
-                - UPDATED
-                - DELETED
+                - CREATE
+                - UPDATE
+                - DELETE
             changes:
               $ref: "#/components/schemas/EntityChangesDto"
               description: Changes made to the entity
