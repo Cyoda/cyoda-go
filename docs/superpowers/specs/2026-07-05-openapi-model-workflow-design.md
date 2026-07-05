@@ -1,32 +1,48 @@
-# OpenAPI entity-model & workflow reconciliation — design
+# OpenAPI entity-model & workflow reconciliation + #369 documentation catch-up — design
 
-Reconciles `api/openapi.yaml` with the actual server for the entity-model and
-workflow domain (`internal/domain/{model,workflow}/*`, `internal/grpc/model.go`).
-Follow-on group 2 of the OpenAPI reconciliation effort (issue #369). Governed by
-[ADR 0003](../../adr/0003-openapi-contract-conformance-and-evolution.md) and the
-typed-but-open schema policy (`docs/analysis/openapi/schema-strictness-research.md`).
-Source findings: `docs/analysis/openapi/README.md` §6C.
+Two bodies of work, one PR to `release/v0.8.2`:
 
-Prior merged slices this reuses the machinery of:
-`2026-07-02-openapi-contract-reconciliation-design.md` (entity),
+**(A) Entity-model & workflow reconciliation** — reconciles `api/openapi.yaml`
+with the server for the entity-model and workflow domain
+(`internal/domain/{model,workflow}/*`, `internal/grpc/model.go`). Follow-on group
+2 of the OpenAPI reconciliation effort (issue #369). Source: `docs/analysis/openapi/README.md` §6C.
+
+**(B) Documentation catch-up for the prior merged slices (#371 entity, #373
+stats/audit/search)** — those PRs changed the API contract but left the
+help-subsystem (`cmd/cyoda/help/content/`) and core docs partly stale, in breach
+of Gate 4 (this was surfaced when the same class of miss nearly recurred in part
+A). As the final documentation-hygiene phase of #369, this PR reconciles that
+drift too. Details in §14.
+
+Governed by [ADR 0003](../../adr/0003-openapi-contract-conformance-and-evolution.md)
+and the typed-but-open schema policy
+(`docs/analysis/openapi/schema-strictness-research.md`). Reuses the machinery of
+`2026-07-02-openapi-contract-reconciliation-design.md` (entity) and
 `2026-07-04-openapi-stats-audit-search-design.md` (stats/audit/search).
 
 ## 1. Scope
 
-All of §6C in one PR to `release/v0.8.2`: the 11 operations under the
-`Entity model` / `Entity Model` / `Entity Model, Workflow` tags.
+**Part A** — all of §6C: the 11 operations under the `Entity model` / `Entity
+Model` / `Entity Model, Workflow` tags. Almost pure spec-documentation
+reconciliation (every error code already emitted, correctly named, with a
+`cmd/cyoda/help/content/errors/<CODE>.md` topic) plus **one deliberate runtime
+behaviour change** (Design area 1, §2). No new error code → no new error topic,
+no `TestErrCode_Parity` delta.
 
-This slice is **almost pure spec-documentation reconciliation** — every error
-code is already emitted, correctly named, and already has a
-`cmd/cyoda/help/content/errors/<CODE>.md` topic — with **one deliberate runtime
-behaviour change** (Design area 1). No new error code is introduced, so no new
-help topic and no `TestErrCode_Parity` delta.
+**Part B** — help-subsystem + core-doc reconciliation for the already-merged
+#371 and #373 contract changes (§14). Pure documentation sync to the
+already-shipped `api/openapi.yaml` — no code change, no contract change, no new
+cloud-parity entry (the contracts were logged when #371/#373 merged). Includes
+one net-new help topic (`audit.md`, Paul-approved) for the audit endpoints #371
+shipped without help coverage.
 
 **Explicitly out of scope (stated so reviewers don't re-litigate):**
-`getAvailableEntityModels` (200 + 5xx only, no 4xx surface) and
+Part A — `getAvailableEntityModels` (200 + 5xx only, no 4xx surface) and
 `validateEntityModel` (400 parse + 404 already documented; validation *failure*
-is a `200 {success:false}`, correctly modelled — not an error code). Both are
-already faithful.
+is a `200 {success:false}`, correctly modelled). Both already faithful.
+Part B — `docs/cyoda/*` (the read-only vendored Cloud spec mirror; its staleness
+is intentional and tracked in `docs/cyoda/cloud-divergences.md` — Cloud conforms
+to cyoda-go, not the reverse) and historical `docs/{plans,superpowers,analysis,audits}/`.
 
 ## 2. Design area 1 — `deleteEntityModel` enforces UNLOCKED state (server-gap)
 
@@ -281,7 +297,7 @@ Add a "Model/workflow reconciliations (2026-07)" section:
 - **M3 — `exportMetadata.uniqueKeys` typed.** The 200 body now enumerates the
   `uniqueKeys` array (typed-but-open). Cloud MUST emit it when keys exist.
 
-## 13. Help-subsystem & core-doc reconciliation (Gate 4)
+## 13. Part A help-subsystem & core-doc reconciliation (Gate 4)
 
 `api/openapi.yaml` is only one of two shipped contract surfaces. The
 `cmd/cyoda/help/content/` tree (served by `cyoda help <topic>` and by
@@ -334,7 +350,90 @@ COMPATIBILITY (no env-var, no interface, no version/pin change), `DefaultConfig(
 Every help-topic edit is a plan task paired with the corresponding
 `api/openapi.yaml` edit so the two surfaces are never committed out of sync.
 
-## 14. Dead-code / zombie sweep checklist
+## 14. Part B — prior-slice documentation reconciliation (#371 / #373 Gate-4 catch-up)
+
+Two independent drift audits (fresh-context agents, 2026-07-05) checked the
+help-subsystem + core docs against the already-merged #371 and #373 contract
+changes. All items below are **documentation-only** — they sync prose/examples to
+the contract already shipped in `api/openapi.yaml` on `release/v0.8.2`. No code,
+no `api/openapi.yaml`, no cloud-parity change. Each fix is verified against the
+cited `api/openapi.yaml` line (the source of truth), not against the audit alone.
+
+### 14.1 `cmd/cyoda/help/content/crud.md` (entity slice #371 drift)
+
+| Sev | Fix | crud.md | Contract truth (openapi.yaml) |
+|---|---|---|---|
+| High | `deleteEntities` — rewrite from "delete all entities for a model" to the **conditional** contract: optional `AbstractConditionDto` body scopes the delete (empty/no body ⇒ all); `verbose=true` lists deleted `ids`; `transactionSize` + `pointInTime` query params; `numberOfEntitites`=matched vs `numberOfEntititesRemoved`=removed; `400 INVALID_CONDITION` on malformed condition | 318-334 | 1803-1928 |
+| High | `changeType` example values + enumeration `CREATED/UPDATED/DELETED` → `CREATE/UPDATE/DELETE` | 355,361,369 | 1427,1487-1497,10225-10230 |
+| High | Envelope: "`modelKey` … omitted from list/search" → **present on all reads** (single-get, list, search; HTTP+gRPC) | 591 | 1726-1728,1754-1756,10255-10257 |
+| Med | list `GET /entity/{name}/{version}` — add `pointInTime` query param + as-at semantics | 336-343 | 1684-1693 |
+| Med | Envelope — add `meta.pointInTime` | 576-596 | 10274-10277 |
+| Med | ERRORS + see_also — add `UNIQUE_VIOLATION` (409), `INVALID_UNIQUE_KEY` (422) | 5-18,609-621 | write-family |
+| Med | `/changes` — add reverse-chronological (newest-first) note; reorder example newest-first | 345-370 | 1445 |
+| Low | single-GET meta example — add `modelKey` | 146-153 | 1369 |
+
+*Confirmed in sync (no change):* `previousTransition` fossil absent from meta
+(E1); collection create/update typed as arrays (E4).
+
+### 14.2 `cmd/cyoda/help/content/search.md`
+
+| Sev | Fix | search.md | Contract truth |
+|---|---|---|---|
+| Med | `searchJobStatus` enum — add `NOT_FOUND` (#373 S3; commercial store emits it) | 229 | openapi 8156,6577-6593 |
+| Low | envelope examples — add `meta.modelKey` (#371 E1b) | 190-191,252 | 10255-10257 |
+
+*Not stale (leave):* `previousTransition` as a `LifecycleCondition` search field
+(search.md:109) — E1 removed only the meta *fossil*, not the lifecycle search
+field (openapi 6316).
+
+### 14.3 Error-code topic bodies
+
+| Sev | Fix | File |
+|---|---|---|
+| Med | `MODEL_NOT_FOUND` — DESCRIPTION covers write-path only; add the read/list/stats/search/grouped-stats path (#373 S1); add `search`/`crud` to see_also | errors/MODEL_NOT_FOUND.md:23-25,5-8 |
+
+*Not stale:* `errors/UNIQUE_VIOLATION.md`, `errors/INVALID_UNIQUE_KEY.md` bodies
+are operation-agnostic and correct. No stale `errors/UNKNOWN_MODEL.md` exists
+(retired code had no topic; bijection intact).
+
+### 14.4 New topic `cmd/cyoda/help/content/audit.md` (Paul-approved)
+
+`#371` shipped `GET /audit/entity/{entityId}` (searchEntityAuditEvents) +
+`EntityChangeAuditEventDto` with zero help coverage; `#373` documented the
+`System` eventType and deferred `changes` diff only in the spec. One new topic
+closes both, following the subsystem-per-topic convention (models/crud/search/
+workflows). Contents:
+- `GET /api/audit/entity/{entityId}` — audit-event search; `EntityChangeAuditEventDto`
+  (`changeType` = `CREATE/UPDATE/DELETE`); `eventType` query enum
+  `StateMachine`/`EntityChange`/`System` — **System excluded from the default set,
+  "use with caution"** (openapi 361-397).
+- The `changes` before/after diff is a **deferred gap** — documented as
+  not-yet-emitted; MUST NOT be promised as working (S2).
+- `GET /api/audit/entity/{entityId}/workflow/{transactionId}/finished`
+  (getStateMachineFinishedEvent; #373 already reconciled its spec to `ProblemDetail`).
+- `see_also`: crud, search, models, errors.*. Register in the help tree; add a
+  `TestHelp*`/topic-tree entry if the tree has a completeness check.
+
+### 14.5 Core docs beyond help
+
+| Sev | Fix | File |
+|---|---|---|
+| Med | `changeType` feature line `CREATED, UPDATED, DELETED` → `CREATE, UPDATE, DELETE` | docs/FEATURES.md:54 |
+
+`README.md` audited clean. `docs/{PRD,adr}` `previousTransition` references are
+the still-valid lifecycle search field, not stale.
+
+### 14.6 Verification for Part B
+No unit/e2e producing test asserts prose accuracy (only `TestErrCode_Parity`
+guards code↔topic existence). Verification is: (1) each edit checked against the
+cited `api/openapi.yaml` line; (2) `cyoda help {crud,search,audit,models}` and
+`cyoda help errors MODEL_NOT_FOUND` render post-build (help tree embedded); (3)
+if a help-tree completeness test exists, `audit.md` passes it. A follow-on
+hardening idea (out of scope, noted for #369 wrap-up): a doc-conformance check
+that greps help prose for retired spellings (`CREATED`/`UPDATED`/`DELETED`,
+`UNKNOWN_MODEL`) — records the risk rather than leaving it silent.
+
+## 15. Dead-code / zombie sweep checklist
 
 - `MODEL_HAS_ENTITIES`-on-delete: **retained** as a multi-node guard (§2.4) — not
   removed.
@@ -344,7 +443,7 @@ Every help-topic edit is a plan task paired with the corresponding
 - Verify `api/generated.go` regenerates clean after the spec edits (the
   `codegen-sync` gate); regen if the router surface shifts.
 
-## 15. Verification gates
+## 16. Verification gates
 
 - TDD: RED for the delete-lock behaviour change first (§2.2); RED producing tests
   for each documented code before its doc is added.
@@ -353,8 +452,13 @@ Every help-topic edit is a plan task paired with the corresponding
 - `make check-codegen` (generated.go in sync), `make check-gofmt`, oasdiff gate,
   `TestSpecHasNoSealedSchemas`, `TestErrCode_Parity` (no new code → no delta),
   the OpenAPI conformance test (every documented status exercised or waived).
-- Gate 4 docs: `docs/cloud-parity/openapi-conformance.md` (§12), the
-  help-subsystem topics + CHANGELOG (§13). Every help-topic edit is committed
-  alongside its `api/openapi.yaml` counterpart. `cyoda help models`, `cyoda help
-  errors MODEL_ALREADY_LOCKED` render correctly after edits (help tree is
-  embedded — a build + spot-render confirms).
+- Gate 4 docs: `docs/cloud-parity/openapi-conformance.md` (§12); Part A
+  help-subsystem topics (§13); Part B prior-slice doc catch-up (§14, incl. new
+  `audit.md`); CHANGELOG. Part-A help edits are committed alongside their
+  `api/openapi.yaml` counterpart; Part-B edits sync to the already-shipped spec
+  (each checked against the cited `openapi.yaml` line). `cyoda help
+  {models,crud,search,audit}` and `cyoda help errors {MODEL_ALREADY_LOCKED,
+  MODEL_NOT_FOUND}` render correctly post-build.
+- Commit hygiene (§Part A/B, one PR): separate commits — (1) delete-lock
+  behaviour change + tests; (2) Part A model/workflow spec + help edits; (3) Part
+  B #371/#373 doc catch-up. Keeps the doc-heavy PR reviewable.
