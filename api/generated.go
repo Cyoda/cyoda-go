@@ -3830,7 +3830,7 @@ type SearchEntitiesParams struct {
 	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Defaults to the consistency time of the system if not provided.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// Limit The maximum number of rows to return. You can specify a limit of up to 10000 and defaults to 1000 if not provided.
+	// Limit The maximum number of rows to return. Defaults to 1000 if not provided. Values above 10000 are rejected with 400.
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.

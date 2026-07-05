@@ -14,6 +14,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -118,6 +119,15 @@ func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 // authoritative read. Truly-unknown paths surface as 4xx BAD_REQUEST.
 // Unregistered models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
+	// Defense-in-depth: enforce the limit cap at the service layer so every
+	// entry point (HTTP, gRPC, future transports) sees the same rejection.
+	// The HTTP handler checks this already; gRPC does not — placing the check
+	// here closes that gap without altering the unbounded (limit<0) semantics.
+	if opts.Limit > pagination.MaxPageSize {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)

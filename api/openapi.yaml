@@ -6688,8 +6688,8 @@ paths:
             format: date-time
         - name: limit
           in: query
-          description: "The maximum number of rows to return. You can specify a limit of
-            up to 10000 and defaults to 1000 if not provided. "
+          description: "The maximum number of rows to return. Defaults to 1000 if not
+            provided. Values above 10000 are rejected with 400."
           required: false
           schema:
             type: string
@@ -6729,26 +6729,15 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/EntityResultDto"
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/EntityResultDto"
         "400":
-          description: Invalid search parameters
+          description: Invalid search parameters (e.g. limit exceeds 10000)
           content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Entity model not found
           content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"

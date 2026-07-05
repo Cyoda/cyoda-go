@@ -1271,3 +1271,51 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 		t.Fatalf("expected SUCCESSFUL, got %s", status.Status)
 	}
 }
+
+// TestSearch_LimitExceedsMax verifies the service-layer defense-in-depth cap:
+// limit > MaxPageSize is rejected with a 400 BAD_REQUEST AppError before any
+// store access, and the unbounded case (limit < 0) is NOT rejected.
+func TestSearch_LimitExceedsMax(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	ctx := tenantCtx("tenant-cap")
+	ref := spi.ModelRef{EntityName: "cap-model", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
+	cond := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{}}
+
+	t.Run("limit above max rejected", func(t *testing.T) {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10001})
+		if err == nil {
+			t.Fatal("expected error for limit=10001, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeBadRequest {
+			t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
+		}
+	})
+
+	t.Run("limit at max accepted", func(t *testing.T) {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10000})
+		if err != nil {
+			t.Fatalf("expected success for limit=10000, got: %v", err)
+		}
+	})
+
+	t.Run("unbounded limit (negative) accepted", func(t *testing.T) {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: -1})
+		if err != nil {
+			t.Fatalf("expected success for unbounded limit=-1, got: %v", err)
+		}
+	})
+}

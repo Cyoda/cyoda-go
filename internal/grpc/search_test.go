@@ -547,6 +547,47 @@ func TestEntitySearch_SnapshotSearch_UnknownModel_ModelNotFound(t *testing.T) {
 	}
 }
 
+// TestEntitySearch_DirectSearch_LimitExceedsMax verifies that a direct search
+// with limit > 10000 (MaxPageSize) is rejected by the service layer and
+// surfaces as CLIENT_ERROR in the gRPC envelope. This closes the HTTP/gRPC
+// parity gap: the HTTP handler already rejects oversized limits; the service
+// cap ensures gRPC inherits the same constraint.
+func TestEntitySearch_DirectSearch_LimitExceedsMax(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "caplimit", "1", map[string]any{"val": "x"})
+
+	overLimit := 10001
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "s-caplimit-1",
+		"model": map[string]any{"name": "caplimit", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+		"limit": overLimit,
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for limit exceeding max")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "BAD_REQUEST") {
+		t.Errorf("expected BAD_REQUEST in message, got %q", typed.Error.Message)
+	}
+}
+
 // TestEntitySearch_SnapshotSearch_OrderBy_InvalidField verifies that an async
 // snapshot search with an unknown sort path is rejected synchronously at submit,
 // surfaces CLIENT_ERROR / INVALID_FIELD_PATH, and issues no snapshot ID.
