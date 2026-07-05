@@ -28,6 +28,9 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 	// Determine which event types to include.
 	// Default (no filter): include EntityChange and StateMachine but NOT System.
+	// System is a reserved/commercial audit source retained in the eventType
+	// enum contract — do NOT remove it from the OpenAPI spec even though OSS
+	// backends never emit it.
 	includeEntityChange := true
 	includeStateMachine := true
 	if params.EventType != nil {

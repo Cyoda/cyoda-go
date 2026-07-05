@@ -54,8 +54,13 @@ type SearchJobStatus struct {
 
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
 type SnapshotStatus struct {
-	SnapshotID    string
-	Status        string // RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND
+	SnapshotID string
+	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND.
+	// NOT_FOUND is emitted by the commercial self-executing search store on
+	// snapshot-expiry races (documented in the getAsyncSearchStatus spec); it
+	// is intentionally retained in the contract — do NOT remove this value
+	// even though OSS backends never set it.
+	Status        string
 	EntitiesCount int
 }
 
