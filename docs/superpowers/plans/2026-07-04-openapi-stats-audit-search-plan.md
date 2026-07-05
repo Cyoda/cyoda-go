@@ -19,6 +19,11 @@
 - TDD: red → green → commit per step. `go vet ./...` after signature changes (a plain `go build` skips test files). `make race` once before PR.
 - No issue IDs in shipped artefacts (code/spec/help/response bodies); issue IDs only in commits/PR/plan/spec docs.
 - Spec source of truth: `docs/superpowers/specs/2026-07-04-openapi-stats-audit-search-design.md`.
+- **gRPC envelope assertion (Tasks 2-7):** cyoda-go maps operational (4xx) `AppError`s to
+  `Error.Code == "CLIENT_ERROR"` with the domain code in `Error.Message` (`"MODEL_NOT_FOUND: detail"`),
+  uniformly (`internal/grpc/errors.go` `buildErrorFields`). gRPC tests assert `Error.Code == "CLIENT_ERROR"`
+  AND `Error.Message` contains `"MODEL_NOT_FOUND"` — NOT `Error.Code == "MODEL_NOT_FOUND"`. Do not change
+  the envelope wrapper (issue #342 territory, out of scope).
 
 ---
 

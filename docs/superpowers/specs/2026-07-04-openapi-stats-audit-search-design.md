@@ -185,6 +185,14 @@ audit-by-id ops (`404 ENTITY_NOT_FOUND`).
 Layers: **U** unit · **E** running-backend e2e (real Postgres) · **P** cross-backend parity
 (memory/sqlite/postgres/commercial) · **G** gRPC envelope (`Error.Code`).
 
+**gRPC envelope-assertion convention:** cyoda-go's gRPC error envelope (`buildErrorFields`,
+`internal/grpc/errors.go`) maps every operational (4xx) `AppError` to `Error.Code == "CLIENT_ERROR"`
+with the domain code carried in `Error.Message` as `"MODEL_NOT_FOUND: <detail>"` (internal errors →
+`"SERVER_ERROR"` + ticket). This is uniform across all builders. So a "gRPC envelope Error.Code"
+cell asserts **`Error.Code == "CLIENT_ERROR"` AND `Error.Message` contains `"MODEL_NOT_FOUND"`** —
+not `Error.Code == "MODEL_NOT_FOUND"`. Exposing domain codes in `Error.Code` is a separate envelope
+question (issue #342), out of scope here; do not diverge one op from the uniform contract.
+
 | Scenario | U | E | P | G |
 |---|---|---|---|---|
 | getAllEntities unknown model → 404 | ✓ | ✓ | (shared P below) | ✓ (grpc ListEntities) |
