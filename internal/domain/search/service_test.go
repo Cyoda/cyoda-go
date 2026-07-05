@@ -30,6 +30,18 @@ func tenantCtx(tenantID string) context.Context {
 	})
 }
 
+// helper: register a minimal model descriptor so EnsureModelRegistered passes.
+func saveMinimalModel(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+	t.Helper()
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
 // helper: save an entity with JSON data, return its ID.
 func saveEntity(t *testing.T, ctx context.Context, factory *memory.StoreFactory, modelRef spi.ModelRef, id string, data []byte) {
 	t.Helper()
@@ -60,6 +72,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice","age":30}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob","age":25}`))
 	saveEntity(t, ctx, factory, ref, "e3", []byte(`{"name":"Alice","age":40}`))
@@ -95,6 +108,7 @@ func TestDirectSearchNoMatches(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	cond := &predicate.SimpleCondition{
@@ -122,6 +136,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	// Save original
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -183,6 +198,7 @@ func TestDirectSearchPagination(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	for i := 0; i < 5; i++ {
 		saveEntity(t, ctx, factory, ref,
 			fmt.Sprintf("e%d", i),
@@ -235,6 +251,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
@@ -471,6 +488,10 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	realStore, _ := factory.AsyncSearchStore(context.Background())
 
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
 	gate := make(chan struct{})
 	blockedStore := &blockingSearchStore{
 		AsyncSearchStore: realStore,
@@ -478,9 +499,6 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	}
 
 	svc := search.NewSearchService(factory, uuids, blockedStore)
-
-	ctx := tenantCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -647,6 +665,7 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, base, ref)
 	// Save entities to the real store for fallback verification.
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -699,6 +718,7 @@ func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	cond := &predicate.SimpleCondition{
@@ -723,6 +743,7 @@ func TestSearchFallsBackWhenInTransaction(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, base, ref)
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
@@ -802,8 +823,9 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// validateConditionPaths (for $.surname) + resolveSortKeys each call Get once.
-		getQueue: []*spi.ModelDescriptor{desc, desc},
+		// EnsureModelRegistered + validateConditionPaths (for $.surname) + resolveSortKeys
+		// each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc, desc},
 	}
 
 	var capturedOpts spi.SearchOptions
@@ -1060,8 +1082,8 @@ func TestSubmitAsync_OrderBy_PersistsTypedSpecs(t *testing.T) {
 
 // TestSearch_SortKeyCap_ReturnsError verifies that Search returns a 400
 // INVALID_FIELD_PATH AppError when the number of sort keys exceeds the
-// configured cap. The cap check must fire before the model store is
-// consulted so the model need not be registered.
+// configured cap. The cap check fires inside resolveSortKeys, before the
+// model schema is consulted for sort-key typing.
 func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -1072,6 +1094,7 @@ func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	orderBy := []search.OrderKey{
 		{Path: "a", Source: spi.SourceData},
@@ -1212,6 +1235,7 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	cond := &predicate.SimpleCondition{
