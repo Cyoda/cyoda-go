@@ -564,6 +564,14 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 		ModelVersion: modelVersion,
 	}
 
+	modelStore, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
+		return nil, appErr
+	}
+
 	// Dereference the optional filter. Distinguish nil-pointer (no filter)
 	// from pointer-to-empty-slice — per the SPI contract, the latter yields
 	// an empty map without a storage call.
