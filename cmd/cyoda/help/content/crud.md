@@ -15,6 +15,8 @@ see_also:
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSITION_NOT_FOUND
+  - errors.UNIQUE_VIOLATION
+  - errors.INVALID_UNIQUE_KEY
   - openapi
 ---
 
@@ -145,6 +147,7 @@ Response: `200 OK`, `application/json`:
   "data": { "category": "physics", "year": "2024" },
   "meta": {
     "id": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
+    "modelKey": { "name": "nobel-prize", "version": 1 },
     "state": "NEW",
     "creationDate": "2025-08-01T10:00:00Z",
     "lastUpdateTime": "2025-08-01T10:00:00Z",
@@ -315,23 +318,33 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-**DELETE /api/entity/{entityName}/{modelVersion}** — Delete all entities for a model
+**DELETE /api/entity/{entityName}/{modelVersion}** — Delete entities for a model (conditional)
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+- `transactionSize` (query, optional): int32, default `1000` — maximum entities to delete per transaction
+- `pointInTime` (query, optional): RFC 3339 — select entities for deletion as at this instant
+- `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every deleted entity ID; for a delete-all (empty body) `ids` is always empty
+
+Request body: optional `AbstractConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
 
 Response: `200 OK`, `application/json`:
 
 ```json
-[{
+{
+  "entityModelClassId": "022d9200-0cf0-11ef-9e63-ae468cd3ed16",
+  "ids": ["ffef9680-26e6-11ef-9e63-ae468cd3ed16"],
   "deleteResult": {
-    "idToError": {},
-    "numberOfEntitites": 42,
-    "numberOfEntititesRemoved": 42
-  },
-  "entityModelClassId": "31134900-d9cb-11ee-b913-ae468cd3ed16"
-}]
+    "numberOfEntitites": 4,
+    "numberOfEntititesRemoved": 3,
+    "idToError": {
+      "cecbe400-7402-11ef-9e63-ae468cd3ed16": "Some error message"
+    }
+  }
+}
 ```
+
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 
@@ -339,6 +352,7 @@ Response: `200 OK`, `application/json`:
 - `modelVersion` (path): int32
 - `pageSize` (query, optional): int32, default `20`
 - `pageNumber` (query, optional): int32, default `0`
+- `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive)
 
 Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
@@ -347,26 +361,26 @@ Response: `200 OK`, `application/json`, array of entity envelopes (same shape as
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time
 
-Response: `200 OK`, `application/json`, array of change entries:
+Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first):
 
 ```json
 [
   {
-    "changeType": "CREATED",
-    "timeOfChange": "2025-08-01T10:00:00Z",
-    "user": "admin",
-    "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
-  },
-  {
-    "changeType": "UPDATED",
+    "changeType": "UPDATE",
     "timeOfChange": "2025-08-02T09:00:00Z",
     "user": "admin",
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16"
+  },
+  {
+    "changeType": "CREATE",
+    "timeOfChange": "2025-08-01T10:00:00Z",
+    "user": "admin",
+    "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
   }
 ]
 ```
 
-- `changeType`: `CREATED`, `UPDATED`, or `DELETED`
+- `changeType`: `CREATE`, `UPDATE`, or `DELETE`
 - `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
@@ -579,6 +593,7 @@ All entity read operations return entities in the standard envelope:
     "state": "NEW",
     "creationDate": "2025-08-01T10:00:00.000000000Z",
     "lastUpdateTime": "2025-08-01T10:00:00.000000000Z",
+    "pointInTime": "2025-08-01T10:00:00Z",
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16",
     "transitionForLatestSave": "UPDATE"
   }
@@ -588,10 +603,11 @@ All entity read operations return entities in the standard envelope:
 - `type` — always `"ENTITY"`
 - `data` — the entity's JSON payload (decoded with `json.Number` for numeric precision)
 - `meta.id` — UUID string
-- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present in single-entity `GET /entity/{id}` responses. Omitted from list/search results because the model is already part of the request path (`/api/entity/{entityName}/{modelVersion}`).
+- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present on all entity reads (single-get, list, search).
 - `meta.state` — current workflow state string
 - `meta.creationDate` — RFC 3339 with nanoseconds
-- `meta.lastUpdateTime` — RFC 3339 with nanoseconds
+- `meta.lastUpdateTime` — RFC 3339 with nanoseconds; equals `creationDate` if never updated
+- `meta.pointInTime` — the as-at point-in-time for which the entity was retrieved, when supplied
 - `meta.transactionId` — present when a transaction ID exists
 - `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
 
@@ -616,6 +632,8 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
+- `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
+- `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
 - Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
@@ -675,12 +693,20 @@ curl -s -X DELETE \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16"
 ```
 
-**Delete all entities for a model:**
+**Delete entities for a model (all, or filtered by condition):**
 
 ```
+# Delete all entities for the model:
 curl -s -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1"
+
+# Delete only VALIDATED entities and list the deleted IDs:
+curl -s -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"VALIDATED"}' \
+  "http://localhost:8080/api/entity/nobel-prize/1?verbose=true"
 ```
 
 **List all entities for a model (page 0, size 20):**
@@ -764,5 +790,7 @@ curl -s -X POST \
 - errors.VALIDATION_FAILED
 - errors.INCOMPATIBLE_TYPE
 - errors.CONFLICT
+- errors.UNIQUE_VIOLATION
+- errors.INVALID_UNIQUE_KEY
 - errors.TRANSITION_NOT_FOUND
 - openapi
