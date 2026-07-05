@@ -343,6 +343,37 @@ func TestUnlockModel_AlreadyUnlocked_ReturnsModelAlreadyUnlocked(t *testing.T) {
 	}
 }
 
+// TestSetChangeLevel_Invalid_400 verifies that SetChangeLevel returns a 400
+// INVALID_CHANGE_LEVEL error when given an off-enum value. The model must exist
+// (non-nil refreshDescriptor) so execution reaches the changeLevel validation
+// step rather than returning 404.
+func TestSetChangeLevel_Invalid_400(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	ms := &refreshingModelStore{
+		getDescriptor:     desc,
+		refreshDescriptor: desc,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	err := h.SetChangeLevel(context.Background(), "Dataset", "1", "BOGUS")
+	if err == nil {
+		t.Fatal("SetChangeLevel with invalid level: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 400 {
+		t.Errorf("expected HTTP 400, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeInvalidChangeLevel {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeInvalidChangeLevel, appErr.Code, appErr.Message)
+	}
+}
+
 // capableStoreFactory wraps fakeStoreFactory and additionally implements
 // spi.CompositeUniqueKeyCapable. The supports field controls whether the
 // factory advertises composite-unique-key support.

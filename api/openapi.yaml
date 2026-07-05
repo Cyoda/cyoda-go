@@ -4256,7 +4256,7 @@ paths:
         - modelVersion: The version number of the model
 
         - changeLevel: The desired change level (ARRAY_LENGTH, ARRAY_ELEMENTS,
-        TYPE, STRUCTURAL) or null to disallow changes
+        TYPE, STRUCTURAL)
 
 
         Change levels are hierarchical - allowing a specific level automatically
@@ -4300,8 +4300,6 @@ paths:
 
             The allowed change level for the model.
 
-            Set to null to disallow all changes.
-
             Valid values: ARRAY_LENGTH, ARRAY_ELEMENTS, TYPE, STRUCTURAL
 
             \            "
@@ -4331,6 +4329,30 @@ paths:
                       version: 1
                     message: model nobel-prize:1 now at change level TYPE
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: |
+            Bad request. Possible codes:
+            - `INVALID_CHANGE_LEVEL` — the supplied `changeLevel` path segment is not one of
+              the accepted enum values (`ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "INVALID_CHANGE_LEVEL: invalid change level \"BOGUS\"; valid values: ARRAY_LENGTH, ARRAY_ELEMENTS, TYPE, STRUCTURAL"
+                instance: /api/model/nobel-prize/2/changeLevel/BOGUS
+                properties:
+                  entityName: nobel-prize
+                  entityVersion: 2
+                  suppliedValue: BOGUS
+                  validValues:
+                    - ARRAY_LENGTH
+                    - ARRAY_ELEMENTS
+                    - TYPE
+                    - STRUCTURAL
         "404":
           description: Entity model not found
           content:
