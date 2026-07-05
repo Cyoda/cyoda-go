@@ -602,6 +602,14 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 		ModelVersion: modelVersion,
 	}
 
+	modelStore, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
+		return nil, appErr
+	}
+
 	count, err := entityStore.Count(ctx, ref)
 	if err != nil {
 		return nil, common.Internal("failed to count entities", err)
