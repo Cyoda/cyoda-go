@@ -4020,7 +4020,10 @@ paths:
                 format: uuid
               example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         "400":
-          description: Invalid converter specified
+          description: |
+            Bad request. Possible causes:
+            - `BAD_REQUEST` — unsupported import converter (`JSON_SCHEMA` or `SIMPLE_VIEW`); only `SAMPLE_DATA` is accepted.
+            - `BAD_REQUEST` — malformed or unparseable sample data in the request body.
           content:
             application/problem+json:
               schema:
@@ -4029,11 +4032,36 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'WRONG' for parameter 'converter'
-                instance: /api/model/import/WRONG/nobel-prize/2
-                properties:
-                  parameter: converter
-                  invalidValue: WRONG
+                detail: "BAD_REQUEST: unsupported import converter"
+                instance: /api/model/import/JSON/JSON_SCHEMA/nobel-prize/1
+        "409":
+          description: |
+            Model cannot be imported. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before re-importing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot save entityModel{name=nobel-prize, version=1} because this model has already been registered"
+                instance: /api/model/import/JSON/SAMPLE_DATA/nobel-prize/1
+        "422":
+          description: |
+            Unprocessable entity. Possible codes:
+            - `INVALID_UNIQUE_KEY_DEFINITION` — re-import invalidates a previously registered unique key definition (defensive guard against descriptor corruption or future merge-semantics changes).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Unprocessable Entity
+                status: 422
+                detail: "INVALID_UNIQUE_KEY_DEFINITION: re-import invalidates existing unique key definitions: key \"k1\": field \"name\" is not a known scalar leaf"
+                instance: /api/model/import/JSON/SAMPLE_DATA/nobel-prize/1
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":

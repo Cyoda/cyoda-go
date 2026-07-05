@@ -1869,6 +1869,66 @@ func TestRPC_ModelTransitionUnlock_AlreadyUnlocked_409(t *testing.T) {
 	}
 }
 
+func TestRPC_ModelImport_Locked_409(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "import-locked", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelImportRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "import-locked", "version": 1},
+		"dataFormat": "JSON",
+		"converter":  "SAMPLE_DATA",
+		"payload":    map[string]any{"name": "Bob"},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelImportResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for re-import of locked model")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_LOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_LOCKED, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_ModelImport_UnsupportedConverter_400(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// SIMPLE_VIEW is a valid envelope enum value but is rejected by the
+	// service (only SAMPLE_DATA is accepted for import), producing BAD_REQUEST.
+	// JSON_SCHEMA is rejected at the CE envelope unmarshal level (it is not
+	// in the EntityModelImportRequestJson converter enum), so SIMPLE_VIEW is
+	// the correct value to exercise the service-layer BAD_REQUEST path.
+	ce := makeCE(EntityModelImportRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "conv-test", "version": 1},
+		"dataFormat": "JSON",
+		"converter":  "SIMPLE_VIEW",
+		"payload":    map[string]any{"name": "x"},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelImportResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unsupported converter")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "BAD_REQUEST") {
+		t.Errorf("expected message to contain BAD_REQUEST, got %s", typed.Error.Message)
+	}
+}
+
 // --- mock stream implementations ---
 
 // mockManageStream implements CloudEventsService_EntityManageCollectionServer.

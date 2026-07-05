@@ -674,3 +674,55 @@ func TestLockModel_AlreadyLocked_ReturnsSpecificCode(t *testing.T) {
 			common.ErrCodeModelAlreadyLocked, appErr.Code, appErr.Message)
 	}
 }
+
+// TestImportModel_InvalidUniqueKeyDefinition_422 verifies the defensive guard
+// in ImportModel that re-validates carried unique keys against the merged
+// schema on re-import.
+//
+// The guard targets out-of-band descriptor corruption (e.g. a key referencing
+// a field that was never in the schema) rather than a scenario reachable via
+// normal API use — schema.Merge is additive and cannot drop an existing field.
+// We simulate corruption by seeding the store with an UNLOCKED descriptor
+// whose UniqueKeys reference a phantom field not present in any schema, then
+// re-importing sample data that does not contain that field.
+func TestImportModel_InvalidUniqueKeyDefinition_422(t *testing.T) {
+	// Seed the store with an existing UNLOCKED descriptor whose UniqueKeys
+	// reference "PHANTOM_FIELD" — a field that never existed in any schema.
+	// Schema is intentionally nil so the service takes the newNode branch
+	// (finalNode = newNode from the import data), which also won't contain
+	// PHANTOM_FIELD.
+	corrupted := &spi.ModelDescriptor{
+		Ref:   spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"},
+		State: spi.ModelUnlocked,
+		UniqueKeys: []spi.UniqueKey{
+			{ID: "k1", Fields: []string{"PHANTOM_FIELD"}},
+		},
+		// No Schema — forces finalNode = newNode path; PHANTOM_FIELD absent.
+	}
+	ms := &refreshingModelStore{
+		refreshDescriptor: corrupted,
+	}
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.ImportModel(context.Background(), model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"name":"x"}`),
+	})
+	if err == nil {
+		t.Fatal("ImportModel: expected 422 error for corrupted unique key definition, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 422 {
+		t.Errorf("expected HTTP 422, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeInvalidUniqueKeyDefinition {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeInvalidUniqueKeyDefinition, appErr.Code, appErr.Message)
+	}
+}

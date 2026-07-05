@@ -53,3 +53,27 @@ func TestModelUnlock_HasEntities_409(t *testing.T) {
 	}
 	assertErrorCode(t, body, "MODEL_HAS_ENTITIES")
 }
+
+func TestModelImport_LockedModel_409(t *testing.T) {
+	const m = "e2e-import-locked"
+	importModelE2E(t, m, 1)
+	lockModelE2E(t, m, 1)
+	resp := doAuth(t, http.MethodPost,
+		"/api/model/import/JSON/SAMPLE_DATA/"+m+"/1", `{"name":"x"}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("re-import locked: expected 409, got %d: %s", resp.StatusCode, body)
+	}
+	assertErrorCode(t, body, "MODEL_ALREADY_LOCKED")
+}
+
+func TestModelImport_UnsupportedConverter_400(t *testing.T) {
+	const m = "e2e-import-conv"
+	resp := doAuth(t, http.MethodPost,
+		"/api/model/import/JSON/JSON_SCHEMA/"+m+"/1", `{"name":"x"}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("import JSON_SCHEMA converter: expected 400, got %d: %s", resp.StatusCode, body)
+	}
+	assertErrorCode(t, body, "BAD_REQUEST")
+}
