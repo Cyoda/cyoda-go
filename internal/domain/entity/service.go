@@ -974,6 +974,14 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		ModelVersion: modelVersion,
 	}
 
+	modelStore, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
+		return nil, appErr
+	}
+
 	var entities []*spi.Entity
 	if pointInTime != nil {
 		entities, err = entityStore.GetAllAsAt(ctx, ref, *pointInTime)

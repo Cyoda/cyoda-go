@@ -8,6 +8,39 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 )
 
+// TestEntityGetAll_UnknownModel_ModelNotFound verifies that EntityGetAllRequest
+// for an unregistered model returns a CLIENT_ERROR envelope response with
+// MODEL_NOT_FOUND in the message, not an empty stream.
+func TestEntityGetAll_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityGetAllRequest, map[string]any{
+		"id":    "getall-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+}
+
 // TestEntitySearch_DirectSearch_OrderBy_SourceMeta verifies that a direct search
 // with source:"meta" on the canonical meta field "creationDate" succeeds,
 // exercising the SourceMeta mapping branch in handleDirectSearchRequest.
