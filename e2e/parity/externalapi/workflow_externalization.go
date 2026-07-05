@@ -489,4 +489,3 @@ func RunExternalAPI_09_15_CriterionContextNegative(t *testing.T, fixture parity.
 		t.Errorf("expected state CREATED (criterion context=\"no-match\" → transition does not fire); got %s — engine may be forwarding a wrong/empty context value or context-equals received unexpected input", got.Meta.State)
 	}
 }
-

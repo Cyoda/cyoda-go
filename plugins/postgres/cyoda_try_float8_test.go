@@ -43,13 +43,13 @@ func TestCyodaTryFloat8(t *testing.T) {
 		{"42", false, 42},
 		{"-1.5", false, -1.5},
 		{"1e10", false, 1e10},
-		{"1e500", true, 0},      // overflow → 22003 → EXCEPTION → NULL
-		{"-1e500", true, 0},     // negative overflow → 22003 → NULL
-		{"1e400", true, 0},      // float8 max ~1.8e308; 1e400 also overflows
-		{"42\n", true, 0},       // trailing newline rejected by \Z anchor
-		{"\n42", true, 0},       // leading newline rejected by \A anchor
-		{" 42", true, 0},        // leading whitespace rejected
-		{"42 ", true, 0},        // trailing whitespace rejected
+		{"1e500", true, 0},  // overflow → 22003 → EXCEPTION → NULL
+		{"-1e500", true, 0}, // negative overflow → 22003 → NULL
+		{"1e400", true, 0},  // float8 max ~1.8e308; 1e400 also overflows
+		{"42\n", true, 0},   // trailing newline rejected by \Z anchor
+		{"\n42", true, 0},   // leading newline rejected by \A anchor
+		{" 42", true, 0},    // leading whitespace rejected
+		{"42 ", true, 0},    // trailing whitespace rejected
 		{"42.5e10", false, 42.5e10},
 		{"0", false, 0},
 		{"-0", false, 0},

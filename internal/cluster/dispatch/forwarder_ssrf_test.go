@@ -80,10 +80,10 @@ func TestHTTPForwarder_RejectsLinkLocalAddresses(t *testing.T) {
 	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
 
 	cases := []string{
-		"169.254.169.254:80",                // AWS / Azure metadata
+		"169.254.169.254:80",                 // AWS / Azure metadata
 		"http://169.254.169.254/latest/api/", // full URL form
-		"169.254.0.1:8080",                  // broader link-local range
-		"[fe80::1]:8080",                    // IPv6 link-local
+		"169.254.0.1:8080",                   // broader link-local range
+		"[fe80::1]:8080",                     // IPv6 link-local
 	}
 	for _, addr := range cases {
 		_, err := fw.ForwardCriteria(context.Background(), addr, makeCriteriaReq())

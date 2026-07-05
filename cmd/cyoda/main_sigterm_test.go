@@ -118,4 +118,3 @@ func TestShutdown_OnSIGTERM_DrainsBothServers(t *testing.T) {
 		t.Fatal("child did not exit within 20s of SIGTERM — graceful shutdown not wired")
 	}
 }
-

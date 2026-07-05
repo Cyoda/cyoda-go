@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )

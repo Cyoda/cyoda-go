@@ -20,9 +20,9 @@ import (
 
 // setUniqueKeysPayload is the CloudEvent payload for EntityModelSetUniqueKeysRequest.
 type setUniqueKeysPayload struct {
-	ID         string              `json:"id"`
+	ID         string               `json:"id"`
 	Model      events.ModelSpecJson `json:"model"`
-	UniqueKeys []uniqueKeyPayload  `json:"uniqueKeys"`
+	UniqueKeys []uniqueKeyPayload   `json:"uniqueKeys"`
 }
 
 // uniqueKeyPayload is a single unique key definition in the CloudEvent payload.

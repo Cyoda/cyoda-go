@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"

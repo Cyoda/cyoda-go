@@ -134,4 +134,3 @@ func TestValidateGroupedStatsRequest_SynthesizedAliasStripsJSONPathPrefix(t *tes
 		}
 	}
 }
-

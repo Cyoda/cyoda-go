@@ -43,7 +43,7 @@ func TestParseSortParam_DataFieldNamedMeta(t *testing.T) {
 func TestParseSortParam_Errors(t *testing.T) {
 	bad := [][]string{
 		{""}, {":desc"}, {"@"}, {"name:"}, {"name:up"},
-		{"@a.b.c"}, // nested meta
+		{"@a.b.c"},                      // nested meta
 		{"surname", "surname"},          // duplicate
 		{"surname:asc", "surname:desc"}, // duplicate (conflicting dir)
 	}

@@ -42,10 +42,10 @@ func init() {
 //     their original (still-current) ifMatch tokens, and item 1 carries
 //     its original (now-stale) token.
 //  4. Assert HTTP 200 with one chunk element that has:
-//       - non-empty transactionId
-//       - entityIds == [id0, id2]
-//       - failed == [{entityId: id1, error.code: ENTITY_MODIFIED,
-//                     error.itemIndex: 1}]
+//     - non-empty transactionId
+//     - entityIds == [id0, id2]
+//     - failed == [{entityId: id1, error.code: ENTITY_MODIFIED,
+//     error.itemIndex: 1}]
 //  5. Read entities back: id0 and id2 reflect the bulk-update payload;
 //     id1 reflects the intervening modification (NOT the bulk-update).
 func RunExternalAPI_05_BulkUpdateIfMatchPerItemIsolation(t *testing.T, fixture parity.BackendFixture) {
@@ -293,4 +293,3 @@ const trivialWorkflowJSON = `{
 		}
 	}]
 }`
-

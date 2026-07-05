@@ -103,4 +103,3 @@ func requireClientError(t *testing.T, sent []*cepb.CloudEvent, msgFragment strin
 		t.Errorf("expected error message to contain %q, got %q", msgFragment, typed.Error.Message)
 	}
 }
-

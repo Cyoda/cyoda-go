@@ -150,10 +150,10 @@ func TestExtend_GenuineKindMismatch_StillRejected(t *testing.T) {
 // TestExtend_NullableMarker_AtLowerChangeLevel_RejectedAsLevelViolation pins
 // the intersection of two behaviors that interact non-obviously:
 //
-//   1. isNullOnlyLeaf carve-out: LEAF[NULL] against non-LEAF is a nullable
-//      marker, not a kind mismatch (commit d3159bd).
-//   2. Nullable markers add NULL to the target's TypeSet, which is a
-//      TYPE-level operation and requires ChangeLevelType or higher.
+//  1. isNullOnlyLeaf carve-out: LEAF[NULL] against non-LEAF is a nullable
+//     marker, not a kind mismatch (commit d3159bd).
+//  2. Nullable markers add NULL to the target's TypeSet, which is a
+//     TYPE-level operation and requires ChangeLevelType or higher.
 //
 // A caller operating at ChangeLevelArrayLength (or any level below TYPE)
 // must NOT smuggle a TypeSet widening through via the nullable path. The

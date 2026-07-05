@@ -64,5 +64,3 @@ func (s *staticKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 	}
 	return nil, auth.ErrKeyNotFound
 }
-
-

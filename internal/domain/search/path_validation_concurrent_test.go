@@ -39,10 +39,10 @@ func TestPathValidationCache_ConcurrentMarkAbsentAndInvalidateRef(t *testing.T) 
 	cache := search.NewPathValidationCache()
 
 	const (
-		tenants     = 4
-		refsPerKey  = 3
-		pathsPerOp  = 8
-		iterations  = 200
+		tenants      = 4
+		refsPerKey   = 3
+		pathsPerOp   = 8
+		iterations   = 200
 		workersPerOp = 4
 	)
 

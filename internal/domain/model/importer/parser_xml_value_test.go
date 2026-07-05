@@ -50,11 +50,11 @@ func TestInferXMLValue_RejectedNumerics(t *testing.T) {
 	// JSON-grammar edge cases that MUST NOT be accepted as json.Number.
 	rejected := []string{
 		"007", "00", "01.5", // leading zeros
-		"-",                  // lone minus
-		"+1",                 // leading plus
-		"1.",                 // trailing dot
-		".5",                 // no integer part
-		"1e", "1e+",          // incomplete exponent
+		"-",         // lone minus
+		"+1",        // leading plus
+		"1.",        // trailing dot
+		".5",        // no integer part
+		"1e", "1e+", // incomplete exponent
 		"NaN", "Inf", "-Inf", // float literals not in JSON grammar
 		"0x1a",  // hex
 		"",      // empty

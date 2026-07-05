@@ -1240,17 +1240,18 @@ func RunOidcD17_IatBindingPreTransition(t *testing.T, fix BackendFixture) {
 // defence: iss mismatch is a HARD FAIL (ErrIssuerMismatch, no chain fall-through).
 //
 // Implementation note on the "overlapping kid namespace" framing:
-//   The registry's kidIndex hot-path returns ErrIssuerMismatch (hard fail, no
-//   retry) when a kid is cached for provider A but a JWT claims iss=B (≠ A).
-//   The cold path is only entered on ErrUnknownKID. Consequently, after
-//   provider A's kid is warmed into the kidIndex, a JWT for provider B with the
-//   same kid is rejected even if B's source would have accepted it.
 //
-//   The row 32 spec invariant ("tokens route by iss") holds in a stricter sense:
-//   tokens with a foreign iss are REJECTED (not routed to the wrong provider).
-//   The scenario below demonstrates this: a cross-signed JWT (A's key, B's iss)
-//   is rejected; each provider's own tokens work independently when not competing
-//   for the same kidIndex entry.
+//	The registry's kidIndex hot-path returns ErrIssuerMismatch (hard fail, no
+//	retry) when a kid is cached for provider A but a JWT claims iss=B (≠ A).
+//	The cold path is only entered on ErrUnknownKID. Consequently, after
+//	provider A's kid is warmed into the kidIndex, a JWT for provider B with the
+//	same kid is rejected even if B's source would have accepted it.
+//
+//	The row 32 spec invariant ("tokens route by iss") holds in a stricter sense:
+//	tokens with a foreign iss are REJECTED (not routed to the wrong provider).
+//	The scenario below demonstrates this: a cross-signed JWT (A's key, B's iss)
+//	is rejected; each provider's own tokens work independently when not competing
+//	for the same kidIndex entry.
 //
 // Scenario:
 //  1. Register two independent IdPs (A and B) each with their own kid.

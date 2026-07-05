@@ -118,4 +118,3 @@ func TestCyodaHealth_RespectsAdminPort(t *testing.T) {
 		t.Fatalf("expected exit 0 when CYODA_ADMIN_PORT points at real server; got %d", code)
 	}
 }
-

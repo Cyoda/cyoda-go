@@ -21,10 +21,10 @@ type stubFactory struct {
 func (f *stubFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {
 	return f.store, nil
 }
-func (f *stubFactory) EntityStore(context.Context) (spi.EntityStore, error)       { return nil, nil }
-func (f *stubFactory) KeyValueStore(context.Context) (spi.KeyValueStore, error)   { return nil, nil }
-func (f *stubFactory) MessageStore(context.Context) (spi.MessageStore, error)     { return nil, nil }
-func (f *stubFactory) WorkflowStore(context.Context) (spi.WorkflowStore, error)   { return nil, nil }
+func (f *stubFactory) EntityStore(context.Context) (spi.EntityStore, error)     { return nil, nil }
+func (f *stubFactory) KeyValueStore(context.Context) (spi.KeyValueStore, error) { return nil, nil }
+func (f *stubFactory) MessageStore(context.Context) (spi.MessageStore, error)   { return nil, nil }
+func (f *stubFactory) WorkflowStore(context.Context) (spi.WorkflowStore, error) { return nil, nil }
 func (f *stubFactory) AsyncSearchStore(context.Context) (spi.AsyncSearchStore, error) {
 	return nil, nil
 }
