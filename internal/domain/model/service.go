@@ -381,6 +381,20 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 		return modelNotFound(entityName, ver)
 	}
 
+	if desc.State == spi.ModelLocked {
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyLocked,
+			fmt.Sprintf("cannot delete entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"expectedState": "UNLOCKED",
+			"actualState":   "LOCKED",
+		}
+		return appErr
+	}
+
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return common.Internal("failed to access entity store", err)
