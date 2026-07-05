@@ -228,6 +228,13 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // know about returns a 4xx without ever creating a job, sparing the
 // client a round-trip through the polling endpoint.
 func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
+	// Defense-in-depth: same cap as Search so the async path also fails fast
+	// rather than creating a job that will fail in the background.
+	if opts.Limit > pagination.MaxPageSize {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")

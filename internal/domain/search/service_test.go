@@ -1319,3 +1319,55 @@ func TestSearch_LimitExceedsMax(t *testing.T) {
 		}
 	})
 }
+
+// TestSubmitAsync_LimitExceedsMax mirrors TestSearch_LimitExceedsMax for the
+// async submit path: limit > MaxPageSize must be rejected synchronously (before
+// any job is created), unbounded (limit<0) and boundary (limit==MaxPageSize)
+// must be allowed.
+func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	ctx := tenantCtx("tenant-async-cap")
+	ref := spi.ModelRef{EntityName: "async-cap-model", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
+	cond := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{}}
+
+	t.Run("limit above max rejected synchronously", func(t *testing.T) {
+		jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10001})
+		if err == nil {
+			t.Fatalf("expected error for limit=10001, got nil (jobID=%s)", jobID)
+		}
+		if jobID != "" {
+			t.Errorf("expected empty job ID on rejection, got %q", jobID)
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeBadRequest {
+			t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
+		}
+	})
+
+	t.Run("limit at max accepted", func(t *testing.T) {
+		_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10000})
+		if err != nil {
+			t.Fatalf("expected success for limit=10000, got: %v", err)
+		}
+	})
+
+	t.Run("unbounded limit (negative) accepted", func(t *testing.T) {
+		_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: -1})
+		if err != nil {
+			t.Fatalf("expected success for unbounded limit=-1, got: %v", err)
+		}
+	})
+}
