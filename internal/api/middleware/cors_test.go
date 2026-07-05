@@ -96,16 +96,16 @@ func TestCORS_LoopbackMatch(t *testing.T) {
 func TestCORS_LoopbackRejects(t *testing.T) {
 	cases := []string{
 		"https://evil.example",
-		"http://localhost.evil.example",       // suffix attack
-		"https://xn--lcalhost-ksb.example",    // IDN homograph
-		"http://localhost@evil.example",       // hostname injection via userinfo syntax — host is evil.example, not localhost
-		"http://127.000.000.001:3000",         // non-canonical IPv4
-		"http://[0:0:0:0:0:0:0:1]",            // non-canonical IPv6
-		"null",                                // file://
-		"ftp://localhost",                     // wrong scheme
-		"http://localhost/admin",              // path component
-		"http://Localhost:3000",               // case (must be lowercase)
-		"HTTP://localhost:3000",               // uppercase scheme
+		"http://localhost.evil.example",    // suffix attack
+		"https://xn--lcalhost-ksb.example", // IDN homograph
+		"http://localhost@evil.example",    // hostname injection via userinfo syntax — host is evil.example, not localhost
+		"http://127.000.000.001:3000",      // non-canonical IPv4
+		"http://[0:0:0:0:0:0:0:1]",         // non-canonical IPv6
+		"null",                             // file://
+		"ftp://localhost",                  // wrong scheme
+		"http://localhost/admin",           // path component
+		"http://Localhost:3000",            // case (must be lowercase)
+		"HTTP://localhost:3000",            // uppercase scheme
 	}
 	p := newCORSPolicy(t, true, false)
 	h := CORS(p)(dummyHandler)

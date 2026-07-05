@@ -328,4 +328,3 @@ func TestMemory_ExtendSchema_ConvergenceUnderConcurrency(t *testing.T) {
 		t.Errorf("concurrent final state != serial replay\n  got:  %q\n  want: %q", got.Schema, expected)
 	}
 }
-

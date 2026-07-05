@@ -81,8 +81,8 @@ type StoreFactory struct {
 
 	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
-	uniqueClaims   map[claimKey]string              // claimKey → entityID currently holding it
-	claimsByEntity map[entityTenantKey][]claimKey   // (tenant,entityID) → its claimKeys (for release)
+	uniqueClaims   map[claimKey]string            // claimKey → entityID currently holding it
+	claimsByEntity map[entityTenantKey][]claimKey // (tenant,entityID) → its claimKeys (for release)
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {

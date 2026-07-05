@@ -67,8 +67,8 @@ func TestClassifyValidateOrExtendErr_ChangeLevelViolation_StillGetsBadRequest(t 
 // because the sentinel is what's checked, not the string.
 func TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx(t *testing.T) {
 	cases := []struct {
-		name     string
-		makeErr  func() error
+		name    string
+		makeErr func() error
 	}{
 		{
 			name: "renamed wrap string still classifies as 5xx",

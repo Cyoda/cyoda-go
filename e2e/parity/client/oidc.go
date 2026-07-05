@@ -188,4 +188,3 @@ func (c *Client) GetOidcProviderRaw(t *testing.T, id uuid.UUID) (int, []byte, er
 	path := fmt.Sprintf("/api/oauth/oidc/providers/%s", id.String())
 	return c.DoJSONBodyRaw(t, http.MethodPatch, path, map[string]any{})
 }
-

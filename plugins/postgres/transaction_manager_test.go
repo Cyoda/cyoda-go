@@ -16,7 +16,9 @@ import (
 func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool) {
 	t.Helper()
 	pool := newTestPool(t)
-	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}

@@ -36,14 +36,14 @@ const (
 
 // Model management types.
 const (
-	EntityModelImportRequest      = "EntityModelImportRequest"
-	EntityModelImportResponse     = "EntityModelImportResponse"
-	EntityModelExportRequest      = "EntityModelExportRequest"
-	EntityModelExportResponse     = "EntityModelExportResponse"
-	EntityModelTransitionRequest  = "EntityModelTransitionRequest"
-	EntityModelTransitionResponse = "EntityModelTransitionResponse"
-	EntityModelDeleteRequest      = "EntityModelDeleteRequest"
-	EntityModelDeleteResponse     = "EntityModelDeleteResponse"
+	EntityModelImportRequest         = "EntityModelImportRequest"
+	EntityModelImportResponse        = "EntityModelImportResponse"
+	EntityModelExportRequest         = "EntityModelExportRequest"
+	EntityModelExportResponse        = "EntityModelExportResponse"
+	EntityModelTransitionRequest     = "EntityModelTransitionRequest"
+	EntityModelTransitionResponse    = "EntityModelTransitionResponse"
+	EntityModelDeleteRequest         = "EntityModelDeleteRequest"
+	EntityModelDeleteResponse        = "EntityModelDeleteResponse"
 	EntityModelGetAllRequest         = "EntityModelGetAllRequest"
 	EntityModelGetAllResponse        = "EntityModelGetAllResponse"
 	EntityModelSetUniqueKeysRequest  = "EntityModelSetUniqueKeysRequest"

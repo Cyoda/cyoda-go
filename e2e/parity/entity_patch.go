@@ -743,4 +743,3 @@ func RunEntityPatchCrossTenantIsNotFound(t *testing.T, fixture BackendFixture) {
 		t.Errorf("entity mutated by cross-tenant PATCH: data.amount = %v, want 1", got.Data["amount"])
 	}
 }
-

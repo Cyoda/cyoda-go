@@ -500,4 +500,3 @@ func aggregateExprToSQL(a spi.AggregateExpr) (string, error) {
 		return "", fmt.Errorf("%w: unknown op %q", ErrInvalidAggregate, a.Op)
 	}
 }
-

@@ -28,11 +28,11 @@ type recordingMetrics struct {
 	drops   map[string]int64
 }
 
-func (m *recordingMetrics) IncKidCacheHit()                        { atomic.AddInt64(&m.hits, 1) }
-func (m *recordingMetrics) IncKidCacheMiss()                       { atomic.AddInt64(&m.misses, 1) }
-func (m *recordingMetrics) IncKidCacheEvict()                      { atomic.AddInt64(&m.evicts, 1) }
-func (m *recordingMetrics) IncJWKSFetchError(outcome string)       { atomic.AddInt64(&m.jwksErrors, 1) }
-func (m *recordingMetrics) IncBroadcastPanic()                     { atomic.AddInt64(&m.panics, 1) }
+func (m *recordingMetrics) IncKidCacheHit()                  { atomic.AddInt64(&m.hits, 1) }
+func (m *recordingMetrics) IncKidCacheMiss()                 { atomic.AddInt64(&m.misses, 1) }
+func (m *recordingMetrics) IncKidCacheEvict()                { atomic.AddInt64(&m.evicts, 1) }
+func (m *recordingMetrics) IncJWKSFetchError(outcome string) { atomic.AddInt64(&m.jwksErrors, 1) }
+func (m *recordingMetrics) IncBroadcastPanic()               { atomic.AddInt64(&m.panics, 1) }
 func (m *recordingMetrics) IncBroadcastDrop(reason string) {
 	m.dropsMu.Lock()
 	defer m.dropsMu.Unlock()
@@ -41,9 +41,11 @@ func (m *recordingMetrics) IncBroadcastDrop(reason string) {
 	}
 	m.drops[reason]++
 }
-func (m *recordingMetrics) IncUnknownProviderBroadcast()           { atomic.AddInt64(&m.unknownBroadcasts, 1) }
-func (m *recordingMetrics) ObserveBroadcastReceive(seconds float64) { atomic.AddInt64(&m.observeCount, 1) }
-func (m *recordingMetrics) SetRegistryProviders(n int)             { atomic.StoreInt64(&m.registryGauge, int64(n)) }
+func (m *recordingMetrics) IncUnknownProviderBroadcast() { atomic.AddInt64(&m.unknownBroadcasts, 1) }
+func (m *recordingMetrics) ObserveBroadcastReceive(seconds float64) {
+	atomic.AddInt64(&m.observeCount, 1)
+}
+func (m *recordingMetrics) SetRegistryProviders(n int) { atomic.StoreInt64(&m.registryGauge, int64(n)) }
 
 // DropsForReason returns the number of times IncBroadcastDrop was called with
 // the given reason label.

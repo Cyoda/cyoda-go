@@ -51,11 +51,13 @@ const (
 //   - a literal child name (for object descent), or
 //   - the token "[]" (for array-element descent — valid only when
 //     the current node is an ARRAY; Apply follows Element()).
+//
 // No JSON-Schema keywords (no "/properties", "/type"): paths are
 // domain-tree field names only. Examples:
 //   - "address/zip"           — zip leaf inside the address object
 //   - "items/[]/field"        — field inside each element of the items array
 //   - "grid/[]/[]"            — inner leaf of an array-of-arrays
+//
 // For KindAddArrayItemType, Path targets the ARRAY node itself; the
 // widening is implicitly on its element leaf.
 type SchemaOp struct {

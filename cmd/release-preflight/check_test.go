@@ -60,7 +60,7 @@ github.com/cyoda-platform/cyoda-go/plugins/memory v0.1.0
 			wantModule: nil,
 		},
 		{
-			name: "empty input returns no violations",
+			name:       "empty input returns no violations",
 			goListOut:  "",
 			org:        "github.com/cyoda-platform/",
 			wantModule: nil,

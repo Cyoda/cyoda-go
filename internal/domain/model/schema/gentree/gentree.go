@@ -102,7 +102,7 @@ func genLeafValue(r *rand.Rand, cfg GenConfig) any {
 	case schema.Double:
 		return json.Number("3.14159265358979")
 	case schema.BigDecimal:
-		return json.Number("1.234567890123456789")         // 18 digit
+		return json.Number("1.234567890123456789") // 18 digit
 	case schema.UnboundDecimal:
 		return json.Number("1.23456789012345678901") // 20 digit
 	case schema.String:

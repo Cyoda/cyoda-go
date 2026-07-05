@@ -98,9 +98,9 @@ func (m *modelStoreGetErr) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDes
 	return nil, m.err
 }
 func (m *modelStoreGetErr) GetAll(_ context.Context) ([]spi.ModelRef, error) { return nil, nil }
-func (m *modelStoreGetErr) Delete(_ context.Context, _ spi.ModelRef) error  { return nil }
-func (m *modelStoreGetErr) Lock(_ context.Context, _ spi.ModelRef) error    { return nil }
-func (m *modelStoreGetErr) Unlock(_ context.Context, _ spi.ModelRef) error  { return nil }
+func (m *modelStoreGetErr) Delete(_ context.Context, _ spi.ModelRef) error   { return nil }
+func (m *modelStoreGetErr) Lock(_ context.Context, _ spi.ModelRef) error     { return nil }
+func (m *modelStoreGetErr) Unlock(_ context.Context, _ spi.ModelRef) error   { return nil }
 func (m *modelStoreGetErr) IsLocked(_ context.Context, _ spi.ModelRef) (bool, error) {
 	return false, nil
 }

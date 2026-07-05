@@ -129,7 +129,7 @@ func TestSqliteIterate_ResidualApplied(t *testing.T) {
 	it := store.(spi.Iterable)
 	// MatchesRegex is non-pushable in sqlite planner — forces residual evaluation.
 	filter := spi.Filter{
-		Op:       spi.FilterAnd,
+		Op: spi.FilterAnd,
 		Children: []spi.Filter{
 			{Op: spi.FilterEq, Source: spi.SourceData, Path: "city", Value: "Berlin"},
 			{Op: spi.FilterMatchesRegex, Source: spi.SourceData, Path: "tag", Value: "^x$"},
@@ -702,4 +702,3 @@ func TestSqliteGroupedAggregate_NonScalarNestedPathCoercesToNull(t *testing.T) {
 		t.Errorf("null count = %d, want 1 (object at nested path coerces to nil)", nullCount)
 	}
 }
-

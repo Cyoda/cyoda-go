@@ -92,8 +92,8 @@ func TestSortEntities_SubMillisecondTemporalTie(t *testing.T) {
 	// differ (1_000_000_000 vs 1_000_500_000) and "b" (smaller nano) would sort
 	// before "a" by time — the opposite of what we assert. Only UnixMilli causes
 	// both to be equal and lets the tiebreaker decide.
-	t1a := time.Unix(1, 0).UTC()         // UnixMilli = 1000, UnixNano = 1_000_000_000
-	t1b := time.Unix(1, 500_000).UTC()   // UnixMilli = 1000, UnixNano = 1_000_500_000
+	t1a := time.Unix(1, 0).UTC()       // UnixMilli = 1000, UnixNano = 1_000_000_000
+	t1b := time.Unix(1, 500_000).UTC() // UnixMilli = 1000, UnixNano = 1_000_500_000
 	es := []*spi.Entity{
 		ent("b", `{}`, t1a), // smaller nano, but same milli — tiebreaker should put "a" first
 		ent("a", `{}`, t1b), // larger nano, but same milli — tiebreaker should put "a" first

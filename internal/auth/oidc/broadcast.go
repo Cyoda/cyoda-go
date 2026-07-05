@@ -23,7 +23,7 @@ const (
 
 // broadcastEnvelope is the wire format for cluster-wide OIDC provider events.
 type broadcastEnvelope struct {
-	Op       string `json:"op"`           // "reload" | "invalidate" | "reload_all"
+	Op       string `json:"op"` // "reload" | "invalidate" | "reload_all"
 	TenantID string `json:"t,omitempty"`
 	URI      string `json:"u,omitempty"`
 }

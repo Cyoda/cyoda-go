@@ -74,10 +74,10 @@ func TestIsBlockedIP_Ranges(t *testing.T) {
 		{"::1", true},
 		{"fe80::1", true},
 		{"fc00::1", true},
-		{"::ffff:127.0.0.1", true},   // IPv4-mapped loopback
-		{"::ffff:10.0.0.1", true},    // IPv4-mapped RFC1918
+		{"::ffff:127.0.0.1", true},       // IPv4-mapped loopback
+		{"::ffff:10.0.0.1", true},        // IPv4-mapped RFC1918
 		{"::ffff:169.254.254.254", true}, // IPv4-mapped link-local (metadata service range)
-		{"::ffff:8.8.8.8", false},    // IPv4-mapped public — must NOT block
+		{"::ffff:8.8.8.8", false},        // IPv4-mapped public — must NOT block
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
 		{"2001:4860:4860::8888", false}, // Google DNS IPv6

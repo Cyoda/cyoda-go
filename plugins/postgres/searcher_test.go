@@ -470,7 +470,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 // omitempty, so a zero-value field lands as `"transition":""` in the _meta
 // JSONB blob — a PRESENT, non-null empty string.  Without NULLIF the "C"
 // collation places "" before any non-empty string, so the empty entity would
-// appear FIRST ascending — wrong.  NULLIF("", '') → NULL → NULLS LAST restores
+// appear FIRST ascending — wrong.  NULLIF("", ”) → NULL → NULLS LAST restores
 // cross-backend parity.
 //
 // Why this test would FAIL against the pre-fix code:

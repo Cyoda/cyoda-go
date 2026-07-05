@@ -37,9 +37,9 @@ func TestResolveOrderBy_DataAndMeta(t *testing.T) {
 func TestResolveOrderBy_Rejections(t *testing.T) {
 	f := fields()
 	bad := [][]OrderKey{
-		{{Path: "missing", Source: spi.SourceData}},  // not in schema (missing-key branch)
-		{{Path: "tags", Source: spi.SourceData}},     // $.tags not a key; only $.tags[*] is (missing-key branch)
-		{{Path: "nope", Source: spi.SourceMeta}},     // unknown meta
+		{{Path: "missing", Source: spi.SourceData}}, // not in schema (missing-key branch)
+		{{Path: "tags", Source: spi.SourceData}},    // $.tags not a key; only $.tags[*] is (missing-key branch)
+		{{Path: "nope", Source: spi.SourceMeta}},    // unknown meta
 		// tags[*] IS a key in the fields map (IsArray=true) so the lookup
 		// succeeds and the fd.IsArray branch fires — not the missing-key branch.
 		// This case is unreachable via the HTTP grammar (isValidSortPath rejects

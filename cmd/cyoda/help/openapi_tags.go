@@ -401,4 +401,3 @@ func emitFilteredOpenAPI(w io.Writer, spec *openapi3.T, slug, format string) int
 		return 2
 	}
 }
-
