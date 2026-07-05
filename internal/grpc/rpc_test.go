@@ -1805,6 +1805,70 @@ func TestRPC_ModelDelete_409_Locked(t *testing.T) {
 	}
 }
 
+func TestRPC_ModelTransitionLock_AlreadyLocked_409(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "relock", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelTransitionRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "relock", "version": 1},
+		"transition": "LOCK",
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for re-lock")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_LOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_LOCKED, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_ModelTransitionUnlock_AlreadyUnlocked_409(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Import only — do NOT lock; model stays in UNLOCKED state.
+	dataBytes, _ := json.Marshal(map[string]any{"name": "Alice"})
+	_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   "unlock-unlocked",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	ce := makeCE(EntityModelTransitionRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "unlock-unlocked", "version": 1},
+		"transition": "UNLOCK",
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unlock of unlocked model")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_UNLOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_UNLOCKED, got %s", typed.Error.Message)
+	}
+}
+
 // --- mock stream implementations ---
 
 // mockManageStream implements CloudEventsService_EntityManageCollectionServer.

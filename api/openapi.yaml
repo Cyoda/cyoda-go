@@ -4358,6 +4358,20 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 locked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "409":
+          description: |
+            Model cannot be locked. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is already in `LOCKED` state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1/lock
         "404":
           description: Entity model not found
           content:
@@ -4443,6 +4457,21 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 unlocked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "409":
+          description: |
+            Model cannot be unlocked. Possible codes:
+            - `MODEL_ALREADY_UNLOCKED` — model is already in `UNLOCKED` state.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_UNLOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=LOCKED, actualState=UNLOCKED"
+                instance: /api/model/nobel-prize/1/unlock
         "404":
           description: Entity model not found
           content:
