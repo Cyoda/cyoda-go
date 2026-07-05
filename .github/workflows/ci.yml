@@ -171,3 +171,18 @@ jobs:
 
       - name: Verify api/generated.go is in sync with api/openapi.yaml
         run: make check-codegen
+
+  # Guards against gofmt drift (struct-field alignment, doc-comment normalization)
+  # accumulating unnoticed — there was previously no formatting gate, so hand
+  # edits left ~50 files gofmt-dirty. Fails if any Go file is not gofmt-canonical.
+  gofmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Verify gofmt-clean
+        run: make check-gofmt
