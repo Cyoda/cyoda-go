@@ -36,6 +36,31 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 	},
+	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
+	// have a bounded, bidirectionally-checkable error surface — only
+	// 404 MODEL_NOT_FOUND in the current suite — and are tracked as full keys:
+	//   {getAllEntities, getEntityStatisticsForModel, getEntityStatisticsByStateForModel}.
+	// Three further ops are deliberately NOT matrix keys because their full error
+	// surface is large or partially out of scope for this slice:
+	//   searchEntities: 404 MODEL_NOT_FOUND proven by TestSearchEntities_UnknownModel_404
+	//     (search_unknown_model_test.go); 400 INVALID_FIELD_PATH has 8+ sub-cases
+	//     (condition + sort variants); full surface out of scope.
+	//   submitAsyncSearchJob: 404 MODEL_NOT_FOUND proven by
+	//     TestSubmitAsyncSearchJob_UnknownModel_404; same INVALID_FIELD_PATH family;
+	//     full surface out of scope.
+	//   queryGroupedEntityStatisticsForModel: 404 MODEL_NOT_FOUND proven by
+	//     TestGroupedStats_UnknownModel_404 (grouped_stats_test.go); full surface
+	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED, NOT_IMPLEMENTED_BY_BACKEND)
+	//     out of scope for this slice.
+	"getAllEntities": {
+		{Status: 404, Code: "MODEL_NOT_FOUND"}, // TestGetAllEntities_UnknownModel_404
+	},
+	"getEntityStatisticsForModel": {
+		{Status: 404, Code: "MODEL_NOT_FOUND"}, // TestGetStatisticsForModel_UnknownModel_404
+	},
+	"getEntityStatisticsByStateForModel": {
+		{Status: 404, Code: "MODEL_NOT_FOUND"}, // TestGetStatisticsByStateForModel_UnknownModel_404
+	},
 	// Entity write operations (E5). The matrix tracks the ops with a bounded,
 	// bidirectionally-checkable error surface:
 	//   {getOneEntity, deleteEntities, create, createCollection, updateSingle,

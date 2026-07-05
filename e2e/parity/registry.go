@@ -2,12 +2,12 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 167
+// Total parity scenarios: 168
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
 // + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
-// + Phase 9.6 Audit fixes + grouped stats).
+// + Phase 9.6 Audit fixes + grouped stats + unknown-model 404 contract).
 // ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/
 // are additional to this count.
 //
@@ -327,6 +327,12 @@ var allTests = []NamedTest{
 	{"GroupedStats_NonNumericSkipped", RunParityGroupedStats_NonNumericSkipped},
 	{"GroupedStats_NonScalarCoercesToNull", RunParityGroupedStats_NonScalarCoercesToNull},
 	{"GroupedStats_CardinalityExceeded", RunParityGroupedStats_CardinalityExceeded},
+
+	// Unknown-model contract — unified 404 MODEL_NOT_FOUND (stats/audit/search slice).
+	// One representative op (GET stats query) suffices: every backend must reject
+	// an unknown model before doing any query work. (The GET stats endpoint runs
+	// the model-existence check first; grouped-stats validates groupBy beforehand.)
+	{"UnknownModel404", RunUnknownModel404},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

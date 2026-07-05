@@ -89,7 +89,6 @@ info:
        - Designed for small to medium datasets
        - Limited by maximum result set size (default: 1000, max: 10000)
        - Non-distributed (executes on single node)
-       - Configurable timeout and result limits
        - Returns immediate streaming results
 
     All endpoints support:
@@ -295,7 +294,6 @@ tags:
          - Designed for small to medium datasets
          - Limited by maximum result set size (default: 1000, max: 10000)
          - Non-distributed (executes on single node)
-         - Configurable timeout and result limits
          - Returns immediate streaming results
 
       All endpoints support:
@@ -497,24 +495,18 @@ paths:
         transaction without needing to
 
         search through all audit events.
-
-
-        Both entityId and transactionId must be valid time-based UUIDs (version
-        1).
       operationId: getStateMachineFinishedEvent
       parameters:
         - name: entityId
           in: path
-          description: "Identifier of the entity. Must be a valid time-based UUID (version
-            1). "
+          description: Identifier of the entity.
           required: true
           schema:
             type: string
             format: uuid
         - name: transactionId
           in: path
-          description: "Identifier of the transaction. Must be a valid time-based UUID
-            (version 1). "
+          description: Identifier of the transaction.
           required: true
           schema:
             type: string
@@ -526,36 +518,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StateMachineAuditEventDto"
-        "400":
-          description: Invalid request - UUID is not time-based
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
         "401":
-          description: Error response
+          description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Entity or transaction not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal server error
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients:
@@ -1127,7 +1113,7 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `UNKNOWN_MODEL`,
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`,
         `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
@@ -1202,8 +1188,7 @@ paths:
           description: >-
             Bad request — malformed JSON body, validation failure (empty
             `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
-            JSONPath, etc.), invalid Condition DSL predicate, or unknown
-            model for the calling tenant.
+            JSONPath, etc.), or invalid Condition DSL predicate.
           content:
             application/problem+json:
               schema:
@@ -1212,6 +1197,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Entity model not found (MODEL_NOT_FOUND)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           description: Request body exceeds the 10 MiB maximum
           content:
@@ -6475,7 +6466,7 @@ paths:
 
         The results are returned in a paginated format, with:
 
-        - Configurable page size (default: 10)
+        - Configurable page size (default: 1000)
 
         - Zero-based page numbering
 
@@ -6501,15 +6492,6 @@ paths:
           required: false
           schema:
             type: string
-        - name: pointInTime
-          in: query
-          description: "The point-in-time for loading the entities, in ISO 8601 format
-            (e.g., '2035-01-01T12:00:00Z'). Defaults to the point-in-time of the
-            report if not provided. "
-          required: false
-          schema:
-            type: string
-            format: date-time
       responses:
         "200":
           description: Successfully retrieved page of results
@@ -6518,8 +6500,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PagedEntityResultsDto"
         "400":
-          description: Invalid parameters (malformed point-in-time or invalid page
-            parameters)
+          description: Invalid parameters (invalid page parameters)
           content:
             application/problem+json:
               schema:
@@ -6653,8 +6634,6 @@ paths:
 
         - Is optimized for smaller result sets
 
-        - Has configurable timeout and result limits
-
         - Supports point-in-time querying
 
 
@@ -6682,8 +6661,6 @@ paths:
         result to 10000)
 
         - Default result limit: 1000 entities
-
-        - Default timeout: 60000 milliseconds
       operationId: searchEntities
       parameters:
         - name: entityName
@@ -6709,19 +6686,12 @@ paths:
             format: date-time
         - name: limit
           in: query
-          description: "The maximum number of rows to return. You can specify a limit of
-            up to 10000 and defaults to 1000 if not provided. "
+          description: "The maximum number of rows to return. Defaults to 1000 if not
+            provided. Values above 10000 are rejected with 400."
           required: false
           schema:
             type: string
             maximum: 10000
-        - name: timeoutMillis
-          in: query
-          description: "The maximum time to wait for the query to complete, in
-            milliseconds, and defaults to 60000 if not provided. "
-          required: false
-          schema:
-            type: string
         - name: sort
           in: query
           description: >
@@ -6757,35 +6727,15 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/EntityResultDto"
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/EntityResultDto"
         "400":
-          description: Invalid search parameters
+          description: Invalid search parameters (e.g. limit exceeds 10000)
           content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Entity model not found
           content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
-        "408":
-          description: Search timeout exceeded
-          content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"

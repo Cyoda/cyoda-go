@@ -30,6 +30,18 @@ func tenantCtx(tenantID string) context.Context {
 	})
 }
 
+// helper: register a minimal model descriptor so EnsureModelRegistered passes.
+func saveMinimalModel(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+	t.Helper()
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
 // helper: save an entity with JSON data, return its ID.
 func saveEntity(t *testing.T, ctx context.Context, factory *memory.StoreFactory, modelRef spi.ModelRef, id string, data []byte) {
 	t.Helper()
@@ -60,6 +72,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice","age":30}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob","age":25}`))
 	saveEntity(t, ctx, factory, ref, "e3", []byte(`{"name":"Alice","age":40}`))
@@ -95,6 +108,7 @@ func TestDirectSearchNoMatches(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	cond := &predicate.SimpleCondition{
@@ -122,6 +136,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	// Save original
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -183,6 +198,7 @@ func TestDirectSearchPagination(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	for i := 0; i < 5; i++ {
 		saveEntity(t, ctx, factory, ref,
 			fmt.Sprintf("e%d", i),
@@ -235,6 +251,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
@@ -296,6 +313,7 @@ func TestAsyncCancel(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	// Create many entities to increase chance the goroutine is still running
 	for i := 0; i < 100; i++ {
@@ -353,6 +371,7 @@ func TestAsyncTenantIsolation(t *testing.T) {
 	ctxA := tenantCtx("tenant-A")
 	ctxB := tenantCtx("tenant-B")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctxA, factory, ref)
 
 	saveEntity(t, ctxA, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -404,6 +423,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -471,6 +491,10 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	realStore, _ := factory.AsyncSearchStore(context.Background())
 
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
 	gate := make(chan struct{})
 	blockedStore := &blockingSearchStore{
 		AsyncSearchStore: realStore,
@@ -478,9 +502,6 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	}
 
 	svc := search.NewSearchService(factory, uuids, blockedStore)
-
-	ctx := tenantCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -584,6 +605,7 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.x",
 		OperatorType: "EQUALS",
@@ -647,6 +669,7 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, base, ref)
 	// Save entities to the real store for fallback verification.
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -699,6 +722,7 @@ func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	cond := &predicate.SimpleCondition{
@@ -723,6 +747,7 @@ func TestSearchFallsBackWhenInTransaction(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, base, ref)
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
@@ -802,8 +827,9 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// validateConditionPaths (for $.surname) + resolveSortKeys each call Get once.
-		getQueue: []*spi.ModelDescriptor{desc, desc},
+		// EnsureModelRegistered + validateConditionPaths (for $.surname) + resolveSortKeys
+		// each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc, desc},
 	}
 
 	var capturedOpts spi.SearchOptions
@@ -1060,8 +1086,8 @@ func TestSubmitAsync_OrderBy_PersistsTypedSpecs(t *testing.T) {
 
 // TestSearch_SortKeyCap_ReturnsError verifies that Search returns a 400
 // INVALID_FIELD_PATH AppError when the number of sort keys exceeds the
-// configured cap. The cap check must fire before the model store is
-// consulted so the model need not be registered.
+// configured cap. The cap check fires inside resolveSortKeys, before the
+// model schema is consulted for sort-key typing.
 func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -1072,6 +1098,7 @@ func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	orderBy := []search.OrderKey{
 		{Path: "a", Source: spi.SourceData},
@@ -1113,6 +1140,7 @@ func TestSubmitAsync_SortKeyCap_ReturnsError(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	orderBy := []search.OrderKey{
 		{Path: "a", Source: spi.SourceData},
@@ -1212,6 +1240,7 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
+	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	cond := &predicate.SimpleCondition{
@@ -1241,4 +1270,104 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	if status.Status != "SUCCESSFUL" {
 		t.Fatalf("expected SUCCESSFUL, got %s", status.Status)
 	}
+}
+
+// TestSearch_LimitExceedsMax verifies the service-layer defense-in-depth cap:
+// limit > MaxPageSize is rejected with a 400 BAD_REQUEST AppError before any
+// store access, and the unbounded case (limit < 0) is NOT rejected.
+func TestSearch_LimitExceedsMax(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	ctx := tenantCtx("tenant-cap")
+	ref := spi.ModelRef{EntityName: "cap-model", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
+	cond := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{}}
+
+	t.Run("limit above max rejected", func(t *testing.T) {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10001})
+		if err == nil {
+			t.Fatal("expected error for limit=10001, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeBadRequest {
+			t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
+		}
+	})
+
+	t.Run("limit at max accepted", func(t *testing.T) {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10000})
+		if err != nil {
+			t.Fatalf("expected success for limit=10000, got: %v", err)
+		}
+	})
+
+	t.Run("unbounded limit (negative) accepted", func(t *testing.T) {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: -1})
+		if err != nil {
+			t.Fatalf("expected success for unbounded limit=-1, got: %v", err)
+		}
+	})
+}
+
+// TestSubmitAsync_LimitExceedsMax mirrors TestSearch_LimitExceedsMax for the
+// async submit path: limit > MaxPageSize must be rejected synchronously (before
+// any job is created), unbounded (limit<0) and boundary (limit==MaxPageSize)
+// must be allowed.
+func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	ctx := tenantCtx("tenant-async-cap")
+	ref := spi.ModelRef{EntityName: "async-cap-model", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
+	cond := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{}}
+
+	t.Run("limit above max rejected synchronously", func(t *testing.T) {
+		jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10001})
+		if err == nil {
+			t.Fatalf("expected error for limit=10001, got nil (jobID=%s)", jobID)
+		}
+		if jobID != "" {
+			t.Errorf("expected empty job ID on rejection, got %q", jobID)
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeBadRequest {
+			t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
+		}
+	})
+
+	t.Run("limit at max accepted", func(t *testing.T) {
+		_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10000})
+		if err != nil {
+			t.Fatalf("expected success for limit=10000, got: %v", err)
+		}
+	})
+
+	t.Run("unbounded limit (negative) accepted", func(t *testing.T) {
+		_, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: -1})
+		if err != nil {
+			t.Fatalf("expected success for unbounded limit=-1, got: %v", err)
+		}
+	})
 }

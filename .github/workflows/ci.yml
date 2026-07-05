@@ -102,7 +102,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
-        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh
+        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh
 
   # Continuous security gates (issue #67):
   #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,
@@ -155,3 +155,19 @@ jobs:
 
       - name: Verify SPI pin sync
         run: ./scripts/check-spi-pin-sync.sh
+
+  # Guards against api/generated.go drifting from api/openapi.yaml — an edit to
+  # the spec that isn't followed by `go generate ./api/...`. This drift went
+  # undetected across several PRs (the spec changed; generated.go did not), so
+  # this gate regenerates and fails on any diff.
+  codegen-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Verify api/generated.go is in sync with api/openapi.yaml
+        run: make check-codegen

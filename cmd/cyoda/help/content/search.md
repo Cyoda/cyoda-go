@@ -6,6 +6,7 @@ see_also:
   - crud
   - models
   - analytics
+  - errors.MODEL_NOT_FOUND
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
@@ -37,7 +38,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 Search operates against a specific entity model `(entityName, modelVersion)`. Two modes are supported:
 
-**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 (values above 10000 are clamped to 10000).
+**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 — values above 10000 are rejected with `400 BAD_REQUEST`.
 
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
@@ -177,7 +178,7 @@ The function is dispatched as `EntityCriteriaCalculationRequest` to the matching
 - `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
   Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
   see `cyoda help crud` ("Point-in-time semantics").
-- `limit` (query, optional): string-encoded integer, clamped to maximum 10000; default 1000
+- `limit` (query, optional): string-encoded integer, maximum 10000 (values above 10000 are rejected with `400 BAD_REQUEST`); default 1000
 
 Request body: `Condition` JSON document.
 
@@ -324,10 +325,11 @@ Both sync and async search accept one or more `sort` query parameters. Repeat th
 
 Async search results use page-number pagination: `pageNumber=0` is the first page, `offset = pageNumber * pageSize`. `pageNumber` and `pageSize` are both string-encoded integers in query parameters.
 
-Synchronous search does not paginate; use the `limit` parameter (max 10000) to bound results. For large datasets, use async search with page retrieval.
+Synchronous search does not paginate; use the `limit` parameter (maximum 10000; above rejects `400`) to bound results. For large datasets, use async search with page retrieval.
 
 ## ERRORS
 
+- `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
@@ -422,6 +424,7 @@ curl -s -X PUT \
 - crud
 - models
 - analytics
+- errors.MODEL_NOT_FOUND
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT

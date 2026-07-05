@@ -55,10 +55,12 @@ var _ spi.ModelStore = (*countingModelStore)(nil)
 
 // TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath asserts that
 // a serial flood of validation requests for the same unknown field path
-// hits the inner ModelStore at most once for the initial Get and once for
-// the bounded RefreshAndGet. Without the negative cache every request
-// would fire its own Get + RefreshAndGet pair, amplifying client error
-// into a denial-of-service vector against the schema cache.
+// hits the path-validation inner store at most once for the initial Get and
+// once for the bounded RefreshAndGet. EnsureModelRegistered fires one Get
+// per Search call (it is not cached), so the total Get count is
+// reqCount+1. Without the negative cache every request would fire its own
+// Get+RefreshAndGet pair for path validation, amplifying client error into
+// a denial-of-service vector against the schema cache.
 func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	desc := buildSearchDescriptor(t, ref, "a")
@@ -90,8 +92,10 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 		}
 	}
 
-	if got := ms.getCount.Load(); got > 2 {
-		t.Errorf("inner Get count: want <=2 (cached negative), got %d", got)
+	// EnsureModelRegistered fires 1 Get per call; path validation fires 1 Get
+	// only on the first call (then the negative cache short-circuits it).
+	if got := ms.getCount.Load(); got > int64(reqCount)+1 {
+		t.Errorf("inner Get count: want <=%d (EnsureModelRegistered per call + 1 path-validation load), got %d", reqCount+1, got)
 	}
 	if got := ms.refreshCount.Load(); got > 1 {
 		t.Errorf("inner RefreshAndGet count: want <=1 (bounded), got %d", got)
@@ -141,12 +145,13 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 	getsBefore := ms.getCount.Load()
 	refreshesBefore := ms.refreshCount.Load()
 
-	// Second request hits the negative cache (no inner store calls).
+	// Second request: EnsureModelRegistered fires one Get, but path validation
+	// should hit the negative cache (no additional inner store calls).
 	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
 		t.Fatalf("expected error on second call")
 	}
-	if ms.getCount.Load() != getsBefore || ms.refreshCount.Load() != refreshesBefore {
-		t.Fatalf("expected no inner store calls between warmup and invalidation, got Δgets=%d Δrefreshes=%d",
+	if ms.getCount.Load() > getsBefore+1 || ms.refreshCount.Load() != refreshesBefore {
+		t.Fatalf("expected only EnsureModelRegistered's Get (no path-validation calls) between warmup and invalidation, got Δgets=%d Δrefreshes=%d",
 			ms.getCount.Load()-getsBefore, ms.refreshCount.Load()-refreshesBefore)
 	}
 

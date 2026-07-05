@@ -13,3 +13,24 @@
 # stale documentation the server never honoured (a bare object is rejected with 400). Correcting
 # the schema to the real shape is the reconciliation this PR performs (E4).
 error at api/openapi.yaml, in API POST /entity/{format} the request's body `type/format` changed from `object/json` to `array<object>` [request-body-type-changed].
+
+# stats/audit/search slice (ADR 0003 Decision 7 — spec-to-reality reconciliation; prior spec never matched server):
+#
+# getStateMachineFinishedEvent (GET /audit/…/finished): prior 401/403/404/500 responses used
+# ErrorResponseDto (error, error_description, error_uri) — a prototype-era schema.  Server has
+# always returned ProblemDetail (RFC 9457).  Correcting the schema removes these fields.
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# searchEntities (POST /search/direct/…): prior 200 listed application/json (wrong — server
+# streams NDJSON); prior 400/404 listed application/x-ndjson (wrong — server returns
+# ProblemDetail JSON for errors).  Correcting both removes these media-type entries.
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/json` for the response with the status `200` [response-media-type-removed].
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/x-ndjson` for the response with the status `400` [response-media-type-removed].
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/x-ndjson` for the response with the status `404` [response-media-type-removed].

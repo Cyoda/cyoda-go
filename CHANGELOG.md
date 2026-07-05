@@ -84,7 +84,41 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   did this; the memory backend keeps filtering in memory by design.
   ([#37](https://github.com/Cyoda-platform/cyoda-go/issues/37))
 
+- **Unknown model → `404 MODEL_NOT_FOUND` (uniform)** — all model-scoped read
+  operations (`getAllEntities`, `getEntityStatisticsForModel`,
+  `getEntityStatisticsByStateForModel`, `searchEntities`, `submitAsyncSearchJob`,
+  `queryGroupedEntityStatisticsForModel`) now return `404 MODEL_NOT_FOUND` when
+  the requested model is not registered for the calling tenant. Previously these
+  paths returned empty results silently; the ad-hoc `UNKNOWN_MODEL` code used by
+  grouped-stats is retired.
+
+- **`searchEntities` limit enforcement** — `limit > 10000` is now rejected with
+  `400 BAD_REQUEST` across synchronous search (HTTP), gRPC direct search, and
+  async search submission. Previously the spec documented this as a silent clamp.
+
+- **`searchEntities` content type** — the synchronous search endpoint responds
+  with `application/x-ndjson` only; the previously-listed `application/json`
+  variant is removed from the contract.
+
+### Removed
+
+- **`pointInTime` param on `getAsyncSearchResults`** — the point-in-time is
+  fixed at job submission; the param was a no-op and is removed from the contract.
+
+- **`timeoutMillis` param and `408` on `searchEntities`** — these were fictional
+  contract surface not backed by an implementation; both are removed. Actual
+  per-request timeout support is tracked separately.
+
+- **Fictional time-based-UUID `400` on `getStateMachineFinishedEvent`** — any
+  valid UUID is accepted; the fictional constraint is removed from the spec.
+
 ### Fixed
+
+- **`getStateMachineFinishedEvent` error envelope** — error responses now use
+  `application/problem+json` (`ProblemDetail`), matching the rest of the API.
+
+- **`getAsyncSearchResults` documented default page size** — corrected from 10
+  to 1000 in the spec; the implementation was already using 1000.
 
 - Point-in-time ("as at T") reads now apply one canonical rule across all
   storage engines and read paths: inclusive of the requested instant (`<=`),

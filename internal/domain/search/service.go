@@ -14,6 +14,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -53,8 +54,13 @@ type SearchJobStatus struct {
 
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
 type SnapshotStatus struct {
-	SnapshotID    string
-	Status        string // RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND
+	SnapshotID string
+	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND.
+	// NOT_FOUND is emitted by the commercial self-executing search store on
+	// snapshot-expiry races (documented in the getAsyncSearchStatus spec); it
+	// is intentionally retained in the contract — do NOT remove this value
+	// even though OSS backends never set it.
+	Status        string
 	EntitiesCount int
 }
 
@@ -116,10 +122,25 @@ func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 // entity.Handler.ValidateWithRefresh's bounded-retry contract) so a
 // search referencing a peer's freshly-extended path succeeds after one
 // authoritative read. Truly-unknown paths surface as 4xx BAD_REQUEST.
-// Models that have never been registered are admitted unchanged —
-// pre-execution validation is best-effort and only applies once the
-// model exists. See issue #77.
+// Unregistered models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
+	// Defense-in-depth: enforce the limit cap at the service layer so every
+	// entry point (HTTP, gRPC, future transports) sees the same rejection.
+	// The HTTP handler checks this already; gRPC does not — placing the check
+	// here closes that gap without altering the unbounded (limit<0) semantics.
+	if opts.Limit > pagination.MaxPageSize {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
+		return nil, appErr
+	}
+
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return nil, vErr
 	}
@@ -212,9 +233,24 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // know about returns a 4xx without ever creating a job, sparing the
 // client a round-trip through the polling endpoint.
 func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
+	// Defense-in-depth: same cap as Search so the async path also fails fast
+	// rather than creating a job that will fail in the background.
+	if opts.Limit > pagination.MaxPageSize {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
+	}
+
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return "", common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
+		return "", appErr
 	}
 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
@@ -493,11 +529,9 @@ func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string
 // a peer's freshly-extended path succeeds after one bounded refresh,
 // and a truly-unknown path surfaces as 4xx without a refresh loop.
 //
-// Returns nil when validation passes, when no data-field paths are
-// addressed (lifecycle-only conditions), or when the model has not been
-// registered (the memory plugin admits entity writes without a prior
-// model, and search must preserve that behaviour). Validator failures
-// surface as a 4xx common.AppError with the missing paths listed.
+// Returns nil when validation passes or when no data-field paths are
+// addressed (lifecycle-only conditions). Validator failures surface as a
+// 4xx common.AppError with the missing paths listed.
 func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) error {
 	paths := extractFieldPaths(cond)
 	if len(paths) == 0 {
@@ -526,12 +560,9 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 
 	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
 	if err != nil {
-		if errors.Is(err, spi.ErrNotFound) {
-			// Unregistered model — nothing to validate against.
-			return nil
-		}
-		// Decoding-the-schema failures are upstream: log and continue so
-		// search can still proceed via the matcher's own error path.
+		// Model existence is guaranteed by EnsureModelRegistered before we
+		// reach here; a schema-decode failure is upstream — log and proceed
+		// so the matcher's own error path can still surface a useful error.
 		slog.Debug("failed to load schema for pre-execution validation",
 			"pkg", "search",
 			"entityName", modelRef.EntityName,
@@ -540,8 +571,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 		return nil
 	}
 	if fields == nil {
-		// Descriptor returned nil (no schema bound) — treat as
-		// unregistered and admit the search.
+		// Descriptor returned nil — no schema bound to validate against.
 		return nil
 	}
 

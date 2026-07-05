@@ -8,6 +8,105 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 )
 
+// TestEntityStatsByStateGet_UnknownModel_ModelNotFound verifies that
+// EntityStatsByStateGetRequest for an unregistered model returns a CLIENT_ERROR
+// envelope response with MODEL_NOT_FOUND in the message, not a zero-count success.
+func TestEntityStatsByStateGet_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityStatsByStateGetRequest, map[string]any{
+		"id":    "stats-state-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityStatsByStateResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+}
+
+// TestEntityStatsGet_UnknownModel_ModelNotFound verifies that EntityStatsGetRequest
+// for an unregistered model returns a CLIENT_ERROR envelope response with
+// MODEL_NOT_FOUND in the message, not a zero-count success.
+func TestEntityStatsGet_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityStatsGetRequest, map[string]any{
+		"id":    "stats-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityStatsResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+}
+
+// TestEntityGetAll_UnknownModel_ModelNotFound verifies that EntityGetAllRequest
+// for an unregistered model returns a CLIENT_ERROR envelope response with
+// MODEL_NOT_FOUND in the message, not an empty stream.
+func TestEntityGetAll_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityGetAllRequest, map[string]any{
+		"id":    "getall-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+}
+
 // TestEntitySearch_DirectSearch_OrderBy_SourceMeta verifies that a direct search
 // with source:"meta" on the canonical meta field "creationDate" succeeds,
 // exercising the SourceMeta mapping branch in handleDirectSearchRequest.
@@ -370,6 +469,122 @@ func TestEntitySearch_SnapshotSearch_OrderBy_ExceedsCap(t *testing.T) {
 	// No snapshot ID must be issued when submit fails.
 	if typed.Status.SnapshotID != nilUUID {
 		t.Errorf("expected nilUUID for failed submit, got %q", typed.Status.SnapshotID)
+	}
+}
+
+// TestEntitySearch_DirectSearch_UnknownModel_ModelNotFound verifies that
+// EntitySearchRequest for an unregistered model returns a CLIENT_ERROR
+// envelope response with MODEL_NOT_FOUND in the message, not an empty
+// stream.
+func TestEntitySearch_DirectSearch_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "search-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+}
+
+// TestEntitySearch_SnapshotSearch_UnknownModel_ModelNotFound verifies that
+// EntitySnapshotSearchRequest for an unregistered model returns a CLIENT_ERROR
+// envelope response with MODEL_NOT_FOUND in the message at submit time,
+// and issues no snapshot ID.
+func TestEntitySearch_SnapshotSearch_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected transport error (errors should be envelope responses): %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+	// No snapshot ID must be issued when submit fails.
+	if typed.Status.SnapshotID != nilUUID {
+		t.Errorf("expected nilUUID for failed submit, got %q", typed.Status.SnapshotID)
+	}
+}
+
+// TestEntitySearch_DirectSearch_LimitExceedsMax verifies that a direct search
+// with limit > 10000 (MaxPageSize) is rejected by the service layer and
+// surfaces as CLIENT_ERROR in the gRPC envelope. This closes the HTTP/gRPC
+// parity gap: the HTTP handler already rejects oversized limits; the service
+// cap ensures gRPC inherits the same constraint.
+func TestEntitySearch_DirectSearch_LimitExceedsMax(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "caplimit", "1", map[string]any{"val": "x"})
+
+	overLimit := 10001
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "s-caplimit-1",
+		"model": map[string]any{"name": "caplimit", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+		"limit": overLimit,
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for limit exceeding max")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "BAD_REQUEST") {
+		t.Errorf("expected BAD_REQUEST in message, got %q", typed.Error.Message)
 	}
 }
 

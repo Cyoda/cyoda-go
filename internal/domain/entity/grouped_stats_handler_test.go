@@ -91,7 +91,7 @@ func TestGroupedStatsHandler_RejectsUnknownTopLevelField(t *testing.T) {
 	}
 }
 
-func TestGroupedStatsHandler_Returns400OnUnknownModel(t *testing.T) {
+func TestGroupedStatsHandler_Returns404OnUnknownModel(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, bool, error) {
 		return nil, spi.ModelRef{}, false, nil
 	}
@@ -102,11 +102,11 @@ func TestGroupedStatsHandler_Returns400OnUnknownModel(t *testing.T) {
 	req.SetPathValue("modelVersion", "1")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
-	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "UNKNOWN_MODEL" {
-		t.Fatalf("errorCode=%s, want UNKNOWN_MODEL (body: %s)", got, rec.Body.String())
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "MODEL_NOT_FOUND" {
+		t.Fatalf("errorCode=%s, want MODEL_NOT_FOUND (body: %s)", got, rec.Body.String())
 	}
 }
 
