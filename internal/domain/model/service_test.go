@@ -726,3 +726,35 @@ func TestImportModel_InvalidUniqueKeyDefinition_422(t *testing.T) {
 			common.ErrCodeInvalidUniqueKeyDefinition, appErr.Code, appErr.Message)
 	}
 }
+
+// TestExportModel_UnsupportedConverter_400 verifies that ExportModel rejects
+// a converter value that is not JSON_SCHEMA or SIMPLE_VIEW with a 400
+// BAD_REQUEST operational error. The OpenAPI enum gate (route-matcher rejects
+// out-of-enum values at the HTTP layer) makes this path unreachable in
+// production, but the domain layer still guards it defensively.
+func TestExportModel_UnsupportedConverter_400(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelLocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{getDescriptor: desc}
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.ExportModel(context.Background(), "Dataset", "1", "SAMPLE_DATA")
+	if err == nil {
+		t.Fatal("ExportModel with unsupported converter: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 400 {
+		t.Errorf("expected HTTP 400, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeBadRequest {
+		t.Errorf("expected code %q, got %q (message: %s)",
+			common.ErrCodeBadRequest, appErr.Code, appErr.Message)
+	}
+}

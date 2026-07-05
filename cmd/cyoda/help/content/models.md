@@ -252,11 +252,14 @@ The importer walks the JSON structure and infers a typed schema. Subsequent impo
       ".share": "STRING",
       ".surname": "STRING"
     }
-  }
+  },
+  "uniqueKeys": [
+    { "id": "by-email", "fields": ["$.email"] }
+  ]
 }
 ```
 
-The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field in the root object. The `"$.fieldname[*]"` bucket contains the array element schema with `"#": "ARRAY_ELEMENT"` as a type marker.
+The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field in the root object. The `"$.fieldname[*]"` bucket contains the array element schema with `"#": "ARRAY_ELEMENT"` as a type marker. `uniqueKeys` is omitted when the model declares no composite unique keys.
 
 **Export — JSON_SCHEMA format**:
 
@@ -282,7 +285,10 @@ The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field
         }
       }
     }
-  }
+  },
+  "uniqueKeys": [
+    { "id": "by-email", "fields": ["$.email"] }
+  ]
 }
 ```
 

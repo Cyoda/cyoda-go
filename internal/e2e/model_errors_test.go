@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -76,4 +77,42 @@ func TestModelImport_UnsupportedConverter_400(t *testing.T) {
 		t.Fatalf("import JSON_SCHEMA converter: expected 400, got %d: %s", resp.StatusCode, body)
 	}
 	assertErrorCode(t, body, "BAD_REQUEST")
+}
+
+// TestExportModel_UniqueKeys_PresentInBody verifies that when a model declares
+// composite unique keys, the export 200 body carries a top-level uniqueKeys
+// array matching the typed-but-open schema introduced in the OpenAPI spec.
+func TestExportModel_UniqueKeys_PresentInBody(t *testing.T) {
+	const m = "e2e-export-uk"
+	importModelE2E(t, m, 1)
+	keysJSON := `{"uniqueKeys":[{"id":"by-name","fields":["$.name"]}]}`
+	status, body := setUniqueKeysE2E(t, m, 1, keysJSON)
+	if status != http.StatusOK {
+		t.Fatalf("setUniqueKeys: expected 200, got %d: %s", status, body)
+	}
+
+	resp := doAuth(t, http.MethodGet, "/api/model/export/JSON_SCHEMA/"+m+"/1", "")
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("export: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("export: unmarshal failed: %v\nbody: %s", err, body)
+	}
+	uks, ok := parsed["uniqueKeys"].([]any)
+	if !ok || len(uks) == 0 {
+		t.Fatalf("export: expected non-empty uniqueKeys array in body, got: %s", body)
+	}
+}
+
+// TestExportModel_NotFound_404 verifies that exporting a model that does not
+// exist returns 404 MODEL_NOT_FOUND.
+func TestExportModel_NotFound_404(t *testing.T) {
+	resp := doAuth(t, http.MethodGet, "/api/model/export/JSON_SCHEMA/nope-model/1", "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("export non-existent model: expected 404, got %d: %s", resp.StatusCode, body)
+	}
+	assertErrorCode(t, body, "MODEL_NOT_FOUND")
 }

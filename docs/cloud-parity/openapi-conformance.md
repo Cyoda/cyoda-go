@@ -129,6 +129,9 @@ Per-finding contract decisions from the entity-model & workflow reconciliation s
   unsupported-converter `BAD_REQUEST`; workflow-import `VALIDATION_FAILED` /
   `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`; workflow-export `MODEL_NOT_FOUND`-vs-
   `WORKFLOW_NOT_FOUND` disambiguation. Direction: spec-incomplete (closed).
+- **M3 — `exportMetadata.uniqueKeys` typed.** The export 200 body now enumerates
+  the top-level `uniqueKeys` array (typed-but-open) alongside `currentState`/`model`.
+  Direction: spec-incomplete (closed). Cloud MUST emit `uniqueKeys` when keys exist.
 
 ## Open questions (Cloud-fact-blocked)
 

@@ -3837,10 +3837,28 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 description: >
                   Exported model metadata in the converter's output format.
                   Shape depends on the converter argument (JSON_SCHEMA or SIMPLE_VIEW).
+                properties:
+                  currentState:
+                    type: string
+                    description: Lifecycle state of the model (LOCKED or UNLOCKED).
+                  model:
+                    type: object
+                    description: Model schema in the requested converter format.
+                  uniqueKeys:
+                    type: array
+                    description: Composite unique-key definitions (omitted when the model declares no keys).
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        fields:
+                          type: array
+                          items:
+                            type: string
               examples:
                 Simple View:
                   summary: SIMPLE_VIEW export example
@@ -3858,6 +3876,10 @@ paths:
                         .share: STRING
                         .surname: STRING
                         "#": ARRAY_ELEMENT
+                    uniqueKeys:
+                      - id: by-email
+                        fields:
+                          - "$.email"
                 Json Schema:
                   summary: JSON_SCHEMA export example
                   description: Json Schema
@@ -3883,6 +3905,10 @@ paths:
                                 type: string
                               motivation:
                                 type: string
+                    uniqueKeys:
+                      - id: by-email
+                        fields:
+                          - "$.email"
         "400":
           description: Invalid converter specified
           content:
@@ -3893,11 +3919,10 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'WRONG' for parameter 'converter'
-                instance: /api/model/export/WRONG/nobel-prize/2
+                detail: unsupported export converter
+                instance: /api/model/export/UNSUPPORTED/nobel-prize/2
                 properties:
-                  parameter: converter
-                  invalidValue: WRONG
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity model not found
           content:
