@@ -1780,6 +1780,31 @@ func parseEntityResponseMeta(t *testing.T, ce *cepb.CloudEvent) map[string]any {
 	return resp.Payload.Meta
 }
 
+func TestRPC_ModelDelete_409_Locked(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "del-locked", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelDeleteRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "del-locked", "version": 1},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for locked-model delete")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_LOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_LOCKED, got %s", typed.Error.Message)
+	}
+}
+
 // --- mock stream implementations ---
 
 // mockManageStream implements CloudEventsService_EntityManageCollectionServer.
