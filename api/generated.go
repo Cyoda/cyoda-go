@@ -339,19 +339,19 @@ func (e CancelAsyncSearchDtoCurrentSearchJobStatus) Valid() bool {
 
 // Defines values for EntityChangeAuditEventDtoChangeType.
 const (
-	EntityChangeAuditEventDtoChangeTypeCREATED EntityChangeAuditEventDtoChangeType = "CREATED"
-	EntityChangeAuditEventDtoChangeTypeDELETED EntityChangeAuditEventDtoChangeType = "DELETED"
-	EntityChangeAuditEventDtoChangeTypeUPDATED EntityChangeAuditEventDtoChangeType = "UPDATED"
+	EntityChangeAuditEventDtoChangeTypeCREATE EntityChangeAuditEventDtoChangeType = "CREATE"
+	EntityChangeAuditEventDtoChangeTypeDELETE EntityChangeAuditEventDtoChangeType = "DELETE"
+	EntityChangeAuditEventDtoChangeTypeUPDATE EntityChangeAuditEventDtoChangeType = "UPDATE"
 )
 
 // Valid indicates whether the value is a known member of the EntityChangeAuditEventDtoChangeType enum.
 func (e EntityChangeAuditEventDtoChangeType) Valid() bool {
 	switch e {
-	case EntityChangeAuditEventDtoChangeTypeCREATED:
+	case EntityChangeAuditEventDtoChangeTypeCREATE:
 		return true
-	case EntityChangeAuditEventDtoChangeTypeDELETED:
+	case EntityChangeAuditEventDtoChangeTypeDELETE:
 		return true
-	case EntityChangeAuditEventDtoChangeTypeUPDATED:
+	case EntityChangeAuditEventDtoChangeTypeUPDATE:
 		return true
 	default:
 		return false
@@ -384,19 +384,19 @@ func (e EntityChangeAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for EntityChangeMetaChangeType.
 const (
-	EntityChangeMetaChangeTypeCREATED EntityChangeMetaChangeType = "CREATED"
-	EntityChangeMetaChangeTypeDELETED EntityChangeMetaChangeType = "DELETED"
-	EntityChangeMetaChangeTypeUPDATED EntityChangeMetaChangeType = "UPDATED"
+	EntityChangeMetaChangeTypeCREATE EntityChangeMetaChangeType = "CREATE"
+	EntityChangeMetaChangeTypeDELETE EntityChangeMetaChangeType = "DELETE"
+	EntityChangeMetaChangeTypeUPDATE EntityChangeMetaChangeType = "UPDATE"
 )
 
 // Valid indicates whether the value is a known member of the EntityChangeMetaChangeType enum.
 func (e EntityChangeMetaChangeType) Valid() bool {
 	switch e {
-	case EntityChangeMetaChangeTypeCREATED:
+	case EntityChangeMetaChangeTypeCREATE:
 		return true
-	case EntityChangeMetaChangeTypeDELETED:
+	case EntityChangeMetaChangeTypeDELETE:
 		return true
-	case EntityChangeMetaChangeTypeUPDATED:
+	case EntityChangeMetaChangeTypeUPDATE:
 		return true
 	default:
 		return false
@@ -1940,7 +1940,7 @@ type EntityChangeAuditEventDto struct {
 	Actor          *AuditActorInfoDto `json:"actor,omitempty"`
 	AuditEventType string             `json:"auditEventType"`
 
-	// ChangeType Type of change that occurred
+	// ChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
 	ChangeType *EntityChangeAuditEventDtoChangeType `json:"changeType,omitempty"`
 
 	// Changes Changes made to the entity
@@ -1974,7 +1974,7 @@ type EntityChangeAuditEventDto struct {
 	UtcTime time.Time `json:"utcTime"`
 }
 
-// EntityChangeAuditEventDtoChangeType Type of change that occurred
+// EntityChangeAuditEventDtoChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
 type EntityChangeAuditEventDtoChangeType string
 
 // EntityChangeAuditEventDtoSeverity Severity level of the event
@@ -1999,6 +1999,36 @@ type EntityChangesDto struct {
 
 	// Before Entity before changes
 	Before *JsonNode `json:"before,omitempty"`
+}
+
+// EntityMetadata System-managed entity metadata. Mirrors the canonical
+// docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
+// fields are enumerated and validated; the object is not sealed, so
+// additive fields remain non-breaking.
+type EntityMetadata struct {
+	CreationDate time.Time `json:"creationDate"`
+
+	// Id Entity id (invariant against point-in-time).
+	Id openapi_types.UUID `json:"id"`
+
+	// LastUpdateTime Last update as-at the point-in-time; equals creationDate if never updated.
+	LastUpdateTime time.Time `json:"lastUpdateTime"`
+
+	// ModelKey Model of the entity. Present on single-entity reads.
+	ModelKey *struct {
+		Name    *string `json:"name,omitempty"`
+		Version *int32  `json:"version,omitempty"`
+	} `json:"modelKey,omitempty"`
+
+	// PointInTime The as-at point-in-time for which the entity was retrieved, when supplied.
+	PointInTime *time.Time `json:"pointInTime,omitempty"`
+
+	// State Entity state at the given point-in-time.
+	State         string              `json:"state"`
+	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
+
+	// TransitionForLatestSave Transition applied when the entity was last saved as-at the point-in-time.
+	TransitionForLatestSave *string `json:"transitionForLatestSave,omitempty"`
 }
 
 // EntityMetadataDto System-managed metadata returned for each entity in search results.
@@ -2141,8 +2171,11 @@ type Envelope struct {
 	// Exact fields depend on the entity model.
 	Data map[string]interface{} `json:"data"`
 
-	// Meta System-managed metadata: id, state, creationDate, previousTransition, etc.
-	Meta map[string]interface{} `json:"meta"`
+	// Meta System-managed entity metadata. Mirrors the canonical
+	// docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
+	// fields are enumerated and validated; the object is not sealed, so
+	// additive fields remain non-breaking.
+	Meta EntityMetadata `json:"meta"`
 
 	// Type Entity type discriminator (e.g. "ENTITY").
 	Type string `json:"type"`
@@ -3408,7 +3441,13 @@ type GetAllEntitiesParams struct {
 }
 
 // CreateCollectionJSONBody defines parameters for CreateCollection.
-type CreateCollectionJSONBody = map[string]interface{}
+type CreateCollectionJSONBody = []struct {
+	Model struct {
+		Name    string `json:"name"`
+		Version int32  `json:"version"`
+	} `json:"model"`
+	Payload string `json:"payload"`
+}
 
 // CreateCollectionParams defines parameters for CreateCollection.
 type CreateCollectionParams struct {
@@ -3612,7 +3651,9 @@ type UpdateSingleParams struct {
 type UpdateSingleParamsFormat string
 
 // CreateJSONBody defines parameters for Create.
-type CreateJSONBody = map[string]interface{}
+type CreateJSONBody struct {
+	union json.RawMessage
+}
 
 // CreateParams defines parameters for Create.
 type CreateParams struct {
@@ -3643,6 +3684,12 @@ type CreateParams struct {
 
 // CreateParamsFormat defines parameters for Create.
 type CreateParamsFormat string
+
+// CreateJSONBody0 defines parameters for Create.
+type CreateJSONBody0 map[string]interface{}
+
+// CreateJSONBody1 defines parameters for Create.
+type CreateJSONBody1 = []map[string]interface{}
 
 // DeleteMessagesJSONBody defines parameters for DeleteMessages.
 type DeleteMessagesJSONBody = openapi_types.UUID
@@ -3771,9 +3818,6 @@ type GetAsyncSearchResultsParams struct {
 
 	// PageNumber Zero-based page number
 	PageNumber *string `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
-
-	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the point-in-time of the report if not provided.
-	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
 // SearchEntitiesJSONBody defines parameters for SearchEntities.
@@ -3827,7 +3871,7 @@ type PatchSingleApplicationMergePatchPlusJSONRequestBody = PatchSingleApplicatio
 type UpdateSingleJSONRequestBody = UpdateSingleJSONBody
 
 // CreateJSONRequestBody defines body for Create for application/json ContentType.
-type CreateJSONRequestBody = CreateJSONBody
+type CreateJSONRequestBody CreateJSONBody
 
 // DeleteMessagesJSONRequestBody defines body for DeleteMessages for application/json ContentType.
 type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
@@ -4568,6 +4612,68 @@ func (t WorkflowConfigurationDto_Criterion) MarshalJSON() ([]byte, error) {
 }
 
 func (t *WorkflowConfigurationDto_Criterion) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsCreateJSONBody0 returns the union data inside the CreateJSONBody as a CreateJSONBody0
+func (t CreateJSONBody) AsCreateJSONBody0() (CreateJSONBody0, error) {
+	var body CreateJSONBody0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCreateJSONBody0 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody0
+func (t *CreateJSONBody) FromCreateJSONBody0(v CreateJSONBody0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCreateJSONBody0 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody0
+func (t *CreateJSONBody) MergeCreateJSONBody0(v CreateJSONBody0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsCreateJSONBody1 returns the union data inside the CreateJSONBody as a CreateJSONBody1
+func (t CreateJSONBody) AsCreateJSONBody1() (CreateJSONBody1, error) {
+	var body CreateJSONBody1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCreateJSONBody1 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody1
+func (t *CreateJSONBody) FromCreateJSONBody1(v CreateJSONBody1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCreateJSONBody1 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody1
+func (t *CreateJSONBody) MergeCreateJSONBody1(v CreateJSONBody1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t CreateJSONBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *CreateJSONBody) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
@@ -8131,19 +8237,6 @@ func (siw *ServerInterfaceWrapper) GetAsyncSearchResults(w http.ResponseWriter, 
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageNumber"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageNumber", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "pointInTime" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "pointInTime", r.URL.Query(), &params.PointInTime, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pointInTime"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pointInTime", Err: err})
 		}
 		return
 	}

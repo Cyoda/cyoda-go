@@ -6506,15 +6506,6 @@ paths:
           required: false
           schema:
             type: string
-        - name: pointInTime
-          in: query
-          description: "The point-in-time for loading the entities, in ISO 8601 format
-            (e.g., '2035-01-01T12:00:00Z'). Defaults to the point-in-time of the
-            report if not provided. "
-          required: false
-          schema:
-            type: string
-            format: date-time
       responses:
         "200":
           description: Successfully retrieved page of results
@@ -6523,8 +6514,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PagedEntityResultsDto"
         "400":
-          description: Invalid parameters (malformed point-in-time or invalid page
-            parameters)
+          description: Invalid parameters (invalid page parameters)
           content:
             application/problem+json:
               schema:
