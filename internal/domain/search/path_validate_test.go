@@ -54,12 +54,14 @@ func (s *refreshingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) 
 	return d, nil
 }
 
-func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
-func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
-func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error           { return nil }
-func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error             { return nil }
-func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
-func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return true, nil }
+func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
+func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)   { return nil, nil }
+func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error         { return nil }
+func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) {
+	return true, nil
+}
 func (s *refreshingModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
 	return nil
 }

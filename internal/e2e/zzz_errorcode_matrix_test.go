@@ -36,7 +36,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 	},
-		// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
+	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
 	// have a bounded, bidirectionally-checkable error surface — only
 	// 404 MODEL_NOT_FOUND in the current suite — and are tracked as full keys:
 	//   {getAllEntities, getEntityStatisticsForModel, getEntityStatisticsByStateForModel}.
