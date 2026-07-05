@@ -289,7 +289,9 @@ func FindModuleRoot() string {
 
 // --- Subprocess lifecycle ---
 
-// KillProcessGroup kills the process group of the given command.
+// KillProcessGroup kills the process group of the given command and reaps it
+// via cmd.Wait(). Use this on paths where the caller owns the single allowed
+// Wait() for the process (single-node + compute launch).
 func KillProcessGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -301,6 +303,75 @@ func KillProcessGroup(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 	}
 	_ = cmd.Wait()
+}
+
+// killProcessGroupNoWait sends SIGKILL to the command's process group (or the
+// process itself if the pgid lookup fails) WITHOUT calling cmd.Wait().
+//
+// The cluster launch path spawns exactly one "monitor" goroutine per node that
+// owns that node's single cmd.Wait() call; calling Wait() a second time here
+// would be a concurrent double-Wait — a data race that the -race build would
+// (correctly) flag. Callers on that path kill via this helper and then reap the
+// process by waiting on the monitor's exit signal instead of calling Wait().
+func killProcessGroupNoWait(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err == nil {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	} else {
+		_ = cmd.Process.Kill()
+	}
+}
+
+// retryLaunch runs fn up to attempts times, returning nil on the first success.
+// If every attempt fails it returns the error from the final attempt. attempts
+// < 1 is treated as a single attempt. Each failed-then-retried attempt is
+// logged so a transient port collision self-healing across fresh-port retries
+// is visible in test output.
+func retryLaunch(attempts int, fn func() error) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if attempt < attempts {
+			slog.Info("cluster launch attempt failed; retrying with fresh ports",
+				"pkg", "fixtureutil", "attempt", attempt, "maxAttempts", attempts, "err", err)
+		}
+	}
+	return err
+}
+
+// nodeOutcome decides a single cluster node's readiness by racing its health
+// probe result against the node process exiting.
+//
+//   - healthDoneCh delivers the health probe's result (nil == healthy,
+//     non-nil == unhealthy or timed out). It is surfaced verbatim.
+//   - exitedCh is closed by the node's monitor goroutine once cmd.Wait()
+//     returns. A close observed before a health result means the process died
+//     before it could become healthy — always a failure, so we fail fast
+//     instead of blocking on a health probe that can never succeed.
+//   - exitErrFn supplies the cmd.Wait() error for the exit branch. It is read
+//     only after exitedCh's close is observed, which happens-after the monitor
+//     stored the error — so the read is race-free without extra locking. May be
+//     nil.
+func nodeOutcome(nodeIdx int, healthDoneCh <-chan error, exitedCh <-chan struct{}, exitErrFn func() error) error {
+	select {
+	case herr := <-healthDoneCh:
+		return herr
+	case <-exitedCh:
+		if exitErrFn != nil {
+			if we := exitErrFn(); we != nil {
+				return fmt.Errorf("cyoda node %d exited before becoming healthy: %w", nodeIdx, we)
+			}
+		}
+		return fmt.Errorf("cyoda node %d exited before becoming healthy", nodeIdx)
+	}
 }
 
 // --- Readiness probes ---
@@ -583,6 +654,17 @@ const defaultComputeHealthAddrTimeout = 15 * time.Second
 // compute-test-client and test driver start hitting the cluster.
 const gossipSettleDelay = 1 * time.Second
 
+// clusterLaunchAttempts bounds how many times the node-launch phase (allocate
+// n×4 ports → start n nodes → wait all healthy) is retried with freshly
+// allocated ports. FreePort() has an unavoidable TOCTOU window — it closes the
+// probe listener and returns the number, and the cyoda child binds it only
+// later, so a concurrently-running test process can steal the port in between
+// and the node dies with "bind: address already in use". A collision is
+// transient; retrying with a fresh set of ports makes a run-ending failure
+// astronomically unlikely (a fresh independent collision would have to recur
+// on every attempt).
+const clusterLaunchAttempts = 3
+
 // LaunchCyodaClusterAndCompute builds the stock cyoda + compute
 // binaries and launches n cyoda-go subprocesses sharing the supplied
 // backing storage (carried in extraEnv). Use this from in-tree parity
@@ -640,114 +722,179 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		cyodaReadinessTimeout = defaultCyodaReadinessTimeout
 	}
 
-	// Allocate n ports for each of HTTP, gRPC, gossip, admin.
-	httpPorts := make([]int, n)
-	grpcPorts := make([]int, n)
-	gossipPorts := make([]int, n)
-	adminPorts := make([]int, n)
-	for i := 0; i < n; i++ {
-		if httpPorts[i], err = FreePort(); err != nil {
-			return nil, nil, fmt.Errorf("failed to get HTTP port for node %d: %w", i, err)
-		}
-		if grpcPorts[i], err = FreePort(); err != nil {
-			return nil, nil, fmt.Errorf("failed to get gRPC port for node %d: %w", i, err)
-		}
-		if gossipPorts[i], err = FreePort(); err != nil {
-			return nil, nil, fmt.Errorf("failed to get gossip port for node %d: %w", i, err)
-		}
-		if adminPorts[i], err = FreePort(); err != nil {
-			return nil, nil, fmt.Errorf("failed to get admin port for node %d: %w", i, err)
+	// Per-node process handle plus the monitor's single-owner exit signal.
+	// Exactly one monitor goroutine per node calls cmd.Wait() and, when it
+	// returns, stores the result in exitErr and closes exitedCh. Reading
+	// exitErr only after observing exitedCh's close is race-free (the close
+	// happens-after the store). No other code calls Wait() on that cmd — the
+	// teardown paths kill via killProcessGroupNoWait and reap by waiting on
+	// exitedCh, which avoids a concurrent double-Wait data race.
+	type clusterNode struct {
+		cmd      *exec.Cmd
+		exitErr  error
+		exitedCh chan struct{}
+	}
+
+	// killNodes SIGKILLs each launched node and reaps it by waiting on its
+	// monitor's exit signal. Safe to call repeatedly and on nil entries.
+	killNodes := func(nodes []*clusterNode) {
+		for _, nd := range nodes {
+			if nd == nil || nd.cmd == nil {
+				continue
+			}
+			killProcessGroupNoWait(nd.cmd)
+			if nd.exitedCh != nil {
+				<-nd.exitedCh // reap: block until the monitor's Wait() returns
+			}
 		}
 	}
 
-	// Build the seed-nodes CSV: host:port for every node.
-	seedAddrs := make([]string, n)
-	for i := 0; i < n; i++ {
-		seedAddrs[i] = fmt.Sprintf("127.0.0.1:%d", gossipPorts[i])
-	}
-	seedNodes := strings.Join(seedAddrs, ",")
+	// nodes holds the successfully-launched, healthy cluster nodes once the
+	// retry loop below succeeds. It stays populated for the returned cleanup.
+	var nodes []*clusterNode
+	var httpPorts, grpcPorts []int
 
-	// HMAC secret shared across the cluster. Random per fixture so
-	// concurrent test packages cannot accidentally talk to each other.
-	hmacBytes := make([]byte, 32)
-	if _, err := rand.Read(hmacBytes); err != nil {
-		return nil, nil, fmt.Errorf("failed to generate HMAC secret: %w", err)
-	}
-	hmacSecret := hex.EncodeToString(hmacBytes)
+	// Retry the whole node-launch phase (fresh ports each time) to self-heal
+	// a transient FreePort() TOCTOU port collision — see clusterLaunchAttempts.
+	launchErr := retryLaunch(clusterLaunchAttempts, func() error {
+		// Allocate n ports for each of HTTP, gRPC, gossip, admin — fresh on
+		// every attempt so a collided port is not reused.
+		hPorts := make([]int, n)
+		gPorts := make([]int, n)
+		gossipPorts := make([]int, n)
+		adminPorts := make([]int, n)
+		for i := 0; i < n; i++ {
+			var e error
+			if hPorts[i], e = FreePort(); e != nil {
+				return fmt.Errorf("failed to get HTTP port for node %d: %w", i, e)
+			}
+			if gPorts[i], e = FreePort(); e != nil {
+				return fmt.Errorf("failed to get gRPC port for node %d: %w", i, e)
+			}
+			if gossipPorts[i], e = FreePort(); e != nil {
+				return fmt.Errorf("failed to get gossip port for node %d: %w", i, e)
+			}
+			if adminPorts[i], e = FreePort(); e != nil {
+				return fmt.Errorf("failed to get admin port for node %d: %w", i, e)
+			}
+		}
 
-	// Per-cluster cleanup tracker: anything started gets registered so a
-	// failure mid-launch tears down already-running children.
+		// Build the seed-nodes CSV: host:port for every node.
+		seedAddrs := make([]string, n)
+		for i := 0; i < n; i++ {
+			seedAddrs[i] = fmt.Sprintf("127.0.0.1:%d", gossipPorts[i])
+		}
+		seedNodes := strings.Join(seedAddrs, ",")
+
+		// HMAC secret shared across the cluster. Random per attempt so
+		// concurrent test packages cannot accidentally talk to each other.
+		hmacBytes := make([]byte, 32)
+		if _, e := rand.Read(hmacBytes); e != nil {
+			return fmt.Errorf("failed to generate HMAC secret: %w", e)
+		}
+		hmacSecret := hex.EncodeToString(hmacBytes)
+
+		attemptNodes := make([]*clusterNode, n)
+
+		// Concurrent start, then concurrent health-wait. Cluster registration
+		// blocks until at least one seed is reachable; if we started node 0 in
+		// isolation it would deadlock waiting on nodes 1..n-1 that haven't been
+		// launched yet. Migration concurrency is safe — golang-migrate uses a
+		// database-level lock on the schema_migrations table.
+		for i := 0; i < n; i++ {
+			cmd := exec.Command(cyodaBin)
+			cmd.WaitDelay = 3 * time.Second
+			env := append(CyodaEnv(hPorts[i], gPorts[i], ks), extraEnv...)
+			env = append(env,
+				fmt.Sprintf("CYODA_ADMIN_PORT=%d", adminPorts[i]),
+				"CYODA_CLUSTER_ENABLED=true",
+				fmt.Sprintf("CYODA_NODE_ID=node-%d", i),
+				fmt.Sprintf("CYODA_NODE_ADDR=http://127.0.0.1:%d", hPorts[i]),
+				fmt.Sprintf("CYODA_GOSSIP_ADDR=127.0.0.1:%d", gossipPorts[i]),
+				fmt.Sprintf("CYODA_SEED_NODES=%s", seedNodes),
+				fmt.Sprintf("CYODA_HMAC_SECRET=%s", hmacSecret),
+				// Advertise each node's real gRPC endpoint so cross-node EntityManage
+				// forwarding (tx-token callbacks landing on a non-owner node) resolves
+				// the owner's gRPC port directly instead of deriving it from the
+				// forwarding node's own port — the fixture assigns a distinct gRPC port
+				// per node, so the uniform-deployment derive fallback would misroute.
+				fmt.Sprintf("CYODA_GRPC_NODE_ADDR=127.0.0.1:%d", gPorts[i]),
+				// Test-only: every node runs on 127.0.0.1, so the dispatch HTTP
+				// forwarder must be allowed to target loopback peers to exercise
+				// forwarded processor/criteria dispatch (A→B) between nodes.
+				"CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING=true",
+			)
+			cmd.Env = env
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
+			if e := cmd.Start(); e != nil {
+				killNodes(attemptNodes)
+				return fmt.Errorf("failed to start cyoda-go node %d: %w", i, e)
+			}
+			nd := &clusterNode{cmd: cmd, exitedCh: make(chan struct{})}
+			attemptNodes[i] = nd
+			// The single owner of this process's cmd.Wait(). Publishes the
+			// result via exitErr + close(exitedCh) so both the health race and
+			// teardown can observe the exit without a second Wait() call.
+			go func(nd *clusterNode) {
+				nd.exitErr = nd.cmd.Wait()
+				close(nd.exitedCh)
+			}(nd)
+		}
+
+		// Concurrent health probe — every node must come ready within the
+		// readiness timeout OR its process must be seen to exit. A node that
+		// dies from a failed bind fails fast instead of hanging the full
+		// timeout. First failure is reported; all nodes torn down on failure.
+		healthErrCh := make(chan error, n)
+		for i := 0; i < n; i++ {
+			go func(idx int) {
+				nd := attemptNodes[idx]
+				baseURL := fmt.Sprintf("http://127.0.0.1:%d", hPorts[idx])
+				healthDoneCh := make(chan error, 1)
+				go func() {
+					healthDoneCh <- WaitForHTTPHealth(baseURL+"/api/health", cyodaReadinessTimeout)
+				}()
+				if e := nodeOutcome(idx, healthDoneCh, nd.exitedCh, func() error { return nd.exitErr }); e != nil {
+					healthErrCh <- e
+					return
+				}
+				slog.Info("cyoda-go cluster node ready", "pkg", "fixtureutil", "node", idx, "baseURL", baseURL)
+				healthErrCh <- nil
+			}(i)
+		}
+		var firstHealthErr error
+		for i := 0; i < n; i++ {
+			if e := <-healthErrCh; e != nil && firstHealthErr == nil {
+				firstHealthErr = e
+			}
+		}
+		if firstHealthErr != nil {
+			killNodes(attemptNodes)
+			return firstHealthErr
+		}
+
+		// Attempt succeeded — publish the healthy cluster for use below and in
+		// the returned cleanup.
+		nodes = attemptNodes
+		httpPorts = hPorts
+		grpcPorts = gPorts
+		return nil
+	})
+	if launchErr != nil {
+		return nil, nil, launchErr
+	}
+
+	// Cmd slice for the returned cluster info; teardown uses killNodes(nodes), not this.
 	cyodaCmds := make([]*exec.Cmd, n)
+	for i, nd := range nodes {
+		cyodaCmds[i] = nd.cmd
+	}
+	// cleanup for the node phase; compute wiring below replaces it with a
+	// variant that also tears down the compute-test-client.
 	cleanup := func() {
-		for _, c := range cyodaCmds {
-			if c != nil {
-				KillProcessGroup(c)
-			}
-		}
-	}
-
-	// Concurrent start, then concurrent health-wait. Cluster registration
-	// blocks until at least one seed is reachable; if we started node 0 in
-	// isolation it would deadlock waiting on nodes 1..n-1 that haven't been
-	// launched yet. Migration concurrency is safe — golang-migrate uses a
-	// database-level lock on the schema_migrations table.
-	for i := 0; i < n; i++ {
-		cmd := exec.Command(cyodaBin)
-		cmd.WaitDelay = 3 * time.Second
-		env := append(CyodaEnv(httpPorts[i], grpcPorts[i], ks), extraEnv...)
-		env = append(env,
-			fmt.Sprintf("CYODA_ADMIN_PORT=%d", adminPorts[i]),
-			"CYODA_CLUSTER_ENABLED=true",
-			fmt.Sprintf("CYODA_NODE_ID=node-%d", i),
-			fmt.Sprintf("CYODA_NODE_ADDR=http://127.0.0.1:%d", httpPorts[i]),
-			fmt.Sprintf("CYODA_GOSSIP_ADDR=127.0.0.1:%d", gossipPorts[i]),
-			fmt.Sprintf("CYODA_SEED_NODES=%s", seedNodes),
-			fmt.Sprintf("CYODA_HMAC_SECRET=%s", hmacSecret),
-			// Advertise each node's real gRPC endpoint so cross-node EntityManage
-			// forwarding (tx-token callbacks landing on a non-owner node) resolves
-			// the owner's gRPC port directly instead of deriving it from the
-			// forwarding node's own port — the fixture assigns a distinct gRPC port
-			// per node, so the uniform-deployment derive fallback would misroute.
-			fmt.Sprintf("CYODA_GRPC_NODE_ADDR=127.0.0.1:%d", grpcPorts[i]),
-			// Test-only: every node runs on 127.0.0.1, so the dispatch HTTP
-			// forwarder must be allowed to target loopback peers to exercise
-			// forwarded processor/criteria dispatch (A→B) between nodes.
-			"CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING=true",
-		)
-		cmd.Env = env
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("failed to start cyoda-go node %d: %w", i, err)
-		}
-		cyodaCmds[i] = cmd
-	}
-
-	// Concurrent health probe — every node needs to come ready within the
-	// readiness timeout. First failure is reported; cleanup tears down all.
-	healthErrCh := make(chan error, n)
-	for i := 0; i < n; i++ {
-		go func(idx int) {
-			baseURL := fmt.Sprintf("http://127.0.0.1:%d", httpPorts[idx])
-			if err := WaitForHTTPHealth(baseURL+"/api/health", cyodaReadinessTimeout); err != nil {
-				healthErrCh <- fmt.Errorf("cyoda node %d health probe failed: %w", idx, err)
-				return
-			}
-			slog.Info("cyoda-go cluster node ready", "pkg", "fixtureutil", "node", idx, "baseURL", baseURL)
-			healthErrCh <- nil
-		}(i)
-	}
-	var firstHealthErr error
-	for i := 0; i < n; i++ {
-		if err := <-healthErrCh; err != nil && firstHealthErr == nil {
-			firstHealthErr = err
-		}
-	}
-	if firstHealthErr != nil {
-		cleanup()
-		return nil, nil, firstHealthErr
+		killNodes(nodes)
 	}
 
 	// Brief settle for gossip convergence so the seed-nodes list is
@@ -788,10 +935,12 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		return nil, nil, fmt.Errorf("failed to start compute-test-client: %w", err)
 	}
 	cleanup = func() {
+		// computeCmd has no monitor goroutine, so KillProcessGroup (which owns
+		// its Wait) is correct. The cyoda nodes are reaped by their monitor
+		// goroutines, so they must be torn down kill-only + exit-signal wait —
+		// never KillProcessGroup, which would double-Wait.
 		KillProcessGroup(computeCmd)
-		for _, c := range cyodaCmds {
-			KillProcessGroup(c)
-		}
+		killNodes(nodes)
 	}
 
 	healthAddr, err := ParseHealthAddr(computeStdout, defaultComputeHealthAddrTimeout)

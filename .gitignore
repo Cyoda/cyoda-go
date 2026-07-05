@@ -97,3 +97,4 @@ go.work.sum
 
 # Local git worktrees created by the worktree workflow — never commit
 .claude/worktrees/
+.superpowers-report.md
