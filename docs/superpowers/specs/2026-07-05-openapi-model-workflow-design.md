@@ -30,11 +30,14 @@ behaviour change** (Design area 1, §2). No new error code → no new error topi
 no `TestErrCode_Parity` delta.
 
 **Part B** — help-subsystem + core-doc reconciliation for the already-merged
-#371 and #373 contract changes (§14). Pure documentation sync to the
-already-shipped `api/openapi.yaml` — no code change, no contract change, no new
-cloud-parity entry (the contracts were logged when #371/#373 merged). Includes
-one net-new help topic (`audit.md`, Paul-approved) for the audit endpoints #371
-shipped without help coverage.
+#371 and #373 contract changes (§14). Documentation sync to the already-shipped
+contract — no behaviour change, no new/changed error code, no new cloud-parity
+entry (the contracts were logged when #371/#373 merged). One **description-only**
+`api/openapi.yaml` prose fix is in scope (the `modelKey` property description at
+`:10257`, which #371 E1b left stale — see §14.0); it is oasdiff-additive
+(non-breaking) and completes E1b. Also includes one net-new help topic
+(`audit.md`, Paul-approved) for the audit endpoints #371 shipped without help
+coverage.
 
 **Explicitly out of scope (stated so reviewers don't re-litigate):**
 Part A — `getAvailableEntityModels` (200 + 5xx only, no 4xx surface) and
@@ -76,8 +79,9 @@ first gate; the caller unlocks (which itself forces clearing entities) then dele
 
 ### 2.4 `MODEL_HAS_ENTITIES`-on-delete is retained (not dead code)
 After 2.2, is the count-check reachable? Entity creation hard-requires a LOCKED
-model (`service.go:220-222` single, `:1094-1096` bulk → `MODEL_NOT_LOCKED`), and
-unlock refuses when entities exist (`service.go:341-352`). So through any
+model (`internal/domain/entity/service.go:222` single, `:1095` bulk →
+`MODEL_NOT_LOCKED`), and unlock refuses when entities exist
+(`internal/domain/model/service.go:341-352`). So through any
 single-node API sequence the invariant **unlocked ⟹ 0 entities** holds, and a
 locked-model-with-entities now hits the lock-check first — making the count
 branch unreachable *single-node*.
@@ -173,13 +177,15 @@ documentation.
 ## 7. Design area 6 — workflow-op error enumeration
 
 - **`importEntityModelWorkflow`** — the generic untyped `400` folds three codes,
-  all HTTP 400: enumerate `BAD_REQUEST` (`handler.go:98,118,122,131`),
-  `VALIDATION_FAILED` (`:222,233,242,253`), `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
-  (`:167`) in the `400` ProblemDetail description. (`WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
-  documentation aligns with `docs/workflow-schema-versioning.md`.) `404
-  MODEL_NOT_FOUND` (`:187`) already documented — keep.
-- **`exportEntityModelWorkflow`** — the single `404` conflates two codes:
-  `MODEL_NOT_FOUND` (`handler.go:339`) and `WORKFLOW_NOT_FOUND` (`:364`). Document
+  all HTTP 400 (refs in `internal/domain/workflow/handler.go`): enumerate
+  `BAD_REQUEST` (`:98,118,122,131`), `VALIDATION_FAILED` (`:222,233,242,253`),
+  `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` (`:168`) in the `400` ProblemDetail
+  description. (`WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` documentation aligns with
+  `docs/workflow-schema-versioning.md`.) `404 MODEL_NOT_FOUND` (`:187`) already
+  documented — keep.
+- **`exportEntityModelWorkflow`** — the single `404` conflates two codes
+  (`internal/domain/workflow/handler.go`): `MODEL_NOT_FOUND` (`:339`) and
+  `WORKFLOW_NOT_FOUND` (`:364`). Document
   both in the `404` description so callers can disambiguate via the ProblemDetail
   `code`.
 
@@ -241,6 +247,10 @@ the domain code. **Not** `Error.Code == <DOMAIN_CODE>`.
 | importEntityModelWorkflow `BAD_REQUEST` 400 | — | ✓ | — | — | HTTP-only; unknown importMode |
 | exportEntityModelWorkflow `MODEL_NOT_FOUND` 404 | — | ✓ | — | — | HTTP-only |
 | exportEntityModelWorkflow `WORKFLOW_NOT_FOUND` 404 | — | ✓ | — | — | HTTP-only; model exists, no workflow |
+| lockEntityModel `MODEL_NOT_FOUND` 404 | — | ✓ | ✓ | — | already-documented shared code; keep coverage |
+| unlockEntityModel `MODEL_NOT_FOUND` 404 | — | ✓ | ✓ | — | already-documented shared code; keep coverage |
+| setEntityModelUniqueKeys `MODEL_ALREADY_LOCKED` 409 | — | ✓ | ✓ | — | already covered (`internal/e2e/unique_keys_test.go:210-229`); keep |
+| importEntityModelWorkflow `MODEL_NOT_FOUND` 404 | — | ✓ | — | — | HTTP-only; already-documented shared code; keep |
 
 Backend-agnostic behaviour here is model-registry state (lock/unlock/has-entities)
 shared across all backends. Existing model parity coverage exercises the common
@@ -280,6 +290,9 @@ object must **not** add `additionalProperties:false` (would be caught by
 properties on an open object is non-breaking. If any correction unexpectedly
 trips the gate, add a surgical documented ignore entry (the E4/stats-slice
 pattern) rather than weakening the fix.
+
+The Part B `modelKey` property-description edit (§14.0) is a description-string
+change on an existing property — oasdiff-additive, non-breaking, no ignore entry.
 
 ## 12. Cloud-parity notes (`docs/cloud-parity/openapi-conformance.md`)
 
@@ -328,6 +341,11 @@ MODEL_ALREADY_LOCKED`): the DESCRIPTION enumerates emitting operations (lock
 relock; re-import). Add **delete of a locked model** (new this slice) and
 **setEntityModelUniqueKeys** (pre-existing gap — Gate 6). Note that the delete
 branch also sets `expectedState`/`actualState` (per §2.2).
+**Ordering:** `DeleteModel` is not a `MODEL_ALREADY_LOCKED` emitter until §2.2
+lands (today's emitters: import, lock, setUniqueKeys) — so this help edit (and
+the `models.md` DELETE `409 MODEL_ALREADY_LOCKED` line, whose "Blocked if LOCKED"
+prose is aspirational until then) belongs in **commit 1** with the behaviour
+change, not the doc-only commits.
 
 **`cmd/cyoda/help/content/errors/MODEL_HAS_ENTITIES.md`**: already states "unlock
 or delete" — accurate, no change.
@@ -359,18 +377,33 @@ the contract already shipped in `api/openapi.yaml` on `release/v0.8.2`. No code,
 no `api/openapi.yaml`, no cloud-parity change. Each fix is verified against the
 cited `api/openapi.yaml` line (the source of truth), not against the audit alone.
 
+### 14.0 One `api/openapi.yaml` description fix (completes #371 E1b)
+
+#371 E1b made `modelKey` emit on **all** entity reads (single-get, list, search)
+and updated the list/search *examples* (`openapi.yaml:1726-1728,1754-1756`) — but
+left the `modelKey` **property description** stale: `api/openapi.yaml:10257` still
+reads *"Model of the entity. Present on single-entity reads."* This contradicts
+the runtime (emitted at `internal/domain/entity/service.go:437` GetEntity, `:1038`
+ListEntities, `internal/domain/search/handler.go:408`) and the spec's own
+examples. Fix the description to *"Model of the entity. Present on all entity
+reads (single-get, list, search)."* Description-only → oasdiff-additive,
+non-breaking; no cloud-parity entry (E1b already logged). This is the single
+`api/openapi.yaml` edit in Part B; the crud.md/search.md `modelKey` fixes below
+now align to a corrected contract, not a self-contradictory one.
+
 ### 14.1 `cmd/cyoda/help/content/crud.md` (entity slice #371 drift)
 
 | Sev | Fix | crud.md | Contract truth (openapi.yaml) |
 |---|---|---|---|
 | High | `deleteEntities` — rewrite from "delete all entities for a model" to the **conditional** contract: optional `AbstractConditionDto` body scopes the delete (empty/no body ⇒ all); `verbose=true` lists deleted `ids`; `transactionSize` + `pointInTime` query params; `numberOfEntitites`=matched vs `numberOfEntititesRemoved`=removed; `400 INVALID_CONDITION` on malformed condition | 318-334 | 1803-1928 |
 | High | `changeType` example values + enumeration `CREATED/UPDATED/DELETED` → `CREATE/UPDATE/DELETE` | 355,361,369 | 1427,1487-1497,10225-10230 |
-| High | Envelope: "`modelKey` … omitted from list/search" → **present on all reads** (single-get, list, search; HTTP+gRPC) | 591 | 1726-1728,1754-1756,10255-10257 |
+| High | Envelope: "`modelKey` … omitted from list/search" → **present on all reads** (single-get, list, search; HTTP+gRPC) | 591 | corrected §14.0 desc + 1726-1728,1754-1756 |
 | Med | list `GET /entity/{name}/{version}` — add `pointInTime` query param + as-at semantics | 336-343 | 1684-1693 |
 | Med | Envelope — add `meta.pointInTime` | 576-596 | 10274-10277 |
 | Med | ERRORS + see_also — add `UNIQUE_VIOLATION` (409), `INVALID_UNIQUE_KEY` (422) | 5-18,609-621 | write-family |
 | Med | `/changes` — add reverse-chronological (newest-first) note; reorder example newest-first | 345-370 | 1445 |
-| Low | single-GET meta example — add `modelKey` | 146-153 | 1369 |
+| Low | single-GET meta example — add `modelKey` | 146-153 | 1296-1300 |
+| — | `deleteEntities` staleness recurs in the curl example ("Delete all entities for a model") — fix both spots | 318-334 **and 678** | 1803-1928 |
 
 *Confirmed in sync (no change):* `previousTransition` fossil absent from meta
 (E1); collection create/update typed as arrays (E4).
@@ -380,7 +413,7 @@ cited `api/openapi.yaml` line (the source of truth), not against the audit alone
 | Sev | Fix | search.md | Contract truth |
 |---|---|---|---|
 | Med | `searchJobStatus` enum — add `NOT_FOUND` (#373 S3; commercial store emits it) | 229 | openapi 8156,6577-6593 |
-| Low | envelope examples — add `meta.modelKey` (#371 E1b) | 190-191,252 | 10255-10257 |
+| Low | envelope examples — add `meta.modelKey` (#371 E1b) | 190-191,252 | corrected §14.0 desc |
 
 *Not stale (leave):* `previousTransition` as a `LifecycleCondition` search field
 (search.md:109) — E1 removed only the meta *fossil*, not the lifecycle search
