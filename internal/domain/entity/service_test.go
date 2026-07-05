@@ -280,6 +280,15 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
+	// Register the model so the model-existence guard passes.
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{Ref: mref, State: spi.ModelLocked}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
+
 	es, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
