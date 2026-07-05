@@ -3833,9 +3833,6 @@ type SearchEntitiesParams struct {
 	// Limit The maximum number of rows to return. You can specify a limit of up to 10000 and defaults to 1000 if not provided.
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// TimeoutMillis The maximum time to wait for the query to complete, in milliseconds, and defaults to 60000 if not provided.
-	TimeoutMillis *string `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
-
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
 	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
 }
@@ -8371,19 +8368,6 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "timeoutMillis" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMillis", r.URL.Query(), &params.TimeoutMillis, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMillis"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMillis", Err: err})
 		}
 		return
 	}
