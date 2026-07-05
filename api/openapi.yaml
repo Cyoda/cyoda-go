@@ -4150,6 +4150,21 @@ paths:
                       version: 1
                     message: model nobel-prize:1 deleted
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "409":
+          description: |
+            Model cannot be deleted. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1
         "404":
           description: Entity model not found
           content:
