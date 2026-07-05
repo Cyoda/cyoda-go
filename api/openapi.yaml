@@ -6468,7 +6468,7 @@ paths:
 
         The results are returned in a paginated format, with:
 
-        - Configurable page size (default: 10)
+        - Configurable page size (default: 1000)
 
         - Zero-based page numbering
 
