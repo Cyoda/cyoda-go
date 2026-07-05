@@ -240,6 +240,65 @@ func TestWorkflow_Import_UnknownField_Returns400(t *testing.T) {
 	}
 }
 
+// TestWorkflow_ExportUnknownModel_404 verifies that exporting workflows for a
+// model that was never imported returns 404 MODEL_NOT_FOUND. Distinct from
+// TestWorkflow_ExportEmpty (model exists but has no workflows); here the
+// model itself does not exist.
+func TestWorkflow_ExportUnknownModel_404(t *testing.T) {
+	status, body := exportWorkflowE2E(t, "e2e-wf-nomodel", 1)
+	if status != http.StatusNotFound {
+		t.Fatalf("export unknown model: expected 404, got %d", status)
+	}
+	detail, _ := body["detail"].(string)
+	if !strings.Contains(detail, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in detail, got %s", detail)
+	}
+}
+
+// TestWorkflow_Import_ValidationFailed verifies that a workflow import that
+// passes the schema-version gate (version "1.1") but fails structural
+// validation is rejected with 400 VALIDATION_FAILED. The payload trips rule
+// H6.b from validate.go: transition.Next references a state ("GHOST") that
+// is not declared in the states map.
+func TestWorkflow_Import_ValidationFailed(t *testing.T) {
+	const entityName = "e2e-wf-valfail"
+	importModelE2E(t, entityName, 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1",
+			"name": "wf-valfail",
+			"initialState": "S1",
+			"active": true,
+			"states": {
+				"S1": {
+					"transitions": [{"name": "go", "next": "GHOST", "manual": false}]
+				}
+			}
+		}]
+	}`
+	status, respBody := importWorkflowE2E(t, entityName, 1, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400 VALIDATION_FAILED; got %d: %s", status, respBody)
+	}
+	var errBody struct {
+		Detail     string `json:"detail"`
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(respBody), &errBody); err != nil {
+		t.Fatalf("decode error body: %v; raw: %s", err, respBody)
+	}
+	if errBody.Properties.ErrorCode != "VALIDATION_FAILED" {
+		t.Fatalf("errorCode = %q; want VALIDATION_FAILED; body: %s", errBody.Properties.ErrorCode, respBody)
+	}
+	if !strings.Contains(errBody.Detail, "GHOST") {
+		t.Errorf("detail %q does not name the offending target state", errBody.Detail)
+	}
+}
+
 // TestWorkflow_ExportEmpty verifies that exporting a workflow for a model
 // that has no imported workflows returns 404 WORKFLOW_NOT_FOUND. A properly
 // structured GET on a non-existent resource should return NOT FOUND, not

@@ -4740,7 +4740,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowExportResponseDto"
         "404":
-          description: No workflows found for this model
+          description: "Not found — MODEL_NOT_FOUND: entity model does not exist; or WORKFLOW_NOT_FOUND: model exists but has no imported workflows."
           content:
             application/problem+json:
               schema:
@@ -4801,13 +4801,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: Invalid request body or unknown importMode
+          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Target entity model not found
+          description: "Not found — MODEL_NOT_FOUND: target entity model does not exist."
           content:
             application/problem+json:
               schema:
