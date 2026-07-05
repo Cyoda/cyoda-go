@@ -89,7 +89,6 @@ info:
        - Designed for small to medium datasets
        - Limited by maximum result set size (default: 1000, max: 10000)
        - Non-distributed (executes on single node)
-       - Configurable timeout and result limits
        - Returns immediate streaming results
 
     All endpoints support:
@@ -295,7 +294,6 @@ tags:
          - Designed for small to medium datasets
          - Limited by maximum result set size (default: 1000, max: 10000)
          - Non-distributed (executes on single node)
-         - Configurable timeout and result limits
          - Returns immediate streaming results
 
       All endpoints support:
