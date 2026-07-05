@@ -281,7 +281,60 @@ Add a "Model/workflow reconciliations (2026-07)" section:
 - **M3 — `exportMetadata.uniqueKeys` typed.** The 200 body now enumerates the
   `uniqueKeys` array (typed-but-open). Cloud MUST emit it when keys exist.
 
-## 13. Dead-code / zombie sweep checklist
+## 13. Help-subsystem & core-doc reconciliation (Gate 4)
+
+`api/openapi.yaml` is only one of two shipped contract surfaces. The
+`cmd/cyoda/help/content/` tree (served by `cyoda help <topic>` and by
+`GET /api/help`, consumed downstream by cyoda-docs) is hand-written prose that
+describes the same behaviour and must move in lock-step. `cyoda help openapi
+{json,yaml}` serves the embedded spec and updates automatically; the prose
+topics below do **not** — they are manual Gate-4 edits with no gate enforcing
+their accuracy (only `TestErrCode_Parity` guards code↔topic *existence*, not
+content), which is exactly why they are called out explicitly here.
+
+**`cmd/cyoda/help/content/models.md`** (`cyoda help models`):
+- DELETE endpoint (§ENDPOINTS): the prose already states delete is "Blocked if
+  the model is `LOCKED` or if any entities reference it" (i.e. already written to
+  the intended contract that change A now enforces) — but the **response line**
+  documents only `409 CONFLICT if entities exist`. Add `409 MODEL_ALREADY_LOCKED`
+  for the locked case.
+- ERRORS section: `MODEL_ALREADY_LOCKED — 409 — re-import or relock attempted` →
+  extend to include **delete of a locked model**.
+- Export examples (SIMPLE_VIEW / JSON_SCHEMA): show the `{currentState, model}`
+  shape but omit the top-level `uniqueKeys` array that the typed-200 change (§5)
+  now documents. Add the `uniqueKeys` sibling to keep the topic and spec aligned.
+- Already accurate, no change: import-converter note (`SAMPLE_DATA` only,
+  `JSON_SCHEMA`/`SIMPLE_VIEW` → `400`), export-converter enum, changeLevel enum
+  (no null prose), `INVALID_CHANGE_LEVEL`/`BAD_REQUEST` ERRORS lines.
+
+**`cmd/cyoda/help/content/errors/MODEL_ALREADY_LOCKED.md`** (`cyoda help errors
+MODEL_ALREADY_LOCKED`): the DESCRIPTION enumerates emitting operations (lock
+relock; re-import). Add **delete of a locked model** (new this slice) and
+**setEntityModelUniqueKeys** (pre-existing gap — Gate 6). Note that the delete
+branch also sets `expectedState`/`actualState` (per §2.2).
+
+**`cmd/cyoda/help/content/errors/MODEL_HAS_ENTITIES.md`**: already states "unlock
+or delete" — accurate, no change.
+
+**`cmd/cyoda/help/content/workflows.md`** (`cyoda help workflows`):
+`VALIDATION_FAILED` (400) is documented thoroughly; `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
+is covered via the `workflows/schema-version.md` subtopic. Completeness pass only:
+confirm the import-error surface and `see_also` name both codes; add
+`errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` to `see_also` if absent.
+
+**Out of scope / unaffected:** `crud.md` (entity CRUD, not model management),
+`openapi.md` (describes the auto-generated spec, no per-op prose), README /
+COMPATIBILITY (no env-var, no interface, no version/pin change), `DefaultConfig()`
+(no config change), `docs/workflow-schema-versioning.md` (already references
+`WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`).
+
+**CHANGELOG:** one entry under the `release/v0.8.2` section summarising the slice
+(delete-lock enforcement + the documentation reconciliations).
+
+Every help-topic edit is a plan task paired with the corresponding
+`api/openapi.yaml` edit so the two surfaces are never committed out of sync.
+
+## 14. Dead-code / zombie sweep checklist
 
 - `MODEL_HAS_ENTITIES`-on-delete: **retained** as a multi-node guard (§2.4) — not
   removed.
@@ -291,7 +344,7 @@ Add a "Model/workflow reconciliations (2026-07)" section:
 - Verify `api/generated.go` regenerates clean after the spec edits (the
   `codegen-sync` gate); regen if the router surface shifts.
 
-## 14. Verification gates
+## 15. Verification gates
 
 - TDD: RED for the delete-lock behaviour change first (§2.2); RED producing tests
   for each documented code before its doc is added.
@@ -300,7 +353,8 @@ Add a "Model/workflow reconciliations (2026-07)" section:
 - `make check-codegen` (generated.go in sync), `make check-gofmt`, oasdiff gate,
   `TestSpecHasNoSealedSchemas`, `TestErrCode_Parity` (no new code → no delta),
   the OpenAPI conformance test (every documented status exercised or waived).
-- Gate 4 docs: `docs/cloud-parity/openapi-conformance.md` (§12), CHANGELOG. No
-  env-var/help-topic/README/COMPATIBILITY change (no new code, no interface
-  change). `docs/workflow-schema-versioning.md` already references
-  `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — no change needed there.
+- Gate 4 docs: `docs/cloud-parity/openapi-conformance.md` (§12), the
+  help-subsystem topics + CHANGELOG (§13). Every help-topic edit is committed
+  alongside its `api/openapi.yaml` counterpart. `cyoda help models`, `cyoda help
+  errors MODEL_ALREADY_LOCKED` render correctly after edits (help tree is
+  embedded — a build + spot-render confirms).
