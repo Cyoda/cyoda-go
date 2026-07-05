@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 167
+// Total parity scenarios: 168
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
@@ -327,6 +327,11 @@ var allTests = []NamedTest{
 	{"GroupedStats_NonNumericSkipped", RunParityGroupedStats_NonNumericSkipped},
 	{"GroupedStats_NonScalarCoercesToNull", RunParityGroupedStats_NonScalarCoercesToNull},
 	{"GroupedStats_CardinalityExceeded", RunParityGroupedStats_CardinalityExceeded},
+
+	// Unknown-model contract — unified 404 MODEL_NOT_FOUND (stats/audit/search slice).
+	// One representative op (grouped-stats query) suffices: every backend must
+	// reject an unknown model before doing any query work.
+	{"UnknownModel404", RunUnknownModel404},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.
