@@ -223,6 +223,14 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", fmt.Errorf("no user context — cannot determine tenant")
 	}
 
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return "", common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
+		return "", appErr
+	}
+
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return "", vErr
 	}

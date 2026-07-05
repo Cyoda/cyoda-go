@@ -313,6 +313,7 @@ func TestAsyncCancel(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	// Create many entities to increase chance the goroutine is still running
 	for i := 0; i < 100; i++ {
@@ -370,6 +371,7 @@ func TestAsyncTenantIsolation(t *testing.T) {
 	ctxA := tenantCtx("tenant-A")
 	ctxB := tenantCtx("tenant-B")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctxA, factory, ref)
 
 	saveEntity(t, ctxA, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -421,6 +423,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -602,6 +605,7 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.x",
 		OperatorType: "EQUALS",
@@ -1136,6 +1140,7 @@ func TestSubmitAsync_SortKeyCap_ReturnsError(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
 
 	orderBy := []search.OrderKey{
 		{Path: "a", Source: spi.SourceData},

@@ -509,6 +509,44 @@ func TestEntitySearch_DirectSearch_UnknownModel_ModelNotFound(t *testing.T) {
 	}
 }
 
+// TestEntitySearch_SnapshotSearch_UnknownModel_ModelNotFound verifies that
+// EntitySnapshotSearchRequest for an unregistered model returns a CLIENT_ERROR
+// envelope response with MODEL_NOT_FOUND in the message at submit time,
+// and issues no snapshot ID.
+func TestEntitySearch_SnapshotSearch_UnknownModel_ModelNotFound(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-unknown",
+		"model": map[string]any{"name": "does-not-exist", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected transport error (errors should be envelope responses): %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected MODEL_NOT_FOUND in message, got %q", typed.Error.Message)
+	}
+	// No snapshot ID must be issued when submit fails.
+	if typed.Status.SnapshotID != nilUUID {
+		t.Errorf("expected nilUUID for failed submit, got %q", typed.Status.SnapshotID)
+	}
+}
+
 // TestEntitySearch_SnapshotSearch_OrderBy_InvalidField verifies that an async
 // snapshot search with an unknown sort path is rejected synchronously at submit,
 // surfaces CLIENT_ERROR / INVALID_FIELD_PATH, and issues no snapshot ID.
