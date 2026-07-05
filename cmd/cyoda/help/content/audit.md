@@ -84,7 +84,7 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 
 - `changeType`: `"CREATE"`, `"UPDATE"`, or `"DELETE"` — the type of entity change
 - `changes`: before/after diff — **not yet emitted by the server (deferred gap)**; the field is declared in the OpenAPI schema but the server currently omits it from all responses. Do not rely on `changes` being present.
-- `severity`, `utcTime`, `microsTime`, `entityId`, `transactionId`, `actor`: inherited from `AuditEventDto`
+- `severity`, `utcTime`, `microsTime`, `entityId`, `transactionId`, `actor` — plus `entityModel`, `consistencyTime`, `details`, `system` — inherited from `AuditEventDto` (see the `openapi` topic for the full schema)
 
 **StateMachineAuditEventDto** fields (discriminated by `auditEventType: "StateMachine"`):
 

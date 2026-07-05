@@ -29,5 +29,7 @@ Not retryable. Register the model before issuing any operation that references i
 ## SEE ALSO
 
 - errors
+- crud
+- search
 - errors.ENTITY_NOT_FOUND
 - errors.MODEL_NOT_LOCKED

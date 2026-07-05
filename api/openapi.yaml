@@ -1481,21 +1481,21 @@ paths:
                 Entity Change History:
                   description: Entity Change History
                   value:
-                    - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
-                      timeOfChange: 2024-12-15T10:30:00Z
-                      user: admin@cyoda.com
-                      changeType: CREATE
-                      fieldsChangedCount: 5
-                    - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
-                      timeOfChange: 2024-12-16T14:22:30Z
-                      user: editor@cyoda.com
-                      changeType: UPDATE
-                      fieldsChangedCount: 2
                     - transactionId: 9c5d3ca0-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-17T09:15:45Z
                       user: admin@cyoda.com
                       changeType: UPDATE
                       fieldsChangedCount: 1
+                    - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
+                      timeOfChange: 2024-12-16T14:22:30Z
+                      user: editor@cyoda.com
+                      changeType: UPDATE
+                      fieldsChangedCount: 2
+                    - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
+                      timeOfChange: 2024-12-15T10:30:00Z
+                      user: admin@cyoda.com
+                      changeType: CREATE
+                      fieldsChangedCount: 5
         "400":
           description: Invalid UUID format
           content:
@@ -4203,21 +4203,6 @@ paths:
                       version: 1
                     message: model nobel-prize:1 deleted
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
-        "409":
-          description: |
-            Model cannot be deleted. Possible codes:
-            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting.
-            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-              example:
-                type: about:blank
-                title: Conflict
-                status: 409
-                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
-                instance: /api/model/nobel-prize/1
         "404":
           description: Entity model not found
           content:
@@ -4233,6 +4218,21 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be deleted. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot delete entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4433,20 +4433,6 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 locked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
-        "409":
-          description: |
-            Model cannot be locked. Possible codes:
-            - `MODEL_ALREADY_LOCKED` — model is already in `LOCKED` state.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-              example:
-                type: about:blank
-                title: Conflict
-                status: 409
-                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
-                instance: /api/model/nobel-prize/1/lock
         "404":
           description: Entity model not found
           content:
@@ -4462,6 +4448,20 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be locked. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is already in `LOCKED` state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1/lock
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4532,21 +4532,6 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 unlocked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
-        "409":
-          description: |
-            Model cannot be unlocked. Possible codes:
-            - `MODEL_ALREADY_UNLOCKED` — model is already in `UNLOCKED` state.
-            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-              example:
-                type: about:blank
-                title: Conflict
-                status: 409
-                detail: "MODEL_ALREADY_UNLOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=LOCKED, actualState=UNLOCKED"
-                instance: /api/model/nobel-prize/1/unlock
         "404":
           description: Entity model not found
           content:
@@ -4562,6 +4547,21 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be unlocked. Possible codes:
+            - `MODEL_ALREADY_UNLOCKED` — model is already in `UNLOCKED` state.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_UNLOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=LOCKED, actualState=UNLOCKED"
+                instance: /api/model/nobel-prize/1/unlock
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4649,18 +4649,6 @@ paths:
                       version: 1
                     message: unique keys set on model nobel-prize:1
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
-        "409":
-          description: Model is locked
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-              example:
-                type: about:blank
-                title: Conflict
-                status: 409
-                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
-                instance: /api/model/nobel-prize/1/unique-keys
         "400":
           description: "Bad request — BAD_REQUEST: malformed or unparseable request body."
           content:
@@ -4684,6 +4672,18 @@ paths:
                 title: Not Found
                 status: 404
                 detail: "MODEL_NOT_FOUND: cannot find model entityName=nobel-prize, version=1"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "409":
+          description: Model is locked
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
                 instance: /api/model/nobel-prize/1/unique-keys
         "422":
           description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a field path does not exist in the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
