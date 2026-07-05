@@ -497,24 +497,18 @@ paths:
         transaction without needing to
 
         search through all audit events.
-
-
-        Both entityId and transactionId must be valid time-based UUIDs (version
-        1).
       operationId: getStateMachineFinishedEvent
       parameters:
         - name: entityId
           in: path
-          description: "Identifier of the entity. Must be a valid time-based UUID (version
-            1). "
+          description: Identifier of the entity.
           required: true
           schema:
             type: string
             format: uuid
         - name: transactionId
           in: path
-          description: "Identifier of the transaction. Must be a valid time-based UUID
-            (version 1). "
+          description: Identifier of the transaction.
           required: true
           schema:
             type: string
@@ -526,36 +520,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StateMachineAuditEventDto"
-        "400":
-          description: Invalid request - UUID is not time-based
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
         "401":
-          description: Error response
+          description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Entity or transaction not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal server error
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients:
