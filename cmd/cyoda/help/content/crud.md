@@ -340,7 +340,7 @@ Response: `200 OK`, `application/json`:
 - `pageSize` (query, optional): int32, default `20`
 - `pageNumber` (query, optional): int32, default `0`
 
-Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET).
+Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
 **GET /api/entity/{entityId}/changes** — Get entity change history metadata
 
@@ -415,7 +415,7 @@ Response: `200 OK`, `application/json`:
 - `entityName` (path): string
 - `modelVersion` (path): int32
 
-Response: `200 OK`, `application/json`, single `ModelStatsDto`.
+Response: `200 OK`, `application/json`, single `ModelStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
 **GET /api/entity/stats/states/{entityName}/{modelVersion}** — Entity count by state for a specific model
 
@@ -423,7 +423,7 @@ Response: `200 OK`, `application/json`, single `ModelStatsDto`.
 - `modelVersion` (path): int32
 - `states` (query, optional): list of state names to filter by; maximum 1000 entries
 
-Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`.
+Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
 **POST /api/entity/stats/{entityName}/{modelVersion}/query** — Grouped statistics with optional aggregations
 

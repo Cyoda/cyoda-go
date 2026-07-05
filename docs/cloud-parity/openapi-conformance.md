@@ -87,6 +87,31 @@ ADR 0003). Each states the direction and what Cloud must mirror.
   canonical field was the higher-risk alternative). Cloud MUST emit `CREATE/UPDATE/DELETE`
   on all these surfaces.
 
+## Stats/audit/search reconciliations (2026-07)
+
+Per-finding contract decisions from the stats/audit/search reconciliation slice.
+
+- **S1 — unknown model → `404 MODEL_NOT_FOUND` (uniform).** All model-scoped read
+  operations (`getAllEntities`, `getEntityStatisticsForModel`,
+  `getEntityStatisticsByStateForModel`, `searchEntities`, `submitAsyncSearchJob`,
+  `queryGroupedEntityStatisticsForModel`) now return `404 MODEL_NOT_FOUND` when the
+  requested `(entityName, modelVersion)` is not registered for the calling tenant.
+  Direction: spec-stale + server-gap (closed). Previous Cloud behaviour: list/stats/search
+  silently returned empty; grouped-stats returned `400 UNKNOWN_MODEL`. The ad-hoc
+  `UNKNOWN_MODEL` code is retired. Cloud MUST return `404 MODEL_NOT_FOUND` on all
+  these paths for unregistered models.
+- **S2 — `searchEntityAuditEvents.changes` diff (documented gap).** The
+  `EntityAuditEventDto.changes` before/after diff field is declared in the schema but
+  not emitted by cyoda-go (nor populated server-side). This is a deferred feature, not
+  a spec contradiction. Direction: server-gap (open; tracked separately). Cloud behaviour
+  is authoritative for now; cyoda-go will close the gap when the feature is implemented.
+- **S3 — `NOT_FOUND` async search-job status (retained).** The `searchJobStatus` field
+  in `GET /api/search/async/{jobId}/status` responses may carry the value `NOT_FOUND`.
+  This is retained in the contract because the commercial self-executing search store
+  emits it. Direction: needs-decision → retained (commercial store compatibility). Cloud
+  MUST continue to emit `NOT_FOUND` where applicable; cyoda-go tolerates it on inbound
+  status payloads.
+
 ## Open questions (Cloud-fact-blocked)
 
 Decided once the Cloud facts are gathered (Gate 7):
