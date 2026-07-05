@@ -16,6 +16,9 @@ import (
 	"math"
 	"net/http"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/google/uuid"
 )
 
 // statsWorkflowJSON is the same canonical workflow used by the search tests:
@@ -211,6 +214,21 @@ func TestGroupedStats_E2E_Aggregations(t *testing.T) {
 		t.Errorf("stdev s: got %.17g, want %.17g (rel diff %.3e)",
 			gotStdev, wantStdev, math.Abs(gotStdev-wantStdev)/wantStdev)
 	}
+}
+
+// TestGroupedStats_UnknownModel_404 asserts that a grouped-stats query for a
+// model that was never registered returns 404 MODEL_NOT_FOUND.
+func TestGroupedStats_UnknownModel_404(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	model := "never-registered-" + uuid.NewString()
+	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
+	resp := doAuth(t, http.MethodPost, path, `{"groupBy":["state"]}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	commontest.ExpectErrorCode(t, resp, "MODEL_NOT_FOUND")
 }
 
 // TestGroupedStats_E2E_ValidationError verifies the validation-error wire

@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -610,9 +609,10 @@ func New(cfg Config) *App {
 	// the closure can capture a.storeFactory directly — the handler needs
 	// the EntityStore as `any` (capability detection via type assertion in
 	// the service layer) and a validated ModelRef for the calling tenant.
-	// The resolver returns ok=false for spi.ErrNotFound (mapped by the
-	// handler to 400 UNKNOWN_MODEL per spec §3) and surfaces every other
-	// storage error to the 500-with-ticket path.
+	// The resolver returns ok=false when the model is not registered (after
+	// one bounded cache refresh — closing the multi-node stale-cache race);
+	// the handler maps that to 404 MODEL_NOT_FOUND. Every other storage
+	// error surfaces via the 500-with-ticket path.
 	storeFactory := a.storeFactory
 	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, bool, error) {
 		ctx := r.Context()
@@ -621,11 +621,10 @@ func New(cfg Config) *App {
 			return nil, spi.ModelRef{}, false, err
 		}
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
-		if _, gerr := modelStore.Get(ctx, ref); gerr != nil {
-			if errors.Is(gerr, spi.ErrNotFound) {
-				return nil, ref, false, nil
-			}
-			return nil, ref, false, gerr
+		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
+			// Not registered (after one bounded refresh) → resolver reports
+			// ok=false; the handler maps that to 404 MODEL_NOT_FOUND.
+			return nil, ref, false, nil
 		}
 		entityStore, err := storeFactory.EntityStore(ctx)
 		if err != nil {

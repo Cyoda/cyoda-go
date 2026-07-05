@@ -1127,7 +1127,7 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `UNKNOWN_MODEL`,
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`,
         `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
@@ -1202,8 +1202,7 @@ paths:
           description: >-
             Bad request — malformed JSON body, validation failure (empty
             `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
-            JSONPath, etc.), invalid Condition DSL predicate, or unknown
-            model for the calling tenant.
+            JSONPath, etc.), or invalid Condition DSL predicate.
           content:
             application/problem+json:
               schema:
@@ -1212,6 +1211,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Entity model not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           description: Request body exceeds the 10 MiB maximum
           content:
