@@ -343,6 +343,37 @@ func TestUnlockModel_AlreadyUnlocked_ReturnsModelAlreadyUnlocked(t *testing.T) {
 	}
 }
 
+// TestSetChangeLevel_Invalid_400 verifies that SetChangeLevel returns a 400
+// INVALID_CHANGE_LEVEL error when given an off-enum value. The model must exist
+// (non-nil refreshDescriptor) so execution reaches the changeLevel validation
+// step rather than returning 404.
+func TestSetChangeLevel_Invalid_400(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	ms := &refreshingModelStore{
+		getDescriptor:     desc,
+		refreshDescriptor: desc,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	err := h.SetChangeLevel(context.Background(), "Dataset", "1", "BOGUS")
+	if err == nil {
+		t.Fatal("SetChangeLevel with invalid level: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 400 {
+		t.Errorf("expected HTTP 400, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeInvalidChangeLevel {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeInvalidChangeLevel, appErr.Code, appErr.Message)
+	}
+}
+
 // capableStoreFactory wraps fakeStoreFactory and additionally implements
 // spi.CompositeUniqueKeyCapable. The supports field controls whether the
 // factory advertises composite-unique-key support.
@@ -672,5 +703,89 @@ func TestLockModel_AlreadyLocked_ReturnsSpecificCode(t *testing.T) {
 	if appErr.Code != common.ErrCodeModelAlreadyLocked {
 		t.Errorf("expected error code %q, got %q (message: %s)",
 			common.ErrCodeModelAlreadyLocked, appErr.Code, appErr.Message)
+	}
+}
+
+// TestImportModel_InvalidUniqueKeyDefinition_422 verifies the defensive guard
+// in ImportModel that re-validates carried unique keys against the merged
+// schema on re-import.
+//
+// The guard targets out-of-band descriptor corruption (e.g. a key referencing
+// a field that was never in the schema) rather than a scenario reachable via
+// normal API use — schema.Merge is additive and cannot drop an existing field.
+// We simulate corruption by seeding the store with an UNLOCKED descriptor
+// whose UniqueKeys reference a phantom field not present in any schema, then
+// re-importing sample data that does not contain that field.
+func TestImportModel_InvalidUniqueKeyDefinition_422(t *testing.T) {
+	// Seed the store with an existing UNLOCKED descriptor whose UniqueKeys
+	// reference "PHANTOM_FIELD" — a field that never existed in any schema.
+	// Schema is intentionally nil so the service takes the newNode branch
+	// (finalNode = newNode from the import data), which also won't contain
+	// PHANTOM_FIELD.
+	corrupted := &spi.ModelDescriptor{
+		Ref:   spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"},
+		State: spi.ModelUnlocked,
+		UniqueKeys: []spi.UniqueKey{
+			{ID: "k1", Fields: []string{"PHANTOM_FIELD"}},
+		},
+		// No Schema — forces finalNode = newNode path; PHANTOM_FIELD absent.
+	}
+	ms := &refreshingModelStore{
+		refreshDescriptor: corrupted,
+	}
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.ImportModel(context.Background(), model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"name":"x"}`),
+	})
+	if err == nil {
+		t.Fatal("ImportModel: expected 422 error for corrupted unique key definition, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 422 {
+		t.Errorf("expected HTTP 422, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeInvalidUniqueKeyDefinition {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeInvalidUniqueKeyDefinition, appErr.Code, appErr.Message)
+	}
+}
+
+// TestExportModel_UnsupportedConverter_400 verifies that ExportModel rejects
+// a converter value that is not JSON_SCHEMA or SIMPLE_VIEW with a 400
+// BAD_REQUEST operational error. The OpenAPI enum gate (route-matcher rejects
+// out-of-enum values at the HTTP layer) makes this path unreachable in
+// production, but the domain layer still guards it defensively.
+func TestExportModel_UnsupportedConverter_400(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelLocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{getDescriptor: desc}
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.ExportModel(context.Background(), "Dataset", "1", "SAMPLE_DATA")
+	if err == nil {
+		t.Fatal("ExportModel with unsupported converter: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 400 {
+		t.Errorf("expected HTTP 400, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeBadRequest {
+		t.Errorf("expected code %q, got %q (message: %s)",
+			common.ErrCodeBadRequest, appErr.Code, appErr.Message)
 	}
 }

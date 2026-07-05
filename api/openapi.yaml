@@ -1481,21 +1481,21 @@ paths:
                 Entity Change History:
                   description: Entity Change History
                   value:
-                    - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
-                      timeOfChange: 2024-12-15T10:30:00Z
-                      user: admin@cyoda.com
-                      changeType: CREATE
-                      fieldsChangedCount: 5
-                    - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
-                      timeOfChange: 2024-12-16T14:22:30Z
-                      user: editor@cyoda.com
-                      changeType: UPDATE
-                      fieldsChangedCount: 2
                     - transactionId: 9c5d3ca0-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-17T09:15:45Z
                       user: admin@cyoda.com
                       changeType: UPDATE
                       fieldsChangedCount: 1
+                    - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
+                      timeOfChange: 2024-12-16T14:22:30Z
+                      user: editor@cyoda.com
+                      changeType: UPDATE
+                      fieldsChangedCount: 2
+                    - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
+                      timeOfChange: 2024-12-15T10:30:00Z
+                      user: admin@cyoda.com
+                      changeType: CREATE
+                      fieldsChangedCount: 5
         "400":
           description: Invalid UUID format
           content:
@@ -3837,10 +3837,28 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 description: >
                   Exported model metadata in the converter's output format.
                   Shape depends on the converter argument (JSON_SCHEMA or SIMPLE_VIEW).
+                properties:
+                  currentState:
+                    type: string
+                    description: Lifecycle state of the model (LOCKED or UNLOCKED).
+                  model:
+                    type: object
+                    description: Model schema in the requested converter format.
+                  uniqueKeys:
+                    type: array
+                    description: Composite unique-key definitions (omitted when the model declares no keys).
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        fields:
+                          type: array
+                          items:
+                            type: string
               examples:
                 Simple View:
                   summary: SIMPLE_VIEW export example
@@ -3858,6 +3876,10 @@ paths:
                         .share: STRING
                         .surname: STRING
                         "#": ARRAY_ELEMENT
+                    uniqueKeys:
+                      - id: by-email
+                        fields:
+                          - "$.email"
                 Json Schema:
                   summary: JSON_SCHEMA export example
                   description: Json Schema
@@ -3883,6 +3905,10 @@ paths:
                                 type: string
                               motivation:
                                 type: string
+                    uniqueKeys:
+                      - id: by-email
+                        fields:
+                          - "$.email"
         "400":
           description: Invalid converter specified
           content:
@@ -3893,11 +3919,10 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'WRONG' for parameter 'converter'
-                instance: /api/model/export/WRONG/nobel-prize/2
+                detail: unsupported export converter
+                instance: /api/model/export/UNSUPPORTED/nobel-prize/2
                 properties:
-                  parameter: converter
-                  invalidValue: WRONG
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity model not found
           content:
@@ -4020,7 +4045,10 @@ paths:
                 format: uuid
               example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         "400":
-          description: Invalid converter specified
+          description: |
+            Bad request. Possible causes:
+            - `BAD_REQUEST` — unsupported import converter (`JSON_SCHEMA` or `SIMPLE_VIEW`); only `SAMPLE_DATA` is accepted.
+            - `BAD_REQUEST` — malformed or unparseable sample data in the request body.
           content:
             application/problem+json:
               schema:
@@ -4029,11 +4057,36 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'WRONG' for parameter 'converter'
-                instance: /api/model/import/WRONG/nobel-prize/2
-                properties:
-                  parameter: converter
-                  invalidValue: WRONG
+                detail: "BAD_REQUEST: unsupported import converter"
+                instance: /api/model/import/JSON/JSON_SCHEMA/nobel-prize/1
+        "409":
+          description: |
+            Model cannot be imported. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before re-importing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot save entityModel{name=nobel-prize, version=1} because this model has already been registered"
+                instance: /api/model/import/JSON/SAMPLE_DATA/nobel-prize/1
+        "422":
+          description: |
+            Unprocessable entity. Possible codes:
+            - `INVALID_UNIQUE_KEY_DEFINITION` — re-import invalidates a previously registered unique key definition (defensive guard against descriptor corruption or future merge-semantics changes).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Unprocessable Entity
+                status: 422
+                detail: "INVALID_UNIQUE_KEY_DEFINITION: re-import invalidates existing unique key definitions: key \"k1\": field \"name\" is not a known scalar leaf"
+                instance: /api/model/import/JSON/SAMPLE_DATA/nobel-prize/1
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4165,6 +4218,21 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be deleted. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot delete entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4188,7 +4256,7 @@ paths:
         - modelVersion: The version number of the model
 
         - changeLevel: The desired change level (ARRAY_LENGTH, ARRAY_ELEMENTS,
-        TYPE, STRUCTURAL) or null to disallow changes
+        TYPE, STRUCTURAL)
 
 
         Change levels are hierarchical - allowing a specific level automatically
@@ -4232,8 +4300,6 @@ paths:
 
             The allowed change level for the model.
 
-            Set to null to disallow all changes.
-
             Valid values: ARRAY_LENGTH, ARRAY_ELEMENTS, TYPE, STRUCTURAL
 
             \            "
@@ -4263,6 +4329,30 @@ paths:
                       version: 1
                     message: model nobel-prize:1 now at change level TYPE
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: |
+            Bad request. Possible codes:
+            - `INVALID_CHANGE_LEVEL` — the supplied `changeLevel` path segment is not one of
+              the accepted enum values (`ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "INVALID_CHANGE_LEVEL: invalid change level \"BOGUS\"; valid values: ARRAY_LENGTH, ARRAY_ELEMENTS, TYPE, STRUCTURAL"
+                instance: /api/model/nobel-prize/2/changeLevel/BOGUS
+                properties:
+                  entityName: nobel-prize
+                  entityVersion: 2
+                  suppliedValue: BOGUS
+                  validValues:
+                    - ARRAY_LENGTH
+                    - ARRAY_ELEMENTS
+                    - TYPE
+                    - STRUCTURAL
         "404":
           description: Entity model not found
           content:
@@ -4358,6 +4448,20 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be locked. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is already in `LOCKED` state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1/lock
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4443,6 +4547,21 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be unlocked. Possible codes:
+            - `MODEL_ALREADY_UNLOCKED` — model is already in `UNLOCKED` state.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_UNLOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=LOCKED, actualState=UNLOCKED"
+                instance: /api/model/nobel-prize/1/unlock
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4530,6 +4649,30 @@ paths:
                       version: 1
                     message: unique keys set on model nobel-prize:1
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "BAD_REQUEST: invalid JSON body"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "404":
+          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: "MODEL_NOT_FOUND: cannot find model entityName=nobel-prize, version=1"
+                instance: /api/model/nobel-prize/1/unique-keys
         "409":
           description: Model is locked
           content:
@@ -4543,7 +4686,7 @@ paths:
                 detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
                 instance: /api/model/nobel-prize/1/unique-keys
         "422":
-          description: Unsupported backend or invalid field definition
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a field path does not exist in the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
           content:
             application/problem+json:
               schema:
@@ -4597,7 +4740,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowExportResponseDto"
         "404":
-          description: No workflows found for this model
+          description: "Not found — MODEL_NOT_FOUND: entity model does not exist; or WORKFLOW_NOT_FOUND: model exists but has no imported workflows."
           content:
             application/problem+json:
               schema:
@@ -4658,13 +4801,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: Invalid request body or unknown importMode
+          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Target entity model not found
+          description: "Not found — MODEL_NOT_FOUND: target entity model does not exist."
           content:
             application/problem+json:
               schema:
@@ -10254,7 +10397,7 @@ components:
           description: Entity id (invariant against point-in-time).
         modelKey:
           type: object
-          description: Model of the entity. Present on single-entity reads.
+          description: Model of the entity. Present on all entity reads (single-get, list, search).
           properties:
             name:
               type: string

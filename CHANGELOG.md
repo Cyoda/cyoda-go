@@ -62,6 +62,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **`DELETE /model/{entityName}/{modelVersion}` now enforces the documented
+  UNLOCKED precondition** — deleting a `LOCKED` model returns `409
+  MODEL_ALREADY_LOCKED` (previously the lock state was ignored). Unlock the model
+  first. The `409 MODEL_HAS_ENTITIES` guard is unchanged.
+
 - **Entity `meta` is typed-but-open** — `Envelope.meta` mirrors the canonical `EntityMetadata`
   (typed properties, never sealed); the obsolete `previousTransition` field is removed.
 

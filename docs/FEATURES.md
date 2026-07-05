@@ -51,7 +51,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - Pagination (offset/limit)
 
 ### Audit Trail
-- Entity change history derived from version metadata (CREATED, UPDATED, DELETED)
+- Entity change history derived from version metadata (CREATE, UPDATE, DELETE)
 - State machine audit with 13 event types tracking full workflow narrative
 - Filterable by event type, severity, time range, transaction ID
 - Cursor-based pagination

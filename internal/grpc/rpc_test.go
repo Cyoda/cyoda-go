@@ -619,6 +619,44 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 	}
 }
 
+// TestRPC_ModelSetUniqueKeys_404_UnknownModel verifies that setting unique keys
+// on a model that has never been imported returns Success=false with a message
+// containing MODEL_NOT_FOUND.
+func TestRPC_ModelSetUniqueKeys_404_UnknownModel(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "ghost-model", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.name"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected message to contain MODEL_NOT_FOUND, got %s", typed.Error.Message)
+	}
+}
+
 // importSetKeysAndLockModel imports a model, sets composite unique keys on it
 // (while still unlocked), then locks it. Use instead of importAndLockModel
 // whenever entity-write unique-key enforcement is needed in a test.
@@ -1778,6 +1816,155 @@ func parseEntityResponseMeta(t *testing.T, ce *cepb.CloudEvent) map[string]any {
 		t.Fatalf("failed to unmarshal entity response: %v", err)
 	}
 	return resp.Payload.Meta
+}
+
+func TestRPC_ModelDelete_409_Locked(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "del-locked", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelDeleteRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "del-locked", "version": 1},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for locked-model delete")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_LOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_LOCKED, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_ModelTransitionLock_AlreadyLocked_409(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "relock", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelTransitionRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "relock", "version": 1},
+		"transition": "LOCK",
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for re-lock")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_LOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_LOCKED, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_ModelTransitionUnlock_AlreadyUnlocked_409(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Import only — do NOT lock; model stays in UNLOCKED state.
+	dataBytes, _ := json.Marshal(map[string]any{"name": "Alice"})
+	_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   "unlock-unlocked",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	ce := makeCE(EntityModelTransitionRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "unlock-unlocked", "version": 1},
+		"transition": "UNLOCK",
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unlock of unlocked model")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_UNLOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_UNLOCKED, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_ModelImport_Locked_409(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "import-locked", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityModelImportRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "import-locked", "version": 1},
+		"dataFormat": "JSON",
+		"converter":  "SAMPLE_DATA",
+		"payload":    map[string]any{"name": "Bob"},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelImportResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for re-import of locked model")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_ALREADY_LOCKED") {
+		t.Errorf("expected message to contain MODEL_ALREADY_LOCKED, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_ModelImport_UnsupportedConverter_400(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// SIMPLE_VIEW is a valid envelope enum value but is rejected by the
+	// service (only SAMPLE_DATA is accepted for import), producing BAD_REQUEST.
+	// JSON_SCHEMA is rejected at the CE envelope unmarshal level (it is not
+	// in the EntityModelImportRequestJson converter enum), so SIMPLE_VIEW is
+	// the correct value to exercise the service-layer BAD_REQUEST path.
+	ce := makeCE(EntityModelImportRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "conv-test", "version": 1},
+		"dataFormat": "JSON",
+		"converter":  "SIMPLE_VIEW",
+		"payload":    map[string]any{"name": "x"},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelImportResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unsupported converter")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("expected CLIENT_ERROR envelope, got %+v", typed.Error)
+	}
+	if !strings.Contains(typed.Error.Message, "BAD_REQUEST") {
+		t.Errorf("expected message to contain BAD_REQUEST, got %s", typed.Error.Message)
+	}
 }
 
 // --- mock stream implementations ---

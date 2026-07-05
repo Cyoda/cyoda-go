@@ -187,8 +187,8 @@ Response: `200 OK`, `Content-Type: application/x-ndjson`.
 Each line is a complete entity envelope JSON object:
 
 ```
-{"type":"ENTITY","data":{"category":"physics","year":"2024"},"meta":{"id":"74807f00-ed0d-11ee-a357-ae468cd3ed16","state":"NEW","creationDate":"2025-08-01T10:00:00.000000000Z","lastUpdateTime":"2025-08-01T10:00:00.000000000Z"}}
-{"type":"ENTITY","data":{"category":"chemistry","year":"2023"},"meta":{"id":"89abc100-ed0d-11ee-a357-ae468cd3ed16","state":"APPROVED","creationDate":"2025-07-15T09:00:00.000000000Z","lastUpdateTime":"2025-07-20T14:00:00.000000000Z"}}
+{"type":"ENTITY","data":{"category":"physics","year":"2024"},"meta":{"id":"74807f00-ed0d-11ee-a357-ae468cd3ed16","modelKey":{"name":"nobel-prize","version":1},"state":"NEW","creationDate":"2025-08-01T10:00:00.000000000Z","lastUpdateTime":"2025-08-01T10:00:00.000000000Z"}}
+{"type":"ENTITY","data":{"category":"chemistry","year":"2023"},"meta":{"id":"89abc100-ed0d-11ee-a357-ae468cd3ed16","modelKey":{"name":"nobel-prize","version":1},"state":"APPROVED","creationDate":"2025-07-15T09:00:00.000000000Z","lastUpdateTime":"2025-07-20T14:00:00.000000000Z"}}
 ```
 
 The stream is truncated on encode failure after the header has been sent; the client detects truncation via a connection error or incomplete last line.
@@ -226,7 +226,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, or `"CANCELLED"`
+- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, `"CANCELLED"`, or `"NOT_FOUND"` (snapshot expired or not found on commercial backends)
 - `createTime`: RFC 3339 with nanoseconds
 - `entitiesCount`: total matching entities (0 while running)
 - `calculationTimeMillis`: elapsed search time in milliseconds
@@ -251,6 +251,7 @@ Response: `200 OK`, `application/json`:
       "data": { "category": "physics", "year": "2024" },
       "meta": {
         "id": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
+        "modelKey": {"name": "nobel-prize", "version": 1},
         "state": "NEW",
         "creationDate": "2025-08-01T10:00:00.000000000Z",
         "lastUpdateTime": "2025-08-01T10:00:00.000000000Z"

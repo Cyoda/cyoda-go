@@ -112,6 +112,27 @@ Per-finding contract decisions from the stats/audit/search reconciliation slice.
   MUST continue to emit `NOT_FOUND` where applicable; cyoda-go tolerates it on inbound
   status payloads.
 
+## Model/workflow reconciliations (2026-07)
+
+Per-finding contract decisions from the entity-model & workflow reconciliation slice.
+
+- **M1 — `deleteEntityModel` enforces UNLOCKED (runtime change).** Deleting a
+  LOCKED model now returns `409 MODEL_ALREADY_LOCKED` (reuses the locked-refusal
+  code, delete-specific message). The `409 MODEL_HAS_ENTITIES` guard is retained
+  (multi-node create/unlock TOCTOU backstop). Direction: server-gap (closed).
+  Cloud MUST refuse deletion of a locked model.
+- **M2 — documented error-code clarifications.** Previously-undocumented codes now
+  in the contract are clarifications Cloud must match: unlock `MODEL_HAS_ENTITIES`
+  / `MODEL_ALREADY_UNLOCKED`; lock & import `MODEL_ALREADY_LOCKED`; import
+  `INVALID_UNIQUE_KEY_DEFINITION`; setUniqueKeys `MODEL_NOT_FOUND` / `BAD_REQUEST`
+  / `COMPOSITE_KEY_UNSUPPORTED`; changeLevel `INVALID_CHANGE_LEVEL`; import/export
+  unsupported-converter `BAD_REQUEST`; workflow-import `VALIDATION_FAILED` /
+  `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`; workflow-export `MODEL_NOT_FOUND`-vs-
+  `WORKFLOW_NOT_FOUND` disambiguation. Direction: spec-incomplete (closed).
+- **M3 — `exportMetadata.uniqueKeys` typed.** The export 200 body now enumerates
+  the top-level `uniqueKeys` array (typed-but-open) alongside `currentState`/`model`.
+  Direction: spec-incomplete (closed). Cloud MUST emit `uniqueKeys` when keys exist.
+
 ## Open questions (Cloud-fact-blocked)
 
 Decided once the Cloud facts are gathered (Gate 7):

@@ -2014,7 +2014,7 @@ type EntityMetadata struct {
 	// LastUpdateTime Last update as-at the point-in-time; equals creationDate if never updated.
 	LastUpdateTime time.Time `json:"lastUpdateTime"`
 
-	// ModelKey Model of the entity. Present on single-entity reads.
+	// ModelKey Model of the entity. Present on all entity reads (single-get, list, search).
 	ModelKey *struct {
 		Name    *string `json:"name,omitempty"`
 		Version *int32  `json:"version,omitempty"`

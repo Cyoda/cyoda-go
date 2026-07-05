@@ -97,7 +97,7 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 Delete a model. Blocked if the model is `LOCKED` or if any entities reference it (entity count > 0).
 
-Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 CONFLICT` if entities exist.
+Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked; `409 MODEL_HAS_ENTITIES` if entities reference it.
 
 **POST /api/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}**
 
@@ -252,11 +252,14 @@ The importer walks the JSON structure and infers a typed schema. Subsequent impo
       ".share": "STRING",
       ".surname": "STRING"
     }
-  }
+  },
+  "uniqueKeys": [
+    { "id": "by-email", "fields": ["$.email"] }
+  ]
 }
 ```
 
-The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field in the root object. The `"$.fieldname[*]"` bucket contains the array element schema with `"#": "ARRAY_ELEMENT"` as a type marker.
+The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field in the root object. The `"$.fieldname[*]"` bucket contains the array element schema with `"#": "ARRAY_ELEMENT"` as a type marker. `uniqueKeys` is omitted when the model declares no composite unique keys.
 
 **Export — JSON_SCHEMA format**:
 
@@ -282,7 +285,10 @@ The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field
         }
       }
     }
-  }
+  },
+  "uniqueKeys": [
+    { "id": "by-email", "fields": ["$.email"] }
+  ]
 }
 ```
 
@@ -303,7 +309,7 @@ The `changeLevel` field controls schema evolution on locked models. When set, en
 ## ERRORS
 
 - `errors.MODEL_NOT_FOUND` — `404` — model does not exist for the given name and version
-- `errors.MODEL_ALREADY_LOCKED` — `409` — re-import or relock attempted on a model already in `LOCKED` state
+- `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
 - `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)

@@ -323,23 +323,6 @@ func TestDeleteUnlockedEmptyModel(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestDeleteLockedEmptyModelSucceeds(t *testing.T) {
-	srv := newTestServer(t)
-
-	resp := doImport(t, srv.URL, "LockedDel", 1, sampleJSON)
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-
-	resp = doLock(t, srv.URL, "LockedDel", 1)
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-
-	// Locked model with no entities should be deletable.
-	resp = doDelete(t, srv.URL, "LockedDel", 1)
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-}
-
 func TestImportRejectedOnLockedModel(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -661,6 +644,24 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestDeleteBlockedByLock(t *testing.T) {
+	_, srv := newTestApp(t)
+
+	// Import + lock a model with no entities.
+	resp := doImport(t, srv.URL, "DeleteLockGuard", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doLock(t, srv.URL, "DeleteLockGuard", 1)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Delete a LOCKED model → 409 MODEL_ALREADY_LOCKED (must unlock first).
+	resp = doDelete(t, srv.URL, "DeleteLockGuard", 1)
+	expectStatus(t, resp, http.StatusConflict)
+	commontest.ExpectErrorCode(t, resp, "MODEL_ALREADY_LOCKED")
+	resp.Body.Close()
+}
+
 func TestDeleteSucceedsAfterEntitiesDeleted(t *testing.T) {
 	a, srv := newTestApp(t)
 
@@ -703,7 +704,12 @@ func TestDeleteSucceedsAfterEntitiesDeleted(t *testing.T) {
 		t.Fatalf("failed to delete entity: %v", err)
 	}
 
-	// Now delete should succeed — only deleted entities remain.
+	// Model must be UNLOCKED before it can be deleted.
+	resp = doUnlock(t, srv.URL, "DeleteAfterPurge", 1)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Now delete should succeed — model is unlocked and only deleted entities remain.
 	resp = doDelete(t, srv.URL, "DeleteAfterPurge", 1)
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
