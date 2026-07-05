@@ -611,8 +611,9 @@ func New(cfg Config) *App {
 	// the service layer) and a validated ModelRef for the calling tenant.
 	// The resolver returns ok=false when the model is not registered (after
 	// one bounded cache refresh — closing the multi-node stale-cache race);
-	// the handler maps that to 404 MODEL_NOT_FOUND. Every other storage
-	// error surfaces via the 500-with-ticket path.
+	// the handler maps that to 404 MODEL_NOT_FOUND. Genuine store errors
+	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
+	// and are propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
 	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, bool, error) {
 		ctx := r.Context()
@@ -622,9 +623,12 @@ func New(cfg Config) *App {
 		}
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
-			// Not registered (after one bounded refresh) → resolver reports
-			// ok=false; the handler maps that to 404 MODEL_NOT_FOUND.
-			return nil, ref, false, nil
+			if appErr.Status == http.StatusNotFound {
+				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
+				return nil, ref, false, nil
+			}
+			// Genuine store error → propagate to 500-with-ticket path.
+			return nil, ref, false, appErr
 		}
 		entityStore, err := storeFactory.EntityStore(ctx)
 		if err != nil {

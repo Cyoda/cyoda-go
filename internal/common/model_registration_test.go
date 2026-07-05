@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -50,9 +51,16 @@ func TestEnsureModelRegistered(t *testing.T) {
 		t.Fatalf("peer-registered model: want nil after refresh, got %v", err)
 	}
 
-	// Not found in cache and refresh also not found → 404.
+	// Not found in cache and refresh also not found → 404 MODEL_NOT_FOUND.
 	err = EnsureModelRegistered(context.Background(), refreshingStore{fakeModelStore: fakeModelStore{getErr: spi.ErrNotFound}, refreshErr: spi.ErrNotFound}, ref)
-	if err == nil || err.Status != http.StatusNotFound {
-		t.Fatalf("refresh-miss: want 404, got %v", err)
+	if err == nil || err.Status != http.StatusNotFound || err.Code != ErrCodeModelNotFound {
+		t.Fatalf("refresh-miss: want 404 MODEL_NOT_FOUND, got %v", err)
+	}
+
+	// RefreshAndGet returns a non-ErrNotFound error (store failure) → Internal/500, NOT 404.
+	storeErr := errors.New("boom")
+	err = EnsureModelRegistered(context.Background(), refreshingStore{fakeModelStore: fakeModelStore{getErr: spi.ErrNotFound}, refreshErr: storeErr}, ref)
+	if err == nil || err.Status != http.StatusInternalServerError {
+		t.Fatalf("refresh-store-error: want 500 Internal, got %v", err)
 	}
 }

@@ -1212,7 +1212,7 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "404":
-          description: Entity model not found
+          description: Entity model not found (MODEL_NOT_FOUND)
           content:
             application/problem+json:
               schema:
