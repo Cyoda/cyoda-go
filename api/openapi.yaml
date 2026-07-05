@@ -4639,8 +4639,32 @@ paths:
                 status: 409
                 detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
                 instance: /api/model/nobel-prize/1/unique-keys
+        "400":
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "BAD_REQUEST: invalid JSON body"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "404":
+          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: "MODEL_NOT_FOUND: cannot find model entityName=nobel-prize, version=1"
+                instance: /api/model/nobel-prize/1/unique-keys
         "422":
-          description: Unsupported backend or invalid field definition
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a field path does not exist in the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
           content:
             application/problem+json:
               schema:

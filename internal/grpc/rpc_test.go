@@ -619,6 +619,44 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 	}
 }
 
+// TestRPC_ModelSetUniqueKeys_404_UnknownModel verifies that setting unique keys
+// on a model that has never been imported returns Success=false with a message
+// containing MODEL_NOT_FOUND.
+func TestRPC_ModelSetUniqueKeys_404_UnknownModel(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "ghost-model", "version": 1},
+		"uniqueKeys": []map[string]any{
+			{"id": "uk1", "fields": []string{"$.name"}},
+		},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelSetUniqueKeysResponse {
+		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for unknown model")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "MODEL_NOT_FOUND") {
+		t.Errorf("expected message to contain MODEL_NOT_FOUND, got %s", typed.Error.Message)
+	}
+}
+
 // importSetKeysAndLockModel imports a model, sets composite unique keys on it
 // (while still unlocked), then locks it. Use instead of importAndLockModel
 // whenever entity-write unique-key enforcement is needed in a test.

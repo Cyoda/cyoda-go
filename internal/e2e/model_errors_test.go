@@ -106,6 +106,28 @@ func TestExportModel_UniqueKeys_PresentInBody(t *testing.T) {
 	}
 }
 
+// TestModelSetUniqueKeys_UnknownModel_404 verifies that setting unique keys on
+// a model that does not exist returns 404 MODEL_NOT_FOUND.
+func TestModelSetUniqueKeys_UnknownModel_404(t *testing.T) {
+	status, body := setUniqueKeysE2E(t, "e2e-uk-nope", 1, `{"uniqueKeys":[{"id":"k","fields":["$.name"]}]}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("set keys unknown model: expected 404, got %d: %s", status, body)
+	}
+	assertErrorCode(t, body, "MODEL_NOT_FOUND")
+}
+
+// TestModelSetUniqueKeys_MalformedBody_400 verifies that a syntactically
+// invalid JSON body returns 400 BAD_REQUEST.
+func TestModelSetUniqueKeys_MalformedBody_400(t *testing.T) {
+	const m = "e2e-uk-malformed"
+	importModelWithSample(t, m, 1, ukSampleData)
+	status, body := setUniqueKeysE2E(t, m, 1, `{not-json`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("malformed keys body: expected 400, got %d: %s", status, body)
+	}
+	assertErrorCode(t, body, "BAD_REQUEST")
+}
+
 // TestExportModel_NotFound_404 verifies that exporting a model that does not
 // exist returns 404 MODEL_NOT_FOUND.
 func TestExportModel_NotFound_404(t *testing.T) {
