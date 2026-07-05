@@ -10397,7 +10397,7 @@ components:
           description: Entity id (invariant against point-in-time).
         modelKey:
           type: object
-          description: Model of the entity. Present on single-entity reads.
+          description: Model of the entity. Present on all entity reads (single-get, list, search).
           properties:
             name:
               type: string
