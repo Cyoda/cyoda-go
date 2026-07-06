@@ -451,35 +451,35 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityAuditEventsResponseDto"
         "400":
-          description: Error response
+          description: Bad Request - Invalid parameters; `properties.errorCode` carries the domain code
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: Entity not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /audit/entity/{entityId}/workflow/{transactionId}/finished:

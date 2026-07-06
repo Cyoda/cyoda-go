@@ -146,3 +146,22 @@ error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate rem
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
+#
+# searchEntityAuditEvents (GET /audit/entity/{entityId}) — D-1 deferred item:
+# 400/401/403/404/500 converted ErrorResponseDto→ProblemDetail (server has always
+# emitted application/problem+json; prototype-era drift).
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `400` [response-media-type-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `404` [response-media-type-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
