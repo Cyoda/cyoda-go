@@ -2215,6 +2215,18 @@ type ExternalizedProcessorDefinitionDtoExecutionMode string
 // in-process subtype lands together with its schema.
 type ExternalizedProcessorDefinitionDtoType string
 
+// FieldConfigDto defines model for FieldConfigDto.
+type FieldConfigDto struct {
+	ArrayFields   *[]FieldConfigDto `json:"arrayFields,omitempty"`
+	DataType      string            `json:"dataType"`
+	FieldCategory string            `json:"fieldCategory"`
+	FieldKey      string            `json:"fieldKey"`
+	FieldName     string            `json:"fieldName"`
+	Flatten       *bool             `json:"flatten,omitempty"`
+	Hidden        *bool             `json:"hidden,omitempty"`
+	IsArray       *bool             `json:"isArray,omitempty"`
+}
+
 // FunctionConditionDto defines model for FunctionConditionDto.
 type FunctionConditionDto struct {
 	Function *ExternalizedFunctionDto `json:"function,omitempty"`
