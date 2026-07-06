@@ -306,3 +306,31 @@ func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {
 		t.Fatalf("array body: status=%d, want 400 (single object only)", arr.StatusCode)
 	}
 }
+
+// TestMessage_MalformedId_400ProblemDetail proves a malformed messageId yields a
+// uniform RFC-9457 ProblemDetail 400 (not oapi-codegen's default text/plain).
+func TestMessage_MalformedId_400ProblemDetail(t *testing.T) {
+	for _, m := range []string{http.MethodGet, http.MethodDelete} {
+		resp := doAuth(t, m, "/api/message/not-a-uuid", "")
+		if resp.StatusCode != http.StatusBadRequest {
+			resp.Body.Close()
+			t.Fatalf("%s malformed id: status=%d, want 400", m, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+			resp.Body.Close()
+			t.Errorf("%s malformed id: content-type=%q, want application/problem+json", m, ct)
+		}
+		var pd struct {
+			Status     int            `json:"status"`
+			Properties map[string]any `json:"properties"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&pd)
+		resp.Body.Close()
+		if pd.Properties["errorCode"] != "BAD_REQUEST" {
+			t.Errorf("%s: properties.errorCode=%v, want BAD_REQUEST", m, pd.Properties["errorCode"])
+		}
+		if pd.Properties["parameter"] != "messageId" {
+			t.Errorf("%s: properties.parameter=%v, want messageId", m, pd.Properties["parameter"])
+		}
+	}
+}

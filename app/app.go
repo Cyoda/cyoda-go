@@ -641,7 +641,10 @@ func New(cfg Config) *App {
 
 	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths.
-	apiHandler := genapi.HandlerFromMux(server, internalapi.NewChiMux())
+	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
+		BaseRouter:       internalapi.NewChiMux(),
+		ErrorHandlerFunc: internalapi.BindingErrorHandler,
+	})
 	if cfg.OTelEnabled {
 		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}

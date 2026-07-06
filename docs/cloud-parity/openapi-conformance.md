@@ -172,9 +172,15 @@ Per-finding contract decisions from the Edge-message reconciliation slice.
 - **M2 — fictional v1-UUID `400` removed; `messageId` typed `uuid`.** `getMessage` / `deleteMessage`
   performed no version-1 UUID validation and emit no `400`; the documented `400 "not a time-based
   UUID"` and `format: uuid-v1` were prototype-era fiction. Corrected to `format: uuid`, which (via
-  codegen) now binds `messageId` as a typed UUID — a malformed id returns the framework binding
-  `400`, consistent with every entity id path param. `deleteMessages` keeps its real invalid-JSON
-  `400`. Direction: spec-stale (closed).
+  codegen) now binds `messageId` as a typed UUID. A malformed uuid path (or query) param now returns
+  a uniform RFC-9457 `ProblemDetail` `400` (`application/problem+json`, `properties.errorCode:
+  BAD_REQUEST`, `properties.parameter: <name>`) via a custom binding-error handler that replaces
+  oapi-codegen's `text/plain` default **API-wide** — the previous behaviour on every uuid path param.
+  This `400` is now documented on `getMessage` / `deleteMessage`, and the entity id ops'
+  (`getOneEntity` / `deleteSingleEntity`) `400` examples were corrected from their earlier fiction to
+  match the real handler output. `deleteMessages` keeps its real invalid-JSON `400`. Direction:
+  server-gap + spec-stale (closed, Gate-6 cross-cutting fix). **Cloud MUST emit the `ProblemDetail`
+  shape** (not `text/plain`) for malformed path/query params.
 - **M3 — `getMessage.metaData` simplified to a flat symmetric map (cyoda-go defines the contract).**
   The bucketed `metaData: {values, indexedValues}` split and the injected `typeReferences: {}` were
   cyoda-cloud indexing workarounds. In cyoda-go, `values` was always empty (all client `meta-data`

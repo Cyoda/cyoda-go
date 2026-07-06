@@ -452,3 +452,63 @@ func TestValidator_StreamingResponseDoesNotPanic(t *testing.T) {
 		t.Errorf("streaming response should pass validation; got mismatches: %+v", mismatches)
 	}
 }
+
+// TestValidator_MalformedPathParam_ConformantBindingError verifies that a
+// malformed path parameter (a non-uuid where format: uuid is required) which
+// the server rejects with a conformant RFC-9457 ProblemDetail 400 is NOT
+// recorded as a conformance mismatch: it is the binding-error handler behaving
+// correctly, not spec drift. A non-400 response to the same malformed path is
+// still flagged.
+func TestValidator_MalformedPathParam_ConformantBindingError(t *testing.T) {
+	const yaml = `openapi: 3.1.0
+info: { title: msg-fixture, version: "1" }
+paths:
+  /message/{messageId}:
+    get:
+      operationId: getMessage
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: bad request
+          content:
+            application/problem+json:
+              schema:
+                type: object
+`
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData([]byte(yaml))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	v, err := NewValidator(doc)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	// Malformed messageId → server returns a conformant ProblemDetail 400.
+	req, _ := http.NewRequest("GET", "http://x/message/not-a-uuid", nil)
+	resp := mkResp(400, "application/problem+json",
+		`{"status":400,"properties":{"errorCode":"BAD_REQUEST","parameter":"messageId"}}`)
+	if mismatches := v.Validate(context.Background(), req, resp); len(mismatches) != 0 {
+		t.Errorf("malformed path param with conformant 400 should not be a mismatch; got %d:\n%+v", len(mismatches), mismatches)
+	}
+
+	// Guard: a malformed param that yields a non-400 (e.g. 200) IS still a mismatch.
+	req2, _ := http.NewRequest("GET", "http://x/message/not-a-uuid", nil)
+	resp2 := mkResp(200, "application/json", `{}`)
+	if mismatches := v.Validate(context.Background(), req2, resp2); len(mismatches) == 0 {
+		t.Errorf("malformed path param with 200 should still be a mismatch; got 0")
+	}
+}

@@ -1408,11 +1408,11 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'not-a-uuid' for parameter 'entityId'
+                detail: invalid value for parameter 'entityId'
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   parameter: entityId
-                  invalidValue: not-a-uuid
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity not found
           content:
@@ -1534,11 +1534,11 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'not-a-uuid' for parameter 'entityId'
+                detail: invalid value for parameter 'entityId'
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   parameter: entityId
-                  invalidValue: not-a-uuid
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity not found
           content:
@@ -3646,6 +3646,21 @@ paths:
                             id: "1038"
                             motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
                             share: "2"
+        "400":
+          description: Invalid UUID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: invalid value for parameter 'messageId'
+                instance: /api/message/not-a-uuid
+                properties:
+                  errorCode: BAD_REQUEST
+                  parameter: messageId
         "404":
           description: Message not found
           content:
@@ -3699,6 +3714,21 @@ paths:
                   value:
                     entityIds:
                       - 8824c480-c166-11ee-9cc7-ae468cd3ed16
+        "400":
+          description: Invalid UUID format
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: invalid value for parameter 'messageId'
+                instance: /api/message/not-a-uuid
+                properties:
+                  errorCode: BAD_REQUEST
+                  parameter: messageId
         "404":
           description: Message not found
           content:
