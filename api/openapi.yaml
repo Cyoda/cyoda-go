@@ -5132,7 +5132,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Feature is disabled
+          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
