@@ -5914,6 +5914,7 @@ paths:
                   type: string
                   description: The OAuth 2.0 grant type
                   enum:
+                    - client_credentials
                     - urn:ietf:params:oauth:grant-type:token-exchange
                 subject_token:
                   type: string
@@ -5945,6 +5946,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "403":
           description: Forbidden - Tenant boundary violation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
+        "405":
+          description: Method Not Allowed - method_not_allowed (only POST is accepted)
           content:
             application/json:
               schema:
@@ -8744,6 +8751,8 @@ components:
             - unsupported_grant_type
             - invalid_scope
             - access_denied
+            - server_error
+            - method_not_allowed
           example: invalid_request
         error_description:
           type: string
@@ -9267,6 +9276,7 @@ components:
             responses, per RFC 8693)
           enum:
             - urn:ietf:params:oauth:token-type:access_token
+            - urn:ietf:params:oauth:token-type:jwt
       required:
         - access_token
         - expires_in
