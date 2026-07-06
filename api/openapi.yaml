@@ -3481,27 +3481,14 @@ paths:
             format: int64
             default: 10000
       requestBody:
-        description: "
-
-          The request body can be either a single JSON object or an array of
-          homomorphic JSON objects.
-
-          Each object must contain a 'payload' field with any valid JSON
-          content.
-
-          It may also optionally include meta-data fields with a Flat set of
-          key-value pairs.
-
-          The meta-data is indexed to enable fast searching by meta-data.
-
-
-          The message will be processed and stored according to this structure.
-
-          \            "
+        description: >
+          A single JSON object. It must contain a `payload` field (any valid JSON
+          value) and may include an optional flat `meta-data` map of key-value pairs.
+          The meta-data is indexed to enable fast search by meta-data.
         content:
           application/json:
             schema:
-              type: string
+              $ref: "#/components/schemas/NewMessageRequest"
             examples:
               Nobel Prize Announcement (with payload and meta-data):
                 description: Nobel Prize Announcement (with payload and meta-data)
@@ -10376,6 +10363,23 @@ components:
         non-JSON text). Proper content-type handling may be added
         as a future feature.
       additionalProperties: true
+    NewMessageRequest:
+      type: object
+      description: >
+        A single JSON object carrying the message payload and optional flat metadata.
+      properties:
+        payload:
+          $ref: "#/components/schemas/EdgeMessagePayload"
+          description: >
+            The message payload — any JSON value (object, array, string, number, …).
+            Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent
+            as a JSON string; see the EdgeMessagePayload note.
+        meta-data:
+          type: object
+          additionalProperties: true
+          description: Optional flat key→value map; indexed to enable search by metadata.
+      required:
+        - payload
     MessageDeleteResponse:
       type: object
       description: |

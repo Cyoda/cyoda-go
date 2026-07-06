@@ -224,3 +224,32 @@ func TestMessage_DeleteBatch(t *testing.T) {
 		}
 	}
 }
+
+// TestMessage_NewMessage_ObjectEnvelope characterizes the real body contract:
+// an object {payload, meta-data}; missing payload -> 400; a top-level array -> 400.
+func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {
+	ok := doAuth(t, http.MethodPost, "/api/message/new/env-ok", `{"payload":{"a":1},"meta-data":{"k":"v"}}`)
+	defer ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("object envelope: status=%d, want 200", ok.StatusCode)
+	}
+
+	// payload may be any JSON value, incl. a base64-ish string (binary workaround).
+	strp := doAuth(t, http.MethodPost, "/api/message/new/env-str", `{"payload":"SGVsbG8="}`)
+	defer strp.Body.Close()
+	if strp.StatusCode != http.StatusOK {
+		t.Fatalf("string payload: status=%d, want 200", strp.StatusCode)
+	}
+
+	missing := doAuth(t, http.MethodPost, "/api/message/new/env-missing", `{"meta-data":{}}`)
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing payload: status=%d, want 400", missing.StatusCode)
+	}
+
+	arr := doAuth(t, http.MethodPost, "/api/message/new/env-arr", `[{"payload":{"a":1}}]`)
+	defer arr.Body.Close()
+	if arr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("array body: status=%d, want 400 (single object only)", arr.StatusCode)
+	}
+}

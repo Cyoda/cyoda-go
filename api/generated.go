@@ -2559,6 +2559,15 @@ type ModelStatsDto struct {
 	ModelVersion int32 `json:"modelVersion"`
 }
 
+// NewMessageRequest A single JSON object carrying the message payload and optional flat metadata.
+type NewMessageRequest struct {
+	// MetaData Optional flat key→value map; indexed to enable search by metadata.
+	MetaData *map[string]interface{} `json:"meta-data,omitempty"`
+
+	// Payload The message payload — any JSON value (object, array, string, number, …). Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent as a JSON string; see the EdgeMessagePayload note.
+	Payload EdgeMessagePayload `json:"payload"`
+}
+
 // OidcProviderResponseDto defines model for OidcProviderResponseDto.
 type OidcProviderResponseDto struct {
 	// Active Whether this OIDC provider is currently active and used for JWT validation
@@ -3700,9 +3709,6 @@ type DeleteMessagesParams struct {
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 }
 
-// NewMessageJSONBody defines parameters for NewMessage.
-type NewMessageJSONBody = string
-
 // NewMessageParams defines parameters for NewMessage.
 type NewMessageParams struct {
 	// TransactionTimeoutMillis Maximum time in milliseconds to wait for transaction completion
@@ -3874,7 +3880,7 @@ type CreateJSONRequestBody CreateJSONBody
 type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
 
 // NewMessageJSONRequestBody defines body for NewMessage for application/json ContentType.
-type NewMessageJSONRequestBody = NewMessageJSONBody
+type NewMessageJSONRequestBody = NewMessageRequest
 
 // ImportEntityModelJSONRequestBody defines body for ImportEntityModel for application/json ContentType.
 type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody

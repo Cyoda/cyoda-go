@@ -129,3 +129,10 @@ error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the requi
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# message slice — newMessage (POST /message/new/{subject}) request body corrected
+# from string to the real {payload, meta-data} object envelope; the prior string
+# schema was prototype-era drift the server never honoured (a bare string is
+# rejected — the handler unmarshals an object). ADR 0003 Decision 7.
+error at api/openapi.yaml, in API POST /message/new/{subject} the request's body `type` changed from `string` to `object` [request-body-type-changed].
+error at api/openapi.yaml, in API POST /message/new/{subject} added the new required request property `payload` [new-required-request-property].
