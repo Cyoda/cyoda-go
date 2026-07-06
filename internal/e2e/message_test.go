@@ -313,6 +313,16 @@ func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {
 	}
 }
 
+// TestMessage_DeleteMessages_NonUUID_400 asserts the array<uuid> contract is
+// enforced: a non-uuid element is rejected with 400, not silently ignored.
+func TestMessage_DeleteMessages_NonUUID_400(t *testing.T) {
+	resp := doAuth(t, http.MethodDelete, "/api/message", `["not-a-uuid"]`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("deleteMessages non-uuid element: status=%d, want 400", resp.StatusCode)
+	}
+}
+
 // TestMessage_MalformedId_400ProblemDetail proves a malformed messageId yields a
 // uniform RFC-9457 ProblemDetail 400 (not oapi-codegen's default text/plain).
 func TestMessage_MalformedId_400ProblemDetail(t *testing.T) {

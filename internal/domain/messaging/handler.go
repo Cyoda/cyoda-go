@@ -34,7 +34,8 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
 			common.WriteError(w, r, common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeBadRequest, "request payload exceeds maximum allowed limit of 10MB"))
 			return
 		}
@@ -226,7 +227,8 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
 			common.WriteError(w, r, common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeBadRequest, "request payload exceeds maximum allowed limit of 10MB"))
 			return
 		}
@@ -238,6 +240,13 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 	if err := json.Unmarshal(rawBody, &ids); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected array of UUID strings"))
 		return
+	}
+
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "id list contains a value that is not a valid UUID"))
+			return
+		}
 	}
 
 	store, err := h.factory.MessageStore(r.Context())
