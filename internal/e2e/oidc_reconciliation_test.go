@@ -164,7 +164,7 @@ func TestOIDC_Delete_NotFound_ProblemDetail(t *testing.T) {
 
 	cid, secret := createM2MClient(t, oidcTenantUUID, "del-nf-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	token := getToken(t, cid, secret)
-	req, _ := e2eNewRequest(t, "DELETE", serverURL+"/api/oauth/oidc/providers/does-not-exist", nil)
+	req, _ := e2eNewRequest(t, "DELETE", serverURL+"/api/oauth/oidc/providers/00000000-0000-0000-0000-0000000000ff", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
