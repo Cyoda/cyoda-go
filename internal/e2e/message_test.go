@@ -185,6 +185,9 @@ func TestMessage_DeleteMessages_413(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("deleteMessages oversized body: status=%d, want 413", resp.StatusCode)
 	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+		t.Errorf("deleteMessages 413: content-type=%q, want application/problem+json", ct)
+	}
 }
 
 // TestMessage_DeleteBatch verifies that a batch delete removes the specified messages
@@ -272,6 +275,9 @@ func TestMessage_MetaDataFlatShape(t *testing.T) {
 	}
 	if _, ok := body.MetaData["values"]; ok {
 		t.Errorf("metaData must be flat, not bucketed (found values): %v", body.MetaData)
+	}
+	if _, ok := body.MetaData["indexedValues"]; ok {
+		t.Errorf("metaData must be flat, not bucketed (found indexedValues): %v", body.MetaData)
 	}
 	if got := body.MetaData["source"]; got != "e2e" {
 		t.Errorf("metaData missing flat user key source=e2e: got %v", body.MetaData)

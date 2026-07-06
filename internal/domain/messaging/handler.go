@@ -167,6 +167,9 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId u
 	// values/indexedValues split and the injected typeReferences were
 	// cyoda-cloud indexing artifacts, not part of the cyoda-go contract.
 	metaMap := map[string]any{}
+	// IndexedValues is merged last, so it wins on a key collision — which is
+	// currently impossible: cyoda-go routes all client meta-data to IndexedValues,
+	// leaving Values empty.
 	for k, v := range metaData.Values {
 		metaMap[k] = v
 	}
@@ -233,7 +236,7 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 
 	var ids []string
 	if err := json.Unmarshal(rawBody, &ids); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: expected array of UUID strings: %v", err)))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected array of UUID strings"))
 		return
 	}
 

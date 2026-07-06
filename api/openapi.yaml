@@ -3367,7 +3367,7 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: "invalid JSON: expected array of UUID strings: json: cannot unmarshal object into Go value of type []string"
+                    detail: "invalid JSON: expected array of UUID strings"
                     instance: /api/message
                     properties:
                       errorCode: BAD_REQUEST

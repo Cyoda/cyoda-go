@@ -84,7 +84,7 @@ func RunMessageRoundTrip(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
-	// CreateMessage submits meta-data {"source": "parity"}.
+	// the parity client's CreateMessage hardcodes meta-data {"source":"parity"}.
 	id, err := c.CreateMessage(t, "parity-roundtrip", `{"hello":"world"}`)
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)

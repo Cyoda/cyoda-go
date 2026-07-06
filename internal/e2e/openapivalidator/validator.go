@@ -218,7 +218,7 @@ func (v *Validator) isStreaming(route *routers.Route, status int) bool {
 
 // isConformantBindingError reports whether resp is a well-formed RFC-9457
 // binding-error rejection: HTTP 400 with an application/problem+json body. A
-// malformed path/query parameter the server rejects this way is correct
+// malformed path parameter the server rejects this way is correct
 // behaviour even though no operation's path-parameter constraints match the
 // malformed value.
 func isConformantBindingError(resp *http.Response) bool {
