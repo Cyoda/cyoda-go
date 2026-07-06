@@ -247,10 +247,12 @@ Envelope column: **PD** = `application/problem+json` `ProblemDetail`; **ERD** =
 | `resetTechnicalUserSecret` | ✓ | — | ✓ | ✓ | ✓ | — | — | ✓ | ✎ | PD |
 | `listTechnicalUsers` | ✓ | — | ✓ | ✓ | — | — | — | ✓ | ✎ | PD |
 
-**¹** `getTechnicalUserToken`: the spec's `error` enum also lists `invalid_request`, which the
-server never emits (`token.go` only produces `unsupported_grant_type`/`invalid_grant` on 400) —
-a documented-but-unemitted output value. Harmless under tolerant-reader; left in the enum, noted
-here so the reconciliation is deliberate, not an oversight.
+**¹** `getTechnicalUserToken`: the spec's `error` enum lists three values the server never
+emits — `invalid_request`, `unauthorized_client`, `invalid_scope`. (The full emitted set is
+`unsupported_grant_type`/`invalid_grant` on 400, `invalid_client` on 401, `access_denied` on 403,
+`server_error` on 500, `method_not_allowed` on 405.) The three unemitted values are
+documented-but-unused output; harmless under tolerant-reader, left in the enum, noted here so the
+reconciliation is deliberate, not an oversight.
 
 **²** Trusted-key `501` is **conditional** (B1): the feature-flag gate (`404 FEATURE_DISABLED`,
 default off) precedes the store gate, so these 5 ops return **404** in default mock config and
@@ -270,6 +272,20 @@ Layers: **U** = service/handler unit test; **E** = running-backend e2e (`interna
 Postgres); **P** = cross-backend parity (`e2e/parity`); **G** = gRPC. These are **HTTP-only
 surfaces** — no gRPC entry point exists for auth/OIDC/keys/trusted (§10) → **G = n/a** for all.
 
+**Test-harness reality (BLOCKER-1 fix — critical for the plan).** The shared `internal/e2e`
+harness (`e2e_test.go` `TestMain`) builds ONE server with `IAM.Mode = "jwt"` (line 123),
+`TrustedKeyRegistrationEnabled = true` (136), and `M2MAdminRoleEnabled = true` (137). So on the
+**shared harness the 21 IAM-gated ops run LIVE 2xx** (adapter installed, stores wired, feature
+on) — it can exercise the happy-path, envelope, and jwt-mode error codes (400/404/409), but it
+**cannot** produce the `501` (needs adapter-nil / store-nil) or the trusted `404 FEATURE_DISABLED`
+(needs feature off) paths. Those require **dedicated `app.New(cfg)` + `httptest.NewServer`
+fixtures** with a bespoke config — the established precedent is `cors_e2e_test.go:22-23` and
+`callback_harness_test.go:187`. The plan MUST budget two such fixtures: (F-a) a **mock-IAM**
+server (`IAM.Mode` default/`mock` → OIDC adapter nil, keys/M2M/trusted stores nil) for the `501`
+rows; (F-b) a **jwt + feature-OFF** server (`TrustedKeyRegistrationEnabled = false`) for the
+trusted `404 FEATURE_DISABLED` rows. Rows below tagged `[F-a]`/`[F-b]` run on those fixtures;
+untagged `E` rows run on the shared jwt harness.
+
 | Scenario | U | E | P | Notes |
 |---|---|---|---|---|
 | OIDC error envelope = `problem+json` + `properties.errorCode` (per op) | | ✓ | | assert content-type + body shape on a 4xx |
@@ -280,18 +296,23 @@ surfaces** — no gRPC entry point exists for auth/OIDC/keys/trusted (§10) → 
 | `listOidcProviders` `activeOnly` garbage → 400 (ParseBool) | | ✓ | | `?activeOnly=yes` → 400 (S2; new binding behaviour) |
 | `registerOidcProvider` 400 sub-codes `OIDC_SSRF_BLOCKED` / `OIDC_INVALID_TENANT` | | ✓ | | producing tests (SSRF discovery URL; cross-tenant) |
 | `getTechnicalUserToken` `client_credentials` accepted | | ✓ | | happy-path M2M grant |
+| `getTechnicalUserToken` bad grant_type → 400 `unsupported_grant_type` | | ✓ | | producing test |
+| `getTechnicalUserToken` bad credential/token → 400 `invalid_grant` | | ✓ | | producing test |
+| `getTechnicalUserToken` bad basic-auth → 401 `invalid_client` | | ✓ | | producing test |
+| `getTechnicalUserToken` tenant mismatch → 403 `access_denied` | | ✓ | | producing test |
 | `getTechnicalUserToken` non-POST → 405 `method_not_allowed` | | ✓ | | producing test |
+| `getTechnicalUserToken` 500 `server_error` | ✓ | | | **WAIVED as running-backend-non-producible** (internal fault only); enum-doc + unit coverage |
 | `getTechnicalUserToken` error shape = flat OAuth (ERD), not PD | | ✓ | | assert `{error,error_description}` json |
 | `issueJwtKeyPair` non-RS256 → 400 `UNSUPPORTED_ALGORITHM` | | ✓ | | producing test (jwt mode) |
 | `registerTrustedKey` non-RSA → 400 `UNSUPPORTED_KEY_TYPE` | | ✓ | | producing test (jwt mode + feature on) |
 | `registerTrustedKey` cap reached → 400 `TRUSTED_KEY_CAP_REACHED` | | ✓ | | producing test (fill to cap) |
 | `registerTrustedKey` cross-tenant → 409 `KEY_OWNED_BY_DIFFERENT_TENANT` | | ✓ | | producing test (already-documented status) |
-| `registerTrustedKey` feature off → 404 `FEATURE_DISABLED` | | ✓ | | producing test (default config) |
-| keys bad id → 404 `KEYPAIR_NOT_FOUND`, bad body/grace → 400 | | ✓ | | producing tests per op |
-| trusted bad id → 404 `TRUSTED_KEY_NOT_FOUND` / `FEATURE_DISABLED`, bad body/grace → 400 | | ✓ | | producing tests per op |
-| 16 gated ops (OIDC/keys/M2M) → 501 in mock IAM mode | ✓ | ✓ | | e2e default mode already `mock`; assert 501 |
-| 5 trusted ops → 404 `FEATURE_DISABLED` in default mock (B1) | | ✓ | | default config; feature off → 404, NOT 501 |
-| 5 trusted ops → 501 when feature on + IAM≠jwt (B1) | ✓ | ✓ | | feature-enabled + mock-IAM fixture; assert 501 |
+| `registerTrustedKey` feature off → 404 `FEATURE_DISABLED` `[F-b]` | | ✓ | | jwt + feature-OFF fixture (shared harness force-enables it) |
+| keys bad id → 404 `KEYPAIR_NOT_FOUND`, bad body/grace → 400 | | ✓ | | producing tests per op (shared jwt harness) |
+| trusted bad id → 404 `TRUSTED_KEY_NOT_FOUND`, bad body/grace → 400 | | ✓ | | producing tests per op (shared jwt harness, feature on) |
+| trusted bad id → 404 `FEATURE_DISABLED` `[F-b]` | | ✓ | | feature-OFF fixture (the 404 is the feature gate, not the id) |
+| 16 gated ops (OIDC/keys/M2M) → 501 in mock IAM mode `[F-a]` | ✓ | ✓ | | mock-IAM fixture (adapter/store nil); shared harness is jwt→live 2xx. Plan: per-op 501 assertion, not one representative |
+| 5 trusted ops → 501 when feature on + IAM≠jwt (B1) `[F-a]` | ✓ | ✓ | | mock-IAM fixture with `TrustedKeyRegistrationEnabled=true`; assert 501 |
 | `searchEntityAuditEvents` 4xx envelope = PD (D-1) | | ✓ | | assert content-type on 400/404 |
 | Non-producible cells (if any surface) | ✓ | | | service unit test with fakes (mirrors #376) |
 
@@ -325,7 +346,9 @@ op×status×property, following the #373 finished-event template exactly:
   op×status×property. (8 ops × their 4xx/5xx statuses × 2 props.) Media-type change
   (`application/json` → `application/problem+json`) may also register as
   `response-media-type-removed` per status — include those entries too if the pinned oasdiff
-  emits them.
+  emits them. **Exclusion:** the converted statuses do **not** include `listOidcProviders 403`
+  — that status is *removed*, not converted, and is handled solely by the dedicated
+  `response-removed` entry below. Do not also emit property/media-type-removed entries for it.
 - **`listOidcProviders` 403 removal (B2 — MUST-have entry):** deleting the documented `403`
   response (the fictional admin-guard status) is `response-removed`, which the pinned oasdiff
   **will** flag as breaking. Add a dedicated, documented `response-removed` err-ignore entry for
@@ -424,7 +447,14 @@ No new Cloud-fact-blocked open questions from this slice.
 
 - Controller runs Docker-backed e2e at consolidation points; subagents go-vet-compile only.
 - gRPC n/a here (§10) — no envelope-code assertions.
+- **Two dedicated e2e fixtures are required (BLOCKER-1, §9):** the shared `internal/e2e` harness
+  runs `IAM.Mode=jwt` + feature-on, so it CANNOT produce the `501` or `404 FEATURE_DISABLED`
+  paths. Budget (F-a) a mock-IAM `app.New(cfg)`+`httptest` server for the 501 rows and (F-b) a
+  jwt+feature-OFF server for the trusted 404 rows — follow `cors_e2e_test.go` /
+  `callback_harness_test.go`. Do NOT flip the shared harness config (it would regress every
+  other e2e test that assumes jwt+feature-on).
 - Producing tests written deliberately (auth ops absent from `EntityErrorCodeMatrix`); waived/
-  non-producible cells → service unit tests with fakes.
+  non-producible cells → service unit tests with fakes. `getTechnicalUserToken 500 server_error`
+  is explicitly waived (internal-fault-only).
 - Keep the PR scoped: a gofmt sweep can drag drive-by churn into non-slice files (incl. plugin
   submodules) — gofmt only what this slice touches.
