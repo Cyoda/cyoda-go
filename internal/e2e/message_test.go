@@ -257,29 +257,24 @@ func TestMessage_NoV1Validation(t *testing.T) {
 	}
 }
 
-// TestMessage_MetaDataFlatShape characterizes getMessage metaData: values and
-// indexedValues are flat maps, each always containing an injected typeReferences key.
 func TestMessage_MetaDataFlatShape(t *testing.T) {
-	id := createMessageE2E(t, "meta-shape", `{"x":1}`) // createMessageE2E sends meta-data {source:e2e}
+	id := createMessageE2E(t, "meta-shape", `{"x":1}`)
 	resp := doAuth(t, http.MethodGet, "/api/message/"+id, "")
 	defer resp.Body.Close()
 	var body struct {
-		MetaData struct {
-			Values        map[string]any `json:"values"`
-			IndexedValues map[string]any `json:"indexedValues"`
-		} `json:"metaData"`
+		MetaData map[string]any `json:"metaData"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if _, ok := body.MetaData.Values["typeReferences"]; !ok {
-		t.Errorf("values missing injected typeReferences key: %v", body.MetaData.Values)
+	if _, ok := body.MetaData["typeReferences"]; ok {
+		t.Errorf("metaData must not contain cloud-ism typeReferences: %v", body.MetaData)
 	}
-	if _, ok := body.MetaData.IndexedValues["typeReferences"]; !ok {
-		t.Errorf("indexedValues missing injected typeReferences key: %v", body.MetaData.IndexedValues)
+	if _, ok := body.MetaData["values"]; ok {
+		t.Errorf("metaData must be flat, not bucketed (found values): %v", body.MetaData)
 	}
-	if _, ok := body.MetaData.IndexedValues["source"]; !ok {
-		t.Errorf("indexedValues missing flat user key 'source': %v", body.MetaData.IndexedValues)
+	if got := body.MetaData["source"]; got != "e2e" {
+		t.Errorf("metaData missing flat user key source=e2e: got %v", body.MetaData)
 	}
 }
 

@@ -1756,8 +1756,10 @@ type EdgeMessageDto struct {
 	// stringify it (e.g. base64 for binary, plain string with escape for
 	// non-JSON text). Proper content-type handling may be added
 	// as a future feature.
-	Content  *EdgeMessagePayload `json:"content,omitempty"`
-	Header   EdgeMessageHeader   `json:"header"`
+	Content *EdgeMessagePayload `json:"content,omitempty"`
+	Header  EdgeMessageHeader   `json:"header"`
+
+	// MetaData Flat map of the message's metadata key-value pairs, symmetric with the `meta-data` supplied at creation. All values are indexed for search.
 	MetaData EdgeMessageMetaData `json:"metaData"`
 }
 
@@ -1776,14 +1778,8 @@ type EdgeMessageHeader struct {
 	UserId        *string `json:"userId,omitempty"`
 }
 
-// EdgeMessageMetaData defines model for EdgeMessageMetaData.
-type EdgeMessageMetaData struct {
-	// IndexedValues Flat map of indexed (searchable) metadata values. Always contains an injected `typeReferences` key (an empty object in this version).
-	IndexedValues map[string]interface{} `json:"indexedValues"`
-
-	// Values Flat map of metadata values. Always contains an injected `typeReferences` key (an empty object in this version).
-	Values map[string]interface{} `json:"values"`
-}
+// EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `meta-data` supplied at creation. All values are indexed for search.
+type EdgeMessageMetaData map[string]interface{}
 
 // EdgeMessagePayload Polymorphic by intent — accepts any JSON value. The contentType field
 // in the message header is informational; it does not affect storage or

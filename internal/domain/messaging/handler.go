@@ -163,28 +163,21 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId u
 		respHeader["correlationId"] = header.CorrelationID
 	}
 
-	valuesMap := map[string]any{"typeReferences": map[string]any{}}
-	if metaData.Values != nil {
-		for k, v := range metaData.Values {
-			valuesMap[k] = v
-		}
+	// Flat metadata map — symmetric with the submitted `meta-data`. The
+	// values/indexedValues split and the injected typeReferences were
+	// cyoda-cloud indexing artifacts, not part of the cyoda-go contract.
+	metaMap := map[string]any{}
+	for k, v := range metaData.Values {
+		metaMap[k] = v
 	}
-
-	indexedMap := map[string]any{"typeReferences": map[string]any{}}
-	if metaData.IndexedValues != nil {
-		for k, v := range metaData.IndexedValues {
-			indexedMap[k] = v
-		}
+	for k, v := range metaData.IndexedValues {
+		metaMap[k] = v
 	}
 
 	resp := map[string]any{
-		"header": respHeader,
-		"metaData": map[string]any{
-			"values":        valuesMap,
-			"indexedValues": indexedMap,
-		},
-		// json.RawMessage embeds the payload as-is in the JSON output instead of
-		// wrapping the bytes in a JSON string. This fixes the #21 JSON-in-string defect.
+		"header":   respHeader,
+		"metaData": metaMap,
+		// json.RawMessage embeds the payload as-is (fixes the JSON-in-string defect).
 		"content": json.RawMessage(payloadBytes),
 	}
 

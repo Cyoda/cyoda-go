@@ -150,12 +150,12 @@ error at api/openapi.yaml, in API DELETE /message the request's body `type/forma
 error at api/openapi.yaml, in API DELETE /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
 error at api/openapi.yaml, in API GET /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
 #
-# getMessage (GET /message/{messageId}) — metaData.values/indexedValues retyped from
-# ValueMaps (bucketed schema with required typeReferences nested property) to typed-but-open
-# flat map (additionalProperties:true, no named properties). The server has never emitted
-# the bucketed ValueMaps shape; it always emits a flat map where typeReferences is one flat
-# key among others. oasdiff flags the loss of the required nested typeReferences as an ERR
-# but no working client depended on the bucketed schema — it was prototype-era drift.
-# ADR 0003 Decision 7.
-error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/indexedValues/typeReferences` from the response with the `200` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/values/typeReferences` from the response with the `200` status [response-required-property-removed].
+# getMessage (GET /message/{messageId}) — metaData simplified to a flat symmetric map:
+# the values/indexedValues split and the injected typeReferences were cyoda-cloud indexing
+# artifacts the cyoda-go contract does not carry; cyoda-cloud conforms. The required
+# values/indexedValues properties disappear from the response schema because
+# EdgeMessageMetaData is now an open flat map (additionalProperties:true, no named
+# properties). No working client depended on the bucketed schema — it was prototype-era
+# drift. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/indexedValues` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/values` from the response with the `200` status [response-required-property-removed].

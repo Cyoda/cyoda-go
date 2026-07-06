@@ -194,37 +194,31 @@ func TestNewMessageWithIndexedMetadata(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	// Verify metaData contains indexed values
+	// Verify metaData is a flat map — symmetric with submitted meta-data.
 	metaData, ok := msg["metaData"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected metaData object, got %v", msg["metaData"])
+		t.Fatalf("expected metaData flat map, got %v", msg["metaData"])
 	}
 
-	indexedValues, ok := metaData["indexedValues"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected indexedValues object, got %v", metaData["indexedValues"])
+	if metaData["eventType"] != "nobel.prize.announced" {
+		t.Errorf("expected eventType=nobel.prize.announced, got %v", metaData["eventType"])
+	}
+	if metaData["timestamp"] != "2024-10-09T12:00:00Z" {
+		t.Errorf("expected timestamp=2024-10-09T12:00:00Z, got %v", metaData["timestamp"])
+	}
+	if metaData["category"] != "physics" {
+		t.Errorf("expected category=physics, got %v", metaData["category"])
 	}
 
-	if indexedValues["eventType"] != "nobel.prize.announced" {
-		t.Errorf("expected eventType=nobel.prize.announced, got %v", indexedValues["eventType"])
+	// Must not expose the old cloud-ism bucket keys.
+	if _, ok := metaData["values"]; ok {
+		t.Errorf("metaData must not contain bucketed values key: %v", metaData)
 	}
-	if indexedValues["timestamp"] != "2024-10-09T12:00:00Z" {
-		t.Errorf("expected timestamp=2024-10-09T12:00:00Z, got %v", indexedValues["timestamp"])
+	if _, ok := metaData["indexedValues"]; ok {
+		t.Errorf("metaData must not contain bucketed indexedValues key: %v", metaData)
 	}
-	if indexedValues["category"] != "physics" {
-		t.Errorf("expected category=physics, got %v", indexedValues["category"])
-	}
-
-	// Verify values contains only typeReferences (meta-data goes to indexedValues)
-	values, ok := metaData["values"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected values object, got %v", metaData["values"])
-	}
-	if _, hasTypeRefs := values["typeReferences"]; !hasTypeRefs {
-		t.Errorf("expected typeReferences in values, got %v", values)
-	}
-	if len(values) != 1 {
-		t.Errorf("expected values to contain only typeReferences, got %v", values)
+	if _, ok := metaData["typeReferences"]; ok {
+		t.Errorf("metaData must not contain cloud-ism typeReferences: %v", metaData)
 	}
 }
 
@@ -247,8 +241,11 @@ func TestMetadataPreservesJsonTypes(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	metaData := msg["metaData"].(map[string]any)
-	indexed := metaData["indexedValues"].(map[string]any)
+	// metaData is a flat map — symmetric with submitted meta-data.
+	indexed, ok := msg["metaData"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metaData flat map, got %v (%T)", msg["metaData"], msg["metaData"])
+	}
 
 	// String stays string
 	if name, ok := indexed["name"].(string); !ok || name != "Alice" {
@@ -442,17 +439,13 @@ func TestNewMessageWithOptionalHeaders(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	// Verify metaData contains our key in indexedValues
+	// Verify metaData is a flat map containing our key directly.
 	md, ok := msg["metaData"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected metaData object, got %v", msg["metaData"])
+		t.Fatalf("expected metaData flat map, got %v", msg["metaData"])
 	}
-	indexedValues, ok := md["indexedValues"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected indexedValues map, got %v", md["indexedValues"])
-	}
-	if indexedValues["key1"] != "val1" {
-		t.Errorf("expected metadata key1=val1, got %v", indexedValues["key1"])
+	if md["key1"] != "val1" {
+		t.Errorf("expected metadata key1=val1, got %v", md["key1"])
 	}
 }
 

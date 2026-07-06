@@ -3625,8 +3625,8 @@ paths:
                       replyTo: announcements@nobelprize.org
                       correlationId: nobel-2024-physics-announcement
                     metaData:
-                      values: {}
-                      indexedValues: {}
+                      eventType: nobel.prize.announced
+                      timestamp: "2024-10-09T12:00:00Z"
                     content:
                       eventType: nobel.prize.announced
                       timestamp: "2024-10-09T12:00:00Z"
@@ -10308,22 +10308,10 @@ components:
         - subject
     EdgeMessageMetaData:
       type: object
-      properties:
-        values:
-          type: object
-          additionalProperties: true
-          description: >
-            Flat map of metadata values. Always contains an injected `typeReferences`
-            key (an empty object in this version).
-        indexedValues:
-          type: object
-          additionalProperties: true
-          description: >
-            Flat map of indexed (searchable) metadata values. Always contains an
-            injected `typeReferences` key (an empty object in this version).
-      required:
-        - indexedValues
-        - values
+      additionalProperties: true
+      description: >
+        Flat map of the message's metadata key-value pairs, symmetric with the
+        `meta-data` supplied at creation. All values are indexed for search.
     EdgeMessagePayload:
       description: |
         Polymorphic by intent — accepts any JSON value. The contentType field
