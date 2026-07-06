@@ -126,3 +126,63 @@ func TestOIDC_List_NonAdmin_Returns200Not403(t *testing.T) {
 		t.Fatalf("non-admin list: got %d, want 200 (no admin guard on list)", resp.StatusCode)
 	}
 }
+
+// assertProblemJSON asserts that resp carries an RFC-9457 ProblemDetail envelope
+// with the expected HTTP status and errorCode in properties.errorCode.
+// It drains and closes the body.
+func assertProblemJSON(t *testing.T, resp *http.Response, wantStatus int, wantCode string) {
+	t.Helper()
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, wantStatus, raw)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type: got %q, want application/problem+json", ct)
+	}
+	var pd struct {
+		Status     int            `json:"status"`
+		Properties map[string]any `json:"properties"`
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("unmarshal ProblemDetail: %v; body=%s", err, raw)
+	}
+	if got := fmt.Sprintf("%v", pd.Properties["errorCode"]); got != wantCode {
+		t.Fatalf("errorCode: got %q, want %q; body=%s", got, wantCode, raw)
+	}
+}
+
+// TestOIDC_Delete_NotFound_ProblemDetail asserts the server emits
+// application/problem+json with OIDC_PROVIDER_NOT_FOUND on a delete of an
+// unknown provider ID. This validates the real server behaviour that the
+// converted spec now documents.
+func TestOIDC_Delete_NotFound_ProblemDetail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	cid, secret := createM2MClient(t, oidcTenantUUID, "del-nf-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	token := getToken(t, cid, secret)
+	req, _ := e2eNewRequest(t, "DELETE", serverURL+"/api/oauth/oidc/providers/does-not-exist", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	assertProblemJSON(t, resp, http.StatusNotFound, "OIDC_PROVIDER_NOT_FOUND")
+}
+
+// TestOIDC_Register_InvalidTenant_ProblemDetail asserts the server emits
+// application/problem+json with OIDC_INVALID_TENANT when the caller's tenant
+// is not UUID-shaped. The bootstrap "testclient"/"testsecret" credentials
+// belong to the non-UUID "test-tenant", triggering this guard.
+func TestOIDC_Register_InvalidTenant_ProblemDetail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	token := getToken(t, "testclient", "testsecret") // bootstrap tenant = "test-tenant" (non-UUID)
+	resp := registerOIDCProvider(t, token, "badtenant")
+	assertProblemJSON(t, resp, http.StatusBadRequest, "OIDC_INVALID_TENANT")
+}

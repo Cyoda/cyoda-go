@@ -5434,17 +5434,21 @@ paths:
                 items:
                   $ref: "#/components/schemas/OidcProviderResponseDto"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -5474,35 +5478,47 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
-          description: Error response
+          description: >-
+            Bad request. Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (e.g. `BAD_REQUEST`, `OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Provider with this well-known configuration URI already exists
+          description: >-
+            Provider with this well-known configuration URI already exists.
+            Body is an RFC-9457 problem document; the machine-readable code
+            is in `properties.errorCode` (e.g. `OIDC_PROVIDER_DUPLICATE`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -5541,23 +5557,29 @@ paths:
           description: OIDC providers reloaded successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -5586,29 +5608,38 @@ paths:
           description: OIDC provider deleted successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     patch:
@@ -5654,35 +5685,56 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
-          description: Error response
+          description: >-
+            Bad request. Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (e.g. `BAD_REQUEST`, `OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            Provider is inactive and cannot be updated. Body is an RFC-9457
+            problem document; the machine-readable code is in
+            `properties.errorCode` (e.g. `OIDC_PROVIDER_INACTIVE`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -5714,29 +5766,38 @@ paths:
           description: OIDC provider invalidated successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -5776,29 +5837,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/token:
