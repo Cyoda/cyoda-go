@@ -10354,7 +10354,6 @@ components:
         stringify it (e.g. base64 for binary, plain string with escape for
         non-JSON text). Proper content-type handling may be added
         as a future feature.
-      additionalProperties: true
     NewMessageRequest:
       type: object
       description: >

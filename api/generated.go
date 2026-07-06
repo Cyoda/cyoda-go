@@ -1787,7 +1787,7 @@ type EdgeMessageMetaData map[string]interface{}
 // stringify it (e.g. base64 for binary, plain string with escape for
 // non-JSON text). Proper content-type handling may be added
 // as a future feature.
-type EdgeMessagePayload map[string]interface{}
+type EdgeMessagePayload = interface{}
 
 // EntityAuditEventsResponseDto defines model for EntityAuditEventsResponseDto.
 type EntityAuditEventsResponseDto struct {
