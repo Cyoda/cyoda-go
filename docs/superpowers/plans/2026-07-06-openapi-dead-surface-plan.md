@@ -16,6 +16,7 @@
 - **ProblemDetail is a correct typed-but-open error bag** — reuse `#/components/schemas/ProblemDetail`; do not add a new error schema or error code.
 - **Worktree paths for all edits/commits.** Working dir is `.claude/worktrees/feat-openapi-dead-surface`; absolute main-repo paths (`/Users/paul/go-projects/cyoda-light/cyoda-go/...` without `.claude/worktrees/...`) hit the MAIN repo, NOT this worktree.
 - **Docker split:** subagents run compile/`go vet`/`gofmt`/`go test ./api`/oasdiff/`make check-codegen` (no Docker). The **controller** runs the Docker-backed `internal/e2e` suite (conformance gate + the new 404 test) and `make race` at consolidation points.
+- **Codegen is NOT fully inert for these edits.** `exclude-tags` only prunes *routes/handlers* for tagged ops; `oapi-codegen` (`models: true`) still generates *component schemas* as model structs when they are referenced. Editing an **inline** schema on an excluded op is codegen-inert, but editing a **component** schema (e.g. `FieldConfigDto`) is NOT — and D4's recursive `arrayFields` self-reference defeats dead-schema pruning, so `FieldConfigDto` starts generating. **After any component-schema edit, run `go generate ./api` and commit the `generated.go` delta** (the `codegen-sync` CI gate enforces it). D4's regen is committed separately as `chore(api): regenerate generated.go for FieldConfigDto`.
 - Stream Data ops (13, `x-cyoda-status: unimplemented`) are **not** edited by any task.
 
 ---
