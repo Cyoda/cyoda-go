@@ -116,7 +116,9 @@ is the *authored contract shape*, which is what group 5 changes. Stream Data ops
 
 All touched ops are **unrouted**, so there is no running-backend 2xx/4xx behavior to exercise; the
 real gate is **oasdiff** (contract shape) + the **conformance marker** gate + **kin-openapi load**.
-Per `.claude/rules/test-coverage.md`, N/A cells are waived with a one-line reason.
+Per `.claude/rules/test-coverage.md`, N/A cells are waived with a one-line reason. (Note: a
+running-backend 404 test is not just N/A but *impossible* under the enforce-mode validator — see
+footnote 5.)
 
 | Scenario | unit | running-backend e2e | cross-backend parity | gRPC | oasdiff | notes |
 |---|---|---|---|---|---|---|
@@ -125,18 +127,20 @@ Per `.claude/rules/test-coverage.md`, N/A cells are waived with a one-line reaso
 | D3 404 → ProblemDetail (4 ops) | N/A¹ | N/A² | N/A³ | N/A⁴ | ✅ err-ignore | as above |
 | D4 FieldConfigDto schema↔example | N/A¹ | N/A² | N/A³ | N/A⁴ | ✅ err-ignore | recursive schema must load in kin-openapi |
 | CQL exclude-tags removal | N/A¹ | N/A | N/A | N/A | N/A | `make check-codegen` (byte-identical generated.go) |
-| Dead surface stays **unrouted** | N/A | ✅ NEW⁵ | N/A³ | N/A⁴ | N/A | one representative 404 assertion per excluded tag |
-| Markers stay honest (marked XOR exercised; no stale marker) | N/A | ✅ existing⁶ | N/A | N/A | N/A | conformance gate already enforces |
+| Markers stay honest (marked XOR exercised; no stale marker) | N/A | ✅ existing⁵ | N/A | N/A | N/A | conformance gate already enforces |
 
 ¹ No Go code changes (only `openapi.yaml` + `config.yaml`); nothing to unit-test.
 ² Op is excluded from codegen and unrouted — no handler exists to exercise (returns 404).
 ³ No backend-specific behavior (no storage path touched).
 ⁴ No gRPC surface for stream-data / sql-schema.
-⁵ **New** e2e in `internal/e2e`: assert a representative `/sql/schema/*` and `/platform-api/stream-data/*`
-   path returns 404 — locks the "unrouted" contract so a future accidental route without marker
-   removal is caught by an explicit test (belt-and-suspenders with the stale-marker gate).
-⁶ `TestOpenAPIConformanceReport` (`zzz_openapi_conformance_test.go`) — unchanged; re-run green proves
-   all 23 markers remain valid after the edits.
+⁵ `TestOpenAPIConformanceReport` (`zzz_openapi_conformance_test.go`) — unchanged; re-run green proves
+   all 23 markers remain valid after the edits. **This is the sole lock on the dead surface, and it
+   is sufficient.** A separate HTTP test asserting the unrouted paths 404 was prototyped and
+   **removed**: the enforce-mode conformance validator records the response of *every* suite request
+   against the spec, so hitting a spec-declared-but-unrouted path yields a Go-default `text/plain` 404
+   that the validator (the op declares only 200) rejects as a mismatch. An unrouted-but-spec-declared
+   op is inherently untestable via HTTP under the enforce-mode validator; the marker gate is the
+   correct enforcement.
 
 ## 8. oasdiff handling
 
@@ -163,8 +167,7 @@ is inconsistent):
 
 - `go generate ./api` + `make check-codegen` (green; generated.go unchanged by the CQL removal).
 - `go test ./api` (spec loads; corrected schemas parse in kin-openapi).
-- Full `go test ./internal/e2e/... -v` incl. `TestOpenAPIConformanceReport` (23 markers valid) + the
-  new 404-assertion test — with Docker.
+- Full `go test ./internal/e2e/... -v` incl. `TestOpenAPIConformanceReport` (23 markers valid) — with Docker.
 - oasdiff gate: `git show origin/release/v0.8.2:api/openapi.yaml > /tmp/base.yaml; oasdiff breaking
   /tmp/base.yaml api/openapi.yaml --fail-on ERR --err-ignore .github/oasdiff-err-ignore.txt`
   (capture exit via redirect, not pipe-to-tail).
@@ -184,7 +187,7 @@ is inconsistent):
 1. `api/openapi.yaml`: D1–D4 SQL-Schema corrections (+ `FieldConfigDto` schema). Stream Data untouched.
 2. `api/config.yaml`: remove the `"CQL Execution Statistics"` exclude-tags line.
 3. `.github/oasdiff-err-ignore.txt`: surgical entries for D1–D4 (exact wording at impl).
-4. `internal/e2e`: one representative 404-assertion test per excluded tag.
+4. `api/generated.go`: regenerated for `FieldConfigDto` (D4's recursive schema un-prunes it; codegen-sync).
 5. `docs/cloud-parity/openapi-conformance.md`: group-5 disposition + the marker-backing invariant.
 6. Tracking issues **#381** (Stream Data disposition) and **#382** (SQL-Schema implementation) — created.
 7. PR to `release/v0.8.2`, milestone v0.8.2, body: `Closes #369` + the asymmetry rationale + #381/#382.
