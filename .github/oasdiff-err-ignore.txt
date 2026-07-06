@@ -173,3 +173,13 @@ error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} remo
 error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `uniformedPath` from the response with the `200` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /sql/schema/listAll removed the required property `schemaName` from the response with the `200` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /sql/schema/listAll removed the required property `tables` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5) — updateTables request body corrected string→array<TableConfigDto>;
+# the prior string schema was prototype drift (the op is unrouted). ADR 0003 Decision 7.
+# updateTables 200 response also corrected: same malformed type:array+sibling-$ref as genTables (D1+D2).
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} the request's body `type` changed from `string` to `array<object>` [request-body-type-changed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `fields` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `hidden` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `metadataClassId` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `tableName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `uniformedPath` from the response with the `200` status [response-required-property-removed].

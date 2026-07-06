@@ -7956,7 +7956,9 @@ paths:
         content:
           application/json:
             schema:
-              type: string
+              type: array
+              items:
+                $ref: "#/components/schemas/TableConfigDto"
             examples:
               Example Tables from the Nobel Prize model:
                 description: Example Tables from the Nobel Prize model
@@ -8087,7 +8089,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/TableConfigDto"
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
               example:
                 - tableName: nobel-prize
                   metadataClassId: 1dba8c8a-77bb-11f0-822a-ae468cd3ed16
