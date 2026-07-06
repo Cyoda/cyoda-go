@@ -22,6 +22,7 @@ func newMockIAMServer(t *testing.T) (string, func()) {
 	cfg := app.DefaultConfig()
 	cfg.StorageBackend = "memory"
 	cfg.Cluster.Enabled = false
+	cfg.IAM.Mode = "mock"
 	cfg.IAM.TrustedKeyRegistrationEnabled = true // gate ON → nil store → 501
 
 	a := app.New(cfg)
@@ -43,6 +44,7 @@ func newFeatureOffServer(t *testing.T) (string, func()) {
 	cfg := app.DefaultConfig()
 	cfg.StorageBackend = "memory"
 	cfg.Cluster.Enabled = false
+	cfg.IAM.Mode = "mock"
 	// cfg.IAM.TrustedKeyRegistrationEnabled is false in DefaultConfig — leave it.
 
 	a := app.New(cfg)
