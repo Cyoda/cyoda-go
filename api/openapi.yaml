@@ -3561,7 +3561,7 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: Invalid JSON format in message payload
+                    detail: "invalid JSON: expected an object with a 'payload' field"
                     instance: /api/message/new/nobel.prize.events
                     properties:
                       errorCode: BAD_REQUEST

@@ -47,7 +47,7 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		MetaData map[string]any  `json:"meta-data"`
 	}
 	if err := json.Unmarshal(rawBody, &envelope); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected an object with a 'payload' field"))
 		return
 	}
 
