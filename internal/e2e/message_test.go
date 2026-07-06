@@ -257,6 +257,32 @@ func TestMessage_NoV1Validation(t *testing.T) {
 	}
 }
 
+// TestMessage_MetaDataFlatShape characterizes getMessage metaData: values and
+// indexedValues are flat maps, each always containing an injected typeReferences key.
+func TestMessage_MetaDataFlatShape(t *testing.T) {
+	id := createMessageE2E(t, "meta-shape", `{"x":1}`) // createMessageE2E sends meta-data {source:e2e}
+	resp := doAuth(t, http.MethodGet, "/api/message/"+id, "")
+	defer resp.Body.Close()
+	var body struct {
+		MetaData struct {
+			Values        map[string]any `json:"values"`
+			IndexedValues map[string]any `json:"indexedValues"`
+		} `json:"metaData"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body.MetaData.Values["typeReferences"]; !ok {
+		t.Errorf("values missing injected typeReferences key: %v", body.MetaData.Values)
+	}
+	if _, ok := body.MetaData.IndexedValues["typeReferences"]; !ok {
+		t.Errorf("indexedValues missing injected typeReferences key: %v", body.MetaData.IndexedValues)
+	}
+	if _, ok := body.MetaData.IndexedValues["source"]; !ok {
+		t.Errorf("indexedValues missing flat user key 'source': %v", body.MetaData.IndexedValues)
+	}
+}
+
 // TestMessage_NewMessage_ObjectEnvelope characterizes the real body contract:
 // an object {payload, meta-data}; missing payload -> 400; a top-level array -> 400.
 func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {

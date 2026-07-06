@@ -1285,150 +1285,6 @@ func (e TrustedKeyResponseDtoAudience) Valid() bool {
 	}
 }
 
-// Defines values for ValueMapsTypeReferences.
-const (
-	ARRAY          ValueMapsTypeReferences = "ARRAY"
-	ARRAYELEMENT   ValueMapsTypeReferences = "ARRAY_ELEMENT"
-	BIGDECIMAL     ValueMapsTypeReferences = "BIG_DECIMAL"
-	BIGINTEGER     ValueMapsTypeReferences = "BIG_INTEGER"
-	BOOLEAN        ValueMapsTypeReferences = "BOOLEAN"
-	BYTE           ValueMapsTypeReferences = "BYTE"
-	BYTEARRAY      ValueMapsTypeReferences = "BYTE_ARRAY"
-	CHARACTER      ValueMapsTypeReferences = "CHARACTER"
-	DOUBLE         ValueMapsTypeReferences = "DOUBLE"
-	FLOAT          ValueMapsTypeReferences = "FLOAT"
-	INTEGER        ValueMapsTypeReferences = "INTEGER"
-	LOCALDATE      ValueMapsTypeReferences = "LOCAL_DATE"
-	LOCALDATETIME  ValueMapsTypeReferences = "LOCAL_DATE_TIME"
-	LOCALTIME      ValueMapsTypeReferences = "LOCAL_TIME"
-	LONG           ValueMapsTypeReferences = "LONG"
-	NULL           ValueMapsTypeReferences = "NULL"
-	OBJECT         ValueMapsTypeReferences = "OBJECT"
-	POLYMORPHIC    ValueMapsTypeReferences = "POLYMORPHIC"
-	SHORT          ValueMapsTypeReferences = "SHORT"
-	STRING         ValueMapsTypeReferences = "STRING"
-	TIMEUUIDTYPE   ValueMapsTypeReferences = "TIME_UUID_TYPE"
-	TYPEREFERENCE  ValueMapsTypeReferences = "TYPE_REFERENCE"
-	UNBOUNDDECIMAL ValueMapsTypeReferences = "UNBOUND_DECIMAL"
-	UNBOUNDINTEGER ValueMapsTypeReferences = "UNBOUND_INTEGER"
-	UUIDTYPE       ValueMapsTypeReferences = "UUID_TYPE"
-	YEAR           ValueMapsTypeReferences = "YEAR"
-	YEARMONTH      ValueMapsTypeReferences = "YEAR_MONTH"
-	ZONEDDATETIME  ValueMapsTypeReferences = "ZONED_DATE_TIME"
-)
-
-// Valid indicates whether the value is a known member of the ValueMapsTypeReferences enum.
-func (e ValueMapsTypeReferences) Valid() bool {
-	switch e {
-	case ARRAY:
-		return true
-	case ARRAYELEMENT:
-		return true
-	case BIGDECIMAL:
-		return true
-	case BIGINTEGER:
-		return true
-	case BOOLEAN:
-		return true
-	case BYTE:
-		return true
-	case BYTEARRAY:
-		return true
-	case CHARACTER:
-		return true
-	case DOUBLE:
-		return true
-	case FLOAT:
-		return true
-	case INTEGER:
-		return true
-	case LOCALDATE:
-		return true
-	case LOCALDATETIME:
-		return true
-	case LOCALTIME:
-		return true
-	case LONG:
-		return true
-	case NULL:
-		return true
-	case OBJECT:
-		return true
-	case POLYMORPHIC:
-		return true
-	case SHORT:
-		return true
-	case STRING:
-		return true
-	case TIMEUUIDTYPE:
-		return true
-	case TYPEREFERENCE:
-		return true
-	case UNBOUNDDECIMAL:
-		return true
-	case UNBOUNDINTEGER:
-		return true
-	case UUIDTYPE:
-		return true
-	case YEAR:
-		return true
-	case YEARMONTH:
-		return true
-	case ZONEDDATETIME:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ValueMapsYearMonthsMonth.
-const (
-	APRIL     ValueMapsYearMonthsMonth = "APRIL"
-	AUGUST    ValueMapsYearMonthsMonth = "AUGUST"
-	DECEMBER  ValueMapsYearMonthsMonth = "DECEMBER"
-	FEBRUARY  ValueMapsYearMonthsMonth = "FEBRUARY"
-	JANUARY   ValueMapsYearMonthsMonth = "JANUARY"
-	JULY      ValueMapsYearMonthsMonth = "JULY"
-	JUNE      ValueMapsYearMonthsMonth = "JUNE"
-	MARCH     ValueMapsYearMonthsMonth = "MARCH"
-	MAY       ValueMapsYearMonthsMonth = "MAY"
-	NOVEMBER  ValueMapsYearMonthsMonth = "NOVEMBER"
-	OCTOBER   ValueMapsYearMonthsMonth = "OCTOBER"
-	SEPTEMBER ValueMapsYearMonthsMonth = "SEPTEMBER"
-)
-
-// Valid indicates whether the value is a known member of the ValueMapsYearMonthsMonth enum.
-func (e ValueMapsYearMonthsMonth) Valid() bool {
-	switch e {
-	case APRIL:
-		return true
-	case AUGUST:
-		return true
-	case DECEMBER:
-		return true
-	case FEBRUARY:
-		return true
-	case JANUARY:
-		return true
-	case JULY:
-		return true
-	case JUNE:
-		return true
-	case MARCH:
-		return true
-	case MAY:
-		return true
-	case NOVEMBER:
-		return true
-	case OCTOBER:
-		return true
-	case SEPTEMBER:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for WorkflowImportRequestDtoImportMode.
 const (
 	ACTIVATE WorkflowImportRequestDtoImportMode = "ACTIVATE"
@@ -1922,8 +1778,11 @@ type EdgeMessageHeader struct {
 
 // EdgeMessageMetaData defines model for EdgeMessageMetaData.
 type EdgeMessageMetaData struct {
-	IndexedValues ValueMaps `json:"indexedValues"`
-	Values        ValueMaps `json:"values"`
+	// IndexedValues Flat map of indexed (searchable) metadata values. Always contains an injected `typeReferences` key (an empty object in this version).
+	IndexedValues map[string]interface{} `json:"indexedValues"`
+
+	// Values Flat map of metadata values. Always contains an injected `typeReferences` key (an empty object in this version).
+	Values map[string]interface{} `json:"values"`
 }
 
 // EdgeMessagePayload Polymorphic by intent — accepts any JSON value. The contentType field
@@ -2509,14 +2368,6 @@ type LifecycleConditionDto struct {
 
 // LifecycleConditionDtoOperatorType defines model for LifecycleConditionDto.OperatorType.
 type LifecycleConditionDtoOperatorType string
-
-// LocalTime defines model for LocalTime.
-type LocalTime struct {
-	Hour   *int32 `json:"hour,omitempty"`
-	Minute *int32 `json:"minute,omitempty"`
-	Nano   *int32 `json:"nano,omitempty"`
-	Second *int32 `json:"second,omitempty"`
-}
 
 // MessageDeleteBatchResponse One element of the array returned by deleteMessages (batch delete).
 // Contains the IDs of deleted entities and a success flag.
@@ -3162,49 +3013,6 @@ type UserRoleDto struct {
 	// Id Identifier for the role
 	Id string `json:"id"`
 }
-
-// ValueMaps defines model for ValueMaps.
-type ValueMaps struct {
-	BigDecimals     *map[string]float32                `json:"bigDecimals,omitempty"`
-	BigIntegers     *map[string]int                    `json:"bigIntegers,omitempty"`
-	Booleans        *map[string]bool                   `json:"booleans,omitempty"`
-	ByteArrays      *map[string][]byte                 `json:"byteArrays,omitempty"`
-	Bytes           *map[string][]byte                 `json:"bytes,omitempty"`
-	Chars           *map[string]string                 `json:"chars,omitempty"`
-	Doubles         *map[string]float64                `json:"doubles,omitempty"`
-	Floats          *map[string]float32                `json:"floats,omitempty"`
-	Ints            *map[string]int32                  `json:"ints,omitempty"`
-	LocalDateTimes  *map[string]time.Time              `json:"localDateTimes,omitempty"`
-	LocalDates      *map[string]openapi_types.Date     `json:"localDates,omitempty"`
-	LocalTimes      *map[string]LocalTime              `json:"localTimes,omitempty"`
-	Longs           *map[string]int64                  `json:"longs,omitempty"`
-	Nulls           *map[string]string                 `json:"nulls,omitempty"`
-	Others          *map[string]map[string]interface{} `json:"others,omitempty"`
-	Shorts          *map[string]int32                  `json:"shorts,omitempty"`
-	Strings         *map[string]string                 `json:"strings,omitempty"`
-	Timeuuids       *map[string]openapi_types.UUID     `json:"timeuuids,omitempty"`
-	TypeReferences  map[string]ValueMapsTypeReferences `json:"typeReferences"`
-	UnboundDecimals *map[string]float32                `json:"unboundDecimals,omitempty"`
-	UnboundIntegers *map[string]int                    `json:"unboundIntegers,omitempty"`
-	Uuids           *map[string]openapi_types.UUID     `json:"uuids,omitempty"`
-	YearMonths      *map[string]struct {
-		LeapYear   *bool                     `json:"leapYear,omitempty"`
-		Month      *ValueMapsYearMonthsMonth `json:"month,omitempty"`
-		MonthValue *int32                    `json:"monthValue,omitempty"`
-		Year       *int32                    `json:"year,omitempty"`
-	} `json:"yearMonths,omitempty"`
-	Years *map[string]struct {
-		Leap  *bool  `json:"leap,omitempty"`
-		Value *int32 `json:"value,omitempty"`
-	} `json:"years,omitempty"`
-	ZonedDateTimes *map[string]time.Time `json:"zonedDateTimes,omitempty"`
-}
-
-// ValueMapsTypeReferences defines model for ValueMaps.TypeReferences.
-type ValueMapsTypeReferences string
-
-// ValueMapsYearMonthsMonth defines model for ValueMaps.YearMonths.Month.
-type ValueMapsYearMonthsMonth string
 
 // WorkflowConfigurationDto defines model for WorkflowConfigurationDto.
 type WorkflowConfigurationDto struct {
