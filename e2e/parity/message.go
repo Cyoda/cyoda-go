@@ -76,6 +76,42 @@ func RunMessageDelete(t *testing.T, fixture BackendFixture) {
 	}
 }
 
+// RunMessageRoundTrip exercises the edge-message new->get->delete cycle and
+// asserts the backend-agnostic response shape: metaData is a single FLAT map
+// (symmetric with the submitted meta-data), carrying the user's key and NONE of
+// the retired cyoda-cloud indexing artifacts (values/indexedValues/typeReferences).
+func RunMessageRoundTrip(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	// CreateMessage submits meta-data {"source": "parity"}.
+	id, err := c.CreateMessage(t, "parity-roundtrip", `{"hello":"world"}`)
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	msg, err := c.GetMessage(t, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	meta, ok := msg["metaData"].(map[string]any)
+	if !ok {
+		t.Fatalf("metaData missing or not an object: %v", msg["metaData"])
+	}
+	if got := meta["source"]; got != "parity" {
+		t.Errorf("metaData.source = %v, want \"parity\" (flat round-trip)", got)
+	}
+	for _, cloudism := range []string{"values", "indexedValues", "typeReferences"} {
+		if _, present := meta[cloudism]; present {
+			t.Errorf("metaData must be flat; found retired cloud-ism key %q: %v", cloudism, meta)
+		}
+	}
+
+	if err := c.DeleteMessage(t, id); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+}
+
 // RunMessageLargePayload verifies that a 200KB message payload survives a
 // full round-trip (create + get). Exercises the path where backends must
 // avoid batching the entire payload into a single oversized write.

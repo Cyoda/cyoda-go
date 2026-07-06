@@ -79,6 +79,9 @@ var allTests = []NamedTest{
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
 
+	// Edge message — flat metaData round-trip (Task 7, #369 group 4)
+	{"MessageRoundTrip", RunMessageRoundTrip},
+
 	// Phase 4a — schema symmetry (Task 4a.7)
 	{"DeepSchemaSymmetry", RunDeepSchemaSymmetry},
 
