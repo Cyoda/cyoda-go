@@ -110,6 +110,17 @@ values:
 (same for `indexedValues`). Do **not** over-model `typeReferences` (leave it as a present-but-open
 key). Then **delete** the now-dead `ValueMaps` and `LocalTime` schemas (§4).
 
+> **UPDATED during execution (design decision, Paul — cyoda-go leads the contract):** the
+> `values`/`indexedValues` split and the injected `typeReferences: {}` are cyoda-cloud indexing
+> workarounds — in cyoda-go `values` is always empty (all `meta-data` routes to indexed storage) and
+> `typeReferences` is an always-empty placeholder. Rather than faithfully reproduce that cruft, the
+> slice **simplifies** `metaData` to a single **flat symmetric map**: what a client PUTs in
+> `meta-data` it GETs back in `metaData` (no `values`/`indexedValues`, no `typeReferences`). This is a
+> response-shape change in the `GetMessage` handler (merge of stored `Values`+`IndexedValues`, no
+> injection) plus `EdgeMessageMetaData` becoming `{type: object, additionalProperties: true}`. No SPI/
+> storage/indexing change; cyoda-cloud conforms (recorded in `docs/cloud-parity/openapi-conformance.md`
+> M3). F7 is subsumed (the example is now a flat map). See the Task 5 revision.
+
 ### F7 — `getMessage` 200 example shows the injected `typeReferences`
 Example (`:3625`) shows `values: {}` / `indexedValues: {}`; the server always injects
 `typeReferences: {}`. **Fix:** update the example to `values: {typeReferences: {}}` /

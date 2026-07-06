@@ -160,6 +160,37 @@ Per-finding contract decisions from the auth / OIDC reconciliation slice.
   Direction: needs-decision → RESOLVED keep-placeholder. Cloud may honour a wider set; cyoda-go
   rejects non-RS256/RSA with the documented `400`.
 
+## Message-slice reconciliations (2026-07)
+
+Per-finding contract decisions from the Edge-message reconciliation slice.
+
+- **M1 — request body shapes corrected.** `newMessage` body is a JSON object envelope
+  `{payload (any JSON value, required), meta-data (optional flat map)}` — not a bare `string`;
+  a top-level array is rejected (single object only). `deleteMessages` body is a JSON `array` of
+  uuid strings — not a single `string`. Direction: spec-incomplete (closed). Cloud's documented
+  request contract must match these shapes.
+- **M2 — fictional v1-UUID `400` removed; `messageId` typed `uuid`.** `getMessage` / `deleteMessage`
+  performed no version-1 UUID validation and emit no `400`; the documented `400 "not a time-based
+  UUID"` and `format: uuid-v1` were prototype-era fiction. Corrected to `format: uuid`, which (via
+  codegen) now binds `messageId` as a typed UUID — a malformed id returns the framework binding
+  `400`, consistent with every entity id path param. `deleteMessages` keeps its real invalid-JSON
+  `400`. Direction: spec-stale (closed).
+- **M3 — `getMessage.metaData` simplified to a flat symmetric map (cyoda-go defines the contract).**
+  The bucketed `metaData: {values, indexedValues}` split and the injected `typeReferences: {}` were
+  cyoda-cloud indexing workarounds. In cyoda-go, `values` was always empty (all client `meta-data`
+  routes to indexed storage) and `typeReferences` was an always-empty placeholder. cyoda-go now
+  emits a **single flat map** — what a client PUTs in `meta-data` it GETs back in `metaData`. The
+  `ValueMaps` / `LocalTime` schemas are deleted. This is a response-shape change only (no SPI /
+  storage / indexing change). Direction: **cyoda-go leads — Cloud MUST conform**: emit the flat
+  `metaData` map and drop `values` / `indexedValues` / `typeReferences` from the read response.
+  Cloud's derived integration tests (e.g. the Kotlin edge-message test asserting
+  `metaData.indexedValues.strings`) must be updated to the flat shape.
+- **M4 — `deleteMessages` `413` on oversized body (runtime change).** A >10 MB batch-delete body now
+  returns `413` (was `500`), matching `newMessage`. Direction: server-gap (closed, Gate-6 parity fix).
+- **Deferred (out of this slice).** Honoring `transactionTimeoutMillis` / `transactionSize` uniformly
+  → **#379** (supersedes #372). Native non-JSON / content-type payloads (binary without base64
+  wrapping) → **#193**. The message contract documents current JSON-envelope behavior.
+
 ## Open questions (Cloud-fact-blocked)
 
 Decided once the Cloud facts are gathered (Gate 7):
