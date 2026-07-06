@@ -135,11 +135,11 @@ func (u *Unimplemented) NewMessage(w http.ResponseWriter, r *http.Request, subje
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (u *Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (u *Unimplemented) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
 	u.stub(w, r)
 }
 

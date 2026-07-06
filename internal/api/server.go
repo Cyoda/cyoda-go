@@ -372,7 +372,7 @@ func (s *Server) NewMessage(w http.ResponseWriter, r *http.Request, subject stri
 	s.Unimplemented.NewMessage(w, r, subject, params)
 }
 
-func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
 	if s.Messaging != nil {
 		s.Messaging.DeleteMessage(w, r, messageId)
 		return
@@ -380,7 +380,7 @@ func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId
 	s.Unimplemented.DeleteMessage(w, r, messageId)
 }
 
-func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
 	if s.Messaging != nil {
 		s.Messaging.GetMessage(w, r, messageId)
 		return

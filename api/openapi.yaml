@@ -3355,23 +3355,22 @@ paths:
                         - 31134900-d9cb-11ee-9cc7-ae468cd3ed16
                       success: true
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid request body (not a JSON array of UUID strings)
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
+                Invalid Body:
+                  description: Invalid Body
                   value:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
+                    detail: "invalid JSON: expected array of UUID strings: json: cannot unmarshal object into Go value of type []string"
+                    instance: /api/message
                     properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+                      errorCode: BAD_REQUEST
         "413":
           description: Payload too large
           content:
@@ -3602,8 +3601,7 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid-v1
-            description: Must be a version 1 (time-based) UUID
+            format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
       responses:
         "200":
@@ -3646,24 +3644,6 @@ paths:
                             id: "1038"
                             motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
                             share: "2"
-        "400":
-          description: Invalid UUID format or not a time-based UUID
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-              examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
-                  value:
-                    type: about:blank
-                    title: Bad Request
-                    status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
-                    properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
         "404":
           description: Message not found
           content:
@@ -3701,8 +3681,7 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid-v1
-            description: Must be a version 1 (time-based) UUID
+            format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
       responses:
         "200":
@@ -3717,24 +3696,6 @@ paths:
                   value:
                     entityIds:
                       - 8824c480-c166-11ee-9cc7-ae468cd3ed16
-        "400":
-          description: Invalid UUID format or not a time-based UUID
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-              examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
-                  value:
-                    type: about:blank
-                    title: Bad Request
-                    status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
-                    properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
         "404":
           description: Message not found
           content:

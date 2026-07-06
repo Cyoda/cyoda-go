@@ -5049,10 +5049,10 @@ type ServerInterface interface {
 	NewMessage(w http.ResponseWriter, r *http.Request, subject string, params NewMessageParams)
 	// Delete a single edge message by ID
 	// (DELETE /message/{messageId})
-	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string)
+	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
 	// Retrieve an edge message by ID
 	// (GET /message/{messageId})
-	GetMessage(w http.ResponseWriter, r *http.Request, messageId string)
+	GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
 	// List Available Entity Models
 	// (GET /model/)
 	GetAvailableEntityModels(w http.ResponseWriter, r *http.Request)
@@ -7004,9 +7004,9 @@ func (siw *ServerInterfaceWrapper) DeleteMessage(w http.ResponseWriter, r *http.
 	_ = err
 
 	// ------------- Path parameter "messageId" -------------
-	var messageId string
+	var messageId openapi_types.UUID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid-v1"})
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
 		return
@@ -7036,9 +7036,9 @@ func (siw *ServerInterfaceWrapper) GetMessage(w http.ResponseWriter, r *http.Req
 	_ = err
 
 	// ------------- Path parameter "messageId" -------------
-	var messageId string
+	var messageId openapi_types.UUID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid-v1"})
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
 		return

@@ -141,3 +141,11 @@ error at api/openapi.yaml, in API POST /message/new/{subject} added the new requ
 # single string/uuid to the real array<string> of ids; prior schema was prototype
 # drift (the handler unmarshals []string). ADR 0003 Decision 7.
 error at api/openapi.yaml, in API DELETE /message the request's body `type/format` changed from `string/uuid` to `array<string/uuid>` [request-body-type-changed].
+#
+# getMessage/deleteMessage path param messageId: format uuid-v1 -> uuid (F5).
+# uuid-v1 is a non-standard custom format the server never validated; oasdiff treats
+# format narrowing→broadening as a type change (ERR), but widening the accepted set
+# breaks no client. The fictional 400 "not a time-based UUID" was prototype drift —
+# server performs no version check; any absent uuid -> 404. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API DELETE /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
+error at api/openapi.yaml, in API GET /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].

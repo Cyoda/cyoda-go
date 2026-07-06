@@ -241,6 +241,22 @@ func TestMessage_DeleteMessages_ArrayBody(t *testing.T) {
 	}
 }
 
+// TestMessage_NoV1Validation proves the fictional "not a time-based UUID (v1)" 400
+// does not exist: a valid v4 uuid (non-v1) that is absent -> 404, never 400.
+func TestMessage_NoV1Validation(t *testing.T) {
+	v4 := "123e4567-e89b-42d3-a456-426614174000" // version nibble = 4
+	get := doAuth(t, http.MethodGet, "/api/message/"+v4, "")
+	defer get.Body.Close()
+	if get.StatusCode != http.StatusNotFound {
+		t.Fatalf("getMessage v4 uuid: status=%d, want 404 (no v1 check)", get.StatusCode)
+	}
+	del := doAuth(t, http.MethodDelete, "/api/message/"+v4, "")
+	defer del.Body.Close()
+	if del.StatusCode != http.StatusNotFound {
+		t.Fatalf("deleteMessage v4 uuid: status=%d, want 404 (no v1 check)", del.StatusCode)
+	}
+}
+
 // TestMessage_NewMessage_ObjectEnvelope characterizes the real body contract:
 // an object {payload, meta-data}; missing payload -> 400; a top-level array -> 400.
 func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {

@@ -114,18 +114,19 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 }
 
 // GetMessage retrieves an edge message by ID.
-func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId uuid.UUID) {
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
-	header, metaData, payloadReader, err := store.Get(r.Context(), messageId)
+	msgIDStr := messageId.String()
+	header, metaData, payloadReader, err := store.Get(r.Context(), msgIDStr)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
-			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", messageId))
-			appErr.Props = map[string]any{"messageId": messageId}
+			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", msgIDStr))
+			appErr.Props = map[string]any{"messageId": msgIDStr}
 			common.WriteError(w, r, appErr)
 			return
 		}
@@ -191,19 +192,20 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId s
 }
 
 // DeleteMessage deletes a single edge message by ID.
-func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId uuid.UUID) {
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
+	msgIDStr := messageId.String()
 	// Check existence by trying to get first
-	_, _, rc, err := store.Get(r.Context(), messageId)
+	_, _, rc, err := store.Get(r.Context(), msgIDStr)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
-			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", messageId))
-			appErr.Props = map[string]any{"messageId": messageId}
+			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", msgIDStr))
+			appErr.Props = map[string]any{"messageId": msgIDStr}
 			common.WriteError(w, r, appErr)
 			return
 		}
@@ -212,13 +214,13 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageI
 	}
 	rc.Close()
 
-	if err := store.Delete(r.Context(), messageId); err != nil {
+	if err := store.Delete(r.Context(), msgIDStr); err != nil {
 		common.WriteError(w, r, common.Internal("failed to delete message", err))
 		return
 	}
 
 	common.WriteJSON(w, http.StatusOK, map[string]any{
-		"entityIds": []string{messageId},
+		"entityIds": []string{msgIDStr},
 	})
 }
 
