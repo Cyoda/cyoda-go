@@ -1,3 +1,24 @@
+// NOTE: OIDC_SSRF_BLOCKED coverage
+//
+// The 400 OIDC_SSRF_BLOCKED sub-code (registerOidcProvider rejects a provider
+// whose wellKnownConfigUri resolves to a private/link-local address or uses
+// http:// when HTTPS is required) is NOT produced by the shared e2e harness.
+// oidc_providers_test.go init() sets CYODA_OIDC_REQUIRE_HTTPS=false and
+// CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true process-wide so that the harness can
+// reach its own httptest.Server — this disables SSRF enforcement globally.
+//
+// Coverage is instead provided by unit tests in internal/auth/oidc/ssrf_test.go:
+//   - TestValidateRegisterURI_RejectsBlockedRanges: asserts errors.Is(err,
+//     ErrSSRFBlocked) for 9 private/link-local/loopback URI literals.
+//   - TestSafeDialContext_BlocksLoopback / TestSafeDialContext_PrivateRanges:
+//     assert ErrSSRFBlocked at dial-time for 7 address families.
+//
+// The adapter (internal/domain/account/oidc_adapter.go) maps ErrSSRFBlocked
+// directly to ErrCodeOIDCSSRFBlocked ("OIDC_SSRF_BLOCKED") with no branching,
+// so unit coverage of the guard constitutes coverage of the error code path.
+// This is the same waiver pattern used for OIDC_PROVIDER_CAP_REACHED and
+// OIDC_ACCESS_DENIED elsewhere in this slice.
+
 package e2e_test
 
 import (
