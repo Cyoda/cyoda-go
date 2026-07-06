@@ -21,7 +21,7 @@ RFC-6749 OAuth endpoints keep `ErrorResponseDto`.
 
 Verified facts that bound the slice:
 
-- **37 `ErrorResponseDto` refs, 9 ops** (36 `$ref` + 1 schema def). Clients / keys / trusted
+- **37 `ErrorResponseDto` `$ref`s + 1 schema def, 9 ops**. Clients / keys / trusted
   CRUD reference `ErrorResponseDto` **not at all** — the sweep is smaller than the audit's
   "~38 across the spec, likely clients/keys/trusted" estimate implied.
 - Sweep targets: **CONVERT** 7 OIDC ops (28 refs) + `searchEntityAuditEvents` (5 refs, D-1);
@@ -31,16 +31,24 @@ Verified facts that bound the slice:
   spec `ProblemDetail` schema (line 8264) already models `properties` as an open bag — correct.
 - 21 ops are **config-conditional 501**: live 2xx in `CYODA_IAM_MODE=jwt`, `501 NOT_IMPLEMENTED`
   in the default `mock` mode (backing stores wired only in jwt mode). Not "unimplemented" —
-  implemented-but-IAM-gated.
-- All 11 error codes touched (`OIDC_PROVIDER_DUPLICATE/INACTIVE/NOT_FOUND`,
-  `UNSUPPORTED_ALGORITHM`, `UNSUPPORTED_KEY_TYPE`, `KEYPAIR_NOT_FOUND`, `FEATURE_DISABLED`,
-  `BAD_REQUEST`, `NOT_IMPLEMENTED`, `FORBIDDEN`, `UNAUTHORIZED`) are **already emitted and
-  already have help topics** — **no new error codes**, so no `errors/<CODE>.md` additions and
-  no `TestErrCode_Parity` impact.
+  implemented-but-IAM-gated. **Nuance (B1):** 16 of the 21 (7 OIDC + 5 keys + 4 M2M) genuinely
+  return 501 in mock mode; the **5 trusted-key ops** check the `TrustedKeyRegistrationEnabled`
+  feature flag (**default off**) *before* the store, so in a default deployment they return
+  **404 `FEATURE_DISABLED`**, and 501 only when the feature is enabled but IAM≠jwt (design area E).
+- **Error codes touched are already emitted and already have help topics** — verified for the
+  full set: `OIDC_PROVIDER_DUPLICATE/INACTIVE/NOT_FOUND`, `OIDC_SSRF_BLOCKED`,
+  `OIDC_INVALID_TENANT`, `UNSUPPORTED_ALGORITHM`, `UNSUPPORTED_KEY_TYPE`, `KEYPAIR_NOT_FOUND`,
+  `TRUSTED_KEY_NOT_FOUND`, `TRUSTED_KEY_CAP_REACHED`, `KEY_OWNED_BY_DIFFERENT_TENANT`,
+  `M2M_CLIENT_NOT_FOUND`, `FEATURE_DISABLED`, `BAD_REQUEST`, `NOT_IMPLEMENTED`, `FORBIDDEN`,
+  `UNAUTHORIZED`, `SERVER_ERROR`. **No new error codes**, so no `errors/<CODE>.md` additions and
+  no `TestErrCode_Parity` impact. (Plan phase re-confirms each topic file exists before adding a
+  producing test.)
 
-**One runtime change** in this slice: `registerOidcProvider` duplicate `400 → 409` (design
-area C1). Everything else is spec reconciliation (documentation), one param retype, and one
-schema consolidation.
+**Runtime changes** in this slice are two, both small: (1) `registerOidcProvider` duplicate
+`400 → 409` (area C1); (2) `listOidcProviders` `activeOnly` string→boolean retype (area C3),
+which shifts binding behaviour — `?activeOnly=1`/`TRUE` now filter correctly, garbage like
+`?activeOnly=yes` now `400`s instead of silently meaning false. Everything else is spec
+reconciliation (documentation) plus one schema consolidation (area F).
 
 ---
 
@@ -104,6 +112,11 @@ matches the sibling `409 OIDC_PROVIDER_INACTIVE`. **Fix the code** to emit `409`
 right). Producing e2e flips the assertion `400 → 409`. Cloud-parity entry (§9, P1). Both the
 validation `400` and the duplicate `409` remain documented (both `ProblemDetail`).
 
+Its `400` is not monolithic — the op also emits **`400 OIDC_SSRF_BLOCKED`**
+(`oidc_adapter.go:107,182`, discovery-URL SSRF guard) and **`400 OIDC_INVALID_TENANT`**
+(`oidc_adapter.go:159`) beyond the generic `BAD_REQUEST`. Document these sub-codes in the op's
+`400` response description and cover them in the matrix (§8/§9).
+
 ### C2. `updateOidcProvider` — document `409 OIDC_PROVIDER_INACTIVE`
 Emitted at `oidc_adapter.go:297-299` when updating an invalidated provider; undocumented. Add
 the `409` response (`ProblemDetail`). Spec-incomplete (closed).
@@ -114,7 +127,13 @@ the `409` response (`ProblemDetail`). Spec-incomplete (closed).
 - **Retype `activeOnly` `string → boolean`** (RUNTIME code touch): today typed `string` and
   compared literally to `"true"` (`oidc_adapter.go:209-212`), so `"1"`/`"TRUE"`/`"yes"`
   silently mean false. Model as `type: boolean`; adjust the adapter to read the parsed
-  `*bool`. Wire form `?activeOnly=true` unchanged. Fixes the silent-false footgun.
+  `*bool`. Wire form `?activeOnly=true` unchanged. **New behaviour to document (S2):**
+  oapi-codegen binds a boolean param via `strconv.ParseBool`, which accepts `1/t/T/TRUE/true`
+  (so `?activeOnly=1` now correctly filters) but **rejects** unparseable values like
+  `?activeOnly=yes` with a binding-layer **`400`** — whereas today they silently meant false.
+  So the retype trades a silent-false footgun for an explicit `400` on garbage input (the
+  better contract). Document the `400` on `listOidcProviders` (§8) and add it to the coverage
+  matrix (§9).
 
 ---
 
@@ -131,6 +150,20 @@ The 21 ops:
 - **5 trusted**: register / list / delete / invalidate / reactivate TrustedKey.
 - **4 clients (M2M)**: create / delete TechnicalUser, resetTechnicalUserSecret, listTechnicalUsers.
 
+**B1 — the 5 trusted-key ops are NOT uniformly 501 in default mock mode** (Paul's call: document
+reality, do NOT reorder the gates). Their gate order is `RequireAdmin → gateTrustedKeyFeature
+(404 FEATURE_DISABLED) → requireTrustedKeyStore (501)`, and `TrustedKeyRegistrationEnabled`
+defaults **off** (`internal/auth/iam_features.go`), so a default deployment returns **404
+`FEATURE_DISABLED`** — the 501 store gate is never reached. For these 5 ops:
+- **404 `FEATURE_DISABLED`** — default config (feature off), any IAM mode. The `x-cyoda-iam-mode`
+  note on these 5 must be paired with an `x-cyoda-feature: trusted-key-registration` note.
+- **501 `NOT_IMPLEMENTED`** — only when the feature is *enabled* AND `CYODA_IAM_MODE ≠ jwt`.
+- Their e2e in the default harness asserts **404**, not 501 (§9); the 501 path needs a
+  feature-enabled + mock-IAM fixture.
+
+The other 16 ops (7 OIDC + 5 keys + 4 M2M) check the store immediately after `RequireAdmin`,
+so they genuinely return **501** in mock mode.
+
 This is distinct from `x-cyoda-status: planned` (not-yet-built). `accountSubscriptionsGet`
 keeps its existing `x-cyoda-status: planned` + unconditional `501` (a genuine stub) — untouched.
 
@@ -138,22 +171,29 @@ keeps its existing `x-cyoda-status: planned` + unconditional `501` (a genuine st
 
 ## 6. Design area E — keys / trusted spec-stale (server is right)
 
-These ops do **not** use `ErrorResponseDto`; the sweep does not touch their envelope. Plan
-phase verifies each op's current error schema and normalises to `ProblemDetail` where an
-inline/other shape is found. Documentation additions:
+These ops do **not** use `ErrorResponseDto`; the sweep does not touch their envelope. Review
+confirmed the keys/trusted error responses **already emit `application/problem+json`
+`ProblemDetail`** (verified on `registerTrustedKey` / `issueJwtKeyPair`), so the "normalise the
+envelope" work here is largely a **no-op** — the substantive change is documentation additions
+plus the `501` (§5). Plan phase still verifies each op's current schema and normalises any stray
+inline shape. Documentation additions:
 
 - **`issueJwtKeyPair`**: keep the full 10-algorithm enum as a roadmap placeholder (Paul's
   call); add field prose "only `RS256` is honoured in this version"; document
   **`400 UNSUPPORTED_ALGORITHM`** (`keys_adapter.go:44`) alongside the malformed-body `400`.
 - **`registerTrustedKey`**: keep the RSA/EC/OKP description as a roadmap placeholder; add
-  "only RSA is honoured in this version"; document **`400 UNSUPPORTED_KEY_TYPE`**
-  (`trusted_adapter.go:132-133`) and the **`404 FEATURE_DISABLED`** gate (trusted-key
-  registration is **off by default**, `gateTrustedKeyFeature`).
+  "only RSA is honoured in this version". Document its full 4xx surface (all already emitted):
+  **`400 UNSUPPORTED_KEY_TYPE`** (`trusted_adapter.go:132-133`) + malformed-body `400`;
+  **`400 TRUSTED_KEY_CAP_REACHED`** (`store.go:330`); **`404 FEATURE_DISABLED`**
+  (`gateTrustedKeyFeature`, off by default); and the **`409 KEY_OWNED_BY_DIFFERENT_TENANT`**
+  (`store.go:309` → `trusted_adapter.go:104-107`) — which the spec **already documents** on this
+  op but the design table originally missed.
 - **`invalidateJwtKeyPair` / `reactivateJwtKeyPair` / `getCurrentJwtKeyPair`**: document the
   emitted `400` (malformed body / out-of-range grace / bad audience) with the nuance that a
   bad/unknown **id** → **`404 KEYPAIR_NOT_FOUND`**, not `400`.
 - **`deleteTrustedKey` / `invalidateTrustedKey` / `listTrustedKeys` / `reactivateTrustedKey`**:
-  document `400` (bad id pattern / body / grace) and `404` (unknown id **and** `FEATURE_DISABLED`).
+  document `400` (bad id pattern / body / grace) and `404` (unknown id → `TRUSTED_KEY_NOT_FOUND`
+  **and** `FEATURE_DISABLED` when the feature is off).
 
 ---
 
@@ -183,29 +223,40 @@ Envelope column: **PD** = `application/problem+json` `ProblemDetail`; **ERD** =
 
 | Op | 200 | 400 | 401 | 403 | 404 | 405 | 409 | 500 | 501 (iam) | Envelope |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `listOidcProviders` | ✓ | — | UNAUTHORIZED | ~~✎ removed~~ | — | — | — | ✓ | ✎ | PD ✎ |
-| `registerOidcProvider` | ✓ | BAD_REQUEST | ✓ | FORBIDDEN | — | — | ✎ OIDC_PROVIDER_DUPLICATE | ✓ | ✎ | PD ✎ |
+| `listOidcProviders` | ✓ | ✎ activeOnly ParseBool | UNAUTHORIZED | ✎ removed | — | — | — | ✓ | ✎ | PD ✎ |
+| `registerOidcProvider` | ✓ | BAD_REQUEST / ✎ OIDC_SSRF_BLOCKED / ✎ OIDC_INVALID_TENANT | ✓ | FORBIDDEN | — | — | ✎ OIDC_PROVIDER_DUPLICATE | ✓ | ✎ | PD ✎ |
 | `reloadOidcProviders` | ✓ | — | ✓ | FORBIDDEN | — | — | — | ✓ | ✎ | PD ✎ |
 | `deleteOidcProvider` | ✓ | — | ✓ | FORBIDDEN | OIDC_PROVIDER_NOT_FOUND | — | — | ✓ | ✎ | PD ✎ |
 | `updateOidcProvider` | ✓ | BAD_REQUEST | ✓ | FORBIDDEN | OIDC_PROVIDER_NOT_FOUND | — | ✎ OIDC_PROVIDER_INACTIVE | ✓ | ✎ | PD ✎ |
 | `invalidateOidcProvider` | ✓ | — | ✓ | FORBIDDEN | OIDC_PROVIDER_NOT_FOUND | — | — | ✓ | ✎ | PD ✎ |
 | `reactivateOidcProvider` | ✓ | — | ✓ | FORBIDDEN | OIDC_PROVIDER_NOT_FOUND | — | — | ✓ | ✎ | PD ✎ |
-| `getTechnicalUserToken` | ✓ | invalid_request / unsupported_grant_type / invalid_grant | invalid_client | access_denied | — | ✎ method_not_allowed | — | ✎ server_error | — | **ERD** (kept) |
+| `getTechnicalUserToken` | ✓ | unsupported_grant_type / invalid_grant ¹ | invalid_client | access_denied | — | ✎ method_not_allowed | — | ✎ server_error | — | **ERD** (kept) |
 | `searchEntityAuditEvents` | ✓ | BAD_REQUEST | ✓ | ✓ | ✓ | — | — | ✓ | — | PD ✎ (D-1) |
 | `issueJwtKeyPair` | ✓ | ✎ UNSUPPORTED_ALGORITHM + malformed | ✓ | ✓ | — | — | — | ✓ | ✎ | PD |
 | `getCurrentJwtKeyPair` | ✓ | ✎ bad audience | ✓ | ✓ | ✎ KEYPAIR_NOT_FOUND | — | — | ✓ | ✎ | PD |
 | `deleteJwtKeyPair` | ✓ | — | ✓ | ✓ | ✎ KEYPAIR_NOT_FOUND | — | — | ✓ | ✎ | PD |
 | `invalidateJwtKeyPair` | ✓ | ✎ body/grace | ✓ | ✓ | ✎ KEYPAIR_NOT_FOUND | — | — | ✓ | ✎ | PD |
 | `reactivateJwtKeyPair` | ✓ | ✎ body | ✓ | ✓ | ✎ KEYPAIR_NOT_FOUND | — | — | ✓ | ✎ | PD |
-| `registerTrustedKey` | ✓ | ✎ UNSUPPORTED_KEY_TYPE + malformed | ✓ | ✓ | ✎ FEATURE_DISABLED | — | — | ✓ | ✎ | PD |
-| `listTrustedKeys` | ✓ | — | ✓ | ✓ | ✎ FEATURE_DISABLED | — | — | ✓ | ✎ | PD |
-| `deleteTrustedKey` | ✓ | ✎ bad id | ✓ | ✓ | ✎ unknown id / FEATURE_DISABLED | — | — | ✓ | ✎ | PD |
-| `invalidateTrustedKey` | ✓ | ✎ id/body/grace | ✓ | ✓ | ✎ unknown id / FEATURE_DISABLED | — | — | ✓ | ✎ | PD |
-| `reactivateTrustedKey` | ✓ | ✎ body | ✓ | ✓ | ✎ unknown id / FEATURE_DISABLED | — | — | ✓ | ✎ | PD |
+| `registerTrustedKey` | ✓ | ✎ UNSUPPORTED_KEY_TYPE / ✎ TRUSTED_KEY_CAP_REACHED + malformed | ✓ | ✓ | ✎ FEATURE_DISABLED | — | ✎ KEY_OWNED_BY_DIFFERENT_TENANT | ✓ | ✎ ² | PD |
+| `listTrustedKeys` | ✓ | — | ✓ | ✓ | ✎ FEATURE_DISABLED | — | — | ✓ | ✎ ² | PD |
+| `deleteTrustedKey` | ✓ | ✎ bad id | ✓ | ✓ | ✎ TRUSTED_KEY_NOT_FOUND / FEATURE_DISABLED | — | — | ✓ | ✎ ² | PD |
+| `invalidateTrustedKey` | ✓ | ✎ id/body/grace | ✓ | ✓ | ✎ TRUSTED_KEY_NOT_FOUND / FEATURE_DISABLED | — | — | ✓ | ✎ ² | PD |
+| `reactivateTrustedKey` | ✓ | ✎ body | ✓ | ✓ | ✎ TRUSTED_KEY_NOT_FOUND / FEATURE_DISABLED | — | — | ✓ | ✎ ² | PD |
 | `createTechnicalUser` | ✓ | ✓ | ✓ | ✓ | — | — | — | ✓ | ✎ | PD |
 | `deleteTechnicalUser` | ✓ | — | ✓ | ✓ | ✓ | — | — | ✓ | ✎ | PD |
 | `resetTechnicalUserSecret` | ✓ | — | ✓ | ✓ | ✓ | — | — | ✓ | ✎ | PD |
 | `listTechnicalUsers` | ✓ | — | ✓ | ✓ | — | — | — | ✓ | ✎ | PD |
+
+**¹** `getTechnicalUserToken`: the spec's `error` enum also lists `invalid_request`, which the
+server never emits (`token.go` only produces `unsupported_grant_type`/`invalid_grant` on 400) —
+a documented-but-unemitted output value. Harmless under tolerant-reader; left in the enum, noted
+here so the reconciliation is deliberate, not an oversight.
+
+**²** Trusted-key `501` is **conditional** (B1): the feature-flag gate (`404 FEATURE_DISABLED`,
+default off) precedes the store gate, so these 5 ops return **404** in default mock config and
+`501` only when `TrustedKeyRegistrationEnabled=true` AND `CYODA_IAM_MODE≠jwt`. The `501` response
++ `x-cyoda-iam-mode: jwt` is documented alongside an `x-cyoda-feature: trusted-key-registration`
+note. The other 16 gated ops return `501` unconditionally in mock mode.
 
 Exact current-state statuses for the keys/trusted/M2M ops are verified per-op in the plan
 (they already document a subset); this table is the **target**. `501 (iam)` is additive on
@@ -226,14 +277,21 @@ surfaces** — no gRPC entry point exists for auth/OIDC/keys/trusted (§10) → 
 | `updateOidcProvider` inactive → 409 | | ✓ | | producing test; drives `ErrProviderInactive` |
 | `listOidcProviders` no 403 for non-admin authed user | | ✓ | | assert 200, not 403 |
 | `listOidcProviders` `activeOnly` boolean filter | | ✓ | | `?activeOnly=true` vs omitted; assert filtering |
+| `listOidcProviders` `activeOnly` garbage → 400 (ParseBool) | | ✓ | | `?activeOnly=yes` → 400 (S2; new binding behaviour) |
+| `registerOidcProvider` 400 sub-codes `OIDC_SSRF_BLOCKED` / `OIDC_INVALID_TENANT` | | ✓ | | producing tests (SSRF discovery URL; cross-tenant) |
 | `getTechnicalUserToken` `client_credentials` accepted | | ✓ | | happy-path M2M grant |
 | `getTechnicalUserToken` non-POST → 405 `method_not_allowed` | | ✓ | | producing test |
 | `getTechnicalUserToken` error shape = flat OAuth (ERD), not PD | | ✓ | | assert `{error,error_description}` json |
 | `issueJwtKeyPair` non-RS256 → 400 `UNSUPPORTED_ALGORITHM` | | ✓ | | producing test (jwt mode) |
 | `registerTrustedKey` non-RSA → 400 `UNSUPPORTED_KEY_TYPE` | | ✓ | | producing test (jwt mode + feature on) |
+| `registerTrustedKey` cap reached → 400 `TRUSTED_KEY_CAP_REACHED` | | ✓ | | producing test (fill to cap) |
+| `registerTrustedKey` cross-tenant → 409 `KEY_OWNED_BY_DIFFERENT_TENANT` | | ✓ | | producing test (already-documented status) |
 | `registerTrustedKey` feature off → 404 `FEATURE_DISABLED` | | ✓ | | producing test (default config) |
-| keys/trusted bad id → 404, bad body/grace → 400 | | ✓ | | producing tests per op |
-| 21 gated ops → 501 in mock IAM mode | ✓ | ✓ | | e2e default mode already `mock`; assert 501 |
+| keys bad id → 404 `KEYPAIR_NOT_FOUND`, bad body/grace → 400 | | ✓ | | producing tests per op |
+| trusted bad id → 404 `TRUSTED_KEY_NOT_FOUND` / `FEATURE_DISABLED`, bad body/grace → 400 | | ✓ | | producing tests per op |
+| 16 gated ops (OIDC/keys/M2M) → 501 in mock IAM mode | ✓ | ✓ | | e2e default mode already `mock`; assert 501 |
+| 5 trusted ops → 404 `FEATURE_DISABLED` in default mock (B1) | | ✓ | | default config; feature off → 404, NOT 501 |
+| 5 trusted ops → 501 when feature on + IAM≠jwt (B1) | ✓ | ✓ | | feature-enabled + mock-IAM fixture; assert 501 |
 | `searchEntityAuditEvents` 4xx envelope = PD (D-1) | | ✓ | | assert content-type on 400/404 |
 | Non-producible cells (if any surface) | ✓ | | | service unit test with fakes (mirrors #376) |
 
@@ -268,18 +326,27 @@ op×status×property, following the #373 finished-event template exactly:
   (`application/json` → `application/problem+json`) may also register as
   `response-media-type-removed` per status — include those entries too if the pinned oasdiff
   emits them.
+- **`listOidcProviders` 403 removal (B2 — MUST-have entry):** deleting the documented `403`
+  response (the fictional admin-guard status) is `response-removed`, which the pinned oasdiff
+  **will** flag as breaking. Add a dedicated, documented `response-removed` err-ignore entry for
+  `GET …/oidc/providers … 403` — distinct from, and not conflated with, the media-type/property
+  entries. Rationale: the server never emits `403` on this op (auth-only by design, D21), so the
+  removal breaks no working client.
 - **`listOidcProviders` `activeOnly`** `string → boolean` → request param type change
   (`request-parameter-type-changed` or equivalent) → one entry.
 - **Additive (no ignore needed):** all `501` responses, the token-op `405`, `updateOidcProvider`
-  `409` doc, the token enum additions (request enum widening is more-permissive; response enum
-  additions are non-breaking warnings), and the newly-documented keys/trusted 400/404 responses.
+  `409` doc, the `registerTrustedKey` `409`/`TRUSTED_KEY_CAP_REACHED` and `registerOidcProvider`
+  `400` sub-code documentation (documenting already-emitted statuses/codes), the token enum
+  additions (request enum widening is more-permissive; response enum additions are non-breaking
+  warnings), and the newly-documented keys/trusted 400/404 responses.
 - **`registerOidcProvider` 400→409:** the spec already documents `409`; the code catches up →
   **no spec diff, no ignore**.
-- **Part F consolidation:** `ProblemDetailDto → ProblemDetail` on 5 search ops — structurally
-  identical (no required-property loss); expected non-breaking or warning. If the enrichment
-  adds a required field it would break — it will not (neither has `required`). Verify the diff
-  is clean; add entries only if the pinned oasdiff flags a property description/example delta as
-  ERR (it should not).
+- **Part F consolidation (N3):** `ProblemDetailDto → ProblemDetail` on 5 search ops —
+  structurally equivalent, neither declares `required`, so no required-property loss and no
+  client break. Note the one delta: `ProblemDetail` carries `format: uri` on `type`/`instance`
+  which `ProblemDetailDto` lacks, so the 5 ops' error responses gain `format: uri` — non-breaking
+  for responses (a stricter response format doesn't break clients; oasdiff won't ERR). Verify the
+  diff is clean; add entries only if the pinned oasdiff unexpectedly flags a delta as ERR.
 
 Each entry carries a comment block explaining the spec-to-reality rationale. Entries are
 prunable once merged (the corrected shape becomes the baseline).
@@ -297,8 +364,13 @@ New section "Auth / OIDC reconciliations (2026-07)":
   `searchEntityAuditEvents` emit `application/problem+json` with `errorCode` under `properties`.
   Direction: spec-stale (closed). Cloud MUST emit `ProblemDetail`, not the OAuth `ErrorResponseDto`,
   on these ops. OAuth token endpoint keeps the RFC-6749 shape.
-- **A3 — documented-but-IAM-gated ops.** 21 ops return `501` unless `CYODA_IAM_MODE=jwt`.
-  Direction: spec-incomplete (closed). Cloud's IAM-mode contract must match.
+- **A3 — documented-but-IAM-gated ops.** 21 ops return `501` unless `CYODA_IAM_MODE=jwt` — with
+  the trusted-key nuance (B1): the 5 trusted ops return `404 FEATURE_DISABLED` first (feature off
+  by default), `501` only when the feature is enabled but IAM≠jwt. Direction: spec-incomplete
+  (closed). Cloud's IAM-mode + feature-flag contract must match.
+- **A5 — `listOidcProviders.activeOnly` string→boolean (runtime change).** The param is now a
+  real boolean: parseable truthy values filter; unparseable values `400` (was silently false).
+  Direction: spec-stale (closed). Cloud MUST treat `activeOnly` as a boolean.
 - **A4 — roadmap-placeholder crypto enums.** `issueJwtKeyPair` (10-algo enum, RS256 honoured)
   and `registerTrustedKey` (RSA/EC/OKP prose, RSA honoured) intentionally retain the wider
   advertised set with "honoured in this version" prose. Direction: needs-decision → RESOLVED
@@ -311,8 +383,9 @@ No new Cloud-fact-blocked open questions from this slice.
 
 ## 13. Documentation hygiene (Gate 4)
 
-- **Help topics:** all 11 error codes already have `cmd/cyoda/help/content/errors/<CODE>.md`
-  topics (verified) — no additions, no `TestErrCode_Parity` change.
+- **Help topics:** every error code touched by this slice (the full ~16-code set enumerated in
+  §1) already has a `cmd/cyoda/help/content/errors/<CODE>.md` topic — no additions, no
+  `TestErrCode_Parity` change. Plan re-confirms each file before adding its producing test.
 - **`cmd/cyoda/help/content/`:** check for an auth/OIDC topic that describes provider/keys/token
   behaviour; update if the 409 semantics, IAM-gating, or the RS256/RSA "this version" limits are
   documented there. Add/adjust only what drifts (compact — actionable core only).
