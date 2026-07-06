@@ -171,6 +171,22 @@ func TestMessage_GetMessage_404_ContentType(t *testing.T) {
 	}
 }
 
+// TestMessage_DeleteMessages_413 asserts an oversized batch-delete body is
+// rejected with 413 (parity with newMessage), not 500.
+func TestMessage_DeleteMessages_413(t *testing.T) {
+	// A JSON array string just over the 10MB MaxBytesReader limit.
+	big := make([]byte, 10*1024*1024+1)
+	for i := range big {
+		big[i] = 'a'
+	}
+	body := `["` + string(big) + `"]`
+	resp := doAuth(t, http.MethodDelete, "/api/message", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("deleteMessages oversized body: status=%d, want 413", resp.StatusCode)
+	}
+}
+
 // TestMessage_DeleteBatch verifies that a batch delete removes the specified messages
 // while leaving others intact.
 func TestMessage_DeleteBatch(t *testing.T) {

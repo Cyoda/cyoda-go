@@ -3371,6 +3371,23 @@ paths:
                     instance: /api/message/123e4567-e89b-12d3-a456-426614174000
                     properties:
                       uuid: 123e4567-e89b-12d3-a456-426614174000
+        "413":
+          description: Payload too large
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              examples:
+                Payload Too Large:
+                  description: Payload Too Large
+                  value:
+                    type: about:blank
+                    title: Request Entity Too Large
+                    status: 413
+                    detail: request payload exceeds maximum allowed limit of 10MB
+                    instance: /api/message
+                    properties:
+                      errorCode: BAD_REQUEST
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":

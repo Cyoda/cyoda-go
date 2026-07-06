@@ -228,6 +228,10 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
+		if err.Error() == "http: request body too large" {
+			common.WriteError(w, r, common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeBadRequest, "request payload exceeds maximum allowed limit of 10MB"))
+			return
+		}
 		common.WriteError(w, r, common.Internal("failed to read request body", err))
 		return
 	}
