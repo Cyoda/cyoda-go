@@ -215,3 +215,21 @@ Decided once the Cloud facts are gathered (Gate 7):
   for the same class. Unifying spans create/collection/patch and the stats/search +
   model slices. Deferred to a cross-slice follow-on; the entity error tables document
   the codes actually emitted.
+
+## Group 5 — dead-surface disposition (final reconciliation slice)
+
+The excluded-tag / always-501 dead surface is disposed as follows:
+
+- **SQL-Schema** (`/sql/schema/*`, 9 ops) — retained as `x-cyoda-status: planned`; the
+  authored contract was corrected (well-formed array responses, array request body,
+  `problem+json` 404s, `FieldConfigDto` reconciled to its examples). Implementation is
+  tracked (Trino SQL management API). Cloud mirrors the corrected contract.
+- **Stream Data** (`/platform-api/stream-data/*`, 13 ops) — retained as
+  `x-cyoda-status: unimplemented`; left minimally touched pending a disposition decision
+  (implement / redesign / remove). Tracked.
+- **CQL Execution Statistics** — vestigial exclude-tags entry removed (no ops).
+- **accountSubscriptionsGet** — unchanged (`planned`, routed, returns 501; tracked).
+
+**Invariant:** every non-live `x-cyoda-status` marker is backed by a tracking issue, so a
+marked surface can never become unowned relabeled fiction. The e2e conformance gate enforces
+exactly-one-of {exercised, marked} and fails any marker that goes stale (op returns 2xx).
