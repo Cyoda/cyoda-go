@@ -40,128 +40,92 @@ error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion
 # it correctly is the reconciliation. oasdiff flags the request param type change.
 error at api/openapi.yaml, in API GET /oauth/oidc/providers for the `query` request parameter `activeOnly`, the `type` was changed from `string` to `boolean` [request-parameter-type-changed].
 
-# auth/OIDC slice — listOidcProviders 403 removed: the op has no admin guard
-# (auth-only by design, D21); the 403 was never emitted. Removing a documented
-# response status is oasdiff-breaking but breaks no working client.
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the response with the status '403' [response-removed].
-
 # auth/OIDC slice — 7 OIDC ops converted ErrorResponseDto→ProblemDetail: the
 # server has always emitted application/problem+json (RFC-9457); the OAuth-shaped
-# ErrorResponseDto was prototype-era drift. Correcting removes error/error_description
-# and changes the media type from application/json to application/problem+json.
-# (listOidcProviders 403 is excluded — handled above.)
+# ErrorResponseDto was prototype-era drift. The spec change also swaps the media
+# type to application/problem+json, but oasdiff v1.21.0 flags only the removal of
+# the required error/error_description properties (a replaced media type is not
+# reported as removed), so only those property-removed entries appear below.
 #
 # GET /oauth/oidc/providers (listOidcProviders) — 401, 500
 error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # POST /oauth/oidc/providers (registerOidcProvider) — 400, 401, 403, 409, 500
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `400` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the media type `application/json` for the response with the status `400` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `409` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `409` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the media type `application/json` for the response with the status `409` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # POST /oauth/oidc/providers/reload (reloadOidcProviders) — 401, 403, 500
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # DELETE /oauth/oidc/providers/{id} (deleteOidcProvider) — 401, 403, 404, 500
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `404` [response-media-type-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # PATCH /oauth/oidc/providers/{id} (updateOidcProvider) — 400, 401, 403, 404, 500
 # (409 is a new addition, not a removal — no ignore entry needed)
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `400` status [response-required-property-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `400` [response-media-type-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `404` [response-media-type-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # POST /oauth/oidc/providers/{id}/invalidate (invalidateOidcProvider) — 401, 403, 404, 500
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the media type `application/json` for the response with the status `404` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # POST /oauth/oidc/providers/{id}/reactivate (reactivateOidcProvider) — 401, 403, 404, 500
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the media type `application/json` for the response with the status `404` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
 #
 # searchEntityAuditEvents (GET /audit/entity/{entityId}) — D-1 deferred item:
 # 400/401/403/404/500 converted ErrorResponseDto→ProblemDetail (server has always
 # emitted application/problem+json; prototype-era drift).
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `400` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `400` [response-media-type-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `401` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `401` [response-media-type-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `403` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `403` [response-media-type-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `404` [response-media-type-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the media type `application/json` for the response with the status `500` [response-media-type-removed].
