@@ -321,6 +321,13 @@ auto-fail the matrix; write producing tests deliberately per plan (mirrors #373/
 extend the matrix (per-op-completeness footgun). Concurrency tests, if any, stay isolated
 single-backend (never parity).
 
+**Uniform middleware statuses (401 / 403 / non-token 500)** are covered once at the
+auth-middleware level, not per-op: `401` (missing/invalid bearer) and `403` (`RequireAdmin` on
+the mutating ops) are uniform cross-cutting behaviour, and non-token `500` is internal-fault-only
+(same waiver rationale as the token `500 server_error`). The plan enumerates one 401 + one 403
+producing test (representative op) rather than N per-op repeats — the same carve-out the #373/#376
+slices used. Per-op producing tests are reserved for the op-specific 4xx/409 codes in §8.
+
 Parity (P): the envelope/behaviour here is IAM-subsystem-specific (built-in JWT IAM), not a
 storage-backend contract, so **no cross-backend parity scenario applies** — the same reason the
 auth subsystem is HTTP+IAM-scoped, not storage-scoped. Recorded explicitly so the empty P
