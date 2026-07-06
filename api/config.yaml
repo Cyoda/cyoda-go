@@ -7,5 +7,4 @@ generate:
 output-options:
   exclude-tags:
     - "Stream Data"
-    - "CQL Execution Statistics"
     - "SQL-Schema"
