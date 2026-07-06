@@ -62,3 +62,45 @@ func TestOIDC_RegisterDuplicate_Returns409(t *testing.T) {
 		t.Fatalf("errorCode: got %q, want OIDC_PROVIDER_DUPLICATE; body=%s", got, raw)
 	}
 }
+
+func TestOIDC_ActiveOnly_BooleanFilter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	cid, secret := createM2MClient(t, oidcTenantUUID, "ao-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	token := getToken(t, cid, secret)
+
+	// Truthy "1" must now filter (previously silently false under string=="true").
+	req, _ := e2eNewRequest(t, "GET", serverURL+"/api/oauth/oidc/providers?activeOnly=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("activeOnly=1: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestOIDC_ActiveOnly_GarbageReturns400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	cid, secret := createM2MClient(t, oidcTenantUUID, "ao-bad-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	token := getToken(t, cid, secret)
+
+	req, _ := e2eNewRequest(t, "GET", serverURL+"/api/oauth/oidc/providers?activeOnly=yes", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("activeOnly=yes: got %d, want 400 (ParseBool rejects)", resp.StatusCode)
+	}
+}

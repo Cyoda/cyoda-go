@@ -3761,8 +3761,8 @@ type GetCurrentJwtKeyPairParamsAudience string
 
 // ListOidcProvidersParams defines parameters for ListOidcProviders.
 type ListOidcProvidersParams struct {
-	// ActiveOnly If true, returns only active providers
-	ActiveOnly *string `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
+	// ActiveOnly When true, return only active (non-invalidated) providers.
+	ActiveOnly *bool `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
 }
 
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
@@ -7829,7 +7829,7 @@ func (siw *ServerInterfaceWrapper) ListOidcProviders(w http.ResponseWriter, r *h
 
 	// ------------- Optional query parameter "activeOnly" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {

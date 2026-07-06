@@ -206,10 +206,7 @@ func (a *oidcAdapter) ListOidcProviders(w http.ResponseWriter, r *http.Request, 
 
 	tenantID := spi.TenantID(uc.Tenant.ID)
 
-	activeOnly := false
-	if params.ActiveOnly != nil && *params.ActiveOnly == "true" {
-		activeOnly = true
-	}
+	activeOnly := params.ActiveOnly != nil && *params.ActiveOnly
 
 	providers, err := a.service.ListByTenant(r.Context(), tenantID, activeOnly)
 	if err != nil {

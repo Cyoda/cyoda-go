@@ -5420,10 +5420,10 @@ paths:
       parameters:
         - name: activeOnly
           in: query
-          description: If true, returns only active providers
           required: false
+          description: When true, return only active (non-invalidated) providers.
           schema:
-            type: string
+            type: boolean
       responses:
         "200":
           description: List of OIDC providers retrieved successfully
