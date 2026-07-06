@@ -451,35 +451,35 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityAuditEventsResponseDto"
         "400":
-          description: Error response
+          description: Bad Request - Invalid parameters; `properties.errorCode` carries the domain code
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: Entity not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /audit/entity/{entityId}/workflow/{transactionId}/finished:
@@ -564,6 +564,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: listTechnicalUsers
+      x-cyoda-iam-mode: jwt
       responses:
         "200":
           description: List of M2M clients returned successfully
@@ -587,6 +588,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -620,6 +627,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: createTechnicalUser
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: withAdminRole
           in: query
@@ -661,6 +669,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -681,6 +695,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: deleteTechnicalUser
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: clientId
           in: path
@@ -728,6 +743,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -748,6 +769,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: resetTechnicalUserSecret
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: clientId
           in: path
@@ -791,6 +813,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4831,6 +4859,7 @@ paths:
 
         access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
       operationId: issueJwtKeyPair
+      x-cyoda-iam-mode: jwt
       requestBody:
         content:
           application/json:
@@ -4845,7 +4874,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: malformed body or invalid audience; UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
           content:
             application/problem+json:
               schema:
@@ -4868,6 +4897,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -4879,6 +4914,7 @@ paths:
         Retrieves information about the currently active JWT signing key-pair
         for the specified audience.
       operationId: getCurrentJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: audience
           in: query
@@ -4896,7 +4932,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: invalid audience value."
           content:
             application/problem+json:
               schema:
@@ -4914,13 +4950,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no active key pair for the given audience."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4938,6 +4980,7 @@ paths:
 
         and then removed from storage.
       operationId: deleteJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -4962,13 +5005,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4988,6 +5037,7 @@ paths:
 
         and existing tokens signed with this key pair would not be accepted. If `gracePeriodSec` is omitted or zero, invalidation is immediate.
       operationId: invalidateJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -5004,6 +5054,12 @@ paths:
         "200":
           description: JWT key-pair invalidated successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: malformed body or gracePeriodSec out of range."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -5017,13 +5073,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5043,6 +5105,7 @@ paths:
         This operation is idempotent - if the key-pair is already active, it
         returns the current state.
       operationId: reactivateJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -5064,7 +5127,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: missing or past validTo, validTo not after validFrom."
           content:
             application/problem+json:
               schema:
@@ -5082,13 +5145,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5104,6 +5173,8 @@ paths:
         Returns all trusted public keys registered for the caller's tenant.
         Requires ADMIN or ROLE_ADMIN role.
       operationId: listTrustedKeys
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       responses:
         "200":
           description: List of trusted keys
@@ -5126,13 +5197,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Feature is disabled
+          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5179,6 +5256,8 @@ paths:
 
         `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
       operationId: registerTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       requestBody:
         content:
           application/json:
@@ -5193,7 +5272,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, or invalid audience; UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -5211,19 +5290,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Feature is disabled
+          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Key with this keyId belongs to a different tenant
+          description: "Conflict — KEY_OWNED_BY_DIFFERENT_TENANT: a key with this keyId is registered to another tenant."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5241,6 +5326,8 @@ paths:
 
         Requires ADMIN or ROLE_ADMIN role.
       operationId: deleteTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -5252,6 +5339,12 @@ paths:
         "200":
           description: Trusted key deleted successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: invalid keyId format."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -5265,13 +5358,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5292,6 +5391,8 @@ paths:
 
         Requires ADMIN or ROLE_ADMIN role.
       operationId: invalidateTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -5308,6 +5409,12 @@ paths:
         "200":
           description: Trusted key invalidated successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: invalid keyId format or gracePeriodSec out of range."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -5321,13 +5428,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5356,6 +5469,8 @@ paths:
 
         indefinitely until explicitly invalidated or deleted again.
       operationId: reactivateTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -5377,7 +5492,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom."
           content:
             application/problem+json:
               schema:
@@ -5395,13 +5510,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5417,13 +5538,14 @@ paths:
         Retrieves a list of all registered OIDC providers, including both active
         and inactive providers. Accessible by any authenticated tenant member.
       operationId: listOidcProviders
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: activeOnly
           in: query
-          description: If true, returns only active providers
           required: false
+          description: When true, return only active (non-invalidated) providers.
           schema:
-            type: string
+            type: boolean
       responses:
         "200":
           description: List of OIDC providers retrieved successfully
@@ -5434,23 +5556,27 @@ paths:
                 items:
                   $ref: "#/components/schemas/OidcProviderResponseDto"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "403":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -5466,6 +5592,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: registerOidcProvider
+      x-cyoda-iam-mode: jwt
       requestBody:
         content:
           application/json:
@@ -5480,35 +5607,53 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
-          description: Error response
+          description: >-
+            Bad request. Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (e.g. `BAD_REQUEST`, `OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Provider with this well-known configuration URI already exists
+          description: >-
+            Provider with this well-known configuration URI already exists.
+            Body is an RFC-9457 problem document; the machine-readable code
+            is in `properties.errorCode` (e.g. `OIDC_PROVIDER_DUPLICATE`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -5542,28 +5687,41 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: reloadOidcProviders
+      x-cyoda-iam-mode: jwt
       responses:
         "200":
           description: OIDC providers reloaded successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -5579,6 +5737,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: deleteOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5592,29 +5751,44 @@ paths:
           description: OIDC provider deleted successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     patch:
@@ -5638,6 +5812,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: updateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5660,35 +5835,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
-          description: Error response
+          description: >-
+            Bad request (invalid body / issuers / expectedAudiences / rolesClaim).
+            Body is an RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`). This op accepts no discovery
+            URI, so it never emits `OIDC_SSRF_BLOCKED` / `OIDC_INVALID_TENANT` —
+            those are `registerOidcProvider` only.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            Provider is inactive and cannot be updated. Body is an RFC-9457
+            problem document; the machine-readable code is in
+            `properties.errorCode` (e.g. `OIDC_PROVIDER_INACTIVE`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -5707,6 +5911,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: invalidateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5720,29 +5925,44 @@ paths:
           description: OIDC provider invalidated successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -5761,6 +5981,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: reactivateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5782,29 +6003,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/token:
@@ -5850,6 +6086,7 @@ paths:
                   type: string
                   description: The OAuth 2.0 grant type
                   enum:
+                    - client_credentials
                     - urn:ietf:params:oauth:grant-type:token-exchange
                 subject_token:
                   type: string
@@ -5881,6 +6118,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "403":
           description: Forbidden - Tenant boundary violation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
+        "405":
+          description: Method Not Allowed - method_not_allowed (only POST is accepted)
           content:
             application/json:
               schema:
@@ -6576,13 +6819,13 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Entity model not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6647,13 +6890,13 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Search job not found or expired
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6693,13 +6936,13 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Search job not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6755,7 +6998,7 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6875,13 +7118,13 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Entity model not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -8267,16 +8510,24 @@ components:
         type:
           type: string
           format: uri
+          description: A URI reference that identifies the problem type
+          example: about:blank
         title:
           type: string
+          description: A short, human-readable summary of the problem type
+          example: Not Found
         status:
           type: integer
           format: int32
+          description: The HTTP status code
+          example: 404
         detail:
           type: string
+          description: A human-readable explanation specific to this occurrence of the problem
         instance:
           type: string
           format: uri
+          description: A URI reference that identifies the specific occurrence of the problem
         properties:
           type: object
           additionalProperties: true
@@ -8303,36 +8554,6 @@ components:
       required:
         - currentSearchJobStatus
         - isCancelled
-    ProblemDetailDto:
-      type: object
-      properties:
-        type:
-          type: string
-          description: A URI reference that identifies the problem type
-          example: about:blank
-        title:
-          type: string
-          description: A short, human-readable summary of the problem type
-          example: Not Found
-        status:
-          type: integer
-          format: int32
-          description: The HTTP status code
-          example: 404
-        detail:
-          type: string
-          description: A human-readable explanation specific to this occurrence of the
-            problem
-        instance:
-          type: string
-          description: A URI reference that identifies the specific occurrence of the
-            problem
-        properties:
-          type: object
-          additionalProperties: true
-          description: |
-            Additional diagnostic properties. Values may be any JSON type
-            (string, number, boolean, object, array).
     AbstractCondition:
       type: object
       properties:
@@ -8680,6 +8901,8 @@ components:
             - unsupported_grant_type
             - invalid_scope
             - access_denied
+            - server_error
+            - method_not_allowed
           example: invalid_request
         error_description:
           type: string
@@ -9203,6 +9426,7 @@ components:
             responses, per RFC 8693)
           enum:
             - urn:ietf:params:oauth:token-type:access_token
+            - urn:ietf:params:oauth:token-type:jwt
       required:
         - access_token
         - expires_in
@@ -9368,7 +9592,8 @@ components:
           description: 'A JSON Web Key (JWK) as defined in RFC 7517. Must contain the
             public key components only. Supported key types: RSA (`kty: "RSA"`),
             EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC
-            7518, and RFC 8037 for field definitions. '
+            7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is
+            honoured in this version.'
           example: "{kty=RSA, kid=my-app-key-1, alg=RS256,
             n=0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..., e=AQAB}"
         audience:
@@ -9492,6 +9717,7 @@ components:
             - client
         algorithm:
           type: string
+          description: Signing algorithm. Only `RS256` is honoured in this version.
           enum:
             - RS256
             - RS384

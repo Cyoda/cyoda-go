@@ -285,21 +285,21 @@ func TestRegisterOidcProvider_NonAdmin_Returns403(t *testing.T) {
 	}
 }
 
-func TestRegisterOidcProvider_Duplicate_Returns400ProviderDuplicate(t *testing.T) {
+func TestRegisterOidcProvider_Duplicate_Returns409ProviderDuplicate(t *testing.T) {
 	h := newOidcAdapterFixture(t)
 	uri := "https://idp.example/.well-known/openid-configuration"
 
 	// First register should succeed.
 	registerProvider(t, h, uri)
 
-	// Second register same URI same tenant → duplicate.
+	// Second register same URI same tenant → duplicate → 409 Conflict.
 	body := rawBody(`{"wellKnownConfigUri":"` + uri + `"}`)
 	req := withOidcTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers", body))
 	rr := httptest.NewRecorder()
 	h.RegisterOidcProvider(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d want 400", rr.Code)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status: got %d want 409", rr.Code)
 	}
 	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeOIDCProviderDuplicate {
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeOIDCProviderDuplicate)
@@ -426,10 +426,10 @@ func TestListOidcProviders_ActiveOnlyFilter_ExcludesInvalidated(t *testing.T) {
 	}
 
 	// activeOnly=true → should return 0 providers.
-	activeStr := "true"
+	activeBool := true
 	req := withOidcTenantUserCtx(httptest.NewRequest(http.MethodGet, "/oauth/oidc/providers?activeOnly=true", nil))
 	rr := httptest.NewRecorder()
-	h.ListOidcProviders(rr, req, genapi.ListOidcProvidersParams{ActiveOnly: &activeStr})
+	h.ListOidcProviders(rr, req, genapi.ListOidcProvidersParams{ActiveOnly: &activeBool})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list status: got %d", rr.Code)
 	}

@@ -493,6 +493,20 @@ func TestTokenUnsupportedGrantType(t *testing.T) {
 	}
 }
 
+func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
+	env := setupTokenEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/oauth/token", nil)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeResponse(t, rr)
+	if resp["error"] != "method_not_allowed" {
+		t.Errorf("expected error method_not_allowed, got %v", resp["error"])
+	}
+}
+
 func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	env := setupTokenEnv(t)
 

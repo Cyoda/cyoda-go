@@ -133,6 +133,33 @@ Per-finding contract decisions from the entity-model & workflow reconciliation s
   the top-level `uniqueKeys` array (typed-but-open) alongside `currentState`/`model`.
   Direction: spec-incomplete (closed). Cloud MUST emit `uniqueKeys` when keys exist.
 
+## Auth / OIDC reconciliations (2026-07)
+
+Per-finding contract decisions from the auth / OIDC reconciliation slice.
+
+- **A1 — `registerOidcProvider` duplicate → `409` (runtime change).** Duplicate provider
+  registration now returns `409 OIDC_PROVIDER_DUPLICATE` (was `400`). Direction: server-gap
+  (closed). Cloud MUST return `409` on duplicate provider registration.
+- **A2 — error envelope = RFC-9457 `ProblemDetail` on OIDC / admin ops.** The 7 OIDC provider
+  ops and `searchEntityAuditEvents` emit `application/problem+json` `ProblemDetail` with
+  `errorCode` under `properties`. Direction: spec-stale (closed). Cloud MUST emit `ProblemDetail`,
+  not the OAuth `ErrorResponseDto`, on these ops. The OAuth token endpoint (`getTechnicalUserToken`)
+  keeps the RFC-6749 flat shape.
+- **A3 — documented-but-IAM-gated ops.** 21 ops (`501 NOT_IMPLEMENTED` when `CYODA_IAM_MODE ≠
+  jwt`): 7 OIDC, 5 JWT-keypair, 4 M2M-client, and 5 trusted-key ops. Trusted-key nuance (B1):
+  the 5 trusted-key ops check the feature flag first — they return `404 FEATURE_DISABLED` when
+  `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=false` (default off); `501` is only reached when
+  the feature is enabled AND `CYODA_IAM_MODE ≠ jwt`. Direction: spec-incomplete (closed). Cloud's
+  IAM-mode and feature-flag contract must match.
+- **A5 — `listOidcProviders.activeOnly` string → boolean (runtime change).** The query parameter
+  is now a real boolean: standard truthy values (`1`, `true`, `TRUE`, `t`, …) filter; unparseable
+  values return `400` (was silently false). Direction: spec-stale (closed). Cloud MUST treat
+  `activeOnly` as a boolean.
+- **A4 — roadmap-placeholder crypto enums.** `issueJwtKeyPair` retains the full 10-algorithm enum
+  (only RS256 honoured). `registerTrustedKey` retains RSA / EC / OKP prose (only RSA honoured).
+  Direction: needs-decision → RESOLVED keep-placeholder. Cloud may honour a wider set; cyoda-go
+  rejects non-RS256/RSA with the documented `400`.
+
 ## Open questions (Cloud-fact-blocked)
 
 Decided once the Cloud facts are gathered (Gate 7):

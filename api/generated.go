@@ -410,6 +410,8 @@ const (
 	InvalidGrant         ErrorResponseDtoError = "invalid_grant"
 	InvalidRequest       ErrorResponseDtoError = "invalid_request"
 	InvalidScope         ErrorResponseDtoError = "invalid_scope"
+	MethodNotAllowed     ErrorResponseDtoError = "method_not_allowed"
+	ServerError          ErrorResponseDtoError = "server_error"
 	UnauthorizedClient   ErrorResponseDtoError = "unauthorized_client"
 	UnsupportedGrantType ErrorResponseDtoError = "unsupported_grant_type"
 )
@@ -426,6 +428,10 @@ func (e ErrorResponseDtoError) Valid() bool {
 	case InvalidRequest:
 		return true
 	case InvalidScope:
+		return true
+	case MethodNotAllowed:
+		return true
+	case ServerError:
 		return true
 	case UnauthorizedClient:
 		return true
@@ -1215,13 +1221,13 @@ func (e SystemAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for TechnicalUserCredentialsDtoGrantType.
 const (
-	ClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
 )
 
 // Valid indicates whether the value is a known member of the TechnicalUserCredentialsDtoGrantType enum.
 func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 	switch e {
-	case ClientCredentials:
+	case TechnicalUserCredentialsDtoGrantTypeClientCredentials:
 		return true
 	default:
 		return false
@@ -1231,12 +1237,15 @@ func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 // Defines values for TokenResponseDtoIssuedTokenType.
 const (
 	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
+	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt         TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the TokenResponseDtoIssuedTokenType enum.
 func (e TokenResponseDtoIssuedTokenType) Valid() bool {
 	switch e {
 	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
+		return true
+	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
 		return false
@@ -1713,13 +1722,16 @@ func (e GetCurrentJwtKeyPairParamsAudience) Valid() bool {
 
 // Defines values for GetTechnicalUserTokenFormdataBodyGrantType.
 const (
-	UrnIetfParamsOauthGrantTypeTokenExchange GetTechnicalUserTokenFormdataBodyGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
+	GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials                        GetTechnicalUserTokenFormdataBodyGrantType = "client_credentials"
+	GetTechnicalUserTokenFormdataBodyGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange GetTechnicalUserTokenFormdataBodyGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Valid indicates whether the value is a known member of the GetTechnicalUserTokenFormdataBodyGrantType enum.
 func (e GetTechnicalUserTokenFormdataBodyGrantType) Valid() bool {
 	switch e {
-	case UrnIetfParamsOauthGrantTypeTokenExchange:
+	case GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials:
+		return true
+	case GetTechnicalUserTokenFormdataBodyGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange:
 		return true
 	default:
 		return false
@@ -2421,6 +2433,7 @@ type InvalidateKeyRequestDto struct {
 
 // IssueJwtKeyPairRequestDto defines model for IssueJwtKeyPairRequestDto.
 type IssueJwtKeyPairRequestDto struct {
+	// Algorithm Signing algorithm. Only `RS256` is honoured in this version.
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
 	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
@@ -2437,7 +2450,7 @@ type IssueJwtKeyPairRequestDto struct {
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
 
-// IssueJwtKeyPairRequestDtoAlgorithm defines model for IssueJwtKeyPairRequestDto.Algorithm.
+// IssueJwtKeyPairRequestDtoAlgorithm Signing algorithm. Only `RS256` is honoured in this version.
 type IssueJwtKeyPairRequestDtoAlgorithm string
 
 // IssueJwtKeyPairRequestDtoAudience defines model for IssueJwtKeyPairRequestDto.Audience.
@@ -2601,19 +2614,6 @@ type Prize struct {
 
 // ProblemDetail defines model for ProblemDetail.
 type ProblemDetail struct {
-	Detail   *string `json:"detail,omitempty"`
-	Instance *string `json:"instance,omitempty"`
-
-	// Properties Additional diagnostic properties. Values may be any JSON type
-	// (string, number, boolean, object, array).
-	Properties *map[string]interface{} `json:"properties,omitempty"`
-	Status     *int32                  `json:"status,omitempty"`
-	Title      *string                 `json:"title,omitempty"`
-	Type       *string                 `json:"type,omitempty"`
-}
-
-// ProblemDetailDto defines model for ProblemDetailDto.
-type ProblemDetailDto struct {
 	// Detail A human-readable explanation specific to this occurrence of the problem
 	Detail *string `json:"detail,omitempty"`
 
@@ -2710,7 +2710,7 @@ type RegisterTrustedKeyRequestDto struct {
 	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions.
+	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is honoured in this version.
 	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Unique key identifier. Will be matched against the `kid` header in JWTs.
@@ -3761,8 +3761,8 @@ type GetCurrentJwtKeyPairParamsAudience string
 
 // ListOidcProvidersParams defines parameters for ListOidcProviders.
 type ListOidcProvidersParams struct {
-	// ActiveOnly If true, returns only active providers
-	ActiveOnly *string `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
+	// ActiveOnly When true, return only active (non-invalidated) providers.
+	ActiveOnly *bool `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
 }
 
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
@@ -7829,7 +7829,7 @@ func (siw *ServerInterfaceWrapper) ListOidcProviders(w http.ResponseWriter, r *h
 
 	// ------------- Optional query parameter "activeOnly" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {

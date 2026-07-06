@@ -60,6 +60,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   error codes (`errorCode` string granularity) for the entity endpoints, in addition to response
   shapes.
 
+- **Config-conditional `501` documented** — 21 IAM-gated operations (OIDC providers, JWT
+  keypairs, trusted keys, M2M clients) now declare `501 NOT_IMPLEMENTED` in the spec when
+  `CYODA_IAM_MODE ≠ jwt`. The 5 trusted-key ops additionally declare `404 FEATURE_DISABLED`
+  when `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=false` (default off); the `501` is only
+  reached when that feature is enabled and IAM ≠ jwt.
+
+- **`getTechnicalUserToken` spec completions** — `client_credentials` grant type, `405
+  method_not_allowed` on non-POST requests, and `server_error` / `method_not_allowed` error
+  enum values are now declared in the spec.
+
 ### Changed
 
 - **`DELETE /model/{entityName}/{modelVersion}` now enforces the documented
@@ -69,6 +79,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Entity `meta` is typed-but-open** — `Envelope.meta` mirrors the canonical `EntityMetadata`
   (typed properties, never sealed); the obsolete `previousTransition` field is removed.
+
+- **`listOidcProviders.activeOnly` retyped to boolean** — standard truthy values
+  (`1`, `true`, `TRUE`, `t`) now correctly filter active-only results; unparseable
+  values such as `?activeOnly=yes` return `400` instead of silently meaning false.
 
 - **`changeType` spelling** — entity change records now use the canonical `CREATE/UPDATE/DELETE`
   across HTTP, gRPC, and the OpenAPI schema (HTTP previously emitted `CREATED/UPDATED/DELETED`).
@@ -105,6 +119,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   with `application/x-ndjson` only; the previously-listed `application/json`
   variant is removed from the contract.
 
+- **`listOidcProviders` fictional `403` removed** — the `403` response was never
+  emitted by the server (the endpoint is auth-only, not admin-only); the spec entry
+  is removed.
+
 ### Removed
 
 - **`pointInTime` param on `getAsyncSearchResults`** — the point-in-time is
@@ -118,6 +136,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   valid UUID is accepted; the fictional constraint is removed from the spec.
 
 ### Fixed
+
+- **OIDC / admin op error envelope** — the 7 OIDC provider ops and
+  `searchEntityAuditEvents` now declare `application/problem+json` `ProblemDetail`
+  errors in the spec, matching the server. `getTechnicalUserToken` retains the
+  RFC-6749 flat OAuth shape (`{error, error_description}`).
+
+- **`registerOidcProvider` duplicate returns `409`** — duplicate provider
+  registration now returns `409 OIDC_PROVIDER_DUPLICATE` (was `400`). The `400`
+  path remains for validation failures (`OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`,
+  malformed body).
+
+- **`ProblemDetailDto` schema consolidated** — the structural duplicate is removed;
+  the 9 async-search error responses now reference the canonical `ProblemDetail`
+  schema.
 
 - **`getStateMachineFinishedEvent` error envelope** — error responses now use
   `application/problem+json` (`ProblemDetail`), matching the rest of the API.
