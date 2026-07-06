@@ -7283,7 +7283,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -7479,7 +7481,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -8359,7 +8363,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -8396,7 +8402,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
