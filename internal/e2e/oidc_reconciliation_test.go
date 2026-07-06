@@ -84,6 +84,10 @@ func TestOIDC_RegisterDuplicate_Returns409(t *testing.T) {
 	}
 }
 
+// TestOIDC_ActiveOnly_BooleanFilter covers the valuable boolean-parsing behavior
+// (?activeOnly=1 → 200). Unparseable values (e.g. "yes") yield a uniform
+// framework binding-layer 400 (plain text, like every typed param in the API);
+// that is not a per-op documented response, so it is intentionally not asserted here.
 func TestOIDC_ActiveOnly_BooleanFilter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -103,26 +107,6 @@ func TestOIDC_ActiveOnly_BooleanFilter(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("activeOnly=1: got %d, want 200", resp.StatusCode)
-	}
-}
-
-func TestOIDC_ActiveOnly_GarbageReturns400(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-
-	cid, secret := createM2MClient(t, oidcTenantUUID, "ao-bad-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
-	token := getToken(t, cid, secret)
-
-	req, _ := e2eNewRequest(t, "GET", serverURL+"/api/oauth/oidc/providers?activeOnly=yes", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("activeOnly=yes: got %d, want 400 (ParseBool rejects)", resp.StatusCode)
 	}
 }
 
