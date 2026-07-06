@@ -8468,13 +8468,15 @@ components:
           type: boolean
         flatten:
           type: boolean
+        arrayFields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldConfigDto"
       required:
         - dataType
         - fieldCategory
         - fieldKey
         - fieldName
-        - hidden
-        - isArray
     SchemaConfigDto:
       type: object
       properties:
