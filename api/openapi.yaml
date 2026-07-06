@@ -7513,7 +7513,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/TableConfigDto"
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
               example:
                 - tableName: nobel-prize
                   metadataClassId: 1dba8c8a-77bb-11f0-822a-ae468cd3ed16
@@ -7650,7 +7651,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/SchemaConfigDto"
+                items:
+                  $ref: "#/components/schemas/SchemaConfigDto"
               example:
                 - schemaName: NOBEL_PRIZES
                   tables:
