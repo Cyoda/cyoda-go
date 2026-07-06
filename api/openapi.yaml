@@ -5836,9 +5836,11 @@ paths:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
           description: >-
-            Bad request. Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (e.g. `BAD_REQUEST`, `OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`).
+            Bad request (invalid body / issuers / expectedAudiences / rolesClaim).
+            Body is an RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`). This op accepts no discovery
+            URI, so it never emits `OIDC_SSRF_BLOCKED` / `OIDC_INVALID_TENANT` —
+            those are `registerOidcProvider` only.
           content:
             application/problem+json:
               schema:
