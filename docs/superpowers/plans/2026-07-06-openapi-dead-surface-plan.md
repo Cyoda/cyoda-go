@@ -169,17 +169,34 @@ git commit -m "fix(openapi): SQL-Schema genTables/getSchemas 200 array items (D1
 
 ---
 
-### Task 3: D2 — correct `updateTables` request body (string → array)
+### Task 3: D2 — correct `updateTables` request body (string → array) + its 200 response array-items
 
-`updateTables` declares its request body as `type: string`, but its own example is an array of `TableConfigDto`. Correct the body to the real shape.
+`updateTables` declares its request body as `type: string`, but its own example is an array of `TableConfigDto`. Correct the body to the real shape. **Also (found in Task 2 review):** `updateTables`' own `200` response carries the same malformed `type: array` + sibling `$ref` (no `items`) as the D1 ops — fix it here since we're already in this op (the D1 audit list of genTables/getSchemas was incomplete; updateTables 200 is the third instance).
 
 **Files:**
-- Modify: `api/openapi.yaml` (`updateTables` requestBody ≈ line 7953-7956)
+- Modify: `api/openapi.yaml` (`updateTables` requestBody ≈ line 7953-7956; `updateTables` 200 response schema ≈ line 8088-8090)
 - Modify: `.github/oasdiff-err-ignore.txt`
 
 **Interfaces:**
 - Consumes: `#/components/schemas/TableConfigDto`.
-- Produces: array request body; no codegen impact (unrouted).
+- Produces: array request body + well-formed array response; no codegen impact (unrouted).
+
+- [ ] **Step 1a: Fix the `updateTables` 200 response array-items (same transform as D1)**
+
+Before:
+```yaml
+              schema:
+                type: array
+                $ref: "#/components/schemas/TableConfigDto"
+```
+After:
+```yaml
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
+```
+(This will add `response-required-property-removed` err-ignore lines for `POST /sql/schema/updateTables/{entityModelId}` exactly like Task 2's genTables — expect ~5 lines for TableConfigDto's required props. Capture verbatim from oasdiff in Step 3.)
 
 - [ ] **Step 1: Fix the request body schema**
 

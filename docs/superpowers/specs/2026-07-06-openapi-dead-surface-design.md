@@ -68,7 +68,7 @@ Defect inventory (current line numbers drift; execution re-locates against the w
 
 | # | Defect | Ops affected | Fix |
 |---|---|---|---|
-| **D1** | `200` response schema is malformed `type: array` **+ sibling `$ref`** (no `items`) → decodes as untyped `[]interface{}` | `genTables` (→`TableConfigDto`), `getSchemas`/listAll (→`SchemaConfigDto`) | `type: array` with `items: {$ref: …}` |
+| **D1** | `200` response schema is malformed `type: array` **+ sibling `$ref`** (no `items`) → decodes as untyped `[]interface{}` | `genTables` (→`TableConfigDto`), `getSchemas`/listAll (→`SchemaConfigDto`), `updateTables` 200 (→`TableConfigDto`; found during Task-2 review — audit list was incomplete) | `type: array` with `items: {$ref: …}` |
 | **D2** | `updateTables` request body is `type: string`, but its own example is an array of `TableConfigDto` | `updateTables` | request body `type: array, items: {$ref: TableConfigDto}` |
 | **D3** | `404` responses use `application/json` with no error schema; platform standard (and these ops' own `400`s) is `application/problem+json ProblemDetail` | `getSchemaByName`, `deleteSchemaByName`, `getSchema`, `deleteSchema` | `404` → `application/problem+json` with `schema: {$ref: ProblemDetail}` |
 | **D4** | `FieldConfigDto` marks `hidden`/`isArray` **required**, but the `genTables`/`updateTables` examples omit them on every field and use an **unmodeled `arrayFields`** | shared `FieldConfigDto` (via `TableConfigDto`) | make `hidden`/`isArray` optional; model `arrayFields` as `type: array, items: {$ref: FieldConfigDto}` (recursive, typed-but-open) — reconcile schema **to** the examples, which reflect the intended shape |
@@ -106,7 +106,7 @@ is the *authored contract shape*, which is what group 5 changes. Stream Data ops
 | genTables | GET `/sql/schema/genTables/{entityModelId}` | 200 `array<TableConfigDto>` | D1 |
 | getSchemas | GET `/sql/schema/listAll` | 200 `array<SchemaConfigDto>` | D1 |
 | putSchema | PUT `/sql/schema/putDefault/{schemaName}` | 200; 400 `problem+json ProblemDetail` | none |
-| updateTables | POST `/sql/schema/updateTables/{entityModelId}` | request `array<TableConfigDto>`; 200 | D2 |
+| updateTables | POST `/sql/schema/updateTables/{entityModelId}` | request `array<TableConfigDto>`; 200 `array<TableConfigDto>` | D2 + D1 |
 | getSchema | GET `/sql/schema/{schemaId}` | 200; 404 `problem+json ProblemDetail` | D3 |
 | deleteSchema | DELETE `/sql/schema/{schemaId}` | 200; 404 `problem+json ProblemDetail` | D3 |
 
