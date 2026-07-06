@@ -3378,8 +3378,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Payload Too Large:
-                  description: Payload Too Large
+                Request Entity Too Large:
+                  description: Request Entity Too Large
                   value:
                     type: about:blank
                     title: Request Entity Too Large
@@ -3564,7 +3564,7 @@ paths:
                     detail: Invalid JSON format in message payload
                     instance: /api/message/new/nobel.prize.events
                     properties:
-                      error: Unexpected character at position 15
+                      errorCode: BAD_REQUEST
         "413":
           description: Payload too large
           content:
@@ -3572,14 +3572,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Payload Too Large:
-                  description: Payload Too Large
+                Request Entity Too Large:
+                  description: Request Entity Too Large
                   value:
                     type: about:blank
-                    title: Payload Too Large
+                    title: Request Entity Too Large
                     status: 413
-                    detail: Request payload size exceeds maximum allowed limit of 10MB
+                    detail: request payload exceeds maximum allowed limit of 10MB
                     instance: /api/message/new/nobel.prize.events
+                    properties:
+                      errorCode: BAD_REQUEST
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3661,6 +3663,7 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+                      errorCode: ENTITY_NOT_FOUND
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3713,6 +3716,7 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+                      errorCode: ENTITY_NOT_FOUND
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
