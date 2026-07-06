@@ -564,6 +564,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: listTechnicalUsers
+      x-cyoda-iam-mode: jwt
       responses:
         "200":
           description: List of M2M clients returned successfully
@@ -587,6 +588,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -620,6 +627,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: createTechnicalUser
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: withAdminRole
           in: query
@@ -661,6 +669,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -681,6 +695,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: deleteTechnicalUser
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: clientId
           in: path
@@ -728,6 +743,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -748,6 +769,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: resetTechnicalUserSecret
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: clientId
           in: path
@@ -791,6 +813,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4831,6 +4859,7 @@ paths:
 
         access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
       operationId: issueJwtKeyPair
+      x-cyoda-iam-mode: jwt
       requestBody:
         content:
           application/json:
@@ -4868,6 +4897,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -4879,6 +4914,7 @@ paths:
         Retrieves information about the currently active JWT signing key-pair
         for the specified audience.
       operationId: getCurrentJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: audience
           in: query
@@ -4925,6 +4961,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -4938,6 +4980,7 @@ paths:
 
         and then removed from storage.
       operationId: deleteJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -4973,6 +5016,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -4988,6 +5037,7 @@ paths:
 
         and existing tokens signed with this key pair would not be accepted. If `gracePeriodSec` is omitted or zero, invalidation is immediate.
       operationId: invalidateJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -5034,6 +5084,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -5049,6 +5105,7 @@ paths:
         This operation is idempotent - if the key-pair is already active, it
         returns the current state.
       operationId: reactivateJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -5099,6 +5156,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -5110,6 +5173,8 @@ paths:
         Returns all trusted public keys registered for the caller's tenant.
         Requires ADMIN or ROLE_ADMIN role.
       operationId: listTrustedKeys
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       responses:
         "200":
           description: List of trusted keys
@@ -5139,6 +5204,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -5185,6 +5256,8 @@ paths:
 
         `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
       operationId: registerTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       requestBody:
         content:
           application/json:
@@ -5234,6 +5307,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -5247,6 +5326,8 @@ paths:
 
         Requires ADMIN or ROLE_ADMIN role.
       operationId: deleteTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -5288,6 +5369,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -5304,6 +5391,8 @@ paths:
 
         Requires ADMIN or ROLE_ADMIN role.
       operationId: invalidateTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -5350,6 +5439,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -5374,6 +5469,8 @@ paths:
 
         indefinitely until explicitly invalidated or deleted again.
       operationId: reactivateTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -5424,6 +5521,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers:
@@ -5435,6 +5538,7 @@ paths:
         Retrieves a list of all registered OIDC providers, including both active
         and inactive providers. Accessible by any authenticated tenant member.
       operationId: listOidcProviders
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: activeOnly
           in: query
@@ -5467,6 +5571,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -5482,6 +5592,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: registerOidcProvider
+      x-cyoda-iam-mode: jwt
       requestBody:
         content:
           application/json:
@@ -5537,6 +5648,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -5570,6 +5687,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: reloadOidcProviders
+      x-cyoda-iam-mode: jwt
       responses:
         "200":
           description: OIDC providers reloaded successfully
@@ -5598,6 +5716,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -5613,6 +5737,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: deleteOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5658,6 +5783,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     patch:
@@ -5681,6 +5812,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: updateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5753,6 +5885,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -5771,6 +5909,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: invalidateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5816,6 +5955,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -5834,6 +5979,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: reactivateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5883,6 +6029,12 @@ paths:
           description: >-
             Internal server error. Body is an RFC-9457 problem document;
             the machine-readable code is in `properties.errorCode`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
