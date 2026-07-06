@@ -1408,11 +1408,11 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'not-a-uuid' for parameter 'entityId'
+                detail: invalid value for parameter 'entityId'
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   parameter: entityId
-                  invalidValue: not-a-uuid
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity not found
           content:
@@ -1534,11 +1534,11 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'not-a-uuid' for parameter 'entityId'
+                detail: invalid value for parameter 'entityId'
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   parameter: entityId
-                  invalidValue: not-a-uuid
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity not found
           content:
@@ -3322,13 +3322,14 @@ paths:
             format: int32
             default: 1000
       requestBody:
-        description: List of message IDs to delete. All IDs must be version 1
-          (time-based) UUIDs.
+        description: List of message IDs to delete.
         content:
           application/json:
             schema:
-              type: string
-              format: uuid
+              type: array
+              items:
+                type: string
+                format: uuid
             examples:
               Message IDs:
                 description: Message IDs
@@ -3354,23 +3355,39 @@ paths:
                         - 31134900-d9cb-11ee-9cc7-ae468cd3ed16
                       success: true
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid request body (not a JSON array of UUID strings)
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
+                Invalid Body:
+                  description: Invalid Body
                   value:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
+                    detail: "invalid JSON: expected array of UUID strings"
+                    instance: /api/message
                     properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+                      errorCode: BAD_REQUEST
+        "413":
+          description: Payload too large
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              examples:
+                Request Entity Too Large:
+                  description: Request Entity Too Large
+                  value:
+                    type: about:blank
+                    title: Request Entity Too Large
+                    status: 413
+                    detail: request payload exceeds maximum allowed limit of 10MB
+                    instance: /api/message
+                    properties:
+                      errorCode: BAD_REQUEST
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3464,27 +3481,14 @@ paths:
             format: int64
             default: 10000
       requestBody:
-        description: "
-
-          The request body can be either a single JSON object or an array of
-          homomorphic JSON objects.
-
-          Each object must contain a 'payload' field with any valid JSON
-          content.
-
-          It may also optionally include meta-data fields with a Flat set of
-          key-value pairs.
-
-          The meta-data is indexed to enable fast searching by meta-data.
-
-
-          The message will be processed and stored according to this structure.
-
-          \            "
+        description: >
+          A single JSON object. It must contain a `payload` field (any valid JSON
+          value) and may include an optional flat `meta-data` map of key-value pairs.
+          The meta-data is indexed to enable fast search by meta-data.
         content:
           application/json:
             schema:
-              type: string
+              $ref: "#/components/schemas/NewMessageRequest"
             examples:
               Nobel Prize Announcement (with payload and meta-data):
                 description: Nobel Prize Announcement (with payload and meta-data)
@@ -3557,10 +3561,10 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: Invalid JSON format in message payload
+                    detail: "invalid JSON: expected an object with a 'payload' field"
                     instance: /api/message/new/nobel.prize.events
                     properties:
-                      error: Unexpected character at position 15
+                      errorCode: BAD_REQUEST
         "413":
           description: Payload too large
           content:
@@ -3568,14 +3572,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Payload Too Large:
-                  description: Payload Too Large
+                Request Entity Too Large:
+                  description: Request Entity Too Large
                   value:
                     type: about:blank
-                    title: Payload Too Large
+                    title: Request Entity Too Large
                     status: 413
-                    detail: Request payload size exceeds maximum allowed limit of 10MB
+                    detail: request payload exceeds maximum allowed limit of 10MB
                     instance: /api/message/new/nobel.prize.events
+                    properties:
+                      errorCode: BAD_REQUEST
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3597,8 +3603,7 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid-v1
-            description: Must be a version 1 (time-based) UUID
+            format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
       responses:
         "200":
@@ -3622,8 +3627,8 @@ paths:
                       replyTo: announcements@nobelprize.org
                       correlationId: nobel-2024-physics-announcement
                     metaData:
-                      values: {}
-                      indexedValues: {}
+                      eventType: nobel.prize.announced
+                      timestamp: "2024-10-09T12:00:00Z"
                     content:
                       eventType: nobel.prize.announced
                       timestamp: "2024-10-09T12:00:00Z"
@@ -3642,23 +3647,20 @@ paths:
                             motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
                             share: "2"
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid UUID format
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-              examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
-                  value:
-                    type: about:blank
-                    title: Bad Request
-                    status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
-                    properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: invalid value for parameter 'messageId'
+                instance: /api/message/not-a-uuid
+                properties:
+                  errorCode: BAD_REQUEST
+                  parameter: messageId
         "404":
           description: Message not found
           content:
@@ -3676,6 +3678,7 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+                      errorCode: ENTITY_NOT_FOUND
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3696,8 +3699,7 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid-v1
-            description: Must be a version 1 (time-based) UUID
+            format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
       responses:
         "200":
@@ -3713,23 +3715,20 @@ paths:
                     entityIds:
                       - 8824c480-c166-11ee-9cc7-ae468cd3ed16
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid UUID format
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-              examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
-                  value:
-                    type: about:blank
-                    title: Bad Request
-                    status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
-                    properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: invalid value for parameter 'messageId'
+                instance: /api/message/not-a-uuid
+                properties:
+                  errorCode: BAD_REQUEST
+                  parameter: messageId
         "404":
           description: Message not found
           content:
@@ -3747,6 +3746,7 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+                      errorCode: ENTITY_NOT_FOUND
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -10342,14 +10342,10 @@ components:
         - subject
     EdgeMessageMetaData:
       type: object
-      properties:
-        values:
-          $ref: "#/components/schemas/ValueMaps"
-        indexedValues:
-          $ref: "#/components/schemas/ValueMaps"
-      required:
-        - indexedValues
-        - values
+      additionalProperties: true
+      description: >
+        Flat map of the message's metadata key-value pairs, symmetric with the
+        `meta-data` supplied at creation. All values are indexed for search.
     EdgeMessagePayload:
       description: |
         Polymorphic by intent — accepts any JSON value. The contentType field
@@ -10358,7 +10354,23 @@ components:
         stringify it (e.g. base64 for binary, plain string with escape for
         non-JSON text). Proper content-type handling may be added
         as a future feature.
-      additionalProperties: true
+    NewMessageRequest:
+      type: object
+      description: >
+        A single JSON object carrying the message payload and optional flat metadata.
+      properties:
+        payload:
+          $ref: "#/components/schemas/EdgeMessagePayload"
+          description: >
+            The message payload — any JSON value (object, array, string, number, …).
+            Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent
+            as a JSON string; see the EdgeMessagePayload note.
+        meta-data:
+          type: object
+          additionalProperties: true
+          description: Optional flat key→value map; indexed to enable search by metadata.
+      required:
+        - payload
     MessageDeleteResponse:
       type: object
       description: |
@@ -10389,197 +10401,6 @@ components:
       required:
         - entityIds
         - success
-    LocalTime:
-      type: object
-      properties:
-        hour:
-          type: integer
-          format: int32
-        minute:
-          type: integer
-          format: int32
-        second:
-          type: integer
-          format: int32
-        nano:
-          type: integer
-          format: int32
-    ValueMaps:
-      type: object
-      properties:
-        strings:
-          type: object
-          additionalProperties:
-            type: string
-        chars:
-          type: object
-          additionalProperties:
-            type: string
-        doubles:
-          type: object
-          additionalProperties:
-            type: number
-            format: double
-        floats:
-          type: object
-          additionalProperties:
-            type: number
-            format: float
-        bytes:
-          type: object
-          additionalProperties:
-            type: string
-            format: byte
-        shorts:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int32
-        longs:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int64
-        ints:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int32
-        localDates:
-          type: object
-          additionalProperties:
-            type: string
-            format: date
-        localDateTimes:
-          type: object
-          additionalProperties:
-            type: string
-            format: date-time
-        localTimes:
-          type: object
-          additionalProperties:
-            $ref: "#/components/schemas/LocalTime"
-        zonedDateTimes:
-          type: object
-          additionalProperties:
-            type: string
-            format: date-time
-        years:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              value:
-                type: integer
-                format: int32
-              leap:
-                type: boolean
-        yearMonths:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              year:
-                type: integer
-                format: int32
-              month:
-                type: string
-                enum:
-                  - JANUARY
-                  - FEBRUARY
-                  - MARCH
-                  - APRIL
-                  - MAY
-                  - JUNE
-                  - JULY
-                  - AUGUST
-                  - SEPTEMBER
-                  - OCTOBER
-                  - NOVEMBER
-                  - DECEMBER
-              monthValue:
-                type: integer
-                format: int32
-              leapYear:
-                type: boolean
-        bigDecimals:
-          type: object
-          additionalProperties:
-            type: number
-        unboundDecimals:
-          type: object
-          additionalProperties:
-            type: number
-        bigIntegers:
-          type: object
-          additionalProperties:
-            type: integer
-        unboundIntegers:
-          type: object
-          additionalProperties:
-            type: integer
-        booleans:
-          type: object
-          additionalProperties:
-            type: boolean
-        uuids:
-          type: object
-          additionalProperties:
-            type: string
-            format: uuid
-        timeuuids:
-          type: object
-          additionalProperties:
-            type: string
-            format: uuid
-        byteArrays:
-          type: object
-          additionalProperties:
-            type: string
-            format: byte
-        others:
-          type: object
-          additionalProperties:
-            type: object
-        nulls:
-          type: object
-          additionalProperties:
-            type: string
-        typeReferences:
-          type: object
-          additionalProperties:
-            type: string
-            enum:
-              - STRING
-              - BYTE
-              - DOUBLE
-              - INTEGER
-              - BIG_DECIMAL
-              - UNBOUND_DECIMAL
-              - BIG_INTEGER
-              - UNBOUND_INTEGER
-              - BOOLEAN
-              - LOCAL_DATE
-              - LOCAL_DATE_TIME
-              - SHORT
-              - CHARACTER
-              - LONG
-              - FLOAT
-              - ZONED_DATE_TIME
-              - YEAR
-              - YEAR_MONTH
-              - LOCAL_TIME
-              - TIME_UUID_TYPE
-              - UUID_TYPE
-              - BYTE_ARRAY
-              - "NULL"
-              - OBJECT
-              - ARRAY
-              - ARRAY_ELEMENT
-              - TYPE_REFERENCE
-              - POLYMORPHIC
-      required:
-        - typeReferences
     EntityChangeMeta:
       type: object
       properties:

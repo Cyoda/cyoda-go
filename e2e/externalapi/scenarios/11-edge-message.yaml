@@ -54,7 +54,7 @@ scenarios:
         target: msg.header.recipient
         expected_ref: data.header.recipient
       - type: field_equals
-        target: msg.metaData.indexedValues.strings.\".happy\"
+        target: msg.metaData.happy
         expected: golucky
       - type: blob_equals
         target: msg.payloadId

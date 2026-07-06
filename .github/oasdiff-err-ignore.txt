@@ -129,3 +129,33 @@ error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the requi
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `500` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# message slice — newMessage (POST /message/new/{subject}) request body corrected
+# from string to the real {payload, meta-data} object envelope; the prior string
+# schema was prototype-era drift the server never honoured (a bare string is
+# rejected — the handler unmarshals an object). ADR 0003 Decision 7.
+error at api/openapi.yaml, in API POST /message/new/{subject} the request's body `type` changed from `string` to `object` [request-body-type-changed].
+error at api/openapi.yaml, in API POST /message/new/{subject} added the new required request property `payload` [new-required-request-property].
+#
+# message slice — deleteMessages (DELETE /message) request body corrected from a
+# single string/uuid to the real array<string> of ids; prior schema was prototype
+# drift (the handler unmarshals []string). ADR 0003 Decision 7.
+error at api/openapi.yaml, in API DELETE /message the request's body `type/format` changed from `string/uuid` to `array<string/uuid>` [request-body-type-changed].
+#
+# getMessage/deleteMessage path param messageId: format uuid-v1 -> uuid (F5).
+# uuid-v1 is a non-standard custom format the server never validated; oasdiff treats
+# format narrowing→broadening as a type change (ERR), but widening the accepted set
+# breaks no client. The fictional 400 "not a time-based UUID" was prototype drift —
+# server performs no version check; any absent uuid -> 404. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API DELETE /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
+error at api/openapi.yaml, in API GET /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
+#
+# getMessage (GET /message/{messageId}) — metaData simplified to a flat symmetric map:
+# the values/indexedValues split and the injected typeReferences were cyoda-cloud indexing
+# artifacts the cyoda-go contract does not carry; cyoda-cloud conforms. The required
+# values/indexedValues properties disappear from the response schema because
+# EdgeMessageMetaData is now an open flat map (additionalProperties:true, no named
+# properties). No working client depended on the bucketed schema — it was prototype-era
+# drift. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/indexedValues` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/values` from the response with the `200` status [response-required-property-removed].

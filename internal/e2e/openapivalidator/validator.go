@@ -120,6 +120,14 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			maybeRecordErrorCode(opId, resp)
 			return nil
 		}
+		// A malformed path-parameter value (e.g. a non-uuid where format: uuid
+		// is required) that the server rejects with a uniform RFC-9457
+		// ProblemDetail 400 is the binding-error handler behaving correctly, not
+		// spec drift: no operation's constraints can match the malformed value
+		// by construction, yet the 400 is the documented, conformant response.
+		if isConformantBindingError(resp) {
+			return nil
+		}
 		return []Mismatch{{
 			Operation: "<unmatched>",
 			Method:    req.Method,
@@ -206,6 +214,18 @@ func (v *Validator) isStreaming(route *routers.Route, status int) bool {
 		}
 	}
 	return false
+}
+
+// isConformantBindingError reports whether resp is a well-formed RFC-9457
+// binding-error rejection: HTTP 400 with an application/problem+json body. A
+// malformed path parameter the server rejects this way is correct
+// behaviour even though no operation's path-parameter constraints match the
+// malformed value.
+func isConformantBindingError(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(resp.Header.Get("Content-Type"), "application/problem+json")
 }
 
 // pathParamsSatisfied reports whether all path parameters in the matched
