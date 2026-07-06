@@ -329,7 +329,7 @@ func RunOidcReactivateNonExistent(t *testing.T, fix BackendFixture) {
 }
 
 // RunOidcDuplicateRegister verifies that registering a second provider with
-// the same wellKnownConfigUri under the same tenant returns 400 with code
+// the same wellKnownConfigUri under the same tenant returns 409 with code
 // OIDC_PROVIDER_DUPLICATE.
 func RunOidcDuplicateRegister(t *testing.T, fix BackendFixture) {
 	tenant := fix.NewTenant(t)
@@ -344,8 +344,8 @@ func RunOidcDuplicateRegister(t *testing.T, fix BackendFixture) {
 	if err != nil {
 		t.Fatalf("RegisterOidcProviderRaw second transport: %v", err)
 	}
-	if status != http.StatusBadRequest {
-		t.Errorf("status: got %d, want 400 (body: %s)", status, raw)
+	if status != http.StatusConflict {
+		t.Errorf("status: got %d, want 409 (body: %s)", status, raw)
 	}
 	assertErrCode(t, raw, "OIDC_PROVIDER_DUPLICATE")
 }
@@ -1621,7 +1621,7 @@ func RunOidcD6_ColdPathTwoIssEligibleCandidates(t *testing.T, fix BackendFixture
 
 // RunOidcD11_SequentialRegisterDeterministic verifies D11 row 38a: two
 // sequential Register calls for the same URI (no concurrent race); the first
-// wins and the second gets 400 OIDC_PROVIDER_DUPLICATE.
+// wins and the second gets 409 OIDC_PROVIDER_DUPLICATE.
 //
 // This is the parity-safe deterministic complement to the fault-injection race
 // test (38b), which requires KV-store-level interleaving not available here.
@@ -1636,13 +1636,13 @@ func RunOidcD11_SequentialRegisterDeterministic(t *testing.T, fix BackendFixture
 		t.Fatalf("RegisterOidcProvider first: %v", err)
 	}
 
-	// Second registration with the same URI must fail with 400 OIDC_PROVIDER_DUPLICATE.
+	// Second registration with the same URI must fail with 409 OIDC_PROVIDER_DUPLICATE.
 	status, raw, err := c.RegisterOidcProviderRaw(t, map[string]any{"wellKnownConfigUri": uri})
 	if err != nil {
 		t.Fatalf("RegisterOidcProviderRaw second transport: %v", err)
 	}
-	if status != http.StatusBadRequest {
-		t.Errorf("status: got %d, want 400 (body: %s)", status, raw)
+	if status != http.StatusConflict {
+		t.Errorf("status: got %d, want 409 (body: %s)", status, raw)
 	}
 	assertErrCode(t, raw, "OIDC_PROVIDER_DUPLICATE")
 }
