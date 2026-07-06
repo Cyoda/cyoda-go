@@ -104,3 +104,25 @@ func TestOIDC_ActiveOnly_GarbageReturns400(t *testing.T) {
 		t.Fatalf("activeOnly=yes: got %d, want 400 (ParseBool rejects)", resp.StatusCode)
 	}
 }
+
+// listOidcProviders is auth-only (any authenticated tenant member, D21) — it has
+// no admin guard, so a non-admin authed user gets 200, never 403.
+func TestOIDC_List_NonAdmin_Returns200Not403(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	cid, secret := createM2MClient(t, oidcTenantUUID, "nonadmin-user", []string{"ROLE_M2M"}) // no ROLE_ADMIN
+	token := getToken(t, cid, secret)
+
+	req, _ := e2eNewRequest(t, "GET", serverURL+"/api/oauth/oidc/providers", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("non-admin list: got %d, want 200 (no admin guard on list)", resp.StatusCode)
+	}
+}

@@ -39,3 +39,8 @@ error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion
 # param was always a boolean-in-intent (server compared string=="true"); typing
 # it correctly is the reconciliation. oasdiff flags the request param type change.
 error at api/openapi.yaml, in API GET /oauth/oidc/providers the parameter 'activeOnly' type/format changed from 'string'/'' to 'boolean'/'' [request-parameter-type-changed].
+
+# auth/OIDC slice — listOidcProviders 403 removed: the op has no admin guard
+# (auth-only by design, D21); the 403 was never emitted. Removing a documented
+# response status is oasdiff-breaking but breaks no working client.
+error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the response with the status '403' [response-removed].
