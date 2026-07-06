@@ -225,6 +225,22 @@ func TestMessage_DeleteBatch(t *testing.T) {
 	}
 }
 
+// TestMessage_DeleteMessages_ArrayBody characterizes the real body: a JSON array
+// of uuid strings (200); a non-array JSON (e.g. object) -> 400.
+func TestMessage_DeleteMessages_ArrayBody(t *testing.T) {
+	id := createMessageE2E(t, "del-arr", `{"x":1}`)
+	ok := doAuth(t, http.MethodDelete, "/api/message", fmt.Sprintf(`["%s"]`, id))
+	defer ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("array body: status=%d, want 200", ok.StatusCode)
+	}
+	bad := doAuth(t, http.MethodDelete, "/api/message", `{"not":"an array"}`)
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("object body: status=%d, want 400", bad.StatusCode)
+	}
+}
+
 // TestMessage_NewMessage_ObjectEnvelope characterizes the real body contract:
 // an object {payload, meta-data}; missing payload -> 400; a top-level array -> 400.
 func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {

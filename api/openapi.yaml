@@ -3322,13 +3322,14 @@ paths:
             format: int32
             default: 1000
       requestBody:
-        description: List of message IDs to delete. All IDs must be version 1
-          (time-based) UUIDs.
+        description: List of message IDs to delete.
         content:
           application/json:
             schema:
-              type: string
-              format: uuid
+              type: array
+              items:
+                type: string
+                format: uuid
             examples:
               Message IDs:
                 description: Message IDs

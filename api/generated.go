@@ -3701,7 +3701,7 @@ type CreateJSONBody0 map[string]interface{}
 type CreateJSONBody1 = []map[string]interface{}
 
 // DeleteMessagesJSONBody defines parameters for DeleteMessages.
-type DeleteMessagesJSONBody = openapi_types.UUID
+type DeleteMessagesJSONBody = []openapi_types.UUID
 
 // DeleteMessagesParams defines parameters for DeleteMessages.
 type DeleteMessagesParams struct {

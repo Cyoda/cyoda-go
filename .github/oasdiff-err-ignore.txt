@@ -136,3 +136,8 @@ error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the requi
 # rejected — the handler unmarshals an object). ADR 0003 Decision 7.
 error at api/openapi.yaml, in API POST /message/new/{subject} the request's body `type` changed from `string` to `object` [request-body-type-changed].
 error at api/openapi.yaml, in API POST /message/new/{subject} added the new required request property `payload` [new-required-request-property].
+#
+# message slice — deleteMessages (DELETE /message) request body corrected from a
+# single string/uuid to the real array<string> of ids; prior schema was prototype
+# drift (the handler unmarshals []string). ADR 0003 Decision 7.
+error at api/openapi.yaml, in API DELETE /message the request's body `type/format` changed from `string/uuid` to `array<string/uuid>` [request-body-type-changed].
