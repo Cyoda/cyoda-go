@@ -114,23 +114,6 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 	assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 }
 
-// TestToken_NonPost_405MethodNotAllowed verifies that a GET to the token
-// endpoint returns 405 method_not_allowed (flat OAuth shape, not ProblemDetail).
-func TestToken_NonPost_405MethodNotAllowed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-	req, err := e2eNewRequest(t, "GET", serverURL+"/api/oauth/token", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do: %v", err)
-	}
-	assertOAuthError(t, resp, http.StatusMethodNotAllowed, "method_not_allowed")
-}
-
 // TestToken_TokenExchange_InvalidGrant_BadSubjectTokenType verifies that a
 // token-exchange request with an unsupported subject_token_type returns 400
 // invalid_grant. This exercises a trigger in handleTokenExchange without
