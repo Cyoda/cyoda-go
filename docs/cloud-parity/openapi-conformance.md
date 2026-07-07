@@ -223,12 +223,12 @@ The excluded-tag / always-501 dead surface is disposed as follows:
 - **SQL-Schema** (`/sql/schema/*`, 9 ops) — retained as `x-cyoda-status: planned`; the
   authored contract was corrected (well-formed array responses, array request body,
   `problem+json` 404s, `FieldConfigDto` reconciled to its examples). Implementation is
-  tracked (Trino SQL management API). Cloud mirrors the corrected contract.
+  tracked (Trino SQL management API, #382). Cloud mirrors the corrected contract.
 - **Stream Data** (`/platform-api/stream-data/*`, 13 ops) — retained as
   `x-cyoda-status: unimplemented`; left minimally touched pending a disposition decision
-  (implement / redesign / remove). Tracked.
+  (implement / redesign / remove, #381).
 - **CQL Execution Statistics** — vestigial exclude-tags entry removed (no ops).
-- **accountSubscriptionsGet** — unchanged (`planned`, routed, returns 501; tracked).
+- **accountSubscriptionsGet** — unchanged (`planned`, routed, returns 501; tracked in #283).
 
 **Invariant:** every non-live `x-cyoda-status` marker is backed by a tracking issue, so a
 marked surface can never become unowned relabeled fiction. The e2e conformance gate enforces
