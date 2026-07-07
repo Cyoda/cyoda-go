@@ -159,3 +159,37 @@ error at api/openapi.yaml, in API GET /message/{messageId} for the `path` reques
 # drift. ADR 0003 Decision 7.
 error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/indexedValues` from the response with the `200` status [response-required-property-removed].
 error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/values` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5, ADR 0003 Decision 7) — genTables/getSchemas 200 array
+# schema corrected from malformed `type:array`+sibling-$ref to array<items>. The ops
+# are unrouted (404); no working client depends on the malformed shape. oasdiff
+# previously treated the sibling $ref as per-object properties on an untyped array
+# root; after the fix it correctly resolves them as items-level, so the root-level
+# required properties appear "removed" — they were never real constraints.
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `fields` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `hidden` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `metadataClassId` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `tableName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `uniformedPath` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/listAll removed the required property `schemaName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/listAll removed the required property `tables` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5) — updateTables request body corrected string→array<TableConfigDto>;
+# the prior string schema was prototype drift (the op is unrouted). ADR 0003 Decision 7.
+# updateTables 200 response also corrected: same malformed type:array+sibling-$ref as genTables (D1+D2).
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} the request's body `type` changed from `string` to `array<object>` [request-body-type-changed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `fields` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `hidden` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `metadataClassId` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `tableName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `uniformedPath` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5) — FieldConfigDto reconciled to its examples: hidden/isArray
+# made optional (examples always omitted them), arrayFields modelled (recursive). Unrouted;
+# prototype drift. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API GET /sql/schema/ the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API GET /sql/schema/ the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API PUT /sql/schema/putDefault/{schemaName} the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API PUT /sql/schema/putDefault/{schemaName} the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API GET /sql/schema/{schemaId} the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API GET /sql/schema/{schemaId} the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].

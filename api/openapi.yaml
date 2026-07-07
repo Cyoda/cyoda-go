@@ -7283,7 +7283,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -7479,7 +7481,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -7513,7 +7517,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/TableConfigDto"
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
               example:
                 - tableName: nobel-prize
                   metadataClassId: 1dba8c8a-77bb-11f0-822a-ae468cd3ed16
@@ -7650,7 +7655,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/SchemaConfigDto"
+                items:
+                  $ref: "#/components/schemas/SchemaConfigDto"
               example:
                 - schemaName: NOBEL_PRIZES
                   tables:
@@ -7954,7 +7960,9 @@ paths:
         content:
           application/json:
             schema:
-              type: string
+              type: array
+              items:
+                $ref: "#/components/schemas/TableConfigDto"
             examples:
               Example Tables from the Nobel Prize model:
                 description: Example Tables from the Nobel Prize model
@@ -8085,7 +8093,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/TableConfigDto"
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
               example:
                 - tableName: nobel-prize
                   metadataClassId: 1dba8c8a-77bb-11f0-822a-ae468cd3ed16
@@ -8354,7 +8363,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -8391,7 +8402,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -8455,13 +8468,15 @@ components:
           type: boolean
         flatten:
           type: boolean
+        arrayFields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldConfigDto"
       required:
         - dataType
         - fieldCategory
         - fieldKey
         - fieldName
-        - hidden
-        - isArray
     SchemaConfigDto:
       type: object
       properties:
