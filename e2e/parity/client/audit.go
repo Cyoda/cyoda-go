@@ -176,7 +176,7 @@ func (e *StateMachineAuditEvent) UnmarshalJSON(b []byte) error {
 // docs/cyoda/api/openapi-audit.yml line 695.
 type EntityChangeAuditEvent struct {
 	AuditEvent
-	ChangeType string `json:"changeType"` // canonical-required: CREATED|UPDATED|DELETED
+	ChangeType string `json:"changeType"` // canonical-required: CREATE|UPDATE|DELETE
 
 	// Changes carries the before/after diff as raw JSON. The shape
 	// varies by entity model; parity scenarios that need typed access

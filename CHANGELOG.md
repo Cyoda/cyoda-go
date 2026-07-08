@@ -1,8 +1,221 @@
 # Changelog
 
-All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, so minor bumps may include breaking changes (see [README — Versioning](./README.md#versioning)).
+All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, where the minor component signals a breaking change and new features ship in patches (see [README — Versioning](./README.md#versioning)).
 
 ## [Unreleased]
+
+### Added
+
+- **Entity partial-update (PATCH / RFC 7386 merge patch)** — `PATCH /api/entity/{format}/{entityId}`
+  and `PATCH /api/entity/{format}/{entityId}/{transition}` apply a sparse JSON patch to the stored
+  payload with RFC 7386 merge semantics (non-null key overwrites, explicit `null` deletes, omitted
+  key untouched), closing the data-loss footgun where `PUT`'s wholesale-replace silently destroyed
+  omitted fields. JSON-only (`XML` ⇒ `415`); `application/merge-patch+json` is implemented,
+  `application/json-patch+json` (RFC 6902) returns `501`. `If-Match` is **required** (the merge is
+  relative to the base the caller read): absent ⇒ `428 PRECONDITION_REQUIRED`, stale ⇒ `412`. The
+  merged result is validated strictly against the model schema — PATCH never extends the model,
+  even in an extend-permitting mode. Under a named transition the merge is applied first, then the
+  transition's processors run on the merged state. New error codes: `PRECONDITION_REQUIRED` (428),
+  `UNSUPPORTED_MEDIA_TYPE` (415).
+  ([#341](https://github.com/Cyoda-platform/cyoda-go/issues/341))
+
+- **Renderer annotations on processors & criteria** — the engine-ignored `annotations` bag now
+  extends to the two workflow elements that lacked it: processors carry an embedded `annotations`
+  object, and criteria carry a sibling `criterionAnnotations` object on the workflow and on each
+  transition (the criterion tree round-trips verbatim and is never parsed to attach metadata). Two
+  well-known optional keys — `displayName`, `description` — are documented uniformly across all
+  five element types (workflow, state, transition, processor, criterion) for renderer and
+  condition-builder use. Object-only, capped at 64 KB per field, stored and re-emitted compacted,
+  never interpreted by the engine; processor annotations are stripped before dispatch and never
+  reach compute members. Additive schema change: the workflow schema moves to **1.2** and every
+  existing 1.1 payload remains valid (dual-shape). No new error codes.
+  ([#384](https://github.com/Cyoda-platform/cyoda-go/issues/384))
+
+- **Composite unique keys** — entity models can declare one or more composite unique keys via
+  `PUT /model/{entityName}/{modelVersion}/unique-keys` (UNLOCKED models only). Each key is an
+  ordered set of scalar field paths; uniqueness is scoped to `(tenant, model, version)` live
+  entities. All-or-nothing null rule: all fields null or absent ⇒ exempt; partial ⇒
+  `422 INVALID_UNIQUE_KEY`; all present ⇒ enforced on create and update. String comparison is
+  byte-exact (case-sensitive, no normalization). Soft-delete frees the value-set.
+  Supported by memory, sqlite, and postgres; the commercial backend returns
+  `422 COMPOSITE_KEY_UNSUPPORTED` until its own support lands.
+  New error codes: `UNIQUE_VIOLATION` (409), `INVALID_UNIQUE_KEY` (422),
+  `COMPOSITE_KEY_UNSUPPORTED` (422), `INVALID_UNIQUE_KEY_DEFINITION` (422).
+
+- **Search result sorting** — both search endpoints (`POST /api/entity/{entityName}/{modelVersion}/search`
+  and the async variant) now accept one or more `sort` query parameters (HTTP) or a structured
+  `orderBy` array (gRPC) to control result order. HTTP grammar: `[@]path[:asc|desc]` — bare
+  dotted path for scalar data fields; `@`-prefixed name for meta fields (`state`, `creationDate`,
+  `lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`). Ordering is canonical
+  across all backends: Text (byte order), Numeric (IEEE-754 double), Bool (`false < true`),
+  Temporal (ms-floored chronological for meta date fields). Absent/null values sort last;
+  `entity_id` is always the final tiebreaker. Unsortable, array, or unknown paths return
+  `400 INVALID_FIELD_PATH`. Sort key count is capped at `CYODA_SEARCH_MAX_SORT_KEYS`
+  (default `16`). New SPI field: `OrderSpec.Kind OrderKind` (enum: `OrderText`, `OrderNumeric`,
+  `OrderBool`, `OrderTemporal`); ships with `cyoda-go-spi v0.8.2`.
+
+- **Compute-node callback transaction-join** — processor and criteria-evaluation
+  callbacks from a compute node now join the originating workflow transaction
+  (`T`) rather than running in a standalone transaction. The engine mints a
+  signed HMAC tx-token `{NodeID, TxRef}` before each dispatch and attaches it
+  to the outbound CloudEvent as the `cyodatxtoken` extension attribute. Compute
+  nodes echo the token on callbacks (`X-Tx-Token` HTTP header / `tx-token` gRPC
+  metadata); the receiving node verifies the HMAC and routes the callback to the
+  owner — local `Join` when owner is self, HTTP reverse proxy or gRPC EntityManage
+  B→A forward otherwise. Callbacks see the cascade's uncommitted writes; callback
+  acks are provisional until `T` commits. `ASYNC_NEW_TX` callbacks join `T` via a
+  savepoint so writes are discarded on processor failure without aborting the
+  cascade. An absent token causes the callback to run standalone (`Begin`), which
+  is the normal behaviour for `COMMIT_BEFORE_DISPATCH` with
+  `startNewTxOnDispatch=false`. New env vars: `CYODA_TX_TOKEN_TTL` (token
+  validity, default `90s`), `CYODA_GRPC_NODE_ADDR` (gRPC address advertised in
+  tokens for B→A forwarding), `CYODA_COMPUTE_HTTP_BASE` (base URL for
+  compute-test-client HTTP callbacks).
+
+- **Conditional `deleteEntities`** — `DELETE /api/entity/{entityName}/{modelVersion}` now honours
+  an `AbstractConditionDto` request body, deleting only matching entities (empty body ⇒ all).
+  `verbose=true` returns the deleted ids; `numberOfEntitites` (matched) and
+  `numberOfEntititesRemoved` (removed) are reported separately. Closes a data-loss defect where
+  the condition was ignored and the whole model was wiped. New error code `INVALID_CONDITION` (400).
+
+- **`getAllEntities` point-in-time** — the model-scoped list read honours `pointInTime`, returning
+  entities as-at the supplied time and stamping `meta.pointInTime`.
+
+- **OpenAPI error-code conformance** — the E2E conformance validator now enforces documented
+  error codes (`errorCode` string granularity) for the entity endpoints, in addition to response
+  shapes.
+
+- **Config-conditional `501` documented** — 21 IAM-gated operations (OIDC providers, JWT
+  keypairs, trusted keys, M2M clients) now declare `501 NOT_IMPLEMENTED` in the spec when
+  `CYODA_IAM_MODE ≠ jwt`. The 5 trusted-key ops additionally declare `404 FEATURE_DISABLED`
+  when `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=false` (default off); the `501` is only
+  reached when that feature is enabled and IAM ≠ jwt.
+
+- **`getTechnicalUserToken` spec completions** — `client_credentials` grant type, `405
+  method_not_allowed` on non-POST requests, and `server_error` / `method_not_allowed` error
+  enum values are now declared in the spec.
+
+- Workflow **processors** now accept an engine-ignored `annotations` object, and **criteria** an
+  engine-ignored `criterionAnnotations` sibling (workflow-selection and transition guards).
+  Well-known renderer keys `displayName`/`description` are documented across all five workflow
+  element types (object-only, ≤64 KB, types advisory). Workflow schema version bumps **1.1 → 1.2**
+  (additive; 1.1 still accepted).
+
+### Changed
+
+- **`DELETE /model/{entityName}/{modelVersion}` now enforces the documented
+  UNLOCKED precondition** — deleting a `LOCKED` model returns `409
+  MODEL_ALREADY_LOCKED` (previously the lock state was ignored). Unlock the model
+  first. The `409 MODEL_HAS_ENTITIES` guard is unchanged.
+
+- **Entity `meta` is typed-but-open** — `Envelope.meta` mirrors the canonical `EntityMetadata`
+  (typed properties, never sealed); the obsolete `previousTransition` field is removed.
+
+- **`listOidcProviders.activeOnly` retyped to boolean** — standard truthy values
+  (`1`, `true`, `TRUE`, `t`) now correctly filter active-only results; unparseable
+  values such as `?activeOnly=yes` return `400` instead of silently meaning false.
+
+- **`changeType` spelling** — entity change records now use the canonical `CREATE/UPDATE/DELETE`
+  across HTTP, gRPC, and the OpenAPI schema (HTTP previously emitted `CREATED/UPDATED/DELETED`).
+
+- **gRPC entity `meta`** — now includes `modelKey` (and `pointInTime` when as-at), matching HTTP.
+
+- Tightened the `create`/`createCollection` request-body schemas to their real shapes; documented
+  unique-key `409`/`422` codes and reverse-chronological change ordering on the entity endpoints.
+
+- PostgreSQL search now pushes supported predicates into SQL (JSONB `->>`
+  extraction, numeric/range/string comparisons) instead of loading every entity
+  of a model and filtering them in memory. Non-pushable operators (regex,
+  case-insensitive) are post-filtered while rows stream, and `LIMIT`/`OFFSET`
+  are pushed into SQL when no residual remains. This is a constant-factor win —
+  no full-result wire transfer, no decode of every document, filtering and
+  pagination done in the database — not a JSON-path-index speedup; adding
+  indexes on queried paths remains a separate operational step. SQLite already
+  did this; the memory backend keeps filtering in memory by design.
+  ([#37](https://github.com/Cyoda-platform/cyoda-go/issues/37))
+
+- **Unknown model → `404 MODEL_NOT_FOUND` (uniform)** — all model-scoped read
+  operations (`getAllEntities`, `getEntityStatisticsForModel`,
+  `getEntityStatisticsByStateForModel`, `searchEntities`, `submitAsyncSearchJob`,
+  `queryGroupedEntityStatisticsForModel`) now return `404 MODEL_NOT_FOUND` when
+  the requested model is not registered for the calling tenant. Previously these
+  paths returned empty results silently; the ad-hoc `UNKNOWN_MODEL` code used by
+  grouped-stats is retired.
+
+- **`searchEntities` limit enforcement** — `limit > 10000` is now rejected with
+  `400 BAD_REQUEST` across synchronous search (HTTP), gRPC direct search, and
+  async search submission. Previously the spec documented this as a silent clamp.
+
+- **`searchEntities` content type** — the synchronous search endpoint responds
+  with `application/x-ndjson` only; the previously-listed `application/json`
+  variant is removed from the contract.
+
+- **`listOidcProviders` fictional `403` removed** — the `403` response was never
+  emitted by the server (the endpoint is auth-only, not admin-only); the spec entry
+  is removed.
+
+- **Edge-message request metadata field renamed `meta-data` → `metaData`** — the
+  `POST /api/message/new/{subject}` request envelope now carries its optional metadata map
+  under `metaData` (camelCase), symmetric with the `getMessage` response and consistent with
+  the rest of the API's JSON naming. The former kebab-case `meta-data` key is no longer honored;
+  its contents are ignored. Breaking input change, shipped in a patch because edge messages have
+  no known consumers. A new `cyoda help messages` topic documents the full edge-message API.
+  ([#386](https://github.com/Cyoda-platform/cyoda-go/issues/386))
+
+### Removed
+
+- **`pointInTime` param on `getAsyncSearchResults`** — the point-in-time is
+  fixed at job submission; the param was a no-op and is removed from the contract.
+
+- **`timeoutMillis` param and `408` on `searchEntities`** — these were fictional
+  contract surface not backed by an implementation; both are removed. Actual
+  per-request timeout support is tracked separately.
+
+- **Fictional time-based-UUID `400` on `getStateMachineFinishedEvent`** — any
+  valid UUID is accepted; the fictional constraint is removed from the spec.
+
+### Fixed
+
+- **OIDC / admin op error envelope** — the 7 OIDC provider ops and
+  `searchEntityAuditEvents` now declare `application/problem+json` `ProblemDetail`
+  errors in the spec, matching the server. `getTechnicalUserToken` retains the
+  RFC-6749 flat OAuth shape (`{error, error_description}`).
+
+- **`registerOidcProvider` duplicate returns `409`** — duplicate provider
+  registration now returns `409 OIDC_PROVIDER_DUPLICATE` (was `400`). The `400`
+  path remains for validation failures (`OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`,
+  malformed body).
+
+- **`ProblemDetailDto` schema consolidated** — the structural duplicate is removed;
+  the 9 async-search error responses now reference the canonical `ProblemDetail`
+  schema.
+
+- **`getStateMachineFinishedEvent` error envelope** — error responses now use
+  `application/problem+json` (`ProblemDetail`), matching the rest of the API.
+
+- **`getAsyncSearchResults` documented default page size** — corrected from 10
+  to 1000 in the spec; the implementation was already using 1000.
+
+- Point-in-time ("as at T") reads now apply one canonical rule across all
+  storage engines and read paths: inclusive of the requested instant (`<=`),
+  compared at native precision, with no millisecond round-up. Previously the
+  memory engine and the SQL `GetAsAt`/`GetAllAsAt` paths rounded the requested
+  time up to the next millisecond (over-including later same-millisecond
+  versions), and sqlite used a strict `<` bound — so different backends, and
+  different read paths within one backend, could disagree at sub-millisecond
+  boundaries. ([#349](https://github.com/Cyoda-platform/cyoda-go/issues/349))
+
+### Security
+
+- Bumped the Go toolchain `go 1.26.4` → `go 1.26.5` (root + all three plugin
+  modules and `go.work`) to clear govulncheck advisory GO-2026-5856, a reachable
+  `crypto/tls` vulnerability in the Go standard library fixed in go1.26.5.
+
+- Bumped the indirect `github.com/yuin/goldmark` dependency `v1.7.13` → `v1.7.17`
+  to clear govulncheck advisory GO-2026-5320 (XSS in goldmark HTML rendering,
+  reached via `glamour` in the `cyoda help` renderer). The renderer only formats
+  first-party help content embedded in the binary, so the advisory was not
+  reachable with attacker-controlled input; the bump keeps the security scan clean.
 
 ## [0.8.1] — 2026-06-23
 

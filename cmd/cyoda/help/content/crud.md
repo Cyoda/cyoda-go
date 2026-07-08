@@ -15,6 +15,9 @@ see_also:
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSITION_NOT_FOUND
+  - errors.UNIQUE_VIOLATION
+  - errors.INVALID_UNIQUE_KEY
+  - messages
   - openapi
 ---
 
@@ -33,6 +36,8 @@ GET    /api/entity/{entityId}
 PUT    /api/entity/{format}/{entityId}
 PUT    /api/entity/{format}/{entityId}/{transition}
 PUT    /api/entity/{format}
+PATCH  /api/entity/{format}/{entityId}
+PATCH  /api/entity/{format}/{entityId}/{transition}
 DELETE /api/entity/{entityId}
 DELETE /api/entity/{entityName}/{modelVersion}
 GET    /api/entity/{entityName}/{modelVersion}
@@ -143,6 +148,7 @@ Response: `200 OK`, `application/json`:
   "data": { "category": "physics", "year": "2024" },
   "meta": {
     "id": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
+    "modelKey": { "name": "nobel-prize", "version": 1 },
     "state": "NEW",
     "creationDate": "2025-08-01T10:00:00Z",
     "lastUpdateTime": "2025-08-01T10:00:00Z",
@@ -241,6 +247,61 @@ Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — on
 
 `itemIndex` is the failing item's zero-based position within its chunk's request slice (per-chunk relative). When every item in a chunk fails its `ifMatch` precondition, the chunk still commits as a zero-write transaction — `entityIds` is empty, `failed[]` lists every item, and `transactionId` remains meaningful for audit correlation.
 
+**PATCH /api/entity/{format}/{entityId}** — Partial update of a single entity (loopback transition)
+
+- `format` (path): `JSON` only — Merge Patch is JSON-only by RFC 7386; `XML` ⇒ `415 Unsupported Media Type`
+- `entityId` (path): UUID
+- `Content-Type` (header, required): `application/merge-patch+json` (RFC 7386 merge patch, implemented) or `application/json-patch+json` (RFC 6902, returns `501 Not Implemented`); any other value ⇒ `415 Unsupported Media Type`
+- `If-Match` (header, required in some form): see the three-state list below
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+
+Request body: a sparse JSON object (the patch document). The patch is applied to the **stored** entity payload using RFC 7386 merge semantics:
+
+- A key present in the patch with a non-null value overwrites the target key.
+- A key whose value is itself an object merges recursively.
+- A key present in the patch with an explicit `null` value deletes that key from the stored payload.
+- Arrays are replaced wholesale — there are no element-level operations.
+- The empty patch `{}` is a valid no-op merge: the data is unchanged, but the request still commits a new transaction and fires the loopback transition (consistent with PUT-with-empty-body).
+
+**If-Match precondition (required).** Unlike `PUT`, where omitting `If-Match` means unconditional replace, PATCH requires `If-Match` to be present in some form, because the merge is applied relative to a base the caller read; silently patching a stale base risks lost updates. The token is the `meta.transactionId` from the caller's last `GET` of this entity — the same field the existing `PUT` `If-Match` uses.
+
+Three states are accepted:
+
+- `If-Match: "<transactionId>"` — Conditional: the stored entity's `transactionId` must still match; returns `412 Precondition Failed` if it has moved since the caller's read.
+- `If-Match: *` — Unconditional opt-out: merge onto current state regardless of version (entity must exist); a concurrent-writer race can still surface as `409` (see below).
+- Absent — returns `428 Precondition Required`; the response body explains the two valid choices.
+
+Response: `200 OK`, same shape as the single-item PUT update.
+
+**PATCH /api/entity/{format}/{entityId}/{transition}** — Partial update of a single entity with a named transition
+
+- `format` (path): `JSON` only
+- `entityId` (path): UUID
+- `transition` (path): string — transition name defined in the model's workflow
+- `Content-Type` (header, required): same two-value list as the loopback form
+- `If-Match` (header, required in some form): same three-state list as the loopback form
+- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+
+The merge patch is applied first; the named transition's processors then run on the merged state and may further mutate the entity. Response: `200 OK`, same shape as the loopback form.
+
+**Two behaviours to be aware of:**
+
+1. **Strict validation.** The merged result is validated strictly against the model schema — the model is never extended, regardless of its `ChangeLevel`. A PATCH cannot introduce a field that the schema does not already allow, even when the model is in an extend-permitting mode. To add a genuinely new field, use `PUT` (which may extend the schema), then PATCH thereafter.
+
+2. **Processors run after the merge.** Under a named transition, the transition's processors run on the merged entity state and may overwrite fields the patch set. The observable result of a patch with a named transition is not guaranteed to retain the patched values when the transition has mutating processors. This is the same ordering as `PUT` plus a named transition.
+
+**Partial-update error codes:**
+
+- `404 Not Found` — entity does not exist
+- `409 Conflict` (retryable) — a concurrent writer committed between the in-transaction base read and this save (read-set conflict at commit); may occur even with `If-Match: *`; caller may retry
+- `412 Precondition Failed` — `If-Match: "<transactionId>"` supplied and the stored `transactionId` differs; see `errors.ENTITY_MODIFIED`
+- `415 Unsupported Media Type` — `XML` format, or a `Content-Type` other than the two patch media types
+- `428 Precondition Required` — no `If-Match` header present
+- `501 Not Implemented` — `Content-Type: application/json-patch+json` (RFC 6902 is recognised but not yet implemented)
+- Standard `4xx` domain errors — the **merged result** fails strict schema validation (full domain detail + error code)
+
 **DELETE /api/entity/{entityId}** — Delete a single entity by UUID
 
 - `entityId` (path): UUID
@@ -258,23 +319,33 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-**DELETE /api/entity/{entityName}/{modelVersion}** — Delete all entities for a model
+**DELETE /api/entity/{entityName}/{modelVersion}** — Delete entities for a model (conditional)
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+- `transactionSize` (query, optional): int32, default `1000` — maximum entities to delete per transaction
+- `pointInTime` (query, optional): RFC 3339 — select entities for deletion as at this instant
+- `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every deleted entity ID; for a delete-all (empty body) `ids` is always empty
+
+Request body: optional `AbstractConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
 
 Response: `200 OK`, `application/json`:
 
 ```json
-[{
+{
+  "entityModelClassId": "022d9200-0cf0-11ef-9e63-ae468cd3ed16",
+  "ids": ["ffef9680-26e6-11ef-9e63-ae468cd3ed16"],
   "deleteResult": {
-    "idToError": {},
-    "numberOfEntitites": 42,
-    "numberOfEntititesRemoved": 42
-  },
-  "entityModelClassId": "31134900-d9cb-11ee-b913-ae468cd3ed16"
-}]
+    "numberOfEntitites": 4,
+    "numberOfEntititesRemoved": 3,
+    "idToError": {
+      "cecbe400-7402-11ef-9e63-ae468cd3ed16": "Some error message"
+    }
+  }
+}
 ```
+
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 
@@ -282,34 +353,35 @@ Response: `200 OK`, `application/json`:
 - `modelVersion` (path): int32
 - `pageSize` (query, optional): int32, default `20`
 - `pageNumber` (query, optional): int32, default `0`
+- `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive)
 
-Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET).
+Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
 **GET /api/entity/{entityId}/changes** — Get entity change history metadata
 
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time
 
-Response: `200 OK`, `application/json`, array of change entries:
+Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first):
 
 ```json
 [
   {
-    "changeType": "CREATED",
-    "timeOfChange": "2025-08-01T10:00:00Z",
-    "user": "admin",
-    "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
-  },
-  {
-    "changeType": "UPDATED",
+    "changeType": "UPDATE",
     "timeOfChange": "2025-08-02T09:00:00Z",
     "user": "admin",
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16"
+  },
+  {
+    "changeType": "CREATE",
+    "timeOfChange": "2025-08-01T10:00:00Z",
+    "user": "admin",
+    "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
   }
 ]
 ```
 
-- `changeType`: `CREATED`, `UPDATED`, or `DELETED`
+- `changeType`: `CREATE`, `UPDATE`, or `DELETE`
 - `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
@@ -358,7 +430,7 @@ Response: `200 OK`, `application/json`:
 - `entityName` (path): string
 - `modelVersion` (path): int32
 
-Response: `200 OK`, `application/json`, single `ModelStatsDto`.
+Response: `200 OK`, `application/json`, single `ModelStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
 **GET /api/entity/stats/states/{entityName}/{modelVersion}** — Entity count by state for a specific model
 
@@ -366,7 +438,7 @@ Response: `200 OK`, `application/json`, single `ModelStatsDto`.
 - `modelVersion` (path): int32
 - `states` (query, optional): list of state names to filter by; maximum 1000 entries
 
-Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`.
+Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
 **POST /api/entity/stats/{entityName}/{modelVersion}/query** — Grouped statistics with optional aggregations
 
@@ -475,8 +547,8 @@ ON entities (json_extract(data, '$.variantId'));
 
 Error codes (response carries RFC 9457 problem+json with `properties.errorCode` set to the machine-readable code below):
 
+- `MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant
 - `MALFORMED_REQUEST` — `400` — JSON parse failed
-- `UNKNOWN_MODEL` — `400` — path does not resolve for the calling tenant
 - `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
 - `INVALID_GROUP_BY_PATH` — `400` — empty entry, or array projection in a `groupBy` JSONPath
 - `DUPLICATE_GROUP_BY` — `400` — duplicate entries after normalization
@@ -493,6 +565,21 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `NOT_IMPLEMENTED_BY_BACKEND` — `501` — backend implements neither `Iterable` nor `GroupedAggregator`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
 
+## POINT-IN-TIME SEMANTICS
+
+A `pointInTime` read returns entity state **as at exactly that instant,
+inclusive**: a version whose write timestamp equals `pointInTime` is included
+(`<=`), and no rounding is applied to the requested time. The bound is compared
+against stored version timestamps at the storage engine's native precision.
+
+Behaviour is identical across every read path — single-entity read, list,
+search, grouped statistics, change history, and available transitions — and
+across storage backends. Because backends store timestamps at different
+precisions (down to milliseconds on some deployments), cross-backend results are
+guaranteed to agree at **millisecond granularity**; finer-grained ordering
+within a single millisecond is backend-defined. Timestamps are accepted and
+emitted as RFC 3339 with full fractional precision.
+
 ## ENTITY ENVELOPE
 
 All entity read operations return entities in the standard envelope:
@@ -507,6 +594,7 @@ All entity read operations return entities in the standard envelope:
     "state": "NEW",
     "creationDate": "2025-08-01T10:00:00.000000000Z",
     "lastUpdateTime": "2025-08-01T10:00:00.000000000Z",
+    "pointInTime": "2025-08-01T10:00:00Z",
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16",
     "transitionForLatestSave": "UPDATE"
   }
@@ -516,10 +604,11 @@ All entity read operations return entities in the standard envelope:
 - `type` — always `"ENTITY"`
 - `data` — the entity's JSON payload (decoded with `json.Number` for numeric precision)
 - `meta.id` — UUID string
-- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present in single-entity `GET /entity/{id}` responses. Omitted from list/search results because the model is already part of the request path (`/api/entity/{entityName}/{modelVersion}`).
+- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present on all entity reads (single-get, list, search).
 - `meta.state` — current workflow state string
 - `meta.creationDate` — RFC 3339 with nanoseconds
-- `meta.lastUpdateTime` — RFC 3339 with nanoseconds
+- `meta.lastUpdateTime` — RFC 3339 with nanoseconds; equals `creationDate` if never updated
+- `meta.pointInTime` — the as-at point-in-time for which the entity was retrieved, when supplied
 - `meta.transactionId` — present when a transaction ID exists
 - `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
 
@@ -544,9 +633,11 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
+- `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
+- `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
-- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `400` for validation failures (`MALFORMED_REQUEST`, `UNKNOWN_MODEL`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
+- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
 ## EXAMPLES
 
@@ -603,12 +694,20 @@ curl -s -X DELETE \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16"
 ```
 
-**Delete all entities for a model:**
+**Delete entities for a model (all, or filtered by condition):**
 
 ```
+# Delete all entities for the model:
 curl -s -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1"
+
+# Delete only VALIDATED entities and list the deleted IDs:
+curl -s -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"VALIDATED"}' \
+  "http://localhost:8080/api/entity/nobel-prize/1?verbose=true"
 ```
 
 **List all entities for a model (page 0, size 20):**
@@ -692,5 +791,8 @@ curl -s -X POST \
 - errors.VALIDATION_FAILED
 - errors.INCOMPATIBLE_TYPE
 - errors.CONFLICT
+- errors.UNIQUE_VIOLATION
+- errors.INVALID_UNIQUE_KEY
 - errors.TRANSITION_NOT_FOUND
+- messages
 - openapi

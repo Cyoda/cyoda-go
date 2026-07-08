@@ -34,7 +34,8 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
 			common.WriteError(w, r, common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeBadRequest, "request payload exceeds maximum allowed limit of 10MB"))
 			return
 		}
@@ -44,10 +45,10 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 
 	var envelope struct {
 		Payload  json.RawMessage `json:"payload"`
-		MetaData map[string]any  `json:"meta-data"`
+		MetaData map[string]any  `json:"metaData"`
 	}
 	if err := json.Unmarshal(rawBody, &envelope); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected an object with a 'payload' field"))
 		return
 	}
 
@@ -114,18 +115,19 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 }
 
 // GetMessage retrieves an edge message by ID.
-func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId uuid.UUID) {
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
-	header, metaData, payloadReader, err := store.Get(r.Context(), messageId)
+	msgIDStr := messageId.String()
+	header, metaData, payloadReader, err := store.Get(r.Context(), msgIDStr)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
-			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", messageId))
-			appErr.Props = map[string]any{"messageId": messageId}
+			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", msgIDStr))
+			appErr.Props = map[string]any{"messageId": msgIDStr}
 			common.WriteError(w, r, appErr)
 			return
 		}
@@ -162,28 +164,24 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId s
 		respHeader["correlationId"] = header.CorrelationID
 	}
 
-	valuesMap := map[string]any{"typeReferences": map[string]any{}}
-	if metaData.Values != nil {
-		for k, v := range metaData.Values {
-			valuesMap[k] = v
-		}
+	// Flat metadata map — symmetric with the submitted `metaData`. The
+	// values/indexedValues split and the injected typeReferences were
+	// cyoda-cloud indexing artifacts, not part of the cyoda-go contract.
+	metaMap := map[string]any{}
+	// IndexedValues is merged last, so it wins on a key collision — which is
+	// currently impossible: cyoda-go routes all client metaData to IndexedValues,
+	// leaving Values empty.
+	for k, v := range metaData.Values {
+		metaMap[k] = v
 	}
-
-	indexedMap := map[string]any{"typeReferences": map[string]any{}}
-	if metaData.IndexedValues != nil {
-		for k, v := range metaData.IndexedValues {
-			indexedMap[k] = v
-		}
+	for k, v := range metaData.IndexedValues {
+		metaMap[k] = v
 	}
 
 	resp := map[string]any{
-		"header": respHeader,
-		"metaData": map[string]any{
-			"values":        valuesMap,
-			"indexedValues": indexedMap,
-		},
-		// json.RawMessage embeds the payload as-is in the JSON output instead of
-		// wrapping the bytes in a JSON string. This fixes the #21 JSON-in-string defect.
+		"header":   respHeader,
+		"metaData": metaMap,
+		// json.RawMessage embeds the payload as-is (fixes the JSON-in-string defect).
 		"content": json.RawMessage(payloadBytes),
 	}
 
@@ -191,19 +189,20 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId s
 }
 
 // DeleteMessage deletes a single edge message by ID.
-func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId uuid.UUID) {
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
+	msgIDStr := messageId.String()
 	// Check existence by trying to get first
-	_, _, rc, err := store.Get(r.Context(), messageId)
+	_, _, rc, err := store.Get(r.Context(), msgIDStr)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
-			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", messageId))
-			appErr.Props = map[string]any{"messageId": messageId}
+			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", msgIDStr))
+			appErr.Props = map[string]any{"messageId": msgIDStr}
 			common.WriteError(w, r, appErr)
 			return
 		}
@@ -212,13 +211,13 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageI
 	}
 	rc.Close()
 
-	if err := store.Delete(r.Context(), messageId); err != nil {
+	if err := store.Delete(r.Context(), msgIDStr); err != nil {
 		common.WriteError(w, r, common.Internal("failed to delete message", err))
 		return
 	}
 
 	common.WriteJSON(w, http.StatusOK, map[string]any{
-		"entityIds": []string{messageId},
+		"entityIds": []string{msgIDStr},
 	})
 }
 
@@ -228,14 +227,26 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			common.WriteError(w, r, common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeBadRequest, "request payload exceeds maximum allowed limit of 10MB"))
+			return
+		}
 		common.WriteError(w, r, common.Internal("failed to read request body", err))
 		return
 	}
 
 	var ids []string
 	if err := json.Unmarshal(rawBody, &ids); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: expected array of UUID strings: %v", err)))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected array of UUID strings"))
 		return
+	}
+
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "id list contains a value that is not a valid UUID"))
+			return
+		}
 	}
 
 	store, err := h.factory.MessageStore(r.Context())

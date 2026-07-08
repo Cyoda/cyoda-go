@@ -198,7 +198,7 @@ var Catalog = []Fixture{
 		}),
 		Incoming: map[string]any{
 			"a":   json.Number("3.14"), // broaden Integer -> Double
-			"new": "s",                  // add property
+			"new": "s",                 // add property
 		},
 		Level: spi.ChangeLevelStructural,
 	},

@@ -64,7 +64,7 @@ type nonFlusherWriter struct {
 	code    int
 }
 
-func (n *nonFlusherWriter) Header() http.Header  { return n.headers }
+func (n *nonFlusherWriter) Header() http.Header { return n.headers }
 func (n *nonFlusherWriter) Write(p []byte) (int, error) {
 	n.body = append(n.body, p...)
 	return len(p), nil

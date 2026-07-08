@@ -74,34 +74,7 @@ func (s *entityStore) Iterate(
 		plan = planQuery(filter)
 	}
 
-	tid := string(s.tenantID)
-	var baseQuery string
-	var baseArgs []any
-
-	if opts.PointInTime != nil {
-		// Bi-temporal pattern from GetAsAt. Two-stage filter:
-		//  1. Inner: DISTINCT ON picks the latest version per entity visible at
-		//     the snapshot (ORDER BY drives the pick).
-		//  2. Outer: drop versions whose deletion-marker is set. This MUST
-		//     happen AFTER the DISTINCT ON, not inside it — otherwise the
-		//     deletion-marker version is filtered out and an older non-deleted
-		//     version surfaces, falsely showing the entity as live post-delete.
-		baseQuery = `SELECT doc FROM (
-		                SELECT DISTINCT ON (entity_id) doc
-		                FROM entity_versions
-		                WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-		                  AND valid_time <= $4
-		                  AND transaction_time <= CURRENT_TIMESTAMP
-		                ORDER BY entity_id, valid_time DESC, transaction_time DESC
-		             ) latest
-		             WHERE (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
-		baseArgs = []any{tid, model.EntityName, model.ModelVersion, *opts.PointInTime}
-	} else {
-		baseQuery = `SELECT doc
-		             FROM entities
-		             WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
-		baseArgs = []any{tid, model.EntityName, model.ModelVersion}
-	}
+	baseQuery, baseArgs := s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
 
 	if plan.where != "" {
 		// planQuery starts its placeholder counter at 1, but we've already

@@ -1,0 +1,65 @@
+name: Close release-branch issues
+
+# When a PR merges into a release/** branch, close the issues it references via
+# Closes/Fixes/Resolves keywords. GitHub only auto-closes those on merges into
+# the DEFAULT branch, so this keeps the release milestone an accurate "delivered"
+# view as features land on the release branch (rather than waiting for the
+# release -> main merge). The milestone (issues only) is the delivered-vs-remaining
+# dashboard; close the milestone itself when the release ships to main.
+#
+# This reuses GitHub's own closingIssuesReferences (parsed from the PR body), so
+# it honours exactly the closing keywords GitHub recognises. Internal release PRs
+# only; a fork PR would carry a read-only token and the close would no-op.
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  close-referenced-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issues referenced by the merged PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            const data = await github.graphql(
+              `query($owner: String!, $repo: String!, $num: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $num) {
+                    closingIssuesReferences(first: 50) { nodes { number state } }
+                  }
+                }
+              }`,
+              { owner, repo, num: pr.number }
+            );
+            const nodes = data.repository.pullRequest.closingIssuesReferences.nodes;
+            if (nodes.length === 0) {
+              core.info('No closing issue references on this PR; nothing to do.');
+              return;
+            }
+            for (const issue of nodes) {
+              if (issue.state === 'CLOSED') {
+                core.info(`#${issue.number} already closed; skipping.`);
+                continue;
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: `Delivered into \`${pr.base.ref}\` via #${pr.number}. `
+                  + `Closed on release-branch landing; ships to main with the release.`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number,
+                state: 'closed', state_reason: 'completed',
+              });
+              core.info(`Closed #${issue.number}.`);
+            }

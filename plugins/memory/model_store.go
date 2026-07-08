@@ -19,6 +19,7 @@ func cloneDescriptor(src *spi.ModelDescriptor) *spi.ModelDescriptor {
 		cp.Schema = make([]byte, len(src.Schema))
 		copy(cp.Schema, src.Schema)
 	}
+	cp.UniqueKeys = append([]spi.UniqueKey(nil), src.UniqueKeys...)
 	return &cp
 }
 

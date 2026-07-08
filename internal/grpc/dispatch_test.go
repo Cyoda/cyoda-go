@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -24,7 +27,8 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 		return nil
 	})
 	uuids := common.NewTestUUIDGenerator()
-	dispatcher := NewProcessorDispatcher(registry, uuids)
+	signer, _ := token.NewSigner(make32(t))
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
 	return dispatcher, registry, memberID, sentCh
 }
 
@@ -175,7 +179,8 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 func TestDispatchProcessor_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
 	uuids := common.NewTestUUIDGenerator()
-	dispatcher := NewProcessorDispatcher(registry, uuids)
+	signer, _ := token.NewSigner(make32(t))
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
 	ctx := testContext()
 	entity := testEntity()
 
@@ -560,5 +565,58 @@ func TestDispatchCriteria_EmptyContextOmitsParameters(t *testing.T) {
 
 	if _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestDispatchProcessor_AnnotationsNotSentToMember verifies that
+// ProcessorDefinition.Annotations — client-owned renderer metadata — never
+// reaches the compute member on the wire. dispatch.go builds a field-selected
+// EntityProcessorCalculationRequestJson rather than marshalling the whole
+// spi.ProcessorDefinition, so there is no annotations field to leak; this
+// test pins that behavior and would fail if the request builder ever grew
+// one.
+func TestDispatchProcessor_AnnotationsNotSentToMember(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	processor := spi.ProcessorDefinition{
+		Name:        "my-proc",
+		Type:        "externalized",
+		Annotations: json.RawMessage(`{"displayName":"SECRET-LABEL"}`),
+		Config: spi.ProcessorConfig{
+			AttachEntity:         true,
+			CalculationNodesTags: "python",
+			ResponseTimeoutMs:    5000,
+		},
+	}
+
+	// Goroutine to respond.
+	// Note: uses t.Error (not t.Fatal) because t.Fatal calls runtime.Goexit
+	// which has undefined behavior when called from a non-test goroutine.
+	go func() {
+		ce := <-sentCh
+		_, payload, err := ParseCloudEvent(ce)
+		if err != nil {
+			t.Errorf("ParseCloudEvent: %v", err)
+			return
+		}
+		if strings.Contains(string(payload), "SECRET-LABEL") || strings.Contains(string(payload), "annotations") {
+			t.Errorf("processor annotations leaked to compute member: %s", payload)
+		}
+
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
+	}()
+
+	// Dispatch should succeed (no error path) despite the processor carrying annotations.
+	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf", "t", "tx-1")
+	if err != nil {
+		t.Fatalf("DispatchProcessor: %v", err)
 	}
 }

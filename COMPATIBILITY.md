@@ -32,6 +32,7 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 | `cyoda-go` | Root `go.mod` pins | In-tree plugin go.mods pin | SPI surface added in this release |
 |---|---|---|---|
+| **`v0.8.2`** *(pending)* | `cyoda-go-spi v0.8.2` *(pending)* | `cyoda-go-spi v0.8.2` *(pending)* | Composite-unique-key support: `CompositeUniqueKeyCapable` optional interface, `UniqueKey`, `UniqueClaim` types, `WithUniqueKeys`/`UniqueKeysFromContext` context helpers; search-sort ordering: `OrderKind` enum (`OrderText`, `OrderNumeric`, `OrderBool`, `OrderTemporal`) + `OrderSpec.Kind OrderKind` field; client-owned annotations extended to processors and criteria: `ProcessorDefinition.Annotations`, `WorkflowDefinition.CriterionAnnotations`, `TransitionDefinition.CriterionAnnotations` (workflow schema 1.1 → 1.2, dual-shape). Binary-only additions: compute-node callback tx-join (token minted per dispatch, `cyodatxtoken` CloudEvent attribute, `Join`-not-`Begin` semantics on callback, cross-node routing via HTTP proxy / gRPC B→A forward); new env vars `CYODA_TX_TOKEN_TTL`, `CYODA_GRPC_NODE_ADDR`, `CYODA_COMPUTE_HTTP_BASE`. |
 | **`v0.8.1`** | `cyoda-go-spi v0.8.1` | `cyoda-go-spi v0.8.1` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`); scheduled-transition shape: `TransitionDefinition.Schedule *TransitionSchedule` (`DelayMs`, `TimeoutMs *int64`); async-result shape: `ProcessorConfig.AsyncResult *bool`, `ProcessorConfig.CrossoverToAsyncMs *int64`; client-owned annotations: `Annotations json.RawMessage` on the workflow, state, and transition definitions |
 | **`v0.7.1`** | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
 | **`v0.7.0`** | `cyoda-go-spi v0.7.0` | `cyoda-go-spi v0.6.1`† | `ProcessorConfig.StartNewTxOnDispatch *bool` |
@@ -41,6 +42,12 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 | `v0.6.0` | `cyoda-go-spi v0.6.0` | `cyoda-go-spi v0.6.0` | `ExtendSchema` retry + ctx-cancellation contract |
 
 † The in-tree plugin submodules pin `spi v0.6.1` rather than `v0.7.0` because they don't use `StartNewTxOnDispatch`. SPI is strictly additive — `v0.7.0` is fully backward-compatible with `v0.6.1` consumers.
+
+### Independent version axes
+
+`cyoda-go` and `cyoda-go-spi` version **independently**. The binary pins the SPI version it needs and never skips or burns a version number to mirror the SPI's — this matrix is the source of truth for which binary pins which SPI, not a shared digit. `cyoda-go-spi` follows the same convention as everything else ([README — Versioning](./README.md#versioning)): a **patch** for additive interface surface, a **minor** only for a breaking interface change. Because the SPI has been strictly additive throughout `v0.5.0…v0.8.1`, its minor moves rarely while the binary iterates freely.
+
+Two repo-internal rules still hold and must not be confused with a binary↔SPI coupling: **pin-sync** (root + every `plugins/*/go.mod` agree on one SPI version, CI-gated by `make check-spi-pin-sync`) and **plugin-tag-equals-umbrella** (plugin submodule tags match the `cyoda-go` tag). Both are release hygiene *within* this repo; neither ties the binary's version number to the SPI's.
 
 ### Out-of-tree plugin authors
 
@@ -59,10 +66,13 @@ commit and was fetched through `proxy.golang.org`, which **permanently** binds a
 version to the first commit it serves. A Go module version cannot be re-cut once
 the proxy/checksum-database has seen it, so `v0.8.0` is abandoned and
 **`cyoda-go-spi v0.8.1`** is the canonical, complete v0.8.x SPI release — it
-resolves cleanly through the public proxy with no `GOPRIVATE` workaround. To keep
-the binary aligned with the SPI it pins, `cyoda-go` skips `v0.8.0` as well and
-ships **`v0.8.1`**. See [`MAINTAINING.md`](./MAINTAINING.md): a module version is
-tagged exactly once, at the final commit, and never re-cut.
+resolves cleanly through the public proxy with no `GOPRIVATE` workaround. At the
+time, `cyoda-go` also skipped `v0.8.0` to keep its number aligned with the SPI's
+and shipped **`v0.8.1`**. That number-matching is **no longer policy** — the
+binary and SPI now version independently (see [Independent version axes](#independent-version-axes)),
+so a future poisoned SPI tag would not force the binary to skip a number. See
+[`MAINTAINING.md`](./MAINTAINING.md): a module version is tagged exactly once, at
+the final commit, and never re-cut.
 
 ### Optional capability interfaces (grouped-stats)
 

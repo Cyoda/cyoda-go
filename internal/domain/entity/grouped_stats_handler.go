@@ -21,7 +21,7 @@ const maxGroupedStatsBodySize = 10 * 1024 * 1024
 // detection happens via type assertion inside the service) and the
 // resolved ModelRef for the given entity name and model version. The ok
 // return is false when the model is not found for the calling tenant —
-// the handler maps that to 400 UNKNOWN_MODEL per spec §3.
+// the handler maps that to 404 MODEL_NOT_FOUND.
 //
 // The handler holds a StoreResolver rather than (factory, modelStore)
 // directly so it can be unit-tested in isolation: tests inject a
@@ -135,8 +135,8 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 	if !ok {
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest, "UNKNOWN_MODEL",
-			"model not found for tenant",
+			http.StatusNotFound, common.ErrCodeModelNotFound,
+			"model not found",
 		))
 		return
 	}
@@ -164,7 +164,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			// status/code stable; only the detail varies.
 			common.WriteError(w, r, common.Operational(
 				http.StatusBadRequest,
-				"INVALID_CONDITION",
+				common.ErrCodeInvalidCondition,
 				err.Error(),
 			))
 		default:

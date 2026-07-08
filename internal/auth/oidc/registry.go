@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // providerRef points to one provider entry by its (tenant, uri) coordinate.
@@ -294,12 +294,12 @@ func (r *Registry) collectKeyEligibleRefs(candidates []providerRef, kid, iss str
 //  3. If exactly one keyEligible: return it (single-match path unchanged).
 //  4. If multiple keyEligible: disambiguate by aud.
 //     - Collect audMatched = those whose ExpectedAudiences is non-empty AND
-//       contains aud.
+//     contains aud.
 //     - Exactly one audMatched → return it.
 //     - Zero or multiple audMatched → ErrAmbiguousProvider (wraps
-//       ErrUnknownKID so the chain falls through). This prevents silent
-//       cross-tenant routing when two tenants share an IdP without setting
-//       distinct ExpectedAudiences (Critical audit fix, #284).
+//     ErrUnknownKID so the chain falls through). This prevents silent
+//     cross-tenant routing when two tenants share an IdP without setting
+//     distinct ExpectedAudiences (Critical audit fix, #284).
 //
 // Return semantics:
 //   - success → KeyResolution with ProviderRef populated

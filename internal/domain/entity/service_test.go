@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -32,6 +33,8 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 		&failingStoreFactory{err: errors.New("database connection lost")},
 		nil,
 		common.NewDefaultUUIDGenerator(),
+		nil,
+		txgate.New(),
 		nil,
 	)
 
@@ -90,6 +93,8 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
+			txgate.New(),
+			nil,
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -111,6 +116,8 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			&modelGetErrFactory{getErr: synthetic},
 			nil,
 			common.NewDefaultUUIDGenerator(),
+			nil,
+			txgate.New(),
 			nil,
 		)
 
@@ -141,6 +148,8 @@ func TestGetEntity_NotFoundReturns404(t *testing.T) {
 		&failingStoreFactory{err: spi.ErrNotFound},
 		nil,
 		common.NewDefaultUUIDGenerator(),
+		nil,
+		txgate.New(),
 		nil,
 	)
 
@@ -188,7 +197,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil)
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -267,9 +276,18 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil)
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
+
+	// Register the model so the model-existence guard passes.
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{Ref: mref, State: spi.ModelLocked}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
 
 	es, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -533,7 +551,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil)
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}

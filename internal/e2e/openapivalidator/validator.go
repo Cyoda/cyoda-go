@@ -1,6 +1,7 @@
 package openapivalidator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -88,10 +89,12 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		// work around the kin-openapi gorillamux limitation with overlapping
 		// path templates (e.g. /entity/{format} enum vs /entity/{entityId} uuid).
 		if opId, op := v.fallbackFindRoute(req); op != nil {
-			// Fallback matched a declared route. Record exercise; skip body
-			// schema validation (we can't construct a full routers.Route without
-			// re-entering the broken router).
+			// Fallback matched a declared route. Record exercise and error-code
+			// triple (if any); skip body schema validation (we can't construct a
+			// full routers.Route without re-entering the broken router).
 			defaultCollector.recordExercised(opId)
+			defaultCollector.recordStatus(opId, resp.StatusCode)
+			maybeRecordErrorCode(opId, resp)
 			return nil
 		}
 		// No matching route — the request hit a path the spec doesn't declare.
@@ -113,6 +116,16 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 	if !v.pathParamsSatisfied(route.Operation, pathParams) {
 		if opId, op := v.fallbackFindRoute(req); op != nil {
 			defaultCollector.recordExercised(opId)
+			defaultCollector.recordStatus(opId, resp.StatusCode)
+			maybeRecordErrorCode(opId, resp)
+			return nil
+		}
+		// A malformed path-parameter value (e.g. a non-uuid where format: uuid
+		// is required) that the server rejects with a uniform RFC-9457
+		// ProblemDetail 400 is the binding-error handler behaving correctly, not
+		// spec drift: no operation's constraints can match the malformed value
+		// by construction, yet the 400 is the documented, conformant response.
+		if isConformantBindingError(resp) {
 			return nil
 		}
 		return []Mismatch{{
@@ -126,6 +139,12 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 
 	opId := route.Operation.OperationID
 	defaultCollector.recordExercised(opId)
+	defaultCollector.recordStatus(opId, resp.StatusCode)
+
+	// Error-code coverage (Pillar A): record the (operationId, status, errorCode)
+	// triple from the ProblemDetail body. Uses the shared helper so the body is
+	// re-buffered identically whether we took the main or fallback branch.
+	maybeRecordErrorCode(opId, resp)
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.
@@ -195,6 +214,18 @@ func (v *Validator) isStreaming(route *routers.Route, status int) bool {
 		}
 	}
 	return false
+}
+
+// isConformantBindingError reports whether resp is a well-formed RFC-9457
+// binding-error rejection: HTTP 400 with an application/problem+json body. A
+// malformed path parameter the server rejects this way is correct
+// behaviour even though no operation's path-parameter constraints match the
+// malformed value.
+func isConformantBindingError(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(resp.Header.Get("Content-Type"), "application/problem+json")
 }
 
 // pathParamsSatisfied reports whether all path parameters in the matched
@@ -372,6 +403,23 @@ func satisfiesParamConstraint(p *openapi3.Parameter, value string) bool {
 		return err == nil
 	}
 	return true
+}
+
+// maybeRecordErrorCode reads properties.errorCode from a ProblemDetail body
+// and records the (opId, status, code) triple when the response is >=400 and
+// the body carries a non-empty code. Re-buffers the body so callers can still
+// read it. Called from both fallback route branches so that error triples are
+// captured regardless of which code path resolved the operation.
+func maybeRecordErrorCode(opId string, resp *http.Response) {
+	if resp.StatusCode < 400 || resp.Body == nil {
+		return
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	if code := extractErrorCode(bodyBytes); code != "" {
+		defaultCollector.recordErrorCode(opId, resp.StatusCode, code)
+	}
 }
 
 // uuidRe matches the canonical 8-4-4-4-12 hex UUID format.

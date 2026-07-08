@@ -16,7 +16,7 @@ TRANSACTION_EXPIRED — the transaction token presented to the proxy is past its
 
 ## SYNOPSIS
 
-HTTP: `400` `Bad Request`. Retryable: `no`.
+HTTP: `410` `Gone`. Retryable: `no`.
 
 ## DESCRIPTION
 

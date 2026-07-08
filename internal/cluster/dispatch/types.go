@@ -18,6 +18,7 @@ type DispatchProcessorRequest struct {
 	Tags           string                  `json:"tags"`
 	UserID         string                  `json:"userID"`
 	Roles          []string                `json:"roles"`
+	TxToken        string                  `json:"txToken,omitempty"`
 }
 
 // DispatchProcessorResponse is the cross-node result for processor execution.
@@ -42,6 +43,7 @@ type DispatchCriteriaRequest struct {
 	Tags           string          `json:"tags"`
 	UserID         string          `json:"userID"`
 	Roles          []string        `json:"roles"`
+	TxToken        string          `json:"txToken,omitempty"`
 }
 
 // DispatchCriteriaResponse is the cross-node result for criteria evaluation.

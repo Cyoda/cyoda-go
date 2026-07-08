@@ -222,6 +222,17 @@ func inferDataType(v any) DataType {
 			if stripped.Scale() == 0 {
 				bigVal = stripped.Unscaled()
 			} else {
+				// Guard against DoS: a huge negative scale (e.g. 1e1_000_000_000)
+				// would make Exp(10, -scale, nil) materialise a billion-digit big.Int.
+				// Compute the approximate decimal digit count without expansion:
+				//   digits = (significant digits in coefficient) + (-scale)
+				// Int128 max ≈ 1.7×10^38 has 39 decimal digits; any integer needing
+				// ≥ 40 digits to express is definitively UnboundInteger — skip Exp.
+				const int128MaxDigits = 39
+				digits := stripped.Precision() + int(-int64(stripped.Scale()))
+				if digits > int128MaxDigits {
+					return UnboundInteger
+				}
 				factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-stripped.Scale())), nil)
 				bigVal = new(big.Int).Mul(stripped.Unscaled(), factor)
 			}

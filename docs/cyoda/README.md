@@ -1,9 +1,10 @@
 # docs/cyoda — Cyoda Cloud OpenAPI reference
 
-This directory is a **read-only reference** mirror of the Cyoda Cloud
-OpenAPI spec, used by cyoda-go for parity work. Nothing in this
-directory is served at runtime — cyoda-go's authoritative, embedded
-spec lives at `api/openapi.yaml` at the repo root.
+This directory holds a **reference snapshot** of the Cyoda Cloud
+OpenAPI spec, kept for comparison and diff work. The authoritative
+contract is `api/openapi.yaml` at the repo root — cyoda-go defines
+that spec and Cyoda Cloud aligns to it. Nothing in this directory is
+served at runtime.
 
 ## Layout
 

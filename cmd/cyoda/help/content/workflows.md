@@ -13,6 +13,9 @@ see_also:
   - errors.WORKFLOW_FAILED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.COMPUTE_MEMBER_DISCONNECTED
+  - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
+  - errors.VALIDATION_FAILED
+  - errors.MODEL_NOT_FOUND
 ---
 
 # workflows
@@ -44,7 +47,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.1",
+  "version": "1.2",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -66,6 +69,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
               "type": "externalized",
               "name": "notify-approval",
               "executionMode": "SYNC",
+              "annotations": { "displayName": "Send approval email" },
               "config": {
                 "attachEntity": true,
                 "calculationNodesTags": "approval-service",
@@ -87,6 +91,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
             "operatorType": "EQUALS",
             "value": "2024"
           },
+          "criterionAnnotations": { "displayName": "Year is 2024" },
           "processors": []
         }
       ]
@@ -110,7 +115,8 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 - `active` — boolean — when `false`, the engine skips this workflow during selection
 - `criterion` — `Condition` JSON or `null` — evaluated against the entity at creation to select this workflow; `null` matches all entities
 - `states` — object — map of state name → `StateDefinition`
-- `annotations` — object or absent — optional client-owned metadata, stored and round-tripped (compacted) but never interpreted by the engine. Must be a JSON object; capped at 64 KB per field. Use for client concerns such as permitted roles, display labels, or UI hints
+- `annotations` — object or absent — optional client-owned metadata, stored and round-tripped (compacted) but never interpreted by the engine. Must be a JSON object; capped at 64 KB per field. Use for client concerns such as permitted roles, display labels, or UI hints. Two well-known optional keys, `displayName` and `description` (strings), are documented for renderer use (workflow visualisers, condition builders); the engine ignores them and the types are advisory, not enforced. All five workflow element types — workflow, state, transition, processor, and criterion via `criterionAnnotations` — share this same bag shape
+- `criterionAnnotations` — object or absent — optional client-owned metadata attached to this workflow's `criterion` as a whole (see `annotations` above); a sibling field rather than embedded in the criterion, so the criterion blob keeps round-tripping byte-verbatim
 
 **StateDefinition:**
 
@@ -126,6 +132,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 - `manual` — boolean — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
+- `criterionAnnotations` — object or absent — optional client-owned metadata attached to this transition's `criterion` as a whole (see WorkflowDefinition `annotations`); sibling field, engine-opaque
 - `processors` — array of `ProcessorDefinition` — invoked sequentially on this transition
 - `annotations` — object or absent — optional client-owned metadata (see WorkflowDefinition `annotations`); object-only, 64 KB cap, engine-opaque
 
@@ -137,6 +144,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 - `name` — string — logical processor name
 - `executionMode` — string — execution mode; see valid values below
 - `config` — `ProcessorConfig`
+- `annotations` — object or absent — optional client-owned metadata (see WorkflowDefinition `annotations`); object-only, 64 KB cap, engine-opaque. Excluded from the gRPC `EntityProcessorCalculationRequest` sent to compute members — never delivered to external processor implementations
 
 **Processor `type` (execution-location axis):**
 
@@ -368,7 +376,7 @@ Response: `200 OK`, `application/json`:
 
 Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the model.
 
-**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, or any transition) is omitted when absent, and is re-serialised in compacted form when present.
+**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, any transition, or any processor) and `criterionAnnotations` (on the workflow or any transition) are omitted when absent, and re-serialised in compacted form when present.
 
 ## ENGINE EXECUTION
 
@@ -405,7 +413,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.1",
+        "version": "1.2",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -457,7 +465,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.1",
+        "version": "1.2",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,
@@ -481,3 +489,6 @@ curl -s -X POST \
 - errors.WORKFLOW_FAILED
 - errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.COMPUTE_MEMBER_DISCONNECTED
+- errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
+- errors.VALIDATION_FAILED
+- errors.MODEL_NOT_FOUND

@@ -14,6 +14,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -32,6 +33,7 @@ type SearchOptions struct {
 	Offset          int
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
+	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
 }
 
 // ResultOptions controls pagination when retrieving async search results.
@@ -52,8 +54,13 @@ type SearchJobStatus struct {
 
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
 type SnapshotStatus struct {
-	SnapshotID    string
-	Status        string // RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND
+	SnapshotID string
+	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND.
+	// NOT_FOUND is emitted by the commercial self-executing search store on
+	// snapshot-expiry races (documented in the getAsyncSearchStatus spec); it
+	// is intentionally retained in the contract — do NOT remove this value
+	// even though OSS backends never set it.
+	Status        string
 	EntitiesCount int
 }
 
@@ -68,6 +75,11 @@ type SearchService struct {
 	// validation. nil-safe: when unset, validation falls back to the
 	// inner-store Get + bounded RefreshAndGet pair on every request.
 	pathCache *PathValidationCache
+
+	// maxSortKeys caps the number of sort keys accepted per request across
+	// all entry points (HTTP, gRPC, sync, async). Zero means use the
+	// built-in default of 16.
+	maxSortKeys int
 }
 
 // NewSearchService creates a SearchService backed by the given store factory.
@@ -90,6 +102,14 @@ func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchS
 	return s
 }
 
+// WithMaxSortKeys sets the per-request sort-key cap enforced by
+// resolveSortKeys. A value ≤ 0 restores the built-in default (16).
+// Returns the receiver for chaining after NewSearchService.
+func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
+	s.maxSortKeys = n
+	return s
+}
+
 // Search performs a synchronous entity search, returning matching entities.
 //
 // When the plugin's EntityStore implements spi.Searcher and there is no active
@@ -102,12 +122,32 @@ func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchS
 // entity.Handler.ValidateWithRefresh's bounded-retry contract) so a
 // search referencing a peer's freshly-extended path succeeds after one
 // authoritative read. Truly-unknown paths surface as 4xx BAD_REQUEST.
-// Models that have never been registered are admitted unchanged —
-// pre-execution validation is best-effort and only applies once the
-// model exists. See issue #77.
+// Unregistered models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
+	// Defense-in-depth: enforce the limit cap at the service layer so every
+	// entry point (HTTP, gRPC, future transports) sees the same rejection.
+	// The HTTP handler checks this already; gRPC does not — placing the check
+	// here closes that gap without altering the unbounded (limit<0) semantics.
+	if opts.Limit > pagination.MaxPageSize {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
+		return nil, appErr
+	}
+
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return nil, vErr
+	}
+
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	store, err := s.factory.EntityStore(ctx)
@@ -122,12 +162,19 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	if searcher, ok := store.(spi.Searcher); ok && tx == nil {
 		filter, translateErr := ConditionToFilter(cond)
 		if translateErr == nil {
+			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
+			// "no explicit limit" in all store implementations.
+			spiLimit := opts.Limit
+			if spiLimit < 0 {
+				spiLimit = 0
+			}
 			return searcher.Search(ctx, filter, spi.SearchOptions{
 				ModelName:    modelRef.EntityName,
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
-				Limit:        opts.Limit,
+				Limit:        spiLimit,
 				Offset:       opts.Offset,
+				OrderBy:      orderBy,
 			})
 		}
 		// Fall through to in-memory filtering if translation fails.
@@ -157,6 +204,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		}
 	}
 
+	sortEntities(matches, orderBy)
+
 	// Apply offset.
 	if opts.Offset > 0 {
 		if opts.Offset >= len(matches) {
@@ -165,12 +214,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		matches = matches[opts.Offset:]
 	}
 
-	// Apply limit (default 1000).
+	// Apply limit. Default 1000 when zero; negative means unbounded (no cap).
 	limit := opts.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 1000
 	}
-	if limit < len(matches) {
+	if limit > 0 && limit < len(matches) {
 		matches = matches[:limit]
 	}
 
@@ -184,13 +233,39 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // know about returns a 4xx without ever creating a job, sparing the
 // client a round-trip through the polling endpoint.
 func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
+	// Defense-in-depth: same cap as Search so the async path also fails fast
+	// rather than creating a job that will fail in the background.
+	if opts.Limit > pagination.MaxPageSize {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
 	}
 
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return "", common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
+		return "", appErr
+	}
+
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return "", vErr
+	}
+
+	// Resolve sort keys synchronously so a bad field path returns 400
+	// before the job is ever created — the client gets an actionable error
+	// without a polling round-trip. The resolved, Kind-bearing specs are
+	// what we persist so a SelfExecutingSearchStore (which executes from
+	// the persisted opts and never runs the domain resolver) orders with
+	// the correct comparison class.
+	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
+	if oerr != nil {
+		return "", oerr
 	}
 
 	if opts.PointInTime == nil {
@@ -206,14 +281,19 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", fmt.Errorf("failed to marshal search condition: %w", err)
 	}
 
+	// spi.OrderSpec has no json tags, so the OrderBy slice serializes with
+	// PascalCase field names (Path/Source/Desc/Kind). SelfExecutingSearchStore
+	// implementations that decode this blob must expect that casing.
 	optsJSON, err := json.Marshal(struct {
-		Limit       int        `json:"limit"`
-		Offset      int        `json:"offset"`
-		PointInTime *time.Time `json:"pointInTime,omitempty"`
+		Limit       int             `json:"limit"`
+		Offset      int             `json:"offset"`
+		PointInTime *time.Time      `json:"pointInTime,omitempty"`
+		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
 	}{
 		Limit:       opts.Limit,
 		Offset:      opts.Offset,
 		PointInTime: opts.PointInTime,
+		OrderBy:     orderBy,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal search options: %w", err)
@@ -449,11 +529,9 @@ func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string
 // a peer's freshly-extended path succeeds after one bounded refresh,
 // and a truly-unknown path surfaces as 4xx without a refresh loop.
 //
-// Returns nil when validation passes, when no data-field paths are
-// addressed (lifecycle-only conditions), or when the model has not been
-// registered (the memory plugin admits entity writes without a prior
-// model, and search must preserve that behaviour). Validator failures
-// surface as a 4xx common.AppError with the missing paths listed.
+// Returns nil when validation passes or when no data-field paths are
+// addressed (lifecycle-only conditions). Validator failures surface as a
+// 4xx common.AppError with the missing paths listed.
 func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) error {
 	paths := extractFieldPaths(cond)
 	if len(paths) == 0 {
@@ -482,12 +560,9 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 
 	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
 	if err != nil {
-		if errors.Is(err, spi.ErrNotFound) {
-			// Unregistered model — nothing to validate against.
-			return nil
-		}
-		// Decoding-the-schema failures are upstream: log and continue so
-		// search can still proceed via the matcher's own error path.
+		// Model existence is guaranteed by EnsureModelRegistered before we
+		// reach here; a schema-decode failure is upstream — log and proceed
+		// so the matcher's own error path can still surface a useful error.
 		slog.Debug("failed to load schema for pre-execution validation",
 			"pkg", "search",
 			"entityName", modelRef.EntityName,
@@ -496,8 +571,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 		return nil
 	}
 	if fields == nil {
-		// Descriptor returned nil (no schema bound) — treat as
-		// unregistered and admit the search.
+		// Descriptor returned nil — no schema bound to validate against.
 		return nil
 	}
 
@@ -583,6 +657,41 @@ func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths 
 	for _, p := range paths {
 		s.pathCache.MarkPresent(tenant, ref, p)
 	}
+}
+
+// resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating
+// scalar-leaf data paths and the meta allowlist. Returns a 400-classified
+// AppError on bad input.
+func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	// Enforce the sort-key cap and reject duplicates before touching the
+	// model store. This bounds every entry point (HTTP, gRPC, sync, async)
+	// uniformly and fails fast on clearly-invalid requests.
+	effMax := s.maxSortKeys
+	if effMax <= 0 {
+		effMax = 16
+	}
+	keys, cerr := capAndDedupOrderKeys(keys, effMax)
+	if cerr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, cerr.Error())
+	}
+
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get model store: %w", err)
+	}
+	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load schema for sort validation: %w", err)
+	}
+	specs, rerr := resolveOrderBy(keys, fields)
+	if rerr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+	}
+	return specs, nil
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more

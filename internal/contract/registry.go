@@ -3,10 +3,11 @@ package contract
 import "context"
 
 type NodeInfo struct {
-	NodeID string
-	Addr   string
-	Alive  bool
-	Tags   map[string][]string // tenantID → compute member tags
+	NodeID   string
+	Addr     string
+	GRPCAddr string // optional: explicit gRPC endpoint (host:port); empty means derive from Addr
+	Alive    bool
+	Tags     map[string][]string // tenantID → compute member tags
 }
 
 type NodeRegistry interface {

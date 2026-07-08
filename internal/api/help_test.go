@@ -101,7 +101,6 @@ func TestMalformedTopicPath_400(t *testing.T) {
 	}
 }
 
-
 func TestMalformedTopicPath_400_LeadingDot(t *testing.T) {
 	srv := helpTestServer(t, "/api")
 	defer srv.Close()
@@ -145,7 +144,6 @@ func TestMalformedTopicPath_BareDot_RedirectsToCanonical(t *testing.T) {
 		t.Errorf("status = %d, want 200 (after ServeMux dot-redirect to /api/help)", resp.StatusCode)
 	}
 }
-
 
 func TestNonGET_Returns405(t *testing.T) {
 	srv := helpTestServer(t, "/api")

@@ -125,10 +125,9 @@ func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 // loadFieldsMap fetches and parses the cached schema for ref, returning
 // the path → FieldDescriptor view used by pre-execution validation.
 //
-// Returns (nil, nil) when the model has not been registered (the memory
-// plugin admits entity writes without a prior model, so search must
-// preserve that behaviour). Other errors propagate so the caller can
-// log and skip validation rather than mistakenly reject the search.
+// Returns (nil, nil) when the descriptor has no schema bound. Other errors
+// propagate so the caller can log and skip validation rather than
+// mistakenly reject the search.
 func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
 	desc, err := store.Get(ctx, ref)
 	if err != nil {

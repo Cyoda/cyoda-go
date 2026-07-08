@@ -20,7 +20,7 @@ Every `WorkflowConfigurationDto` carries a `version` field. The server validates
 
 ```json
 {
-  "version": "1.1",
+  "version": "1.2",
   "name": "my-workflow",
   "initialState": "ready",
   "states": { "ready": {} }
@@ -52,9 +52,9 @@ Both emit the same structured JSON:
 
 ```json
 {
-  "current": "1.1",
+  "current": "1.2",
   "supported": [
-    { "major": 1, "minMinor": 1, "maxMinor": 1 }
+    { "major": 1, "minMinor": 1, "maxMinor": 2 }
   ]
 }
 ```
@@ -75,5 +75,5 @@ Pin your authoring tools and CI to the schema version they were tested against:
 ```bash
 # in a CI step
 current=$(curl -s $CYODA_HOST/api/help/workflows/schema-version/versions | jq -r .current)
-test "$current" = "1.1" || { echo "schema drift"; exit 1; }
+test "$current" = "1.2" || { echo "schema drift"; exit 1; }
 ```

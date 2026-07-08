@@ -239,6 +239,9 @@ Condition pushdown by category:
 
 Data is fetched in pages (default page size: 1000). Point-in-time is derived from the `POINT_TIME` condition or defaults to the current consistency time.
 
+Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
+see `cyoda help crud` ("Point-in-time semantics").
+
 **Views (view.*):**
 
 - `view.getViews` — get all views the user can read; payload: userId string; returns stream of `TrinoViewDto`

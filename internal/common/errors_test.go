@@ -294,6 +294,51 @@ func TestErrCodeSearchResultLimit(t *testing.T) {
 	}
 }
 
+// TestInternal_UniqueViolation verifies that an error wrapping spi.ErrUniqueViolation
+// is routed to a non-retryable 409 UNIQUE_VIOLATION — not a 500 SERVER_ERROR.
+func TestInternal_UniqueViolation(t *testing.T) {
+	e := common.Internal("save", fmt.Errorf("w: %w", spi.ErrUniqueViolation))
+	if e.Status != 409 {
+		t.Fatalf("status = %d, want 409", e.Status)
+	}
+	if e.Code != common.ErrCodeUniqueViolation {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeUniqueViolation)
+	}
+	if e.Retryable {
+		t.Fatal("UNIQUE_VIOLATION must not be retryable")
+	}
+	if e.Level != common.LevelOperational {
+		t.Fatalf("level = %v, want Operational", e.Level)
+	}
+}
+
+// TestInternal_PartialKey verifies that an error wrapping spi.ErrPartialUniqueKey
+// is routed to a non-retryable 422 INVALID_UNIQUE_KEY — not a 500 SERVER_ERROR.
+func TestInternal_PartialKey(t *testing.T) {
+	e := common.Internal("save", fmt.Errorf("w: %w", spi.ErrPartialUniqueKey))
+	if e.Status != 422 {
+		t.Fatalf("status = %d, want 422", e.Status)
+	}
+	if e.Code != common.ErrCodeInvalidUniqueKey {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeInvalidUniqueKey)
+	}
+	if e.Retryable {
+		t.Fatal("INVALID_UNIQUE_KEY must not be retryable")
+	}
+}
+
+// TestInternal_ConflictStillRetryable guards that the existing ErrConflict
+// routing is not disturbed by the new more-specific branches above it.
+func TestInternal_ConflictStillRetryable(t *testing.T) {
+	e := common.Internal("c", fmt.Errorf("w: %w", spi.ErrConflict))
+	if e.Code != common.ErrCodeConflict {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeConflict)
+	}
+	if !e.Retryable {
+		t.Fatal("ErrConflict must remain retryable")
+	}
+}
+
 // TestOperational_NotRetryableByDefault pins that 4xx errors from the
 // primitive Operational constructor are non-retryable by default —
 // retryable is opt-in via AsRetryable(). A permanent business-logic

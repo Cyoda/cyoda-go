@@ -84,6 +84,7 @@ mkdir -p "$(dirname "$OUT")"
   "$CLEAN_DIR"/common/DataPayload.json \
   "$CLEAN_DIR"/common/ModelInfo.json \
   "$CLEAN_DIR"/common/DataFormat.json \
+  "$CLEAN_DIR"/common/PatchFormat.json \
   "$CLEAN_DIR"/common/ModelConverterType.json \
   "$CLEAN_DIR"/common/EntityChangeMeta.json \
   "$CLEAN_DIR"/common/statemachine/WorkflowInfo.json \

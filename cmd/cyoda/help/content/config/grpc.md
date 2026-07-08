@@ -34,6 +34,9 @@ These variables are used by compute-node clients that connect to a running cyoda
   e.g. `localhost:9090` (required when running as a compute client)
 - `CYODA_COMPUTE_TOKEN` — bearer token for compute-node authentication
   (required when running as a compute client)
+- `CYODA_COMPUTE_HTTP_BASE` — HTTP base URL of the cyoda instance a compute node
+  calls back into (e.g. to join the originating transaction); optional, enables
+  callback-capable processors when set
 
 ## EXAMPLES
 

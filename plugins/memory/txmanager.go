@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,12 +37,19 @@ type savepointSnapshot struct {
 type TransactionManager struct {
 	factory      *StoreFactory
 	uuids        spi.UUIDGenerator
-	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, and savepoints
+	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
 	active       map[string]*spi.TransactionState
 	committedLog []committedTx
 	committing   map[string]bool                         // tracks txIDs currently being committed
 	submitTimes  map[string]time.Time                    // txID -> submitTime, survives log pruning. Evicted after submitTimeTTL.
 	savepoints   map[string]map[string]savepointSnapshot // txID -> spID -> snapshot
+
+	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
+	// Captured when an entity is buffered so that Commit can enforce the correct
+	// keys per entity even in a mixed-model batch where each Save may carry a
+	// different key set in its context. Protected by mu. Cleaned up after commit
+	// or rollback (no leak).
+	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 }
 
 // Verify interface compliance at compile time.
@@ -57,9 +65,22 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		committing:   make(map[string]bool),
 		submitTimes:  make(map[string]time.Time),
 		savepoints:   make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys: make(map[string]map[string][]spi.UniqueKey),
 	}
 	f.txManager = tm
 	return tm
+}
+
+// recordUniqueKeys stores the unique keys for entityID under txID so that
+// Commit can look them up per entity during the flush. Last-write-wins,
+// matching the semantics of tx.Buffer. Protected by mu.
+func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.UniqueKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.txUniqueKeys[txID] == nil {
+		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
+	}
+	m.txUniqueKeys[txID][entityID] = keys
 }
 
 // GetTransactionManager returns the registered TransactionManager, or nil.
@@ -176,128 +197,230 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		tx.OpMu.Unlock()
 	}()
 
-	// 2. Acquire the factory write lock for atomic flush.
-	m.factory.entityMu.Lock()
+	// 2–6. Acquire the factory write lock for atomic flush.
+	// All abort paths (FCW conflict, claim violation) and the success path are
+	// enclosed in a result-returning IIFE so that entityMu is always released
+	// via defer — no bare Unlock() calls (go-mutex-discipline.md).
+	tid := tx.TenantID
+	if err := func() error {
+		m.factory.entityMu.Lock()
+		defer m.factory.entityMu.Unlock()
 
-	// 3. Conflict detection: check committed log for overlapping write sets.
-	m.mu.Lock()
-	for _, committed := range m.committedLog {
-		if committed.submitTime.After(tx.SnapshotTime) {
-			for entityID := range committed.writeSet {
-				if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
-					delete(m.committing, txID)
-					delete(m.active, txID)
-					delete(m.savepoints, txID)
-					m.mu.Unlock()
-					m.factory.entityMu.Unlock()
-					return spi.ErrConflict
+		// 3. Conflict detection: check committed log for overlapping write sets.
+		// Also snapshot per-entity unique keys captured at Save time so that
+		// step 3.5 can read them without re-acquiring m.mu.
+		var capturedKeys map[string][]spi.UniqueKey
+		if err := func() error {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			for _, committed := range m.committedLog {
+				if committed.submitTime.After(tx.SnapshotTime) {
+					for entityID := range committed.writeSet {
+						if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
+							delete(m.committing, txID)
+							delete(m.active, txID)
+							delete(m.savepoints, txID)
+							delete(m.txUniqueKeys, txID)
+							return spi.ErrConflict
+						}
+					}
 				}
 			}
-		}
-	}
-	m.mu.Unlock()
-
-	// 4. Flush buffer to entity store.
-	submitTime := m.factory.clock.Now()
-	tid := tx.TenantID
-
-	for entityID, entity := range tx.Buffer {
-		if m.factory.entityData[tid] == nil {
-			m.factory.entityData[tid] = make(map[string][]entityVersion)
+			capturedKeys = m.txUniqueKeys[txID] // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
+			return nil
+		}(); err != nil {
+			return err
 		}
 
-		versions := m.factory.entityData[tid][entityID]
-		var nextVersion int64 = 1
-		for i := len(versions) - 1; i >= 0; i-- {
-			if !versions[i].deleted && versions[i].entity != nil {
-				nextVersion = versions[i].entity.Meta.Version + 1
-				break
+		// 3.5. Validate composite unique-key claims inside the entityMu critical section.
+		//
+		// Deterministic order: sort buffered entity IDs so that any intra-batch
+		// collision is detected stably (independent of map iteration order).
+		//
+		// abortClaim cleans up m.mu-protected state and returns err.
+		// entityMu is released by the enclosing IIFE's defer — no bare Unlock.
+		abortClaim := func(err error) error {
+			func() {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				delete(m.committing, txID)
+				delete(m.active, txID)
+				delete(m.savepoints, txID)
+				delete(m.txUniqueKeys, txID)
+			}()
+			return err
+		}
+
+		ids := make([]string, 0, len(tx.Buffer))
+		for id := range tx.Buffer {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		// ISSUE-3: build release set from tx.Deletes so that a same-tx
+		// delete+reclaim of the same key value is not falsely rejected.
+		toRelease := make(map[string]bool, len(tx.Deletes))
+		for id := range tx.Deletes {
+			toRelease[id] = true
+		}
+
+		// ISSUE-4: compute claims once during validation; reuse during apply.
+		computedClaims := make(map[string][]spi.UniqueClaim, len(ids))
+		pending := make(map[claimKey]string) // claimKey → entityID within this batch
+		for _, entityID := range ids {
+			entity := tx.Buffer[entityID]
+			keys := capturedKeys[entityID] // nil if entity was buffered without unique keys
+
+			claims, err := spi.ComputeClaims(keys, entity.Data)
+			if err != nil {
+				return abortClaim(err)
+			}
+			computedClaims[entityID] = claims
+
+			for _, c := range claims {
+				k := claimKey{
+					tenant:    string(tid),
+					model:     entity.Meta.ModelRef.EntityName,
+					version:   entity.Meta.ModelRef.ModelVersion,
+					keyID:     c.KeyID,
+					signature: c.Signature,
+				}
+				// Intra-batch collision: two buffered entities share a claim.
+				if pendingHolder, exists := pending[k]; exists && pendingHolder != entityID {
+					return abortClaim(spi.ErrUniqueViolation)
+				}
+				// Collision with a committed claim held by a different entity that
+				// is NOT being released in the same tx (ISSUE-3 same-tx delete+reclaim).
+				if holder, exists := m.factory.uniqueClaims[k]; exists && holder != entityID && !toRelease[holder] {
+					return abortClaim(spi.ErrUniqueViolation)
+				}
+				pending[k] = entityID
 			}
 		}
 
-		saved := copyEntity(entity)
-		saved.Meta.Version = nextVersion
-		saved.Meta.LastModifiedDate = submitTime
-		saved.Meta.TransactionID = txID
-		saved.Meta.TenantID = tid
+		// 4. Flush buffer to entity store.
+		submitTime := m.factory.clock.Now()
 
-		// Preserve CreationDate from existing versions.
-		if len(versions) > 0 && versions[0].entity != nil {
-			saved.Meta.CreationDate = versions[0].entity.Meta.CreationDate
-		} else if saved.Meta.CreationDate.IsZero() {
-			saved.Meta.CreationDate = submitTime
+		// Pre-release: free claims for all deleted entities BEFORE inserting any
+		// new buffer claims. This ensures a same-tx delete+reclaim of the same
+		// key value (ISSUE-3) does not clobber the freshly-inserted buffer claim.
+		// Buffer and Deletes are mutually exclusive (Delete removes from Buffer).
+		for entityID := range tx.Deletes {
+			m.factory.releaseClaims(string(tid), entityID)
 		}
 
-		m.factory.entityData[tid][entityID] = append(versions, entityVersion{
-			entity:        saved,
-			transactionID: txID,
-			submitTime:    submitTime,
-			changeType:    entity.Meta.ChangeType,
-			user:          entity.Meta.ChangeUser,
-		})
-	}
-
-	// 5. Apply deletes.
-	userName := ""
-	if uc != nil {
-		userName = uc.UserID
-	}
-	for entityID := range tx.Deletes {
-		if m.factory.entityData[tid] == nil {
-			m.factory.entityData[tid] = make(map[string][]entityVersion)
-		}
-		versions := m.factory.entityData[tid][entityID]
-		m.factory.entityData[tid][entityID] = append(versions, entityVersion{
-			entity:        nil,
-			transactionID: txID,
-			submitTime:    submitTime,
-			deleted:       true,
-			changeType:    "DELETED",
-			user:          userName,
-		})
-	}
-
-	// 6. Record in committed log, submit times, and prune.
-	m.mu.Lock()
-	m.committedLog = append(m.committedLog, committedTx{
-		id:         txID,
-		submitTime: submitTime,
-		writeSet:   tx.WriteSet,
-	})
-	m.submitTimes[txID] = submitTime
-	evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
-	for id, t := range m.submitTimes {
-		if t.Before(evictBefore) {
-			delete(m.submitTimes, id)
-		}
-	}
-
-	// Prune: find oldest active transaction's snapshot, remove older entries.
-	delete(m.active, txID)
-	delete(m.committing, txID)
-	delete(m.savepoints, txID)
-	var oldest time.Time
-	for _, activeTx := range m.active {
-		if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
-			oldest = activeTx.SnapshotTime
-		}
-	}
-	if !oldest.IsZero() {
-		pruned := m.committedLog[:0]
-		for _, c := range m.committedLog {
-			if !c.submitTime.Before(oldest) {
-				pruned = append(pruned, c)
+		for entityID, entity := range tx.Buffer {
+			if m.factory.entityData[tid] == nil {
+				m.factory.entityData[tid] = make(map[string][]entityVersion)
 			}
+
+			versions := m.factory.entityData[tid][entityID]
+			var nextVersion int64 = 1
+			for i := len(versions) - 1; i >= 0; i-- {
+				if !versions[i].deleted && versions[i].entity != nil {
+					nextVersion = versions[i].entity.Meta.Version + 1
+					break
+				}
+			}
+
+			saved := copyEntity(entity)
+			saved.Meta.Version = nextVersion
+			saved.Meta.LastModifiedDate = submitTime
+			saved.Meta.TransactionID = txID
+			saved.Meta.TenantID = tid
+
+			// Preserve CreationDate from existing versions.
+			if len(versions) > 0 && versions[0].entity != nil {
+				saved.Meta.CreationDate = versions[0].entity.Meta.CreationDate
+			} else if saved.Meta.CreationDate.IsZero() {
+				saved.Meta.CreationDate = submitTime
+			}
+
+			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
+				entity:        saved,
+				transactionID: txID,
+				submitTime:    submitTime,
+				changeType:    entity.Meta.ChangeType,
+				user:          entity.Meta.ChangeUser,
+			})
+
+			// Apply unique-key claims: release any prior claims for this entity
+			// (handles the update-moves-key case), then insert the new claim set.
+			// ISSUE-4: reuse computedClaims computed in step 3.5 — no recompute.
+			// ISSUE-2: pass tenantID to releaseClaims for correct tenant isolation.
+			newClaims := computedClaims[entityID]
+			m.factory.releaseClaims(string(tid), entityID)
+			m.factory.insertClaims(entityID, string(tid),
+				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, newClaims)
 		}
-		m.committedLog = pruned
-	} else {
-		// No active transactions — all entries can be pruned.
-		m.committedLog = m.committedLog[:0]
+
+		// 5. Apply deletes (tombstones). Claims were already released in the
+		// pre-release pass above — do not call releaseClaims again here.
+		userName := ""
+		if uc != nil {
+			userName = uc.UserID
+		}
+		for entityID := range tx.Deletes {
+			if m.factory.entityData[tid] == nil {
+				m.factory.entityData[tid] = make(map[string][]entityVersion)
+			}
+			versions := m.factory.entityData[tid][entityID]
+			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
+				entity:        nil,
+				transactionID: txID,
+				submitTime:    submitTime,
+				deleted:       true,
+				changeType:    "DELETED",
+				user:          userName,
+			})
+		}
+
+		// 6. Record in committed log, submit times, and prune.
+		func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			m.committedLog = append(m.committedLog, committedTx{
+				id:         txID,
+				submitTime: submitTime,
+				writeSet:   tx.WriteSet,
+			})
+			m.submitTimes[txID] = submitTime
+			evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
+			for id, t := range m.submitTimes {
+				if t.Before(evictBefore) {
+					delete(m.submitTimes, id)
+				}
+			}
+
+			// Prune: find oldest active transaction's snapshot, remove older entries.
+			delete(m.active, txID)
+			delete(m.committing, txID)
+			delete(m.savepoints, txID)
+			delete(m.txUniqueKeys, txID)
+			var oldest time.Time
+			for _, activeTx := range m.active {
+				if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
+					oldest = activeTx.SnapshotTime
+				}
+			}
+			if !oldest.IsZero() {
+				pruned := m.committedLog[:0]
+				for _, c := range m.committedLog {
+					if !c.submitTime.Before(oldest) {
+						pruned = append(pruned, c)
+					}
+				}
+				m.committedLog = pruned
+			} else {
+				// No active transactions — all entries can be pruned.
+				m.committedLog = m.committedLog[:0]
+			}
+		}()
+
+		return nil
+	}(); err != nil {
+		return err
 	}
-	m.mu.Unlock()
-
-	m.factory.entityMu.Unlock()
-
 	return nil
 }
 
@@ -328,6 +451,7 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	delete(m.active, txID)
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
 	m.mu.Unlock()
 	return nil
 }

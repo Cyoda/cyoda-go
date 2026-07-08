@@ -88,4 +88,3 @@ func TestRunServers_CtxCancelDrainsBothServers(t *testing.T) {
 		t.Error("HTTP server still serving after runServers returned")
 	}
 }
-

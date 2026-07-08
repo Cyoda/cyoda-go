@@ -2,12 +2,10 @@
 
 package events
 
-import (
-	"encoding/json"
-	"fmt"
-	"reflect"
-	"time"
-)
+import "encoding/json"
+import "fmt"
+import "reflect"
+import "time"
 
 type BaseEventJson struct {
 	// Error details (if present).
@@ -2389,6 +2387,126 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type EntityPatchPayloadJson struct {
+	// ID of the entity to patch.
+	EntityID string `json:"entityId" yaml:"entityId" mapstructure:"entityId"`
+
+	// transactionId from the last read, or "*" for unconditional. Empty is rejected
+	// as precondition-required.
+	IfMatch *string `json:"ifMatch,omitempty" yaml:"ifMatch,omitempty" mapstructure:"ifMatch,omitempty"`
+
+	// The patch document (RFC 7386 merge patch).
+	Patch interface{} `json:"patch" yaml:"patch" mapstructure:"patch"`
+
+	// Transition to apply, or omit for loopback.
+	Transition *string `json:"transition,omitempty" yaml:"transition,omitempty" mapstructure:"transition,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityPatchPayloadJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["entityId"]; raw != nil && !ok {
+		return fmt.Errorf("field entityId in EntityPatchPayloadJson: required")
+	}
+	if _, ok := raw["patch"]; raw != nil && !ok {
+		return fmt.Errorf("field patch in EntityPatchPayloadJson: required")
+	}
+	type Plain EntityPatchPayloadJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityPatchPayloadJson(plain)
+	return nil
+}
+
+type EntityPatchRequestJson struct {
+	// Error details (if present).
+	Error *EntityPatchRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// PatchFormat corresponds to the JSON schema field "patchFormat".
+	PatchFormat PatchFormatJson `json:"patchFormat" yaml:"patchFormat" mapstructure:"patchFormat"`
+
+	// Data payload containing the entity id and patch.
+	Payload EntityPatchPayloadJson `json:"payload" yaml:"payload" mapstructure:"payload"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Indicates the timeout of transaction for transactional save.
+	TransactionTimeoutMs *int `json:"transactionTimeoutMs,omitempty" yaml:"transactionTimeoutMs,omitempty" mapstructure:"transactionTimeoutMs,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityPatchRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Flag indicates whether this error is retryable (for example, whether cyoda
+	// should retry the calculation request).
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityPatchRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityPatchRequestJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityPatchRequestJsonError: required")
+	}
+	type Plain EntityPatchRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityPatchRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityPatchRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityPatchRequestJson: required")
+	}
+	if _, ok := raw["patchFormat"]; raw != nil && !ok {
+		return fmt.Errorf("field patchFormat in EntityPatchRequestJson: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in EntityPatchRequestJson: required")
+	}
+	type Plain EntityPatchRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; !ok || v == nil {
+		plain.Success = true
+	}
+	*j = EntityPatchRequestJson(plain)
+	return nil
+}
+
 type EntityProcessorCalculationRequestJson struct {
 	// Entity ID.
 	EntityID string `json:"entityId" yaml:"entityId" mapstructure:"entityId"`
@@ -2681,6 +2799,9 @@ type EntitySearchRequestJson struct {
 	// Entity model to use for building this snapshot.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
+	// OrderBy corresponds to the JSON schema field "orderBy".
+	OrderBy []EntitySearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
+
 	// point in time
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
@@ -2731,6 +2852,71 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type EntitySearchRequestJsonOrderByElem struct {
+	// Desc corresponds to the JSON schema field "desc".
+	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
+
+	// Path corresponds to the JSON schema field "path".
+	Path string `json:"path" yaml:"path" mapstructure:"path"`
+
+	// Source corresponds to the JSON schema field "source".
+	Source EntitySearchRequestJsonOrderByElemSource `json:"source,omitempty" yaml:"source,omitempty" mapstructure:"source,omitempty"`
+}
+
+type EntitySearchRequestJsonOrderByElemSource string
+
+const EntitySearchRequestJsonOrderByElemSourceData EntitySearchRequestJsonOrderByElemSource = "data"
+const EntitySearchRequestJsonOrderByElemSourceMeta EntitySearchRequestJsonOrderByElemSource = "meta"
+
+var enumValues_EntitySearchRequestJsonOrderByElemSource = []interface{}{
+	"data",
+	"meta",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_EntitySearchRequestJsonOrderByElemSource {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySearchRequestJsonOrderByElemSource, v)
+	}
+	*j = EntitySearchRequestJsonOrderByElemSource(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["path"]; raw != nil && !ok {
+		return fmt.Errorf("field path in EntitySearchRequestJsonOrderByElem: required")
+	}
+	type Plain EntitySearchRequestJsonOrderByElem
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["desc"]; !ok || v == nil {
+		plain.Desc = false
+	}
+	if v, ok := raw["source"]; !ok || v == nil {
+		plain.Source = "data"
+	}
+	*j = EntitySearchRequestJsonOrderByElem(plain)
+	return nil
+}
+
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
@@ -2770,6 +2956,9 @@ type EntitySnapshotSearchRequestJson struct {
 
 	// Entity model to use for building this snapshot.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
+
+	// OrderBy corresponds to the JSON schema field "orderBy".
+	OrderBy []EntitySnapshotSearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
 	// point in time
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
@@ -2815,6 +3004,71 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 		return err
 	}
 	*j = EntitySnapshotSearchRequestJsonError(plain)
+	return nil
+}
+
+type EntitySnapshotSearchRequestJsonOrderByElem struct {
+	// Desc corresponds to the JSON schema field "desc".
+	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
+
+	// Path corresponds to the JSON schema field "path".
+	Path string `json:"path" yaml:"path" mapstructure:"path"`
+
+	// Source corresponds to the JSON schema field "source".
+	Source EntitySnapshotSearchRequestJsonOrderByElemSource `json:"source,omitempty" yaml:"source,omitempty" mapstructure:"source,omitempty"`
+}
+
+type EntitySnapshotSearchRequestJsonOrderByElemSource string
+
+const EntitySnapshotSearchRequestJsonOrderByElemSourceData EntitySnapshotSearchRequestJsonOrderByElemSource = "data"
+const EntitySnapshotSearchRequestJsonOrderByElemSourceMeta EntitySnapshotSearchRequestJsonOrderByElemSource = "meta"
+
+var enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource = []interface{}{
+	"data",
+	"meta",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySnapshotSearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource, v)
+	}
+	*j = EntitySnapshotSearchRequestJsonOrderByElemSource(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntitySnapshotSearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["path"]; raw != nil && !ok {
+		return fmt.Errorf("field path in EntitySnapshotSearchRequestJsonOrderByElem: required")
+	}
+	type Plain EntitySnapshotSearchRequestJsonOrderByElem
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["desc"]; !ok || v == nil {
+		plain.Desc = false
+	}
+	if v, ok := raw["source"]; !ok || v == nil {
+		plain.Source = "data"
+	}
+	*j = EntitySnapshotSearchRequestJsonOrderByElem(plain)
 	return nil
 }
 
@@ -3906,6 +4160,36 @@ func (j *ModelSpecJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	*j = ModelSpecJson(plain)
+	return nil
+}
+
+type PatchFormatJson string
+
+const PatchFormatJsonJSONPATCH PatchFormatJson = "JSON_PATCH"
+const PatchFormatJsonMERGEPATCH PatchFormatJson = "MERGE_PATCH"
+
+var enumValues_PatchFormatJson = []interface{}{
+	"MERGE_PATCH",
+	"JSON_PATCH",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PatchFormatJson) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_PatchFormatJson {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_PatchFormatJson, v)
+	}
+	*j = PatchFormatJson(v)
 	return nil
 }
 

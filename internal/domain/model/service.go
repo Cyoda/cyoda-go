@@ -46,7 +46,8 @@ type ImportModelResult struct {
 
 // ExportModelResult carries the result of a model export.
 type ExportModelResult struct {
-	Payload json.RawMessage
+	Payload    json.RawMessage
+	UniqueKeys []spi.UniqueKey
 }
 
 // ModelTransitionResult carries the result of a model state transition.
@@ -153,6 +154,29 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	}
 	if existing != nil {
 		desc.ChangeLevel = existing.ChangeLevel
+		desc.UniqueKeys = existing.UniqueKeys
+
+		// Defensive guard: re-validate carried-forward keys against the merged
+		// schema. schema.Merge is additive and cannot drop an existing field, so
+		// this targets out-of-band descriptor corruption or future
+		// merge-semantics changes — not a scenario reachable via normal API use.
+		if len(desc.UniqueKeys) > 0 {
+			if valErr := schema.ValidateUniqueKeys(finalNode, desc.UniqueKeys); valErr != nil {
+				var keyDefErr *schema.UniqueKeyDefError
+				if errors.As(valErr, &keyDefErr) {
+					appErr := common.Operational(
+						http.StatusUnprocessableEntity,
+						common.ErrCodeInvalidUniqueKeyDefinition,
+						fmt.Sprintf("re-import invalidates existing unique key definitions: %s", keyDefErr.Reason))
+					appErr.Props = map[string]any{
+						"entityName":    input.EntityName,
+						"entityVersion": ver,
+					}
+					return nil, appErr
+				}
+				return nil, common.Internal("failed to validate existing unique key definitions against new schema", valErr)
+			}
+		}
 	}
 
 	if err := store.Save(ctx, desc); err != nil {
@@ -196,7 +220,35 @@ func (h *Handler) ExportModel(ctx context.Context, entityName, modelVersion, con
 		return nil, common.Internal("export failed", err)
 	}
 
-	return &ExportModelResult{Payload: exported}, nil
+	// Inject uniqueKeys into the exported payload as a sibling field, but ONLY
+	// when the model actually declares composite keys (omitempty semantics). A
+	// model with no keys exports byte-identically to a pre-feature model — the
+	// change is purely additive, and it matches the omitempty convention the
+	// descriptor storage DTOs already use. The export response is free-form
+	// (OpenAPI: additionalProperties), so absence is the natural "no keys".
+	uks := desc.UniqueKeys
+	if len(uks) > 0 {
+		type uniqueKeyExport struct {
+			ID     string   `json:"id"`
+			Fields []string `json:"fields"`
+		}
+		ukExports := make([]uniqueKeyExport, 0, len(uks))
+		for _, k := range uks {
+			ukExports = append(ukExports, uniqueKeyExport{ID: k.ID, Fields: k.Fields})
+		}
+		var m map[string]any
+		if err2 := json.Unmarshal(exported, &m); err2 != nil {
+			return nil, common.Internal("failed to decode exported payload for unique-key annotation", err2)
+		}
+		m["uniqueKeys"] = ukExports
+		b, err2 := json.Marshal(m)
+		if err2 != nil {
+			return nil, common.Internal("failed to re-encode exported payload with unique keys", err2)
+		}
+		exported = b
+	}
+
+	return &ExportModelResult{Payload: exported, UniqueKeys: uks}, nil
 }
 
 // LockModel locks a model, preventing further imports.
@@ -327,6 +379,20 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	}
 	if desc == nil {
 		return modelNotFound(entityName, ver)
+	}
+
+	if desc.State == spi.ModelLocked {
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyLocked,
+			fmt.Sprintf("cannot delete entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"expectedState": "UNLOCKED",
+			"actualState":   "LOCKED",
+		}
+		return appErr
 	}
 
 	entityStore, err := h.factory.EntityStore(ctx)
@@ -484,6 +550,82 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 	}
 
 	return nil
+}
+
+// SetUniqueKeys sets composite unique-key definitions on an unlocked model.
+// The backend must advertise spi.CompositeUniqueKeyCapable; the model must be
+// UNLOCKED; and every key must reference only known scalar leaf fields.
+func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion string, keys []spi.UniqueKey) (*ModelTransitionResult, error) {
+	// Capability gate FIRST — fast path for unsupported backends.
+	if c, ok := h.factory.(spi.CompositeUniqueKeyCapable); !ok || !c.SupportsCompositeUniqueKeys() {
+		return nil, common.Operational(
+			http.StatusUnprocessableEntity,
+			common.ErrCodeCompositeKeyUnsupported,
+			"backend does not support composite unique keys")
+	}
+
+	store, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+
+	ver := parseVersion(modelVersion)
+	ref := modelRef(entityName, ver)
+
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, store, ref)
+	if err != nil {
+		return nil, classifyGetErr("set unique keys", entityName, ver, err)
+	}
+	if desc == nil {
+		return nil, modelNotFound(entityName, ver)
+	}
+
+	if desc.State == spi.ModelLocked {
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyLocked,
+			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"expectedState": "UNLOCKED",
+			"actualState":   "LOCKED",
+		}
+		return nil, appErr
+	}
+
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil, common.Internal("failed to unmarshal schema", err)
+	}
+
+	if valErr := schema.ValidateUniqueKeys(node, keys); valErr != nil {
+		var keyDefErr *schema.UniqueKeyDefError
+		if errors.As(valErr, &keyDefErr) {
+			appErr := common.Operational(
+				http.StatusUnprocessableEntity,
+				common.ErrCodeInvalidUniqueKeyDefinition,
+				keyDefErr.Reason)
+			appErr.Props = map[string]any{
+				"entityName":    entityName,
+				"entityVersion": ver,
+			}
+			return nil, appErr
+		}
+		return nil, common.Internal("failed to validate unique key definitions", valErr)
+	}
+
+	desc.UniqueKeys = keys
+	if err := store.Save(ctx, desc); err != nil {
+		return nil, common.Internal("failed to save model", err)
+	}
+
+	return &ModelTransitionResult{
+		ModelID: deterministicID(ref).String(),
+		State:   string(desc.State),
+	}, nil
 }
 
 // ValidationError is a non-AppError that signals validation failure (not an HTTP error).

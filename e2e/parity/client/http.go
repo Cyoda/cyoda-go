@@ -389,11 +389,24 @@ func (c *Client) GetEntityChangesAt(t *testing.T, entityID uuid.UUID, pointInTim
 }
 
 // ListEntitiesByModel issues GET /api/entity/{name}/{version}.
-// Returns the entity list (each as EntityResult without modelKey per A2).
+// Returns the entity list; each EntityResult includes modelKey (A2 abandoned).
 // Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
 func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersion int) ([]EntityResult, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s/%d", modelName, modelVersion)
+	var entities []EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
+// ListEntitiesByModelAt issues GET /api/entity/{name}/{version}?pointInTime=<t>.
+// Returns the entity list as it existed at the given point in time (E3).
+// Canonical: docs/cyoda/openapi.yml (getAllEntities with pointInTime query param).
+func (c *Client) ListEntitiesByModelAt(t *testing.T, modelName string, modelVersion int, pointInTime time.Time) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", modelName, modelVersion, pointInTime.Format(time.RFC3339Nano))
 	var entities []EntityResult
 	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
 		return nil, err
@@ -775,8 +788,8 @@ type CollectionChunkError struct {
 // NOT roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
 // carrying an IfMatch precondition (issue #228).
 type CollectionChunkItemFailure struct {
-	EntityID string                  `json:"entityId"`
-	Error    CollectionChunkItemErr  `json:"error"`
+	EntityID string                 `json:"entityId"`
+	Error    CollectionChunkItemErr `json:"error"`
 }
 
 // CollectionChunkItemErr is the per-item failure inner object.
@@ -896,13 +909,13 @@ func (c *Client) doRawWithHeaders(t *testing.T, method, path, body string, extra
 }
 
 // CreateMessage issues POST /api/message/new/{subject} with the given
-// payload wrapped in the edge-message envelope {payload, meta-data}.
+// payload wrapped in the edge-message envelope {payload, metaData}.
 // Returns the message ID.
 // Canonical: docs/cyoda/openapi.yml:2401.
 func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, error) {
 	t.Helper()
 	path := "/api/message/new/" + subject
-	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "parity"}}`, payload)
+	body := fmt.Sprintf(`{"payload": %s, "metaData": {"source": "parity"}}`, payload)
 	raw, err := c.doRaw(t, http.MethodPost, path, body)
 	if err != nil {
 		return "", err
@@ -924,7 +937,7 @@ func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, e
 // It sends the fields in MessageHeaderInput as HTTP request headers so
 // cyoda-go's generated handler reads them via NewMessageParams. The body
 // envelope is identical to CreateMessage: {"payload": <payload>,
-// "meta-data": {"source": "parity"}}.
+// "metaData": {"source": "parity"}}.
 //
 // If header.ContentType is empty it defaults to "application/json".
 // Empty fields in header are omitted from the request.
@@ -932,7 +945,7 @@ func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, e
 func (c *Client) CreateMessageWithHeaders(t *testing.T, subject, payload string, header MessageHeaderInput) (string, error) {
 	t.Helper()
 	path := "/api/message/new/" + subject
-	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "parity"}}`, payload)
+	body := fmt.Sprintf(`{"payload": %s, "metaData": {"source": "parity"}}`, payload)
 
 	h := make(http.Header)
 	ct := header.ContentType
@@ -1188,19 +1201,11 @@ func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersi
 	return resp.StatusCode, raw, nil
 }
 
-// SyncSearch issues POST /api/search/direct/{name}/{version} with the
-// given condition JSON. Returns the entity results.
-// The sync search endpoint returns application/x-ndjson. This method
-// reads the response line-by-line (NDJSON).
-// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
-func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, condition string) ([]EntityResult, error) {
-	t.Helper()
-	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
-	raw, err := c.doRaw(t, http.MethodPost, path, condition)
-	if err != nil {
-		return nil, err
-	}
-	// Parse NDJSON: one EntityResult per line.
+// decodeEntityResultNDJSON parses an application/x-ndjson response body into
+// a slice of EntityResult. Each non-empty line is decoded as one object using
+// DisallowUnknownFields to catch API drift. Used by SyncSearch, SyncSearchAt,
+// SyncSearchSorted, and SyncSearchSortedAt.
+func decodeEntityResultNDJSON(raw []byte) ([]EntityResult, error) {
 	var results []EntityResult
 	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
 		if line == "" {
@@ -1215,6 +1220,75 @@ func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, co
 		results = append(results, r)
 	}
 	return results, nil
+}
+
+// SyncSearchSorted issues POST /api/search/direct/{name}/{version}?sort=k1&sort=k2...
+// with the given condition JSON and ordered sort keys. Returns entity results in
+// the server-applied sort order.  An empty sortKeys slice is equivalent to
+// SyncSearch (no sort params — entity_id ascending default).
+// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
+func (c *Client) SyncSearchSorted(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	if len(sortKeys) > 0 {
+		vals := url.Values{}
+		for _, k := range sortKeys {
+			vals.Add("sort", k)
+		}
+		path += "?" + vals.Encode()
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
+// SyncSearchSortedAt is like SyncSearchSorted but also adds a pointInTime
+// query parameter so the search operates on the snapshot at the given instant.
+func (c *Client) SyncSearchSortedAt(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string, at time.Time) ([]EntityResult, error) {
+	t.Helper()
+	vals := url.Values{}
+	vals.Set("pointInTime", at.UTC().Format(time.RFC3339Nano))
+	for _, k := range sortKeys {
+		vals.Add("sort", k)
+	}
+	path := fmt.Sprintf("/api/search/direct/%s/%d?%s", modelName, modelVersion, vals.Encode())
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
+// SyncSearch issues POST /api/search/direct/{name}/{version} with the
+// given condition JSON. Returns the entity results.
+// The sync search endpoint returns application/x-ndjson. This method
+// reads the response line-by-line (NDJSON).
+// Canonical: docs/cyoda/api/openapi-entity-search.yml:471 (searchEntities).
+func (c *Client) SyncSearch(t *testing.T, modelName string, modelVersion int, condition string) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
+// SyncSearchAt issues POST /api/search/direct/{name}/{version}?pointInTime=<t>
+// with the given condition JSON and returns the entity results at the snapshot.
+// Mirrors SyncSearch (NDJSON response); the direct-search handler honours the
+// pointInTime query param.
+func (c *Client) SyncSearchAt(t *testing.T, modelName string, modelVersion int, condition string, at time.Time) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d?pointInTime=%s",
+		modelName, modelVersion, at.UTC().Format(time.RFC3339Nano))
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
 }
 
 // GetAuditEvents issues GET /api/audit/entity/{entityId} with optional
@@ -1532,6 +1606,102 @@ func (c *Client) QueryGroupedStatsRaw(t *testing.T, modelName string, modelVersi
 		httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// PatchEntityRaw issues PATCH /api/entity/{format}/{entityId} (loopback) or
+// PATCH /api/entity/{format}/{entityId}/{transition} (named transition) and
+// returns the HTTP status, response body, and a transport error only. A
+// non-2xx status is returned without raising, so scenarios can assert
+// 200/400/404/412/415/428/501 directly.
+//
+// transition == "" selects the loopback path (no transition segment).
+// ifMatch == "" omits the If-Match header entirely (to exercise the 428 path).
+// format is the path format segment (normally "JSON"; pass "XML" to exercise
+// the 415 unsupported-format path).
+// contentType is sent verbatim as the Content-Type header (e.g.
+// "application/merge-patch+json").
+//
+// No 409 retry is performed — concurrency scenarios need to observe 409/412
+// directly. The request is issued once via the underlying http.Client, which
+// mirrors the pattern of all other *Raw methods in this file.
+func (c *Client) PatchEntityRaw(t *testing.T, entityID uuid.UUID, format, transition, contentType, ifMatch, body string) (int, []byte, error) {
+	t.Helper()
+
+	var path string
+	if transition == "" {
+		path = fmt.Sprintf("/api/entity/%s/%s", format, entityID.String())
+	} else {
+		path = fmt.Sprintf("/api/entity/%s/%s/%s", format, entityID.String(), transition)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPatch, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// PatchEntityMerge issues a merge-patch (application/merge-patch+json) PATCH
+// against /api/entity/JSON/{entityId}[/{transition}] and returns status+body.
+// Delegates to PatchEntityRaw with format="JSON" and the merge-patch
+// Content-Type so scenarios don't have to repeat the MIME string.
+func (c *Client) PatchEntityMerge(t *testing.T, entityID uuid.UUID, transition, ifMatch, body string) (int, []byte, error) {
+	t.Helper()
+	return c.PatchEntityRaw(t, entityID, "JSON", transition, "application/merge-patch+json", ifMatch, body)
+}
+
+// SetUniqueKeys issues PUT /api/model/{name}/{version}/unique-keys with the
+// given raw JSON body (must be a valid SetUniqueKeysRequest). Returns nil on
+// 2xx; returns a descriptive error on non-2xx or transport failure.
+//
+// Call this on an UNLOCKED model, after ImportModel and before LockModel.
+// Mirrors the helper pattern of ImportModel and LockModel.
+func (c *Client) SetUniqueKeys(t *testing.T, modelName string, modelVersion int, keysJSON string) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unique-keys", modelName, modelVersion)
+	_, err := c.doRaw(t, http.MethodPut, path, keysJSON)
+	return err
+}
+
+// SetUniqueKeysRaw issues PUT /api/model/{name}/{version}/unique-keys and
+// returns (status, body, transportErr) without raising on non-2xx. Used by
+// capability-gate detection and negative-path parity scenarios.
+//
+// Call pattern: if status == 422 && strings.Contains(body, "COMPOSITE_KEY_UNSUPPORTED")
+// → t.Skip("backend does not support composite unique keys").
+// Mirrors the *Raw helpers LockModelRaw / ImportModelRaw.
+func (c *Client) SetUniqueKeysRaw(t *testing.T, modelName string, modelVersion int, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unique-keys", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("transport: %w", err)
 	}

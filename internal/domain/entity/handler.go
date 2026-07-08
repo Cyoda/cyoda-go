@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,7 +20,9 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
@@ -81,14 +84,58 @@ func deterministicModelID(ref spi.ModelRef) uuid.UUID {
 }
 
 type Handler struct {
-	factory spi.StoreFactory
-	txMgr   spi.TransactionManager
-	uuids   spi.UUIDGenerator
-	engine  *wfengine.Engine
+	factory   spi.StoreFactory
+	txMgr     spi.TransactionManager
+	uuids     spi.UUIDGenerator
+	engine    *wfengine.Engine
+	gate      *txgate.Registry
+	searchSvc *search.SearchService
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine}
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, searchSvc *search.SearchService) *Handler {
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, searchSvc: searchSvc}
+}
+
+// beginOrJoin decides whether this inbound request OWNS a fresh transaction or
+// PARTICIPATES in a transaction already on ctx.
+//
+// A joined tx on ctx (spi.GetTransaction(ctx) != nil) means we are servicing a
+// routed compute-node callback that a later task joined onto the owner's tx
+// (#287). In that case we return the joined tx's ID with owned=false and DO NOT
+// Begin — the write lands in the shared buffer for the owner to commit. When
+// there is no joined tx (the normal inbound case) we Begin our own tx and
+// return owned=true. The txCtx returned in the joined case is the caller's ctx
+// unchanged (it already carries the TransactionState); in the owned case it is
+// the Begin-derived context.
+func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, bool, error) {
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		return tx.ID, ctx, false, nil
+	}
+	txID, txCtx, err := h.txMgr.Begin(ctx)
+	return txID, txCtx, true, err
+}
+
+// commitOwned commits the transaction only when this request owns it. For a
+// joined callback (owned==false) the owner is responsible for the commit, so
+// this is a no-op. Callers gate the whole final Save+Commit critical section
+// (see the per-flow finalize blocks): the gate is acquired by the flow around
+// the final buffer mutation and released after this commit, so commitOwned
+// itself must NOT touch the gate (the gate is a non-reentrant per-tx mutex).
+func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) error {
+	if !owned {
+		return nil
+	}
+	return h.txMgr.Commit(ctx, txID)
+}
+
+// rollbackOwned rolls the transaction back only when this request owns it. A
+// joined callback must never roll back the owner's tx — an error on the joined
+// path surfaces to the owner, which decides the tx's fate.
+func (h *Handler) rollbackOwned(ctx context.Context, txID string, owned bool) {
+	if !owned {
+		return
+	}
+	_ = h.txMgr.Rollback(ctx, txID)
 }
 
 // validateOrExtend validates parsedData against the model schema. When
@@ -128,6 +175,23 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 		return fmt.Errorf("change level violation: %w", err)
 	}
 
+	// Guard: if any unique key field would become non-scalar in the extended
+	// schema, reject the write now. This catches the null-only-leaf → object/array
+	// widening case (a TYPE-level change permitted by Structural ChangeLevel)
+	// that would otherwise surface as an opaque Diff "kind change" 5xx. The
+	// unique keys were valid when declared; the schema extension must not
+	// silently invalidate them.
+	if len(desc.UniqueKeys) > 0 {
+		if vErr := schema.ValidateUniqueKeys(extended, desc.UniqueKeys); vErr != nil {
+			var de *schema.UniqueKeyDefError
+			if errors.As(vErr, &de) {
+				return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKeyDefinition,
+					"schema change would invalidate a composite unique key: "+de.Reason)
+			}
+			return fmt.Errorf("%w: re-validate unique keys: %w", errInternalSchema, vErr)
+		}
+	}
+
 	// Compute the additive delta. Diff returns (nil, nil) when the
 	// extension is a semantic no-op, which is the common case on
 	// every entity write.
@@ -142,6 +206,22 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	// ambient entity transaction so visibility is commit-bound.
 	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
 		return fmt.Errorf("%w: failed to extend schema: %w", errInternalSchema, err)
+	}
+	return nil
+}
+
+// validateStrict validates parsedData against the model schema WITHOUT
+// extending it. PATCH uses this: a sparse delta must never widen the tenant's
+// model (a stray/typo'd key is rejected, not absorbed). Mirrors the
+// ChangeLevel=="" branch of validateOrExtend.
+func (h *Handler) validateStrict(desc *spi.ModelDescriptor, parsedData any) error {
+	modelNode, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return fmt.Errorf("%w: failed to unmarshal model schema: %w", errInternalSchema, err)
+	}
+	errs := schema.Validate(modelNode, parsedData)
+	if len(errs) > 0 {
+		return enrichWithModelRef(validationErrorsToError(errs), desc.Ref)
 	}
 	return nil
 }
@@ -235,6 +315,12 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 //   - anything else           → 4xx BAD_REQUEST (change-level violation,
 //     other validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
+	// Pass-through: validateOrExtend may return a *common.AppError directly
+	// for pre-classified operational errors (e.g. unique-key widening guard).
+	var preClassified *common.AppError
+	if errors.As(err, &preClassified) {
+		return preClassified
+	}
 	if errors.Is(err, schema.ErrPolymorphicSlot) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
 	}
@@ -492,7 +578,7 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 	result := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		entry := map[string]any{
-			"changeType":   e.ChangeType,
+			"changeType":   common.CanonicalChangeType(e.ChangeType),
 			"timeOfChange": e.TimeOfChange,
 			"user":         e.User,
 		}
@@ -506,22 +592,38 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
-	result, err := h.DeleteAllEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion))
+	condBody, err := io.ReadAll(r.Body)
 	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
+		return
+	}
+
+	verbose := params.Verbose != nil && *params.Verbose
+	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), condBody, params.PointInTime, verbose)
+	if err != nil {
+		if errors.Is(err, ErrInvalidCondition) {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()))
+			return
+		}
 		common.WriteError(w, r, classifyError(err))
 		return
 	}
 
-	// Spec declares StreamDeleteResult as a single object (not an array).
-	// The object has: entityModelClassId (uuid), deleteResult (nested object),
-	// and optional ids ([]uuid). Server is source of truth per design §3.
+	// StreamDeleteResult: single object with entityModelClassId, deleteResult,
+	// and optional ids (verbose). numberOfEntitites = matched, ...Removed =
+	// actually deleted (decoupled — a condition may match more than it removes
+	// if a per-id delete fails). Reconciled to the per-finding policy (design §2).
+	deleteResult := map[string]any{
+		"idToError":                result.IDToError,
+		"numberOfEntitites":        result.MatchedCount,
+		"numberOfEntititesRemoved": result.RemovedCount,
+	}
 	resp := map[string]any{
 		"entityModelClassId": result.EntityModelID,
-		"deleteResult": map[string]any{
-			"idToError":                map[string]any{},
-			"numberOfEntitites":        result.TotalCount,
-			"numberOfEntititesRemoved": result.TotalCount,
-		},
+		"deleteResult":       deleteResult,
+	}
+	if verbose {
+		resp["ids"] = result.IDs
 	}
 	common.WriteJSON(w, http.StatusOK, resp)
 }
@@ -551,7 +653,7 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	envelopes, err := h.ListEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), PaginationParams{
 		PageSize:   pageSize,
 		PageNumber: pageNumber,
-	})
+	}, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -632,8 +734,8 @@ type collectionChunkError struct {
 // carrying an IfMatch precondition (issue #228). ItemIndex is the failing
 // item's zero-based position within its chunk's request slice.
 type collectionChunkItemFailure struct {
-	EntityID string                  `json:"entityId"`
-	Error    collectionChunkItemErr  `json:"error"`
+	EntityID string                 `json:"entityId"`
+	Error    collectionChunkItemErr `json:"error"`
 }
 
 // collectionChunkItemErr is the per-item failure inner object — code, message,
@@ -925,4 +1027,74 @@ func (h *Handler) UpdateSingle(w http.ResponseWriter, r *http.Request, format ge
 		"entityIds":     result.EntityIDs,
 	}
 	common.WriteJSON(w, http.StatusOK, resp)
+}
+
+// PatchSingleWithLoopback handles PATCH /entity/{format}/{entityId} (loopback).
+func (h *Handler) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.PatchSingleWithLoopbackParams) {
+	h.patch(w, r, string(format), entityId, "", params.IfMatch)
+}
+
+// PatchSingle handles PATCH /entity/{format}/{entityId}/{transition}.
+func (h *Handler) PatchSingle(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.PatchSingleParams) {
+	h.patch(w, r, string(format), entityId, transition, params.IfMatch)
+}
+
+// patch is the shared PATCH implementation. Error precedence: media-type/format
+// (415) -> If-Match presence (428) -> service (404/412/409/501/4xx).
+func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, entityId openapi_types.UUID, transition string, ifMatchHeader *string) {
+	if format != "JSON" {
+		common.WriteError(w, r, common.Operational(http.StatusUnsupportedMediaType, common.ErrCodeUnsupportedMediaType, "patch supports the JSON format only"))
+		return
+	}
+	patchFormat, ok := patchFormatFromContentType(r.Header.Get("Content-Type"))
+	if !ok {
+		common.WriteError(w, r, common.Operational(http.StatusUnsupportedMediaType, common.ErrCodeUnsupportedMediaType,
+			"unsupported Content-Type; use application/merge-patch+json or application/json-patch+json"))
+		return
+	}
+	if ifMatchHeader == nil {
+		common.WriteError(w, r, common.Operational(http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
+			"missing If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
+		return
+	}
+	result, err := h.PatchEntity(r.Context(), PatchEntityInput{
+		EntityID:    entityId.String(),
+		Patch:       bodyBytes,
+		PatchFormat: patchFormat,
+		Transition:  transition,
+		IfMatch:     *ifMatchHeader,
+	})
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, map[string]any{
+		"transactionId": result.TransactionID,
+		"entityIds":     result.EntityIDs,
+	})
+}
+
+// patchFormatFromContentType maps the request Content-Type to a patch dialect.
+func patchFormatFromContentType(ct string) (string, bool) {
+	if ct == "" {
+		return "", false
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return "", false
+	}
+	switch mediaType {
+	case "application/merge-patch+json":
+		return "MERGE_PATCH", true
+	case "application/json-patch+json":
+		return "JSON_PATCH", true
+	default:
+		return "", false
+	}
 }

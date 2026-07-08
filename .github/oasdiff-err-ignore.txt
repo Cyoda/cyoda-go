@@ -1,0 +1,195 @@
+# oasdiff err-ignore — deliberate, reviewed breaking-change allowances (ADR 0003 Decision 7:
+# reconcile drift by direction). Each entry below is the EXACT oasdiff singleline text of a
+# spec-to-reality reconciliation that oasdiff classifies as breaking but that breaks no working
+# client, because the prior spec never matched the server. oasdiff only suppresses a change when
+# an ignore line contains that change's full operation+path AND message, so each entry is
+# surgical — it cannot mask any other (or future) breaking change. Fail-closed: if the pinned
+# oasdiff's wording changes on a version bump, the entry stops matching and the gate re-flags it.
+# Entries are safe to prune once merged into the base branch (the corrected shape becomes the
+# baseline and no longer diffs).
+#
+# createCollection (POST entity/{format}) request body corrected from object to array-of-object:
+# the endpoint has always required a JSON array of {model, payload}; the prior object schema was
+# stale documentation the server never honoured (a bare object is rejected with 400). Correcting
+# the schema to the real shape is the reconciliation this PR performs (E4).
+error at api/openapi.yaml, in API POST /entity/{format} the request's body `type/format` changed from `object/json` to `array<object>` [request-body-type-changed].
+
+# stats/audit/search slice (ADR 0003 Decision 7 — spec-to-reality reconciliation; prior spec never matched server):
+#
+# getStateMachineFinishedEvent (GET /audit/…/finished): prior 401/403/404/500 responses used
+# ErrorResponseDto (error, error_description, error_uri) — a prototype-era schema.  Server has
+# always returned ProblemDetail (RFC 9457).  Correcting the schema removes these fields.
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# searchEntities (POST /search/direct/…): prior 200 listed application/json (wrong — server
+# streams NDJSON); prior 400/404 listed application/x-ndjson (wrong — server returns
+# ProblemDetail JSON for errors).  Correcting both removes these media-type entries.
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/json` for the response with the status `200` [response-media-type-removed].
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/x-ndjson` for the response with the status `400` [response-media-type-removed].
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/x-ndjson` for the response with the status `404` [response-media-type-removed].
+
+# auth/OIDC slice — listOidcProviders.activeOnly retyped string→boolean: the
+# param was always a boolean-in-intent (server compared string=="true"); typing
+# it correctly is the reconciliation. oasdiff flags the request param type change.
+error at api/openapi.yaml, in API GET /oauth/oidc/providers for the `query` request parameter `activeOnly`, the `type` was changed from `string` to `boolean` [request-parameter-type-changed].
+
+# auth/OIDC slice — 7 OIDC ops converted ErrorResponseDto→ProblemDetail: the
+# server has always emitted application/problem+json (RFC-9457); the OAuth-shaped
+# ErrorResponseDto was prototype-era drift. The spec change also swaps the media
+# type to application/problem+json, but oasdiff v1.21.0 flags only the removal of
+# the required error/error_description properties (a replaced media type is not
+# reported as removed), so only those property-removed entries appear below.
+#
+# GET /oauth/oidc/providers (listOidcProviders) — 401, 500
+error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# POST /oauth/oidc/providers (registerOidcProvider) — 400, 401, 403, 409, 500
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `409` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `409` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# POST /oauth/oidc/providers/reload (reloadOidcProviders) — 401, 403, 500
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# DELETE /oauth/oidc/providers/{id} (deleteOidcProvider) — 401, 403, 404, 500
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# PATCH /oauth/oidc/providers/{id} (updateOidcProvider) — 400, 401, 403, 404, 500
+# (409 is a new addition, not a removal — no ignore entry needed)
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# POST /oauth/oidc/providers/{id}/invalidate (invalidateOidcProvider) — 401, 403, 404, 500
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# POST /oauth/oidc/providers/{id}/reactivate (reactivateOidcProvider) — 401, 403, 404, 500
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# searchEntityAuditEvents (GET /audit/entity/{entityId}) — D-1 deferred item:
+# 400/401/403/404/500 converted ErrorResponseDto→ProblemDetail (server has always
+# emitted application/problem+json; prototype-era drift).
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error` from the response with the `500` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /audit/entity/{entityId} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
+#
+# message slice — newMessage (POST /message/new/{subject}) request body corrected
+# from string to the real {payload, meta-data} object envelope; the prior string
+# schema was prototype-era drift the server never honoured (a bare string is
+# rejected — the handler unmarshals an object). ADR 0003 Decision 7.
+error at api/openapi.yaml, in API POST /message/new/{subject} the request's body `type` changed from `string` to `object` [request-body-type-changed].
+error at api/openapi.yaml, in API POST /message/new/{subject} added the new required request property `payload` [new-required-request-property].
+#
+# message slice — deleteMessages (DELETE /message) request body corrected from a
+# single string/uuid to the real array<string> of ids; prior schema was prototype
+# drift (the handler unmarshals []string). ADR 0003 Decision 7.
+error at api/openapi.yaml, in API DELETE /message the request's body `type/format` changed from `string/uuid` to `array<string/uuid>` [request-body-type-changed].
+#
+# getMessage/deleteMessage path param messageId: format uuid-v1 -> uuid (F5).
+# uuid-v1 is a non-standard custom format the server never validated; oasdiff treats
+# format narrowing→broadening as a type change (ERR), but widening the accepted set
+# breaks no client. The fictional 400 "not a time-based UUID" was prototype drift —
+# server performs no version check; any absent uuid -> 404. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API DELETE /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
+error at api/openapi.yaml, in API GET /message/{messageId} for the `path` request parameter `messageId`, the `format` was changed from `uuid-v1` to `uuid` [request-parameter-type-changed].
+#
+# getMessage (GET /message/{messageId}) — metaData simplified to a flat symmetric map:
+# the values/indexedValues split and the injected typeReferences were cyoda-cloud indexing
+# artifacts the cyoda-go contract does not carry; cyoda-cloud conforms. The required
+# values/indexedValues properties disappear from the response schema because
+# EdgeMessageMetaData is now an open flat map (additionalProperties:true, no named
+# properties). No working client depended on the bucketed schema — it was prototype-era
+# drift. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/indexedValues` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /message/{messageId} removed the required property `metaData/values` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5, ADR 0003 Decision 7) — genTables/getSchemas 200 array
+# schema corrected from malformed `type:array`+sibling-$ref to array<items>. The ops
+# are unrouted (404); no working client depends on the malformed shape. oasdiff
+# previously treated the sibling $ref as per-object properties on an untyped array
+# root; after the fix it correctly resolves them as items-level, so the root-level
+# required properties appear "removed" — they were never real constraints.
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `fields` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `hidden` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `metadataClassId` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `tableName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/genTables/{entityModelId} removed the required property `uniformedPath` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/listAll removed the required property `schemaName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /sql/schema/listAll removed the required property `tables` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5) — updateTables request body corrected string→array<TableConfigDto>;
+# the prior string schema was prototype drift (the op is unrouted). ADR 0003 Decision 7.
+# updateTables 200 response also corrected: same malformed type:array+sibling-$ref as genTables (D1+D2).
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} the request's body `type` changed from `string` to `array<object>` [request-body-type-changed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `fields` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `hidden` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `metadataClassId` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `tableName` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /sql/schema/updateTables/{entityModelId} removed the required property `uniformedPath` from the response with the `200` status [response-required-property-removed].
+#
+# SQL-Schema slice (group 5) — FieldConfigDto reconciled to its examples: hidden/isArray
+# made optional (examples always omitted them), arrayFields modelled (recursive). Unrouted;
+# prototype drift. ADR 0003 Decision 7.
+error at api/openapi.yaml, in API GET /sql/schema/ the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API GET /sql/schema/ the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API PUT /sql/schema/putDefault/{schemaName} the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API PUT /sql/schema/putDefault/{schemaName} the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API GET /sql/schema/{schemaId} the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
+error at api/openapi.yaml, in API GET /sql/schema/{schemaId} the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].

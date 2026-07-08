@@ -1,9 +1,10 @@
 package e2e_test
 
-// entity_conformance_test.go — E2E tests that pin the wire shapes corrected by
-// Task 6.1 of the OpenAPI conformance plan (#21). Each test creates the minimal
-// fixture, hits the endpoint, and asserts the response shape matches the
-// corrected spec declaration (server-is-source-of-truth policy).
+// entity_conformance_test.go — E2E tests that exercise the entity endpoints so
+// the ambient openapivalidator (enforce mode) binds their response shapes. Where
+// spec and server disagreed, each finding was reconciled per ADR 0003 Decision 7
+// (fix whichever side left the contract), not by assuming the server is always
+// right — see docs/superpowers/specs/2026-07-02-openapi-contract-reconciliation-design.md §2.
 
 import (
 	"encoding/json"
@@ -119,7 +120,9 @@ func TestGetOneEntity_ReturnsEnvelope(t *testing.T) {
 		t.Fatalf("getOneEntity: response is not a JSON object: %v\nbody: %s", err, body)
 	}
 
-	// Must have type, data, meta at top level (the Envelope schema).
+	// Minimal presence check: type/data/meta must exist at the top level.
+	// The ambient openapivalidator (enforce mode) covers the full Envelope +
+	// EntityMetadata schema — per-field meta assertions are not needed here.
 	if _, ok := envelope["type"]; !ok {
 		t.Errorf("getOneEntity: missing 'type' field; got keys: %v", keys(envelope))
 	}
@@ -157,7 +160,9 @@ func TestGetAllEntities_ReturnsJSONArray(t *testing.T) {
 		t.Fatalf("getAllEntities: response is not a JSON array: %v\nbody: %s", err, body)
 	}
 
-	// Each element must be an envelope with type, data, meta.
+	// Minimal presence check per element: type/data/meta must exist.
+	// The ambient openapivalidator (enforce mode) covers the full Envelope +
+	// EntityMetadata schema — per-field meta assertions are not needed here.
 	for i, item := range arr {
 		if _, ok := item["type"]; !ok {
 			t.Errorf("getAllEntities: item[%d] missing 'type'; got %v", i, item)

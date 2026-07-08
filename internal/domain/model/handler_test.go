@@ -323,23 +323,6 @@ func TestDeleteUnlockedEmptyModel(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestDeleteLockedEmptyModelSucceeds(t *testing.T) {
-	srv := newTestServer(t)
-
-	resp := doImport(t, srv.URL, "LockedDel", 1, sampleJSON)
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-
-	resp = doLock(t, srv.URL, "LockedDel", 1)
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-
-	// Locked model with no entities should be deletable.
-	resp = doDelete(t, srv.URL, "LockedDel", 1)
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-}
-
 func TestImportRejectedOnLockedModel(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -661,6 +644,24 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestDeleteBlockedByLock(t *testing.T) {
+	_, srv := newTestApp(t)
+
+	// Import + lock a model with no entities.
+	resp := doImport(t, srv.URL, "DeleteLockGuard", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doLock(t, srv.URL, "DeleteLockGuard", 1)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Delete a LOCKED model → 409 MODEL_ALREADY_LOCKED (must unlock first).
+	resp = doDelete(t, srv.URL, "DeleteLockGuard", 1)
+	expectStatus(t, resp, http.StatusConflict)
+	commontest.ExpectErrorCode(t, resp, "MODEL_ALREADY_LOCKED")
+	resp.Body.Close()
+}
+
 func TestDeleteSucceedsAfterEntitiesDeleted(t *testing.T) {
 	a, srv := newTestApp(t)
 
@@ -703,7 +704,12 @@ func TestDeleteSucceedsAfterEntitiesDeleted(t *testing.T) {
 		t.Fatalf("failed to delete entity: %v", err)
 	}
 
-	// Now delete should succeed — only deleted entities remain.
+	// Model must be UNLOCKED before it can be deleted.
+	resp = doUnlock(t, srv.URL, "DeleteAfterPurge", 1)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Now delete should succeed — model is unlocked and only deleted entities remain.
 	resp = doDelete(t, srv.URL, "DeleteAfterPurge", 1)
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
@@ -838,6 +844,112 @@ func TestImportBodySizeLimit(t *testing.T) {
 	// Should get a 400 (MaxBytesReader triggers a read error caught as bad request).
 	if resp.StatusCode == 200 {
 		t.Errorf("expected rejection for oversized body, got 200")
+	}
+}
+
+func doSetUniqueKeys(t *testing.T, base, entityName string, version int, body string) *http.Response {
+	t.Helper()
+	url := base + "/model/" + entityName + "/" + strconv.Itoa(version) + "/unique-keys"
+	req, _ := http.NewRequest(http.MethodPut, url, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("setUniqueKeys request failed: %v", err)
+	}
+	return resp
+}
+
+func TestSetUniqueKeys_200_Valid(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "UKTest", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
+	resp = doSetUniqueKeys(t, srv.URL, "UKTest", 1, body)
+	expectStatus(t, resp, http.StatusOK)
+
+	var result map[string]any
+	json.Unmarshal(readBody(t, resp), &result)
+	if result["success"] != true {
+		t.Fatalf("expected success=true, got %v", result["success"])
+	}
+}
+
+func TestSetUniqueKeys_409_Locked(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "UKLocked", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	resp = doLock(t, srv.URL, "UKLocked", 1)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
+	resp = doSetUniqueKeys(t, srv.URL, "UKLocked", 1, body)
+	expectStatus(t, resp, http.StatusConflict)
+	commontest.ExpectErrorCode(t, resp, "MODEL_ALREADY_LOCKED")
+}
+
+func TestSetUniqueKeys_422_BadField(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "UKBadField", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.nonexistent_field_xyz"]}]}`
+	resp = doSetUniqueKeys(t, srv.URL, "UKBadField", 1, body)
+	expectStatus(t, resp, http.StatusUnprocessableEntity)
+	commontest.ExpectErrorCode(t, resp, "INVALID_UNIQUE_KEY_DEFINITION")
+}
+
+func TestSetUniqueKeys_422_Unsupported(t *testing.T) {
+	// incapableFactory embeds spi.StoreFactory as an interface so the
+	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
+	// promoted — the type assertion in SetUniqueKeys returns ok=false.
+	type incapableFactory struct{ spi.StoreFactory }
+	h := model.New(incapableFactory{memory.NewStoreFactory()})
+
+	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
+	r := httptest.NewRequest(http.MethodPut, "/model/UKUnsupported/1/unique-keys", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.SetEntityModelUniqueKeys(w, r, "UKUnsupported", 1)
+
+	resp := w.Result()
+	expectStatus(t, resp, http.StatusUnprocessableEntity)
+	commontest.ExpectErrorCode(t, resp, "COMPOSITE_KEY_UNSUPPORTED")
+}
+
+func TestExportIncludesUniqueKeys(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "UKExport", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
+	resp = doSetUniqueKeys(t, srv.URL, "UKExport", 1, body)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	resp = doExport(t, srv.URL, "JSON_SCHEMA", "UKExport", 1)
+	expectStatus(t, resp, http.StatusOK)
+
+	var exported map[string]any
+	json.Unmarshal(readBody(t, resp), &exported)
+	uks, ok := exported["uniqueKeys"]
+	if !ok {
+		t.Fatal("expected 'uniqueKeys' field in export output")
+	}
+	arr, ok := uks.([]any)
+	if !ok || len(arr) != 1 {
+		t.Fatalf("expected 1 unique key in export, got %v", uks)
 	}
 }
 

@@ -49,6 +49,9 @@ type Config struct {
 	// the request fails with 422 GROUP_CARDINALITY_EXCEEDED. Defaults to
 	// 10000; tune via CYODA_STATS_GROUP_MAX. See spec D2.
 	StatsGroupMax int
+	// SearchMaxSortKeys caps the number of sort keys per search request.
+	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
+	SearchMaxSortKeys int
 }
 
 type AdminConfig struct {
@@ -164,6 +167,12 @@ func DefaultConfig() Config {
 	if statsGroupMax <= 0 {
 		statsGroupMax = 10000
 	}
+	maxSortKeys := envInt("CYODA_SEARCH_MAX_SORT_KEYS", 16)
+	// A 0 or negative cap would 400 every sorted request (cap enforced by
+	// resolveSortKeys); clamp to the documented default instead.
+	if maxSortKeys <= 0 {
+		maxSortKeys = 16
+	}
 
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
@@ -198,6 +207,7 @@ func DefaultConfig() Config {
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		StatsGroupMax:      statsGroupMax,
+		SearchMaxSortKeys:  maxSortKeys,
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
@@ -234,9 +244,14 @@ func DefaultConfig() Config {
 			},
 		},
 		Cluster: cluster.Config{
+			// Enabled defaults false for easier onboarding — NOT because multi-node is
+			// secondary. Cluster/HA correctness (tx-affinity, cross-node callback join,
+			// proxy routing, peer failover) is a primary design target.
+			// See .claude/rules/multi-node-primary.md.
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
 			NodeID:                 envString("CYODA_NODE_ID", ""),
 			NodeAddr:               envString("CYODA_NODE_ADDR", "http://localhost:8080"),
+			GRPCNodeAddr:           envString("CYODA_GRPC_NODE_ADDR", ""),
 			GossipAddr:             envString("CYODA_GOSSIP_ADDR", ":7946"),
 			SeedNodes:              splitCSV(envString("CYODA_SEED_NODES", "")),
 			StabilityWindow:        envDuration("CYODA_GOSSIP_STABILITY_WINDOW", 2*time.Second),
@@ -247,6 +262,14 @@ func DefaultConfig() Config {
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
+			// TxTokenTTL must outlive the full dispatch round-trip plus the callback's
+			// verify step, including the forwarded-chain case where two budgets stack
+			// (local dispatch + peer forward). Default ≥3× the dispatch/forward timeout (30s).
+			TxTokenTTL: envDuration("CYODA_TX_TOKEN_TTL", 90*time.Second),
+			// Test-only: allow the dispatch HTTP forwarder to target loopback peers.
+			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
+			// this false so the SSRF guard stays active.
+			DispatchAllowLoopback: envBool("CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING", false),
 		},
 	}
 }

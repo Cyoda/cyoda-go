@@ -16,10 +16,10 @@ import (
 // ceiling leaves a 10x headroom over sustained load; an attacker flood fails
 // closed rather than letting stale entries linger.
 type nonceCache struct {
-	ttl    time.Duration
-	cap    int
-	nowFn  func() time.Time
-	mu     sync.Mutex
+	ttl     time.Duration
+	cap     int
+	nowFn   func() time.Time
+	mu      sync.Mutex
 	entries map[string]time.Time
 }
 

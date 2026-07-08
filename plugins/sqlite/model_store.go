@@ -29,6 +29,7 @@ type modelDoc struct {
 	ChangeLevel spi.ChangeLevel `json:"changeLevel"`
 	UpdateDate  string          `json:"updateDate"`
 	Schema      []byte          `json:"schema"`
+	UniqueKeys  []spi.UniqueKey `json:"uniqueKeys,omitempty"`
 }
 
 func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
@@ -39,6 +40,7 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 	doc.ChangeLevel = desc.ChangeLevel
 	doc.UpdateDate = desc.UpdateDate.UTC().Format(time.RFC3339Nano)
 	doc.Schema = desc.Schema
+	doc.UniqueKeys = desc.UniqueKeys
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
@@ -347,6 +349,7 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 		ChangeLevel: doc.ChangeLevel,
 		UpdateDate:  updateDate,
 		Schema:      doc.Schema,
+		UniqueKeys:  doc.UniqueKeys,
 	}, nil
 }
 

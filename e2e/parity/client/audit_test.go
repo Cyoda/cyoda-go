@@ -62,8 +62,8 @@ func TestAuditEvent_EntityChange_Decode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AsEntityChange: %v", err)
 	}
-	if ec.ChangeType != "CREATED" {
-		t.Errorf("ChangeType: got %q, want \"CREATED\"", ec.ChangeType)
+	if ec.ChangeType != "CREATE" {
+		t.Errorf("ChangeType: got %q, want \"CREATE\"", ec.ChangeType)
 	}
 	if len(ec.Changes) == 0 {
 		t.Error("Changes is empty (fixture has after-block)")

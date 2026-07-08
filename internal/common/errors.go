@@ -94,6 +94,12 @@ func Operational(status int, code string, message string) *AppError {
 // rolled back is retryable, not a server error. This keeps every call site
 // honest without forcing each to reason about pgx error codes.
 func Internal(message string, err error) *AppError {
+	if err != nil && errors.Is(err, spi.ErrUniqueViolation) {
+		return Operational(http.StatusConflict, ErrCodeUniqueViolation, "a composite unique key constraint was violated")
+	}
+	if err != nil && errors.Is(err, spi.ErrPartialUniqueKey) {
+		return Operational(http.StatusUnprocessableEntity, ErrCodeInvalidUniqueKey, "one or more unique key fields are null or invalid")
+	}
 	if err != nil && errors.Is(err, spi.ErrConflict) {
 		return Operational(http.StatusConflict, ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 	}

@@ -168,6 +168,22 @@ func (s *Server) UpdateSingle(w http.ResponseWriter, r *http.Request, format gen
 	s.Unimplemented.UpdateSingle(w, r, format, entityId, transition, params)
 }
 
+func (s *Server) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.PatchSingleWithLoopbackParams) {
+	if s.Entity != nil {
+		s.Entity.PatchSingleWithLoopback(w, r, format, entityId, params)
+		return
+	}
+	s.Unimplemented.PatchSingleWithLoopback(w, r, format, entityId, params)
+}
+
+func (s *Server) PatchSingle(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.PatchSingleParams) {
+	if s.Entity != nil {
+		s.Entity.PatchSingle(w, r, format, entityId, transition, params)
+		return
+	}
+	s.Unimplemented.PatchSingle(w, r, format, entityId, transition, params)
+}
+
 func (s *Server) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
 	if s.Entity != nil {
 		s.Entity.Create(w, r, format, entityName, modelVersion, params)
@@ -242,6 +258,14 @@ func (s *Server) ValidateEntityModel(w http.ResponseWriter, r *http.Request, ent
 		return
 	}
 	s.Unimplemented.ValidateEntityModel(w, r, entityName, modelVersion)
+}
+
+func (s *Server) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+	if s.Model != nil {
+		s.Model.SetEntityModelUniqueKeys(w, r, entityName, modelVersion)
+		return
+	}
+	s.Unimplemented.SetEntityModelUniqueKeys(w, r, entityName, modelVersion)
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +372,7 @@ func (s *Server) NewMessage(w http.ResponseWriter, r *http.Request, subject stri
 	s.Unimplemented.NewMessage(w, r, subject, params)
 }
 
-func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
 	if s.Messaging != nil {
 		s.Messaging.DeleteMessage(w, r, messageId)
 		return
@@ -356,7 +380,7 @@ func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId
 	s.Unimplemented.DeleteMessage(w, r, messageId)
 }
 
-func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId string) {
+func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
 	if s.Messaging != nil {
 		s.Messaging.GetMessage(w, r, messageId)
 		return

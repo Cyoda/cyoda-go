@@ -31,20 +31,23 @@ const (
 	EntityDeleteAllResponse       = "EntityDeleteAllResponse"
 	EntityTransitionRequest       = "EntityTransitionRequest"
 	EntityTransitionResponse      = "EntityTransitionResponse"
+	EntityPatchRequest            = "EntityPatchRequest"
 )
 
 // Model management types.
 const (
-	EntityModelImportRequest      = "EntityModelImportRequest"
-	EntityModelImportResponse     = "EntityModelImportResponse"
-	EntityModelExportRequest      = "EntityModelExportRequest"
-	EntityModelExportResponse     = "EntityModelExportResponse"
-	EntityModelTransitionRequest  = "EntityModelTransitionRequest"
-	EntityModelTransitionResponse = "EntityModelTransitionResponse"
-	EntityModelDeleteRequest      = "EntityModelDeleteRequest"
-	EntityModelDeleteResponse     = "EntityModelDeleteResponse"
-	EntityModelGetAllRequest      = "EntityModelGetAllRequest"
-	EntityModelGetAllResponse     = "EntityModelGetAllResponse"
+	EntityModelImportRequest         = "EntityModelImportRequest"
+	EntityModelImportResponse        = "EntityModelImportResponse"
+	EntityModelExportRequest         = "EntityModelExportRequest"
+	EntityModelExportResponse        = "EntityModelExportResponse"
+	EntityModelTransitionRequest     = "EntityModelTransitionRequest"
+	EntityModelTransitionResponse    = "EntityModelTransitionResponse"
+	EntityModelDeleteRequest         = "EntityModelDeleteRequest"
+	EntityModelDeleteResponse        = "EntityModelDeleteResponse"
+	EntityModelGetAllRequest         = "EntityModelGetAllRequest"
+	EntityModelGetAllResponse        = "EntityModelGetAllResponse"
+	EntityModelSetUniqueKeysRequest  = "EntityModelSetUniqueKeysRequest"
+	EntityModelSetUniqueKeysResponse = "EntityModelSetUniqueKeysResponse"
 )
 
 // Search / query types.

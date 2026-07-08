@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityPatchPayload.json",
+  "title": "EntityPatchPayload",
+  "type": "object",
+  "properties": {
+    "entityId": {
+      "type": "string",
+      "description": "ID of the entity to patch.",
+      "format": "uuid"
+    },
+    "patch": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "The patch document (RFC 7386 merge patch)."
+    },
+    "transition": {
+      "type": "string",
+      "description": "Transition to apply, or omit for loopback."
+    },
+    "ifMatch": {
+      "type": "string",
+      "description": "transactionId from the last read, or \"*\" for unconditional. Empty is rejected as precondition-required."
+    }
+  },
+  "required": [
+    "entityId",
+    "patch"
+  ]
+}

@@ -339,19 +339,19 @@ func (e CancelAsyncSearchDtoCurrentSearchJobStatus) Valid() bool {
 
 // Defines values for EntityChangeAuditEventDtoChangeType.
 const (
-	EntityChangeAuditEventDtoChangeTypeCREATED EntityChangeAuditEventDtoChangeType = "CREATED"
-	EntityChangeAuditEventDtoChangeTypeDELETED EntityChangeAuditEventDtoChangeType = "DELETED"
-	EntityChangeAuditEventDtoChangeTypeUPDATED EntityChangeAuditEventDtoChangeType = "UPDATED"
+	EntityChangeAuditEventDtoChangeTypeCREATE EntityChangeAuditEventDtoChangeType = "CREATE"
+	EntityChangeAuditEventDtoChangeTypeDELETE EntityChangeAuditEventDtoChangeType = "DELETE"
+	EntityChangeAuditEventDtoChangeTypeUPDATE EntityChangeAuditEventDtoChangeType = "UPDATE"
 )
 
 // Valid indicates whether the value is a known member of the EntityChangeAuditEventDtoChangeType enum.
 func (e EntityChangeAuditEventDtoChangeType) Valid() bool {
 	switch e {
-	case EntityChangeAuditEventDtoChangeTypeCREATED:
+	case EntityChangeAuditEventDtoChangeTypeCREATE:
 		return true
-	case EntityChangeAuditEventDtoChangeTypeDELETED:
+	case EntityChangeAuditEventDtoChangeTypeDELETE:
 		return true
-	case EntityChangeAuditEventDtoChangeTypeUPDATED:
+	case EntityChangeAuditEventDtoChangeTypeUPDATE:
 		return true
 	default:
 		return false
@@ -384,19 +384,19 @@ func (e EntityChangeAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for EntityChangeMetaChangeType.
 const (
-	EntityChangeMetaChangeTypeCREATED EntityChangeMetaChangeType = "CREATED"
-	EntityChangeMetaChangeTypeDELETED EntityChangeMetaChangeType = "DELETED"
-	EntityChangeMetaChangeTypeUPDATED EntityChangeMetaChangeType = "UPDATED"
+	EntityChangeMetaChangeTypeCREATE EntityChangeMetaChangeType = "CREATE"
+	EntityChangeMetaChangeTypeDELETE EntityChangeMetaChangeType = "DELETE"
+	EntityChangeMetaChangeTypeUPDATE EntityChangeMetaChangeType = "UPDATE"
 )
 
 // Valid indicates whether the value is a known member of the EntityChangeMetaChangeType enum.
 func (e EntityChangeMetaChangeType) Valid() bool {
 	switch e {
-	case EntityChangeMetaChangeTypeCREATED:
+	case EntityChangeMetaChangeTypeCREATE:
 		return true
-	case EntityChangeMetaChangeTypeDELETED:
+	case EntityChangeMetaChangeTypeDELETE:
 		return true
-	case EntityChangeMetaChangeTypeUPDATED:
+	case EntityChangeMetaChangeTypeUPDATE:
 		return true
 	default:
 		return false
@@ -410,6 +410,8 @@ const (
 	InvalidGrant         ErrorResponseDtoError = "invalid_grant"
 	InvalidRequest       ErrorResponseDtoError = "invalid_request"
 	InvalidScope         ErrorResponseDtoError = "invalid_scope"
+	MethodNotAllowed     ErrorResponseDtoError = "method_not_allowed"
+	ServerError          ErrorResponseDtoError = "server_error"
 	UnauthorizedClient   ErrorResponseDtoError = "unauthorized_client"
 	UnsupportedGrantType ErrorResponseDtoError = "unsupported_grant_type"
 )
@@ -426,6 +428,10 @@ func (e ErrorResponseDtoError) Valid() bool {
 	case InvalidRequest:
 		return true
 	case InvalidScope:
+		return true
+	case MethodNotAllowed:
+		return true
+	case ServerError:
 		return true
 	case UnauthorizedClient:
 		return true
@@ -1215,13 +1221,13 @@ func (e SystemAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for TechnicalUserCredentialsDtoGrantType.
 const (
-	ClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
 )
 
 // Valid indicates whether the value is a known member of the TechnicalUserCredentialsDtoGrantType enum.
 func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 	switch e {
-	case ClientCredentials:
+	case TechnicalUserCredentialsDtoGrantTypeClientCredentials:
 		return true
 	default:
 		return false
@@ -1231,12 +1237,15 @@ func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 // Defines values for TokenResponseDtoIssuedTokenType.
 const (
 	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
+	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt         TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the TokenResponseDtoIssuedTokenType enum.
 func (e TokenResponseDtoIssuedTokenType) Valid() bool {
 	switch e {
 	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
+		return true
+	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
 		return false
@@ -1270,150 +1279,6 @@ func (e TrustedKeyResponseDtoAudience) Valid() bool {
 	case TrustedKeyResponseDtoAudienceClient:
 		return true
 	case TrustedKeyResponseDtoAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ValueMapsTypeReferences.
-const (
-	ARRAY          ValueMapsTypeReferences = "ARRAY"
-	ARRAYELEMENT   ValueMapsTypeReferences = "ARRAY_ELEMENT"
-	BIGDECIMAL     ValueMapsTypeReferences = "BIG_DECIMAL"
-	BIGINTEGER     ValueMapsTypeReferences = "BIG_INTEGER"
-	BOOLEAN        ValueMapsTypeReferences = "BOOLEAN"
-	BYTE           ValueMapsTypeReferences = "BYTE"
-	BYTEARRAY      ValueMapsTypeReferences = "BYTE_ARRAY"
-	CHARACTER      ValueMapsTypeReferences = "CHARACTER"
-	DOUBLE         ValueMapsTypeReferences = "DOUBLE"
-	FLOAT          ValueMapsTypeReferences = "FLOAT"
-	INTEGER        ValueMapsTypeReferences = "INTEGER"
-	LOCALDATE      ValueMapsTypeReferences = "LOCAL_DATE"
-	LOCALDATETIME  ValueMapsTypeReferences = "LOCAL_DATE_TIME"
-	LOCALTIME      ValueMapsTypeReferences = "LOCAL_TIME"
-	LONG           ValueMapsTypeReferences = "LONG"
-	NULL           ValueMapsTypeReferences = "NULL"
-	OBJECT         ValueMapsTypeReferences = "OBJECT"
-	POLYMORPHIC    ValueMapsTypeReferences = "POLYMORPHIC"
-	SHORT          ValueMapsTypeReferences = "SHORT"
-	STRING         ValueMapsTypeReferences = "STRING"
-	TIMEUUIDTYPE   ValueMapsTypeReferences = "TIME_UUID_TYPE"
-	TYPEREFERENCE  ValueMapsTypeReferences = "TYPE_REFERENCE"
-	UNBOUNDDECIMAL ValueMapsTypeReferences = "UNBOUND_DECIMAL"
-	UNBOUNDINTEGER ValueMapsTypeReferences = "UNBOUND_INTEGER"
-	UUIDTYPE       ValueMapsTypeReferences = "UUID_TYPE"
-	YEAR           ValueMapsTypeReferences = "YEAR"
-	YEARMONTH      ValueMapsTypeReferences = "YEAR_MONTH"
-	ZONEDDATETIME  ValueMapsTypeReferences = "ZONED_DATE_TIME"
-)
-
-// Valid indicates whether the value is a known member of the ValueMapsTypeReferences enum.
-func (e ValueMapsTypeReferences) Valid() bool {
-	switch e {
-	case ARRAY:
-		return true
-	case ARRAYELEMENT:
-		return true
-	case BIGDECIMAL:
-		return true
-	case BIGINTEGER:
-		return true
-	case BOOLEAN:
-		return true
-	case BYTE:
-		return true
-	case BYTEARRAY:
-		return true
-	case CHARACTER:
-		return true
-	case DOUBLE:
-		return true
-	case FLOAT:
-		return true
-	case INTEGER:
-		return true
-	case LOCALDATE:
-		return true
-	case LOCALDATETIME:
-		return true
-	case LOCALTIME:
-		return true
-	case LONG:
-		return true
-	case NULL:
-		return true
-	case OBJECT:
-		return true
-	case POLYMORPHIC:
-		return true
-	case SHORT:
-		return true
-	case STRING:
-		return true
-	case TIMEUUIDTYPE:
-		return true
-	case TYPEREFERENCE:
-		return true
-	case UNBOUNDDECIMAL:
-		return true
-	case UNBOUNDINTEGER:
-		return true
-	case UUIDTYPE:
-		return true
-	case YEAR:
-		return true
-	case YEARMONTH:
-		return true
-	case ZONEDDATETIME:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ValueMapsYearMonthsMonth.
-const (
-	APRIL     ValueMapsYearMonthsMonth = "APRIL"
-	AUGUST    ValueMapsYearMonthsMonth = "AUGUST"
-	DECEMBER  ValueMapsYearMonthsMonth = "DECEMBER"
-	FEBRUARY  ValueMapsYearMonthsMonth = "FEBRUARY"
-	JANUARY   ValueMapsYearMonthsMonth = "JANUARY"
-	JULY      ValueMapsYearMonthsMonth = "JULY"
-	JUNE      ValueMapsYearMonthsMonth = "JUNE"
-	MARCH     ValueMapsYearMonthsMonth = "MARCH"
-	MAY       ValueMapsYearMonthsMonth = "MAY"
-	NOVEMBER  ValueMapsYearMonthsMonth = "NOVEMBER"
-	OCTOBER   ValueMapsYearMonthsMonth = "OCTOBER"
-	SEPTEMBER ValueMapsYearMonthsMonth = "SEPTEMBER"
-)
-
-// Valid indicates whether the value is a known member of the ValueMapsYearMonthsMonth enum.
-func (e ValueMapsYearMonthsMonth) Valid() bool {
-	switch e {
-	case APRIL:
-		return true
-	case AUGUST:
-		return true
-	case DECEMBER:
-		return true
-	case FEBRUARY:
-		return true
-	case JANUARY:
-		return true
-	case JULY:
-		return true
-	case JUNE:
-		return true
-	case MARCH:
-		return true
-	case MAY:
-		return true
-	case NOVEMBER:
-		return true
-	case OCTOBER:
-		return true
-	case SEPTEMBER:
 		return true
 	default:
 		return false
@@ -1522,6 +1387,24 @@ func (e UpdateCollectionParamsFormat) Valid() bool {
 	}
 }
 
+// Defines values for PatchSingleWithLoopbackParamsFormat.
+const (
+	PatchSingleWithLoopbackParamsFormatJSON PatchSingleWithLoopbackParamsFormat = "JSON"
+	PatchSingleWithLoopbackParamsFormatXML  PatchSingleWithLoopbackParamsFormat = "XML"
+)
+
+// Valid indicates whether the value is a known member of the PatchSingleWithLoopbackParamsFormat enum.
+func (e PatchSingleWithLoopbackParamsFormat) Valid() bool {
+	switch e {
+	case PatchSingleWithLoopbackParamsFormatJSON:
+		return true
+	case PatchSingleWithLoopbackParamsFormatXML:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UpdateSingleWithLoopbackParamsFormat.
 const (
 	UpdateSingleWithLoopbackParamsFormatJSON UpdateSingleWithLoopbackParamsFormat = "JSON"
@@ -1534,6 +1417,24 @@ func (e UpdateSingleWithLoopbackParamsFormat) Valid() bool {
 	case UpdateSingleWithLoopbackParamsFormatJSON:
 		return true
 	case UpdateSingleWithLoopbackParamsFormatXML:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PatchSingleParamsFormat.
+const (
+	PatchSingleParamsFormatJSON PatchSingleParamsFormat = "JSON"
+	PatchSingleParamsFormatXML  PatchSingleParamsFormat = "XML"
+)
+
+// Valid indicates whether the value is a known member of the PatchSingleParamsFormat enum.
+func (e PatchSingleParamsFormat) Valid() bool {
+	switch e {
+	case PatchSingleParamsFormatJSON:
+		return true
+	case PatchSingleParamsFormatXML:
 		return true
 	default:
 		return false
@@ -1677,13 +1578,16 @@ func (e GetCurrentJwtKeyPairParamsAudience) Valid() bool {
 
 // Defines values for GetTechnicalUserTokenFormdataBodyGrantType.
 const (
-	UrnIetfParamsOauthGrantTypeTokenExchange GetTechnicalUserTokenFormdataBodyGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
+	GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials                        GetTechnicalUserTokenFormdataBodyGrantType = "client_credentials"
+	GetTechnicalUserTokenFormdataBodyGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange GetTechnicalUserTokenFormdataBodyGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Valid indicates whether the value is a known member of the GetTechnicalUserTokenFormdataBodyGrantType enum.
 func (e GetTechnicalUserTokenFormdataBodyGrantType) Valid() bool {
 	switch e {
-	case UrnIetfParamsOauthGrantTypeTokenExchange:
+	case GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials:
+		return true
+	case GetTechnicalUserTokenFormdataBodyGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange:
 		return true
 	default:
 		return false
@@ -1852,8 +1756,10 @@ type EdgeMessageDto struct {
 	// stringify it (e.g. base64 for binary, plain string with escape for
 	// non-JSON text). Proper content-type handling may be added
 	// as a future feature.
-	Content  *EdgeMessagePayload `json:"content,omitempty"`
-	Header   EdgeMessageHeader   `json:"header"`
+	Content *EdgeMessagePayload `json:"content,omitempty"`
+	Header  EdgeMessageHeader   `json:"header"`
+
+	// MetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
 	MetaData EdgeMessageMetaData `json:"metaData"`
 }
 
@@ -1872,11 +1778,8 @@ type EdgeMessageHeader struct {
 	UserId        *string `json:"userId,omitempty"`
 }
 
-// EdgeMessageMetaData defines model for EdgeMessageMetaData.
-type EdgeMessageMetaData struct {
-	IndexedValues ValueMaps `json:"indexedValues"`
-	Values        ValueMaps `json:"values"`
-}
+// EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
+type EdgeMessageMetaData map[string]interface{}
 
 // EdgeMessagePayload Polymorphic by intent — accepts any JSON value. The contentType field
 // in the message header is informational; it does not affect storage or
@@ -1884,7 +1787,7 @@ type EdgeMessageMetaData struct {
 // stringify it (e.g. base64 for binary, plain string with escape for
 // non-JSON text). Proper content-type handling may be added
 // as a future feature.
-type EdgeMessagePayload map[string]interface{}
+type EdgeMessagePayload = interface{}
 
 // EntityAuditEventsResponseDto defines model for EntityAuditEventsResponseDto.
 type EntityAuditEventsResponseDto struct {
@@ -1904,7 +1807,7 @@ type EntityChangeAuditEventDto struct {
 	Actor          *AuditActorInfoDto `json:"actor,omitempty"`
 	AuditEventType string             `json:"auditEventType"`
 
-	// ChangeType Type of change that occurred
+	// ChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
 	ChangeType *EntityChangeAuditEventDtoChangeType `json:"changeType,omitempty"`
 
 	// Changes Changes made to the entity
@@ -1938,7 +1841,7 @@ type EntityChangeAuditEventDto struct {
 	UtcTime time.Time `json:"utcTime"`
 }
 
-// EntityChangeAuditEventDtoChangeType Type of change that occurred
+// EntityChangeAuditEventDtoChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
 type EntityChangeAuditEventDtoChangeType string
 
 // EntityChangeAuditEventDtoSeverity Severity level of the event
@@ -1963,6 +1866,36 @@ type EntityChangesDto struct {
 
 	// Before Entity before changes
 	Before *JsonNode `json:"before,omitempty"`
+}
+
+// EntityMetadata System-managed entity metadata. Mirrors the canonical
+// docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
+// fields are enumerated and validated; the object is not sealed, so
+// additive fields remain non-breaking.
+type EntityMetadata struct {
+	CreationDate time.Time `json:"creationDate"`
+
+	// Id Entity id (invariant against point-in-time).
+	Id openapi_types.UUID `json:"id"`
+
+	// LastUpdateTime Last update as-at the point-in-time; equals creationDate if never updated.
+	LastUpdateTime time.Time `json:"lastUpdateTime"`
+
+	// ModelKey Model of the entity. Present on all entity reads (single-get, list, search).
+	ModelKey *struct {
+		Name    *string `json:"name,omitempty"`
+		Version *int32  `json:"version,omitempty"`
+	} `json:"modelKey,omitempty"`
+
+	// PointInTime The as-at point-in-time for which the entity was retrieved, when supplied.
+	PointInTime *time.Time `json:"pointInTime,omitempty"`
+
+	// State Entity state at the given point-in-time.
+	State         string              `json:"state"`
+	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
+
+	// TransitionForLatestSave Transition applied when the entity was last saved as-at the point-in-time.
+	TransitionForLatestSave *string `json:"transitionForLatestSave,omitempty"`
 }
 
 // EntityMetadataDto System-managed metadata returned for each entity in search results.
@@ -2105,8 +2038,11 @@ type Envelope struct {
 	// Exact fields depend on the entity model.
 	Data map[string]interface{} `json:"data"`
 
-	// Meta System-managed metadata: id, state, creationDate, previousTransition, etc.
-	Meta map[string]interface{} `json:"meta"`
+	// Meta System-managed entity metadata. Mirrors the canonical
+	// docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
+	// fields are enumerated and validated; the object is not sealed, so
+	// additive fields remain non-breaking.
+	Meta EntityMetadata `json:"meta"`
 
 	// Type Entity type discriminator (e.g. "ENTITY").
 	Type string `json:"type"`
@@ -2228,7 +2164,9 @@ type ExternalizedProcessorConfigDtoRetryPolicy string
 
 // ExternalizedProcessorDefinitionDto defines model for ExternalizedProcessorDefinitionDto.
 type ExternalizedProcessorDefinitionDto struct {
-	Config *ExternalizedProcessorConfigDto `json:"config,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations     `json:"annotations,omitempty"`
+	Config      *ExternalizedProcessorConfigDto `json:"config,omitempty"`
 
 	// ExecutionMode Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
 	// run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
@@ -2278,6 +2216,18 @@ type ExternalizedProcessorDefinitionDtoExecutionMode string
 // reserved value is intentionally absent from this enum until the
 // in-process subtype lands together with its schema.
 type ExternalizedProcessorDefinitionDtoType string
+
+// FieldConfigDto defines model for FieldConfigDto.
+type FieldConfigDto struct {
+	ArrayFields   *[]FieldConfigDto `json:"arrayFields,omitempty"`
+	DataType      string            `json:"dataType"`
+	FieldCategory string            `json:"fieldCategory"`
+	FieldKey      string            `json:"fieldKey"`
+	FieldName     string            `json:"fieldName"`
+	Flatten       *bool             `json:"flatten,omitempty"`
+	Hidden        *bool             `json:"hidden,omitempty"`
+	IsArray       *bool             `json:"isArray,omitempty"`
+}
 
 // FunctionConditionDto defines model for FunctionConditionDto.
 type FunctionConditionDto struct {
@@ -2352,6 +2302,7 @@ type InvalidateKeyRequestDto struct {
 
 // IssueJwtKeyPairRequestDto defines model for IssueJwtKeyPairRequestDto.
 type IssueJwtKeyPairRequestDto struct {
+	// Algorithm Signing algorithm. Only `RS256` is honoured in this version.
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
 	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
@@ -2368,7 +2319,7 @@ type IssueJwtKeyPairRequestDto struct {
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
 
-// IssueJwtKeyPairRequestDtoAlgorithm defines model for IssueJwtKeyPairRequestDto.Algorithm.
+// IssueJwtKeyPairRequestDtoAlgorithm Signing algorithm. Only `RS256` is honoured in this version.
 type IssueJwtKeyPairRequestDtoAlgorithm string
 
 // IssueJwtKeyPairRequestDtoAudience defines model for IssueJwtKeyPairRequestDto.Audience.
@@ -2428,14 +2379,6 @@ type LifecycleConditionDto struct {
 // LifecycleConditionDtoOperatorType defines model for LifecycleConditionDto.OperatorType.
 type LifecycleConditionDtoOperatorType string
 
-// LocalTime defines model for LocalTime.
-type LocalTime struct {
-	Hour   *int32 `json:"hour,omitempty"`
-	Minute *int32 `json:"minute,omitempty"`
-	Nano   *int32 `json:"nano,omitempty"`
-	Second *int32 `json:"second,omitempty"`
-}
-
 // MessageDeleteBatchResponse One element of the array returned by deleteMessages (batch delete).
 // Contains the IDs of deleted entities and a success flag.
 type MessageDeleteBatchResponse struct {
@@ -2475,6 +2418,15 @@ type ModelStatsDto struct {
 
 	// ModelVersion Entity Model Version
 	ModelVersion int32 `json:"modelVersion"`
+}
+
+// NewMessageRequest A single JSON object carrying the message payload and optional flat metadata.
+type NewMessageRequest struct {
+	// MetaData Optional flat key→value map; indexed to enable search by metadata.
+	MetaData *map[string]interface{} `json:"metaData,omitempty"`
+
+	// Payload The message payload — any JSON value (object, array, string, number, …). Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent as a JSON string; see the EdgeMessagePayload note.
+	Payload EdgeMessagePayload `json:"payload"`
 }
 
 // OidcProviderResponseDto defines model for OidcProviderResponseDto.
@@ -2532,19 +2484,6 @@ type Prize struct {
 
 // ProblemDetail defines model for ProblemDetail.
 type ProblemDetail struct {
-	Detail   *string `json:"detail,omitempty"`
-	Instance *string `json:"instance,omitempty"`
-
-	// Properties Additional diagnostic properties. Values may be any JSON type
-	// (string, number, boolean, object, array).
-	Properties *map[string]interface{} `json:"properties,omitempty"`
-	Status     *int32                  `json:"status,omitempty"`
-	Title      *string                 `json:"title,omitempty"`
-	Type       *string                 `json:"type,omitempty"`
-}
-
-// ProblemDetailDto defines model for ProblemDetailDto.
-type ProblemDetailDto struct {
 	// Detail A human-readable explanation specific to this occurrence of the problem
 	Detail *string `json:"detail,omitempty"`
 
@@ -2567,6 +2506,9 @@ type ProblemDetailDto struct {
 
 // ProcessorDefinitionDto defines model for ProcessorDefinitionDto.
 type ProcessorDefinitionDto struct {
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
+
 	// Name Name of the processor
 	Name string `json:"name"`
 
@@ -2641,7 +2583,7 @@ type RegisterTrustedKeyRequestDto struct {
 	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions.
+	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is honoured in this version.
 	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Unique key identifier. Will be matched against the `kid` header in JWTs.
@@ -2656,6 +2598,11 @@ type RegisterTrustedKeyRequestDto struct {
 
 // RegisterTrustedKeyRequestDtoAudience defines model for RegisterTrustedKeyRequestDto.Audience.
 type RegisterTrustedKeyRequestDtoAudience string
+
+// SetUniqueKeysRequest defines model for SetUniqueKeysRequest.
+type SetUniqueKeysRequest struct {
+	UniqueKeys []UniqueKeyDto `json:"uniqueKeys"`
+}
 
 // SimpleConditionDto defines model for SimpleConditionDto.
 type SimpleConditionDto struct {
@@ -2677,8 +2624,8 @@ type SingleDeleteResult struct {
 
 // StateDefinitionDto defines model for StateDefinitionDto.
 type StateDefinitionDto struct {
-	// Annotations Arbitrary client-owned metadata, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB per field.
-	Annotations *map[string]interface{} `json:"annotations,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
 
 	// Transitions List of possible transitions from this state
 	Transitions *[]TransitionDefinitionDto `json:"transitions,omitempty"`
@@ -2929,9 +2876,12 @@ type TokenResponseDtoTokenType string
 
 // TransitionDefinitionDto defines model for TransitionDefinitionDto.
 type TransitionDefinitionDto struct {
-	// Annotations Arbitrary client-owned metadata, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB per field.
-	Annotations *map[string]interface{}            `json:"annotations,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations        `json:"annotations,omitempty"`
 	Criterion   *TransitionDefinitionDto_Criterion `json:"criterion,omitempty"`
+
+	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
 
 	// Disabled Flag indicating if the transition is disabled
 	Disabled *bool `json:"disabled,omitempty"`
@@ -3030,6 +2980,15 @@ type TrustedKeyResponseDto struct {
 // TrustedKeyResponseDtoAudience defines model for TrustedKeyResponseDto.Audience.
 type TrustedKeyResponseDtoAudience string
 
+// UniqueKeyDto A composite unique key definition over one or more scalar leaf fields.
+type UniqueKeyDto struct {
+	// Fields Ordered list of scalar leaf field paths.
+	Fields []string `json:"fields"`
+
+	// Id Unique identifier for this key definition.
+	Id string `json:"id"`
+}
+
 // UpdateOidcProviderRequestDto defines model for UpdateOidcProviderRequestDto.
 type UpdateOidcProviderRequestDto struct {
 	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
@@ -3071,56 +3030,13 @@ type UserRoleDto struct {
 	Id string `json:"id"`
 }
 
-// ValueMaps defines model for ValueMaps.
-type ValueMaps struct {
-	BigDecimals     *map[string]float32                `json:"bigDecimals,omitempty"`
-	BigIntegers     *map[string]int                    `json:"bigIntegers,omitempty"`
-	Booleans        *map[string]bool                   `json:"booleans,omitempty"`
-	ByteArrays      *map[string][]byte                 `json:"byteArrays,omitempty"`
-	Bytes           *map[string][]byte                 `json:"bytes,omitempty"`
-	Chars           *map[string]string                 `json:"chars,omitempty"`
-	Doubles         *map[string]float64                `json:"doubles,omitempty"`
-	Floats          *map[string]float32                `json:"floats,omitempty"`
-	Ints            *map[string]int32                  `json:"ints,omitempty"`
-	LocalDateTimes  *map[string]time.Time              `json:"localDateTimes,omitempty"`
-	LocalDates      *map[string]openapi_types.Date     `json:"localDates,omitempty"`
-	LocalTimes      *map[string]LocalTime              `json:"localTimes,omitempty"`
-	Longs           *map[string]int64                  `json:"longs,omitempty"`
-	Nulls           *map[string]string                 `json:"nulls,omitempty"`
-	Others          *map[string]map[string]interface{} `json:"others,omitempty"`
-	Shorts          *map[string]int32                  `json:"shorts,omitempty"`
-	Strings         *map[string]string                 `json:"strings,omitempty"`
-	Timeuuids       *map[string]openapi_types.UUID     `json:"timeuuids,omitempty"`
-	TypeReferences  map[string]ValueMapsTypeReferences `json:"typeReferences"`
-	UnboundDecimals *map[string]float32                `json:"unboundDecimals,omitempty"`
-	UnboundIntegers *map[string]int                    `json:"unboundIntegers,omitempty"`
-	Uuids           *map[string]openapi_types.UUID     `json:"uuids,omitempty"`
-	YearMonths      *map[string]struct {
-		LeapYear   *bool                     `json:"leapYear,omitempty"`
-		Month      *ValueMapsYearMonthsMonth `json:"month,omitempty"`
-		MonthValue *int32                    `json:"monthValue,omitempty"`
-		Year       *int32                    `json:"year,omitempty"`
-	} `json:"yearMonths,omitempty"`
-	Years *map[string]struct {
-		Leap  *bool  `json:"leap,omitempty"`
-		Value *int32 `json:"value,omitempty"`
-	} `json:"years,omitempty"`
-	ZonedDateTimes *map[string]time.Time `json:"zonedDateTimes,omitempty"`
-}
-
-// ValueMapsTypeReferences defines model for ValueMaps.TypeReferences.
-type ValueMapsTypeReferences string
-
-// ValueMapsYearMonthsMonth defines model for ValueMaps.YearMonths.Month.
-type ValueMapsYearMonthsMonth string
-
 // WorkflowConfigurationDto defines model for WorkflowConfigurationDto.
 type WorkflowConfigurationDto struct {
 	// Active Flag indicating if the workflow is active
 	Active *bool `json:"active,omitempty"`
 
-	// Annotations Arbitrary client-owned metadata for the whole workflow, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB. Use for client concerns such as permitted roles, display labels, or UI hints.
-	Annotations *map[string]interface{} `json:"annotations,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
 
 	// Criterion Optional selection criterion evaluated against the entity to
 	// decide which of several workflows applies. When a model has
@@ -3135,6 +3051,9 @@ type WorkflowConfigurationDto struct {
 	// use the same Condition DSL as search and transition-level
 	// criteria.
 	Criterion *WorkflowConfigurationDto_Criterion `json:"criterion,omitempty"`
+
+	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
 
 	// Desc Description of the workflow
 	Desc *string `json:"desc,omitempty"`
@@ -3175,6 +3094,16 @@ type WorkflowConfigurationDto struct {
 // criteria.
 type WorkflowConfigurationDto_Criterion struct {
 	union json.RawMessage
+}
+
+// WorkflowElementAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+type WorkflowElementAnnotations struct {
+	// Description Advisory human-readable description for renderers (not enforced).
+	Description *string `json:"description,omitempty"`
+
+	// DisplayName Advisory human-readable label for renderers (not enforced).
+	DisplayName          *string                `json:"displayName,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
 // WorkflowExportResponseDto defines model for WorkflowExportResponseDto.
@@ -3358,7 +3287,13 @@ type GetAllEntitiesParams struct {
 }
 
 // CreateCollectionJSONBody defines parameters for CreateCollection.
-type CreateCollectionJSONBody = map[string]interface{}
+type CreateCollectionJSONBody = []struct {
+	Model struct {
+		Name    string `json:"name"`
+		Version int32  `json:"version"`
+	} `json:"model"`
+	Payload string `json:"payload"`
+}
 
 // CreateCollectionParams defines parameters for CreateCollection.
 type CreateCollectionParams struct {
@@ -3439,6 +3374,38 @@ type UpdateCollectionParams struct {
 // UpdateCollectionParamsFormat defines parameters for UpdateCollection.
 type UpdateCollectionParamsFormat string
 
+// PatchSingleWithLoopbackApplicationJSONPatchPlusJSONBody defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackApplicationJSONPatchPlusJSONBody = []map[string]interface{}
+
+// PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody = map[string]interface{}
+
+// PatchSingleWithLoopbackParams defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackParams struct {
+	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
+	// Operation will fail if it takes longer than this timeout.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
+	// May increase response time but guarantees data consistency when
+	// returning, so that subsequent calls will see the updated data.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
+
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchSingleWithLoopbackParamsFormat defines parameters for PatchSingleWithLoopback.
+type PatchSingleWithLoopbackParamsFormat string
+
 // UpdateSingleWithLoopbackJSONBody defines parameters for UpdateSingleWithLoopback.
 type UpdateSingleWithLoopbackJSONBody = map[string]interface{}
 
@@ -3467,6 +3434,38 @@ type UpdateSingleWithLoopbackParams struct {
 
 // UpdateSingleWithLoopbackParamsFormat defines parameters for UpdateSingleWithLoopback.
 type UpdateSingleWithLoopbackParamsFormat string
+
+// PatchSingleApplicationJSONPatchPlusJSONBody defines parameters for PatchSingle.
+type PatchSingleApplicationJSONPatchPlusJSONBody = []map[string]interface{}
+
+// PatchSingleApplicationMergePatchPlusJSONBody defines parameters for PatchSingle.
+type PatchSingleApplicationMergePatchPlusJSONBody = map[string]interface{}
+
+// PatchSingleParams defines parameters for PatchSingle.
+type PatchSingleParams struct {
+	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
+	// Operation will fail if it takes longer than this timeout.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
+	// May increase response time but guarantees data consistency when
+	// returning, so that subsequent calls will see the updated data.
+	// Accepted for Cyoda Cloud API parity. Behavior is
+	// storage-engine-plugin dependent — not every plugin honors this
+	// field; consult the runtime plugin's documentation for the
+	// supported behavior.
+	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
+
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchSingleParamsFormat defines parameters for PatchSingle.
+type PatchSingleParamsFormat string
 
 // UpdateSingleJSONBody defines parameters for UpdateSingle.
 type UpdateSingleJSONBody = map[string]interface{}
@@ -3498,7 +3497,9 @@ type UpdateSingleParams struct {
 type UpdateSingleParamsFormat string
 
 // CreateJSONBody defines parameters for Create.
-type CreateJSONBody = map[string]interface{}
+type CreateJSONBody struct {
+	union json.RawMessage
+}
 
 // CreateParams defines parameters for Create.
 type CreateParams struct {
@@ -3530,17 +3531,20 @@ type CreateParams struct {
 // CreateParamsFormat defines parameters for Create.
 type CreateParamsFormat string
 
+// CreateJSONBody0 defines parameters for Create.
+type CreateJSONBody0 map[string]interface{}
+
+// CreateJSONBody1 defines parameters for Create.
+type CreateJSONBody1 = []map[string]interface{}
+
 // DeleteMessagesJSONBody defines parameters for DeleteMessages.
-type DeleteMessagesJSONBody = openapi_types.UUID
+type DeleteMessagesJSONBody = []openapi_types.UUID
 
 // DeleteMessagesParams defines parameters for DeleteMessages.
 type DeleteMessagesParams struct {
 	// TransactionSize Number of messages to delete per transaction batch
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 }
-
-// NewMessageJSONBody defines parameters for NewMessage.
-type NewMessageJSONBody = string
 
 // NewMessageParams defines parameters for NewMessage.
 type NewMessageParams struct {
@@ -3600,8 +3604,8 @@ type GetCurrentJwtKeyPairParamsAudience string
 
 // ListOidcProvidersParams defines parameters for ListOidcProviders.
 type ListOidcProvidersParams struct {
-	// ActiveOnly If true, returns only active providers
-	ActiveOnly *string `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
+	// ActiveOnly When true, return only active (non-invalidated) providers.
+	ActiveOnly *bool `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
 }
 
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
@@ -3645,6 +3649,9 @@ type SubmitAsyncSearchJobJSONBody struct {
 type SubmitAsyncSearchJobParams struct {
 	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
+	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
 }
 
 // GetAsyncSearchResultsParams defines parameters for GetAsyncSearchResults.
@@ -3654,9 +3661,6 @@ type GetAsyncSearchResultsParams struct {
 
 	// PageNumber Zero-based page number
 	PageNumber *string `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
-
-	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the point-in-time of the report if not provided.
-	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
 // SearchEntitiesJSONBody defines parameters for SearchEntities.
@@ -3669,11 +3673,11 @@ type SearchEntitiesParams struct {
 	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Defaults to the consistency time of the system if not provided.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// Limit The maximum number of rows to return. You can specify a limit of up to 10000 and defaults to 1000 if not provided.
+	// Limit The maximum number of rows to return. Defaults to 1000 if not provided. Values above 10000 are rejected with 400.
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// TimeoutMillis The maximum time to wait for the query to complete, in milliseconds, and defaults to 60000 if not provided.
-	TimeoutMillis *string `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
+	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
+	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
 }
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
@@ -3688,26 +3692,41 @@ type CreateCollectionJSONRequestBody = CreateCollectionJSONBody
 // UpdateCollectionJSONRequestBody defines body for UpdateCollection for application/json ContentType.
 type UpdateCollectionJSONRequestBody = UpdateCollectionJSONBody
 
+// PatchSingleWithLoopbackApplicationJSONPatchPlusJSONRequestBody defines body for PatchSingleWithLoopback for application/json-patch+json ContentType.
+type PatchSingleWithLoopbackApplicationJSONPatchPlusJSONRequestBody = PatchSingleWithLoopbackApplicationJSONPatchPlusJSONBody
+
+// PatchSingleWithLoopbackApplicationMergePatchPlusJSONRequestBody defines body for PatchSingleWithLoopback for application/merge-patch+json ContentType.
+type PatchSingleWithLoopbackApplicationMergePatchPlusJSONRequestBody = PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody
+
 // UpdateSingleWithLoopbackJSONRequestBody defines body for UpdateSingleWithLoopback for application/json ContentType.
 type UpdateSingleWithLoopbackJSONRequestBody = UpdateSingleWithLoopbackJSONBody
+
+// PatchSingleApplicationJSONPatchPlusJSONRequestBody defines body for PatchSingle for application/json-patch+json ContentType.
+type PatchSingleApplicationJSONPatchPlusJSONRequestBody = PatchSingleApplicationJSONPatchPlusJSONBody
+
+// PatchSingleApplicationMergePatchPlusJSONRequestBody defines body for PatchSingle for application/merge-patch+json ContentType.
+type PatchSingleApplicationMergePatchPlusJSONRequestBody = PatchSingleApplicationMergePatchPlusJSONBody
 
 // UpdateSingleJSONRequestBody defines body for UpdateSingle for application/json ContentType.
 type UpdateSingleJSONRequestBody = UpdateSingleJSONBody
 
 // CreateJSONRequestBody defines body for Create for application/json ContentType.
-type CreateJSONRequestBody = CreateJSONBody
+type CreateJSONRequestBody CreateJSONBody
 
 // DeleteMessagesJSONRequestBody defines body for DeleteMessages for application/json ContentType.
 type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
 
 // NewMessageJSONRequestBody defines body for NewMessage for application/json ContentType.
-type NewMessageJSONRequestBody = NewMessageJSONBody
+type NewMessageJSONRequestBody = NewMessageRequest
 
 // ImportEntityModelJSONRequestBody defines body for ImportEntityModel for application/json ContentType.
 type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody
 
 // ValidateEntityModelJSONRequestBody defines body for ValidateEntityModel for application/json ContentType.
 type ValidateEntityModelJSONRequestBody = ValidateEntityModelJSONBody
+
+// SetEntityModelUniqueKeysJSONRequestBody defines body for SetEntityModelUniqueKeys for application/json ContentType.
+type SetEntityModelUniqueKeysJSONRequestBody = SetUniqueKeysRequest
 
 // ImportEntityModelWorkflowJSONRequestBody defines body for ImportEntityModelWorkflow for application/json ContentType.
 type ImportEntityModelWorkflowJSONRequestBody = WorkflowImportRequestDto
@@ -3747,6 +3766,89 @@ type SubmitAsyncSearchJobJSONRequestBody SubmitAsyncSearchJobJSONBody
 
 // SearchEntitiesJSONRequestBody defines body for SearchEntities for application/json ContentType.
 type SearchEntitiesJSONRequestBody SearchEntitiesJSONBody
+
+// Getter for additional properties for WorkflowElementAnnotations. Returns the specified
+// element and whether it was found
+func (a WorkflowElementAnnotations) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for WorkflowElementAnnotations
+func (a *WorkflowElementAnnotations) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for WorkflowElementAnnotations to handle AdditionalProperties
+func (a *WorkflowElementAnnotations) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["displayName"]; found {
+		err = json.Unmarshal(raw, &a.DisplayName)
+		if err != nil {
+			return fmt.Errorf("error reading 'displayName': %w", err)
+		}
+		delete(object, "displayName")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for WorkflowElementAnnotations to handle AdditionalProperties
+func (a WorkflowElementAnnotations) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.DisplayName != nil {
+		object["displayName"], err = json.Marshal(a.DisplayName)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'displayName': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // AsEntityChangeAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a EntityChangeAuditEventDto
 func (t EntityAuditEventsResponseDto_Items_Item) AsEntityChangeAuditEventDto() (EntityChangeAuditEventDto, error) {
@@ -4437,6 +4539,68 @@ func (t *WorkflowConfigurationDto_Criterion) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsCreateJSONBody0 returns the union data inside the CreateJSONBody as a CreateJSONBody0
+func (t CreateJSONBody) AsCreateJSONBody0() (CreateJSONBody0, error) {
+	var body CreateJSONBody0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCreateJSONBody0 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody0
+func (t *CreateJSONBody) FromCreateJSONBody0(v CreateJSONBody0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCreateJSONBody0 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody0
+func (t *CreateJSONBody) MergeCreateJSONBody0(v CreateJSONBody0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsCreateJSONBody1 returns the union data inside the CreateJSONBody as a CreateJSONBody1
+func (t CreateJSONBody) AsCreateJSONBody1() (CreateJSONBody1, error) {
+	var body CreateJSONBody1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCreateJSONBody1 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody1
+func (t *CreateJSONBody) FromCreateJSONBody1(v CreateJSONBody1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCreateJSONBody1 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody1
+func (t *CreateJSONBody) MergeCreateJSONBody1(v CreateJSONBody1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t CreateJSONBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *CreateJSONBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsArrayConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a ArrayConditionDto
 func (t SubmitAsyncSearchJobJSONBody) AsArrayConditionDto() (ArrayConditionDto, error) {
 	var body ArrayConditionDto
@@ -4782,9 +4946,15 @@ type ServerInterface interface {
 	// Update Collection
 	// (PUT /entity/{format})
 	UpdateCollection(w http.ResponseWriter, r *http.Request, format UpdateCollectionParamsFormat, params UpdateCollectionParams)
+	// Patch Single with a loopback transition
+	// (PATCH /entity/{format}/{entityId})
+	PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params PatchSingleWithLoopbackParams)
 	// Update Single with a loopback transition
 	// (PUT /entity/{format}/{entityId})
 	UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params UpdateSingleWithLoopbackParams)
+	// Patch Single
+	// (PATCH /entity/{format}/{entityId}/{transition})
+	PatchSingle(w http.ResponseWriter, r *http.Request, format PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params PatchSingleParams)
 	// Update Single
 	// (PUT /entity/{format}/{entityId}/{transition})
 	UpdateSingle(w http.ResponseWriter, r *http.Request, format UpdateSingleParamsFormat, entityId openapi_types.UUID, transition string, params UpdateSingleParams)
@@ -4799,10 +4969,10 @@ type ServerInterface interface {
 	NewMessage(w http.ResponseWriter, r *http.Request, subject string, params NewMessageParams)
 	// Delete a single edge message by ID
 	// (DELETE /message/{messageId})
-	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId string)
+	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
 	// Retrieve an edge message by ID
 	// (GET /message/{messageId})
-	GetMessage(w http.ResponseWriter, r *http.Request, messageId string)
+	GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
 	// List Available Entity Models
 	// (GET /model/)
 	GetAvailableEntityModels(w http.ResponseWriter, r *http.Request)
@@ -4824,6 +4994,9 @@ type ServerInterface interface {
 	// Lock Entity Model
 	// (PUT /model/{entityName}/{modelVersion}/lock)
 	LockEntityModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
+	// Set Entity Model Unique Keys
+	// (PUT /model/{entityName}/{modelVersion}/unique-keys)
+	SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
 	// Unlock Entity Model
 	// (PUT /model/{entityName}/{modelVersion}/unlock)
 	UnlockEntityModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
@@ -6021,6 +6194,97 @@ func (siw *ServerInterfaceWrapper) UpdateCollection(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// PatchSingleWithLoopback operation middleware
+func (siw *ServerInterfaceWrapper) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "format" -------------
+	var format PatchSingleWithLoopbackParamsFormat
+
+	err = runtime.BindStyledParameterWithOptions("simple", "format", r.PathValue("format"), &format, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "format", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "entityId" -------------
+	var entityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityId", r.PathValue("entityId"), &entityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PatchSingleWithLoopbackParams
+
+	// ------------- Optional query parameter "transactionTimeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "transactionTimeoutMillis", r.URL.Query(), &params.TransactionTimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchSingleWithLoopback(w, r, format, entityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateSingleWithLoopback operation middleware
 func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request) {
 
@@ -6103,6 +6367,106 @@ func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateSingleWithLoopback(w, r, format, entityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchSingle operation middleware
+func (siw *ServerInterfaceWrapper) PatchSingle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "format" -------------
+	var format PatchSingleParamsFormat
+
+	err = runtime.BindStyledParameterWithOptions("simple", "format", r.PathValue("format"), &format, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "format", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "entityId" -------------
+	var entityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityId", r.PathValue("entityId"), &entityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "transition" -------------
+	var transition string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "transition", r.PathValue("transition"), &transition, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transition", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PatchSingleParams
+
+	// ------------- Optional query parameter "transactionTimeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "transactionTimeoutMillis", r.URL.Query(), &params.TransactionTimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchSingle(w, r, format, entityId, transition, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6560,9 +6924,9 @@ func (siw *ServerInterfaceWrapper) DeleteMessage(w http.ResponseWriter, r *http.
 	_ = err
 
 	// ------------- Path parameter "messageId" -------------
-	var messageId string
+	var messageId openapi_types.UUID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid-v1"})
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
 		return
@@ -6592,9 +6956,9 @@ func (siw *ServerInterfaceWrapper) GetMessage(w http.ResponseWriter, r *http.Req
 	_ = err
 
 	// ------------- Path parameter "messageId" -------------
-	var messageId string
+	var messageId openapi_types.UUID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid-v1"})
+	err = runtime.BindStyledParameterWithOptions("simple", "messageId", r.PathValue("messageId"), &messageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "messageId", Err: err})
 		return
@@ -6910,6 +7274,47 @@ func (siw *ServerInterfaceWrapper) LockEntityModel(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.LockEntityModel(w, r, entityName, modelVersion)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetEntityModelUniqueKeys operation middleware
+func (siw *ServerInterfaceWrapper) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "entityName" -------------
+	var entityName string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityName", r.PathValue("entityName"), &entityName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityName", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "modelVersion" -------------
+	var modelVersion int32
+
+	err = runtime.BindStyledParameterWithOptions("simple", "modelVersion", r.PathValue("modelVersion"), &modelVersion, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int32"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "modelVersion", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetEntityModelUniqueKeys(w, r, entityName, modelVersion)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7350,7 +7755,7 @@ func (siw *ServerInterfaceWrapper) ListOidcProviders(w http.ResponseWriter, r *h
 
 	// ------------- Optional query parameter "activeOnly" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
@@ -7685,6 +8090,19 @@ func (siw *ServerInterfaceWrapper) SubmitAsyncSearchJob(w http.ResponseWriter, r
 		return
 	}
 
+	// ------------- Optional query parameter "sort" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sort", r.URL.Query(), &params.Sort, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sort"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SubmitAsyncSearchJob(w, r, entityName, modelVersion, params)
 	}))
@@ -7742,19 +8160,6 @@ func (siw *ServerInterfaceWrapper) GetAsyncSearchResults(w http.ResponseWriter, 
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageNumber"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageNumber", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "pointInTime" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "pointInTime", r.URL.Query(), &params.PointInTime, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pointInTime"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pointInTime", Err: err})
 		}
 		return
 	}
@@ -7893,15 +8298,15 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 		return
 	}
 
-	// ------------- Optional query parameter "timeoutMillis" -------------
+	// ------------- Optional query parameter "sort" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMillis", r.URL.Query(), &params.TimeoutMillis, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sort", r.URL.Query(), &params.Sort, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMillis"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sort"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMillis", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
 		}
 		return
 	}
@@ -8058,7 +8463,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/{entityName}/{modelVersion}", wrapper.GetAllEntities)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entity/{format}", wrapper.CreateCollection)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/entity/{format}", wrapper.UpdateCollection)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/entity/{format}/{entityId}", wrapper.PatchSingleWithLoopback)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/entity/{format}/{entityId}", wrapper.UpdateSingleWithLoopback)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/entity/{format}/{entityId}/{transition}", wrapper.PatchSingle)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/entity/{format}/{entityId}/{transition}", wrapper.UpdateSingle)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entity/{format}/{entityName}/{modelVersion}", wrapper.Create)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/message", wrapper.DeleteMessages)
@@ -8072,6 +8479,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/model/{entityName}/{modelVersion}", wrapper.DeleteEntityModel)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}", wrapper.SetEntityModelChangeLevel)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/lock", wrapper.LockEntityModel)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/unique-keys", wrapper.SetEntityModelUniqueKeys)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/unlock", wrapper.UnlockEntityModel)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/workflow/export", wrapper.ExportEntityModelWorkflow)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/model/{entityName}/{modelVersion}/workflow/import", wrapper.ImportEntityModelWorkflow)

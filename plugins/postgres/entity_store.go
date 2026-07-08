@@ -131,6 +131,12 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		return 0, fmt.Errorf("failed to insert entity version: %w", err)
 	}
 
+	// Maintain unique-key claims atomically within this transaction.
+	// replaceClaims is a no-op when no keys are declared in context.
+	if err := s.replaceClaims(ctx, entity); err != nil {
+		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
+	}
+
 	return nextVersion, nil
 }
 
@@ -179,9 +185,6 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
-	// Round up to the next millisecond boundary (matching memory implementation).
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	var doc []byte
 	err := s.q.QueryRow(ctx,
 		`SELECT doc FROM entity_versions
@@ -239,8 +242,6 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
-
 	rows, err := s.q.Query(ctx,
 		`SELECT v.doc
 		 FROM entities e
@@ -325,6 +326,11 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to mark entity deleted: %w", err)
 	}
 
+	// Release unique-key claims so the freed values can be re-claimed immediately.
+	if err := s.releaseClaims(ctx, entityID); err != nil {
+		return fmt.Errorf("failed to release unique claims: %w", err)
+	}
+
 	return nil
 }
 
@@ -356,6 +362,16 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if err := s.Delete(ctx, id); err != nil {
 			return fmt.Errorf("failed to delete entity %s: %w", id, err)
 		}
+	}
+
+	// Belt-and-suspenders: bulk-delete any remaining claim rows for the model.
+	// Individual Delete calls already invoke releaseClaims; this catches any
+	// orphaned rows (e.g. from a previous partial run) and ensures a clean slate.
+	if _, err := s.q.Exec(ctx,
+		`DELETE FROM unique_claims WHERE tenant_id=$1 AND model_name=$2 AND model_version=$3`,
+		tid, modelRef.EntityName, modelRef.ModelVersion,
+	); err != nil {
+		return fmt.Errorf("failed to bulk-release unique claims for model: %w", err)
 	}
 
 	return nil

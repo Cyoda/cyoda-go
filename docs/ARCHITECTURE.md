@@ -435,7 +435,7 @@ in-process and per-node mechanics.
 
 ## 4. Multi-Node Routing Architecture
 
-Multi-node cluster mode is **opt-in** via `CYODA_CLUSTER_ENABLED` (default: `false`). Single-node is the default deployment pattern. The routing, gossip, and transaction forwarding described in this section are only active when cluster mode is enabled.
+Multi-node cluster mode is **opt-in** via `CYODA_CLUSTER_ENABLED` (default: `false`). The `false` default is an onboarding affordance — it does not make cluster/HA features secondary. Multi-node correctness (proxy routing, tx-affinity, cross-node callback join, peer failover) is a primary design target. See `.claude/rules/multi-node-primary.md`. The routing, gossip, and transaction forwarding described in this section are only active when cluster mode is enabled.
 
 This is the most architecturally significant section. Cyoda-Go supports multi-node deployment where any node can receive any request, with transactions pinned to their originating node.
 
@@ -674,11 +674,13 @@ t3   Node A: SM engine dispatches to processor
 t3a  Node A: Check local MemberRegistry --> not found
 t3b  Node A: Query gossip --> Node B has tag for this tenant
 t3c  Node A: PeerSelector picks Node B (random from candidates)
-t3d  Node A: HTTPForwarder --> POST Node B /internal/dispatch/processor
-t3e  Node B: Receives forwarded dispatch, finds local member, dispatches via gRPC stream
-t4   Compute: Receives CloudEvent w/ tx-123 (from Node B's stream)
+t3d  Node A: Mint signed tx-token {NodeID=A, TxRef=tx-123}, attach as cyodatxtoken attribute
+t3e  Node A: HTTPForwarder --> POST Node B /internal/dispatch/processor
+t3f  Node B: Receives forwarded dispatch, finds local member, dispatches via gRPC stream
+t4   Compute: Receives CloudEvent with cyodatxtoken (signed tx-token referencing Node A / tx-123)
 t5   Compute: Executes business logic
-t6   Compute: CRUD callback w/ tx-123 --> Node B receives request
+t6   Compute: CRUD callback; echoes cyodatxtoken as X-Tx-Token (HTTP) or tx-token (gRPC metadata)
+              --> Node B receives request with X-Tx-Token header
 t7   Node B: Decode txToken --> extract Node A from claims --> proxy to Node A
 t8   Node A: Receive proxied CRUD, Join tx-123 --> PG: INSERT/UPDATE (in tx-123)
 t9   Node A: CRUD OK --> respond to Node B --> Node B forwards to Compute
@@ -691,9 +693,11 @@ t14  Node A: 200 OK {entityId, transactionId} --> Client
 
 Key observations:
 - Node A is the single transaction owner throughout. All writes go through Node A.
+- Node A mints the tx-token and embeds it in the CloudEvent (`cyodatxtoken`). The compute node echoes it on callbacks — `X-Tx-Token` header (HTTP) or `tx-token` metadata (gRPC). Without the echo the callback runs in a standalone transaction rather than joining T.
 - Node B acts as a transparent proxy for CRUD callbacks (via `X-Tx-Token`) and as a local dispatch host for its compute members.
+- Callback acks are provisional: writes are not durable until Node A commits T at t13.
 - The compute member is stateless -- it receives entity data via CloudEvent payload and returns modified data the same way.
-- The dispatch forward (t3d) and the CRUD proxy (t7) are distinct network paths that can fail independently.
+- The dispatch forward (t3e) and the CRUD proxy (t7) are distinct network paths that can fail independently.
 
 **Variant: `COMMIT_BEFORE_DISPATCH` (segment boundary at the dispatch).**
 

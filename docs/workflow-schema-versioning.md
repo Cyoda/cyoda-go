@@ -46,6 +46,10 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 - Bug-fixing a validator that was already supposed to reject something — i.e., the rejection was always documented and the validator was the bug. Add a test, ship the fix; no schema bump. (Borderline cases: if a validator was widely-relied-upon-via-its-absence, treat as a tightening release per §above.)
 - Internal refactoring of the engine, store, or audit shape. The wire contract is unchanged.
 
+### Model export surface — `uniqueKeys` field (v0.8.2)
+
+`GET /model/export/…` responses carry a top-level `uniqueKeys` array listing the model's declared composite unique keys. The field uses **omitempty** semantics — it is present only when the model declares at least one key; a model with no keys exports byte-identically to a pre-feature model (matching the descriptor storage DTOs, which also omit the empty case). This is a purely additive change to the **model export DTO** (`ExportModel`) — it is separate from `WorkflowConfigurationDto` and therefore does **not** trigger a workflow schema version bump per the rule above. No `CurrentSchemaVersion` change is required.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:
@@ -57,7 +61,18 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.1 — v0.8.0 contract (current)
+### 1.2 — v0.8.2 contract (current)
+
+Additive MINOR — two new optional fields, both reusing the existing `annotations` validation (client-owned JSON object, ≤ 64 KB compacted, engine-ignored):
+
+- **`annotations` on `ProcessorDefinition`** — same shape as the existing workflow/state/transition `annotations`.
+- **`criterionAnnotations` on `WorkflowDefinition` and `TransitionDefinition`** — a sibling field next to `criterion`, not embedded in it, so the criterion blob keeps round-tripping byte-verbatim.
+
+Both fields document two well-known optional keys for renderers, `displayName` and `description` (strings) — the engine never interprets them, and the key names/types are an advisory convention, not enforced beyond the existing object-shape/size check.
+
+**Dual-shape retention of 1.1.** This is purely additive: every payload 1.1 accepted is still valid, unchanged, under 1.2. There is nothing to retire, so `SupportedSchemaRanges` widens in place to `{Major: 1, MinMinor: 1, MaxMinor: 2}` — 1.1-stamped imports keep working alongside 1.2.
+
+### 1.1 — v0.8.0 contract
 
 v0.8.0 tightened the import surface beyond what 1.0 accepted:
 

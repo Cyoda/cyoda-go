@@ -12,7 +12,7 @@ import (
 func createMessageE2E(t *testing.T, subject string, payload string) string {
 	t.Helper()
 	path := fmt.Sprintf("/api/message/new/%s", subject)
-	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "e2e"}}`, payload)
+	body := fmt.Sprintf(`{"payload": %s, "metaData": {"source": "e2e"}}`, payload)
 	resp := doAuth(t, http.MethodPost, path, body)
 	respBody := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -135,7 +135,7 @@ func TestMessage_DeleteMessages_Shape(t *testing.T) {
 // TestMessage_NewMessage_Shape verifies that NewMessage returns an array with entityIds,
 // not a bare string — the spec was wrong (type:string).
 func TestMessage_NewMessage_Shape(t *testing.T) {
-	body := `{"payload": {"k": "v"}, "meta-data": {}}`
+	body := `{"payload": {"k": "v"}, "metaData": {}}`
 	resp := doAuth(t, http.MethodPost, "/api/message/new/test-new-shape", body)
 	respBody := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -168,6 +168,25 @@ func TestMessage_GetMessage_404_ContentType(t *testing.T) {
 	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "application/problem+json") {
 		t.Errorf("Content-Type = %q, want application/problem+json prefix (RFC 9457 — see #21)", ct)
+	}
+}
+
+// TestMessage_DeleteMessages_413 asserts an oversized batch-delete body is
+// rejected with 413 (parity with newMessage), not 500.
+func TestMessage_DeleteMessages_413(t *testing.T) {
+	// A JSON array string just over the 10MB MaxBytesReader limit.
+	big := make([]byte, 10*1024*1024+1)
+	for i := range big {
+		big[i] = 'a'
+	}
+	body := `["` + string(big) + `"]`
+	resp := doAuth(t, http.MethodDelete, "/api/message", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("deleteMessages oversized body: status=%d, want 413", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+		t.Errorf("deleteMessages 413: content-type=%q, want application/problem+json", ct)
 	}
 }
 
@@ -205,6 +224,129 @@ func TestMessage_DeleteBatch(t *testing.T) {
 		b := readBody(t, r)
 		if r.StatusCode != http.StatusNotFound {
 			t.Errorf("getMessage %s (should be deleted): expected 404, got %d: %s", id, r.StatusCode, b)
+		}
+	}
+}
+
+// TestMessage_DeleteMessages_ArrayBody characterizes the real body: a JSON array
+// of uuid strings (200); a non-array JSON (e.g. object) -> 400.
+func TestMessage_DeleteMessages_ArrayBody(t *testing.T) {
+	id := createMessageE2E(t, "del-arr", `{"x":1}`)
+	ok := doAuth(t, http.MethodDelete, "/api/message", fmt.Sprintf(`["%s"]`, id))
+	defer ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("array body: status=%d, want 200", ok.StatusCode)
+	}
+	bad := doAuth(t, http.MethodDelete, "/api/message", `{"not":"an array"}`)
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("object body: status=%d, want 400", bad.StatusCode)
+	}
+}
+
+// TestMessage_NoV1Validation proves the fictional "not a time-based UUID (v1)" 400
+// does not exist: a valid v4 uuid (non-v1) that is absent -> 404, never 400.
+func TestMessage_NoV1Validation(t *testing.T) {
+	v4 := "123e4567-e89b-42d3-a456-426614174000" // version nibble = 4
+	get := doAuth(t, http.MethodGet, "/api/message/"+v4, "")
+	defer get.Body.Close()
+	if get.StatusCode != http.StatusNotFound {
+		t.Fatalf("getMessage v4 uuid: status=%d, want 404 (no v1 check)", get.StatusCode)
+	}
+	del := doAuth(t, http.MethodDelete, "/api/message/"+v4, "")
+	defer del.Body.Close()
+	if del.StatusCode != http.StatusNotFound {
+		t.Fatalf("deleteMessage v4 uuid: status=%d, want 404 (no v1 check)", del.StatusCode)
+	}
+}
+
+func TestMessage_MetaDataFlatShape(t *testing.T) {
+	id := createMessageE2E(t, "meta-shape", `{"x":1}`)
+	resp := doAuth(t, http.MethodGet, "/api/message/"+id, "")
+	defer resp.Body.Close()
+	var body struct {
+		MetaData map[string]any `json:"metaData"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body.MetaData["typeReferences"]; ok {
+		t.Errorf("metaData must not contain cloud-ism typeReferences: %v", body.MetaData)
+	}
+	if _, ok := body.MetaData["values"]; ok {
+		t.Errorf("metaData must be flat, not bucketed (found values): %v", body.MetaData)
+	}
+	if _, ok := body.MetaData["indexedValues"]; ok {
+		t.Errorf("metaData must be flat, not bucketed (found indexedValues): %v", body.MetaData)
+	}
+	if got := body.MetaData["source"]; got != "e2e" {
+		t.Errorf("metaData missing flat user key source=e2e: got %v", body.MetaData)
+	}
+}
+
+// TestMessage_NewMessage_ObjectEnvelope characterizes the real body contract:
+// an object {payload, metaData}; missing payload -> 400; a top-level array -> 400.
+func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {
+	ok := doAuth(t, http.MethodPost, "/api/message/new/env-ok", `{"payload":{"a":1},"metaData":{"k":"v"}}`)
+	defer ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("object envelope: status=%d, want 200", ok.StatusCode)
+	}
+
+	// payload may be any JSON value, incl. a base64-ish string (binary workaround).
+	strp := doAuth(t, http.MethodPost, "/api/message/new/env-str", `{"payload":"SGVsbG8="}`)
+	defer strp.Body.Close()
+	if strp.StatusCode != http.StatusOK {
+		t.Fatalf("string payload: status=%d, want 200", strp.StatusCode)
+	}
+
+	missing := doAuth(t, http.MethodPost, "/api/message/new/env-missing", `{"metaData":{}}`)
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing payload: status=%d, want 400", missing.StatusCode)
+	}
+
+	arr := doAuth(t, http.MethodPost, "/api/message/new/env-arr", `[{"payload":{"a":1}}]`)
+	defer arr.Body.Close()
+	if arr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("array body: status=%d, want 400 (single object only)", arr.StatusCode)
+	}
+}
+
+// TestMessage_DeleteMessages_NonUUID_400 asserts the array<uuid> contract is
+// enforced: a non-uuid element is rejected with 400, not silently ignored.
+func TestMessage_DeleteMessages_NonUUID_400(t *testing.T) {
+	resp := doAuth(t, http.MethodDelete, "/api/message", `["not-a-uuid"]`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("deleteMessages non-uuid element: status=%d, want 400", resp.StatusCode)
+	}
+}
+
+// TestMessage_MalformedId_400ProblemDetail proves a malformed messageId yields a
+// uniform RFC-9457 ProblemDetail 400 (not oapi-codegen's default text/plain).
+func TestMessage_MalformedId_400ProblemDetail(t *testing.T) {
+	for _, m := range []string{http.MethodGet, http.MethodDelete} {
+		resp := doAuth(t, m, "/api/message/not-a-uuid", "")
+		if resp.StatusCode != http.StatusBadRequest {
+			resp.Body.Close()
+			t.Fatalf("%s malformed id: status=%d, want 400", m, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+			resp.Body.Close()
+			t.Errorf("%s malformed id: content-type=%q, want application/problem+json", m, ct)
+		}
+		var pd struct {
+			Status     int            `json:"status"`
+			Properties map[string]any `json:"properties"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&pd)
+		resp.Body.Close()
+		if pd.Properties["errorCode"] != "BAD_REQUEST" {
+			t.Errorf("%s: properties.errorCode=%v, want BAD_REQUEST", m, pd.Properties["errorCode"])
+		}
+		if pd.Properties["parameter"] != "messageId" {
+			t.Errorf("%s: properties.parameter=%v, want messageId", m, pd.Properties["parameter"])
 		}
 	}
 }

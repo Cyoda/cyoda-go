@@ -196,7 +196,7 @@ Registration / lifecycle (precise codes — admin-facing surface):
 
 - `errors.OIDC_INVALID_TENANT` (`400`) — caller's tenant ID is not UUID-shaped (commonly: bootstrap `default-tenant` literal).
 - `errors.OIDC_SSRF_BLOCKED` (`400`) — `wellKnownConfigUri` resolves to a blocked address range (set `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true` for dev).
-- `errors.OIDC_PROVIDER_DUPLICATE` (`400`) — same `wellKnownConfigUri` already registered for this tenant.
+- `errors.OIDC_PROVIDER_DUPLICATE` (`409`) — same `wellKnownConfigUri` already registered for this tenant.
 - `errors.OIDC_PROVIDER_NOT_FOUND` (`404`) — referenced provider ID absent in this tenant.
 - `errors.OIDC_PROVIDER_INACTIVE` (`409`) — update or operation attempted on an invalidated provider; reactivate first.
 

@@ -77,7 +77,7 @@ func TestCreateMessageWithHeaders_SetsXHeaders(t *testing.T) {
 		t.Errorf("Content-Encoding: got %q, want utf-8", got)
 	}
 
-	// Body envelope: {"payload": ..., "meta-data": {"source": "parity"}}
+	// Body envelope: {"payload": ..., "metaData": {"source": "parity"}}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(gotBody, &envelope); err != nil {
 		t.Fatalf("body not valid JSON: %v", err)
@@ -85,8 +85,8 @@ func TestCreateMessageWithHeaders_SetsXHeaders(t *testing.T) {
 	if _, ok := envelope["payload"]; !ok {
 		t.Error("body missing 'payload' field")
 	}
-	if _, ok := envelope["meta-data"]; !ok {
-		t.Error("body missing 'meta-data' field")
+	if _, ok := envelope["metaData"]; !ok {
+		t.Error("body missing 'metaData' field")
 	}
 }
 

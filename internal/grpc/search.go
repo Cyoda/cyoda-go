@@ -148,6 +148,13 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 	opts := search.SearchOptions{
 		PointInTime: req.PointInTime,
 	}
+	for _, o := range req.OrderBy {
+		src := spi.SourceData
+		if o.Source == events.EntitySnapshotSearchRequestJsonOrderByElemSourceMeta {
+			src = spi.SourceMeta
+		}
+		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
+	}
 
 	snapshotID, err := s.searchService.SubmitAsyncSearch(ctx, modelRef, cond, opts)
 	if err != nil {
@@ -268,7 +275,7 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	envelopes, err := s.entityHandler.ListEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), entity.PaginationParams{
 		PageSize:   int32(pageSize),
 		PageNumber: int32(pageNumber),
-	})
+	}, nil)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
@@ -328,6 +335,13 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	if req.Limit != nil {
 		opts.Limit = *req.Limit
 	}
+	for _, o := range req.OrderBy {
+		src := spi.SourceData
+		if o.Source == events.EntitySearchRequestJsonOrderByElemSourceMeta {
+			src = spi.SourceMeta
+		}
+		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
+	}
 
 	results, err := s.searchService.DirectSearch(ctx, modelRef, cond, opts)
 	if err != nil {
@@ -358,7 +372,7 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 			Payload: events.DataPayloadJson{
 				Type: "JSON",
 				Data: data,
-				Meta: buildEntityMeta(e),
+				Meta: buildEntityMeta(e, nil),
 			},
 		}
 		respCE, err := NewCloudEvent(EntityResponse, resp)
@@ -559,10 +573,14 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 // Helpers
 // ---------------------------------------------------------------------------
 
-// buildEntityMeta builds the meta map for an entity response.
-func buildEntityMeta(e *spi.Entity) map[string]any {
+// buildEntityMeta builds the meta map for an entity response. Mirrors the HTTP
+// meta shape (design §6.3): includes modelKey, and pointInTime when the read
+// was as-at a supplied point-in-time.
+func buildEntityMeta(e *spi.Entity, pointInTime *time.Time) map[string]any {
+	modelVersion, _ := strconv.Atoi(e.Meta.ModelRef.ModelVersion)
 	meta := map[string]any{
 		"id":             e.Meta.ID,
+		"modelKey":       map[string]any{"name": e.Meta.ModelRef.EntityName, "version": modelVersion},
 		"state":          e.Meta.State,
 		"creationDate":   e.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
 		"lastUpdateTime": e.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
@@ -571,23 +589,17 @@ func buildEntityMeta(e *spi.Entity) map[string]any {
 	if e.Meta.TransitionForLatestSave != "" {
 		meta["transitionForLatestSave"] = e.Meta.TransitionForLatestSave
 	}
+	if pointInTime != nil {
+		meta["pointInTime"] = pointInTime.UTC().Format(time.RFC3339Nano)
+	}
 	return meta
 }
 
 // mapChangeType maps internal change type strings to the enum values expected
 // by the generated EntityChangeMetaJsonChangeType.
+// Delegates to common.CanonicalChangeType (E8 shared mapping).
 func mapChangeType(ct string) string {
-	switch ct {
-	case "CREATED":
-		return "CREATE"
-	case "UPDATED":
-		return "UPDATE"
-	case "DELETED":
-		return "DELETE"
-	default:
-		// Pass through if already in the correct format.
-		return ct
-	}
+	return common.CanonicalChangeType(ct)
 }
 
 // handleSnapshotGetRequestStreaming streams entity results from a completed snapshot.
@@ -645,7 +657,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 			Payload: events.DataPayloadJson{
 				Type: "JSON",
 				Data: data,
-				Meta: buildEntityMeta(e),
+				Meta: buildEntityMeta(e, nil),
 			},
 		}
 		respCE, err := NewCloudEvent(EntityResponse, resp)

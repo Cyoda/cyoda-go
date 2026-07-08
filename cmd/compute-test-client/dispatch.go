@@ -133,9 +133,14 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			continue
 		}
 
+		// The signed tx-token (feature #287) rides as a CloudEvent extension
+		// attribute; it is echoed on joined callbacks. Empty when the dispatch
+		// carries no transaction context. Never logged (Gate 3).
+		txToken := txTokenFromCloudEvent(msg)
+
 		switch msg.Type {
 		case ceTypeProcessorRequest:
-			resp, err := d.handleProcessorRequest(ctx, payload)
+			resp, err := d.handleProcessorRequest(ctx, payload, txToken)
 			if err != nil {
 				slog.Error("processor dispatch failed", "pkg", "compute-test-client", "error", err)
 				continue
@@ -145,7 +150,7 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			}
 
 		case ceTypeCriteriaRequest:
-			resp, err := d.handleCriteriaRequest(ctx, payload)
+			resp, err := d.handleCriteriaRequest(ctx, payload, txToken)
 			if err != nil {
 				slog.Error("criteria dispatch failed", "pkg", "compute-test-client", "error", err)
 				continue
@@ -201,7 +206,7 @@ func (d *dispatcher) keepAliveLoop(ctx context.Context, stream grpc.BidiStreamin
 
 // handleProcessorRequest dispatches a processor request to the catalog and
 // returns the response CloudEvent.
-func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage) (*cepb.CloudEvent, error) {
+func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken string) (*cepb.CloudEvent, error) {
 	var req struct {
 		RequestID     string          `json:"requestId"`
 		ProcessorID   string          `json:"processorId"`
@@ -229,6 +234,20 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 	}
 	if req.Payload != nil && req.Payload.Data != nil {
 		entity.Data = req.Payload.Data
+	}
+
+	// Callback-capable processors (feature #287) take precedence: they receive
+	// the tx-token and the callback client to issue joined callbacks.
+	if cbFn, ok := d.cat.callbackProcessor(name); ok {
+		cfg, err := parseCallbackConfig(req.Parameters)
+		if err != nil {
+			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+		}
+		result, err := cbFn(ctx, entity, cfg, txToken, d.cat.cb)
+		if err != nil {
+			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+		}
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "")
 	}
 
 	procFn, ok := d.cat.processor(name)
@@ -269,7 +288,7 @@ func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data jso
 
 // handleCriteriaRequest dispatches a criteria request to the catalog and
 // returns the response CloudEvent.
-func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.RawMessage) (*cepb.CloudEvent, error) {
+func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.RawMessage, txToken string) (*cepb.CloudEvent, error) {
 	var req struct {
 		RequestID    string          `json:"requestId"`
 		CriteriaID   string          `json:"criteriaId"`
@@ -296,6 +315,19 @@ func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.Raw
 	}
 	if req.Payload != nil && req.Payload.Data != nil {
 		entity.Data = req.Payload.Data
+	}
+
+	// Callback-capable criteria (feature #287) take precedence.
+	if cbFn, ok := d.cat.callbackCriterion(name); ok {
+		cfg, err := parseCallbackConfig(req.Parameters)
+		if err != nil {
+			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+		}
+		matches, err := cbFn(ctx, entity, cfg, txToken, d.cat.cb)
+		if err != nil {
+			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+		}
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "")
 	}
 
 	critFn, ok := d.cat.criterion(name)

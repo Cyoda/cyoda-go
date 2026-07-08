@@ -251,4 +251,3 @@ func printMockAuthWarningTo(w io.Writer, cfg app.Config) {
 	fmt.Fprintln(w, yellow+"========================================================================"+reset)
 	fmt.Fprintln(w)
 }
-

@@ -6,6 +6,7 @@ see_also:
   - crud
   - models
   - analytics
+  - errors.MODEL_NOT_FOUND
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
@@ -37,7 +38,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 Search operates against a specific entity model `(entityName, modelVersion)`. Two modes are supported:
 
-**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 (values above 10000 are clamped to 10000).
+**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 — values above 10000 are rejected with `400 BAD_REQUEST`.
 
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
@@ -174,8 +175,10 @@ The function is dispatched as `EntityCriteriaCalculationRequest` to the matching
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant
-- `limit` (query, optional): string-encoded integer, clamped to maximum 10000; default 1000
+- `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
+  Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
+  see `cyoda help crud` ("Point-in-time semantics").
+- `limit` (query, optional): string-encoded integer, maximum 10000 (values above 10000 are rejected with `400 BAD_REQUEST`); default 1000
 
 Request body: `Condition` JSON document.
 
@@ -184,8 +187,8 @@ Response: `200 OK`, `Content-Type: application/x-ndjson`.
 Each line is a complete entity envelope JSON object:
 
 ```
-{"type":"ENTITY","data":{"category":"physics","year":"2024"},"meta":{"id":"74807f00-ed0d-11ee-a357-ae468cd3ed16","state":"NEW","creationDate":"2025-08-01T10:00:00.000000000Z","lastUpdateTime":"2025-08-01T10:00:00.000000000Z"}}
-{"type":"ENTITY","data":{"category":"chemistry","year":"2023"},"meta":{"id":"89abc100-ed0d-11ee-a357-ae468cd3ed16","state":"APPROVED","creationDate":"2025-07-15T09:00:00.000000000Z","lastUpdateTime":"2025-07-20T14:00:00.000000000Z"}}
+{"type":"ENTITY","data":{"category":"physics","year":"2024"},"meta":{"id":"74807f00-ed0d-11ee-a357-ae468cd3ed16","modelKey":{"name":"nobel-prize","version":1},"state":"NEW","creationDate":"2025-08-01T10:00:00.000000000Z","lastUpdateTime":"2025-08-01T10:00:00.000000000Z"}}
+{"type":"ENTITY","data":{"category":"chemistry","year":"2023"},"meta":{"id":"89abc100-ed0d-11ee-a357-ae468cd3ed16","modelKey":{"name":"nobel-prize","version":1},"state":"APPROVED","creationDate":"2025-07-15T09:00:00.000000000Z","lastUpdateTime":"2025-07-20T14:00:00.000000000Z"}}
 ```
 
 The stream is truncated on encode failure after the header has been sent; the client detects truncation via a connection error or incomplete last line.
@@ -223,7 +226,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, or `"CANCELLED"`
+- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, `"CANCELLED"`, or `"NOT_FOUND"` (snapshot expired or not found on commercial backends)
 - `createTime`: RFC 3339 with nanoseconds
 - `entitiesCount`: total matching entities (0 while running)
 - `calculationTimeMillis`: elapsed search time in milliseconds
@@ -248,6 +251,7 @@ Response: `200 OK`, `application/json`:
       "data": { "category": "physics", "year": "2024" },
       "meta": {
         "id": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
+        "modelKey": {"name": "nobel-prize", "version": 1},
         "state": "NEW",
         "creationDate": "2025-08-01T10:00:00.000000000Z",
         "lastUpdateTime": "2025-08-01T10:00:00.000000000Z"
@@ -294,14 +298,39 @@ On successful cancellation, response: `200 OK`, `application/json`:
 }
 ```
 
+## SORTING
+
+Both sync and async search accept one or more `sort` query parameters. Repeat the parameter for multi-key sorting; precedence follows declaration order.
+
+**Grammar:** `[@]path[:asc|desc]`
+
+- Direction defaults to `asc` when omitted.
+- A leading `$.` on a data path is tolerated and stripped: `$.year:desc` equals `year:desc`.
+- Prefix `@` to sort by a meta field: `@creationDate:asc`.
+
+**Meta field allowlist** (only these are accepted with `@`): `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`.
+
+**Order semantics:**
+- Strings: byte (lexicographic) order.
+- Numbers: numeric order.
+- Meta dates (`creationDate`, `lastUpdateTime`, `transitionForLatestSave`): chronological; millisecond resolution is the minimum precision enforced cross-engine.
+- Absent or null values sort last regardless of direction.
+
+**Tiebreaker:** `entity_id` ascending is always appended as the final key.
+
+**Key cap:** configurable via `CYODA_SEARCH_MAX_SORT_KEYS` (default 16); exceeding the cap returns `errors.INVALID_FIELD_PATH` (`400`), like any other malformed `sort` value.
+
+**Invalid paths:** unsortable, unknown, array, or non-scalar paths return `errors.INVALID_FIELD_PATH` (`400`).
+
 ## PAGINATION
 
 Async search results use page-number pagination: `pageNumber=0` is the first page, `offset = pageNumber * pageSize`. `pageNumber` and `pageSize` are both string-encoded integers in query parameters.
 
-Synchronous search does not paginate; use the `limit` parameter (max 10000) to bound results. For large datasets, use async search with page retrieval.
+Synchronous search does not paginate; use the `limit` parameter (maximum 10000; above rejects `400`) to bound results. For large datasets, use async search with page retrieval.
 
 ## ERRORS
 
+- `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
@@ -396,6 +425,7 @@ curl -s -X PUT \
 - crud
 - models
 - analytics
+- errors.MODEL_NOT_FOUND
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT

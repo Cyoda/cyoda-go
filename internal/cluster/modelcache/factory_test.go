@@ -21,10 +21,10 @@ type stubFactory struct {
 func (f *stubFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {
 	return f.store, nil
 }
-func (f *stubFactory) EntityStore(context.Context) (spi.EntityStore, error)       { return nil, nil }
-func (f *stubFactory) KeyValueStore(context.Context) (spi.KeyValueStore, error)   { return nil, nil }
-func (f *stubFactory) MessageStore(context.Context) (spi.MessageStore, error)     { return nil, nil }
-func (f *stubFactory) WorkflowStore(context.Context) (spi.WorkflowStore, error)   { return nil, nil }
+func (f *stubFactory) EntityStore(context.Context) (spi.EntityStore, error)     { return nil, nil }
+func (f *stubFactory) KeyValueStore(context.Context) (spi.KeyValueStore, error) { return nil, nil }
+func (f *stubFactory) MessageStore(context.Context) (spi.MessageStore, error)   { return nil, nil }
+func (f *stubFactory) WorkflowStore(context.Context) (spi.WorkflowStore, error) { return nil, nil }
 func (f *stubFactory) AsyncSearchStore(context.Context) (spi.AsyncSearchStore, error) {
 	return nil, nil
 }
@@ -181,3 +181,52 @@ func (f *recordingFactory) TransactionManager(context.Context) (spi.TransactionM
 	return nil, nil
 }
 func (f *recordingFactory) Close() error { return nil }
+
+// capableInnerFactory wraps stubFactory and implements spi.CompositeUniqueKeyCapable.
+type capableInnerFactory struct {
+	stubFactory
+	supports bool
+}
+
+func (f *capableInnerFactory) SupportsCompositeUniqueKeys() bool { return f.supports }
+
+// TestCachingStoreFactory_ForwardsCompositeUniqueKeyCapable verifies that
+// the caching wrapper propagates the CompositeUniqueKeyCapable capability
+// from the inner factory rather than silently hiding it.
+func TestCachingStoreFactory_ForwardsCompositeUniqueKeyCapable(t *testing.T) {
+	t.Run("inner capable and true", func(t *testing.T) {
+		inner := &capableInnerFactory{supports: true}
+		f := modelcache.NewCachingStoreFactory(inner, nil, &manualClock{now: time.Now()}, time.Hour)
+		c, ok := any(f).(spi.CompositeUniqueKeyCapable)
+		if !ok {
+			t.Fatal("CachingStoreFactory must implement CompositeUniqueKeyCapable when inner does")
+		}
+		if !c.SupportsCompositeUniqueKeys() {
+			t.Error("expected SupportsCompositeUniqueKeys=true when inner returns true")
+		}
+	})
+
+	t.Run("inner capable and false", func(t *testing.T) {
+		inner := &capableInnerFactory{supports: false}
+		f := modelcache.NewCachingStoreFactory(inner, nil, &manualClock{now: time.Now()}, time.Hour)
+		c, ok := any(f).(spi.CompositeUniqueKeyCapable)
+		if !ok {
+			t.Fatal("CachingStoreFactory must implement CompositeUniqueKeyCapable")
+		}
+		if c.SupportsCompositeUniqueKeys() {
+			t.Error("expected SupportsCompositeUniqueKeys=false when inner returns false")
+		}
+	})
+
+	t.Run("inner not capable", func(t *testing.T) {
+		inner := &stubFactory{} // does not implement CompositeUniqueKeyCapable
+		f := modelcache.NewCachingStoreFactory(inner, nil, &manualClock{now: time.Now()}, time.Hour)
+		c, ok := any(f).(spi.CompositeUniqueKeyCapable)
+		if !ok {
+			t.Fatal("CachingStoreFactory must implement CompositeUniqueKeyCapable (returns false for non-capable inner)")
+		}
+		if c.SupportsCompositeUniqueKeys() {
+			t.Error("expected SupportsCompositeUniqueKeys=false when inner does not implement the interface")
+		}
+	})
+}

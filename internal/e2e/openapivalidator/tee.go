@@ -98,4 +98,3 @@ func (t *teeHR) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func (t *teeHR) ReadFrom(src io.Reader) (int64, error) {
 	return t.w.(io.ReaderFrom).ReadFrom(io.TeeReader(src, &t.captured))
 }
-

@@ -40,7 +40,7 @@ func TestEndToEnd_ProxyRouting(t *testing.T) {
 	nodeBLocal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"served_by": "node-b-local"})
 	})
-	nodeBHandler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second)(nodeBLocal)
+	nodeBHandler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second, true)(nodeBLocal)
 	nodeB := httptest.NewServer(nodeBHandler)
 	defer nodeB.Close()
 
@@ -82,7 +82,7 @@ func TestEndToEnd_NoToken_ServesLocally(t *testing.T) {
 	localHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"served_by": "node-b-local"})
 	})
-	handler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second)(localHandler)
+	handler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second, true)(localHandler)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

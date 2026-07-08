@@ -54,12 +54,14 @@ func (s *refreshingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) 
 	return d, nil
 }
 
-func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
-func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
-func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error           { return nil }
-func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error             { return nil }
-func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
-func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return true, nil }
+func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
+func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)   { return nil, nil }
+func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error         { return nil }
+func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) {
+	return true, nil
+}
 func (s *refreshingModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
 	return nil
 }
@@ -125,7 +127,8 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 	stale := buildSearchDescriptor(t, ref, "a")
 	fresh := buildSearchDescriptor(t, ref, "a", "z")
 	ms := &refreshingModelStore{
-		getQueue:     []*spi.ModelDescriptor{stale},
+		// EnsureModelRegistered consumes the first Get; loadFieldsMap gets the second.
+		getQueue:     []*spi.ModelDescriptor{stale, stale},
 		refreshQueue: []*spi.ModelDescriptor{fresh},
 	}
 	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
@@ -166,7 +169,8 @@ func TestSearch_TrulyMissingPath_FourxxAfterOneRefresh(t *testing.T) {
 	stale := buildSearchDescriptor(t, ref, "a")
 	stillStale := buildSearchDescriptor(t, ref, "a")
 	ms := &refreshingModelStore{
-		getQueue:     []*spi.ModelDescriptor{stale},
+		// EnsureModelRegistered consumes the first Get; loadFieldsMap gets the second.
+		getQueue:     []*spi.ModelDescriptor{stale, stale},
 		refreshQueue: []*spi.ModelDescriptor{stillStale},
 	}
 	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}

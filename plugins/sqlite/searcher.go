@@ -151,38 +151,66 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 	return query, args
 }
 
+// metaBlobKey maps canonical meta sort-path names (as used in spi.OrderSpec)
+// to the corresponding key in the meta JSON blob stored on-disk. The "id"
+// case is special: it resolves to the entity_id column, not the blob.
+var metaBlobKey = map[string]string{
+	"state":                   "state",
+	"creationDate":            "creation_date",
+	"lastUpdateTime":          "last_modified_date",
+	"transitionForLatestSave": "transition_for_latest_save",
+	"transactionId":           "transaction_id",
+}
+
+// jsonExtract wraps col in json() before extracting key, handling text-affinity
+// blobs that may not be stored in JSON canonical form.
+func jsonExtract(col, key string) string {
+	return fmt.Sprintf("json_extract(json(%s), '$.%s')", col, key)
+}
+
 // orderByClause builds a SQL ORDER BY clause from opts.OrderBy.
-// When OrderBy is empty, defaults to "ORDER BY entity_id".
-// tablePrefix is prepended to direct column names (e.g., "ev" for point-in-time
-// queries where the entity_versions table is aliased as "ev").
-// For SourceMeta paths that are direct columns, uses the column name.
-// For SourceMeta paths in the meta BLOB, uses json_extract(json(meta), '$.path').
-// For SourceData paths, uses json_extract(data, '$.path').
+//
+//   - When OrderBy is empty, defaults to "ORDER BY entity_id".
+//   - Each clause gets NULLS LAST so absent/null values sort after real values
+//     regardless of ASC/DESC.
+//   - A entity_id tiebreaker is appended unless the last OrderSpec already
+//     resolves to entity_id (Source=SourceMeta, Path="id"), avoiding duplicates.
+//   - tablePrefix is prepended to column references (e.g., "ev" for PIT queries).
 func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
-	if len(opts.OrderBy) == 0 {
-		col := "entity_id"
-		if tablePrefix != "" {
-			col = tablePrefix + "." + col
-		}
-		return " ORDER BY " + col
+	idCol := "entity_id"
+	if tablePrefix != "" {
+		idCol = tablePrefix + ".entity_id"
 	}
-	clauses := make([]string, 0, len(opts.OrderBy))
+	if len(opts.OrderBy) == 0 {
+		return " ORDER BY " + idCol
+	}
+	clauses := make([]string, 0, len(opts.OrderBy)+1)
 	for _, spec := range opts.OrderBy {
 		expr := orderByFieldExpr(spec, tablePrefix)
 		if spec.Desc {
 			expr += " DESC"
 		}
-		clauses = append(clauses, expr)
+		clauses = append(clauses, expr+" NULLS LAST")
+	}
+	// Append entity_id tiebreaker unless the last spec already IS entity_id.
+	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
+		clauses = append(clauses, idCol)
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")
 }
 
 // orderByFieldExpr returns the SQL expression for an OrderSpec field.
 //
-// Safety invariant: spec.Path is interpolated into a JSON-path literal
-// and therefore MUST have been validated by validateOrderSpecs at the
-// Search() boundary (see path_validation.go). Adding a new caller that
-// bypasses Search() re-introduces SQL injection.
+// SourceMeta "id" → entity_id column (direct, no json_extract).
+// SourceMeta other → json_extract on meta blob with canonical key from metaBlobKey.
+// SourceData → json_extract on data blob.
+// Kind wraps the expression: Numeric → CAST AS REAL, Temporal → /1000 (µs→ms
+// floor), Bool → raw (json_extract returns 0/1), Text → COLLATE BINARY.
+//
+// Safety invariant: spec.Path is interpolated into a JSON-path literal and
+// MUST have been validated by validateOrderSpecs at the Search() boundary
+// (see path_validation.go). Adding a new caller that bypasses Search() re-
+// introduces SQL injection.
 func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
 	qualify := func(col string) string {
 		if tablePrefix != "" {
@@ -190,11 +218,32 @@ func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
 		}
 		return col
 	}
-	if spec.Source == spi.SourceMeta {
-		if directMetaColumns[spec.Path] {
-			return qualify(spec.Path)
+	var base string
+	switch {
+	case spec.Source == spi.SourceMeta && spec.Path == "id":
+		base = qualify("entity_id")
+	case spec.Source == spi.SourceMeta:
+		key, ok := metaBlobKey[spec.Path]
+		if !ok {
+			// Unreachable: validateOrderSpecs rejects any meta path outside the
+			// canonical set before Search() builds SQL. Panic surfaces a bypass
+			// (e.g. a future refactor) instead of silently interpolating input.
+			panic(fmt.Sprintf("orderByFieldExpr: unmapped meta sort path %q", spec.Path))
 		}
-		return fmt.Sprintf("json_extract(json(%s), '$.%s')", qualify("meta"), spec.Path)
+		base = jsonExtract(qualify("meta"), key)
+	default:
+		base = fmt.Sprintf("json_extract(%s, '$.%s')", qualify("data"), spec.Path)
 	}
-	return fmt.Sprintf("json_extract(%s, '$.%s')", qualify("data"), spec.Path)
+	switch spec.Kind {
+	case spi.OrderNumeric:
+		return "CAST(" + base + " AS REAL)"
+	case spi.OrderTemporal:
+		// Meta blob stores timestamps as microseconds; floor to ms via integer
+		// division for cross-backend parity (Cassandra HLC precision floor).
+		return "(" + base + ") / 1000"
+	case spi.OrderBool:
+		return base // json_extract yields 0/1 natively
+	default: // OrderText (zero value)
+		return base + " COLLATE BINARY"
+	}
 }

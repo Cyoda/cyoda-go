@@ -318,6 +318,90 @@ paths:
 	}
 }
 
+// TestValidator_FallbackPath_RecordsErrorCode verifies that when the primary
+// kin-openapi router cannot disambiguate overlapping path templates and the
+// fallback matcher is used, error-code triples for 4xx responses are still
+// recorded on the collector. This is a regression guard for the fallback
+// early-return that previously skipped errorCode capture.
+func TestValidator_FallbackPath_RecordsErrorCode(t *testing.T) {
+	const yaml = `openapi: 3.1.0
+info: { title: overlap-fixture, version: "1" }
+paths:
+  /entity/{format}:
+    post:
+      operationId: createCollection
+      parameters:
+        - name: format
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [JSON, XML]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+  /entity/{entityId}:
+    get:
+      operationId: getOneEntity
+      parameters:
+        - name: entityId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "404":
+          description: not found
+`
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData([]byte(yaml))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	v, err := NewValidator(doc)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	// Snapshot existing triples so we can detect what this validate call adds.
+	before := defaultCollector.observedErrorTriples()
+	beforeSet := make(map[ErrorTriple]bool, len(before))
+	for _, tr := range before {
+		beforeSet[tr] = true
+	}
+
+	// GET /entity/<UUID> → 404 with ProblemDetail. This request hits the
+	// fallback path (primary router cannot disambiguate the overlapping templates).
+	const body404 = `{"properties":{"errorCode":"ENTITY_NOT_FOUND"}}`
+	req, _ := http.NewRequest("GET", "http://x/entity/123e4567-e89b-12d3-a456-426614174000", nil)
+	resp := mkResp(404, "application/json", body404)
+	_ = v.Validate(context.Background(), req, resp)
+
+	// The error triple must now appear in the collector and must not have been
+	// there before (so we know this validate call added it, not a prior test).
+	want := ErrorTriple{Operation: "getOneEntity", Status: 404, ErrorCode: "ENTITY_NOT_FOUND"}
+	if beforeSet[want] {
+		// Triple was already present before this call — cannot distinguish; skip.
+		t.Logf("triple %+v was already in the collector before this test; skipping assertion", want)
+		return
+	}
+	found := false
+	for _, tr := range defaultCollector.observedErrorTriples() {
+		if tr == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("fallback path did not record error triple %+v", want)
+	}
+}
+
 // Helpers used by the fixture tests above.
 var _ = bytes.NewReader
 var _ = json.Marshal
@@ -366,5 +450,65 @@ func TestValidator_StreamingResponseDoesNotPanic(t *testing.T) {
 	mismatches := v.Validate(context.Background(), req, resp)
 	if len(mismatches) > 0 {
 		t.Errorf("streaming response should pass validation; got mismatches: %+v", mismatches)
+	}
+}
+
+// TestValidator_MalformedPathParam_ConformantBindingError verifies that a
+// malformed path parameter (a non-uuid where format: uuid is required) which
+// the server rejects with a conformant RFC-9457 ProblemDetail 400 is NOT
+// recorded as a conformance mismatch: it is the binding-error handler behaving
+// correctly, not spec drift. A non-400 response to the same malformed path is
+// still flagged.
+func TestValidator_MalformedPathParam_ConformantBindingError(t *testing.T) {
+	const yaml = `openapi: 3.1.0
+info: { title: msg-fixture, version: "1" }
+paths:
+  /message/{messageId}:
+    get:
+      operationId: getMessage
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: bad request
+          content:
+            application/problem+json:
+              schema:
+                type: object
+`
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData([]byte(yaml))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	v, err := NewValidator(doc)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	// Malformed messageId → server returns a conformant ProblemDetail 400.
+	req, _ := http.NewRequest("GET", "http://x/message/not-a-uuid", nil)
+	resp := mkResp(400, "application/problem+json",
+		`{"status":400,"properties":{"errorCode":"BAD_REQUEST","parameter":"messageId"}}`)
+	if mismatches := v.Validate(context.Background(), req, resp); len(mismatches) != 0 {
+		t.Errorf("malformed path param with conformant 400 should not be a mismatch; got %d:\n%+v", len(mismatches), mismatches)
+	}
+
+	// Guard: a malformed param that yields a non-400 (e.g. 200) IS still a mismatch.
+	req2, _ := http.NewRequest("GET", "http://x/message/not-a-uuid", nil)
+	resp2 := mkResp(200, "application/json", `{}`)
+	if mismatches := v.Validate(context.Background(), req2, resp2); len(mismatches) == 0 {
+		t.Errorf("malformed path param with 200 should still be a mismatch; got 0")
 	}
 }

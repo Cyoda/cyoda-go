@@ -191,8 +191,8 @@ func TestAuditAfterCreate(t *testing.T) {
 	if ev["auditEventType"] != "EntityChange" {
 		t.Errorf("expected auditEventType=EntityChange, got %v", ev["auditEventType"])
 	}
-	if ev["changeType"] != "CREATED" {
-		t.Errorf("expected changeType=CREATED, got %v", ev["changeType"])
+	if ev["changeType"] != "CREATE" {
+		t.Errorf("expected changeType=CREATE, got %v", ev["changeType"])
 	}
 	if ev["severity"] != "INFO" {
 		t.Errorf("expected severity=INFO, got %v", ev["severity"])
@@ -228,12 +228,12 @@ func TestAuditAfterUpdate(t *testing.T) {
 		t.Fatalf("expected 2 audit events, got %d", len(events))
 	}
 
-	// Newest first
-	if events[0]["changeType"] != "UPDATED" {
-		t.Errorf("expected first event changeType=UPDATED, got %v", events[0]["changeType"])
+	// Newest first (canonical wire spelling)
+	if events[0]["changeType"] != "UPDATE" {
+		t.Errorf("expected first event changeType=UPDATE, got %v", events[0]["changeType"])
 	}
-	if events[1]["changeType"] != "CREATED" {
-		t.Errorf("expected second event changeType=CREATED, got %v", events[1]["changeType"])
+	if events[1]["changeType"] != "CREATE" {
+		t.Errorf("expected second event changeType=CREATE, got %v", events[1]["changeType"])
 	}
 }
 
@@ -250,9 +250,9 @@ func TestAuditAfterDelete(t *testing.T) {
 		t.Fatalf("expected at least 2 events, got %d", len(events))
 	}
 
-	// Newest first — DELETED should be first
-	if events[0]["changeType"] != "DELETED" {
-		t.Errorf("expected first event changeType=DELETED, got %v", events[0]["changeType"])
+	// Newest first — DELETE should be first (canonical wire spelling)
+	if events[0]["changeType"] != "DELETE" {
+		t.Errorf("expected first event changeType=DELETE, got %v", events[0]["changeType"])
 	}
 }
 
@@ -271,7 +271,7 @@ func TestAuditFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 4 audit events, got %d", len(events))
 	}
 
-	expectedOrder := []string{"DELETED", "UPDATED", "UPDATED", "CREATED"}
+	expectedOrder := []string{"DELETE", "UPDATE", "UPDATE", "CREATE"}
 	for i, want := range expectedOrder {
 		got := events[i]["changeType"]
 		if got != want {
@@ -333,8 +333,8 @@ func TestAuditTimeRangeFilter(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event after time filter, got %d", len(events))
 	}
-	if events[0]["changeType"] != "UPDATED" {
-		t.Errorf("expected changeType=UPDATED, got %v", events[0]["changeType"])
+	if events[0]["changeType"] != "UPDATE" {
+		t.Errorf("expected changeType=UPDATE, got %v", events[0]["changeType"])
 	}
 }
 
@@ -354,20 +354,20 @@ func TestAuditTransactionIdFilter(t *testing.T) {
 		t.Fatal("expected at least 1 event with txId filter, got 0")
 	}
 
-	// The EntityChange CREATED event must be present.
+	// The EntityChange CREATE event must be present (canonical wire spelling).
 	var foundCreated bool
 	for _, ev := range events {
-		if ev["auditEventType"] == "EntityChange" && ev["changeType"] == "CREATED" {
+		if ev["auditEventType"] == "EntityChange" && ev["changeType"] == "CREATE" {
 			foundCreated = true
 		}
 	}
 	if !foundCreated {
-		t.Error("expected an EntityChange event with changeType=CREATED in filtered results")
+		t.Error("expected an EntityChange event with changeType=CREATE in filtered results")
 	}
 
 	// The update's EntityChange event (different txID) must NOT be present.
 	for _, ev := range events {
-		if ev["auditEventType"] == "EntityChange" && ev["changeType"] == "UPDATED" {
+		if ev["auditEventType"] == "EntityChange" && ev["changeType"] == "UPDATE" {
 			t.Error("update event should not appear when filtering by create txID")
 		}
 	}

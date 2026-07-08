@@ -2,12 +2,12 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 143
+// Total parity scenarios: 169
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
 // + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
-// + Phase 9.6 Audit fixes + grouped stats).
+// + Phase 9.6 Audit fixes + grouped stats + unknown-model 404 contract).
 // ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/
 // are additional to this count.
 //
@@ -43,17 +43,22 @@ var allTests = []NamedTest{
 	{"ModelDelete", RunModelDelete},
 	{"WorkflowImportExport", RunWorkflowImportExport},
 	{"WorkflowAnnotationsRoundTrip", RunWorkflowAnnotationsRoundTrip},
+	{"WorkflowProcCriterionAnnotationsRoundTrip", RunWorkflowProcCriterionAnnotationsRoundTrip},
 
 	// Phase 4a — entity CRUD (Task 4a.2)
 	{"EntityCreateAndGet", RunEntityCreateAndGet},
 	{"EntityDelete", RunEntityDelete},
 	{"EntityListByModel", RunEntityListByModel},
+	{"EntityMetaShape", RunEntityMetaShape},
+	{"GetAllEntitiesAsAt", RunGetAllEntitiesAsAt},
+	{"EntityConditionalDeleteInTx", RunEntityConditionalDeleteInTx},
 	{"EntityUpdateCollectionHappyPath", RunEntityUpdateCollectionHappyPath},
 	{"EntityUpdateCollectionRollback", RunEntityUpdateCollectionRollback},
 
 	// Phase 4a — bi-temporal (Task 4a.3)
 	{"TemporalPointInTimeRetrieval", RunTemporalPointInTimeRetrieval},
 	{"TemporalGetAsAtPopulatesFullMeta", RunTemporalGetAsAtPopulatesFullMeta},
+	{"PITBoundaryExactT", RunPITBoundaryExactT},
 
 	// Phase 4a — audit (Task 4a.4)
 	{"AuditEntityHistory", RunAuditEntityHistory},
@@ -75,6 +80,9 @@ var allTests = []NamedTest{
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
 
+	// Edge message — flat metaData round-trip (Task 7, #369 group 4)
+	{"MessageRoundTrip", RunMessageRoundTrip},
+
 	// Phase 4a — schema symmetry (Task 4a.7)
 	{"DeepSchemaSymmetry", RunDeepSchemaSymmetry},
 
@@ -95,6 +103,7 @@ var allTests = []NamedTest{
 	{"SearchGroupCondition", RunSearchGroupCondition},
 	{"SearchNoMatches", RunSearchNoMatches},
 	{"SearchAfterUpdate", RunSearchAfterUpdate},
+	{"SearchPointInTime", RunSearchPointInTime},
 
 	// Phase 4b — workflow selection (Task 4b.7)
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},
@@ -102,6 +111,17 @@ var allTests = []NamedTest{
 	// Phase 4b — distributed-safety contracts (Tasks 4b.9-10)
 	{"ConcurrentConflictingUpdate", RunConcurrentConflictingUpdate},
 	{"ConcurrentTransitionsDifferentEntities", RunConcurrentTransitionsDifferentEntities},
+
+	// Compute-node callback transaction-join (#287) — backend-agnostic join
+	// invariants driven through the callback-capable compute-test-client.
+	// Concurrency/torn-write cases are intentionally NOT here (isolated e2e).
+	{"CallbackTxJoin_SyncWriteAtomic", RunCallbackSyncWriteAtomic},
+	{"CallbackTxJoin_SyncReadYourWrites", RunCallbackSyncReadYourWrites},
+	{"CallbackTxJoin_CriteriaReadYourWrites", RunCallbackCriteriaReadYourWrites},
+	{"CallbackTxJoin_IfMatchUpdate", RunCallbackIfMatchUpdate},
+	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
+	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
+	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
@@ -245,6 +265,58 @@ var allTests = []NamedTest{
 	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
 	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
 
+	// Entity PATCH (RFC 7386 merge-patch) — cross-backend contract matrix.
+	// Normal operation.
+	{"EntityPatchMergePreservesFields", RunEntityPatchMergePreservesFields},
+	{"EntityPatchNullDeletesKey", RunEntityPatchNullDeletesKey},
+	{"EntityPatchNestedMerge", RunEntityPatchNestedMerge},
+	{"EntityPatchArrayWholesaleReplace", RunEntityPatchArrayWholesaleReplace},
+	{"EntityPatchEmptyNoOp", RunEntityPatchEmptyNoOp},
+	{"EntityPatchNumberFidelity", RunEntityPatchNumberFidelity},
+	{"EntityPatchStarUnconditional", RunEntityPatchStarUnconditional},
+	{"EntityPatchWithTransition", RunEntityPatchWithTransition},
+	// Error scenarios.
+	{"EntityPatchNotFound", RunEntityPatchNotFound},
+	{"EntityPatchStaleTokenIs412", RunEntityPatchStaleTokenIs412},
+	{"EntityPatchXMLFormatIs415", RunEntityPatchXMLFormatIs415},
+	{"EntityPatchWrongContentTypeIs415", RunEntityPatchWrongContentTypeIs415},
+	{"EntityPatchMissingIfMatchIs428", RunEntityPatchMissingIfMatchIs428},
+	{"EntityPatchJSONPatchNotImplemented", RunEntityPatchJSONPatchNotImplemented},
+	{"EntityPatchTypeMismatchIs400", RunEntityPatchTypeMismatchIs400},
+	{"EntityPatchStrictRejectsUnknownField", RunEntityPatchStrictRejectsUnknownField},
+	// Cross-tenant isolation.
+	{"EntityPatchCrossTenantIsNotFound", RunEntityPatchCrossTenantIsNotFound},
+
+	// Composite unique keys — cross-backend parity matrix (spec §8.3).
+	// Capability gate in each scenario: SetUniqueKeysRaw on the unlocked model;
+	// if status==422+COMPOSITE_KEY_UNSUPPORTED → t.Skip (commercial backend
+	// safe skip). All three in-repo backends run all assertions.
+	{"UniqueKeys_CreateDuplicate", RunUniqueKeys_CreateDuplicate},
+	{"UniqueKeys_SoftDeleteFreesValue", RunUniqueKeys_SoftDeleteFreesValue},
+	{"UniqueKeys_PartialKey", RunUniqueKeys_PartialKey},
+	{"UniqueKeys_AllNullExempt", RunUniqueKeys_AllNullExempt},
+	{"UniqueKeys_DeleteAllFreesValues", RunUniqueKeys_DeleteAllFreesValues},
+	{"UniqueKeys_MultipleKeys", RunUniqueKeys_MultipleKeys},
+	{"UniqueKeys_UpdateClearsAllKeyFields", RunUniqueKeys_UpdateClearsAllKeyFields},
+	// Centerpiece: a processor rewrites the key field → enforcement is on the
+	// POST-MERGE value, not the input (two distinct inputs collide → 409).
+	{"UniqueKeys_ProcessorRewritesKeyField", RunUniqueKeys_ProcessorRewritesKeyField},
+
+	// Search sort — cross-backend sort ordering contract (Task 15).
+	// Each scenario seeds entities, issues a sorted sync search, and asserts
+	// the exact entity-id sequence.  Divergence here is a real bug in the
+	// backend comparator or default-order path, not a test weakness.
+	{"SearchSortDataText", RunSearchSortDataText},
+	{"SearchSortDataNumeric", RunSearchSortDataNumeric},
+	{"SearchSortDataBool", RunSearchSortDataBool},
+	{"SearchSortMetaCreationDate", RunSearchSortMetaCreationDate},
+	{"SearchSortMetaState", RunSearchSortMetaState},
+	{"SearchSortMultiKeyTiebreaker", RunSearchSortMultiKeyTiebreaker},
+	{"SearchSortNullsLast", RunSearchSortNullsLast},
+	{"SearchSortPointInTime", RunSearchSortPointInTime},
+	{"SearchSortDataFieldNamedMeta", RunSearchSortDataFieldNamedMeta},
+	{"SearchNoSortDefaultOrder", RunSearchNoSortDefaultOrder},
+
 	// Grouped statistics — cross-backend parity matrix (spec §7).
 	// Each scenario asserts an OBSERVABLE response: every backend
 	// (memory / sqlite / postgres / out-of-tree plugins) must produce the
@@ -259,6 +331,12 @@ var allTests = []NamedTest{
 	{"GroupedStats_NonNumericSkipped", RunParityGroupedStats_NonNumericSkipped},
 	{"GroupedStats_NonScalarCoercesToNull", RunParityGroupedStats_NonScalarCoercesToNull},
 	{"GroupedStats_CardinalityExceeded", RunParityGroupedStats_CardinalityExceeded},
+
+	// Unknown-model contract — unified 404 MODEL_NOT_FOUND (stats/audit/search slice).
+	// One representative op (GET stats query) suffices: every backend must reject
+	// an unknown model before doing any query work. (The GET stats endpoint runs
+	// the model-existence check first; grouped-stats validates groupBy beforehand.)
+	{"UnknownModel404", RunUnknownModel404},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

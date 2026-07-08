@@ -1,7 +1,7 @@
 # Cyoda-Go
 
-Lightweight, multi-node Go digital twin of the Cyoda platform.
-Goal: API and behavioral fidelity with Cyoda Cloud.
+Lightweight, multi-node Go implementation of the Cyoda platform.
+cyoda-go defines the API and integration contract; Cyoda Cloud aligns to it.
 
 ## Development Gates
 
@@ -18,6 +18,11 @@ add or update E2E tests in `internal/e2e/` to cover the change through the full 
 E2E tests are self-contained: `TestMain` starts a PostgreSQL container via testcontainers-go
 and an in-process `httptest.Server` with JWT auth — no external instance needed.
 Just run `go test ./internal/e2e/... -v` (requires Docker running).
+For API/gRPC features the bar is **full coverage** — happy path AND every documented
+status/error code on a running backend, plus a cross-backend parity scenario for
+backend-agnostic behavior. See `.claude/rules/test-coverage.md` (the spec's error table is
+the checklist). `superpowers:brainstorming` and `superpowers:writing-plans` auto-inject these
+gates via a `PreToolUse` hook (`.claude/hooks/inject-skill-gates.sh`).
 
 ### Gate 3: Security by default
 Never log credentials, tokens, secrets, or signing keys at any level.
@@ -59,6 +64,12 @@ expand the change, **stop and surface the choice to the human** rather than
 silently leaving it broken. Recording a `TODO(...)` is the last resort, not
 the first response.
 
+### Gate 7: Cloud-parity — cyoda-go leads the contract
+cyoda-go **defines** the API and integration contract; Cyoda Cloud follows it.
+Any change to the integration contract (API shape, wire/error semantics, entity
+or workflow behaviour Cloud mirrors) must be reconciled with cyoda-cloud and the
+change logged in `docs/cloud-parity/` — one file per feature/behaviour.
+
 ## External Storage Plugins
 
 The Cassandra storage plugin lives in a separate repository:
@@ -70,6 +81,10 @@ shared contracts), verify the change does not break the Cassandra plugin. The
 parity test registry (`e2e/parity/registry.go`) is picked up by all backends
 including Cassandra — new parity tests will surface there on their next
 dependency update.
+
+A storage backend (memory/sqlite/postgres) diverging from the others on the same
+contract is a bug to fix, not an "accepted divergence"; cross-backend parity tests
+guard that consistency, they don't define behaviour.
 
 ## Go Conventions
 

@@ -15,7 +15,9 @@ import (
 func TestRLS_PoliciesExist(t *testing.T) {
 	pool := newTestPool(t)
 
-	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -56,7 +58,9 @@ func TestRLS_PoliciesExist(t *testing.T) {
 func TestRLS_ApplicationLevelIsolation(t *testing.T) {
 	pool := newTestPool(t)
 
-	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}

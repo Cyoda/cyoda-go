@@ -578,13 +578,13 @@ func TestPlanQuery_MetaColumnMapping(t *testing.T) {
 //   - If postFilter is non-nil, it contains only non-pushable ops
 func FuzzQueryPlanner(f *testing.F) {
 	// Seed corpus with representative filter patterns.
-	f.Add(byte(0), byte(0), "city", "Berlin", byte(0))   // eq, data
-	f.Add(byte(1), byte(1), "state", "ACTIVE", byte(0))  // ne, meta
-	f.Add(byte(2), byte(0), "age", "25", byte(1))         // gt, data, with AND wrapper
-	f.Add(byte(12), byte(0), "code", "^[A-Z]", byte(0))   // regex, data
-	f.Add(byte(8), byte(0), "name", "ali", byte(2))        // ieq, data, with OR wrapper
-	f.Add(byte(5), byte(0), "score", "10", byte(1))        // lte, data, AND wrapper
-	f.Add(byte(10), byte(0), "val", "5", byte(3))          // between, data, nested AND(OR(...))
+	f.Add(byte(0), byte(0), "city", "Berlin", byte(0))  // eq, data
+	f.Add(byte(1), byte(1), "state", "ACTIVE", byte(0)) // ne, meta
+	f.Add(byte(2), byte(0), "age", "25", byte(1))       // gt, data, with AND wrapper
+	f.Add(byte(12), byte(0), "code", "^[A-Z]", byte(0)) // regex, data
+	f.Add(byte(8), byte(0), "name", "ali", byte(2))     // ieq, data, with OR wrapper
+	f.Add(byte(5), byte(0), "score", "10", byte(1))     // lte, data, AND wrapper
+	f.Add(byte(10), byte(0), "val", "5", byte(3))       // between, data, nested AND(OR(...))
 
 	f.Fuzz(func(t *testing.T, opIdx byte, sourceIdx byte, path string, value string, treeShape byte) {
 		// Map opIdx to a FilterOp. We cover all defined ops.

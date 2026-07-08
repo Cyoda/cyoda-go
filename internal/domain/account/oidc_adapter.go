@@ -174,7 +174,7 @@ func (a *oidcAdapter) RegisterOidcProvider(w http.ResponseWriter, r *http.Reques
 	p, err := a.service.Register(r.Context(), in)
 	if err != nil {
 		if errors.Is(err, oidc.ErrProviderDuplicate) {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeOIDCProviderDuplicate,
+			common.WriteError(w, r, common.Operational(http.StatusConflict, common.ErrCodeOIDCProviderDuplicate,
 				"provider with this wellKnownConfigUri already registered for this tenant"))
 			return
 		}
@@ -206,10 +206,7 @@ func (a *oidcAdapter) ListOidcProviders(w http.ResponseWriter, r *http.Request, 
 
 	tenantID := spi.TenantID(uc.Tenant.ID)
 
-	activeOnly := false
-	if params.ActiveOnly != nil && *params.ActiveOnly == "true" {
-		activeOnly = true
-	}
+	activeOnly := params.ActiveOnly != nil && *params.ActiveOnly
 
 	providers, err := a.service.ListByTenant(r.Context(), tenantID, activeOnly)
 	if err != nil {

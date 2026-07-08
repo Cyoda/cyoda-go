@@ -495,7 +495,28 @@ Processors and criteria define required tags in their configuration. Calculation
 
 ### Transaction Context Propagation
 
-Processor callbacks (CRUD operations performed by the processor) carry the transaction token. In a multi-node cluster, callbacks may arrive at any node — the router forwards them to the transaction-owning node (see Section 9).
+Before dispatching to a compute node, the engine mints a signed HMAC tx-token
+(`{NodeID, TxRef}`) and attaches it to the outgoing CloudEvent as the
+`cyodatxtoken` extension attribute.
+
+A compute node MUST echo the received token on every callback into cyoda-go:
+- HTTP callbacks: `X-Tx-Token` request header
+- gRPC EntityManage callbacks: `tx-token` metadata key
+
+When a callback arrives with the token, the receiving node joins the
+originating transaction — either locally (token's `NodeID` == self) or by
+forwarding to the owning node (HTTP reverse proxy, or gRPC EntityManage B→A
+forward). Callbacks see the cascade's uncommitted writes; other readers do
+not. Callback acks are **provisional** — writes are not durable until the
+owning transaction commits. If the processor fails, all callback writes roll
+back atomically.
+
+An absent token (empty `cyodatxtoken`) means the callback runs in a
+standalone transaction. This is normal for `COMMIT_BEFORE_DISPATCH` with
+`startNewTxOnDispatch=false`.
+
+See Section 9 for the routing mechanics and `docs/PROCESSOR_EXECUTION_MODES.md`
+for mode-specific semantics.
 
 ---
 

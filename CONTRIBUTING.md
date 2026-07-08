@@ -83,6 +83,19 @@ govulncheck ./...
 
 Release builds additionally run a Trivy scan against the published GHCR image (`.github/workflows/release.yml`). Results are surfaced in the release run's job summary. This is advisory — the tag is already published by the time Trivy runs; pre-merge gating is the `security` job's responsibility.
 
+## OpenAPI operation status & evolution
+
+Every operation in `api/openapi.yaml` must be in one of two states:
+
+- **Live** — exercised by at least one test in `internal/e2e/`. No marker required.
+- **Not-live** — carries `x-cyoda-status: planned` or `x-cyoda-status: unimplemented`.
+
+The E2E conformance gate enforces both sides of this rule: an unmarked operation with no E2E coverage fails CI; a marked operation that returns 2xx fails CI (the marker must be removed once the operation is implemented and exercised).
+
+**Schema authoring rule (ADR 0003).** Schemas are *typed-but-open*: enumerate every property the service emits, but never set `additionalProperties: false` on an evolvable schema. Sealing an object makes every additive field addition a breaking change. This is enforced automatically by `TestSpecHasNoSealedSchemas` (`internal/oasdiffcheck`), which fails if `api/openapi.yaml` contains `additionalProperties: false`.
+
+**Breaking-change gate.** The `openapi-breaking-change` CI job (`.github/workflows/openapi-breaking-change.yml`) runs `oasdiff` on every PR that touches `api/openapi.yaml` and rejects client-breaking edits: narrowing a type, removing an operation or parameter, or adding a required request field. (`oasdiff` does not classify response-sealing as breaking — that is caught by the `additionalProperties: false` check above.)
+
 ## Dependencies
 
 No external web frameworks. No DI frameworks. No ORM.

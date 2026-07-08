@@ -153,8 +153,8 @@ func RunExternalAPI_07_03_ChangeHistoryFull(t *testing.T, fixture parity.Backend
 	}
 	// The API returns changes newest-first; the oldest entry (CREATE) is last.
 	last := changes[len(changes)-1]
-	if last.ChangeType != "CREATED" {
-		t.Errorf("changes[last].changeType: got %q, want CREATED", last.ChangeType)
+	if last.ChangeType != "CREATE" {
+		t.Errorf("changes[last].changeType: got %q, want CREATE", last.ChangeType)
 	}
 }
 

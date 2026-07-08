@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 const iatSkew = 30 * time.Second

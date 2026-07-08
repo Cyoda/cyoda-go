@@ -93,3 +93,71 @@ func TestWorkflowAnnotations_NonObjectRejected(t *testing.T) {
 		t.Fatalf("expected 400 VALIDATION_FAILED, got %d: %s", status, body)
 	}
 }
+
+const procCritWorkflowPayload = `{
+  "importMode": "REPLACE",
+  "workflows": [{
+    "version": "1.2",
+    "name": "pc-wf",
+    "initialState": "S",
+    "active": true,
+    "criterionAnnotations": { "displayName": "WF guard" },
+    "states": {
+      "S": {
+        "transitions": [
+          {
+            "name": "t", "next": "S", "manual": true,
+            "criterionAnnotations": { "displayName": "T guard", "description": "checks status" },
+            "processors": [
+              { "name": "p1", "type": "externalized", "annotations": { "displayName": "Proc One" } }
+            ]
+          }
+        ]
+      }
+    }
+  }]
+}`
+
+func TestWorkflowAnnotations_ProcessorAndCriterionRoundTrip(t *testing.T) {
+	const entity, version = "annot-pc-rt", 1
+	importModelE2E(t, entity, version)
+	if status, body := importWorkflowE2E(t, entity, version, procCritWorkflowPayload); status != http.StatusOK {
+		t.Fatalf("import: expected 200, got %d: %s", status, body)
+	}
+	_, body := exportWorkflowE2E(t, entity, version)
+	wf := firstWorkflow(t, body)
+	if got, want := wf["criterionAnnotations"], map[string]any{"displayName": "WF guard"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("wf criterionAnnotations: got %#v, want %#v", got, want)
+	}
+	state := wf["states"].(map[string]any)["S"].(map[string]any)
+	tr := state["transitions"].([]any)[0].(map[string]any)
+	if got, want := tr["criterionAnnotations"], map[string]any{"displayName": "T guard", "description": "checks status"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("transition criterionAnnotations: got %#v, want %#v", got, want)
+	}
+	proc := tr["processors"].([]any)[0].(map[string]any)
+	if got, want := proc["annotations"], map[string]any{"displayName": "Proc One"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("processor annotations: got %#v, want %#v", got, want)
+	}
+}
+
+func TestWorkflowAnnotations_ProcessorNonObjectRejected(t *testing.T) {
+	const entity, version = "annot-pc-bad", 1
+	importModelE2E(t, entity, version)
+	payload := strings.Replace(procCritWorkflowPayload,
+		`"annotations": { "displayName": "Proc One" }`, `"annotations": 5`, 1)
+	status, body := importWorkflowE2E(t, entity, version, payload)
+	if status != http.StatusBadRequest || !strings.Contains(body, "VALIDATION_FAILED") {
+		t.Fatalf("expected 400 VALIDATION_FAILED, got %d: %s", status, body)
+	}
+}
+
+func TestWorkflowAnnotations_CriterionAnnotationsTypoRejected(t *testing.T) {
+	const entity, version = "annot-pc-typo", 1
+	importModelE2E(t, entity, version)
+	payload := strings.Replace(procCritWorkflowPayload, `"criterionAnnotations": { "displayName": "WF guard" }`,
+		`"criterionAnnotationss": { "displayName": "WF guard" }`, 1)
+	status, body := importWorkflowE2E(t, entity, version, payload)
+	if status != http.StatusBadRequest || !strings.Contains(body, "BAD_REQUEST") {
+		t.Fatalf("expected 400 BAD_REQUEST for unknown field, got %d: %s", status, body)
+	}
+}

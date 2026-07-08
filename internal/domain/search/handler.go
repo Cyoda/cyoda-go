@@ -37,21 +37,23 @@ func jobLookupError(err error) *common.AppError {
 
 // Handler handles search-related HTTP endpoints.
 type Handler struct {
-	searchSvc *SearchService
-	factory   spi.StoreFactory
+	searchSvc   *SearchService
+	factory     spi.StoreFactory
+	maxSortKeys int
 }
 
 // NewHandler creates a new search handler wired to the given SearchService.
+// Uses a default cap of 16 sort keys per request.
 func NewHandler(searchSvc *SearchService) *Handler {
-	return &Handler{searchSvc: searchSvc}
+	return &Handler{searchSvc: searchSvc, maxSortKeys: 16}
 }
 
 // NewHandlerWithModel creates a search handler that additionally validates
 // condition value types against the model schema before executing search.
 // Pass a nil factory to disable condition-type validation (e.g. in tests
-// that don't need it).
-func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory) *Handler {
-	return &Handler{searchSvc: searchSvc, factory: factory}
+// that don't need it). maxSortKeys caps the number of sort keys per request.
+func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory, maxSortKeys int) *Handler {
+	return &Handler{searchSvc: searchSvc, factory: factory, maxSortKeys: maxSortKeys}
 }
 
 // lookupModelSchema fetches the parsed model schema for the given entity/version.
@@ -124,6 +126,15 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
+	}
+
+	if params.Sort != nil {
+		keys, perr := ParseSortParam(*params.Sort, h.maxSortKeys)
+		if perr != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, perr.Error()))
+			return
+		}
+		opts.OrderBy = keys
 	}
 
 	// Parse limit from string parameter.
@@ -207,6 +218,15 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
+	}
+
+	if params.Sort != nil {
+		keys, perr := ParseSortParam(*params.Sort, h.maxSortKeys)
+		if perr != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, perr.Error()))
+			return
+		}
+		opts.OrderBy = keys
 	}
 
 	modelRef := spi.ModelRef{
@@ -382,8 +402,10 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 }
 
 func entityEnvelope(e *spi.Entity) map[string]any {
+	modelVersion, _ := strconv.Atoi(e.Meta.ModelRef.ModelVersion)
 	meta := map[string]any{
 		"id":             e.Meta.ID,
+		"modelKey":       map[string]any{"name": e.Meta.ModelRef.EntityName, "version": modelVersion},
 		"state":          e.Meta.State,
 		"creationDate":   e.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
 		"lastUpdateTime": e.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),

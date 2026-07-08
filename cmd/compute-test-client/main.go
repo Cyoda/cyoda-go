@@ -37,9 +37,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	cat := newCatalog()
+	// Optional HTTP base URL for feature #287 callback-join processors. When
+	// unset, callback processors report a clear error rather than panicking;
+	// the non-callback catalog still serves. The M2M token doubles as the
+	// callback bearer (same tenant as dispatch).
+	httpBase := os.Getenv("CYODA_COMPUTE_HTTP_BASE")
+	cb := newCallbackClient(httpBase, token)
+
+	// gRPC EntityManage callback client (feature #287 cross-node gRPC callback).
+	// It dials the same gRPC endpoint the member streams from; when that node is a
+	// non-owner for a forwarded dispatch, the callback forwards B→A to the owner.
+	gcb, err := newGRPCCallbackClient(endpoint, token)
+	if err != nil {
+		slog.Error("gRPC callback client failed", "pkg", "compute-test-client", "error", err)
+		os.Exit(1)
+	}
+	defer gcb.close()
+
+	cat := newCatalog(cb, gcb)
 	slog.Info("catalog loaded", "pkg", "compute-test-client",
-		"processors", len(cat.processors), "criteria", len(cat.criteria))
+		"processors", len(cat.processors), "criteria", len(cat.criteria),
+		"callbackProcessors", len(cat.callbackProcessors), "callbackCriteria", len(cat.callbackCriteria),
+		"callbackEnabled", cb != nil, "grpcCallbackEnabled", gcb != nil)
 
 	// Start the health server first so the fixture can poll it before
 	// the gRPC connection settles.

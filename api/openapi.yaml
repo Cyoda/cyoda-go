@@ -89,7 +89,6 @@ info:
        - Designed for small to medium datasets
        - Limited by maximum result set size (default: 1000, max: 10000)
        - Non-distributed (executes on single node)
-       - Configurable timeout and result limits
        - Returns immediate streaming results
 
     All endpoints support:
@@ -295,7 +294,6 @@ tags:
          - Designed for small to medium datasets
          - Limited by maximum result set size (default: 1000, max: 10000)
          - Non-distributed (executes on single node)
-         - Configurable timeout and result limits
          - Returns immediate streaming results
 
       All endpoints support:
@@ -344,9 +342,11 @@ paths:
       tags:
         - User, Account
       summary: Retrieve all subscriptions available for the current user's legal entity.
-      description: Fetch all subscription details associated with the legal entity of
-        the current user.
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go (tracked for implementation).
+        Fetch all subscription details associated with the legal entity of the current user.
       operationId: accountSubscriptionsGet
+      x-cyoda-status: planned
       responses:
         "200":
           description: Collection of all subscriptions for the user's legal entity
@@ -451,35 +451,35 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityAuditEventsResponseDto"
         "400":
-          description: Error response
+          description: Bad Request - Invalid parameters; `properties.errorCode` carries the domain code
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: Entity not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal Server Error - An unexpected error occurred
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /audit/entity/{entityId}/workflow/{transactionId}/finished:
@@ -495,24 +495,18 @@ paths:
         transaction without needing to
 
         search through all audit events.
-
-
-        Both entityId and transactionId must be valid time-based UUIDs (version
-        1).
       operationId: getStateMachineFinishedEvent
       parameters:
         - name: entityId
           in: path
-          description: "Identifier of the entity. Must be a valid time-based UUID (version
-            1). "
+          description: Identifier of the entity.
           required: true
           schema:
             type: string
             format: uuid
         - name: transactionId
           in: path
-          description: "Identifier of the transaction. Must be a valid time-based UUID
-            (version 1). "
+          description: Identifier of the transaction.
           required: true
           schema:
             type: string
@@ -524,36 +518,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StateMachineAuditEventDto"
-        "400":
-          description: Invalid request - UUID is not time-based
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
         "401":
-          description: Error response
+          description: Unauthorized - Authentication is required
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: Forbidden - Insufficient permissions
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Entity or transaction not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal server error
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients:
@@ -576,6 +564,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: listTechnicalUsers
+      x-cyoda-iam-mode: jwt
       responses:
         "200":
           description: List of M2M clients returned successfully
@@ -599,6 +588,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -632,6 +627,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: createTechnicalUser
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: withAdminRole
           in: query
@@ -673,6 +669,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -693,6 +695,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: deleteTechnicalUser
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: clientId
           in: path
@@ -740,6 +743,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -760,6 +769,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role
       operationId: resetTechnicalUserSecret
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: clientId
           in: path
@@ -803,6 +813,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - An unexpected error occurred
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -1125,7 +1141,7 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `UNKNOWN_MODEL`,
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`,
         `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
@@ -1200,8 +1216,7 @@ paths:
           description: >-
             Bad request — malformed JSON body, validation failure (empty
             `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
-            JSONPath, etc.), invalid Condition DSL predicate, or unknown
-            model for the calling tenant.
+            JSONPath, etc.), or invalid Condition DSL predicate.
           content:
             application/problem+json:
               schema:
@@ -1210,6 +1225,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Entity model not found (MODEL_NOT_FOUND)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           description: Request body exceeds the 10 MiB maximum
           content:
@@ -1301,8 +1322,14 @@ paths:
                           share: "2"
                       year: "2024"
                     meta:
-                      id: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
-                      state: VALIDATED
+                      id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                      modelKey:
+                        name: Order
+                        version: 1
+                      state: CREATED
+                      creationDate: "2026-07-01T12:00:00.000Z"
+                      lastUpdateTime: "2026-07-01T12:00:00.000Z"
+                      transactionId: 9f1b0c2d-1111-2222-3333-444455556666
         "400":
           description: Conflicting request paramters (both pointInTime and transactionId
             provided)
@@ -1381,11 +1408,11 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'not-a-uuid' for parameter 'entityId'
+                detail: invalid value for parameter 'entityId'
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   parameter: entityId
-                  invalidValue: not-a-uuid
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity not found
           content:
@@ -1443,7 +1470,7 @@ paths:
 
         Note:
 
-        - Changes are returned in chronological order
+        - Changes are returned in reverse-chronological order (newest first)
 
         - The pointInTime parameter allows viewing the change history as it
         existed at a specific time
@@ -1482,21 +1509,21 @@ paths:
                 Entity Change History:
                   description: Entity Change History
                   value:
-                    - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
-                      timeOfChange: 2024-12-15T10:30:00Z
-                      user: admin@cyoda.com
-                      changeType: CREATED
-                      fieldsChangedCount: 5
-                    - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
-                      timeOfChange: 2024-12-16T14:22:30Z
-                      user: editor@cyoda.com
-                      changeType: UPDATED
-                      fieldsChangedCount: 2
                     - transactionId: 9c5d3ca0-c055-11ef-a357-ae468cd3ed16
                       timeOfChange: 2024-12-17T09:15:45Z
                       user: admin@cyoda.com
-                      changeType: UPDATED
+                      changeType: UPDATE
                       fieldsChangedCount: 1
+                    - transactionId: 8a4f2b90-c055-11ef-a357-ae468cd3ed16
+                      timeOfChange: 2024-12-16T14:22:30Z
+                      user: editor@cyoda.com
+                      changeType: UPDATE
+                      fieldsChangedCount: 2
+                    - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
+                      timeOfChange: 2024-12-15T10:30:00Z
+                      user: admin@cyoda.com
+                      changeType: CREATE
+                      fieldsChangedCount: 5
         "400":
           description: Invalid UUID format
           content:
@@ -1507,11 +1534,11 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'not-a-uuid' for parameter 'entityId'
+                detail: invalid value for parameter 'entityId'
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   parameter: entityId
-                  invalidValue: not-a-uuid
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity not found
           content:
@@ -1724,9 +1751,12 @@ paths:
                         year: "2024"
                       meta:
                         id: e4f14c38-34b2-11b2-92cb-fa754528b475
+                        modelKey:
+                          name: nobel-prize
+                          version: 1
                         state: VALIDATED
-                        creationDate: 2025-03-30T15:30:24.243Z
-                        previousTransition: VALIDATE
+                        creationDate: "2025-03-30T15:30:24.243Z"
+                        lastUpdateTime: "2025-03-30T15:30:24.243Z"
                     - type: ENTITY
                       data:
                         category: economics
@@ -1748,10 +1778,13 @@ paths:
                             share: "3"
                         year: "2024"
                       meta:
-                        id: e4f14c38-34b2-11b2-92cb-fa754528b475
+                        id: e4f14c38-34b2-11b2-92cb-fa754528b477
+                        modelKey:
+                          name: nobel-prize
+                          version: 1
                         state: VALIDATED
-                        creationDate: 2025-03-30T15:30:24.243Z
-                        previousTransition: VALIDATE
+                        creationDate: "2025-03-30T15:30:24.243Z"
+                        lastUpdateTime: "2025-03-30T15:30:24.243Z"
         "400":
           description: Invalid request parameters
           content:
@@ -1799,9 +1832,18 @@ paths:
       tags:
         - Entity Management
       summary: Delete entities of a model and version
-      description: Deletes entities for a given model name and version which existed
-        at the consistency time of the system when the request is launched by
-        provided condition or all entities if condition is not provided.
+      description: >-
+        Deletes entities for a given model name and version.
+        An optional `AbstractConditionDto` request body scopes the delete to
+        matching entities only; an empty body (or no body) deletes all entities.
+        When `verbose=true` and a condition is given, the response `ids` array
+        lists every deleted entity ID. For a delete-all (empty body), `ids` is
+        always an empty array — enumerating a whole-model wipe is impractical at
+        scale; use statistics only. `deleteResult.numberOfEntitites` is the count
+        of entities that matched the condition (or all entities when no condition
+        is given); `deleteResult.numberOfEntititesRemoved` is the count actually
+        removed (may be lower if individual deletes failed).
+        A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
         - name: entityName
@@ -1913,7 +1955,9 @@ paths:
                       idToError:
                         cecbe400-7402-11ef-9e63-ae468cd3ed16: Some error message
         "400":
-          description: Invalid model name
+          description: >-
+            Invalid request. Returned for a malformed condition body
+            (`INVALID_CONDITION`) or an invalid model name (e.g., name too long).
           content:
             application/problem+json:
               schema:
@@ -1927,6 +1971,16 @@ paths:
                     status: 400
                     detail: String length of the schema name is outside of the bounds [1,1024]
                     instance: /api/entity/very-long-entity-model-name/1
+                Invalid Condition:
+                  description: Malformed AbstractConditionDto body
+                  value:
+                    type: about:blank
+                    title: Bad Request
+                    status: 400
+                    detail: "INVALID_CONDITION: unsupported condition type: NONSENSE"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: INVALID_CONDITION
         "404":
           description: Entity model not found
           content:
@@ -2140,7 +2194,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2227,8 +2287,29 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              format: json
+              type: array
+              description: |
+                Batch of entities to create across one or more models. Each item
+                names its model and carries the entity payload as a JSON string.
+              items:
+                type: object
+                required:
+                  - model
+                  - payload
+                properties:
+                  model:
+                    type: object
+                    required:
+                      - name
+                      - version
+                    properties:
+                      name:
+                        type: string
+                      version:
+                        type: integer
+                        format: int32
+                  payload:
+                    type: string
             examples:
               Mixed Entity Collection:
                 summary: Example of multiple entities of different types
@@ -2302,13 +2383,25 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid JSON array or payload
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: One or more entity models not found
+          description: "Not Found — MODEL_NOT_FOUND: one or more entity models are not registered."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
             application/problem+json:
               schema:
@@ -2477,7 +2570,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
@@ -2488,6 +2581,155 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags:
+        - Entity Management
+      summary: Patch Single with a loopback transition
+      description: |
+        Partially updates a single entity (RFC 7386 JSON Merge Patch) with a
+        loopback transition. Send only the fields that change; an explicit null
+        deletes a key. The merged result is validated against the model schema
+        and cannot introduce a new field (unlike PUT). The dialect is selected
+        by Content-Type: application/merge-patch+json (RFC 7386, implemented) or
+        application/json-patch+json (RFC 6902, not implemented -> 501).
+
+        If-Match is required in some form: the transactionId from your last GET
+        of this entity (conditional; 412 if it has moved), or "*" to accept
+        last-writer-wins. Its absence returns 428.
+      operationId: patchSingleWithLoopback
+      parameters:
+        - name: format
+          in: path
+          description: Must be JSON (merge patch is JSON only)
+          required: true
+          schema:
+            type: string
+            enum:
+              - JSON
+              - XML
+        - name: entityId
+          in: path
+          description: The UUID of the entity to patch
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          description: transactionId from the last read, or "*" for unconditional. Absent returns 428.
+          required: false
+          schema:
+            type: string
+        - name: transactionTimeoutMillis
+          in: query
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
+            Operation will fail if it takes longer than this timeout.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 10000
+          example: 30000
+        - name: waitForConsistencyAfter
+          in: query
+          description: |
+            If true, waits for the consistency time to pass before responding.
+            May increase response time but guarantees data consistency when
+            returning, so that subsequent calls will see the updated data.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: true
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              format: json
+            examples:
+              MergePatch:
+                summary: Change one field
+                value:
+                  year: "2025"
+          application/json-patch+json:
+            schema:
+              type: array
+              items:
+                type: object
+      responses:
+        "200":
+          description: Entity patched successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityTransactionResponse"
+        "400":
+          description: Bad request — invalid patch or validation failure
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "428":
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "501":
+          $ref: '#/components/responses/NotImplemented'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2652,7 +2894,146 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, validation failure, or invalid transition
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found — ENTITY_NOT_FOUND: entity UUID does not exist."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags:
+        - Entity Management
+      summary: Patch Single
+      description: |
+        Partially updates a single entity (RFC 7386 JSON Merge Patch) with a
+        named transition. Send only the fields that change; an explicit null
+        deletes a key. The merged result is validated against the model schema
+        and cannot introduce a new field (unlike PUT). The dialect is selected
+        by Content-Type: application/merge-patch+json (RFC 7386, implemented) or
+        application/json-patch+json (RFC 6902, not implemented -> 501).
+
+        If-Match is required in some form: the transactionId from your last GET
+        of this entity (conditional; 412 if it has moved), or "*" to accept
+        last-writer-wins. Its absence returns 428.
+      operationId: patchSingle
+      parameters:
+        - name: format
+          in: path
+          description: Must be JSON (merge patch is JSON only)
+          required: true
+          schema:
+            type: string
+            enum:
+              - JSON
+              - XML
+        - name: entityId
+          in: path
+          description: The UUID of the entity to patch
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: transition
+          in: path
+          description: The transition state to apply to the entity (e.g., 'UPDATE',
+            'PUBLISH')
+          required: true
+          schema:
+            type: string
+            maxLength: 1024
+            minLength: 1
+          example: UPDATE
+        - name: If-Match
+          in: header
+          description: transactionId from the last read, or "*" for unconditional. Absent returns 428.
+          required: false
+          schema:
+            type: string
+        - name: transactionTimeoutMillis
+          in: query
+          description: |
+            Maximum time in milliseconds allowed for transaction completion.
+            Operation will fail if it takes longer than this timeout.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 10000
+          example: 30000
+        - name: waitForConsistencyAfter
+          in: query
+          description: |
+            If true, waits for the consistency time to pass before responding.
+            May increase response time but guarantees data consistency when
+            returning, so that subsequent calls will see the updated data.
+            Accepted for Cyoda Cloud API parity. Behavior is
+            storage-engine-plugin dependent — not every plugin honors this
+            field; consult the runtime plugin's documentation for the
+            supported behavior.
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: true
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              format: json
+            examples:
+              MergePatch:
+                summary: Change one field
+                value:
+                  year: "2025"
+          application/json-patch+json:
+            schema:
+              type: array
+              items:
+                type: object
+      responses:
+        "200":
+          description: Entity patched successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityTransactionResponse"
+        "400":
+          description: Bad request — invalid patch or validation failure
           content:
             application/problem+json:
               schema:
@@ -2664,17 +3045,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Conflict — serialization failure (retryable)
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "412":
-          description: Precondition Failed — If-Match header does not match current version
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "428":
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "501":
+          $ref: '#/components/responses/NotImplemented'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2778,7 +3179,17 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              description: |
+                A single entity JSON object, or a JSON array of entity objects
+                (batch create). The model is identified by the path; the payload
+                shape is polymorphic per model, so items stay open.
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
             examples:
               Single JSON Object example:
                 summary: Example of a single JSON Object
@@ -2851,7 +3262,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, validation failure, or change level violation
+          description: "Bad request — BAD_REQUEST: invalid payload, parameter, or transactionWindow out of range; INCOMPATIBLE_TYPE: payload type mismatches the model; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:
@@ -2863,7 +3274,7 @@ paths:
                 detail: "validation failed: field x is required"
                 instance: /api/entity/JSON/nobel-prize/1
         "404":
-          description: Entity model not found
+          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
           content:
             application/problem+json:
               schema:
@@ -2874,6 +3285,18 @@ paths:
                 status: 404
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
+        "409":
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2899,13 +3322,14 @@ paths:
             format: int32
             default: 1000
       requestBody:
-        description: List of message IDs to delete. All IDs must be version 1
-          (time-based) UUIDs.
+        description: List of message IDs to delete.
         content:
           application/json:
             schema:
-              type: string
-              format: uuid
+              type: array
+              items:
+                type: string
+                format: uuid
             examples:
               Message IDs:
                 description: Message IDs
@@ -2931,23 +3355,39 @@ paths:
                         - 31134900-d9cb-11ee-9cc7-ae468cd3ed16
                       success: true
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid request body (not a JSON array of UUID strings)
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
+                Invalid Body:
+                  description: Invalid Body
                   value:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
+                    detail: "invalid JSON: expected array of UUID strings"
+                    instance: /api/message
                     properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+                      errorCode: BAD_REQUEST
+        "413":
+          description: Payload too large
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              examples:
+                Request Entity Too Large:
+                  description: Request Entity Too Large
+                  value:
+                    type: about:blank
+                    title: Request Entity Too Large
+                    status: 413
+                    detail: request payload exceeds maximum allowed limit of 10MB
+                    instance: /api/message
+                    properties:
+                      errorCode: BAD_REQUEST
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3041,32 +3481,19 @@ paths:
             format: int64
             default: 10000
       requestBody:
-        description: "
-
-          The request body can be either a single JSON object or an array of
-          homomorphic JSON objects.
-
-          Each object must contain a 'payload' field with any valid JSON
-          content.
-
-          It may also optionally include meta-data fields with a Flat set of
-          key-value pairs.
-
-          The meta-data is indexed to enable fast searching by meta-data.
-
-
-          The message will be processed and stored according to this structure.
-
-          \            "
+        description: >
+          A single JSON object. It must contain a `payload` field (any valid JSON
+          value) and may include an optional flat `metaData` map of key-value pairs.
+          The metaData is indexed to enable fast search by metadata.
         content:
           application/json:
             schema:
-              type: string
+              $ref: "#/components/schemas/NewMessageRequest"
             examples:
-              Nobel Prize Announcement (with payload and meta-data):
-                description: Nobel Prize Announcement (with payload and meta-data)
+              Nobel Prize Announcement (with payload and metaData):
+                description: Nobel Prize Announcement (with payload and metaData)
                 value:
-                  meta-data:
+                  metaData:
                     eventType: nobel.prize.announced
                     timestamp: 2024-10-09T12:00:00Z
                   payload:
@@ -3085,8 +3512,8 @@ paths:
                         motivation: for foundational discoveries and inventions that enable machine
                           learning with artificial neural networks
                         share: "2"
-              Nobel Prize Announcement (with payload but without meta-data):
-                description: Nobel Prize Announcement (with payload but without meta-data)
+              Nobel Prize Announcement (with payload but without metaData):
+                description: Nobel Prize Announcement (with payload but without metaData)
                 value:
                   payload:
                     category: physics
@@ -3134,10 +3561,10 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: Invalid JSON format in message payload
+                    detail: "invalid JSON: expected an object with a 'payload' field"
                     instance: /api/message/new/nobel.prize.events
                     properties:
-                      error: Unexpected character at position 15
+                      errorCode: BAD_REQUEST
         "413":
           description: Payload too large
           content:
@@ -3145,14 +3572,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
-                Payload Too Large:
-                  description: Payload Too Large
+                Request Entity Too Large:
+                  description: Request Entity Too Large
                   value:
                     type: about:blank
-                    title: Payload Too Large
+                    title: Request Entity Too Large
                     status: 413
-                    detail: Request payload size exceeds maximum allowed limit of 10MB
+                    detail: request payload exceeds maximum allowed limit of 10MB
                     instance: /api/message/new/nobel.prize.events
+                    properties:
+                      errorCode: BAD_REQUEST
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3174,8 +3603,7 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid-v1
-            description: Must be a version 1 (time-based) UUID
+            format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
       responses:
         "200":
@@ -3199,8 +3627,8 @@ paths:
                       replyTo: announcements@nobelprize.org
                       correlationId: nobel-2024-physics-announcement
                     metaData:
-                      values: {}
-                      indexedValues: {}
+                      eventType: nobel.prize.announced
+                      timestamp: "2024-10-09T12:00:00Z"
                     content:
                       eventType: nobel.prize.announced
                       timestamp: "2024-10-09T12:00:00Z"
@@ -3219,23 +3647,20 @@ paths:
                             motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
                             share: "2"
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid UUID format
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-              examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
-                  value:
-                    type: about:blank
-                    title: Bad Request
-                    status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
-                    properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: invalid value for parameter 'messageId'
+                instance: /api/message/not-a-uuid
+                properties:
+                  errorCode: BAD_REQUEST
+                  parameter: messageId
         "404":
           description: Message not found
           content:
@@ -3253,6 +3678,7 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+                      errorCode: ENTITY_NOT_FOUND
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3273,8 +3699,7 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid-v1
-            description: Must be a version 1 (time-based) UUID
+            format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
       responses:
         "200":
@@ -3290,23 +3715,20 @@ paths:
                     entityIds:
                       - 8824c480-c166-11ee-9cc7-ae468cd3ed16
         "400":
-          description: Invalid UUID format or not a time-based UUID
+          description: Invalid UUID format
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-              examples:
-                Not a Time UUID:
-                  description: Not a Time UUID
-                  value:
-                    type: about:blank
-                    title: Bad Request
-                    status: 400
-                    detail: UUID 123e4567-e89b-12d3-a456-426614174000 is not a time-based UUID
-                      (version 1)
-                    instance: /api/message/123e4567-e89b-12d3-a456-426614174000
-                    properties:
-                      uuid: 123e4567-e89b-12d3-a456-426614174000
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: invalid value for parameter 'messageId'
+                instance: /api/message/not-a-uuid
+                properties:
+                  errorCode: BAD_REQUEST
+                  parameter: messageId
         "404":
           description: Message not found
           content:
@@ -3324,6 +3746,7 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+                      errorCode: ENTITY_NOT_FOUND
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3442,10 +3865,28 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 description: >
                   Exported model metadata in the converter's output format.
                   Shape depends on the converter argument (JSON_SCHEMA or SIMPLE_VIEW).
+                properties:
+                  currentState:
+                    type: string
+                    description: Lifecycle state of the model (LOCKED or UNLOCKED).
+                  model:
+                    type: object
+                    description: Model schema in the requested converter format.
+                  uniqueKeys:
+                    type: array
+                    description: Composite unique-key definitions (omitted when the model declares no keys).
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        fields:
+                          type: array
+                          items:
+                            type: string
               examples:
                 Simple View:
                   summary: SIMPLE_VIEW export example
@@ -3463,6 +3904,10 @@ paths:
                         .share: STRING
                         .surname: STRING
                         "#": ARRAY_ELEMENT
+                    uniqueKeys:
+                      - id: by-email
+                        fields:
+                          - "$.email"
                 Json Schema:
                   summary: JSON_SCHEMA export example
                   description: Json Schema
@@ -3488,6 +3933,10 @@ paths:
                                 type: string
                               motivation:
                                 type: string
+                    uniqueKeys:
+                      - id: by-email
+                        fields:
+                          - "$.email"
         "400":
           description: Invalid converter specified
           content:
@@ -3498,11 +3947,10 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'WRONG' for parameter 'converter'
-                instance: /api/model/export/WRONG/nobel-prize/2
+                detail: unsupported export converter
+                instance: /api/model/export/UNSUPPORTED/nobel-prize/2
                 properties:
-                  parameter: converter
-                  invalidValue: WRONG
+                  errorCode: BAD_REQUEST
         "404":
           description: Entity model not found
           content:
@@ -3625,7 +4073,10 @@ paths:
                 format: uuid
               example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         "400":
-          description: Invalid converter specified
+          description: |
+            Bad request. Possible causes:
+            - `BAD_REQUEST` — unsupported import converter (`JSON_SCHEMA` or `SIMPLE_VIEW`); only `SAMPLE_DATA` is accepted.
+            - `BAD_REQUEST` — malformed or unparseable sample data in the request body.
           content:
             application/problem+json:
               schema:
@@ -3634,11 +4085,36 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: Invalid value 'WRONG' for parameter 'converter'
-                instance: /api/model/import/WRONG/nobel-prize/2
-                properties:
-                  parameter: converter
-                  invalidValue: WRONG
+                detail: "BAD_REQUEST: unsupported import converter"
+                instance: /api/model/import/JSON/JSON_SCHEMA/nobel-prize/1
+        "409":
+          description: |
+            Model cannot be imported. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before re-importing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot save entityModel{name=nobel-prize, version=1} because this model has already been registered"
+                instance: /api/model/import/JSON/SAMPLE_DATA/nobel-prize/1
+        "422":
+          description: |
+            Unprocessable entity. Possible codes:
+            - `INVALID_UNIQUE_KEY_DEFINITION` — re-import invalidates a previously registered unique key definition (defensive guard against descriptor corruption or future merge-semantics changes).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Unprocessable Entity
+                status: 422
+                detail: "INVALID_UNIQUE_KEY_DEFINITION: re-import invalidates existing unique key definitions: key \"k1\": field \"name\" is not a known scalar leaf"
+                instance: /api/model/import/JSON/SAMPLE_DATA/nobel-prize/1
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3770,6 +4246,21 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be deleted. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot delete entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3793,7 +4284,7 @@ paths:
         - modelVersion: The version number of the model
 
         - changeLevel: The desired change level (ARRAY_LENGTH, ARRAY_ELEMENTS,
-        TYPE, STRUCTURAL) or null to disallow changes
+        TYPE, STRUCTURAL)
 
 
         Change levels are hierarchical - allowing a specific level automatically
@@ -3837,8 +4328,6 @@ paths:
 
             The allowed change level for the model.
 
-            Set to null to disallow all changes.
-
             Valid values: ARRAY_LENGTH, ARRAY_ELEMENTS, TYPE, STRUCTURAL
 
             \            "
@@ -3868,6 +4357,30 @@ paths:
                       version: 1
                     message: model nobel-prize:1 now at change level TYPE
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: |
+            Bad request. Possible codes:
+            - `INVALID_CHANGE_LEVEL` — the supplied `changeLevel` path segment is not one of
+              the accepted enum values (`ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "INVALID_CHANGE_LEVEL: invalid change level \"BOGUS\"; valid values: ARRAY_LENGTH, ARRAY_ELEMENTS, TYPE, STRUCTURAL"
+                instance: /api/model/nobel-prize/2/changeLevel/BOGUS
+                properties:
+                  entityName: nobel-prize
+                  entityVersion: 2
+                  suppliedValue: BOGUS
+                  validValues:
+                    - ARRAY_LENGTH
+                    - ARRAY_ELEMENTS
+                    - TYPE
+                    - STRUCTURAL
         "404":
           description: Entity model not found
           content:
@@ -3963,6 +4476,20 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be locked. Possible codes:
+            - `MODEL_ALREADY_LOCKED` — model is already in `LOCKED` state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1/lock
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4048,6 +4575,156 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "409":
+          description: |
+            Model cannot be unlocked. Possible codes:
+            - `MODEL_ALREADY_UNLOCKED` — model is already in `UNLOCKED` state.
+            - `MODEL_HAS_ENTITIES` — entities referencing this model exist in the database.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_UNLOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=LOCKED, actualState=UNLOCKED"
+                instance: /api/model/nobel-prize/1/unlock
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+  /model/{entityName}/{modelVersion}/unique-keys:
+    put:
+      tags:
+        - Entity model
+      summary: Set Entity Model Unique Keys
+      description: "
+
+        Sets composite unique-key definitions on an unlocked entity model.
+
+
+        Path Parameters:
+
+        - entityName: The name of the entity model
+
+        - modelVersion: The version number of the model
+
+
+        Requirements:
+
+        - Model must be in UNLOCKED state
+
+        - Backend must support composite unique keys
+
+        - All declared fields must be scalar leaf fields in the model schema
+
+
+        Enforcement:
+
+        - A duplicate value-set is rejected with 409 UNIQUE_VIOLATION (non-retryable).
+
+        - In one transaction, free a unique-key value (delete/re-key the holder) before claiming it elsewhere. Free-then-claim is portable; claim-before-free is rejected on write-time backends (PostgreSQL), accepted on commit-time ones (in-memory, SQLite).
+
+        \        "
+      operationId: setEntityModelUniqueKeys
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: entityName
+          in: path
+          description: The model name of the entity
+          required: true
+          schema:
+            type: string
+          example: nobel-prize
+        - name: modelVersion
+          in: path
+          description: The version number of the model
+          required: true
+          schema:
+            type: integer
+            format: int32
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetUniqueKeysRequest"
+            example:
+              uniqueKeys:
+                - id: uk1
+                  fields:
+                    - "$.name"
+                    - "$.email"
+      responses:
+        "200":
+          description: Unique keys successfully set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityModelActionResultDto"
+              examples:
+                success:
+                  description: success
+                  value:
+                    success: true
+                    modelKey:
+                      name: nobel-prize
+                      version: 1
+                    message: unique keys set on model nobel-prize:1
+                    modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "BAD_REQUEST: invalid JSON body"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "404":
+          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: "MODEL_NOT_FOUND: cannot find model entityName=nobel-prize, version=1"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "409":
+          description: Model is locked
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
+                instance: /api/model/nobel-prize/1/unique-keys
+        "422":
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a field path does not exist in the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Unprocessable Entity
+                status: 422
+                detail: "INVALID_UNIQUE_KEY_DEFINITION: field not found in model schema"
+                instance: /api/model/nobel-prize/1/unique-keys
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -4091,7 +4768,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowExportResponseDto"
         "404":
-          description: No workflows found for this model
+          description: "Not found — MODEL_NOT_FOUND: entity model does not exist; or WORKFLOW_NOT_FOUND: model exists but has no imported workflows."
           content:
             application/problem+json:
               schema:
@@ -4152,13 +4829,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: Invalid request body or unknown importMode
+          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Target entity model not found
+          description: "Not found — MODEL_NOT_FOUND: target entity model does not exist."
           content:
             application/problem+json:
               schema:
@@ -4182,6 +4859,7 @@ paths:
 
         access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
       operationId: issueJwtKeyPair
+      x-cyoda-iam-mode: jwt
       requestBody:
         content:
           application/json:
@@ -4196,7 +4874,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: malformed body or invalid audience; UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
           content:
             application/problem+json:
               schema:
@@ -4219,6 +4897,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -4230,6 +4914,7 @@ paths:
         Retrieves information about the currently active JWT signing key-pair
         for the specified audience.
       operationId: getCurrentJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: audience
           in: query
@@ -4247,7 +4932,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: invalid audience value."
           content:
             application/problem+json:
               schema:
@@ -4265,13 +4950,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no active key pair for the given audience."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4289,6 +4980,7 @@ paths:
 
         and then removed from storage.
       operationId: deleteJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -4313,13 +5005,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4339,6 +5037,7 @@ paths:
 
         and existing tokens signed with this key pair would not be accepted. If `gracePeriodSec` is omitted or zero, invalidation is immediate.
       operationId: invalidateJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -4355,6 +5054,12 @@ paths:
         "200":
           description: JWT key-pair invalidated successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: malformed body or gracePeriodSec out of range."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -4368,13 +5073,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4394,6 +5105,7 @@ paths:
         This operation is idempotent - if the key-pair is already active, it
         returns the current state.
       operationId: reactivateJwtKeyPair
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: keyId
           in: path
@@ -4415,7 +5127,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: missing or past validTo, validTo not after validFrom."
           content:
             application/problem+json:
               schema:
@@ -4433,13 +5145,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4455,6 +5173,8 @@ paths:
         Returns all trusted public keys registered for the caller's tenant.
         Requires ADMIN or ROLE_ADMIN role.
       operationId: listTrustedKeys
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       responses:
         "200":
           description: List of trusted keys
@@ -4477,13 +5197,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Feature is disabled
+          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4530,6 +5256,8 @@ paths:
 
         `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
       operationId: registerTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       requestBody:
         content:
           application/json:
@@ -4544,7 +5272,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, or invalid audience; UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -4562,19 +5290,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Feature is disabled
+          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Key with this keyId belongs to a different tenant
+          description: "Conflict — KEY_OWNED_BY_DIFFERENT_TENANT: a key with this keyId is registered to another tenant."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4592,6 +5326,8 @@ paths:
 
         Requires ADMIN or ROLE_ADMIN role.
       operationId: deleteTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -4603,6 +5339,12 @@ paths:
         "200":
           description: Trusted key deleted successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: invalid keyId format."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -4616,13 +5358,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4643,6 +5391,8 @@ paths:
 
         Requires ADMIN or ROLE_ADMIN role.
       operationId: invalidateTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -4659,6 +5409,12 @@ paths:
         "200":
           description: Trusted key invalidated successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: invalid keyId format or gracePeriodSec out of range."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -4672,13 +5428,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4707,6 +5469,8 @@ paths:
 
         indefinitely until explicitly invalidated or deleted again.
       operationId: reactivateTrustedKey
+      x-cyoda-iam-mode: jwt
+      x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
@@ -4728,7 +5492,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: Error response
+          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom."
           content:
             application/problem+json:
               schema:
@@ -4746,13 +5510,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Error response
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
@@ -4768,13 +5538,14 @@ paths:
         Retrieves a list of all registered OIDC providers, including both active
         and inactive providers. Accessible by any authenticated tenant member.
       operationId: listOidcProviders
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: activeOnly
           in: query
-          description: If true, returns only active providers
           required: false
+          description: When true, return only active (non-invalidated) providers.
           schema:
-            type: string
+            type: boolean
       responses:
         "200":
           description: List of OIDC providers retrieved successfully
@@ -4785,23 +5556,27 @@ paths:
                 items:
                   $ref: "#/components/schemas/OidcProviderResponseDto"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "403":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     post:
@@ -4817,6 +5592,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: registerOidcProvider
+      x-cyoda-iam-mode: jwt
       requestBody:
         content:
           application/json:
@@ -4831,35 +5607,53 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
-          description: Error response
+          description: >-
+            Bad request. Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (e.g. `BAD_REQUEST`, `OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: Provider with this well-known configuration URI already exists
+          description: >-
+            Provider with this well-known configuration URI already exists.
+            Body is an RFC-9457 problem document; the machine-readable code
+            is in `properties.errorCode` (e.g. `OIDC_PROVIDER_DUPLICATE`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -4893,28 +5687,41 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: reloadOidcProviders
+      x-cyoda-iam-mode: jwt
       responses:
         "200":
           description: OIDC providers reloaded successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -4930,6 +5737,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: deleteOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -4943,29 +5751,44 @@ paths:
           description: OIDC provider deleted successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
     patch:
@@ -4989,6 +5812,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: updateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5011,35 +5835,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
-          description: Error response
+          description: >-
+            Bad request (invalid body / issuers / expectedAudiences / rolesClaim).
+            Body is an RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`). This op accepts no discovery
+            URI, so it never emits `OIDC_SSRF_BLOCKED` / `OIDC_INVALID_TENANT` —
+            those are `registerOidcProvider` only.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            Provider is inactive and cannot be updated. Body is an RFC-9457
+            problem document; the machine-readable code is in
+            `properties.errorCode` (e.g. `OIDC_PROVIDER_INACTIVE`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -5058,6 +5911,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: invalidateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5071,29 +5925,44 @@ paths:
           description: OIDC provider invalidated successfully
           content: {}
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -5112,6 +5981,7 @@ paths:
 
         **Authorization Required:** ROLE_ADMIN role.
       operationId: reactivateOidcProvider
+      x-cyoda-iam-mode: jwt
       parameters:
         - name: id
           in: path
@@ -5133,29 +6003,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "401":
-          description: Error response
+          description: >-
+            Unauthorized. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: >-
+            Forbidden. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: >-
+            Provider not found. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`
+            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: >-
+            Internal server error. Body is an RFC-9457 problem document;
+            the machine-readable code is in `properties.errorCode`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        '501':
+          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /oauth/token:
@@ -5201,6 +6086,7 @@ paths:
                   type: string
                   description: The OAuth 2.0 grant type
                   enum:
+                    - client_credentials
                     - urn:ietf:params:oauth:grant-type:token-exchange
                 subject_token:
                   type: string
@@ -5236,6 +6122,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "405":
+          description: Method Not Allowed - method_not_allowed (only POST is accepted)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:
@@ -5249,8 +6141,11 @@ paths:
       tags:
         - Stream Data
       summary: Get a stream data configuration by ID
-      description: Retrieves a specific stream data configuration by its UUID.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Retrieves a specific stream data configuration by its UUID.
       operationId: getStreamDataConfig
+      x-cyoda-status: unimplemented
       parameters:
         - name: configId
           in: query
@@ -5278,8 +6173,11 @@ paths:
       tags:
         - Stream Data
       summary: Update an existing stream data configuration
-      description: Updates an existing stream data configuration definition.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Updates an existing stream data configuration definition.
       operationId: updateStreamDataConfig
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data configuration with updated values
         content:
@@ -5306,8 +6204,11 @@ paths:
       tags:
         - Stream Data
       summary: Save a new stream data configuration
-      description: Creates and persists a new stream data configuration definition.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Creates and persists a new stream data configuration definition.
       operationId: saveStreamDataConfig
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data configuration to save
         content:
@@ -5339,8 +6240,11 @@ paths:
       tags:
         - Stream Data
       summary: Delete a stream data configuration
-      description: Deletes a stream data configuration by its UUID.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Deletes a stream data configuration by its UUID.
       operationId: deleteStreamDataConfig
+      x-cyoda-status: unimplemented
       parameters:
         - name: configId
           in: query
@@ -5369,8 +6273,11 @@ paths:
       tags:
         - Stream Data
       summary: List all stream data configurations
-      description: Returns all available stream data configurations.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Returns all available stream data configurations.
       operationId: getAllConfigs
+      x-cyoda-status: unimplemented
       responses:
         "200":
           description: List of all stream data configurations
@@ -5397,8 +6304,11 @@ paths:
       tags:
         - Stream Data
       summary: Delete stream data
-      description: Deletes entities matching the stream data request criteria.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Deletes entities matching the stream data request criteria.
       operationId: delete
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data request defining the entities to delete
         content:
@@ -5430,9 +6340,11 @@ paths:
       tags:
         - Stream Data
       summary: Export all stream data configurations
-      description: Exports all stream data configurations as a container for backup or
-        transfer.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Exports all stream data configurations as a container for backup or transfer.
       operationId: exportAll_1
+      x-cyoda-status: unimplemented
       responses:
         "200":
           description: Container with all stream data configurations
@@ -5457,9 +6369,11 @@ paths:
       tags:
         - Stream Data
       summary: Export stream data configurations by entity class
-      description: Exports all stream data configurations associated with a specific
-        entity class.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Exports all stream data configurations associated with a specific entity class.
       operationId: exportAll
+      x-cyoda-status: unimplemented
       parameters:
         - name: entityClass
           in: query
@@ -5488,8 +6402,11 @@ paths:
       tags:
         - Stream Data
       summary: Export stream data configurations by IDs
-      description: Exports specific stream data configurations identified by their UUIDs.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Exports specific stream data configurations identified by their UUIDs.
       operationId: exportByIds
+      x-cyoda-status: unimplemented
       parameters:
         - name: includeIds
           in: query
@@ -5524,9 +6441,11 @@ paths:
       tags:
         - Stream Data
       summary: Fetch stream data
-      description: Retrieves paginated stream data based on the provided request
-        definition, including conditions, columns, and pagination parameters.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Retrieves paginated stream data based on the provided request definition, including conditions, columns, and pagination parameters.
       operationId: getStreamData
+      x-cyoda-status: unimplemented
       requestBody:
         description: Stream data request containing definition, pagination, and
           point-in-time parameters
@@ -5559,9 +6478,11 @@ paths:
       tags:
         - Stream Data
       summary: Import stream data configurations
-      description: Imports stream data configurations from a container. Can optionally
-        fail if configurations already exist.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Imports stream data configurations from a container. Can optionally fail if configurations already exist.
       operationId: importContainer
+      x-cyoda-status: unimplemented
       parameters:
         - name: failOnExists
           in: query
@@ -5594,9 +6515,11 @@ paths:
       tags:
         - Stream Data
       summary: List index configurations for an entity class
-      description: Returns all index configurations available for the specified entity
-        class.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Returns all index configurations available for the specified entity class.
       operationId: getIndexs
+      x-cyoda-status: unimplemented
       parameters:
         - name: entityClass
           in: query
@@ -5627,9 +6550,11 @@ paths:
       tags:
         - Stream Data
       summary: Get query execution plan
-      description: Returns the original and optimized query execution plan for the
-        given entity class, condition, and alias definitions.
+      description: |
+        NOT IMPLEMENTED in cyoda-go (disposition under review).
+        Returns the original and optimized query execution plan for the given entity class, condition, and alias definitions.
       operationId: getQueryPlan
+      x-cyoda-status: unimplemented
       requestBody:
         description: Query plan request containing entity class, condition, and alias
           definitions
@@ -5854,6 +6779,22 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: sort
+          in: query
+          description: >
+            Repeatable sort key. Grammar: [@]path[:asc|desc], direction
+            defaults to asc. A bare path sorts by a scalar entity-data field;
+            a leading '@' selects a meta field (state, creationDate,
+            lastUpdateTime, transitionForLatestSave, transactionId, id).
+            Repetition order is sort precedence; entity id is the final
+            tiebreaker. Absent/null values sort last.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       requestBody:
         content:
           application/json:
@@ -5878,13 +6819,13 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Entity model not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -5906,12 +6847,12 @@ paths:
         endpoint.
 
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
 
         The results are returned in a paginated format, with:
 
-        - Configurable page size (default: 10)
+        - Configurable page size (default: 1000)
 
         - Zero-based page numbering
 
@@ -5937,15 +6878,6 @@ paths:
           required: false
           schema:
             type: string
-        - name: pointInTime
-          in: query
-          description: "The point-in-time for loading the entities, in ISO 8601 format
-            (e.g., '2035-01-01T12:00:00Z'). Defaults to the point-in-time of the
-            report if not provided. "
-          required: false
-          schema:
-            type: string
-            format: date-time
       responses:
         "200":
           description: Successfully retrieved page of results
@@ -5954,18 +6886,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/PagedEntityResultsDto"
         "400":
-          description: Invalid parameters (malformed point-in-time or invalid page
-            parameters)
+          description: Invalid parameters (invalid page parameters)
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Search job not found or expired
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6005,13 +6936,13 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Search job not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6067,7 +6998,7 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6089,12 +7020,10 @@ paths:
 
         - Is optimized for smaller result sets
 
-        - Has configurable timeout and result limits
-
         - Supports point-in-time querying
 
 
-        The results are sorted in descending order by entity id.
+        By default results are ordered by entity id ascending. Pass one or more `sort` keys to order by scalar data or meta fields; entity id is always the final tiebreaker.
 
 
         If no request body is provided or an empty request body is sent, all
@@ -6118,8 +7047,6 @@ paths:
         result to 10000)
 
         - Default result limit: 1000 entities
-
-        - Default timeout: 60000 milliseconds
       operationId: searchEntities
       parameters:
         - name: entityName
@@ -6145,19 +7072,28 @@ paths:
             format: date-time
         - name: limit
           in: query
-          description: "The maximum number of rows to return. You can specify a limit of
-            up to 10000 and defaults to 1000 if not provided. "
+          description: "The maximum number of rows to return. Defaults to 1000 if not
+            provided. Values above 10000 are rejected with 400."
           required: false
           schema:
             type: string
             maximum: 10000
-        - name: timeoutMillis
+        - name: sort
           in: query
-          description: "The maximum time to wait for the query to complete, in
-            milliseconds, and defaults to 60000 if not provided. "
+          description: >
+            Repeatable sort key. Grammar: [@]path[:asc|desc], direction
+            defaults to asc. A bare path sorts by a scalar entity-data field;
+            a leading '@' selects a meta field (state, creationDate,
+            lastUpdateTime, transitionForLatestSave, transactionId, id).
+            Repetition order is sort precedence; entity id is the final
+            tiebreaker. Absent/null values sort last.
           required: false
           schema:
-            type: string
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       requestBody:
         content:
           application/json:
@@ -6177,38 +7113,18 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/EntityResultDto"
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/EntityResultDto"
         "400":
-          description: Invalid search parameters
+          description: Invalid search parameters (e.g. limit exceeds 10000)
           content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Entity model not found
           content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
-        "408":
-          description: Search timeout exceeded
-          content:
-            application/x-ndjson:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetailDto"
+                $ref: '#/components/schemas/ProblemDetail'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -6222,8 +7138,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Get schema by name
-      description: Retrieves a schema configuration using its name
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Retrieves a schema configuration using its name
       operationId: getSchemaByName
+      x-cyoda-status: planned
       parameters:
         - name: schemaName
           in: query
@@ -6364,7 +7283,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -6377,8 +7298,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Save schema
-      description: Saves a new or updates an existing schema configuration
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Saves a new or updates an existing schema configuration
       operationId: saveSchema
+      x-cyoda-status: planned
       requestBody:
         content:
           application/json:
@@ -6534,8 +7458,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Delete schema by name
-      description: Deletes an existing schema configuration using its name
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Deletes an existing schema configuration using its name
       operationId: deleteSchemaByName
+      x-cyoda-status: planned
       parameters:
         - name: schemaName
           in: query
@@ -6554,7 +7481,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -6568,8 +7497,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Generate SQL tables from an entity model
-      description: Generates table configurations based on entity model ID
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Generates table configurations based on entity model ID
       operationId: genTables
+      x-cyoda-status: planned
       parameters:
         - name: entityModelId
           in: path
@@ -6585,7 +7517,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/TableConfigDto"
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
               example:
                 - tableName: nobel-prize
                   metadataClassId: 1dba8c8a-77bb-11f0-822a-ae468cd3ed16
@@ -6710,8 +7643,11 @@ paths:
       tags:
         - SQL-Schema
       summary: List all schemas
-      description: Retrieves all available schema configurations
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Retrieves all available schema configurations
       operationId: getSchemas
+      x-cyoda-status: planned
       responses:
         "200":
           description: List of schemas retrieved successfully
@@ -6719,7 +7655,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/SchemaConfigDto"
+                items:
+                  $ref: "#/components/schemas/SchemaConfigDto"
               example:
                 - schemaName: NOBEL_PRIZES
                   tables:
@@ -6846,9 +7783,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Create default schema
-      description: Creates a new schema configuration that includes all available
-        entity models with their complete field structures
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Creates a new schema configuration that includes all available entity models with their complete field structures
       operationId: putSchema
+      x-cyoda-status: planned
       parameters:
         - name: schemaName
           in: path
@@ -7004,10 +7943,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Synchronize given SQL table configurations with the current entity model
-      description: Synchronizes given table configurations with the current entity
-        model structure, preserving custom settings while incorporating any
-        model changes
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Synchronizes given table configurations with the current entity model structure, preserving custom settings while incorporating any model changes
       operationId: updateTables
+      x-cyoda-status: planned
       parameters:
         - name: entityModelId
           in: path
@@ -7020,7 +7960,9 @@ paths:
         content:
           application/json:
             schema:
-              type: string
+              type: array
+              items:
+                $ref: "#/components/schemas/TableConfigDto"
             examples:
               Example Tables from the Nobel Prize model:
                 description: Example Tables from the Nobel Prize model
@@ -7151,7 +8093,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/TableConfigDto"
+                items:
+                  $ref: "#/components/schemas/TableConfigDto"
               example:
                 - tableName: nobel-prize
                   metadataClassId: 1dba8c8a-77bb-11f0-822a-ae468cd3ed16
@@ -7276,8 +8219,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Get schema by ID
-      description: Retrieves a schema configuration using its UUID
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Retrieves a schema configuration using its UUID
       operationId: getSchema
+      x-cyoda-status: planned
       parameters:
         - name: schemaId
           in: path
@@ -7417,7 +8363,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -7430,8 +8378,11 @@ paths:
       tags:
         - SQL-Schema
       summary: Delete schema by ID
-      description: Deletes a schema configuration using its UUID
+      description: |
+        NOT YET IMPLEMENTED in cyoda-go. Planned for the Trino SQL surface.
+        Deletes a schema configuration using its UUID
       operationId: deleteSchema
+      x-cyoda-status: planned
       parameters:
         - name: schemaId
           in: path
@@ -7451,7 +8402,9 @@ paths:
         "404":
           description: Schema not found
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
               example:
                 type: about:blank
                 title: Not Found
@@ -7484,10 +8437,7 @@ components:
             Polymorphic entity payload as supplied at create/update time.
             Exact fields depend on the entity model.
         meta:
-          type: object
-          additionalProperties: true
-          description: |
-            System-managed metadata: id, state, creationDate, previousTransition, etc.
+          $ref: "#/components/schemas/EntityMetadata"
     TransitionNameList:
       type: array
       description: >
@@ -7518,13 +8468,15 @@ components:
           type: boolean
         flatten:
           type: boolean
+        arrayFields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldConfigDto"
       required:
         - dataType
         - fieldCategory
         - fieldKey
         - fieldName
-        - hidden
-        - isArray
     SchemaConfigDto:
       type: object
       properties:
@@ -7573,16 +8525,24 @@ components:
         type:
           type: string
           format: uri
+          description: A URI reference that identifies the problem type
+          example: about:blank
         title:
           type: string
+          description: A short, human-readable summary of the problem type
+          example: Not Found
         status:
           type: integer
           format: int32
+          description: The HTTP status code
+          example: 404
         detail:
           type: string
+          description: A human-readable explanation specific to this occurrence of the problem
         instance:
           type: string
           format: uri
+          description: A URI reference that identifies the specific occurrence of the problem
         properties:
           type: object
           additionalProperties: true
@@ -7609,36 +8569,6 @@ components:
       required:
         - currentSearchJobStatus
         - isCancelled
-    ProblemDetailDto:
-      type: object
-      properties:
-        type:
-          type: string
-          description: A URI reference that identifies the problem type
-          example: about:blank
-        title:
-          type: string
-          description: A short, human-readable summary of the problem type
-          example: Not Found
-        status:
-          type: integer
-          format: int32
-          description: The HTTP status code
-          example: 404
-        detail:
-          type: string
-          description: A human-readable explanation specific to this occurrence of the
-            problem
-        instance:
-          type: string
-          description: A URI reference that identifies the specific occurrence of the
-            problem
-        properties:
-          type: object
-          additionalProperties: true
-          description: |
-            Additional diagnostic properties. Values may be any JSON type
-            (string, number, boolean, object, array).
     AbstractCondition:
       type: object
       properties:
@@ -7728,6 +8658,34 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ReportAliasDef"
+    UniqueKeyDto:
+      type: object
+      description: A composite unique key definition over one or more scalar leaf fields.
+      required:
+        - id
+        - fields
+      properties:
+        id:
+          type: string
+          description: Unique identifier for this key definition.
+          example: uk1
+        fields:
+          type: array
+          description: Ordered list of scalar leaf field paths.
+          items:
+            type: string
+          example:
+            - "$.name"
+            - "$.email"
+    SetUniqueKeysRequest:
+      type: object
+      required:
+        - uniqueKeys
+      properties:
+        uniqueKeys:
+          type: array
+          items:
+            $ref: "#/components/schemas/UniqueKeyDto"
     EntityModelActionResultDto:
       type: object
       properties:
@@ -7958,6 +8916,8 @@ components:
             - unsupported_grant_type
             - invalid_scope
             - access_denied
+            - server_error
+            - method_not_allowed
           example: invalid_request
         error_description:
           type: string
@@ -8481,6 +9441,7 @@ components:
             responses, per RFC 8693)
           enum:
             - urn:ietf:params:oauth:token-type:access_token
+            - urn:ietf:params:oauth:token-type:jwt
       required:
         - access_token
         - expires_in
@@ -8646,7 +9607,8 @@ components:
           description: 'A JSON Web Key (JWK) as defined in RFC 7517. Must contain the
             public key components only. Supported key types: RSA (`kty: "RSA"`),
             EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC
-            7518, and RFC 8037 for field definitions. '
+            7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is
+            honoured in this version.'
           example: "{kty=RSA, kid=my-app-key-1, alg=RS256,
             n=0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..., e=AQAB}"
         audience:
@@ -8770,6 +9732,7 @@ components:
             - client
         algorithm:
           type: string
+          description: Signing algorithm. Only `RS256` is honoured in this version.
           enum:
             - RS256
             - RS384
@@ -8861,6 +9824,23 @@ components:
             backend does not implement async/crossover semantics; imports
             that set any value for crossoverToAsyncMs are rejected with
             HTTP 400 VALIDATION_FAILED.
+    WorkflowElementAnnotations:
+      type: object
+      additionalProperties: true
+      description: >
+        Client-owned metadata attached to a workflow element, stored and
+        round-tripped verbatim and never interpreted by the engine. The engine
+        validates only that the value is a JSON object of at most 64 KB
+        (compacted); it does not enforce the types of the well-known keys below,
+        which are a documented convention for renderers. Additional client keys
+        are permitted.
+      properties:
+        displayName:
+          type: string
+          description: Advisory human-readable label for renderers (not enforced).
+        description:
+          type: string
+          description: Advisory human-readable description for renderers (not enforced).
     ExternalizedProcessorDefinitionDto:
       allOf:
         - $ref: "#/components/schemas/ProcessorDefinitionDto"
@@ -8920,6 +9900,8 @@ components:
           minLength: 1
           maxLength: 256
           description: Name of the processor
+        annotations:
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
       required:
         - name
     StateDefinitionDto:
@@ -8931,12 +9913,7 @@ components:
           items:
             $ref: "#/components/schemas/TransitionDefinitionDto"
         annotations:
-          type: object
-          additionalProperties: true
-          description: >
-            Arbitrary client-owned metadata, stored and round-tripped (compacted)
-            and never interpreted by the engine. Must be a JSON object; capped at
-            64 KB per field.
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
     TransitionDefinitionDto:
       type: object
       properties:
@@ -8979,13 +9956,10 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        criterionAnnotations:
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
-          type: object
-          additionalProperties: true
-          description: >
-            Arbitrary client-owned metadata, stored and round-tripped (compacted)
-            and never interpreted by the engine. Must be a JSON object; capped at
-            64 KB per field.
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
       required:
         - manual
         - name
@@ -9094,14 +10068,10 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        criterionAnnotations:
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
-          type: object
-          additionalProperties: true
-          description: >
-            Arbitrary client-owned metadata for the whole workflow, stored and
-            round-tripped (compacted) and never interpreted by the engine. Must be
-            a JSON object; capped at 64 KB. Use for client concerns such as
-            permitted roles, display labels, or UI hints.
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
       required:
         - initialState
         - name
@@ -9394,14 +10364,10 @@ components:
         - subject
     EdgeMessageMetaData:
       type: object
-      properties:
-        values:
-          $ref: "#/components/schemas/ValueMaps"
-        indexedValues:
-          $ref: "#/components/schemas/ValueMaps"
-      required:
-        - indexedValues
-        - values
+      additionalProperties: true
+      description: >
+        Flat map of the message's metadata key-value pairs, symmetric with the
+        `metaData` supplied at creation. All values are indexed for search.
     EdgeMessagePayload:
       description: |
         Polymorphic by intent — accepts any JSON value. The contentType field
@@ -9410,7 +10376,23 @@ components:
         stringify it (e.g. base64 for binary, plain string with escape for
         non-JSON text). Proper content-type handling may be added
         as a future feature.
-      additionalProperties: true
+    NewMessageRequest:
+      type: object
+      description: >
+        A single JSON object carrying the message payload and optional flat metadata.
+      properties:
+        payload:
+          $ref: "#/components/schemas/EdgeMessagePayload"
+          description: >
+            The message payload — any JSON value (object, array, string, number, …).
+            Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent
+            as a JSON string; see the EdgeMessagePayload note.
+        metaData:
+          type: object
+          additionalProperties: true
+          description: Optional flat key→value map; indexed to enable search by metadata.
+      required:
+        - payload
     MessageDeleteResponse:
       type: object
       description: |
@@ -9441,214 +10423,6 @@ components:
       required:
         - entityIds
         - success
-    LocalTime:
-      type: object
-      properties:
-        hour:
-          type: integer
-          format: int32
-        minute:
-          type: integer
-          format: int32
-        second:
-          type: integer
-          format: int32
-        nano:
-          type: integer
-          format: int32
-    ValueMaps:
-      type: object
-      properties:
-        strings:
-          type: object
-          additionalProperties:
-            type: string
-        chars:
-          type: object
-          additionalProperties:
-            type: string
-        doubles:
-          type: object
-          additionalProperties:
-            type: number
-            format: double
-        floats:
-          type: object
-          additionalProperties:
-            type: number
-            format: float
-        bytes:
-          type: object
-          additionalProperties:
-            type: string
-            format: byte
-        shorts:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int32
-        longs:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int64
-        ints:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int32
-        localDates:
-          type: object
-          additionalProperties:
-            type: string
-            format: date
-        localDateTimes:
-          type: object
-          additionalProperties:
-            type: string
-            format: date-time
-        localTimes:
-          type: object
-          additionalProperties:
-            $ref: "#/components/schemas/LocalTime"
-        zonedDateTimes:
-          type: object
-          additionalProperties:
-            type: string
-            format: date-time
-        years:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              value:
-                type: integer
-                format: int32
-              leap:
-                type: boolean
-        yearMonths:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              year:
-                type: integer
-                format: int32
-              month:
-                type: string
-                enum:
-                  - JANUARY
-                  - FEBRUARY
-                  - MARCH
-                  - APRIL
-                  - MAY
-                  - JUNE
-                  - JULY
-                  - AUGUST
-                  - SEPTEMBER
-                  - OCTOBER
-                  - NOVEMBER
-                  - DECEMBER
-              monthValue:
-                type: integer
-                format: int32
-              leapYear:
-                type: boolean
-        bigDecimals:
-          type: object
-          additionalProperties:
-            type: number
-        unboundDecimals:
-          type: object
-          additionalProperties:
-            type: number
-        bigIntegers:
-          type: object
-          additionalProperties:
-            type: integer
-        unboundIntegers:
-          type: object
-          additionalProperties:
-            type: integer
-        booleans:
-          type: object
-          additionalProperties:
-            type: boolean
-        uuids:
-          type: object
-          additionalProperties:
-            type: string
-            format: uuid
-        timeuuids:
-          type: object
-          additionalProperties:
-            type: string
-            format: uuid
-        byteArrays:
-          type: object
-          additionalProperties:
-            type: string
-            format: byte
-        others:
-          type: object
-          additionalProperties:
-            type: object
-        nulls:
-          type: object
-          additionalProperties:
-            type: string
-        typeReferences:
-          type: object
-          additionalProperties:
-            type: string
-            enum:
-              - STRING
-              - BYTE
-              - DOUBLE
-              - INTEGER
-              - BIG_DECIMAL
-              - UNBOUND_DECIMAL
-              - BIG_INTEGER
-              - UNBOUND_INTEGER
-              - BOOLEAN
-              - LOCAL_DATE
-              - LOCAL_DATE_TIME
-              - SHORT
-              - CHARACTER
-              - LONG
-              - FLOAT
-              - ZONED_DATE_TIME
-              - YEAR
-              - YEAR_MONTH
-              - LOCAL_TIME
-              - TIME_UUID_TYPE
-              - UUID_TYPE
-              - BYTE_ARRAY
-              - "NULL"
-              - OBJECT
-              - ARRAY
-              - ARRAY_ELEMENT
-              - TYPE_REFERENCE
-              - POLYMORPHIC
-      required:
-        - typeReferences
-    ErrorResponse:
-      type: object
-      properties:
-        status:
-          type: integer
-          format: int32
-        message:
-          type: string
-        errorCode:
-          type: string
-          enum:
-            - "2"
-            - "10"
-            - "11"
-        timestamp:
-          type: string
-          format: date-time
     EntityChangeMeta:
       type: object
       properties:
@@ -9663,9 +10437,9 @@ components:
         changeType:
           type: string
           enum:
-            - CREATED
-            - UPDATED
-            - DELETED
+            - CREATE
+            - UPDATE
+            - DELETE
         fieldsChangedCount:
           type: integer
           format: int32
@@ -9673,6 +10447,52 @@ components:
         - changeType
         - timeOfChange
         - user
+    EntityMetadata:
+      type: object
+      description: |
+        System-managed entity metadata. Mirrors the canonical
+        docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
+        fields are enumerated and validated; the object is not sealed, so
+        additive fields remain non-breaking.
+      required:
+        - id
+        - state
+        - creationDate
+        - lastUpdateTime
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Entity id (invariant against point-in-time).
+        modelKey:
+          type: object
+          description: Model of the entity. Present on all entity reads (single-get, list, search).
+          properties:
+            name:
+              type: string
+            version:
+              type: integer
+              format: int32
+        state:
+          type: string
+          description: Entity state at the given point-in-time.
+        creationDate:
+          type: string
+          format: date-time
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: Last update as-at the point-in-time; equals creationDate if never updated.
+        pointInTime:
+          type: string
+          format: date-time
+          description: The as-at point-in-time for which the entity was retrieved, when supplied.
+        transitionForLatestSave:
+          type: string
+          description: Transition applied when the entity was last saved as-at the point-in-time.
+        transactionId:
+          type: string
+          format: uuid
     ModelStatsDto:
       type: object
       properties:
@@ -9997,11 +10817,11 @@ components:
           properties:
             changeType:
               type: string
-              description: Type of change that occurred
+              description: Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
               enum:
-                - CREATED
-                - UPDATED
-                - DELETED
+                - CREATE
+                - UPDATE
+                - DELETE
             changes:
               $ref: "#/components/schemas/EntityChangesDto"
               description: Changes made to the entity

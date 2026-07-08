@@ -229,6 +229,13 @@ func TestHandlerDirectSearchSimple(t *testing.T) {
 	if meta["state"] == nil || meta["state"] == "" {
 		t.Error("expected non-empty meta.state")
 	}
+	mk, ok := meta["modelKey"].(map[string]any)
+	if !ok {
+		t.Fatal("expected modelKey map in meta")
+	}
+	if mk["name"] != "Person" {
+		t.Errorf("expected modelKey.name=Person, got %v", mk["name"])
+	}
 }
 
 func TestHandlerDirectSearchGroup(t *testing.T) {
@@ -452,6 +459,39 @@ func TestHandlerAsyncCancel(t *testing.T) {
 	}
 	if props["currentStatus"] != "SUCCESSFUL" {
 		t.Errorf("expected currentStatus=SUCCESSFUL, got %v", props["currentStatus"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sort param — grammar-level handler tests
+// ---------------------------------------------------------------------------
+
+// TestSearchEntities_SortMalformed400 verifies that a malformed sort token
+// (invalid direction) is rejected with 400 INVALID_FIELD_PATH at the handler
+// level, and that a well-formed token passes through to the service.
+func TestSearchEntities_SortMalformed400(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "Widget", 1, `{"name":"x"}`)
+
+	cond := `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"CREATED"}`
+
+	// Malformed direction "up" is not a valid direction token → 400 INVALID_FIELD_PATH
+	resp := doDirectSearch(t, srv.URL, "Widget", 1, cond, "sort=name:up")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, string(body))
+	}
+	obj := parseObject(t, body)
+	props, _ := obj["properties"].(map[string]any)
+	if props == nil || props["errorCode"] != "INVALID_FIELD_PATH" {
+		t.Errorf("expected properties.errorCode=INVALID_FIELD_PATH, got %v; body: %s", props, string(body))
+	}
+
+	// Well-formed token "name:asc" reaches the service without a parse error.
+	resp2 := doDirectSearch(t, srv.URL, "Widget", 1, cond, "sort=name:asc")
+	body2 := readBody(t, resp2)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for well-formed sort, got %d; body: %s", resp2.StatusCode, string(body2))
 	}
 }
 
