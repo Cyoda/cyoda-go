@@ -166,7 +166,8 @@ Per-finding contract decisions from the Edge-message reconciliation slice.
 
 - **M1 — request body shapes corrected.** `newMessage` body is a JSON object envelope
   `{payload (any JSON value, required), meta-data (optional flat map)}` — not a bare `string`;
-  a top-level array is rejected (single object only). `deleteMessages` body is a JSON `array` of
+  a top-level array is rejected (single object only). (The `meta-data` request field was
+  subsequently renamed `metaData` — see M5.) `deleteMessages` body is a JSON `array` of
   uuid strings — not a single `string`. Direction: spec-incomplete (closed). Cloud's documented
   request contract must match these shapes.
 - **M2 — fictional v1-UUID `400` removed; `messageId` typed `uuid`.** `getMessage` / `deleteMessage`
@@ -185,7 +186,8 @@ Per-finding contract decisions from the Edge-message reconciliation slice.
   The bucketed `metaData: {values, indexedValues}` split and the injected `typeReferences: {}` were
   cyoda-cloud indexing workarounds. In cyoda-go, `values` was always empty (all client `meta-data`
   routes to indexed storage) and `typeReferences` was an always-empty placeholder. cyoda-go now
-  emits a **single flat map** — what a client PUTs in `meta-data` it GETs back in `metaData`. The
+  emits a **single flat map** — what a client PUTs in `meta-data` it GETs back in `metaData` (the
+  request field was subsequently renamed `meta-data` → `metaData`; see M5). The
   `ValueMaps` / `LocalTime` schemas are deleted. This is a response-shape change only (no SPI /
   storage / indexing change). Direction: **cyoda-go leads — Cloud MUST conform**: emit the flat
   `metaData` map and drop `values` / `indexedValues` / `typeReferences` from the read response.
@@ -193,6 +195,15 @@ Per-finding contract decisions from the Edge-message reconciliation slice.
   `metaData.indexedValues.strings`) must be updated to the flat shape.
 - **M4 — `deleteMessages` `413` on oversized body (runtime change).** A >10 MB batch-delete body now
   returns `413` (was `500`), matching `newMessage`. Direction: server-gap (closed, Gate-6 parity fix).
+- **M5 — request metadata field renamed `meta-data` → `metaData` (camelCase alignment).** The
+  `newMessage` request envelope carried its metadata under `meta-data` — the only kebab-case JSON
+  property in the API, while every other body field (including the `getMessage` response's own
+  `metaData`) is camelCase. cyoda-go now accepts the metadata map under `metaData` on the create
+  request, so the field name is symmetric with the response and consistent with the project-wide
+  convention. The legacy `meta-data` key is no longer honored (its contents are ignored) — a
+  breaking input change, taken on a patch release because edge messages have no known consumers.
+  Supersedes the `meta-data` request-field spelling in M1 and M3. Direction: **cyoda-go leads —
+  Cloud MUST conform**: accept `metaData` (not `meta-data`) on the `newMessage` request body.
 - **Deferred (out of this slice).** Honoring `transactionTimeoutMillis` / `transactionSize` uniformly
   → **#379** (supersedes #372). Native non-JSON / content-type payloads (binary without base64
   wrapping) → **#193**. The message contract documents current JSON-envelope behavior.

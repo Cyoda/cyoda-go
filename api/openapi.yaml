@@ -3483,17 +3483,17 @@ paths:
       requestBody:
         description: >
           A single JSON object. It must contain a `payload` field (any valid JSON
-          value) and may include an optional flat `meta-data` map of key-value pairs.
-          The meta-data is indexed to enable fast search by meta-data.
+          value) and may include an optional flat `metaData` map of key-value pairs.
+          The metaData is indexed to enable fast search by metadata.
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/NewMessageRequest"
             examples:
-              Nobel Prize Announcement (with payload and meta-data):
-                description: Nobel Prize Announcement (with payload and meta-data)
+              Nobel Prize Announcement (with payload and metaData):
+                description: Nobel Prize Announcement (with payload and metaData)
                 value:
-                  meta-data:
+                  metaData:
                     eventType: nobel.prize.announced
                     timestamp: 2024-10-09T12:00:00Z
                   payload:
@@ -3512,8 +3512,8 @@ paths:
                         motivation: for foundational discoveries and inventions that enable machine
                           learning with artificial neural networks
                         share: "2"
-              Nobel Prize Announcement (with payload but without meta-data):
-                description: Nobel Prize Announcement (with payload but without meta-data)
+              Nobel Prize Announcement (with payload but without metaData):
+                description: Nobel Prize Announcement (with payload but without metaData)
                 value:
                   payload:
                     category: physics
@@ -10360,7 +10360,7 @@ components:
       additionalProperties: true
       description: >
         Flat map of the message's metadata key-value pairs, symmetric with the
-        `meta-data` supplied at creation. All values are indexed for search.
+        `metaData` supplied at creation. All values are indexed for search.
     EdgeMessagePayload:
       description: |
         Polymorphic by intent — accepts any JSON value. The contentType field
@@ -10380,7 +10380,7 @@ components:
             The message payload — any JSON value (object, array, string, number, …).
             Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent
             as a JSON string; see the EdgeMessagePayload note.
-        meta-data:
+        metaData:
           type: object
           additionalProperties: true
           description: Optional flat key→value map; indexed to enable search by metadata.

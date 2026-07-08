@@ -131,7 +131,7 @@ func TestNewMessageAndGet(t *testing.T) {
 	srv := newTestServer(t)
 
 	// POST a new message
-	body := `{"payload": {"name": "Alice", "age": 30}, "meta-data": {"eventType": "test.event"}}`
+	body := `{"payload": {"name": "Alice", "age": 30}, "metaData": {"eventType": "test.event"}}`
 	resp := postMessage(t, srv.URL, "test.subject", body)
 	expectStatus(t, resp, http.StatusOK)
 	msgID := extractMessageID(t, resp)
@@ -179,7 +179,7 @@ func TestNewMessageWithIndexedMetadata(t *testing.T) {
 	srv := newTestServer(t)
 
 	// POST message with indexed metadata
-	body := `{"payload": {"data": "test"}, "meta-data": {"eventType": "nobel.prize.announced", "timestamp": "2024-10-09T12:00:00Z", "category": "physics"}}`
+	body := `{"payload": {"data": "test"}, "metaData": {"eventType": "nobel.prize.announced", "timestamp": "2024-10-09T12:00:00Z", "category": "physics"}}`
 	resp := postMessage(t, srv.URL, "events.nobel", body)
 	expectStatus(t, resp, http.StatusOK)
 	msgID := extractMessageID(t, resp)
@@ -194,7 +194,7 @@ func TestNewMessageWithIndexedMetadata(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	// Verify metaData is a flat map — symmetric with submitted meta-data.
+	// Verify metaData is a flat map — symmetric with submitted metaData.
 	metaData, ok := msg["metaData"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected metaData flat map, got %v", msg["metaData"])
@@ -222,11 +222,56 @@ func TestNewMessageWithIndexedMetadata(t *testing.T) {
 	}
 }
 
+func TestNewMessageMetaDataFieldIsCamelCase(t *testing.T) {
+	srv := newTestServer(t)
+
+	// The request metadata field is `metaData` (camelCase) — symmetric with
+	// the `metaData` field on the read response and consistent with the rest
+	// of the API's JSON naming.
+	body := `{"payload": {"data": "test"}, "metaData": {"eventType": "nobel.prize.announced"}}`
+	resp := postMessage(t, srv.URL, "events.camel", body)
+	expectStatus(t, resp, http.StatusOK)
+	msgID := extractMessageID(t, resp)
+
+	resp = getMessage(t, srv.URL, msgID)
+	expectStatus(t, resp, http.StatusOK)
+	var msg map[string]any
+	if err := json.Unmarshal(readBody(t, resp), &msg); err != nil {
+		t.Fatalf("failed to parse GET response: %v", err)
+	}
+	metaData, ok := msg["metaData"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metaData flat map, got %v", msg["metaData"])
+	}
+	if metaData["eventType"] != "nobel.prize.announced" {
+		t.Errorf("expected metaData.eventType round-tripped from camelCase request field, got %v", metaData["eventType"])
+	}
+
+	// The legacy kebab-case `meta-data` request field is no longer honored
+	// (breaking rename). Sending it must not populate metadata.
+	legacy := `{"payload": {"data": "test"}, "meta-data": {"eventType": "should.be.ignored"}}`
+	resp = postMessage(t, srv.URL, "events.legacy", legacy)
+	expectStatus(t, resp, http.StatusOK)
+	legacyID := extractMessageID(t, resp)
+
+	resp = getMessage(t, srv.URL, legacyID)
+	expectStatus(t, resp, http.StatusOK)
+	var legacyMsg map[string]any
+	if err := json.Unmarshal(readBody(t, resp), &legacyMsg); err != nil {
+		t.Fatalf("failed to parse GET response: %v", err)
+	}
+	if md, ok := legacyMsg["metaData"].(map[string]any); ok {
+		if _, present := md["eventType"]; present {
+			t.Errorf("legacy `meta-data` field must be ignored, but eventType leaked into metaData: %v", md)
+		}
+	}
+}
+
 func TestMetadataPreservesJsonTypes(t *testing.T) {
 	srv := newTestServer(t)
 
 	// POST message with mixed-type metadata: string, number, boolean, null
-	body := `{"payload": {"x": 1}, "meta-data": {"name": "Alice", "age": 30, "active": true, "score": 99.5, "tags": ["a","b"]}}`
+	body := `{"payload": {"x": 1}, "metaData": {"name": "Alice", "age": 30, "active": true, "score": 99.5, "tags": ["a","b"]}}`
 	resp := postMessage(t, srv.URL, "typed.meta", body)
 	expectStatus(t, resp, http.StatusOK)
 	msgID := extractMessageID(t, resp)
@@ -241,7 +286,7 @@ func TestMetadataPreservesJsonTypes(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	// metaData is a flat map — symmetric with submitted meta-data.
+	// metaData is a flat map — symmetric with submitted metaData.
 	indexed, ok := msg["metaData"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected metaData flat map, got %v (%T)", msg["metaData"], msg["metaData"])
@@ -424,7 +469,7 @@ func TestDeleteMessagesInvalidBody(t *testing.T) {
 func TestNewMessageWithOptionalHeaders(t *testing.T) {
 	srv := newTestServer(t)
 
-	body := `{"payload": {"data": "value"}, "meta-data": {"key1": "val1"}}`
+	body := `{"payload": {"data": "value"}, "metaData": {"key1": "val1"}}`
 	resp := postMessage(t, srv.URL, "headers.test", body)
 	expectStatus(t, resp, http.StatusOK)
 	msgID := extractMessageID(t, resp)

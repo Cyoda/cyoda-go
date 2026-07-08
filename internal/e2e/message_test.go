@@ -12,7 +12,7 @@ import (
 func createMessageE2E(t *testing.T, subject string, payload string) string {
 	t.Helper()
 	path := fmt.Sprintf("/api/message/new/%s", subject)
-	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "e2e"}}`, payload)
+	body := fmt.Sprintf(`{"payload": %s, "metaData": {"source": "e2e"}}`, payload)
 	resp := doAuth(t, http.MethodPost, path, body)
 	respBody := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -135,7 +135,7 @@ func TestMessage_DeleteMessages_Shape(t *testing.T) {
 // TestMessage_NewMessage_Shape verifies that NewMessage returns an array with entityIds,
 // not a bare string — the spec was wrong (type:string).
 func TestMessage_NewMessage_Shape(t *testing.T) {
-	body := `{"payload": {"k": "v"}, "meta-data": {}}`
+	body := `{"payload": {"k": "v"}, "metaData": {}}`
 	resp := doAuth(t, http.MethodPost, "/api/message/new/test-new-shape", body)
 	respBody := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -285,9 +285,9 @@ func TestMessage_MetaDataFlatShape(t *testing.T) {
 }
 
 // TestMessage_NewMessage_ObjectEnvelope characterizes the real body contract:
-// an object {payload, meta-data}; missing payload -> 400; a top-level array -> 400.
+// an object {payload, metaData}; missing payload -> 400; a top-level array -> 400.
 func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {
-	ok := doAuth(t, http.MethodPost, "/api/message/new/env-ok", `{"payload":{"a":1},"meta-data":{"k":"v"}}`)
+	ok := doAuth(t, http.MethodPost, "/api/message/new/env-ok", `{"payload":{"a":1},"metaData":{"k":"v"}}`)
 	defer ok.Body.Close()
 	if ok.StatusCode != http.StatusOK {
 		t.Fatalf("object envelope: status=%d, want 200", ok.StatusCode)
@@ -300,7 +300,7 @@ func TestMessage_NewMessage_ObjectEnvelope(t *testing.T) {
 		t.Fatalf("string payload: status=%d, want 200", strp.StatusCode)
 	}
 
-	missing := doAuth(t, http.MethodPost, "/api/message/new/env-missing", `{"meta-data":{}}`)
+	missing := doAuth(t, http.MethodPost, "/api/message/new/env-missing", `{"metaData":{}}`)
 	defer missing.Body.Close()
 	if missing.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing payload: status=%d, want 400", missing.StatusCode)

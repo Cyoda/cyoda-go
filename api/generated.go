@@ -1759,7 +1759,7 @@ type EdgeMessageDto struct {
 	Content *EdgeMessagePayload `json:"content,omitempty"`
 	Header  EdgeMessageHeader   `json:"header"`
 
-	// MetaData Flat map of the message's metadata key-value pairs, symmetric with the `meta-data` supplied at creation. All values are indexed for search.
+	// MetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
 	MetaData EdgeMessageMetaData `json:"metaData"`
 }
 
@@ -1778,7 +1778,7 @@ type EdgeMessageHeader struct {
 	UserId        *string `json:"userId,omitempty"`
 }
 
-// EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `meta-data` supplied at creation. All values are indexed for search.
+// EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
 type EdgeMessageMetaData map[string]interface{}
 
 // EdgeMessagePayload Polymorphic by intent — accepts any JSON value. The contentType field
@@ -2421,7 +2421,7 @@ type ModelStatsDto struct {
 // NewMessageRequest A single JSON object carrying the message payload and optional flat metadata.
 type NewMessageRequest struct {
 	// MetaData Optional flat key→value map; indexed to enable search by metadata.
-	MetaData *map[string]interface{} `json:"meta-data,omitempty"`
+	MetaData *map[string]interface{} `json:"metaData,omitempty"`
 
 	// Payload The message payload — any JSON value (object, array, string, number, …). Non-JSON content (e.g. binary) must be stringified (e.g. base64) and sent as a JSON string; see the EdgeMessagePayload note.
 	Payload EdgeMessagePayload `json:"payload"`
