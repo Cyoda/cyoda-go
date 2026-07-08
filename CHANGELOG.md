@@ -166,6 +166,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   different read paths within one backend, could disagree at sub-millisecond
   boundaries. ([#349](https://github.com/Cyoda-platform/cyoda-go/issues/349))
 
+### Security
+
+- Bumped the indirect `github.com/yuin/goldmark` dependency `v1.7.13` → `v1.7.17`
+  to clear govulncheck advisory GO-2026-5320 (XSS in goldmark HTML rendering,
+  reached via `glamour` in the `cyoda help` renderer). The renderer only formats
+  first-party help content embedded in the binary, so the advisory was not
+  reachable with attacker-controlled input; the bump keeps the security scan clean.
+
 ## [0.8.1] — 2026-06-23
 
 > No `v0.8.0` release. The `cyoda-go-spi v0.8.0` tag was poisoned by a premature
