@@ -144,6 +144,14 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 			return err
 		}
 		wf.Annotations = canon
+		// Criterion annotations sit beside the (verbatim, opaque) criterion.
+		// The criterion blob itself is never parsed here.
+		wfCrit, err := canonicalizeAnnotations(wf.CriterionAnnotations,
+			fmt.Sprintf("workflow %q criterionAnnotations", wf.Name))
+		if err != nil {
+			return err
+		}
+		wf.CriterionAnnotations = wfCrit
 		for stateName, stateDef := range wf.States {
 			sCanon, err := canonicalizeAnnotations(stateDef.Annotations,
 				fmt.Sprintf("workflow %q state %q", wf.Name, stateName))
@@ -159,11 +167,27 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 					return err
 				}
 				tr.Annotations = tCanon
+				trCrit, err := canonicalizeAnnotations(tr.CriterionAnnotations,
+					fmt.Sprintf("workflow %q state %q transition %q criterionAnnotations", wf.Name, stateName, tr.Name))
+				if err != nil {
+					return err
+				}
+				tr.CriterionAnnotations = trCrit
+				// Processors must be mutated by index — a range-value copy
+				// would discard the canonicalised blob.
+				for k := range tr.Processors {
+					p := &tr.Processors[k]
+					pCanon, err := canonicalizeAnnotations(p.Annotations,
+						fmt.Sprintf("workflow %q state %q transition %q processor %q", wf.Name, stateName, tr.Name, p.Name))
+					if err != nil {
+						return err
+					}
+					p.Annotations = pCanon
+				}
 			}
-			// Map values are not addressable — write the state (with its
-			// normalised annotations) back. The transitions slice is shared
-			// by reference, but the state-level Annotations assignment above
-			// only touched the local copy.
+			// Map values are not addressable — write the state back so its
+			// canonicalised Annotations persist. Transitions/processors mutate
+			// through the shared slice backing array and need no write-back.
 			wf.States[stateName] = stateDef
 		}
 	}
