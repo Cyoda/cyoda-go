@@ -6,6 +6,31 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Entity partial-update (PATCH / RFC 7386 merge patch)** — `PATCH /api/entity/{format}/{entityId}`
+  and `PATCH /api/entity/{format}/{entityId}/{transition}` apply a sparse JSON patch to the stored
+  payload with RFC 7386 merge semantics (non-null key overwrites, explicit `null` deletes, omitted
+  key untouched), closing the data-loss footgun where `PUT`'s wholesale-replace silently destroyed
+  omitted fields. JSON-only (`XML` ⇒ `415`); `application/merge-patch+json` is implemented,
+  `application/json-patch+json` (RFC 6902) returns `501`. `If-Match` is **required** (the merge is
+  relative to the base the caller read): absent ⇒ `428 PRECONDITION_REQUIRED`, stale ⇒ `412`. The
+  merged result is validated strictly against the model schema — PATCH never extends the model,
+  even in an extend-permitting mode. Under a named transition the merge is applied first, then the
+  transition's processors run on the merged state. New error codes: `PRECONDITION_REQUIRED` (428),
+  `UNSUPPORTED_MEDIA_TYPE` (415).
+  ([#341](https://github.com/Cyoda-platform/cyoda-go/issues/341))
+
+- **Renderer annotations on processors & criteria** — the engine-ignored `annotations` bag now
+  extends to the two workflow elements that lacked it: processors carry an embedded `annotations`
+  object, and criteria carry a sibling `criterionAnnotations` object on the workflow and on each
+  transition (the criterion tree round-trips verbatim and is never parsed to attach metadata). Two
+  well-known optional keys — `displayName`, `description` — are documented uniformly across all
+  five element types (workflow, state, transition, processor, criterion) for renderer and
+  condition-builder use. Object-only, capped at 64 KB per field, stored and re-emitted compacted,
+  never interpreted by the engine; processor annotations are stripped before dispatch and never
+  reach compute members. Additive schema change: the workflow schema moves to **1.2** and every
+  existing 1.1 payload remains valid (dual-shape). No new error codes.
+  ([#384](https://github.com/Cyoda-platform/cyoda-go/issues/384))
+
 - **Composite unique keys** — entity models can declare one or more composite unique keys via
   `PUT /model/{entityName}/{modelVersion}/unique-keys` (UNLOCKED models only). Each key is an
   ordered set of scalar field paths; uniqueness is scoped to `(tenant, model, version)` live
