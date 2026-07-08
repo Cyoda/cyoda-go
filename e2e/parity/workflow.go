@@ -153,3 +153,57 @@ func RunWorkflowAnnotationsRoundTrip(t *testing.T, fixture BackendFixture) {
 		t.Errorf("state annotations: got %#v, want %#v", got, want)
 	}
 }
+
+const workflowProcCriterionAnnotationsPayload = `{
+  "importMode": "REPLACE",
+  "workflows": [{
+    "version": "1.2", "name": "pc-annot-wf", "initialState": "NONE", "active": true,
+    "criterionAnnotations": { "displayName": "WF guard" },
+    "states": { "NONE": { "transitions": [
+      { "name": "t", "next": "NONE", "manual": true,
+        "criterionAnnotations": { "displayName": "T guard" },
+        "processors": [ { "name": "p1", "type": "externalized", "annotations": { "displayName": "Proc One" } } ]
+      }
+    ] } }
+  }]
+}`
+
+// RunWorkflowProcCriterionAnnotationsRoundTrip verifies processor annotations
+// and criterionAnnotations survive import → export on every backend.
+func RunWorkflowProcCriterionAnnotationsRoundTrip(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "wf-pc-annotations-test"
+	const modelVersion = 1
+
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test Order","status":"draft"}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.ImportWorkflow(t, modelName, modelVersion, workflowProcCriterionAnnotationsPayload); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+	raw, err := c.ExportWorkflow(t, modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportWorkflow: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("ExportWorkflow: parse: %v", err)
+	}
+	wf := body["workflows"].([]any)[0].(map[string]any)
+	if got, want := wf["criterionAnnotations"], map[string]any{"displayName": "WF guard"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("wf criterionAnnotations: got %#v, want %#v", got, want)
+	}
+	tr := wf["states"].(map[string]any)["NONE"].(map[string]any)["transitions"].([]any)[0].(map[string]any)
+	if got, want := tr["criterionAnnotations"], map[string]any{"displayName": "T guard"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("transition criterionAnnotations: got %#v, want %#v", got, want)
+	}
+	proc := tr["processors"].([]any)[0].(map[string]any)
+	if got, want := proc["annotations"], map[string]any{"displayName": "Proc One"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("processor annotations: got %#v, want %#v", got, want)
+	}
+}
