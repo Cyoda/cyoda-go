@@ -9824,6 +9824,23 @@ components:
             backend does not implement async/crossover semantics; imports
             that set any value for crossoverToAsyncMs are rejected with
             HTTP 400 VALIDATION_FAILED.
+    WorkflowElementAnnotations:
+      type: object
+      additionalProperties: true
+      description: >
+        Client-owned metadata attached to a workflow element, stored and
+        round-tripped verbatim and never interpreted by the engine. The engine
+        validates only that the value is a JSON object of at most 64 KB
+        (compacted); it does not enforce the types of the well-known keys below,
+        which are a documented convention for renderers. Additional client keys
+        are permitted.
+      properties:
+        displayName:
+          type: string
+          description: Advisory human-readable label for renderers (not enforced).
+        description:
+          type: string
+          description: Advisory human-readable description for renderers (not enforced).
     ExternalizedProcessorDefinitionDto:
       allOf:
         - $ref: "#/components/schemas/ProcessorDefinitionDto"
@@ -9883,6 +9900,8 @@ components:
           minLength: 1
           maxLength: 256
           description: Name of the processor
+        annotations:
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
       required:
         - name
     StateDefinitionDto:
@@ -9894,12 +9913,7 @@ components:
           items:
             $ref: "#/components/schemas/TransitionDefinitionDto"
         annotations:
-          type: object
-          additionalProperties: true
-          description: >
-            Arbitrary client-owned metadata, stored and round-tripped (compacted)
-            and never interpreted by the engine. Must be a JSON object; capped at
-            64 KB per field.
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
     TransitionDefinitionDto:
       type: object
       properties:
@@ -9942,13 +9956,10 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        criterionAnnotations:
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
-          type: object
-          additionalProperties: true
-          description: >
-            Arbitrary client-owned metadata, stored and round-tripped (compacted)
-            and never interpreted by the engine. Must be a JSON object; capped at
-            64 KB per field.
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
       required:
         - manual
         - name
@@ -10057,14 +10068,10 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+        criterionAnnotations:
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
-          type: object
-          additionalProperties: true
-          description: >
-            Arbitrary client-owned metadata for the whole workflow, stored and
-            round-tripped (compacted) and never interpreted by the engine. Must be
-            a JSON object; capped at 64 KB. Use for client concerns such as
-            permitted roles, display labels, or UI hints.
+          $ref: "#/components/schemas/WorkflowElementAnnotations"
       required:
         - initialState
         - name

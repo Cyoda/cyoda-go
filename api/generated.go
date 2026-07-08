@@ -2164,7 +2164,9 @@ type ExternalizedProcessorConfigDtoRetryPolicy string
 
 // ExternalizedProcessorDefinitionDto defines model for ExternalizedProcessorDefinitionDto.
 type ExternalizedProcessorDefinitionDto struct {
-	Config *ExternalizedProcessorConfigDto `json:"config,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations     `json:"annotations,omitempty"`
+	Config      *ExternalizedProcessorConfigDto `json:"config,omitempty"`
 
 	// ExecutionMode Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
 	// run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
@@ -2504,6 +2506,9 @@ type ProblemDetail struct {
 
 // ProcessorDefinitionDto defines model for ProcessorDefinitionDto.
 type ProcessorDefinitionDto struct {
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
+
 	// Name Name of the processor
 	Name string `json:"name"`
 
@@ -2619,8 +2624,8 @@ type SingleDeleteResult struct {
 
 // StateDefinitionDto defines model for StateDefinitionDto.
 type StateDefinitionDto struct {
-	// Annotations Arbitrary client-owned metadata, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB per field.
-	Annotations *map[string]interface{} `json:"annotations,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
 
 	// Transitions List of possible transitions from this state
 	Transitions *[]TransitionDefinitionDto `json:"transitions,omitempty"`
@@ -2871,9 +2876,12 @@ type TokenResponseDtoTokenType string
 
 // TransitionDefinitionDto defines model for TransitionDefinitionDto.
 type TransitionDefinitionDto struct {
-	// Annotations Arbitrary client-owned metadata, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB per field.
-	Annotations *map[string]interface{}            `json:"annotations,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations        `json:"annotations,omitempty"`
 	Criterion   *TransitionDefinitionDto_Criterion `json:"criterion,omitempty"`
+
+	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
 
 	// Disabled Flag indicating if the transition is disabled
 	Disabled *bool `json:"disabled,omitempty"`
@@ -3027,8 +3035,8 @@ type WorkflowConfigurationDto struct {
 	// Active Flag indicating if the workflow is active
 	Active *bool `json:"active,omitempty"`
 
-	// Annotations Arbitrary client-owned metadata for the whole workflow, stored and round-tripped (compacted) and never interpreted by the engine. Must be a JSON object; capped at 64 KB. Use for client concerns such as permitted roles, display labels, or UI hints.
-	Annotations *map[string]interface{} `json:"annotations,omitempty"`
+	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
 
 	// Criterion Optional selection criterion evaluated against the entity to
 	// decide which of several workflows applies. When a model has
@@ -3043,6 +3051,9 @@ type WorkflowConfigurationDto struct {
 	// use the same Condition DSL as search and transition-level
 	// criteria.
 	Criterion *WorkflowConfigurationDto_Criterion `json:"criterion,omitempty"`
+
+	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
 
 	// Desc Description of the workflow
 	Desc *string `json:"desc,omitempty"`
@@ -3083,6 +3094,16 @@ type WorkflowConfigurationDto struct {
 // criteria.
 type WorkflowConfigurationDto_Criterion struct {
 	union json.RawMessage
+}
+
+// WorkflowElementAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
+type WorkflowElementAnnotations struct {
+	// Description Advisory human-readable description for renderers (not enforced).
+	Description *string `json:"description,omitempty"`
+
+	// DisplayName Advisory human-readable label for renderers (not enforced).
+	DisplayName          *string                `json:"displayName,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
 // WorkflowExportResponseDto defines model for WorkflowExportResponseDto.
@@ -3745,6 +3766,89 @@ type SubmitAsyncSearchJobJSONRequestBody SubmitAsyncSearchJobJSONBody
 
 // SearchEntitiesJSONRequestBody defines body for SearchEntities for application/json ContentType.
 type SearchEntitiesJSONRequestBody SearchEntitiesJSONBody
+
+// Getter for additional properties for WorkflowElementAnnotations. Returns the specified
+// element and whether it was found
+func (a WorkflowElementAnnotations) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for WorkflowElementAnnotations
+func (a *WorkflowElementAnnotations) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for WorkflowElementAnnotations to handle AdditionalProperties
+func (a *WorkflowElementAnnotations) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["displayName"]; found {
+		err = json.Unmarshal(raw, &a.DisplayName)
+		if err != nil {
+			return fmt.Errorf("error reading 'displayName': %w", err)
+		}
+		delete(object, "displayName")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for WorkflowElementAnnotations to handle AdditionalProperties
+func (a WorkflowElementAnnotations) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.DisplayName != nil {
+		object["displayName"], err = json.Marshal(a.DisplayName)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'displayName': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // AsEntityChangeAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a EntityChangeAuditEventDto
 func (t EntityAuditEventsResponseDto_Items_Item) AsEntityChangeAuditEventDto() (EntityChangeAuditEventDto, error) {
