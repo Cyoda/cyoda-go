@@ -26,7 +26,7 @@ import (
 // maintain dual-shape acceptance — v0.7.x clients sending "1.0" are
 // rejected with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED so the diagnosis
 // is explicit. See docs/workflow-schema-versioning.md §"1.0 → 1.1".
-const CurrentSchemaVersion = "1.1"
+const CurrentSchemaVersion = "1.2"
 
 // SchemaRange is a closed integer interval [MinMinor..MaxMinor] on
 // the MINOR axis of a given MAJOR. A range models a single contiguous
@@ -47,7 +47,7 @@ type SchemaRange struct {
 // exercise alternative range configurations without changing
 // production defaults.
 var SupportedSchemaRanges = []SchemaRange{
-	{Major: 1, MinMinor: 1, MaxMinor: 1},
+	{Major: 1, MinMinor: 1, MaxMinor: 2},
 }
 
 // Sentinel errors returned by Supports. Callers use errors.Is to
