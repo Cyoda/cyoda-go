@@ -78,13 +78,13 @@ func RunMessageDelete(t *testing.T, fixture BackendFixture) {
 
 // RunMessageRoundTrip exercises the edge-message new->get->delete cycle and
 // asserts the backend-agnostic response shape: metaData is a single FLAT map
-// (symmetric with the submitted meta-data), carrying the user's key and NONE of
+// (symmetric with the submitted metaData), carrying the user's key and NONE of
 // the retired cyoda-cloud indexing artifacts (values/indexedValues/typeReferences).
 func RunMessageRoundTrip(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
-	// the parity client's CreateMessage hardcodes meta-data {"source":"parity"}.
+	// the parity client's CreateMessage hardcodes metaData {"source":"parity"}.
 	id, err := c.CreateMessage(t, "parity-roundtrip", `{"hello":"world"}`)
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)

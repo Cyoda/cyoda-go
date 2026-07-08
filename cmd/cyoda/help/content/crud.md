@@ -17,6 +17,7 @@ see_also:
   - errors.TRANSITION_NOT_FOUND
   - errors.UNIQUE_VIOLATION
   - errors.INVALID_UNIQUE_KEY
+  - messages
   - openapi
 ---
 
@@ -793,4 +794,5 @@ curl -s -X POST \
 - errors.UNIQUE_VIOLATION
 - errors.INVALID_UNIQUE_KEY
 - errors.TRANSITION_NOT_FOUND
+- messages
 - openapi

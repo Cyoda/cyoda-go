@@ -45,7 +45,7 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 
 	var envelope struct {
 		Payload  json.RawMessage `json:"payload"`
-		MetaData map[string]any  `json:"meta-data"`
+		MetaData map[string]any  `json:"metaData"`
 	}
 	if err := json.Unmarshal(rawBody, &envelope); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected an object with a 'payload' field"))
@@ -164,12 +164,12 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId u
 		respHeader["correlationId"] = header.CorrelationID
 	}
 
-	// Flat metadata map — symmetric with the submitted `meta-data`. The
+	// Flat metadata map — symmetric with the submitted `metaData`. The
 	// values/indexedValues split and the injected typeReferences were
 	// cyoda-cloud indexing artifacts, not part of the cyoda-go contract.
 	metaMap := map[string]any{}
 	// IndexedValues is merged last, so it wins on a key collision — which is
-	// currently impossible: cyoda-go routes all client meta-data to IndexedValues,
+	// currently impossible: cyoda-go routes all client metaData to IndexedValues,
 	// leaving Values empty.
 	for k, v := range metaData.Values {
 		metaMap[k] = v

@@ -123,6 +123,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   emitted by the server (the endpoint is auth-only, not admin-only); the spec entry
   is removed.
 
+- **Edge-message request metadata field renamed `meta-data` → `metaData`** — the
+  `POST /api/message/new/{subject}` request envelope now carries its optional metadata map
+  under `metaData` (camelCase), symmetric with the `getMessage` response and consistent with
+  the rest of the API's JSON naming. The former kebab-case `meta-data` key is no longer honored;
+  its contents are ignored. Breaking input change, shipped in a patch because edge messages have
+  no known consumers. A new `cyoda help messages` topic documents the full edge-message API.
+  ([#386](https://github.com/Cyoda-platform/cyoda-go/issues/386))
+
 ### Removed
 
 - **`pointInTime` param on `getAsyncSearchResults`** — the point-in-time is

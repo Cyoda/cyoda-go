@@ -909,13 +909,13 @@ func (c *Client) doRawWithHeaders(t *testing.T, method, path, body string, extra
 }
 
 // CreateMessage issues POST /api/message/new/{subject} with the given
-// payload wrapped in the edge-message envelope {payload, meta-data}.
+// payload wrapped in the edge-message envelope {payload, metaData}.
 // Returns the message ID.
 // Canonical: docs/cyoda/openapi.yml:2401.
 func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, error) {
 	t.Helper()
 	path := "/api/message/new/" + subject
-	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "parity"}}`, payload)
+	body := fmt.Sprintf(`{"payload": %s, "metaData": {"source": "parity"}}`, payload)
 	raw, err := c.doRaw(t, http.MethodPost, path, body)
 	if err != nil {
 		return "", err
@@ -937,7 +937,7 @@ func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, e
 // It sends the fields in MessageHeaderInput as HTTP request headers so
 // cyoda-go's generated handler reads them via NewMessageParams. The body
 // envelope is identical to CreateMessage: {"payload": <payload>,
-// "meta-data": {"source": "parity"}}.
+// "metaData": {"source": "parity"}}.
 //
 // If header.ContentType is empty it defaults to "application/json".
 // Empty fields in header are omitted from the request.
@@ -945,7 +945,7 @@ func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, e
 func (c *Client) CreateMessageWithHeaders(t *testing.T, subject, payload string, header MessageHeaderInput) (string, error) {
 	t.Helper()
 	path := "/api/message/new/" + subject
-	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "parity"}}`, payload)
+	body := fmt.Sprintf(`{"payload": %s, "metaData": {"source": "parity"}}`, payload)
 
 	h := make(http.Header)
 	ct := header.ContentType
