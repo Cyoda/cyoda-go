@@ -26,6 +26,11 @@ import (
 // maintain dual-shape acceptance — v0.7.x clients sending "1.0" are
 // rejected with WORKFLOW_SCHEMA_VERSION_UNSUPPORTED so the diagnosis
 // is explicit. See docs/workflow-schema-versioning.md §"1.0 → 1.1".
+//
+// 1.1 → 1.2 in v0.8.2: additive MINOR — optional processor annotations
+// and workflow/transition criterionAnnotations. Dual-shape: 1.1 stays in
+// SupportedSchemaRanges (every 1.1 payload remains valid). See
+// docs/workflow-schema-versioning.md §"1.1 → 1.2".
 const CurrentSchemaVersion = "1.2"
 
 // SchemaRange is a closed integer interval [MinMinor..MaxMinor] on

@@ -132,7 +132,8 @@ func canonicalizeAnnotations(raw json.RawMessage, location string) (json.RawMess
 }
 
 // validateAndNormalizeAnnotations canonicalises the annotations on every
-// workflow, state, and transition in the incoming slice, mutating each in
+// workflow, state, transition, and processor — plus the workflow/transition
+// criterionAnnotations sibling — in the incoming slice, mutating each in
 // place. Returns the first validation error (object-only, size cap). Run on
 // the incoming import request only — consistent with the other structural
 // validators, which are not retroactive against already-stored workflows.
