@@ -72,9 +72,12 @@ Workflow schema bumps **1.1 → 1.2**, additive MINOR:
 
 Both fields are engine-ignored metadata: no workflow-execution behaviour
 depends on their contents. cyoda-go does not forward processor `annotations`
-to external compute-node gRPC dispatch requests; `criterionAnnotations` is
-never forwarded to compute nodes at all (criteria are evaluated in-process).
-Cloud's own compute-dispatch path should apply the same exclusion.
+to external compute-node gRPC dispatch requests — those requests are built
+field-by-field and carry no annotations. `criterionAnnotations` is likewise
+never forwarded: it is a transition/workflow sibling, and the criteria-dispatch
+request (used for `FUNCTION` criteria, which are evaluated on a compute node)
+carries only the bare `criterion` value. Cloud's own compute-dispatch path
+should apply the same exclusion.
 
 ## 6. Backend support
 
