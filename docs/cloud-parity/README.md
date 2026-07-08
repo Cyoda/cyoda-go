@@ -21,3 +21,5 @@ Cloud needs to adopt.
 |---|---|
 | `entity-patch.md` | PATCH single-entity contract (RFC 7386 merge patch) |
 | `openapi-conformance.md` | OpenAPI operation status, live common ground, tolerant-reader obligation, deferred open questions (E6, D2) |
+| `search-sort.md` | Search result sorting — HTTP `sort` grammar, gRPC `orderBy`, canonical ordering semantics |
+| `processor-criteria-annotations.md` | Processor `annotations` + workflow/transition `criterionAnnotations`, well-known renderer keys, schema 1.1 → 1.2 |

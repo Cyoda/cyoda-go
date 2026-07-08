@@ -61,7 +61,18 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.1 — v0.8.0 contract (current)
+### 1.2 — v0.8.2 contract (current)
+
+Additive MINOR — two new optional fields, both reusing the existing `annotations` validation (client-owned JSON object, ≤ 64 KB compacted, engine-ignored):
+
+- **`annotations` on `ProcessorDefinition`** — same shape as the existing workflow/state/transition `annotations`.
+- **`criterionAnnotations` on `WorkflowDefinition` and `TransitionDefinition`** — a sibling field next to `criterion`, not embedded in it, so the criterion blob keeps round-tripping byte-verbatim.
+
+Both fields document two well-known optional keys for renderers, `displayName` and `description` (strings) — the engine never interprets them, and the key names/types are an advisory convention, not enforced beyond the existing object-shape/size check.
+
+**Dual-shape retention of 1.1.** This is purely additive: every payload 1.1 accepted is still valid, unchanged, under 1.2. There is nothing to retire, so `SupportedSchemaRanges` widens in place to `{Major: 1, MinMinor: 1, MaxMinor: 2}` — 1.1-stamped imports keep working alongside 1.2.
+
+### 1.1 — v0.8.0 contract
 
 v0.8.0 tightened the import surface beyond what 1.0 accepted:
 

@@ -72,14 +72,15 @@ func New(factory spi.StoreFactory, engine *Engine) *Handler {
 // and is treated the same as the field being absent — both default to
 // Active=true.
 type workflowImportDef struct {
-	Version      string                         `json:"version"`
-	Name         string                         `json:"name"`
-	Description  string                         `json:"desc,omitempty"`
-	InitialState string                         `json:"initialState"`
-	Active       *bool                          `json:"active"`
-	Criterion    json.RawMessage                `json:"criterion,omitempty"`
-	States       map[string]spi.StateDefinition `json:"states"`
-	Annotations  json.RawMessage                `json:"annotations,omitempty"`
+	Version              string                         `json:"version"`
+	Name                 string                         `json:"name"`
+	Description          string                         `json:"desc,omitempty"`
+	InitialState         string                         `json:"initialState"`
+	Active               *bool                          `json:"active"`
+	Criterion            json.RawMessage                `json:"criterion,omitempty"`
+	States               map[string]spi.StateDefinition `json:"states"`
+	Annotations          json.RawMessage                `json:"annotations,omitempty"`
+	CriterionAnnotations json.RawMessage                `json:"criterionAnnotations,omitempty"`
 }
 
 // importRequest is the JSON body shape for workflow import.
@@ -148,14 +149,15 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 			active = *w.Active
 		}
 		incoming[i] = spi.WorkflowDefinition{
-			Version:      w.Version,
-			Name:         w.Name,
-			Description:  w.Description,
-			InitialState: w.InitialState,
-			Active:       active,
-			Criterion:    w.Criterion,
-			States:       w.States,
-			Annotations:  w.Annotations,
+			Version:              w.Version,
+			Name:                 w.Name,
+			Description:          w.Description,
+			InitialState:         w.InitialState,
+			Active:               active,
+			Criterion:            w.Criterion,
+			States:               w.States,
+			Annotations:          w.Annotations,
+			CriterionAnnotations: w.CriterionAnnotations,
 		}
 	}
 

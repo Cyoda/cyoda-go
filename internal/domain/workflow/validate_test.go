@@ -128,3 +128,74 @@ func TestValidateAndNormalizeAnnotations_SizeCapMeasuredOnCompacted(t *testing.T
 		t.Errorf("annotations not compacted: got %q, want %q", got, want)
 	}
 }
+
+func wfWithNewAnnotations(procA, wfCritA, trCritA json.RawMessage) []spi.WorkflowDefinition {
+	return []spi.WorkflowDefinition{{
+		Name:                 "wf",
+		Version:              "1.2",
+		InitialState:         "S",
+		Active:               true,
+		CriterionAnnotations: wfCritA,
+		States: map[string]spi.StateDefinition{
+			"S": {
+				Transitions: []spi.TransitionDefinition{{
+					Name:                 "t",
+					Next:                 "S",
+					CriterionAnnotations: trCritA,
+					Processors: []spi.ProcessorDefinition{
+						{Name: "p", Type: "externalized", Annotations: procA},
+					},
+				}},
+			},
+		},
+	}}
+}
+
+func TestValidateAndNormalizeAnnotations_ProcessorAndCriterionCompacted(t *testing.T) {
+	wfs := wfWithNewAnnotations(
+		json.RawMessage(`{ "displayName" : "Proc" }`),
+		json.RawMessage("{\n  \"displayName\": \"WF guard\"\n}"),
+		json.RawMessage(`{"description":"t guard"}`),
+	)
+	if err := validateAndNormalizeAnnotations(wfs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := string(wfs[0].CriterionAnnotations); got != `{"displayName":"WF guard"}` {
+		t.Errorf("wf criterionAnnotations not compacted: %s", got)
+	}
+	tr := wfs[0].States["S"].Transitions[0]
+	if got := string(tr.CriterionAnnotations); got != `{"description":"t guard"}` {
+		t.Errorf("transition criterionAnnotations not compacted: %s", got)
+	}
+	if got := string(tr.Processors[0].Annotations); got != `{"displayName":"Proc"}` {
+		t.Errorf("processor annotations not compacted: %s", got)
+	}
+}
+
+func TestValidateAndNormalizeAnnotations_ProcessorNonObjectRejected(t *testing.T) {
+	err := validateAndNormalizeAnnotations(wfWithNewAnnotations(json.RawMessage(`[1,2]`), nil, nil))
+	if err == nil || !strings.Contains(err.Error(), "must be a JSON object") {
+		t.Fatalf("expected object error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "processor") {
+		t.Errorf("error should locate the processor: %v", err)
+	}
+}
+
+func TestValidateAndNormalizeAnnotations_TransitionCriterionNonObjectRejected(t *testing.T) {
+	err := validateAndNormalizeAnnotations(wfWithNewAnnotations(nil, nil, json.RawMessage(`"x"`)))
+	if err == nil || !strings.Contains(err.Error(), "must be a JSON object") {
+		t.Fatalf("expected object error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "criterionAnnotations") {
+		t.Errorf("error should name criterionAnnotations: %v", err)
+	}
+}
+
+func TestValidateAndNormalizeAnnotations_ProcessorOversizeRejected(t *testing.T) {
+	big := json.RawMessage(`{"displayName":"` + strings.Repeat("a", 64*1024) + `"}`)
+	err := validateAndNormalizeAnnotations(wfWithNewAnnotations(big, nil, nil))
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size error, got %v", err)
+	}
+}
