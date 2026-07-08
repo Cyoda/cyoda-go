@@ -176,6 +176,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Security
 
+- Bumped the Go toolchain `go 1.26.4` → `go 1.26.5` (root + all three plugin
+  modules and `go.work`) to clear govulncheck advisory GO-2026-5856, a reachable
+  `crypto/tls` vulnerability in the Go standard library fixed in go1.26.5.
+
 - Bumped the indirect `github.com/yuin/goldmark` dependency `v1.7.13` → `v1.7.17`
   to clear govulncheck advisory GO-2026-5320 (XSS in goldmark HTML rendering,
   reached via `glamour` in the `cyoda help` renderer). The renderer only formats
