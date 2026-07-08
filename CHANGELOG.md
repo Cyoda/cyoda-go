@@ -70,6 +70,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   method_not_allowed` on non-POST requests, and `server_error` / `method_not_allowed` error
   enum values are now declared in the spec.
 
+- Workflow **processors** now accept an engine-ignored `annotations` object, and **criteria** an
+  engine-ignored `criterionAnnotations` sibling (workflow-selection and transition guards).
+  Well-known renderer keys `displayName`/`description` are documented across all five workflow
+  element types (object-only, ≤64 KB, types advisory). Workflow schema version bumps **1.1 → 1.2**
+  (additive; 1.1 still accepted).
+
 ### Changed
 
 - **`DELETE /model/{entityName}/{modelVersion}` now enforces the documented
