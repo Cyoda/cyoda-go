@@ -28,7 +28,7 @@ var preConfigVars = map[string]bool{
 
 // durComponentRe splits a time.Duration.String() output into its
 // (value, unit) components, e.g. "1h0m0s" -> [{1 h} {0 m} {0 s}].
-var durComponentRe = regexp.MustCompile(`(\d+)(h|m|s|ms|us|ns)`)
+var durComponentRe = regexp.MustCompile(`(\d+)(h|ms|us|ns|m|s)`)
 
 // renderDuration normalizes time.Duration.String() to the canonical form used
 // by the root ConfigVar table: trailing zero-value unit components are

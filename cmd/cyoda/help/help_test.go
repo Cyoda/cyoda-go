@@ -547,19 +547,7 @@ var errCodePattern = regexp.MustCompile(`ErrCode[A-Z][A-Za-z0-9]+\s*=\s*"([A-Z0-
 // TestErrCode_Parity asserts every ErrCode* in internal/common/error_codes.go
 // has a matching errors/<CODE>.md topic file, and vice versa.
 func TestErrCode_Parity(t *testing.T) {
-	wd, _ := os.Getwd()
-	root := wd
-	for {
-		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
-			t.Skip("cannot locate repo root")
-			return
-		}
-		root = parent
-	}
+	root := repoRoot(t)
 	src, err := os.ReadFile(filepath.Join(root, "internal/common/error_codes.go"))
 	if err != nil {
 		t.Fatalf("read error_codes.go: %v", err)
@@ -607,19 +595,7 @@ var printHelpMustAppearPhrases = []string{
 }
 
 func TestPrintHelp_ContentMigrationParity(t *testing.T) {
-	wd, _ := os.Getwd()
-	root := wd
-	for {
-		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
-			t.Skip("cannot locate repo root")
-			return
-		}
-		root = parent
-	}
+	root := repoRoot(t)
 	var combined strings.Builder
 	for _, dir := range []string{"cmd/cyoda/help/content/cli", "cmd/cyoda/help/content/config"} {
 		_ = filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
