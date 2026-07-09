@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -243,6 +244,19 @@ func isNumericValue(v any) bool {
 	return false
 }
 
+// textArg normalizes an operand for binding against a text-typed doc->>'path'
+// extraction. A Go bool cannot be encoded into text (OID 25) by pgx — it has no
+// bool->text encode plan — so a boolean operand is rendered as its text form
+// ("true"/"false"), which is exactly how doc->>'path' renders a stored JSON
+// boolean. This mirrors the lexicographic text comparison used for strings and
+// the memory/sqlite backends. Non-bool values pass through unchanged.
+func textArg(v any) any {
+	if b, ok := v.(bool); ok {
+		return strconv.FormatBool(b)
+	}
+	return v
+}
+
 // orderExpr returns the SQL expression used as the LHS of an ordering
 // comparison (Gt/Lt/Gte/Lte/Between). For numeric values it wraps the field
 // in cyoda_try_float8(...) so overflow/non-numeric content returns NULL
@@ -296,7 +310,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		}
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
-		return fmt.Sprintf("(%s IS NOT NULL AND %s = %s)", col, col, p), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s = %s)", col, col, p), []any{textArg(f.Value)}
 	case spi.FilterNe:
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
@@ -305,7 +319,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		}
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
-		return fmt.Sprintf("(%s IS NULL OR %s != %s)", col, col, p), []any{f.Value}
+		return fmt.Sprintf("(%s IS NULL OR %s != %s)", col, col, p), []any{textArg(f.Value)}
 	case spi.FilterGt:
 		return orderingOp(f, ">", counter)
 	case spi.FilterLt:
@@ -351,7 +365,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 					col, col, p1, p2), []any{f.Values[0], f.Values[1]}
 			}
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)",
-				col, col, p1, p2), []any{f.Values[0], f.Values[1]}
+				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
 		}
 		return "1=1", nil
 	}
@@ -368,7 +382,7 @@ func orderingOp(f spi.Filter, sqlOp string, counter *int) (string, []any) {
 	if numeric {
 		return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s::float8)", col, col, sqlOp, p), []any{f.Value}
 	}
-	return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s)", col, col, sqlOp, p), []any{f.Value}
+	return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s)", col, col, sqlOp, p), []any{textArg(f.Value)}
 }
 
 // escapeLike escapes LIKE wildcards (%, _, \) in a user-provided value

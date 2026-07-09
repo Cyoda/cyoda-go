@@ -54,6 +54,7 @@ const statsModelSampleDoc = `{
 	"price": 1.5,
 	"qty": 1,
 	"region": "EU",
+	"eligible": true,
 	"meta": {"source": "parity"},
 	"tags": ["a","b"]
 }`
@@ -403,6 +404,53 @@ func RunParityGroupedStats_WithCondition(t *testing.T, fixture BackendFixture) {
 	}
 	if b := findBucketByGroupKey(buckets, []client.GroupKeyEntry{{Path: "$.variantId", Value: stringValue("v2")}}); b == nil || b.Count != 1 {
 		t.Errorf("v2 bucket (filtered): got %+v, want count=1", b)
+	}
+}
+
+// RunParityGroupedStats_BoolCondition is the reported-bug guard: group-by a
+// data field, filtered by a JSON boolean data condition ($.eligible EQUALS
+// true). On postgres this previously 500'd ("cannot find encode plan" — a raw
+// Go bool bound against the text-typed doc->>'path' extraction); memory and
+// sqlite always answered it. Every backend must now return the same buckets.
+func RunParityGroupedStats_BoolCondition(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-stats-bool-cond"
+	const modelVersion = 1
+	setupStatsModel(t, c, modelName, modelVersion)
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":10,"eligible":true}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":20,"eligible":false}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v2","price":30,"eligible":true}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	// Data condition: $.eligible EQUALS a JSON boolean true.
+	buckets, err := c.QueryGroupedStats(t, modelName, modelVersion, client.GroupedStatsRequest{
+		GroupBy: []string{"$.variantId"},
+		Condition: &client.AggregationCond{
+			"type":         "simple",
+			"jsonPath":     "$.eligible",
+			"operatorType": "EQUALS",
+			"value":        true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("QueryGroupedStats (eligible EQUALS true): %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets (v1 eligible + v2 eligible), got %d: %+v", len(buckets), buckets)
+	}
+	if b := findBucketByGroupKey(buckets, []client.GroupKeyEntry{{Path: "$.variantId", Value: stringValue("v1")}}); b == nil || b.Count != 1 {
+		t.Errorf("v1 bucket (eligible=true): got %+v, want count=1", b)
+	}
+	if b := findBucketByGroupKey(buckets, []client.GroupKeyEntry{{Path: "$.variantId", Value: stringValue("v2")}}); b == nil || b.Count != 1 {
+		t.Errorf("v2 bucket (eligible=true): got %+v, want count=1", b)
 	}
 }
 

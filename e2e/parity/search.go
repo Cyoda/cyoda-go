@@ -60,6 +60,60 @@ func RunSearchSimpleCondition(t *testing.T, fixture BackendFixture) {
 	}
 }
 
+// RunSearchBoolCondition creates 3 entities with a boolean field and searches
+// with a JSON boolean value (EQUALS true, then NOT_EQUALS true). Guards the
+// postgres bool->text encode bug: a raw Go bool bound against the text-typed
+// doc->>'path' extraction failed to encode ("cannot find encode plan"), 500ing
+// the search. Memory and sqlite always handled it; this asserts all backends agree.
+func RunSearchBoolCondition(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-bool"
+	const modelVersion = 1
+	// Own model import so the schema declares the boolean `active` field
+	// (the shared search model has no bool field).
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Sample","active":true}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.ImportWorkflow(t, modelName, modelVersion, searchWorkflowJSON); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","active":true}`); err != nil {
+		t.Fatalf("CreateEntity Alice: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Bob","active":false}`); err != nil {
+		t.Fatalf("CreateEntity Bob: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Carol","active":true}`); err != nil {
+		t.Fatalf("CreateEntity Carol: %v", err)
+	}
+
+	// EQUALS a JSON boolean true -> Alice, Carol.
+	eqCond := `{"type":"simple","jsonPath":"$.active","operatorType":"EQUALS","value":true}`
+	eqResults, err := c.SyncSearch(t, modelName, modelVersion, eqCond)
+	if err != nil {
+		t.Fatalf("SyncSearch (EQUALS true): %v", err)
+	}
+	if len(eqResults) != 2 {
+		t.Errorf("EQUALS true: expected 2 results (Alice, Carol), got %d", len(eqResults))
+	}
+
+	// NOT_EQUALS a JSON boolean true -> Bob (same text-branch encode path).
+	neCond := `{"type":"simple","jsonPath":"$.active","operatorType":"NOT_EQUAL","value":true}`
+	neResults, err := c.SyncSearch(t, modelName, modelVersion, neCond)
+	if err != nil {
+		t.Fatalf("SyncSearch (NOT_EQUAL true): %v", err)
+	}
+	if len(neResults) != 1 {
+		t.Errorf("NOT_EQUAL true: expected 1 result (Bob), got %d", len(neResults))
+	}
+}
+
 // RunSearchLifecycleCondition creates 2 entities, fires a manual transition
 // on one to move it to APPROVED, then searches by lifecycle state==APPROVED
 // and asserts 1 result.

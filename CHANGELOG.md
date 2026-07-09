@@ -177,6 +177,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Boolean search conditions on postgres no longer 500** — a `simple` search
+  condition comparing a JSON path to a boolean (`{"operatorType":"EQUALS","value":true}`)
+  returned `500 SERVER_ERROR` (`unable to encode true into text format for text (OID 25):
+  cannot find encode plan`) on the postgres backend. The query planner bound a raw Go
+  `bool` against the text-typed `doc->>'path'` extraction, which pgx cannot encode; the
+  operand is now rendered as its text form (`"true"`/`"false"`), matching the lexicographic
+  text comparison already used for strings and the memory/sqlite backends. Affected normal
+  searches and grouped-stats queries alike (shared query planner); memory and sqlite were
+  never affected. ([#399](https://github.com/Cyoda-platform/cyoda-go/issues/399))
+
 - **OIDC / admin op error envelope** — the 7 OIDC provider ops and
   `searchEntityAuditEvents` now declare `application/problem+json` `ProblemDetail`
   errors in the spec, matching the server. `getTechnicalUserToken` retains the
