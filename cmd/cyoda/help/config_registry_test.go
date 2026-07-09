@@ -1,6 +1,8 @@
 package help
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -58,6 +60,41 @@ func TestBuildConfigRegistry_IncludesPluginVars(t *testing.T) {
 		t.Error("root var CYODA_HTTP_PORT missing from aggregate")
 	}
 	// memory implements no ConfigVars() — must not blow up (skipped).
+}
+
+// TestConfigAll_Complete is the authoritative completeness guard: every
+// CYODA_* var referenced in source (cmd, app, plugins, internal) must
+// appear in the aggregate registry rendered by `cyoda help config all`.
+// Nothing can be added to a plugin's parseConfig without also showing up
+// here.
+func TestConfigAll_Complete(t *testing.T) {
+	root := repoRoot(t) // reuse the go.mod-walk helper from TestConfig_EnvVarCoverage
+	scanned := scanEnvVarsInGoSource(t, root, []string{"cmd", "app", "plugins", "internal"})
+
+	registry := map[string]bool{}
+	for _, v := range buildConfigRegistry() {
+		registry[v.Name] = true
+	}
+
+	var missing []string
+	for name := range scanned {
+		if isTestOnlyEnv(name) {
+			continue
+		}
+		if strings.HasSuffix(name, "_") {
+			continue // comment fragment, e.g. CYODA_POSTGRES_
+		}
+		if strings.HasSuffix(name, "_FILE") {
+			continue // derived variant of a base var
+		}
+		if !registry[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("CYODA_* vars in source but absent from `config all`:\n  %s", strings.Join(missing, "\n  "))
+	}
 }
 
 func TestPluginVarTopic(t *testing.T) {

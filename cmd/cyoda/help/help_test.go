@@ -461,11 +461,9 @@ func isTestOnlyEnv(v string) bool {
 	return false
 }
 
-// TestConfig_EnvVarCoverage asserts every CYODA_* env var referenced in
-// source also appears in cmd/cyoda/help/content/config/**/*.md (or
-// config.md). Scope: cmd, app, plugins, internal (excluding _test.go).
-func TestConfig_EnvVarCoverage(t *testing.T) {
-	// Walk up from getwd until we find go.mod.
+// repoRoot walks up from the current working directory until it finds
+// go.mod, returning that directory. Skips the test if no go.mod is found.
+func repoRoot(t *testing.T) string {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -473,15 +471,22 @@ func TestConfig_EnvVarCoverage(t *testing.T) {
 	root := wd
 	for {
 		if _, statErr := os.Stat(filepath.Join(root, "go.mod")); statErr == nil {
-			break
+			return root
 		}
 		parent := filepath.Dir(root)
 		if parent == root {
 			t.Skip("cannot locate repo root; test skipped")
-			return
+			return ""
 		}
 		root = parent
 	}
+}
+
+// TestConfig_EnvVarCoverage asserts every CYODA_* env var referenced in
+// source also appears in cmd/cyoda/help/content/config/**/*.md (or
+// config.md). Scope: cmd, app, plugins, internal (excluding _test.go).
+func TestConfig_EnvVarCoverage(t *testing.T) {
+	root := repoRoot(t)
 
 	referenced := scanEnvVarsInGoSource(t, root, []string{"cmd", "app", "plugins", "internal"})
 	documented := scanEnvVarsInConfigDocs(t, filepath.Join(root, "cmd/cyoda/help/content"))
