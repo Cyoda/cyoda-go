@@ -55,6 +55,9 @@ var actionRegistry = map[string]map[string]ActionEntry{
 	"workflows.schema-version": {
 		"versions": {Handler: emitWorkflowSchemaVersions, ContentType: "application/json"},
 	},
+	"config": {
+		"all": {Handler: writeConfigAllJSON, ContentType: "application/json"},
+	},
 }
 
 // LookupAction returns the action entry for a topic, if registered.

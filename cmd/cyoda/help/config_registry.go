@@ -1,8 +1,12 @@
 package help
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -172,4 +176,53 @@ func buildConfigRegistry() []ConfigVar {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+// configAllEnvelope is the JSON shape for `cyoda help config all
+// --format=json` and `GET /help/config/all`.
+type configAllEnvelope struct {
+	Schema  int         `json:"schema"`
+	Version string      `json:"version"`
+	Vars    []ConfigVar `json:"vars"`
+}
+
+// writeConfigAllJSONVersion writes the config-all JSON envelope with an
+// explicit version. Used by the CLI special-case in command.go, which
+// has the real binary version in scope.
+func writeConfigAllJSONVersion(w io.Writer, version string) int {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(configAllEnvelope{Schema: 1, Version: version, Vars: buildConfigRegistry()}); err != nil {
+		fmt.Fprintf(w, "cyoda help config all: encode: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// writeConfigAllJSON is the action-registry entry (HTTP + generic CLI
+// action dispatch); version is unknown here, so it is emitted empty.
+func writeConfigAllJSON(w io.Writer) int { return writeConfigAllJSONVersion(w, "") }
+
+// writeConfigAllText renders the full config-var registry as a
+// tab-aligned table grouped by topic, for `cyoda help config all` on a
+// terminal.
+func writeConfigAllText(w io.Writer) int {
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	var topic string
+	for _, v := range buildConfigRegistry() {
+		if v.Topic != topic {
+			topic = v.Topic
+			fmt.Fprintf(tw, "\n[%s]\n", topic)
+		}
+		def := v.Default
+		if v.Required {
+			def = "(required)"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", v.Name, def, v.Description)
+	}
+	if err := tw.Flush(); err != nil {
+		fmt.Fprintf(w, "cyoda help config all: %v\n", err)
+		return 1
+	}
+	return 0
 }

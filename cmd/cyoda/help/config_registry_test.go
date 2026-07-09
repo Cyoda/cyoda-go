@@ -1,6 +1,8 @@
 package help
 
 import (
+	"bytes"
+	"encoding/json"
 	"sort"
 	"strings"
 	"testing"
@@ -107,6 +109,44 @@ func TestPluginVarTopic(t *testing.T) {
 	for in, want := range cases {
 		if got := pluginVarTopic(in[0], in[1]); got != want {
 			t.Errorf("pluginVarTopic(%q,%q)=%q want %q", in[0], in[1], got, want)
+		}
+	}
+}
+
+func TestWriteConfigAllJSON_Envelope(t *testing.T) {
+	var buf bytes.Buffer
+	if rc := writeConfigAllJSON(&buf); rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	var env struct {
+		Schema  int         `json:"schema"`
+		Version string      `json:"version"`
+		Vars    []ConfigVar `json:"vars"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if env.Schema != 1 || len(env.Vars) < 40 {
+		t.Fatalf("schema=%d vars=%d", env.Schema, len(env.Vars))
+	}
+	names := map[string]bool{}
+	for _, v := range env.Vars {
+		names[v.Name] = true
+	}
+	if !names["CYODA_HTTP_PORT"] || !names["CYODA_SQLITE_PATH"] {
+		t.Error("json missing expected vars")
+	}
+}
+
+func TestWriteConfigAllText_ListsVars(t *testing.T) {
+	var buf bytes.Buffer
+	if rc := writeConfigAllText(&buf); rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	s := buf.String()
+	for _, want := range []string{"CYODA_HTTP_PORT", "CYODA_CLUSTER_ENABLED", "CYODA_SQLITE_PATH", "cluster", "database"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("text output missing %q", want)
 		}
 	}
 }

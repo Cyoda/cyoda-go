@@ -2,6 +2,7 @@ package help
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -512,5 +513,22 @@ stability: stable
 	}
 	if !strings.Contains(s, "`cyoda help x child`") {
 		t.Errorf("markdown subtopic entry missing: %q", s)
+	}
+}
+
+func TestRunHelp_ConfigAll(t *testing.T) {
+	var text bytes.Buffer
+	if rc := RunHelp(DefaultTree, []string{"config", "all"}, &text, "v0.0.0", false, ""); rc != 0 {
+		t.Fatalf("text rc=%d", rc)
+	}
+	if !strings.Contains(text.String(), "CYODA_HTTP_PORT") {
+		t.Error("config all (text) missing vars")
+	}
+	var js bytes.Buffer
+	if rc := RunHelp(DefaultTree, []string{"config", "all", "--format=json"}, &js, "v0.0.0", false, ""); rc != 0 {
+		t.Fatalf("json rc=%d", rc)
+	}
+	if !json.Valid(js.Bytes()) {
+		t.Error("config all --format=json not valid JSON")
 	}
 }
