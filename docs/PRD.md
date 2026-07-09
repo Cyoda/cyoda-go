@@ -228,12 +228,13 @@ Each entity follows a workflow — a directed graph of states connected by trans
 | Type | Trigger | Gating |
 |------|---------|--------|
 | **Automated** | Fires on state entry when criteria are met | Criteria evaluation |
-| **Manual** | Explicit API call (`POST /entity/{entityId}/{transition}`) | Criteria evaluation |
+| **Manual** | Explicit API call (`PUT /entity/{format}/{entityId}/{transition}`) | Criteria evaluation |
 
 #### Loopback
 
 Loopback is an operation, not a transition type. A client can invoke
-`PUT /entity/{id}?loopback` to re-evaluate the entity's automated
+`PUT /entity/{format}/{entityId}` (an update carrying a virtual loopback
+transition) to re-evaluate the entity's automated
 transitions from its current state without forcing a manual transition.
 Useful for retriggering workflow logic after the entity's data has
 changed via a non-workflow path (e.g. an external processor's
@@ -272,13 +273,13 @@ Processors may create or mutate other entities, triggering further workflow trav
 
 ### Audit Trail
 
-12 event types track the full state machine narrative:
+14 event types track the full state machine narrative:
 
-- Workflow selection (selected, not found)
-- Transition attempts (attempted, made, denied, failed)
-- Processor execution (dispatched, succeeded, failed)
-- Criteria evaluation results
-- Cancellation events
+- Machine lifecycle — `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`
+- Workflow selection — `WORKFLOW_FOUND`, `WORKFLOW_NOT_FOUND`, `WORKFLOW_SKIP`
+- Transitions — `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`
+- Processing — `PROCESS_NOT_MATCH_CRITERION`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`
+- Manual overrides — `CANCEL`, `FORCE_SUCCESS`
 
 Filterable by event type, severity, time range, transaction ID. Cursor-based pagination.
 
@@ -400,22 +401,22 @@ Calculation members (external compute nodes) are scoped to their authenticating 
 
 ### Synchronous (Direct) Search
 
-`POST /search/{entityName}/{modelVersion}` — Evaluates predicate conditions against entity data and returns results immediately.
+`POST /search/direct/{entityName}/{modelVersion}` — Evaluates predicate conditions against entity data and returns results immediately.
 
-### Asynchronous (Snapshot) Search
+### Asynchronous Search
 
-Snapshot search provides a job-based lifecycle for longer-running queries:
+Async search provides a job-based lifecycle for longer-running queries:
 
 ```
-SUBMIT ──► RUNNING ──► SUCCESSFUL ──► (retrieve results) ──► DELETE
+SUBMIT ──► RUNNING ──► SUCCESSFUL ──► (retrieve results)
                   │
                   └──► FAILED / CANCELLED
 ```
 
-- `POST /search/snapshot` — Submit search, receive job ID
-- `GET /search/async/{jobId}` — Poll status
-- Retrieve results with pagination
-- `DELETE /search/async/{jobId}` — Cancel/cleanup
+- `POST /search/async/{entityName}/{modelVersion}` — Submit search, receive job ID
+- `GET /search/async/{jobId}/status` — Poll status
+- `GET /search/async/{jobId}` — Retrieve results with pagination
+- `PUT /search/async/{jobId}/cancel` — Cancel a running job
 
 **Multi-node persistence:** In PostgreSQL mode, snapshot jobs and results are stored in `search_jobs` and `search_job_results` tables. Any node can create or retrieve snapshots. In memory mode, snapshots are node-local.
 
@@ -536,9 +537,9 @@ for mode-specific semantics.
 | **Token issuance** | `POST /oauth/token` | `client_credentials` grant |
 | **OBO exchange** | `POST /oauth/token` | RFC 8693 token exchange — a service acting on behalf of a user |
 | **JWKS** | `GET /.well-known/jwks.json` | Public key discovery for token verification |
-| **M2M clients** | `POST/DELETE /auth/m2m/...` | Create, delete, reset secret for machine-to-machine clients |
-| **Key management** | `POST/DELETE /auth/keys/...` | Issue, invalidate, reactivate, delete signing key pairs |
-| **Trusted keys** | `POST/DELETE /auth/trusted/...` | Register external signing keys for cross-system trust |
+| **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create, delete, reset secret for machine-to-machine clients |
+| **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs |
+| **Trusted keys** | `POST/GET/DELETE /oauth/keys/trusted/...` | Register external signing keys for cross-system trust |
 | **Bootstrap client** | `CYODA_BOOTSTRAP_CLIENT_ID` | Pre-configured M2M client at startup (solves chicken-and-egg) |
 
 ### Token Claims
@@ -565,7 +566,7 @@ In JWT mode, each tenant can register one or more external Identity Providers (I
 **What you can do with OIDC providers:**
 
 - **Register** a provider by supplying its URL, accepted issuer values, expected audiences, and (optionally) a custom roles claim name.
-- **List, get, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints, `ROLE_ADMIN` required).
+- **List, register, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints, `ROLE_ADMIN` required).
 - **Invalidate** a provider to suspend JWT acceptance without removing the record; **reactivate** to restore it.
 - **Reload** to force a fresh JWKS fetch and evict the node-local cache — useful after an IdP rotates its signing keys outside the normal TTL window.
 
@@ -687,12 +688,12 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 | **Entity Stats** | `GET /entity/stats/...` | Count, state distribution per model |
 | **Model Management** | `POST/GET/DELETE /model/...` | Import, export, lock, unlock, delete, validate, changeLevel |
 | **Workflow** | `GET/POST /model/.../workflow/{export,import}` | Import/export workflow definitions |
-| **Search** | `POST /search/{direct,async}/...` | Synchronous and snapshot search |
+| **Search** | `POST /search/{direct,async}/...` | Synchronous and async search |
 | **Audit** | `GET /audit/entity/{entityId}` | Entity change history, SM audit trail |
 | **Messaging** | `POST/GET/DELETE /message/...` | Edge message store |
 | **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
 | **Account** | `GET /account` | Account info, subscriptions |
-| **Cluster** | `GET /cluster/members/calculation/...` | Connected member registry |
+| **Cluster** | _(not exposed over REST)_ | Connected calculation-member registry is internal-only (`contract.ClusterService`) |
 | **Admin** | `GET/POST /admin/log-level` | Runtime log level control |
 
 All REST responses follow RFC 9457 (Problem Details) for errors.
