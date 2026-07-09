@@ -899,3 +899,32 @@ func TestDefaultTree_AuthLandingListsAllChildren(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultTree_ConfigClusterSubtopic verifies the cluster/dispatch env
+// vars live under their own config.cluster subtopic (mirroring
+// auth/cors/database/grpc/schema) and that config.md's see_also lists both
+// config.cluster and config.cors.
+func TestDefaultTree_ConfigClusterSubtopic(t *testing.T) {
+	node := DefaultTree.Find([]string{"config", "cluster"})
+	if node == nil {
+		t.Fatal("config.cluster topic not found")
+	}
+	// The cluster/dispatch vars must now live under config.cluster, not config.
+	body := string(node.Body)
+	for _, want := range []string{"CYODA_CLUSTER_ENABLED", "CYODA_SEED_NODES", "CYODA_DISPATCH_WAIT_TIMEOUT"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("config.cluster body missing %s", want)
+		}
+	}
+	// config.md must list cluster (frontmatter see_also drives Descriptor.SeeAlso).
+	cfg := DefaultTree.Find([]string{"config"})
+	if cfg == nil {
+		t.Fatal("config topic not found")
+	}
+	joined := strings.Join(cfg.Descriptor().SeeAlso, ",")
+	for _, want := range []string{"config.cluster", "config.cors"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("config see_also missing %s (got %q)", want, joined)
+		}
+	}
+}
