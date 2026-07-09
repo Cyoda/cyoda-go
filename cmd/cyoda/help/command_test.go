@@ -524,6 +524,12 @@ func TestRunHelp_ConfigAll(t *testing.T) {
 	if !strings.Contains(text.String(), "CYODA_HTTP_PORT") {
 		t.Error("config all (text) missing vars")
 	}
+	if json.Valid(text.Bytes()) {
+		t.Error("config all (no --format) should emit the text table, not JSON")
+	}
+	if !strings.Contains(text.String(), "[server]") {
+		t.Error("config all (text) missing topic group header")
+	}
 	var js bytes.Buffer
 	if rc := RunHelp(DefaultTree, []string{"config", "all", "--format=json"}, &js, "v0.0.0", false, ""); rc != 0 {
 		t.Fatalf("json rc=%d", rc)
