@@ -295,7 +295,9 @@ func nextPlaceholder(counter *int) string {
 // content returns NULL rather than raising 22003, and so a numeric operand is
 // compared numerically against the text-typed doc->>'path' extraction (a raw
 // numeric bind against a text column fails to encode) — the regex+EXCEPTION
-// helper is defined in migration 000002. String values keep text comparison.
+// helper is defined in migration 000002. String values keep text comparison;
+// boolean operands are rendered to their text form ("true"/"false") via textArg
+// so they encode against the text-typed extraction (see textArg).
 func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 	switch f.Op {
 	case spi.FilterEq:

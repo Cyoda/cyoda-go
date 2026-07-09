@@ -2,7 +2,9 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 171
+// Total parity scenarios: 196 (guarded by TestParityScenarioCount — bump
+// wantParityScenarioCount in registry_count_test.go when adding/removing an
+// entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
