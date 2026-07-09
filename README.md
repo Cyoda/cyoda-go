@@ -206,6 +206,8 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.
 
+Run `cyoda help config all` for the complete env-var reference (add `--format=json` for machine-readable output); `cyoda help config cluster` covers multi-node/dispatch vars.
+
 | Goal                          | Link                                              |
 |-------------------------------|---------------------------------------------------|
 | Build an app fast (Claude Code) | [github.com/cyoda/cyoda-skills](https://github.com/cyoda/cyoda-skills) — install the cyoda-skills plugin and use `/cyoda:app` to scaffold |

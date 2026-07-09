@@ -29,6 +29,7 @@ All configuration is environment variables prefixed with `CYODA_`. Topics group 
 - `config.grpc` — gRPC listener and compute-node credentials
 - `config.schema` — schema-extension log tuning
 - `config.cluster` — multi-node clustering, gossip, cross-node dispatch
+- `config all` — flat listing of every variable (append `--format=json` for the docs-site JSON)
 
 ## DESCRIPTION
 
