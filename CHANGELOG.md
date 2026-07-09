@@ -42,8 +42,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   New error codes: `UNIQUE_VIOLATION` (409), `INVALID_UNIQUE_KEY` (422),
   `COMPOSITE_KEY_UNSUPPORTED` (422), `INVALID_UNIQUE_KEY_DEFINITION` (422).
 
-- **Search result sorting** — both search endpoints (`POST /api/entity/{entityName}/{modelVersion}/search`
-  and the async variant) now accept one or more `sort` query parameters (HTTP) or a structured
+- **Search result sorting** — both search endpoints (`POST /api/search/direct/{entityName}/{modelVersion}`
+  and the async variant `POST /api/search/async/{entityName}/{modelVersion}`) now accept one or more
+  `sort` query parameters (HTTP) or a structured
   `orderBy` array (gRPC) to control result order. HTTP grammar: `[@]path[:asc|desc]` — bare
   dotted path for scalar data fields; `@`-prefixed name for meta fields (`state`, `creationDate`,
   `lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`). Ordering is canonical

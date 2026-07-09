@@ -191,7 +191,7 @@ This call is idempotent — it replaces the model's entire key list. The keys ar
 Search endpoints accept one or more `sort` query parameters to order results by scalar data or meta fields:
 
 ```
-GET /api/entity/{entityName}/{modelVersion}/search?sort=price:asc&sort=@creationDate:desc
+POST /api/search/direct/{entityName}/{modelVersion}?sort=price:asc&sort=@creationDate:desc
 ```
 
 Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-data field; the `@` prefix sorts by a meta field. Direction defaults to `asc`. Repetition order is sort precedence; `entity_id` is always the final tiebreaker. Absent/null values sort last.

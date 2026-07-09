@@ -10,8 +10,8 @@ spec and implemented code.
 ### Endpoints
 
 ```
-POST /api/entity/{entityName}/{modelVersion}/search
-POST /api/entity/{entityName}/{modelVersion}/search/async
+POST /api/search/direct/{entityName}/{modelVersion}
+POST /api/search/async/{entityName}/{modelVersion}
 ```
 
 Both endpoints accept the same `sort` query parameter — repeatable, in
