@@ -29,7 +29,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_MODEL_CACHE_LEASE", Topic: "server", Type: "duration", Default: "5m", Description: "Model cache lease duration; actual expiry is jittered ±10%."},
 	{Name: "CYODA_STORAGE_BACKEND", Topic: "server", Type: "string", Default: "memory", Description: "Storage backend selection (memory|sqlite|postgres)."},
 	{Name: "CYODA_PROFILES", Topic: "server", Type: "csv", Default: "", Description: "Comma-separated profile names; loads cyoda.<name>.env files before the process's own environment is consulted."},
-	{Name: "CYODA_DEBUG", Topic: "server", Type: "bool", Default: "false", Description: "Reserved; not currently read by the server."},
+	{Name: "CYODA_DEBUG", Topic: "server", Type: "", Default: "", Description: "Reserved; not currently read by the server."},
 
 	// --- admin ---
 	{Name: "CYODA_ADMIN_PORT", Topic: "admin", Type: "int", Default: "9091", Description: "Admin port for health and metrics."},
@@ -86,9 +86,9 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_BOOTSTRAP_USER_ID", Topic: "auth", Type: "string", Default: "admin", Description: "User ID for the bootstrap client."},
 	{Name: "CYODA_BOOTSTRAP_ROLES", Topic: "auth", Type: "csv", Default: "ROLE_ADMIN,ROLE_M2M", Description: "Comma-separated roles granted to the bootstrap client."},
 	{Name: "CYODA_OIDC_REQUIRE_HTTPS", Topic: "auth", Type: "bool", Default: "true", Description: "Reject federated OIDC provider registration when the well-known config URI is not https."},
-	{Name: "CYODA_OIDC_CONNECT_TIMEOUT_MS", Topic: "auth", Type: "duration", Default: "5s", Description: "TCP connect timeout for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_SOCKET_TIMEOUT_MS", Topic: "auth", Type: "duration", Default: "5s", Description: "HTTP read timeout for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", Topic: "auth", Type: "duration", Default: "5s", Description: "Connection-pool request timeout for OIDC discovery and JWKS endpoint fetches."},
+	{Name: "CYODA_OIDC_CONNECT_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "TCP connect timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
+	{Name: "CYODA_OIDC_SOCKET_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "HTTP read timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
+	{Name: "CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "Connection-pool request timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
 	{Name: "CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", Topic: "auth", Type: "bool", Default: "false", Description: "Bypass the SSRF blocklist so private-network OIDC providers can be registered; test/dev only, never in production."},
 	{Name: "CYODA_OIDC_ROLES_CLAIM", Topic: "auth", Type: "string", Default: "roles", Description: "JWT claim name from which role values are read for tokens issued by a federated OIDC provider."},
 
