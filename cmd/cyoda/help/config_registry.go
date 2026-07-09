@@ -17,8 +17,8 @@ import (
 type ConfigVar struct {
 	Name        string `json:"name"`
 	Topic       string `json:"topic"`
-	Type        string `json:"type,omitempty"`     // int|duration|bool|string|csv; "" if unknown (plugin vars)
-	Default     string `json:"default,omitempty"`  // rendered default; "" for secrets/unset
+	Type        string `json:"type,omitempty"`    // int|duration|bool|string|csv; "" if unknown (plugin vars)
+	Default     string `json:"default,omitempty"` // rendered default; "" for secrets/unset
 	Required    bool   `json:"required,omitempty"`
 	Description string `json:"description"`
 }
