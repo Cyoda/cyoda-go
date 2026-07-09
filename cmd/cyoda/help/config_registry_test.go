@@ -138,6 +138,26 @@ func TestWriteConfigAllJSON_Envelope(t *testing.T) {
 	}
 }
 
+func TestWriteConfigAllText_ShowsType(t *testing.T) {
+	// The text table should carry the Type column the JSON envelope has, so
+	// CLI users see int/duration/bool without switching to --format=json.
+	var buf bytes.Buffer
+	if rc := writeConfigAllText(&buf); rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	s := buf.String()
+	// CYODA_HTTP_PORT is an int root var; its row must show the type.
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, "CYODA_HTTP_PORT") {
+			if !strings.Contains(line, "int") {
+				t.Errorf("CYODA_HTTP_PORT row missing type: %q", line)
+			}
+			return
+		}
+	}
+	t.Error("CYODA_HTTP_PORT row not found")
+}
+
 func TestWriteConfigAllText_ListsVars(t *testing.T) {
 	var buf bytes.Buffer
 	if rc := writeConfigAllText(&buf); rc != 0 {

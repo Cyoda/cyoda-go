@@ -516,6 +516,22 @@ stability: stable
 	}
 }
 
+func TestRunHelp_ConfigAll_UnsupportedFormat(t *testing.T) {
+	// config all supports only text (default) and json. markdown/yaml are
+	// valid help formats generally but meaningless for this flat listing —
+	// reject them rather than silently returning the text table.
+	for _, f := range []string{"markdown", "yaml"} {
+		var buf bytes.Buffer
+		rc := RunHelp(DefaultTree, []string{"config", "all", "--format=" + f}, &buf, "v0.0.0", false, "")
+		if rc != 2 {
+			t.Errorf("config all --format=%s: rc=%d, want 2", f, rc)
+		}
+		if !strings.Contains(buf.String(), "text or json") {
+			t.Errorf("config all --format=%s: missing guidance, got %q", f, buf.String())
+		}
+	}
+}
+
 func TestRunHelp_ConfigAll(t *testing.T) {
 	var text bytes.Buffer
 	if rc := RunHelp(DefaultTree, []string{"config", "all"}, &text, "v0.0.0", false, ""); rc != 0 {

@@ -218,7 +218,7 @@ func writeConfigAllText(w io.Writer) int {
 		if v.Required {
 			def = "(required)"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", v.Name, def, v.Description)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", v.Name, v.Type, def, v.Description)
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(w, "cyoda help config all: %v\n", err)

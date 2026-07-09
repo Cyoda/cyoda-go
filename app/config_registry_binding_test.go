@@ -28,7 +28,17 @@ var preConfigVars = map[string]bool{
 
 // durComponentRe splits a time.Duration.String() output into its
 // (value, unit) components, e.g. "1h0m0s" -> [{1 h} {0 m} {0 s}].
-var durComponentRe = regexp.MustCompile(`(\d+)(h|ms|us|ns|m|s)`)
+var durComponentRe = regexp.MustCompile(`(\d+)(h|ms|µs|ns|m|s)`)
+
+// TestRenderDuration_Microseconds guards the microsecond unit token: Go's
+// time.Duration.String() spells microseconds "µs" (U+00B5), not "us", so the
+// component regex must match "µs" or a whole-microsecond duration renders to "".
+// Latent for current config defaults (none are sub-millisecond) but correct.
+func TestRenderDuration_Microseconds(t *testing.T) {
+	if got := renderDuration(500 * time.Microsecond); got != "500µs" {
+		t.Errorf("renderDuration(500µs) = %q, want \"500µs\"", got)
+	}
+}
 
 // renderDuration normalizes time.Duration.String() to the canonical form used
 // by the root ConfigVar table: trailing zero-value unit components are
