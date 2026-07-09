@@ -1,5 +1,12 @@
 package help
 
+import (
+	"sort"
+	"strings"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
+
 // ConfigVar documents one CYODA_* configuration variable for the
 // `cyoda help config all` listing. Values are never rendered — only
 // names, types, defaults, and descriptions.
@@ -107,5 +114,62 @@ var rootConfigVars = []ConfigVar{
 func RootConfigVars() []ConfigVar {
 	out := make([]ConfigVar, len(rootConfigVars))
 	copy(out, rootConfigVars)
+	return out
+}
+
+// pluginVarTopic maps a plugin-contributed var to its help subtopic.
+// Schema-extension vars are shared by SQL backends; SQLite/Postgres
+// vars group under "database". Unknown prefixes fall back to the
+// plugin name so a new backend is never silently mis-grouped.
+func pluginVarTopic(varName, pluginName string) string {
+	switch {
+	case strings.HasPrefix(varName, "CYODA_SCHEMA_"):
+		return "schema"
+	case strings.HasPrefix(varName, "CYODA_SQLITE_"), strings.HasPrefix(varName, "CYODA_POSTGRES_"):
+		return "database"
+	default:
+		return pluginName
+	}
+}
+
+// buildConfigRegistry assembles the full config-var registry at call
+// time: the root table plus every registered DescribablePlugin's
+// ConfigVars(). Deduped by name (root wins). Sorted by topic, then name.
+func buildConfigRegistry() []ConfigVar {
+	out := make([]ConfigVar, 0, len(rootConfigVars))
+	seen := map[string]bool{}
+	for _, v := range rootConfigVars {
+		out = append(out, v)
+		seen[v.Name] = true
+	}
+	for _, name := range spi.RegisteredPlugins() {
+		p, ok := spi.GetPlugin(name)
+		if !ok {
+			continue
+		}
+		dp, ok := p.(spi.DescribablePlugin)
+		if !ok {
+			continue // e.g. memory — no config vars
+		}
+		for _, cv := range dp.ConfigVars() {
+			if seen[cv.Name] {
+				continue
+			}
+			seen[cv.Name] = true
+			out = append(out, ConfigVar{
+				Name:        cv.Name,
+				Topic:       pluginVarTopic(cv.Name, name),
+				Default:     cv.Default,
+				Required:    cv.Required,
+				Description: cv.Description,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Topic != out[j].Topic {
+			return out[i].Topic < out[j].Topic
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out
 }
