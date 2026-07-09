@@ -186,22 +186,19 @@ type configAllEnvelope struct {
 	Vars    []ConfigVar `json:"vars"`
 }
 
-// writeConfigAllJSONVersion writes the config-all JSON envelope with an
-// explicit version. Used by the CLI special-case in command.go, which
-// has the real binary version in scope.
-func writeConfigAllJSONVersion(w io.Writer, version string) int {
+// writeConfigAllJSON writes the config-all JSON envelope. The cyoda build
+// version is self-reported via binaryVersion() (the same helper cloudevents
+// json uses), so the output is identical whether reached from the CLI
+// (--format=json) or over HTTP (GET /help/config/all) — no entry-point drift.
+func writeConfigAllJSON(w io.Writer) int {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(configAllEnvelope{Schema: 1, Version: version, Vars: buildConfigRegistry()}); err != nil {
+	if err := enc.Encode(configAllEnvelope{Schema: 1, Version: binaryVersion(), Vars: buildConfigRegistry()}); err != nil {
 		fmt.Fprintf(w, "cyoda help config all: encode: %v\n", err)
 		return 1
 	}
 	return 0
 }
-
-// writeConfigAllJSON is the action-registry entry (HTTP + generic CLI
-// action dispatch); version is unknown here, so it is emitted empty.
-func writeConfigAllJSON(w io.Writer) int { return writeConfigAllJSONVersion(w, "") }
 
 // writeConfigAllText renders the full config-var registry as a
 // tab-aligned table grouped by topic, for `cyoda help config all` on a
