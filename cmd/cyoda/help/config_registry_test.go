@@ -129,6 +129,11 @@ func TestWriteConfigAllJSON_Envelope(t *testing.T) {
 	if env.Schema != 1 || len(env.Vars) < 40 {
 		t.Fatalf("schema=%d vars=%d", env.Schema, len(env.Vars))
 	}
+	// version is self-reported via binaryVersion() (same helper cloudevents
+	// json uses), so it is populated over HTTP too — never empty.
+	if env.Version == "" || env.Version != binaryVersion() {
+		t.Errorf("version = %q, want binaryVersion() = %q", env.Version, binaryVersion())
+	}
 	names := map[string]bool{}
 	for _, v := range env.Vars {
 		names[v.Name] = true

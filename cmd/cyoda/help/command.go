@@ -60,7 +60,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 	if len(positional) == 2 && positional[0] == "config" && positional[1] == "all" {
 		switch format {
 		case "json":
-			return writeConfigAllJSONVersion(out, version)
+			return writeConfigAllJSON(out)
 		case "auto", "", "text":
 			return writeConfigAllText(out)
 		default:

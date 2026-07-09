@@ -553,4 +553,12 @@ func TestRunHelp_ConfigAll(t *testing.T) {
 	if !json.Valid(js.Bytes()) {
 		t.Error("config all --format=json not valid JSON")
 	}
+	// CLI --format=json and the HTTP action must emit identical bytes — same
+	// registry, same self-reported version — so the resource doesn't differ
+	// by entry point.
+	var action bytes.Buffer
+	writeConfigAllJSON(&action)
+	if js.String() != action.String() {
+		t.Error("config all --format=json (CLI) differs from the HTTP action output; must be identical")
+	}
 }
