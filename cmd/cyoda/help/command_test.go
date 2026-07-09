@@ -2,6 +2,7 @@ package help
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -512,5 +513,44 @@ stability: stable
 	}
 	if !strings.Contains(s, "`cyoda help x child`") {
 		t.Errorf("markdown subtopic entry missing: %q", s)
+	}
+}
+
+func TestRunHelp_ConfigAll_UnsupportedFormat(t *testing.T) {
+	// config all supports only text (default) and json. markdown/yaml are
+	// valid help formats generally but meaningless for this flat listing —
+	// reject them rather than silently returning the text table.
+	for _, f := range []string{"markdown", "yaml"} {
+		var buf bytes.Buffer
+		rc := RunHelp(DefaultTree, []string{"config", "all", "--format=" + f}, &buf, "v0.0.0", false, "")
+		if rc != 2 {
+			t.Errorf("config all --format=%s: rc=%d, want 2", f, rc)
+		}
+		if !strings.Contains(buf.String(), "text or json") {
+			t.Errorf("config all --format=%s: missing guidance, got %q", f, buf.String())
+		}
+	}
+}
+
+func TestRunHelp_ConfigAll(t *testing.T) {
+	var text bytes.Buffer
+	if rc := RunHelp(DefaultTree, []string{"config", "all"}, &text, "v0.0.0", false, ""); rc != 0 {
+		t.Fatalf("text rc=%d", rc)
+	}
+	if !strings.Contains(text.String(), "CYODA_HTTP_PORT") {
+		t.Error("config all (text) missing vars")
+	}
+	if json.Valid(text.Bytes()) {
+		t.Error("config all (no --format) should emit the text table, not JSON")
+	}
+	if !strings.Contains(text.String(), "[server]") {
+		t.Error("config all (text) missing topic group header")
+	}
+	var js bytes.Buffer
+	if rc := RunHelp(DefaultTree, []string{"config", "all", "--format=json"}, &js, "v0.0.0", false, ""); rc != 0 {
+		t.Fatalf("json rc=%d", rc)
+	}
+	if !json.Valid(js.Bytes()) {
+		t.Error("config all --format=json not valid JSON")
 	}
 }

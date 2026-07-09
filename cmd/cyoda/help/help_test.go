@@ -461,11 +461,9 @@ func isTestOnlyEnv(v string) bool {
 	return false
 }
 
-// TestConfig_EnvVarCoverage asserts every CYODA_* env var referenced in
-// source also appears in cmd/cyoda/help/content/config/**/*.md (or
-// config.md). Scope: cmd, app, plugins, internal (excluding _test.go).
-func TestConfig_EnvVarCoverage(t *testing.T) {
-	// Walk up from getwd until we find go.mod.
+// repoRoot walks up from the current working directory until it finds
+// go.mod, returning that directory. Skips the test if no go.mod is found.
+func repoRoot(t *testing.T) string {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -473,15 +471,22 @@ func TestConfig_EnvVarCoverage(t *testing.T) {
 	root := wd
 	for {
 		if _, statErr := os.Stat(filepath.Join(root, "go.mod")); statErr == nil {
-			break
+			return root
 		}
 		parent := filepath.Dir(root)
 		if parent == root {
 			t.Skip("cannot locate repo root; test skipped")
-			return
+			return ""
 		}
 		root = parent
 	}
+}
+
+// TestConfig_EnvVarCoverage asserts every CYODA_* env var referenced in
+// source also appears in cmd/cyoda/help/content/config/**/*.md (or
+// config.md). Scope: cmd, app, plugins, internal (excluding _test.go).
+func TestConfig_EnvVarCoverage(t *testing.T) {
+	root := repoRoot(t)
 
 	referenced := scanEnvVarsInGoSource(t, root, []string{"cmd", "app", "plugins", "internal"})
 	documented := scanEnvVarsInConfigDocs(t, filepath.Join(root, "cmd/cyoda/help/content"))
@@ -542,19 +547,7 @@ var errCodePattern = regexp.MustCompile(`ErrCode[A-Z][A-Za-z0-9]+\s*=\s*"([A-Z0-
 // TestErrCode_Parity asserts every ErrCode* in internal/common/error_codes.go
 // has a matching errors/<CODE>.md topic file, and vice versa.
 func TestErrCode_Parity(t *testing.T) {
-	wd, _ := os.Getwd()
-	root := wd
-	for {
-		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
-			t.Skip("cannot locate repo root")
-			return
-		}
-		root = parent
-	}
+	root := repoRoot(t)
 	src, err := os.ReadFile(filepath.Join(root, "internal/common/error_codes.go"))
 	if err != nil {
 		t.Fatalf("read error_codes.go: %v", err)
@@ -602,19 +595,7 @@ var printHelpMustAppearPhrases = []string{
 }
 
 func TestPrintHelp_ContentMigrationParity(t *testing.T) {
-	wd, _ := os.Getwd()
-	root := wd
-	for {
-		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
-			t.Skip("cannot locate repo root")
-			return
-		}
-		root = parent
-	}
+	root := repoRoot(t)
 	var combined strings.Builder
 	for _, dir := range []string{"cmd/cyoda/help/content/cli", "cmd/cyoda/help/content/config"} {
 		_ = filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
@@ -896,6 +877,35 @@ func TestDefaultTree_AuthLandingListsAllChildren(t *testing.T) {
 	for k := range want {
 		if !got[k] {
 			t.Errorf("auth missing child %q (have %v)", k, got)
+		}
+	}
+}
+
+// TestDefaultTree_ConfigClusterSubtopic verifies the cluster/dispatch env
+// vars live under their own config.cluster subtopic (mirroring
+// auth/cors/database/grpc/schema) and that config.md's see_also lists both
+// config.cluster and config.cors.
+func TestDefaultTree_ConfigClusterSubtopic(t *testing.T) {
+	node := DefaultTree.Find([]string{"config", "cluster"})
+	if node == nil {
+		t.Fatal("config.cluster topic not found")
+	}
+	// The cluster/dispatch vars must now live under config.cluster, not config.
+	body := string(node.Body)
+	for _, want := range []string{"CYODA_CLUSTER_ENABLED", "CYODA_SEED_NODES", "CYODA_DISPATCH_WAIT_TIMEOUT"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("config.cluster body missing %s", want)
+		}
+	}
+	// config.md must list cluster (frontmatter see_also drives Descriptor.SeeAlso).
+	cfg := DefaultTree.Find([]string{"config"})
+	if cfg == nil {
+		t.Fatal("config topic not found")
+	}
+	joined := strings.Join(cfg.Descriptor().SeeAlso, ",")
+	for _, want := range []string{"config.cluster", "config.cors"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("config see_also missing %s (got %q)", want, joined)
 		}
 	}
 }

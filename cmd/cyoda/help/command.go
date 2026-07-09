@@ -52,6 +52,25 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 		return writeTreeSummary(tree, out, style)
 	}
 
+	// "config all" is both a registered action (HTTP, and the generic
+	// CLI action dispatch below) and a CLI special-case here — the
+	// special-case runs first so plain-text is the CLI default and
+	// --format=json is honored, which the generic action dispatch
+	// (ContentType is fixed, ignores --format) cannot do.
+	if len(positional) == 2 && positional[0] == "config" && positional[1] == "all" {
+		switch format {
+		case "json":
+			return writeConfigAllJSONVersion(out, version)
+		case "auto", "", "text":
+			return writeConfigAllText(out)
+		default:
+			// markdown/yaml are valid help formats generally but meaningless
+			// for this flat listing — reject rather than silently return text.
+			fmt.Fprintf(out, "cyoda help config all: --format=%s not supported; use text or json\n", format)
+			return 2
+		}
+	}
+
 	// Topic lookup.
 	topic := tree.Find(positional)
 	if topic == nil {

@@ -29,6 +29,8 @@ backends.
   backends that support native schema extension with optimistic concurrency
   (default: `8`, minimum: `1`). Increase if you observe contention under high concurrency.
 
+The prefix `CYODA_SCHEMA_` is used to namespace all schema-extension configuration variables.
+
 ## EXAMPLES
 
 **High-write workload (more frequent savepoints):**
