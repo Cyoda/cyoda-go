@@ -234,6 +234,45 @@ func RunCallbackSyncReadYourWrites(t *testing.T, fixture BackendFixture) {
 	}
 }
 
+// RunCallbackGRPCSearchReadYourWrites proves that a callback which SEARCHES over
+// the gRPC entity API joins T identically on every backend: a SYNC processor
+// creates a secondary inside T (uncommitted), then issues an EntitySearchCollection
+// gRPC callback for it both WITH the tx-token (joined) and WITHOUT (standalone).
+// The joined search must match the uncommitted row (count >= 1); the standalone
+// control must match nothing (count 0). This guards the search-within-T
+// visibility the gRPC read-RPC routing depends on — before the search RPCs were
+// wired into the txRouteInterceptor, the joined count collapsed to the standalone
+// count on every backend.
+func RunCallbackGRPCSearchReadYourWrites(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const secondary = "cbtj-gsearch-secondary"
+	const primary = "cbtj-gsearch-primary"
+	const marker = "cbtj-gsearch-marker"
+
+	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+		cbPrimaryProcWorkflow("cbtj-gsearch-wf", "cb-grpc-search-read-your-writes", "SYNC", cbContext(secondary, marker)))
+
+	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create: %v", err)
+	}
+	prim, err := c.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
+	}
+	joined, _ := prim.Data["grpcSearchJoinedCount"].(float64)
+	standalone, _ := prim.Data["grpcSearchStandaloneCount"].(float64)
+	if joined < 1 {
+		t.Fatalf("joined gRPC search matched %v entities; want >= 1 — the tx-token was ignored on the search RPC (read-your-writes broken for gRPC search): data=%+v", prim.Data["grpcSearchJoinedCount"], prim.Data)
+	}
+	if standalone != 0 {
+		t.Errorf("standalone gRPC search (no token) matched %v entities; want 0 — the control must not see the uncommitted secondary", prim.Data["grpcSearchStandaloneCount"])
+	}
+}
+
 // RunCallbackCriteriaReadYourWrites proves invariant 3: a criteria callback that
 // reads an entity written earlier in T joins the transaction and sees the
 // uncommitted state.

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 196 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 197 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -120,6 +120,7 @@ var allTests = []NamedTest{
 	// Concurrency/torn-write cases are intentionally NOT here (isolated e2e).
 	{"CallbackTxJoin_SyncWriteAtomic", RunCallbackSyncWriteAtomic},
 	{"CallbackTxJoin_SyncReadYourWrites", RunCallbackSyncReadYourWrites},
+	{"CallbackTxJoin_GRPCSearchReadYourWrites", RunCallbackGRPCSearchReadYourWrites},
 	{"CallbackTxJoin_CriteriaReadYourWrites", RunCallbackCriteriaReadYourWrites},
 	{"CallbackTxJoin_IfMatchUpdate", RunCallbackIfMatchUpdate},
 	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},

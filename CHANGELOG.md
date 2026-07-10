@@ -177,6 +177,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Compute-node callback transaction-join now covers the gRPC search RPCs** — a
+  processor/criteria callback that presented a valid `tx-token` on `EntitySearch` /
+  `EntitySearchCollection` had the token silently ignored: the joining
+  `txRouteInterceptor` was wired only for the write RPCs (`EntityManage` /
+  `EntityManageCollection`), so a callback's searches ran unjoined against
+  last-committed state while its writes joined the originating transaction `T`.
+  Read-your-own-writes was therefore asymmetric — a processor could not search for
+  entities it created or transitioned earlier in the same still-open transaction
+  (silent stale results, no error). The interceptor now routes the search RPCs
+  through the same join / peer-forward path: a local-owner token joins `T` for the
+  read; a peer-owner token forwards the search to the owner (B→A), mirroring the
+  write path. Routing/join failures on a search return the search-shaped error
+  envelope (`EntityResponse`, `Success=false`) rather than a raw gRPC status, and
+  a token-less search is unchanged (no join). The HTTP entity API already joined
+  reads (route-agnostic `X-Tx-Token` middleware) and was unaffected.
+  ([#402](https://github.com/Cyoda-platform/cyoda-go/issues/402))
+
 - **Boolean search conditions on postgres no longer 500** — a `simple` search
   condition comparing a JSON path to a boolean (`{"operatorType":"EQUALS","value":true}`)
   returned `500 SERVER_ERROR` (`unable to encode true into text format for text (OID 25):

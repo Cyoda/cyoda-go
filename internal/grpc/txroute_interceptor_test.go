@@ -114,6 +114,14 @@ func entityManageCollectionInfo() *googlegrpc.StreamServerInfo {
 	return &googlegrpc.StreamServerInfo{FullMethod: cyodapb.CloudEventsService_EntityManageCollection_FullMethodName}
 }
 
+func entitySearchInfo() *googlegrpc.UnaryServerInfo {
+	return &googlegrpc.UnaryServerInfo{FullMethod: cyodapb.CloudEventsService_EntitySearch_FullMethodName}
+}
+
+func entitySearchCollectionInfo() *googlegrpc.StreamServerInfo {
+	return &googlegrpc.StreamServerInfo{FullMethod: cyodapb.CloudEventsService_EntitySearchCollection_FullMethodName}
+}
+
 func decodeTxResp(t *testing.T, ce *cepb.CloudEvent) events.EntityTransactionResponseJson {
 	t.Helper()
 	_, payload, err := ParseCloudEvent(ce)
@@ -121,6 +129,30 @@ func decodeTxResp(t *testing.T, ce *cepb.CloudEvent) events.EntityTransactionRes
 		t.Fatalf("ParseCloudEvent: %v", err)
 	}
 	var r events.EntityTransactionResponseJson
+	if err := json.Unmarshal(payload, &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return r
+}
+
+// decodeEntityResp decodes a unary interceptor result as an EntityResponse — the
+// error-envelope shape used by the search RPCs (EntitySearch / EntitySearchCollection).
+func decodeEntityResp(t *testing.T, resp any) events.EntityResponseJson {
+	t.Helper()
+	ce, ok := resp.(*cepb.CloudEvent)
+	if !ok {
+		t.Fatalf("expected *cepb.CloudEvent, got %T", resp)
+	}
+	return decodeEntityRespCE(t, ce)
+}
+
+func decodeEntityRespCE(t *testing.T, ce *cepb.CloudEvent) events.EntityResponseJson {
+	t.Helper()
+	_, payload, err := ParseCloudEvent(ce)
+	if err != nil {
+		t.Fatalf("ParseCloudEvent: %v", err)
+	}
+	var r events.EntityResponseJson
 	if err := json.Unmarshal(payload, &r); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -146,6 +178,184 @@ func TestTxRouteInterceptor_LocalJoin(t *testing.T) {
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(), handler)
 	if err != nil || sawTx != "tx-1" || resp != "ok" {
 		t.Fatalf("expected local join tx-1, sawTx=%q resp=%v err=%v", sawTx, resp, err)
+	}
+}
+
+// A valid self-node token on EntitySearch (unary) joins the tx onto the handler
+// context, symmetric with EntityManage: a compute-node callback that searches
+// within its still-open transaction must observe its own uncommitted writes.
+func TestTxRouteInterceptor_SearchLocalJoin(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("local", "tx-search-1", time.Now().Add(time.Minute))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	var sawTx string
+	handler := func(ctx context.Context, req any) (any, error) {
+		if tx := spi.GetTransaction(ctx); tx != nil {
+			sawTx = tx.ID
+		}
+		return "ok", nil
+	}
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-s1"}, entitySearchInfo(), handler)
+	if err != nil || sawTx != "tx-search-1" || resp != "ok" {
+		t.Fatalf("expected search local join tx-search-1, sawTx=%q resp=%v err=%v", sawTx, resp, err)
+	}
+}
+
+// A valid self-node token on EntitySearchCollection (stream) joins the tx onto
+// the stream context, symmetric with EntityManageCollection.
+func TestTxRouteInterceptor_SearchStreamLocalJoin(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("local", "tx-search-7", time.Now().Add(time.Minute))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	ss := &fakeServerStream{ctx: baseCtx}
+
+	var sawTx string
+	handler := func(_ any, stream googlegrpc.ServerStream) error {
+		if tx := spi.GetTransaction(stream.Context()); tx != nil {
+			sawTx = tx.ID
+		}
+		return nil
+	}
+	if err := ic.stream()(nil, ss, entitySearchCollectionInfo(), handler); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if sawTx != "tx-search-7" {
+		t.Fatalf("expected joined tx-search-7 on search stream ctx, got %q", sawTx)
+	}
+}
+
+// A search token for a foreign, alive node forwards the EntitySearch (unary) to
+// the owner via the search forward seam — mirroring the write path, so a
+// peer-owned transaction's reads execute on the owner (where T is live).
+func TestTxRouteInterceptor_SearchForeignProxies(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("node-B", "tx-search-9", time.Now().Add(time.Minute))
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+
+	var gotAddr string
+	writeForwardCalled := false
+	ic.forwardUnary = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+		writeForwardCalled = true // the search path must NOT use the write forward
+		return nil, nil
+	}
+	ic.forwardSearchUnary = func(_ context.Context, _ *proxy.ClientPool, addr string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+		gotAddr = addr
+		return &cepb.CloudEvent{Id: "search-forwarded"}, nil
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-s9"}, entitySearchInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run for a proxied search")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if writeForwardCalled {
+		t.Fatal("search proxy must use the search forward, not the write forward")
+	}
+	if gotAddr != "node-b:9090" {
+		t.Fatalf("expected search forward to derived gRPC addr %q, got %q", "node-b:9090", gotAddr)
+	}
+	if ce, ok := resp.(*cepb.CloudEvent); !ok || ce.Id != "search-forwarded" {
+		t.Fatalf("expected forwarded search response verbatim, got %v", resp)
+	}
+}
+
+// A search token for a foreign node re-issues EntitySearchCollection (stream) to
+// the owner via the search stream forward seam and copies frames back.
+func TestTxRouteInterceptor_SearchStreamForeignProxies(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("node-B", "tx-search-11", time.Now().Add(time.Minute))
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+
+	var gotAddr string
+	ic.forwardStream = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
+		t.Fatal("search stream proxy must use the search forward, not the write forward")
+		return nil, nil
+	}
+	ic.forwardSearchStream = func(_ context.Context, _ *proxy.ClientPool, addr string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
+		gotAddr = addr
+		return &fakeClientStream{frames: []*cepb.CloudEvent{{Id: "sf1"}, {Id: "sf2"}}}, nil
+	}
+	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	ss := &fakeServerStream{ctx: baseCtx, recv: []*cepb.CloudEvent{{Id: "req-search-2"}}}
+
+	handler := func(any, googlegrpc.ServerStream) error {
+		t.Fatal("handler must not run for a proxied search stream")
+		return nil
+	}
+	if err := ic.stream()(nil, ss, entitySearchCollectionInfo(), handler); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if gotAddr != "node-b:9090" {
+		t.Fatalf("expected search stream forward to derived gRPC addr %q, got %q", "node-b:9090", gotAddr)
+	}
+	if len(ss.sent) != 2 || ss.sent[0].Id != "sf1" || ss.sent[1].Id != "sf2" {
+		t.Fatalf("expected 2 forwarded frames sf1,sf2; got %+v", ss.sent)
+	}
+}
+
+// A bad token on EntitySearch (unary) yields the SEARCH error envelope
+// (EntityResponse, not the transaction envelope), never a raw gRPC status, and
+// never reaches the handler — the loud-fail contract, symmetric with writes.
+func TestTxRouteInterceptor_SearchBadTokenEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-sx"}, entitySearchInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run for a bad search token")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	r := decodeEntityResp(t, resp)
+	if r.Success {
+		t.Fatal("expected Success=false")
+	}
+	if r.RequestID != "req-sx" {
+		t.Fatalf("expected RequestID req-sx, got %q", r.RequestID)
+	}
+	if r.Error == nil || r.Error.Message == "" {
+		t.Fatalf("expected error detail, got %+v", r.Error)
+	}
+}
+
+// A bad token on EntitySearchCollection (stream) yields the SEARCH error
+// envelope frame (EntityResponse), never a raw gRPC status.
+func TestTxRouteInterceptor_SearchStreamBadTokenEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
+	ss := &fakeServerStream{ctx: baseCtx}
+
+	handler := func(any, googlegrpc.ServerStream) error {
+		t.Fatal("handler must not run for a bad search token")
+		return nil
+	}
+	if err := ic.stream()(nil, ss, entitySearchCollectionInfo(), handler); err != nil {
+		t.Fatalf("expected envelope on stream, got raw err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("expected 1 envelope frame, got %d", len(ss.sent))
+	}
+	r := decodeEntityRespCE(t, ss.sent[0])
+	if r.Success {
+		t.Fatal("expected Success=false")
+	}
+	if r.Error == nil || r.Error.Message == "" {
+		t.Fatalf("expected error detail, got %+v", r.Error)
 	}
 }
 
@@ -367,7 +577,8 @@ func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 	assertEnvelopeCode(t, resp, "req-tenant", "FORBIDDEN")
 }
 
-// Non-EntityManage methods pass through untouched (no token processing).
+// A non-routed unary method (EntityModelManage) passes through untouched (no
+// token processing), even with a bad token present.
 func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
@@ -382,7 +593,7 @@ func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 		}
 		return "ok", nil
 	}
-	info := &googlegrpc.UnaryServerInfo{FullMethod: cyodapb.CloudEventsService_EntitySearch_FullMethodName}
+	info := &googlegrpc.UnaryServerInfo{FullMethod: cyodapb.CloudEventsService_EntityModelManage_FullMethodName}
 	resp, err := ic.unary()(ctx, nil, info, handler)
 	if err != nil || !called || resp != "ok" {
 		t.Fatalf("expected passthrough, called=%v resp=%v err=%v", called, resp, err)
@@ -414,7 +625,7 @@ func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 	}
 }
 
-// A non-EntityManageCollection stream method with a bad token must pass through
+// A non-routed stream method (StartStreaming) with a bad token must pass through
 // untouched — no routing, no envelope, handler invoked directly.
 func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
@@ -430,7 +641,7 @@ func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
 		}
 		return nil
 	}
-	info := &googlegrpc.StreamServerInfo{FullMethod: cyodapb.CloudEventsService_EntitySearch_FullMethodName}
+	info := &googlegrpc.StreamServerInfo{FullMethod: cyodapb.CloudEventsService_StartStreaming_FullMethodName}
 	if err := ic.stream()(nil, ss, info, handler); err != nil {
 		t.Fatalf("expected passthrough, got err: %v", err)
 	}
