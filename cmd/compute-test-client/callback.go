@@ -290,6 +290,39 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
+		// cb-grpc-search-forward — the cross-node counterpart of
+		// cb-grpc-search-read-your-writes: creates a secondary via a joined gRPC
+		// callback (B→A forwarded to the owner, written into T there), then SEARCHES
+		// for it via a joined gRPC EntitySearchCollection callback. When this member
+		// is a non-owner for T, the search call forwards B→A to the owner and joins T
+		// there, so it observes the uncommitted secondary. Without the search-RPC
+		// routing the call would run locally (non-owner, no T) and match nothing.
+		// Records the joined match count + lineage into the primary's data.
+		"cb-grpc-search-forward": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if gcb == nil {
+				return nil, fmt.Errorf("gRPC callback client unavailable: CYODA_COMPUTE_GRPC_ENDPOINT not set")
+			}
+			created, err := gcb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("grpc callback create: %w", err)
+			}
+			if !created.Success {
+				return nil, fmt.Errorf("grpc callback create failed: code=%s msg=%s", created.ErrorCode, created.ErrorMsg)
+			}
+			joined, err := gcb.searchSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("grpc forwarded search: %w", err)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["grpcForwardSearchCount"] = float64(joined)
+			data["secondaryId"] = created.EntityID
+			data["tokenWasEmpty"] = token == ""
+			return withData(entity, data)
+		},
+
 		// cb-grpc-create-then-fail — creates a secondary via a joined gRPC callback,
 		// then deliberately fails so T rolls back (cross-node atomicity proof).
 		"cb-grpc-create-then-fail": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
@@ -304,6 +337,44 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 				return nil, fmt.Errorf("grpc callback create failed: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 			}
 			return nil, fmt.Errorf("processor deliberately fails after gRPC callback write")
+		},
+
+		// cb-grpc-search-read-your-writes — creates a secondary inside T
+		// (uncommitted) via the HTTP join path, then SEARCHES for it over the gRPC
+		// EntitySearchCollection RPC both WITH the tx-token (joined) and WITHOUT it
+		// (standalone control). The joined search must match the uncommitted row;
+		// the standalone one must not. Proves the gRPC read RPCs join T identically
+		// on every backend. Records both counts into the primary's data.
+		"cb-grpc-search-read-your-writes": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			if gcb == nil {
+				return nil, fmt.Errorf("gRPC callback client unavailable: CYODA_COMPUTE_GRPC_ENDPOINT not set")
+			}
+			res, secID, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			if res.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback create status=%d body=%s", res.Status, res.Body)
+			}
+			joined, err := gcb.searchSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("joined gRPC search: %w", err)
+			}
+			standalone, err := gcb.searchSecondary(ctx, cfg, "", cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("standalone gRPC search: %w", err)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["grpcSearchJoinedCount"] = float64(joined)
+			data["grpcSearchStandaloneCount"] = float64(standalone)
+			data["secondaryId"] = secID
+			return withData(entity, data)
 		},
 
 		// cb-create-then-fail — creates a secondary via a joined callback, then

@@ -89,15 +89,18 @@ Before dispatching to a compute node the engine mints a signed HMAC tx-token
 `cyodatxtoken` extension attribute.
 
 **Compute node contract:** the compute node MUST echo the received token on
-every callback into cyoda-go:
-- HTTP CRUD callbacks: `X-Tx-Token: <token>` request header
-- gRPC EntityManage callbacks: `tx-token` metadata key
+every callback into cyoda-go — reads as well as writes:
+- HTTP callbacks: `X-Tx-Token: <token>` request header
+- gRPC callbacks: `tx-token` metadata key (both the write RPCs
+  `EntityManage`/`EntityManageCollection` and the read RPCs
+  `EntitySearch`/`EntitySearchCollection`)
 
 When a callback arrives carrying the token, the receiving node verifies the
 HMAC and joins the transaction: if `NodeID` equals self, it calls
 `Join(TxRef)` locally; otherwise it forwards the full request to the owning
-node (HTTP: reverse proxy; gRPC EntityManage: B→A forward). Inside `T` the
-callback sees the cascade's uncommitted writes; other readers do not.
+node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
+sees the cascade's uncommitted writes — including via search (read-your-own-writes);
+other readers do not.
 
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,

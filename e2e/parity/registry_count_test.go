@@ -6,7 +6,7 @@ import "testing"
 // the registry.go header comment drifted silently for many PRs because nothing
 // asserted it; this test converts that drift into a failure. Bump this constant
 // (and the header comment) in the same change that adds or removes a scenario.
-const wantParityScenarioCount = 196
+const wantParityScenarioCount = 197
 
 // TestParityScenarioCount guards the documented scenario count against silent
 // drift.
