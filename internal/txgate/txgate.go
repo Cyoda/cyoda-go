@@ -73,10 +73,12 @@ var heldKey = heldKeyT{}
 // the same txID. This generalises the owner's H3 invariant ("never hold the
 // gate across engine.Execute") to the joined-callback path.
 //
-// Suspend/resume run on the same goroutine that installed the handle (the
-// synchronous handler→engine→dispatch call chain); the mutex guards only the
-// active flag against the once-guarded resume, and keeps the handle safe if a
-// future caller ever shares it.
+// The handle is single-goroutine by construction: Suspend/resume and the
+// caller's deferred release all run on the synchronous handler→engine→dispatch
+// call chain, and the deferred release reads *release with no lock, so the
+// handle is not shareable across goroutines regardless of the mutex. The mutex
+// only orders the explicit + deferred resume against a redundant Suspend so a
+// double call cannot double-release the gate.
 type held struct {
 	reg     *Registry
 	txID    string

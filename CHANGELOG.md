@@ -185,8 +185,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   transaction hung for the full 30 s dispatch timeout and then failed
   `WORKFLOW_FAILED`, forcing callers to break the join (run the inner transition
   in its own transaction) and sacrifice cross-entity atomicity. The per-tx gate
-  is now **released across every external dispatch** (SYNC processor and FUNCTION
-  criterion call-out) and re-acquired before the buffer is touched again —
+  is now **released across every external dispatch** (every processor mode —
+  SYNC / ASYNC_SAME_TX / ASYNC_NEW_TX — and FUNCTION criterion call-out) and
+  re-acquired before the buffer is touched again —
   generalising the owner-side H3 invariant ("never hold the gate across the
   engine's dispatch") to every joined callback. The dispatch window touches no
   local buffer and is the one place a descendant callback can re-enter, so the

@@ -16,9 +16,12 @@ commit atomically — the whole nested chain succeeds or rolls back together.
 Access to a transaction's shared buffer / connection is serialised by a
 **per-transaction exclusive gate** (a non-reentrant mutex keyed by tx id). Every
 holder of that gate — the transaction owner **and** every joined callback — MUST
-**release the gate for the duration of any blocking external dispatch** (SYNC
-processor or FUNCTION criterion call-out) and re-acquire it before touching the
-buffer again. The dispatch window touches no local buffer but can re-enter with a
+**release the gate for the duration of any blocking external dispatch** (every
+processor dispatch — SYNC / ASYNC_SAME_TX / ASYNC_NEW_TX — and FUNCTION criterion
+call-out) and re-acquire it before touching the buffer again. Where the dispatch
+is bracketed by buffer work (e.g. an ASYNC_NEW_TX savepoint create/rollback), the
+release spans only the call-out, not the surrounding buffer ops. The dispatch
+window touches no local buffer but can re-enter with a
 descendant joined callback on the same tx; holding the gate across it is a
 hold-and-wait that deadlocks the transaction until the dispatch timeout.
 

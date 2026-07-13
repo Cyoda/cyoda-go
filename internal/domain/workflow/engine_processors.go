@@ -195,7 +195,14 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 
 	// Without a transaction manager, fall back to plain dispatch (no savepoint).
 	if e.txMgr == nil {
+		// Release any per-tx gate this chain holds across the blocking dispatch
+		// (H3 invariant) — this dispatch reuses the gated txID and can re-enter
+		// with a descendant joined callback on the same tx, so holding the gate
+		// here deadlocks exactly like the SYNC path.
+		resume := txgate.Suspend(ctx)
+		defer resume()
 		_, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
+		resume()
 		return err
 	}
 
@@ -204,7 +211,14 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 		return fmt.Errorf("savepoint creation failed: %w", err)
 	}
 
+	// Release the per-tx gate across the blocking dispatch (H3 invariant). The
+	// savepoint create above and the rollback/release below are buffer ops that
+	// must stay gated, so suspend only spans the callout: re-acquire before
+	// touching the savepoint again. No-op for the owner / non-joined calls.
+	resume := txgate.Suspend(ctx)
+	defer resume()
 	_, dispatchErr := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
+	resume()
 	if dispatchErr != nil {
 		if rbErr := e.txMgr.RollbackToSavepoint(ctx, txID, spID); rbErr != nil {
 			slog.Warn("failed to rollback savepoint after processor error",
