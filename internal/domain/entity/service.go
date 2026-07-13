@@ -266,7 +266,9 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
@@ -639,7 +641,9 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -775,7 +779,9 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -894,7 +900,9 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	modelStore, err := h.factory.ModelStore(txCtx)
@@ -1145,7 +1153,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	now := time.Now()
@@ -1321,7 +1331,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	// Load existing entity within transaction (adds to read set).
@@ -1665,7 +1677,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	now := time.Now()
