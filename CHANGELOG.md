@@ -177,6 +177,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Depth-2 nested joined cascade no longer deadlocks the transaction** — when a
+  joined compute-node callback ran a transition whose own SYNC processor drove a
+  *further* joined write on the same transaction `T` (a 2-deep same-transaction
+  cascade), the third-level write blocked on the per-transaction gate the
+  second-level callback still held while parked in its processor dispatch. The
+  transaction hung for the full 30 s dispatch timeout and then failed
+  `WORKFLOW_FAILED`, forcing callers to break the join (run the inner transition
+  in its own transaction) and sacrifice cross-entity atomicity. The per-tx gate
+  is now **released across every external dispatch** (SYNC processor and FUNCTION
+  criterion call-out) and re-acquired before the buffer is touched again —
+  generalising the owner-side H3 invariant ("never hold the gate across the
+  engine's dispatch") to every joined callback. The dispatch window touches no
+  local buffer and is the one place a descendant callback can re-enter, so the
+  release is safe for concurrent same-tx siblings. Covers both HTTP and gRPC entry
+  points (both funnel through the same entity handler).
+  ([#410](https://github.com/Cyoda-platform/cyoda-go/issues/410))
+
 - **Compute-node callback transaction-join now covers the gRPC search RPCs** — a
   processor/criteria callback that presented a valid `tx-token` on `EntitySearch` /
   `EntitySearchCollection` had the token silently ignored: the joining

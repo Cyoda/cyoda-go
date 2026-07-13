@@ -115,6 +115,25 @@ func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, boo
 	return txID, txCtx, true, err
 }
 
+// acquireJoinedGate acquires the per-tx gate for a joined (owned==false) call
+// and installs a suspendable handle on txCtx so the engine can release the gate
+// across a blocking external dispatch (SYNC processor / FUNCTION criterion) and
+// re-acquire it afterward. This generalises the owner's H3 invariant — "never
+// hold the gate across engine.Execute" — to the joined-callback path: without
+// it, a depth-2 cascade (a joined callback whose own SYNC processor drives a
+// further joined write on the same tx) hold-and-waits on the non-reentrant gate
+// and deadlocks until the 30s dispatch timeout.
+//
+// It returns the ctx to pass to engine.Execute and a release func the caller
+// MUST defer. Both the returned release closure and the installed handle alias
+// the same release variable, so a mid-dispatch Suspend/resume that re-acquires
+// the gate is observed by the caller's deferred release.
+func (h *Handler) acquireJoinedGate(txCtx context.Context, txID string) (context.Context, func()) {
+	release := h.gate.Acquire(txID)
+	txCtx, _ = txgate.WithHeld(txCtx, h.gate, txID, &release)
+	return txCtx, func() { release() }
+}
+
 // commitOwned commits the transaction only when this request owns it. For a
 // joined callback (owned==false) the owner is responsible for the commit, so
 // this is a no-op. Callers gate the whole final Save+Commit critical section

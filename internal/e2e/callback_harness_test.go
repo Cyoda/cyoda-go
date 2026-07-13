@@ -107,8 +107,8 @@ func (rc *reqCtx) GetEntity(entityID string) (callbackResult, error) {
 	return rc.h.callback(http.MethodGet, path, "", rc.token)
 }
 
-// callbackProc is a processor implemented on the compute member. It runs on the
-// member's receive-loop goroutine while the engine blocks on the dispatch
+// callbackProc is a processor implemented on the compute member. It runs on a
+// per-request handler goroutine while the engine blocks on the dispatch
 // response, so it MUST NOT call t.Fatal (record into test-owned state and assert
 // on the main goroutine instead). Returning a non-nil error fails the transition
 // (and, for a SYNC processor, rolls back T). The returned map, when non-nil, is
@@ -389,6 +389,16 @@ type computeMember struct {
 	conn   *grpc.ClientConn
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// sendMu serialises stream.Send — gRPC bidi streams are not safe for
+	// concurrent Send, and calc requests are now dispatched to concurrent
+	// handler goroutines (mirroring a real compute node's thread pool, which a
+	// depth-2 nested cascade requires: the member must run the inner processor
+	// while the outer processor's callback is still in flight).
+	sendMu sync.Mutex
+	// handlers tracks in-flight concurrent calc handlers so teardown can drain
+	// them before closing the connection.
+	handlers sync.WaitGroup
 }
 
 // newComputeMember dials the stack's gRPC server, opens StartStreaming with an
@@ -434,6 +444,14 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 	greeted := make(chan struct{})
 	m := &computeMember{conn: conn, cancel: cancel, done: make(chan struct{})}
 
+	// send serialises all outbound frames (keep-alive replies + concurrent calc
+	// responses) so no two goroutines call stream.Send at once.
+	send := func(ce *cepb.CloudEvent) error {
+		m.sendMu.Lock()
+		defer m.sendMu.Unlock()
+		return stream.Send(ce)
+	}
+
 	go func() {
 		defer close(m.done)
 		var greetOnce sync.Once
@@ -456,10 +474,18 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 					"success": true,
 				})
 				if kerr == nil {
-					_ = stream.Send(ka)
+					_ = send(ka)
 				}
 			case internalgrpc.EntityProcessorCalculationRequest:
-				h.handleCalcRequest(stream, ce, payload)
+				// Dispatch concurrently: a processor callback may block on an HTTP
+				// call that drives a further dispatch to this same member (depth-2
+				// cascade). Handling inline on the receive loop would deadlock the
+				// member before the txgate is ever exercised.
+				m.handlers.Add(1)
+				go func(ce *cepb.CloudEvent, payload []byte) {
+					defer m.handlers.Done()
+					h.handleCalcRequest(send, ce, payload)
+				}(ce, payload)
 			default:
 				// ignore other server events
 			}
@@ -483,12 +509,21 @@ func (m *computeMember) stop() {
 	case <-m.done:
 	case <-time.After(5 * time.Second):
 	}
+	// Drain any in-flight concurrent calc handlers (their Sends now no-op on the
+	// closed stream) so no handler goroutine outlives the test.
+	drained := make(chan struct{})
+	go func() { m.handlers.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 // handleCalcRequest runs the registered processor for an inbound calc request
-// and replies with an EntityProcessorCalculationResponse. It runs on the member
-// receive-loop goroutine.
-func (h *callbackHarness) handleCalcRequest(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent], ce *cepb.CloudEvent, payload []byte) {
+// and replies with an EntityProcessorCalculationResponse. It is dispatched on a
+// per-request goroutine; send serialises the reply against other concurrent
+// handlers and the receive loop's keep-alive replies.
+func (h *callbackHarness) handleCalcRequest(send func(*cepb.CloudEvent) error, ce *cepb.CloudEvent, payload []byte) {
 	var req struct {
 		RequestID     string `json:"requestId"`
 		ID            string `json:"id"`
@@ -516,7 +551,7 @@ func (h *callbackHarness) handleCalcRequest(stream grpc.BidiStreamingClient[cepb
 			"success":   false,
 			"error":     map[string]any{"message": msg},
 		})
-		_ = stream.Send(resp)
+		_ = send(resp)
 	}
 
 	fn, ok := h.lookupProc(procName)
@@ -557,7 +592,7 @@ func (h *callbackHarness) handleCalcRequest(stream grpc.BidiStreamingClient[cepb
 		sendErr(fmt.Sprintf("failed to build response: %v", err))
 		return
 	}
-	_ = stream.Send(resp)
+	_ = send(resp)
 }
 
 // cloneData returns a shallow copy of an entity data map (nil-safe), so a

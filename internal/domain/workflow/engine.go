@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
@@ -629,6 +630,12 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		if e.extProc == nil {
 			return false, fmt.Errorf("no external processing service configured for FUNCTION criteria")
 		}
+		// Release any per-tx gate this call chain holds across the blocking
+		// FUNCTION-criterion dispatch — same H3 rationale as executeSyncProcessor:
+		// the callout can re-enter with a descendant joined callback on the same
+		// txID. No-op for the owner / non-joined calls.
+		resume := txgate.Suspend(cc.ctx)
+		defer resume()
 		return e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
 	}
 

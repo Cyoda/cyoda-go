@@ -6,7 +6,10 @@
 // concurrent in-flight ops on the same tx").
 package txgate
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 type gate struct {
 	mu   sync.Mutex
@@ -54,4 +57,77 @@ func (r *Registry) len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.gates)
+}
+
+// heldKeyT is the (unexported, collision-free) context key under which a joined
+// caller records the gate it currently holds so the engine can Suspend it across
+// a blocking external dispatch.
+type heldKeyT struct{}
+
+var heldKey = heldKeyT{}
+
+// held is the ctx-scoped handle to a gate the current call chain holds. The
+// engine releases it across a blocking callout (SYNC processor / FUNCTION
+// criterion dispatch) via Suspend and re-acquires it afterward — the one window
+// that touches no local buffer yet can re-enter with a descendant callback on
+// the same txID. This generalises the owner's H3 invariant ("never hold the
+// gate across engine.Execute") to the joined-callback path.
+//
+// Suspend/resume run on the same goroutine that installed the handle (the
+// synchronous handler→engine→dispatch call chain); the mutex guards only the
+// active flag against the once-guarded resume, and keeps the handle safe if a
+// future caller ever shares it.
+type held struct {
+	reg     *Registry
+	txID    string
+	release *func() // points at the caller's live release variable
+	mu      sync.Mutex
+	active  bool // true while the gate is currently held via *release
+}
+
+// WithHeld records, on the returned ctx, that the caller holds reg's gate for
+// txID via the release func pointed to by release. release MUST point at the
+// caller's own release variable: a re-acquire (Suspend's resume) mints a fresh
+// release func and stores it through the pointer, so the caller's deferred
+// release frees the re-acquired gate rather than double-freeing the old one.
+func WithHeld(ctx context.Context, reg *Registry, txID string, release *func()) (context.Context, *held) {
+	h := &held{reg: reg, txID: txID, release: release, active: true}
+	return context.WithValue(ctx, heldKey, h), h
+}
+
+// Suspend releases the gate the ctx's call chain currently holds (installed via
+// WithHeld) and returns a resume func that re-acquires it. If ctx carries no
+// held gate — the transaction owner (which never installs one), or a plain
+// non-joined call — Suspend and its resume are both no-ops. Callers MUST invoke
+// resume before touching the shared tx buffer again; a deferred resume also
+// makes the re-acquire panic-safe.
+func Suspend(ctx context.Context) (resume func()) {
+	h, _ := ctx.Value(heldKey).(*held)
+	if h == nil {
+		return func() {}
+	}
+	return h.suspend()
+}
+
+func (h *held) suspend() func() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.active {
+		// Already suspended (no nested Suspend is expected on the engine's
+		// sequential dispatch path; this guard keeps a double call harmless
+		// rather than double-releasing the gate).
+		return func() {}
+	}
+	(*h.release)()
+	h.active = false
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			*h.release = h.reg.Acquire(h.txID) // blocks until a descendant frees the gate
+			h.active = true
+		})
+	}
 }

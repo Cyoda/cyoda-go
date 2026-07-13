@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
@@ -161,7 +162,18 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, p
 	if e.extProc == nil {
 		return nil
 	}
+	// Release any per-tx gate this call chain holds across the blocking dispatch
+	// (H3 invariant, generalised to the joined-callback path): the dispatch
+	// touches no local buffer but can re-enter with a descendant joined callback
+	// on the same txID, which would otherwise deadlock waiting for the gate this
+	// chain holds. resume() re-acquires before we apply the processor's result.
+	// No-op for the owner and for plain non-joined calls. Deferred resume keeps
+	// the re-acquire panic-safe; the explicit call re-acquires before touching
+	// entity so the buffer write below is gated.
+	resume := txgate.Suspend(ctx)
+	defer resume()
 	modifiedEntity, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
+	resume()
 	if err != nil {
 		return err
 	}
