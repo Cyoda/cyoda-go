@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // ErrCommitBeforeDispatchInfra wraps every infrastructure-layer failure
