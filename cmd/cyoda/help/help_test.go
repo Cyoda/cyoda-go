@@ -664,6 +664,44 @@ func TestSeeAlsoResolution(t *testing.T) {
 	}
 }
 
+// TestGRPCEventTypeCatalogueParity asserts every registered Entity…Request
+// CloudEvent constant in internal/grpc/cloudevent_types.go appears literally
+// in the grpc help topic. grpc.md is the machine-consumable spec surface
+// downstream docs consume, so a missing entry silently drifts the catalogue
+// away from the registered types. Regex over the source (not a hand-kept
+// slice) means any future Entity…Request addition is covered automatically.
+func TestGRPCEventTypeCatalogueParity(t *testing.T) {
+	root := repoRoot(t)
+
+	src, err := os.ReadFile(filepath.Join(root, "internal/grpc/cloudevent_types.go"))
+	if err != nil {
+		t.Fatalf("read cloudevent_types.go: %v", err)
+	}
+	grpcDoc, err := os.ReadFile(filepath.Join(root, "cmd/cyoda/help/content/grpc.md"))
+	if err != nil {
+		t.Fatalf("read grpc.md: %v", err)
+	}
+	doc := string(grpcDoc)
+
+	re := regexp.MustCompile(`\bEntity[A-Za-z]*Request\b`)
+	seen := map[string]bool{}
+	var missing []string
+	for _, name := range re.FindAllString(string(src), -1) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if !strings.Contains(doc, name) {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("Entity…Request CloudEvent constants missing from grpc.md:\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+}
+
 // scanEnvVarsInConfigDocs walks the help content directory and extracts
 // every CYODA_* mention from config.md and config/**/*.md.
 func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {
