@@ -162,6 +162,7 @@ The full CloudEvent envelope for an ack:
 - `EntityDeleteRequest` / `EntityDeleteResponse`
 - `EntityDeleteAllRequest` / `EntityDeleteAllResponse`
 - `EntityTransitionRequest` / `EntityTransitionResponse`
+- `EntityPatchRequest` / `EntityTransactionResponse` — partial update; `PatchFormat` selects the dialect (`MERGE_PATCH`, RFC 7386 `application/merge-patch+json`, or `JSON_PATCH` `application/json-patch+json`). Requires `ifMatch` (the `transactionId` from the last read, or `"*"` for last-writer-wins); an optional `transition` names the transition to fire.
 
 **Model management event types**:
 
@@ -170,6 +171,7 @@ The full CloudEvent envelope for an ack:
 - `EntityModelTransitionRequest` / `EntityModelTransitionResponse`
 - `EntityModelDeleteRequest` / `EntityModelDeleteResponse`
 - `EntityModelGetAllRequest` / `EntityModelGetAllResponse`
+- `EntityModelSetUniqueKeysRequest` / `EntityModelSetUniqueKeysResponse`
 
 **Search / query event types**:
 
