@@ -487,6 +487,55 @@ func TestStreaming_CriteriaResponse(t *testing.T) {
 	<-done
 }
 
+func TestStreaming_CriteriaResponse_PropagatesReason(t *testing.T) {
+	svc := newServiceForTest()
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	defer cancel()
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{"python"}))
+
+	done := make(chan error, 1)
+	go func() { done <- svc.StartStreaming(stream) }()
+
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	_, greetPayload, _ := ParseCloudEvent(greetCE)
+	memberID := ExtractStringField(greetPayload, "memberId")
+
+	member := svc.registry.Get(memberID)
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	respCh := member.TrackRequest("req-reason-1")
+
+	respPayload := map[string]any{
+		"requestId": "req-reason-1",
+		"success":   true,
+		"matches":   false,
+		"reason":    "credit score 540 below threshold 600",
+	}
+	respCE, err := NewCloudEvent(EntityCriteriaCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create criteria response event: %v", err)
+	}
+	stream.enqueue(respCE)
+
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if resp.Reason != "credit score 540 below threshold 600" {
+			t.Errorf("expected reason propagated, got %q", resp.Reason)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for criteria response")
+	}
+
+	stream.closeRecv()
+	<-done
+}
+
 // --- Retryable flag plumbing (audit §M1) -----------------------------------
 //
 // These tests cover the wire tri-state: retryable=true / retryable=false /

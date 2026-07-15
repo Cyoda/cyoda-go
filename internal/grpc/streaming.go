@@ -283,6 +283,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
 		Matches   bool   `json:"matches"`
+		Reason    string `json:"reason"`
 		Error     *struct {
 			Message   string `json:"message"`
 			Retryable *bool  `json:"retryable"`
@@ -310,6 +311,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Success:   resp.Success,
 		Error:     errMsg,
 		Matches:   &matches,
+		Reason:    resp.Reason,
 		Warnings:  resp.Warnings,
 		Retryable: retryable,
 	})
