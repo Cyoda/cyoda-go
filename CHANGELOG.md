@@ -6,6 +6,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Criterion stoppage reason** — a criteria compute node's `EntityCriteriaCalculationResponse`
+  may now carry an optional `reason` string on `matches: false`, explaining why a passage was
+  blocked. A manual explicit transition rejected by its criterion appends the reason to the
+  `400 WORKFLOW_FAILED` detail (`transition "<name>" criterion not matched: <reason>`) — the
+  guaranteed, backend-independent surface. For the automated-cascade and workflow-selection
+  paths, the reason is additionally recorded durably on the state-machine audit trail:
+  `TRANSITION_NOT_MATCH_CRITERION`'s `data` carries `{workflowName, transition, criterion, reason}`
+  and `WORKFLOW_SKIP`'s carries `{workflowName, reason}`. A manual rejection's own audit event is
+  not forced durable (it rolls back with the no-op transaction, same as before). Reason is capped
+  at 2 KiB; an omitted reason defaults to `"criterion did not match"`. No new error codes.
+
 - **Entity partial-update (PATCH / RFC 7386 merge patch)** — `PATCH /api/entity/{format}/{entityId}`
   and `PATCH /api/entity/{format}/{entityId}/{transition}` apply a sparse JSON patch to the stored
   payload with RFC 7386 merge semantics (non-null key overwrites, explicit `null` deletes, omitted

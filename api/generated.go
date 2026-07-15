@@ -2640,7 +2640,7 @@ type StateMachineAuditEventDto struct {
 	// ConsistencyTime Cyoda consistency time
 	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
 
-	// Data Optional event-specific payload. Present for some event types (e.g. STATE_MACHINE_FINISH includes {"success": true}, STATE_PROCESS_RESULT includes {"success": false}). Null for most event types.
+	// Data Optional event-specific payload. Present for some event types (e.g. STATE_MACHINE_FINISH includes {"success": true}, STATE_PROCESS_RESULT includes {"success": false}). TRANSITION_NOT_MATCH_CRITERION carries {workflowName, transition, criterion, reason} and WORKFLOW_SKIP carries {workflowName, reason}, where reason explains why the criterion blocked the passage. Null for most event types.
 	Data *map[string]interface{} `json:"data,omitempty"`
 
 	// Details Details of the event
