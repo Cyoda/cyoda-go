@@ -3406,6 +3406,34 @@ func TestEngine_ManualCriterionNoMatch_EnrichesError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `criterion not matched: reason X`) {
 		t.Fatalf("expected enriched error, got %v", err)
 	}
+
+	// The rejection also populates the state-machine audit event data (durable
+	// on non-TX-bound backends like memory; rolled back on TX-bound backends).
+	// Assert the criterion name is the nested FUNCTION name, mirroring the
+	// automated sibling's data assertions.
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEvents(ctx, "manual-crit-reason-e1")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	var found bool
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventTransitionCriterionNoMatch {
+			found = true
+			if ev.Data["criterion"] != "approval-check" {
+				t.Errorf("criterion: got %v, want approval-check", ev.Data["criterion"])
+			}
+			if ev.Data["reason"] != "reason X" {
+				t.Errorf("reason: got %v, want reason X", ev.Data["reason"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no TRANSITION_NOT_MATCH_CRITERION event recorded")
+	}
 }
 
 // TestEngine_ManualInlineCriterionNoMatch_NoRedundantSuffix verifies that a

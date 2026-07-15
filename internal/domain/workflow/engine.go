@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -63,10 +64,16 @@ const defaultCriterionReason = "criterion did not match"
 // maxCriterionReasonLen before it is persisted to the audit trail or
 // reflected into an error message.
 func capReason(s string) string {
-	if len(s) > maxCriterionReasonLen {
-		return s[:maxCriterionReasonLen]
+	if len(s) <= maxCriterionReasonLen {
+		return s
 	}
-	return s
+	// Back off to a UTF-8 rune boundary so truncation never splits a
+	// multibyte rune.
+	cut := maxCriterionReasonLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // criterionName derives the audit "criterion" field: the FUNCTION name for a
@@ -693,9 +700,9 @@ type criterionContext struct {
 // evaluateCriterion parses and matches a JSON criterion against the entity.
 // If the criterion is a FUNCTION type, it delegates to the external processing
 // service using the provided criterionContext and returns the capped
-// compute-node-supplied reason for a clean matched=false. Inline predicates
-// have no such explanation and always return an empty reason (as does any
-// matched=true result).
+// compute-node-supplied reason (passed through regardless of match result;
+// only consumed on a matched=false rejection). Inline predicates have no such
+// explanation and always return an empty reason.
 func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *criterionContext) (bool, string, error) {
 	cond, err := predicate.ParseCondition(criterion)
 	if err != nil {
