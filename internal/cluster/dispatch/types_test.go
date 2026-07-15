@@ -207,6 +207,21 @@ func TestDispatchCriteriaRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDispatchCriteriaResponse_ReasonRoundTrip(t *testing.T) {
+	in := dispatch.DispatchCriteriaResponse{Matches: false, Success: true, Reason: "amount 5 below minimum 10"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out dispatch.DispatchCriteriaResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Reason != in.Reason {
+		t.Errorf("reason not round-tripped: got %q want %q", out.Reason, in.Reason)
+	}
+}
+
 func TestDispatchCriteriaResponse_JSONRoundTrip(t *testing.T) {
 	resp := dispatch.DispatchCriteriaResponse{
 		Matches:  true,
