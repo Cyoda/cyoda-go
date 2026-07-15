@@ -93,7 +93,7 @@ func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request)
 		Data: []byte(req.Entity),
 	}
 
-	matches, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
+	matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
 	if err != nil {
 		slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
 		writeJSON(w, http.StatusOK, DispatchCriteriaResponse{
@@ -106,6 +106,7 @@ func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, DispatchCriteriaResponse{
 		Success: true,
 		Matches: matches,
+		Reason:  reason,
 	})
 }
 

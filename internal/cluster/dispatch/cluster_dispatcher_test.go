@@ -36,14 +36,14 @@ func (f *stubDispatcher) DispatchProcessor(_ context.Context, _ *spi.Entity, _ s
 	return f.processorResp, nil
 }
 
-func (f *stubDispatcher) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, error) {
+func (f *stubDispatcher) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, string, error) {
 	if f.otherErr != nil {
-		return false, f.otherErr
+		return false, "", f.otherErr
 	}
 	if f.noMember {
-		return false, fmt.Errorf("%w: tags %q", internalgrpc.ErrNoMatchingMember, "python")
+		return false, "", fmt.Errorf("%w: tags %q", internalgrpc.ErrNoMatchingMember, "python")
 	}
-	return f.criteriaResult, nil
+	return f.criteriaResult, "", nil
 }
 
 // stubNodeRegistry returns a fixed list of nodes.
@@ -132,7 +132,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 
 	t.Run("criteria_local_success", func(t *testing.T) {
 		ctx := testContext()
-		matches, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
+		matches, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -221,7 +221,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
 
 		ctx := testContext()
-		matches, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
+		matches, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -266,7 +266,7 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 
 	t.Run("criteria_no_member_anywhere", func(t *testing.T) {
 		ctx := testContext()
-		_, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
+		_, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
 		if err == nil {
 			t.Fatal("expected error")
 		}

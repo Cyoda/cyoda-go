@@ -23,6 +23,7 @@ type fakeLocalDispatcher struct {
 	processorResult *spi.Entity
 	processorErr    error
 	criteriaResult  bool
+	criteriaReason  string
 	criteriaErr     error
 	capturedCtx     context.Context
 }
@@ -42,9 +43,9 @@ func (f *fakeLocalDispatcher) DispatchCriteria(
 	_ *spi.Entity,
 	_ json.RawMessage,
 	_, _, _, _, _ string,
-) (bool, error) {
+) (bool, string, error) {
 	f.capturedCtx = ctx
-	return f.criteriaResult, f.criteriaErr
+	return f.criteriaResult, f.criteriaReason, f.criteriaErr
 }
 
 var testSecret32 = bytes.Repeat([]byte{0xAB}, 32)
@@ -317,6 +318,46 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 	}
 	if strings.Contains(resp.Error, "connection refused") {
 		t.Errorf("error response must not contain internal details, got %q", resp.Error)
+	}
+}
+
+func TestHandleCriteria_PropagatesReason(t *testing.T) {
+	auth := newAEAD(t)
+	fake := &fakeLocalDispatcher{criteriaResult: false, criteriaReason: "peer reason here"}
+
+	handler := NewDispatchHandler(fake, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	req := DispatchCriteriaRequest{
+		Entity:         json.RawMessage(`{"foo":"bar"}`),
+		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
+		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
+		Target:         "target",
+		WorkflowName:   "wf",
+		TransitionName: "t1",
+		ProcessorName:  "proc1",
+		TxID:           "tx-2",
+		TenantID:       "tenant-a",
+		UserID:         "user-1",
+		Roles:          []string{"ROLE_USER"},
+	}
+	plain, _ := json.Marshal(req)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/criteria", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp DispatchCriteriaResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Reason != "peer reason here" {
+		t.Errorf("expected peer reason propagated, got %q", resp.Reason)
 	}
 }
 

@@ -19,12 +19,15 @@ type ProcessorFunc func(ctx context.Context, entity *spi.Entity, proc spi.Proces
 // CriteriaFunc is a callback invoked when a function criterion is evaluated.
 type CriteriaFunc func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, error)
 
+// criteriaFuncR is the internal reason-returning criterion form.
+type criteriaFuncR func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, string, error)
+
 // LocalProcessingService dispatches processors and criteria to registered
 // Go function callbacks. It implements contract.ExternalProcessingService.
 type LocalProcessingService struct {
 	mu             sync.RWMutex
 	processors     map[string]ProcessorFunc
-	criteria       map[string]CriteriaFunc
+	criteria       map[string]criteriaFuncR
 	processorCalls map[string]*atomic.Int64
 	criteriaCalls  map[string]*atomic.Int64
 }
@@ -33,7 +36,7 @@ type LocalProcessingService struct {
 func New() *LocalProcessingService {
 	return &LocalProcessingService{
 		processors:     make(map[string]ProcessorFunc),
-		criteria:       make(map[string]CriteriaFunc),
+		criteria:       make(map[string]criteriaFuncR),
 		processorCalls: make(map[string]*atomic.Int64),
 		criteriaCalls:  make(map[string]*atomic.Int64),
 	}
@@ -49,8 +52,16 @@ func (s *LocalProcessingService) RegisterProcessor(name string, fn ProcessorFunc
 	}
 }
 
-// RegisterCriteria registers a criteria callback by function name.
+// RegisterCriteria registers a criteria callback by function name (no reason).
 func (s *LocalProcessingService) RegisterCriteria(name string, fn CriteriaFunc) {
+	s.RegisterCriteriaReason(name, func(ctx context.Context, e *spi.Entity, c json.RawMessage) (bool, string, error) {
+		m, err := fn(ctx, e, c)
+		return m, "", err
+	})
+}
+
+// RegisterCriteriaReason registers a criteria callback that also returns a reason.
+func (s *LocalProcessingService) RegisterCriteriaReason(name string, fn criteriaFuncR) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.criteria[name] = fn
@@ -82,14 +93,14 @@ func (s *LocalProcessingService) DispatchProcessor(ctx context.Context, entity *
 
 // DispatchCriteria dispatches to the registered criteria callback.
 // It parses the function name from the criterion JSON envelope.
-func (s *LocalProcessingService) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+func (s *LocalProcessingService) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
 	var parsed struct {
 		Function struct {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(criterion, &parsed); err != nil {
-		return false, fmt.Errorf("invalid criterion JSON: %w", err)
+		return false, "", fmt.Errorf("invalid criterion JSON: %w", err)
 	}
 	name := parsed.Function.Name
 
@@ -99,7 +110,7 @@ func (s *LocalProcessingService) DispatchCriteria(ctx context.Context, entity *s
 	s.mu.RUnlock()
 
 	if !ok {
-		return false, fmt.Errorf("no local criteria registered for %q", name)
+		return false, "", fmt.Errorf("no local criteria registered for %q", name)
 	}
 	counter.Add(1)
 	return fn(ctx, entity, criterion)

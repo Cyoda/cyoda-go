@@ -32,12 +32,12 @@ func (f *fakeDispatcher) DispatchProcessor(
 func (f *fakeDispatcher) DispatchCriteria(
 	ctx context.Context, entity *spi.Entity, criterion json.RawMessage,
 	target, workflowName, transitionName, processorName, txID string,
-) (bool, error) {
+) (bool, string, error) {
 	f.criteriaCalled = true
 	if f.returnErr != nil {
-		return false, f.returnErr
+		return false, "", f.returnErr
 	}
-	return true, nil
+	return true, "", nil
 }
 
 func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *testing.T) {
@@ -78,7 +78,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_DelegatesToInner(t *t
 	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-2"}}
 	criterion := json.RawMessage(`{"op":"eq","field":"status","value":"active"}`)
 
-	matches, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")
+	matches, _, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")
 	if err != nil {
 		t.Fatalf("DispatchCriteria: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *te
 	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-4"}}
 	criterion := json.RawMessage(`{}`)
 
-	_, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")
+	_, _, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")
 	if !errors.Is(err, wantErr) {
 		t.Errorf("expected %v, got %v", wantErr, err)
 	}

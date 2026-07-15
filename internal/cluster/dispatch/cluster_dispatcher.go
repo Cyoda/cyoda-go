@@ -118,7 +118,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 
 // DispatchCriteria tries the local node first. If the local node has no matching
 // calculation member, it looks up peers via gossip and forwards the request.
-func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
 	tok := ""
@@ -132,12 +132,12 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
-	matches, err := d.local.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
+	matches, reason, err := d.local.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
 	if err == nil {
-		return matches, nil
+		return matches, reason, nil
 	}
 	if !isNoMatchingMember(err) {
-		return false, err
+		return false, "", err
 	}
 
 	tags := extractCriteriaTags(criterion)
@@ -151,7 +151,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 
 	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	slog.Debug("forwarding criteria to peer",
@@ -159,16 +159,16 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 
 	resp, err := d.forwarder.ForwardCriteria(ctx, peer.Addr, req)
 	if err != nil {
-		return false, fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
+		return false, "", fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
 	}
 	if !resp.Success {
-		return false, fmt.Errorf("peer %s criteria dispatch failed: %s", peer.NodeID, resp.Error)
+		return false, "", fmt.Errorf("peer %s criteria dispatch failed: %s", peer.NodeID, resp.Error)
 	}
 	for _, w := range resp.Warnings {
 		common.AddWarning(ctx, w)
 	}
 
-	return resp.Matches, nil
+	return resp.Matches, resp.Reason, nil
 }
 
 // findPeerWithPolling polls the gossip registry for a peer with matching tags,

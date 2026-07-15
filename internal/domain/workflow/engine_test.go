@@ -868,11 +868,11 @@ func (m *mockExtProc) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.
 	return m.returnEntity, m.returnErr
 }
 
-func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
+func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dispatchCriteriaCalls++
-	return m.criteriaResult, m.criteriaErr
+	return m.criteriaResult, "", m.criteriaErr
 }
 
 func TestProcessorDispatchWithExtProc(t *testing.T) {
@@ -1597,8 +1597,8 @@ func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *
 	return entity, nil
 }
 
-func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
-	return true, nil
+func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
+	return true, "", nil
 }
 
 func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {

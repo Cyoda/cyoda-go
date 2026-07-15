@@ -77,7 +77,7 @@ func (t *TracingExternalProcessingService) DispatchProcessor(
 func (t *TracingExternalProcessingService) DispatchCriteria(
 	ctx context.Context, entity *spi.Entity, criterion json.RawMessage,
 	target, workflowName, transitionName, processorName, txID string,
-) (bool, error) {
+) (bool, string, error) {
 	ctx, span := t.tracer.Start(ctx, "dispatch.criteria", trace.WithAttributes(
 		AttrCriterionTarget.String(target),
 		AttrWorkflowName.String(workflowName),
@@ -86,7 +86,7 @@ func (t *TracingExternalProcessingService) DispatchCriteria(
 	defer span.End()
 
 	start := time.Now()
-	matches, err := t.inner.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
+	matches, reason, err := t.inner.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
 	elapsed := time.Since(start).Seconds()
 
 	t.dispatchDuration.Record(ctx, elapsed, t.typeCriteria)
@@ -97,5 +97,5 @@ func (t *TracingExternalProcessingService) DispatchCriteria(
 		span.SetStatus(codes.Error, err.Error())
 	}
 	span.SetAttributes(AttrCriteriaMatches.Bool(matches))
-	return matches, err
+	return matches, reason, err
 }

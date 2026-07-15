@@ -636,7 +636,8 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		// txID. No-op for the owner / non-joined calls.
 		resume := txgate.Suspend(cc.ctx)
 		defer resume()
-		return e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
+		matches, _, err := e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
+		return matches, err
 	}
 
 	return match.Match(cond, entity.Data, entity.Meta)
