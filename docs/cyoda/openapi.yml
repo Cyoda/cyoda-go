@@ -9244,10 +9244,10 @@ components:
               description: >
                 Why the criterion blocked the passage: the criteria compute
                 node's explanation, or "criterion did not match" when none was
-                supplied. Always present on this event.
+                supplied. Present on events recorded since this field was
+                introduced; older audit events omit it.
       required:
         - criterion
-        - reason
         - transition
         - workflowName
     StateMachineTransitionMadeDto:
@@ -9307,9 +9307,10 @@ components:
               description: >
                 Why the workflow-selection criterion blocked the workflow: the
                 criteria compute node's explanation, or "criterion did not
-                match" when none was supplied. Always present on this event.
+                match" when none was supplied. Present on events recorded since
+                this field was introduced; older audit events omit it.
       required:
-        - reason
+        - workflowName
         - workflowName
     StateProcessIdDto:
       type: object
