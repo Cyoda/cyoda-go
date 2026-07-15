@@ -26,15 +26,40 @@ entity state-machine audit trail**, so clients can analyse a workflow and learn
 why a passage was blocked. Additionally, surface it synchronously in the
 manual-transition rejection response.
 
-No new endpoint. Two client surfaces:
+No new endpoint. Two client surfaces, each primary for a different rejection kind:
 
-1. **State-machine audit (durable record).** When a criterion returns
-   `matches=false`, the existing state-machine audit event gains a `data`
-   payload carrying the reason. Read via
-   `GET /audit/entity/{entityId}?eventTypes=StateMachine`.
-2. **Manual-transition 400 body (synchronous).** A manual transition rejected by
-   its criterion returns `400 WORKFLOW_FAILED` whose detail now includes the
-   reason, so interactive callers learn why without a second audit fetch.
+1. **State-machine audit (durable record) — for events whose transaction commits.**
+   When a criterion returns `matches=false`, the existing state-machine audit
+   event gains a `data` payload carrying the reason. Read via
+   `GET /audit/entity/{entityId}?eventTypes=StateMachine`. This is durable for
+   the **automated cascade** and **workflow-selection** paths, because those
+   commit their transaction (the entity settles at a stable state).
+2. **Manual-transition 400 body (synchronous) — the primary surface for a manual
+   rejection.** A manual transition rejected by its criterion returns
+   `400 WORKFLOW_FAILED` whose detail includes the reason. This is the
+   guaranteed delivery for manual rejections and does not depend on the
+   transaction or the audit store.
+
+### Transactional-audit invariant (design decision)
+
+State-machine audit events are recorded through a **transaction-bound** store
+(`factory.StateMachineAuditStore(ctx)`), so on a TX-bound backend (Postgres)
+they share the entity transaction's fate. A manual transition the engine
+**rejects** rolls the transaction back — so its `TRANSITION_NOT_MATCH_CRITERION`
+event is discarded on Postgres. **This is deliberate and left unchanged.** The
+established invariant (documented at the `TRANSITION_ABORTED`/`#228` sites,
+`entity/service.go:1505`) is: *the engine never commits — nor writes out of
+band — a transaction to preserve an audit event*; a rolled-back operation has
+empty audit, which is consistent. We do **not** flip the rollback to a commit,
+and we do **not** add a detached audit write, to satisfy the audit goal —
+transactional semantics must not bend to an audit-log requirement.
+
+Consequently the criterion reason for a **manual** rejection is delivered by
+surface (2), the direct 400 response — guaranteed on all backends and
+independent of the audit store. The manual `TRANSITION_NOT_MATCH_CRITERION`
+event is still populated with `data` (surface 1) for backends where audit is
+not TX-bound (e.g. memory), matching the `#228` pattern, but its durability is
+**not** asserted on TX-bound backends.
 
 ## Scope — two implemented contact points
 
@@ -166,12 +191,17 @@ exhaustive; `go build ./... && go vet ./...` surfaces the rest.
 
 ## Contract & documentation (Gate 4, Gate 7)
 
+- **OpenAPI — manual-transition 400 reason (REQUIRED, primary manual surface):**
+  the manual-transition endpoint's `400 WORKFLOW_FAILED` description must state
+  that when the rejection is a criterion no-match the `detail` carries the
+  criterion reason (`"transition \"X\" criterion not matched: <reason>"`). This
+  is the documented, guaranteed delivery of the reason for a manual explicit
+  transition. Apply to `api/openapi.yaml` and the mirror `docs/cyoda/openapi.yml`.
 - **OpenAPI (m3):** update `StateMachineAuditEventDto.data` description
   (`api/openapi.yaml:10893`) to document that `TRANSITION_NOT_MATCH_CRITERION`
   carries `{workflowName, transition, criterion, reason}` and `WORKFLOW_SKIP`
-  carries `{workflowName, reason}`. Also update the mirror
-  `docs/cyoda/openapi.yml`. The manual-transition endpoint's 400 description
-  already covers `WORKFLOW_FAILED`; note the reason is now appended to the detail.
+  carries `{workflowName, reason}` (durable for the automated + workflow-skip
+  paths). Also update the mirror `docs/cyoda/openapi.yml`.
   (The typed `StateMachine*Dto` family documents these same fields at top level;
   the two descriptions coexist until #369 reconciles the representations.)
 - **Cloud-parity (Gate 7):** add `docs/cloud-parity/criterion-stoppage-reason.md`
@@ -201,7 +231,7 @@ No new error code → no new `errors/<CODE>.md` topic.
 | Scenario | unit | running-backend e2e | cross-backend parity | gRPC | multi-node (isolated) |
 |---|---|---|---|---|---|
 | gRPC criteria response `reason` → `ProcessingResponse.Reason` | | | | ✅ `internal/grpc` | |
-| External FUNCTION criterion rejects **manual** transition → 400 body carries reason **and** audit `data.reason` | | ✅ | | | |
+| External FUNCTION criterion rejects **manual** transition → 400 body carries reason (audit durability NOT asserted — tx rolls back, see invariant above) | | ✅ | | | |
 | External FUNCTION criterion rejects **automated cascade** transition → audit `data.reason` (no error) | | ✅ | | | |
 | Workflow-selection FUNCTION criterion rejects → `WORKFLOW_SKIP` audit `data.reason` | | ✅ | | | |
 | Inline predicate rejects → default `"criterion did not match"` in `data.reason` | ✅ | ✅ | ✅ (register in `e2e/parity/registry.go`) | | |
