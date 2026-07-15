@@ -2894,7 +2894,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update. When the transition's criterion evaluates false, `detail` is `transition \"<name>\" criterion not matched: <reason>` — <reason> is the criteria compute node's explanation, or omitted (bare `criterion not matched`) when no reason was supplied."
           content:
             application/problem+json:
               schema:
@@ -10897,7 +10897,10 @@ components:
                 Optional event-specific payload. Present for some event types
                 (e.g. STATE_MACHINE_FINISH includes {"success": true},
                 STATE_PROCESS_RESULT includes {"success": false}).
-                Null for most event types.
+                TRANSITION_NOT_MATCH_CRITERION carries
+                {workflowName, transition, criterion, reason} and WORKFLOW_SKIP
+                carries {workflowName, reason}, where reason explains why the
+                criterion blocked the passage. Null for most event types.
               additionalProperties: true
       required:
         - eventType

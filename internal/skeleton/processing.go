@@ -17,6 +17,6 @@ func (s *ExternalProcessingService) DispatchProcessor(_ context.Context, entity 
 	return entity, nil
 }
 
-func (s *ExternalProcessingService) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, error) {
-	return true, nil
+func (s *ExternalProcessingService) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, string, error) {
+	return true, "", nil
 }

@@ -82,7 +82,7 @@ func TestLocalProc_DispatchCriteria_Registered(t *testing.T) {
 
 	entity := testEntity()
 	criterion := json.RawMessage(`{"type":"function","function":{"name":"check-age"}}`)
-	matched, err := svc.DispatchCriteria(context.Background(), entity, criterion, "TRANSITION", "wf", "tr", "", "tx-1")
+	matched, _, err := svc.DispatchCriteria(context.Background(), entity, criterion, "TRANSITION", "wf", "tr", "", "tx-1")
 	if err != nil {
 		t.Fatalf("DispatchCriteria: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestLocalProc_DispatchCriteria_ReturnsFalse(t *testing.T) {
 
 	entity := testEntity()
 	criterion := json.RawMessage(`{"type":"function","function":{"name":"is-minor"}}`)
-	matched, err := svc.DispatchCriteria(context.Background(), entity, criterion, "TRANSITION", "wf", "tr", "", "tx-1")
+	matched, _, err := svc.DispatchCriteria(context.Background(), entity, criterion, "TRANSITION", "wf", "tr", "", "tx-1")
 	if err != nil {
 		t.Fatalf("DispatchCriteria: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestLocalProc_DispatchCriteria_Unregistered(t *testing.T) {
 	svc := localproc.New()
 	entity := testEntity()
 	criterion := json.RawMessage(`{"type":"function","function":{"name":"missing"}}`)
-	_, err := svc.DispatchCriteria(context.Background(), entity, criterion, "TRANSITION", "wf", "tr", "", "tx-1")
+	_, _, err := svc.DispatchCriteria(context.Background(), entity, criterion, "TRANSITION", "wf", "tr", "", "tx-1")
 	if err == nil {
 		t.Fatal("expected error for unregistered criteria")
 	}

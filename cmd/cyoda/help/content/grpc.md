@@ -297,6 +297,17 @@ Client responds with `EntityCriteriaCalculationResponse`:
 }
 ```
 
+On `matches: false`, the response may also carry a `reason` string explaining
+why the criterion blocked the passage (capped at 2 KiB). It surfaces in two
+places: the manual-transition `400 WORKFLOW_FAILED` body
+(`detail: transition "<name>" criterion not matched: <reason>` — the
+guaranteed, backend-independent delivery for a manual rejection), and the
+`TRANSITION_NOT_MATCH_CRITERION` / `WORKFLOW_SKIP` state-machine audit events'
+`data.reason` — durable there only for the automated-cascade and
+workflow-selection paths, since a manual rejection rolls its transaction back.
+An omitted `reason` defaults to `"criterion did not match"` in the audit and
+is left out of the 400 detail (bare `criterion not matched`).
+
 **Auth context on dispatched events:**
 
 The server attaches CloudEvent Auth Context extension attributes to every dispatched request:

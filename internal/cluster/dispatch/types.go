@@ -51,5 +51,6 @@ type DispatchCriteriaResponse struct {
 	Matches  bool     `json:"matches"`
 	Success  bool     `json:"success"`
 	Error    string   `json:"error,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }

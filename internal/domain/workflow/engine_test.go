@@ -858,6 +858,7 @@ type mockExtProc struct {
 	returnEntity           *spi.Entity
 	returnErr              error
 	criteriaResult         bool
+	criteriaReason         string
 	criteriaErr            error
 }
 
@@ -868,11 +869,11 @@ func (m *mockExtProc) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.
 	return m.returnEntity, m.returnErr
 }
 
-func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
+func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dispatchCriteriaCalls++
-	return m.criteriaResult, m.criteriaErr
+	return m.criteriaResult, m.criteriaReason, m.criteriaErr
 }
 
 func TestProcessorDispatchWithExtProc(t *testing.T) {
@@ -1597,8 +1598,8 @@ func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *
 	return entity, nil
 }
 
-func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
-	return true, nil
+func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
+	return true, "", nil
 }
 
 func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
@@ -3231,5 +3232,306 @@ func TestEngine_AttemptTransition_Scheduled_ReturnsTransitionNotFound(t *testing
 	}
 	if entity.Meta.State != "S1" {
 		t.Errorf("expected entity to stay in source state S1; got %q", entity.Meta.State)
+	}
+}
+
+// --- Criterion reason propagation into audit data / manual-transition error ---
+
+// TestEngine_AutomatedCriterionNoMatch_RecordsReason verifies that when an
+// automated transition's FUNCTION criterion returns matched=false with a
+// compute-node-supplied reason, the TRANSITION_NOT_MATCH_CRITERION audit
+// event's Data carries that reason alongside workflowName/transition/criterion.
+func TestEngine_AutomatedCriterionNoMatch_RecordsReason(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExtProc{criteriaResult: false, criteriaReason: "amount 5 below minimum 10"}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "auto-crit-reason", ModelVersion: "1.0"}
+
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "min-amount"}})
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "AutoCritReasonWF", InitialState: "CREATED", Active: true,
+		States: map[string]spi.StateDefinition{
+			"CREATED": {Transitions: []spi.TransitionDefinition{
+				{Name: "upgrade", Next: "PREMIUM", Manual: false, Criterion: funcCriterion},
+			}},
+			"PREMIUM": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := makeEntity("auto-crit-reason-e1", modelRef, map[string]any{"amount": 5})
+	entity.Meta.TransactionID = txID
+
+	_, err = engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if entity.Meta.State != "CREATED" {
+		t.Errorf("expected entity to stay in CREATED (criterion did not match), got %q", entity.Meta.State)
+	}
+
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEventsByTransaction(ctx, "auto-crit-reason-e1", txID)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction: %v", err)
+	}
+
+	var found bool
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventTransitionCriterionNoMatch {
+			found = true
+			if ev.Data["reason"] != "amount 5 below minimum 10" {
+				t.Errorf("reason: got %v", ev.Data["reason"])
+			}
+			if ev.Data["transition"] != "upgrade" || ev.Data["workflowName"] != "AutoCritReasonWF" || ev.Data["criterion"] != "min-amount" {
+				t.Errorf("unexpected data keys: %v", ev.Data)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no TRANSITION_NOT_MATCH_CRITERION event recorded")
+	}
+}
+
+// TestEngine_InlineCriterionNoMatch_DefaultsReason verifies that an inline
+// (non-FUNCTION) criterion no-match records the default reason string since
+// inline predicates have no compute-node-supplied explanation.
+func TestEngine_InlineCriterionNoMatch_DefaultsReason(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "inline-crit-reason", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "InlineCritReasonWF", InitialState: "CREATED", Active: true,
+		States: map[string]spi.StateDefinition{
+			"CREATED": {Transitions: []spi.TransitionDefinition{
+				{Name: "upgrade", Next: "PREMIUM", Manual: false,
+					Criterion: simpleCriterion("$.amount", "GREATER_THAN", 100)},
+			}},
+			"PREMIUM": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := makeEntity("inline-crit-reason-e1", modelRef, map[string]any{"amount": 5})
+	entity.Meta.TransactionID = txID
+
+	_, err = engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEventsByTransaction(ctx, "inline-crit-reason-e1", txID)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction: %v", err)
+	}
+
+	var found bool
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventTransitionCriterionNoMatch {
+			found = true
+			if ev.Data["reason"] != defaultCriterionReason {
+				t.Errorf("reason: got %v, want %q", ev.Data["reason"], defaultCriterionReason)
+			}
+			if ev.Data["criterion"] != "simple" {
+				t.Errorf("criterion: got %v, want %q", ev.Data["criterion"], "simple")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no TRANSITION_NOT_MATCH_CRITERION event recorded")
+	}
+}
+
+// TestEngine_ManualCriterionNoMatch_EnrichesError verifies that a manual
+// transition rejected by a FUNCTION criterion with an external reason returns
+// an error enriched with that reason.
+func TestEngine_ManualCriterionNoMatch_EnrichesError(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExtProc{criteriaResult: false, criteriaReason: "reason X"}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "manual-crit-reason", ModelVersion: "1.0"}
+
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "approval-check"}})
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "ManualCritReasonWF", InitialState: "PENDING", Active: true,
+		States: map[string]spi.StateDefinition{
+			"PENDING": {Transitions: []spi.TransitionDefinition{
+				{Name: "approve", Next: "APPROVED", Manual: true, Criterion: funcCriterion},
+			}},
+			"APPROVED": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("manual-crit-reason-e1", modelRef, map[string]any{})
+	entity.Meta.State = "PENDING"
+
+	_, err := engine.ManualTransition(ctx, entity, "approve")
+	if err == nil || !strings.Contains(err.Error(), `criterion not matched: reason X`) {
+		t.Fatalf("expected enriched error, got %v", err)
+	}
+
+	// The rejection also populates the state-machine audit event data (durable
+	// on non-TX-bound backends like memory; rolled back on TX-bound backends).
+	// Assert the criterion name is the nested FUNCTION name, mirroring the
+	// automated sibling's data assertions.
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEvents(ctx, "manual-crit-reason-e1")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	var found bool
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventTransitionCriterionNoMatch {
+			found = true
+			if ev.Data["criterion"] != "approval-check" {
+				t.Errorf("criterion: got %v, want approval-check", ev.Data["criterion"])
+			}
+			if ev.Data["reason"] != "reason X" {
+				t.Errorf("reason: got %v, want reason X", ev.Data["reason"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no TRANSITION_NOT_MATCH_CRITERION event recorded")
+	}
+}
+
+// TestEngine_ManualInlineCriterionNoMatch_NoRedundantSuffix verifies that a
+// manual transition rejected by an inline criterion keeps the bare error
+// message — no redundant ": criterion did not match" suffix.
+func TestEngine_ManualInlineCriterionNoMatch_NoRedundantSuffix(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "manual-inline-crit-reason", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "ManualInlineCritReasonWF", InitialState: "PENDING", Active: true,
+		States: map[string]spi.StateDefinition{
+			"PENDING": {Transitions: []spi.TransitionDefinition{
+				{Name: "approve", Next: "APPROVED", Manual: true,
+					Criterion: simpleCriterion("$.amount", "GREATER_THAN", 100)},
+			}},
+			"APPROVED": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("manual-inline-crit-reason-e1", modelRef, map[string]any{"amount": 5})
+	entity.Meta.State = "PENDING"
+
+	_, err := engine.ManualTransition(ctx, entity, "approve")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != `transition "approve" criterion not matched` {
+		t.Errorf("unexpected error message: %v", err)
+	}
+	if strings.Contains(err.Error(), "criterion not matched: criterion did not match") {
+		t.Fatalf("unexpected redundant suffix: %v", err)
+	}
+}
+
+// TestEngine_WorkflowSkipped_RecordsReason verifies that a workflow-selection
+// FUNCTION criterion no-match records the reason on the WORKFLOW_SKIP audit
+// event.
+func TestEngine_WorkflowSkipped_RecordsReason(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+
+	mock := &mockExtProc{criteriaResult: false, criteriaReason: "tenant not eligible"}
+	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "wf-skip-reason", ModelVersion: "1.0"}
+
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "eligibility"}})
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "WFSkipReasonWF", InitialState: "SELECTED", Active: true,
+		Criterion: funcCriterion,
+		States: map[string]spi.StateDefinition{
+			"SELECTED": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := makeEntity("wf-skip-reason-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = txID
+
+	_, err = engine.Execute(txCtx, entity, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEventsByTransaction(ctx, "wf-skip-reason-e1", txID)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction: %v", err)
+	}
+
+	var found bool
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventWorkflowSkipped {
+			found = true
+			if ev.Data["reason"] != "tenant not eligible" {
+				t.Errorf("reason: got %v", ev.Data["reason"])
+			}
+			if ev.Data["workflowName"] != "WFSkipReasonWF" {
+				t.Errorf("workflowName: got %v", ev.Data["workflowName"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no WORKFLOW_SKIP event recorded")
 	}
 }

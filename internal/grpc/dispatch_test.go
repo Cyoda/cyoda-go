@@ -301,7 +301,7 @@ func TestDispatchCriteria_MatchesTrue(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1")
+	result, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -336,15 +336,19 @@ func TestDispatchCriteria_MatchesFalse(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{
 			Success: true,
 			Matches: &matchesFalse,
+			Reason:  "amount 5 below minimum 10",
 		})
 	}()
 
-	result, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1")
+	result, reason, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result {
 		t.Error("expected matches=false")
+	}
+	if reason != "amount 5 below minimum 10" {
+		t.Errorf("expected reason returned, got %q", reason)
 	}
 }
 
@@ -522,7 +526,7 @@ func TestDispatchCriteria_ContextSurfacesAsParametersString(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
 	}()
 
-	if _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -563,7 +567,7 @@ func TestDispatchCriteria_EmptyContextOmitsParameters(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
 	}()
 
-	if _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

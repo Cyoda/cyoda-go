@@ -22,10 +22,14 @@ type SendFunc func(ce *cepb.CloudEvent) error
 
 // ProcessingResponse holds the response from a processor or criteria calculation.
 type ProcessingResponse struct {
-	Payload  json.RawMessage
-	Success  bool
-	Error    string
-	Matches  *bool    // for criteria responses (nil for processor responses)
+	Payload json.RawMessage
+	Success bool
+	Error   string
+	Matches *bool // for criteria responses (nil for processor responses)
+	// Reason is the criteria-response explanation for a matches=false result
+	// (EntityCriteriaCalculationResponse.reason). Empty for processor
+	// responses and for criteria that supply no reason.
+	Reason   string
 	Warnings []string // warnings from processor/criteria, propagated to client
 	// Retryable carries the member-supplied retryable flag from the inbound
 	// CloudEvent error shape (api/grpc/events/types.go: every *EventJsonError

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 197 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 198 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -342,6 +342,10 @@ var allTests = []NamedTest{
 	// an unknown model before doing any query work. (The GET stats endpoint runs
 	// the model-existence check first; grouped-stats validates groupBy beforehand.)
 	{"UnknownModel404", RunUnknownModel404},
+
+	// Criterion rejection reason — inline (non-FUNCTION) criterion default
+	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
+	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

@@ -192,7 +192,7 @@ func (d *ProcessorDispatcher) applyProcessorResponse(entity *spi.Entity, resp *P
 
 // DispatchCriteria sends an entity criteria calculation request to a matching
 // calculation member and waits for the boolean result.
-func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
 	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
@@ -211,7 +211,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(criterion, &parsed); err != nil {
-		return false, fmt.Errorf("invalid criterion JSON: %w", err)
+		return false, "", fmt.Errorf("invalid criterion JSON: %w", err)
 	}
 
 	// attachEntity defaults to true when not explicitly set.
@@ -223,7 +223,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 	member := d.registry.FindByTags(tenantID, parsed.Function.Config.CalculationNodesTags)
 	if member == nil {
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", parsed.Function.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return false, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, parsed.Function.Config.CalculationNodesTags)
+		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, parsed.Function.Config.CalculationNodesTags)
 	}
 
 	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "entityId", entity.Meta.ID)
@@ -270,7 +270,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 
 	ce, err := NewCloudEvent(EntityCriteriaCalculationRequest, req)
 	if err != nil {
-		return false, fmt.Errorf("failed to build criteria cloud event: %w", err)
+		return false, "", fmt.Errorf("failed to build criteria cloud event: %w", err)
 	}
 	AttachAuthContext(ctx, ce)
 	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
@@ -282,7 +282,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 
 	if err := member.Send(ce); err != nil {
 		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
-		return false, fmt.Errorf("failed to send criteria request: %w", err)
+		return false, "", fmt.Errorf("failed to send criteria request: %w", err)
 	}
 
 	timeoutMs := parsed.Function.Config.ResponseTimeoutMs
@@ -306,17 +306,17 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 				errMsg = resp.Error
 				common.AddError(ctx, fmt.Sprintf("criteria %s: %s", parsed.Function.Name, errMsg))
 			}
-			return false, fmt.Errorf("criteria dispatch failed: %s", errMsg)
+			return false, "", fmt.Errorf("criteria dispatch failed: %s", errMsg)
 		}
 		slog.Info("criteria completed", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "requestId", requestID, "success", true)
 		if resp.Matches != nil {
-			return *resp.Matches, nil
+			return *resp.Matches, resp.Reason, nil
 		}
-		return false, nil
+		return false, resp.Reason, nil
 	case <-time.After(timeout):
 		slog.Error("dispatch timeout", "pkg", "grpc", "criteria", parsed.Function.Name, "requestId", requestID, "timeout", timeout)
-		return false, fmt.Errorf("criteria dispatch timed out after %dms", timeoutMs)
+		return false, "", fmt.Errorf("criteria dispatch timed out after %dms", timeoutMs)
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return false, "", ctx.Err()
 	}
 }
