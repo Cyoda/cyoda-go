@@ -49,6 +49,53 @@ const maxCascadeDepth = 100
 // defaultMaxStateVisits is the default per-state visit limit.
 const defaultMaxStateVisits = 10
 
+// maxCriterionReasonLen bounds the criterion reason stored in the audit and
+// reflected into the 400 body. The reason is compute-node-supplied and the
+// audit is durable storage, so it is capped defensively.
+const maxCriterionReasonLen = 2048
+
+// defaultCriterionReason is recorded when a criterion returns false without an
+// explanatory reason (inline predicates, or a FUNCTION criterion that supplies
+// none). Keeps the audit data.reason shape stable.
+const defaultCriterionReason = "criterion did not match"
+
+// capReason truncates a compute-node-supplied criterion reason to
+// maxCriterionReasonLen before it is persisted to the audit trail or
+// reflected into an error message.
+func capReason(s string) string {
+	if len(s) > maxCriterionReasonLen {
+		return s[:maxCriterionReasonLen]
+	}
+	return s
+}
+
+// criterionName derives the audit "criterion" field: the FUNCTION name for a
+// function criterion, else the parsed condition type (e.g. "simple", "group").
+// The canonical FUNCTION wire shape nests the name under "function" (see
+// internal/grpc/dispatch.go); a top-level "name" is kept as a fallback for
+// robustness.
+func criterionName(criterion []byte) string {
+	var envelope struct {
+		Type     string `json:"type"`
+		Name     string `json:"name"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(criterion, &envelope) == nil && envelope.Type == "function" {
+		if envelope.Function.Name != "" {
+			return envelope.Function.Name
+		}
+		if envelope.Name != "" {
+			return envelope.Name
+		}
+	}
+	if cond, err := predicate.ParseCondition(criterion); err == nil {
+		return cond.Type()
+	}
+	return ""
+}
+
 // Engine orchestrates workflow execution for entities.
 type Engine struct {
 	factory          spi.StoreFactory
@@ -383,7 +430,7 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 			return wf, nil
 		}
 
-		matched, err := e.evaluateCriterion(wf.Criterion, entity, &criterionContext{
+		matched, reason, err := e.evaluateCriterion(wf.Criterion, entity, &criterionContext{
 			ctx: ctx, txID: txID, workflowName: wf.Name, target: "WORKFLOW",
 		})
 		if err != nil {
@@ -395,8 +442,12 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 			return wf, nil
 		}
 
+		if reason == "" {
+			reason = defaultCriterionReason
+		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name), nil)
+			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name),
+			map[string]any{"workflowName": wf.Name, "reason": reason})
 	}
 
 	// No imported workflow matched the entity — fall back to the embedded
@@ -473,16 +524,29 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 
 	// Evaluate transition criterion.
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
-		matched, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
+		matched, reason, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
 			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
 		if !matched {
+			external := reason != ""
+			if reason == "" {
+				reason = defaultCriterionReason
+			}
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionCriterionNoMatch,
-				fmt.Sprintf("Transition %q criterion not matched", transitionName), nil)
+				fmt.Sprintf("Transition %q criterion not matched", transitionName),
+				map[string]any{
+					"workflowName": wf.Name,
+					"transition":   transitionName,
+					"criterion":    criterionName(transition.Criterion),
+					"reason":       reason,
+				})
+			if external {
+				return ctx, txID, fmt.Errorf("transition %q criterion not matched: %s", transitionName, reason)
+			}
 			return ctx, txID, fmt.Errorf("transition %q criterion not matched", transitionName)
 		}
 	}
@@ -550,16 +614,25 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 
 			// Evaluate criterion.
 			if len(tr.Criterion) > 0 && string(tr.Criterion) != "null" {
-				matched, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
+				matched, reason, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
 					ctx: currentCtx, txID: txID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
 				})
 				if err != nil {
 					return currentCtx, currentTxID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 				}
 				if !matched {
+					if reason == "" {
+						reason = defaultCriterionReason
+					}
 					e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 						spi.SMEventTransitionCriterionNoMatch,
-						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name), nil)
+						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name),
+						map[string]any{
+							"workflowName": wf.Name,
+							"transition":   tr.Name,
+							"criterion":    criterionName(tr.Criterion),
+							"reason":       reason,
+						})
 					continue
 				}
 			}
@@ -619,16 +692,19 @@ type criterionContext struct {
 
 // evaluateCriterion parses and matches a JSON criterion against the entity.
 // If the criterion is a FUNCTION type, it delegates to the external processing
-// service using the provided criterionContext.
-func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *criterionContext) (bool, error) {
+// service using the provided criterionContext and returns the capped
+// compute-node-supplied reason for a clean matched=false. Inline predicates
+// have no such explanation and always return an empty reason (as does any
+// matched=true result).
+func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *criterionContext) (bool, string, error) {
 	cond, err := predicate.ParseCondition(criterion)
 	if err != nil {
-		return false, fmt.Errorf("failed to parse criterion: %w", err)
+		return false, "", fmt.Errorf("failed to parse criterion: %w", err)
 	}
 
 	if _, ok := cond.(*predicate.FunctionCondition); ok {
 		if e.extProc == nil {
-			return false, fmt.Errorf("no external processing service configured for FUNCTION criteria")
+			return false, "", fmt.Errorf("no external processing service configured for FUNCTION criteria")
 		}
 		// Release any per-tx gate this call chain holds across the blocking
 		// FUNCTION-criterion dispatch — same H3 rationale as executeSyncProcessor:
@@ -636,11 +712,12 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		// txID. No-op for the owner / non-joined calls.
 		resume := txgate.Suspend(cc.ctx)
 		defer resume()
-		matches, _, err := e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
-		return matches, err
+		matches, reason, err := e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
+		return matches, capReason(reason), err
 	}
 
-	return match.Match(cond, entity.Data, entity.Meta)
+	matched, err := match.Match(cond, entity.Data, entity.Meta)
+	return matched, "", err
 }
 
 // resolveAuditTxID returns the transaction ID to use for state-machine audit
