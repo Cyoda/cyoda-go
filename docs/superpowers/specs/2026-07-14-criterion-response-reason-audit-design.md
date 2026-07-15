@@ -55,7 +55,11 @@ the `data` argument.
 
 The OpenAPI already defines per-event typed shapes (Java-parity family, presently
 unwired from the actual flat audit response — that reconciliation is #369, out of
-scope here). We adopt their field names so a future reconciliation is trivial:
+scope here). We adopt their field **names** so a future reconciliation is
+field-name-aligned. Note this is only a naming alignment: the typed DTOs put these
+fields at the top level (`allOf StateMachineEventDto`), whereas the shipped audit
+response nests them under `data`; #369 still owns the shape move, which is not
+trivial.
 
 - `StateMachineTransitionCriterionNotMatchedDto` = `{workflowName, transition, criterion, reason}`
   (`api/openapi.yaml:11019`; `reason` optional there).
@@ -123,20 +127,27 @@ such type in the SPI). No coordinated SPI release, no schema-version bump.
 4. **grpc dispatcher** — `internal/grpc/dispatch.go DispatchCriteria`: return
    `resp.Reason` on the `matches=false` path (and generally alongside the bool).
 5. **Cluster cross-node** — `internal/cluster/dispatch/types.go`: add `Reason` to
-   `DispatchCriteriaResponse`. **Producer wiring (M2, multi-node-primary):**
+   `DispatchCriteriaResponse`. Both `ClusterDispatcher.DispatchCriteria` return
+   branches must carry the reason: the **local** branch
+   (`cluster_dispatcher.go:137`, same-node evaluation) and the **peer-forward**
+   branch (`:171`). **Producer wiring (M2, multi-node-primary):**
    `internal/cluster/dispatch/handler.go handleCriteria` (~`:96-109`) must copy
-   the local `DispatchCriteria` reason into the outbound response; the routing
-   node `cluster_dispatcher.go:171` returns it. Without this, peer-evaluated
-   criteria silently lose the reason in cluster mode.
+   the local `DispatchCriteria` reason into the outbound `DispatchCriteriaResponse`;
+   without this, peer-evaluated criteria silently lose the reason in cluster mode.
 6. **Engine** — `evaluateCriterion` (`engine.go:623`): `(bool, error)` →
    `(bool, string, error)`; propagate the reason (external reason for FUNCTION,
-   `""` for inline). Populate `data` at the three no-match sites, applying the D3
-   default and the length cap.
+   `""` for inline). This is the single chokepoint where local, peer, audit, and
+   400-body all converge, so **apply the length cap here, once**, on the returned
+   reason. Populate `data` at the three no-match sites, applying the D3 default.
 7. **Manual-transition 400** — the manual path returns
    `fmt.Errorf("transition %q criterion not matched", name)` (`engine.go:486`),
    reflected verbatim into the 400 body via `classifyWorkflowError`
-   (`service.go:1950`, `ErrCodeWorkflowFailed`). Append the reason:
-   `"transition %q criterion not matched: %s"`. No new error code.
+   (`service.go:1950`, `ErrCodeWorkflowFailed`; verified: no sentinel-wrap hides
+   it). Append the reason only when it is a **real (external) reason** —
+   `"transition %q criterion not matched: %s"`; **suppress the append when the
+   reason is the inline D3 default** (`"criterion did not match"`) to avoid the
+   redundant `"...not matched: criterion did not match"`. The audit event still
+   carries the default for inline (see D3). No new error code.
 
 ### Test doubles to update (compilation-enforced, listed to prevent silent revert)
 
@@ -147,7 +158,11 @@ such type in the SPI). No coordinated SPI release, no schema-version bump.
 `internal/domain/workflow/engine_test.go:871` and `:1600`. Plus the real
 implementors: `internal/skeleton/processing.go`,
 `internal/observability/dispatch_tracing.go`,
-`internal/testing/localproc/localproc.go`.
+`internal/testing/localproc/localproc.go`. Individual *call-site* test files that
+invoke `DispatchCriteria` (e.g. `internal/grpc/dispatch_test.go`,
+`internal/cluster/dispatch/*_test.go`, `internal/testing/localproc/localproc_test.go`)
+also need the extra return value — compilation-enforced, so this list need not be
+exhaustive; `go build ./... && go vet ./...` surfaces the rest.
 
 ## Contract & documentation (Gate 4, Gate 7)
 
@@ -157,6 +172,8 @@ implementors: `internal/skeleton/processing.go`,
   carries `{workflowName, reason}`. Also update the mirror
   `docs/cyoda/openapi.yml`. The manual-transition endpoint's 400 description
   already covers `WORKFLOW_FAILED`; note the reason is now appended to the detail.
+  (The typed `StateMachine*Dto` family documents these same fields at top level;
+  the two descriptions coexist until #369 reconciles the representations.)
 - **Cloud-parity (Gate 7):** add `docs/cloud-parity/criterion-stoppage-reason.md`
   — cyoda-go leads; the audit `data.reason` shape and the 400-body enrichment are
   the contract Cloud mirrors.
@@ -190,6 +207,7 @@ No new error code → no new `errors/<CODE>.md` topic.
 | Inline predicate rejects → default `"criterion did not match"` in `data.reason` | ✅ | ✅ | ✅ (register in `e2e/parity/registry.go`) | | |
 | Audit `data.reason` is backend-agnostic (memory/sqlite/postgres) | | | ✅ | | |
 | Peer-evaluated FUNCTION criterion returns reason to routing node via `DispatchCriteriaResponse` | | | | | ✅ `internal/cluster/dispatch` |
+| Cluster **local-branch** (`cluster_dispatcher.go:137`) returns the reason (same-node eval in cluster mode) | | | | | ✅ `internal/cluster/dispatch` |
 | Overlong reason truncated to cap before persist / 400 | ✅ | | | | |
 | Criterion-name derivation (FUNCTION name vs inline type) | ✅ | | | | |
 
