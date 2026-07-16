@@ -58,3 +58,70 @@ func TestMemory_ScheduledTaskArm_RollbackIsAtomic(t *testing.T) {
 		t.Fatal("expected scheduled task to be absent after rollback (staged op must be discarded, not applied)")
 	}
 }
+
+// TestMemory_ScheduledTaskArm_SavepointTruncates proves that a ScheduledTask
+// Upsert staged AFTER a savepoint is discarded by RollbackToSavepoint, while
+// an Upsert staged BEFORE the savepoint survives the rollback and still
+// commits. TransactionManager.scheduledTaskOps must be savepoint-scoped the
+// same way tx.Buffer/ReadSet/WriteSet/Deletes are — a staged op surviving a
+// RollbackToSavepoint would orphan it from the entity work it must be
+// atomic with.
+func TestMemory_ScheduledTaskArm_SavepointTruncates(t *testing.T) {
+	factory, tm := newTxManager(t)
+	ctx := ctxWithTenant("tenant-A")
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	sts, err := factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+
+	first := spi.ScheduledTask{
+		ID:            "e1:S:T1",
+		TenantID:      "tenant-A",
+		Type:          spi.ScheduledTaskFireTransition,
+		ScheduledTime: 1000,
+		EntityID:      "e1",
+		SourceState:   "S",
+		Transition:    "T1",
+	}
+	if err := sts.Upsert(txCtx, first); err != nil {
+		t.Fatalf("Upsert (first) failed: %v", err)
+	}
+
+	spID, err := tm.Savepoint(ctx, txID)
+	if err != nil {
+		t.Fatalf("Savepoint failed: %v", err)
+	}
+
+	second := first
+	second.ID = "e1:S:T2"
+	second.Transition = "T2"
+	if err := sts.Upsert(txCtx, second); err != nil {
+		t.Fatalf("Upsert (second) failed: %v", err)
+	}
+
+	if err := tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
+		t.Fatalf("RollbackToSavepoint failed: %v", err)
+	}
+
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	if _, found, err := sts.Get(context.Background(), first.ID); err != nil {
+		t.Fatalf("Get(first) failed: %v", err)
+	} else if !found {
+		t.Fatal("expected task staged before the savepoint to survive commit")
+	}
+
+	if _, found, err := sts.Get(context.Background(), second.ID); err != nil {
+		t.Fatalf("Get(second) failed: %v", err)
+	} else if found {
+		t.Fatal("expected task staged after the savepoint to be discarded by RollbackToSavepoint, not committed")
+	}
+}
