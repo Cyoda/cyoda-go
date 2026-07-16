@@ -54,8 +54,13 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 //
 // Arm/cancel audit events are recorded best-effort via recordEvent, matching
 // every other audit call site in the engine — a failure to audit must never
-// fail the transition that already committed.
-func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, txID string) error {
+// fail the transition that already committed. auditStore is the
+// already-resolved store from the caller (Execute/ManualTransition/Loopback
+// all hard-fail before reaching here if they can't resolve one), so arm/cancel
+// events share the same guaranteed-non-nil store as every other audit event
+// in the call — reconcile no longer re-derives its own and silently skips
+// the audit block on a transient resolution failure.
+func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, txID string, auditStore spi.StateMachineAuditStore) error {
 	if !workflowHasSchedule(wf) {
 		return nil
 	}
@@ -111,20 +116,17 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		return fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
-	auditStore, aerr := e.factory.StateMachineAuditStore(ctx)
-	if aerr == nil {
-		for _, a := range arm {
-			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
-				spi.SMEventScheduledTransitionArmed,
-				fmt.Sprintf("Scheduled transition %q armed for %dms from now", a.Transition, a.ScheduledTime-nowMs),
-				map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
-		}
-		for _, c := range cancelled {
-			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, c.SourceState,
-				spi.SMEventScheduledTransitionCancelled,
-				fmt.Sprintf("Scheduled transition %q cancelled (left state %q)", c.Transition, c.SourceState),
-				map[string]any{"transition": c.Transition, "sourceState": c.SourceState})
-		}
+	for _, a := range arm {
+		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
+			spi.SMEventScheduledTransitionArmed,
+			fmt.Sprintf("Scheduled transition %q armed for %dms from now", a.Transition, a.ScheduledTime-nowMs),
+			map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
+	}
+	for _, c := range cancelled {
+		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, c.SourceState,
+			spi.SMEventScheduledTransitionCancelled,
+			fmt.Sprintf("Scheduled transition %q cancelled (left state %q)", c.Transition, c.SourceState),
+			map[string]any{"transition": c.Transition, "sourceState": c.SourceState})
 	}
 
 	return nil

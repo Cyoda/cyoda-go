@@ -27,6 +27,33 @@ func setupEngineWithClock(t *testing.T, nowMs int64) (*Engine, spi.StoreFactory)
 	return engine, factory
 }
 
+// steppableClock returns a clock function backed by a mutable ms value, plus
+// an advance func the test can call between engine operations to move "now"
+// forward. Unlike fixedClock — which is frozen for the whole test and so
+// cannot distinguish "re-armed with a fresh ScheduledTime" from "left the
+// stale row untouched" (both land on the same nowMs+delayMs value) —
+// steppableClock lets a test observe a SECOND, later "now" from a subsequent
+// engine call, so a re-arm is only provably correct if the assertion tracks
+// that later instant.
+func steppableClock(initialMs int64) (clock func() time.Time, advance func(deltaMs int64)) {
+	ms := initialMs
+	return func() time.Time { return time.UnixMilli(ms) },
+		func(deltaMs int64) { ms += deltaMs }
+}
+
+// setupEngineWithSteppableClock is setupEngineWithClock but returns an
+// advance func instead of freezing the clock for the whole test.
+func setupEngineWithSteppableClock(t *testing.T, initialMs int64) (*Engine, spi.StoreFactory, func(deltaMs int64)) {
+	t.Helper()
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+	clock, advance := steppableClock(initialMs)
+	engine := NewEngine(factory, uuids, txMgr, WithScheduledClock(clock))
+	return engine, factory, advance
+}
+
 func TestReconcile_ArmsCurrentStateSchedules(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
 	engine, factory := setupEngineWithClock(t, nowMs)
@@ -112,7 +139,8 @@ func TestReconcile_ArmsCurrentStateSchedules(t *testing.T) {
 
 func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
-	engine, factory := setupEngineWithClock(t, nowMs)
+	const advanceMs = int64(500)
+	engine, factory, advance := setupEngineWithSteppableClock(t, nowMs)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "loop-order", ModelVersion: "1.0"}
 
@@ -152,9 +180,28 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	if _, found, _ := sts.Get(ctx, wantID); !found {
+	firstTask, found, err := sts.Get(ctx, wantID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
 		t.Fatalf("expected task %q armed after Execute", wantID)
 	}
+	// Baseline from the first arm, at the ORIGINAL now.
+	if firstTask.ScheduledTime != nowMs+delayMs {
+		t.Errorf("after Execute: ScheduledTime = %d, want %d", firstTask.ScheduledTime, nowMs+delayMs)
+	}
+	if firstTask.ArmedAt != nowMs {
+		t.Errorf("after Execute: ArmedAt = %d, want %d", firstTask.ArmedAt, nowMs)
+	}
+
+	// Advance the clock before the loopback so a re-armed row is observably
+	// distinguishable from the untouched first-arm row: if reconcile were a
+	// no-op on the loopback path, ScheduledTime/ArmedAt below would still read
+	// the FIRST now (nowMs), not the second (nowMs+advanceMs), and the
+	// assertions after Loopback would fail.
+	advance(advanceMs)
+	secondNowMs := nowMs + advanceMs
 
 	// Second write: loopback while still in OPEN (data update, no state change).
 	txID2, txCtx2, err := txMgr.Begin(ctx)
@@ -176,8 +223,16 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	if !found {
 		t.Fatalf("expected task %q to still be armed (re-armed via upsert) after loopback", wantID)
 	}
-	if task.ScheduledTime != nowMs+delayMs {
-		t.Errorf("ScheduledTime = %d, want %d", task.ScheduledTime, nowMs+delayMs)
+	// Proves the loopback reconcile actually re-armed the row (upsert) rather
+	// than leaving the stale first-arm row in place: both ScheduledTime and
+	// ArmedAt must reflect the SECOND, later now — a no-op would still show
+	// the first now's values (nowMs+delayMs / nowMs), which is what the old
+	// frozen-clock version of this test could not tell apart.
+	if task.ScheduledTime != secondNowMs+delayMs {
+		t.Errorf("ScheduledTime = %d, want %d (second now + delay)", task.ScheduledTime, secondNowMs+delayMs)
+	}
+	if task.ArmedAt != secondNowMs {
+		t.Errorf("ArmedAt = %d, want %d (second now)", task.ArmedAt, secondNowMs)
 	}
 
 	auditStore, err := factory.StateMachineAuditStore(ctx)
