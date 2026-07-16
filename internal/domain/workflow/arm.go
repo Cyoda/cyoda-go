@@ -60,7 +60,17 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 // events share the same guaranteed-non-nil store as every other audit event
 // in the call — reconcile no longer re-derives its own and silently skips
 // the audit block on a transient resolution failure.
-func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, txID string, auditStore spi.StateMachineAuditStore) error {
+//
+// suppressCancelAuditFor, when non-empty, names a ScheduledTask ID whose
+// SourceState-mismatch is NOT a genuine "left behind" cancel: it is the very
+// task FireScheduledTransition just fired, so its SourceState no longer
+// matching the post-cascade CurrentState is expected. ReconcileForEntity
+// still reports (and its own Delete still removes) that task's row like any
+// other cancelled entry — this only suppresses the misleading
+// SCHEDULED_TRANSITION_CANCEL audit event that would otherwise sit alongside
+// its SCHEDULED_TRANSITION_FIRE event. Every non-fire caller
+// (Execute/ManualTransition/Loopback) passes "" — no exclusion.
+func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, txID string, auditStore spi.StateMachineAuditStore, suppressCancelAuditFor string) error {
 	if !workflowHasSchedule(wf) {
 		return nil
 	}
@@ -123,6 +133,9 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 			map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
 	}
 	for _, c := range cancelled {
+		if suppressCancelAuditFor != "" && c.ID == suppressCancelAuditFor {
+			continue
+		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, c.SourceState,
 			spi.SMEventScheduledTransitionCancelled,
 			fmt.Sprintf("Scheduled transition %q cancelled (left state %q)", c.Transition, c.SourceState),

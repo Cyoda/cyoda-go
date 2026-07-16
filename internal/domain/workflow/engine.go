@@ -289,7 +289,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// settles, using the FINAL ctx/txID — the write joins whatever
 	// transaction currentCtx carries, atomic with the entity write it just
 	// cascaded into.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, currentTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, currentTxID, auditStore, ""); err != nil {
 		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
@@ -385,7 +385,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
 		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
@@ -484,7 +484,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute/ManualTransition, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
 		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 

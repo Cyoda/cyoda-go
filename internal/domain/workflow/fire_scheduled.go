@@ -71,14 +71,24 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to begin scheduled-fire transaction: %w", err)
 	}
+	// curCtx/curTxID track the CURRENTLY OPEN transaction segment as the flow
+	// advances (entry -> post-fireTransition -> post-cascade). A
+	// COMMIT_BEFORE_DISPATCH processor anywhere in the fired transition or
+	// its cascade commits the entry segment (TX_pre) and opens a new one
+	// (TX_post); every non-commit exit after that point must roll back the
+	// segment curTxID NOW names, not the (already-committed, rollback-is-a-
+	// no-op) entry txID — mirrors rollbackOwned(finalCtx, finalTxID) in
+	// internal/domain/entity/service.go.
+	curCtx, curTxID := txCtx, txID
 	committed := false
 	defer func() {
 		if !committed {
-			// Best-effort: if a COMMIT_BEFORE_DISPATCH segment already
-			// committed txID as TX_pre further down, txID is no longer
-			// active and Rollback is a safe, ignored no-op (same pattern as
-			// rollbackOpenSegmentOnFailure elsewhere in this package).
-			_ = e.txMgr.Rollback(ctx, txID)
+			// Best-effort: if curTxID's segment already committed further
+			// down (e.g. this fires before a later CBD-segment commit is
+			// reflected here), Rollback is a safe, ignored no-op (same
+			// pattern as rollbackOpenSegmentOnFailure elsewhere in this
+			// package).
+			_ = e.txMgr.Rollback(curCtx, curTxID)
 		}
 	}()
 
@@ -193,6 +203,12 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	fireCtx := withIfMatch(txCtx, expectedTxID)
 
 	newCtx, newTxID, matched, fireErr := e.fireTransition(fireCtx, entity, wf, transition, auditStore, txID)
+	// fireTransition may have segmented via a COMMIT_BEFORE_DISPATCH
+	// processor even on a subsequent failure (e.g. a later processor in the
+	// same pipeline fails after an earlier one committed TX_pre) — advance
+	// curCtx/curTxID unconditionally so every exit below rolls back whatever
+	// is actually still open (Finding #1).
+	curCtx, curTxID = newCtx, newTxID
 	if fireErr != nil {
 		if errors.Is(fireErr, ErrCriterionNotMatched) {
 			// One-shot decline: terminal, no retry (design §5.4). The
@@ -224,10 +240,34 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// the settled state's own schedules), all still within txID/newTxID's
 	// transaction(s), before the entity is persisted.
 	finalCtx, finalTxID, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
+	// Same reasoning as above: cascadeAutomated may segment further via its
+	// own CBD processors, and may fail entirely outside executeProcessors
+	// (e.g. the maxStateVisits abort) — a failure executeProcessors's own
+	// segment-cleanup never sees. Advance curCtx/curTxID before checking err
+	// so the deferred rollback always targets the segment actually open.
+	curCtx, curTxID = finalCtx, finalTxID
 	if err != nil {
 		return OutcomeDropped, err
 	}
-	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, finalTxID, auditStore); err != nil {
+
+	// reconcileScheduledTasks/ReconcileForEntity cancels (and deletes) every
+	// pending task whose SourceState != the entity's (now post-cascade)
+	// CurrentState — which includes the task that just fired, since its
+	// SourceState is the OLD state. That row deletion is correct (the task
+	// is resolved either way), but recording a SCHEDULED_TRANSITION_CANCEL
+	// for it alongside its own SCHEDULED_TRANSITION_FIRE would be wrong
+	// (Finding #2): it left sourceState BECAUSE it fired, not because it was
+	// left behind. task.ID is passed as the audit-suppression exclusion so
+	// reconcile still cancels (and its underlying Delete still removes) any
+	// genuine sibling out of the old state, just without double-counting
+	// this one.
+	//
+	// Note: an explicit pre-reconcile Delete(task.ID) would NOT work here —
+	// every ScheduledTaskStore backend (memory/sqlite/postgres) buffers
+	// Upsert/Delete as staged ops applied only at commit-flush time; Get/
+	// ReconcileForEntity read committed state, so a same-tx delete would be
+	// invisible to the very ReconcileForEntity call right after it.
+	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, finalTxID, auditStore, task.ID); err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 
