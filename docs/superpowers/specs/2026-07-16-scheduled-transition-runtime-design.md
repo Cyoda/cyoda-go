@@ -528,11 +528,12 @@ scenarios register in `e2e/parity/registry.go`.
 
 - **Memory + sqlite tx-buffer co-commit** (§5.1/§15 F2) — the genuine tx-model
   addition; two buffer-and-flush plugins, not one. Postgres atomic for free.
-- **Timer starvation from frequent writes** (§15 F6) — because every save
-  re-arms, an entity written more often than `DelayMs` never fires its scheduled
-  transition. A direct consequence of "a data write resets the clock" — document
-  as a known semantic in the help topic. *(Pending user confirmation this is
-  intended vs. resetting only on state entry.)*
+- **"Settled for DelayMs" semantic** (§15 F6) — because an in-place write
+  re-arms, an entity edited more often than `DelayMs` never reaches "DelayMs
+  since last touch" and so never fires. This is the intended reading (the timer
+  measures a settled interval), not a bug — the design handles all staleness
+  naturally. **Action: one help-topic line** so "escalate N after entry" authors
+  know routine edits push the deadline out.
 - **Infinite-heartbeat load** (§5.4) — unconditional scheduled cycles fire
   forever; documented operator opt-in, bounded by batch/scan config.
 - **Failover / RPC latency** (§6.3, §15 F8) — fires delayed by the memberlist
@@ -618,9 +619,10 @@ A second fresh-context reviewer audited the revised design. Dispositions:
 - **F5 (spurious `Cancelled` on loopback)** — **fixed:** arm is now a
   **reconcile** — delete only tasks whose `sourceState ≠ current state`; a
   loopback emits no `Cancelled` (§5.1, §8).
-- **F6 (timer starvation from frequent writes)** — a consequence of "every save
-  re-arms." **Pending user confirmation** (intended + documented, vs. reset only
-  on state entry); tracked in §14.
+- **F6 (timer starvation from frequent writes)** — **not a bug:** the design
+  handles staleness naturally (guard drops moved-on tasks; in-place writes
+  re-arm). It's the intended "settled for DelayMs" semantic; **resolved
+  document-only** (one help-topic line, §14).
 - **F7 (cross-tenant scan / RLS)** — **addressed:** `ScheduledTaskStore` is a
   tenant-pattern exception like `AsyncSearchStore`; postgres scan must not be
   RLS-filtered to one tenant (§12).
