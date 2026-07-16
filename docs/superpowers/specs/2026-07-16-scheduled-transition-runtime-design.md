@@ -451,11 +451,13 @@ scenarios register in `e2e/parity/registry.go`.
   §5.1), sqlite, postgres each implement `ScheduledTaskStore` (a
   `scheduledTime`-indexed table; plain `MarkRedispatch`; `Delete` returns
   rows-affected). Per-plugin tests + `make test-all`.
-- **Commercial backend (Cassandra):** implements `ScheduledTaskStore`
-  (due-time-bucketed table). Leader-scan works over it — **no shard-ownership
-  pull-up needed**. Also confirm the §5.3 guard-token invariant on HLC.
-  Substantial commercial-side task — **flag for scheduling**; keep any courtesy
-  PR strictly in-scope.
+- **Commercial backend:** implements `ScheduledTaskStore` (due-time-bucketed
+  table). Leader-scan works over it — **no shard-ownership pull-up needed**. Must
+  confirm two backend-specific invariants: the §5.3 guard-token (token changes on
+  every save incl. loopback) and the §5.1 arm/cancel atomicity with the entity
+  write. Tracked as a separate implementation issue in the commercial backend
+  repo; substantial, scheduled independently of v1. Keep any courtesy PR strictly
+  in-scope.
 - **Gate 7 cloud-parity:** changes workflow runtime semantics Cloud mirrors →
   one `docs/cloud-parity/` file.
 - **Gate 4 docs:** rewrite the "runtime not yet implemented" section of
