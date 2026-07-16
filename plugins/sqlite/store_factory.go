@@ -252,6 +252,14 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	return &asyncSearchStore{db: f.db, clock: f.clock}, nil
 }
 
+// ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
+// per-tenant accessors above, it does not resolve a tenant from ctx: ScanDue
+// is cross-tenant by design and Upsert/Delete/Reconcile carry the tenant on
+// the task/request itself (see spi.ScheduledTaskStore godoc).
+func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
+	return &scheduledTaskStore{db: f.db, tm: f.tm}, nil
+}
+
 // TransactionManager implements spi.StoreFactory.
 // Returns the TM registered via initTransactionManager. Errors if none is set.
 func (f *StoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
