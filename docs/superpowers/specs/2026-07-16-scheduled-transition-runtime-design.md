@@ -49,11 +49,13 @@ explicit fires. This design supplies the timer runtime.
    the arming write records `scheduledTime = now + DelayMs`. A **loopback is a
    state re-entry that resets the timer** — every entity save leaving the entity
    in a scheduled state re-arms.
-3. **Guard = the entity's `CompareAndSave` token.** Fire iff the entity is
-   unchanged since arming. One check encodes loopback-reset, supersede, and
-   still-in-state — and it *is* the existing CAS, not new machinery (§5.3).
-   **Verified sound** for core backends: `TransactionID` changes on every save
-   incl. loopback (`plugins/*/…` — see §15 M5).
+3. **Guard = re-read the task in the fire transaction** (no arm-time token).
+   Fire iff the task row still exists, `entity.state == task.sourceState`, and
+   `task.scheduledTime ≤ now`; the entity write is ordinary read-then-
+   `CompareAndSave` at fire time. This encodes loopback-reset (a re-arm pushes
+   `scheduledTime` forward), supersede, and still-in-state — and is
+   **backend-agnostic**, avoiding the finalTxID-vs-entryTxID discrepancy that an
+   arm-time token hits on postgres (§5.3, §15 F1).
 4. **One-shot criterion.** At the lateness-valid pickup, evaluate the criterion
    once: `true` → fire; `false` → **Declined**, terminal, no retry. The
    criterion is the intelligent gate; retrying overrides its judgment (§5.4).
@@ -80,8 +82,8 @@ Two layers:
   coordinator/distribution + lifecycle + audit. "Do something at
   `scheduledTime`, with `timeoutMs` lateness tolerance."
 - **First task type — `fire-transition`:** payload `{entityId, tenantId,
-  modelRef, transition, sourceState, guardToken}`; per-type guard = token check;
-  per-type action = fire via the engine.
+  modelRef, transition, sourceState}`; per-type guard = fire-time task re-read
+  (§5.3); per-type action = fire via the engine.
 
 ```
  entity write (create / transition / loopback), one transaction
@@ -89,14 +91,14 @@ Two layers:
         ▼
   engine: cancel entity's pending tasks + arm current state's scheduled transitions
         │
-        ▼   ScheduledTaskStore (SPI, per-backend): Upsert / ScanDue / MarkRedispatch / Delete / CancelForEntity
+        ▼   ScheduledTaskStore (SPI, per-backend): Upsert / ScanDue / MarkRedispatch / Get / Delete / ReconcileForEntity
                                     ▲                          │
  coordinator (lowest NodeID) ───────┘ scan due                │ plain redispatch throttle
         │  DistributionStrategy picks target member            │
         │  MarkRedispatch(id) (best-effort, no lease)          │
         ▼  fire-and-forget peer RPC (PeerAuth/AEAD)  ExecuteScheduledTask(task)
  worker: system UserContext(task.tenantId) → engine.FireScheduledTransition(task)
-        │  grace-band lateness gate → fire via CompareAndSave(guardToken) → one-shot criterion
+        │  re-read guard → grace-band gate → fire via read-then-CompareAndSave → one-shot criterion
         ▼  Fired / Declined / Expired  → delete-gated audit + Delete(task)   (guard-fail → silent Delete)
 ```
 
@@ -112,7 +114,7 @@ Two layers:
 | `scheduledTime` | int64 ms | `armTime + DelayMs`. Due when `≤ now`. |
 | `timeoutMs` | *int64 | From `Schedule.TimeoutMs`. |
 | `redispatchAfter` | int64 ms, nullable | Best-effort throttle. Set (plain write) to `now + backoff` at dispatch; scan excludes rows inside the window so a long-running task isn't re-dispatched every tick. **Not** a lease and **not** conditional — correctness rests on the guard CAS + grace band, not on this. |
-| `payload` | json | fire-transition: `entityId`, `modelRef` (name+version), `transition`, `sourceState`, `guardToken` (§5.3). |
+| `payload` | json | fire-transition: `entityId`, `modelRef` (name+version), `transition`, `sourceState`. No stored guard token — the guard is a fire-time re-read (§5.3). |
 | `armedAt` | int64 ms | Observability. |
 | `attemptCount` | int | Bumped on each claim; observability. |
 
@@ -140,27 +142,34 @@ The cascade currently **skips** scheduled transitions (`engine.go:618`). That
 skip becomes **arm**. Within the transaction that writes the entity (create /
 manual transition / self-loop / loopback), **only if the workflow contains any
 scheduled transition** (in-memory check from the workflow def → zero store I/O
-otherwise), after the entity is written:
+otherwise), after the entity is written, **reconcile** the entity's pending
+tasks to its *current* state:
 
-1. `CancelForEntity(tenantId, entityId)` — delete the entity's pending tasks
-   (belonged to the state just left); emit `…Cancelled` for any deleted.
-2. For each scheduled transition `T` on the new current state: `Upsert` a task
-   with `scheduledTime = now + T.Schedule.DelayMs`, `timeoutMs`, and
-   `guardToken` = the arming write's **final committed txID** (§5.3, §15 M1).
+1. For each scheduled transition `T` on the new current state: `Upsert` a task
+   (deterministic id) with `scheduledTime = now + T.Schedule.DelayMs`,
+   `timeoutMs`, `sourceState`.
+2. Delete any pending task for this entity whose `sourceState ≠ the new current
+   state` — emit `…Cancelled` for those (the entity genuinely left that state).
 
-**Atomicity** (this is the load-bearing premise — §15 C1):
+A loopback (same state) re-arms via the step-1 upsert and deletes nothing → **no
+spurious `Cancelled`** (§15 F5). A transition `S→S'` deletes the `S` tasks
+(`Cancelled`) and arms `S'`. A scheduled fire uses this same reconcile, so the
+fired task is removed **atomically within the fire transaction** — no window for
+a committed fire to leave a live task (§15 F3).
 
-- **SQL backends (sqlite/postgres):** the store factory hands every store a
-  context-resolving querier that picks up the transaction's DB handle
-  (`plugins/postgres/store_factory.go:117-127`; the audit store already works
+**Atomicity** (this is the load-bearing premise — §15 C1/F2):
+
+- **Postgres only:** the store factory hands every store a context-resolving
+  querier that picks up the transaction's `pgx.Tx` per call
+  (`plugins/postgres/store_factory.go:106-127`; the audit store already works
   this way, `:168`). A `ScheduledTaskStore` built the same way executes its
   Upsert/Delete **inside the entity write's DB transaction** → atomic for free.
-- **Memory backend:** the tx buffer is entity-only and `Commit` hard-codes the
-  entity flush (`plugins/memory/txmanager.go:312-355`); the audit store writes
-  immediately (`sm_audit_store.go:21`). So the memory `ScheduledTaskStore` must
-  **stage task ops in the tx state and flush them in `Commit`** alongside
-  entities. This is the one real tx-model addition — scoped to the memory
-  plugin, not a cross-backend rewrite.
+- **Memory *and* sqlite:** both buffer entity writes into `tx.Buffer` and open
+  the only DB tx at commit-flush (memory `txmanager.go:312-355`; sqlite
+  `entity_store.go:206` + `flushToSQLite` `txmanager.go:331`). So **both** must
+  **stage task ops in the tx state and flush them in the same commit** alongside
+  entities. This is the real tx-model addition — two backends, not one (§15 F2)
+  — but still scoped to the plugins, not a core rewrite.
 
 The dangerous non-atomic direction (entity commits into a scheduled state, task
 write lost → silent lost fire) is thereby closed on every backend. The benign
@@ -178,40 +187,49 @@ Refactor `attemptTransition` (`engine.go:496`) to split policy from mechanism:
   cascade. No manual/scheduled opinion.
 - **Manual/API door** (`attemptTransition` ← `ManualTransition`): find → reject
   if `disabled` → **reject if `Schedule != nil`** → `fireTransition`.
-- **Scheduler door** (`FireScheduledTransition(ctx, task)`, new, internal): load
-  entity → **lateness gate with grace band** (§5.5: fire-eligible if
-  `lateness ≤ timeoutMs`; expire if `lateness > timeoutMs + grace`; in between
-  → drop-and-wait) → `fireTransition` via
-  `CompareAndSave(expectedTxID = guardToken)`. Criterion `false` → Declined;
-  success → Fired.
+- **Scheduler door** (`FireScheduledTransition(ctx, task)`, new, internal):
+  in one tx, apply the **re-read guard** (§5.3) → **grace-band lateness gate**
+  (§5.5: fire-eligible if `lateness ≤ timeoutMs`; expire if
+  `lateness > timeoutMs + grace`; between → drop-and-wait) → `fireTransition`
+  via ordinary read-then-`CompareAndSave` at first flush. Criterion `false` →
+  Declined; success → Fired.
 
 Two doors, one mechanism. `Schedule != nil` at the manual door means "not
 manually fireable"; the scheduler door is the authorised trigger. No special
 consistency rights.
 
-### 5.3 Guard token = `CompareAndSave` (verified sound)
+### 5.3 Guard = fire-time task re-read (backend-agnostic)
 
-`guardToken` = the entity's `TransactionID` captured at arming — specifically
-the **final committed txID** of the arming write. (For a segmenting
-COMMIT_BEFORE_DISPATCH arming cascade `finalTxID ≠ entry txID`, `service.go:319,
-1472`; use `finalTxID` — §15 M1.) The fire is
-`CompareAndSave(entity, expectedTxID = guardToken)`, applied at the **first
-flush** of the firing transition, before its own cascade can segment — mirroring
-how `IfMatch` is applied at first-segment flush (`service.go:1502` vs
-`1525-1536`):
+No token is captured at arm time — that approach breaks on postgres, which
+persists the *entry* txID (not the final) after a segmenting cascade because
+`Save` stamps `TransactionID` only when empty (`entity_store.go:46-48`,
+`entity_doc.go:49`), whereas memory/sqlite persist the final txID; there is no
+single arm-time value correct across backends (§15 F1).
 
-- Nothing wrote since arming → `TransactionID == guardToken` → CAS succeeds →
-  fire. (Still-in-state implied: no write ⇒ no state change.)
-- Loopback / other transition wrote → token differs → CAS `ErrConflict` → fire
-  aborts → task obsolete → **silently deleted** (no Cancelled audit — §15 M3).
+Instead, the whole fire runs in **one transaction** (both `ScheduledTaskStore`
+and `EntityStore` are tx-scoped), and the worker applies a **guard by re-read**
+before acting:
 
-**Verified:** every commit stamps a fresh per-`Begin` txID
-(`plugins/memory/txmanager.go:106`, applied `:329`) and CAS compares the latest
-version's `TransactionID` against `expectedTxID`
-(`plugins/postgres/entity_store.go:160,191`); loopback commits through the same
-path (`service.go:1436`). So `TransactionID` changes on every save incl.
-loopback — the guard is sound on core backends. **Unverified for the commercial
-HLC backend** — phase 1 must confirm (§14).
+1. Re-read the task by id. Absent → drop (cancelled elsewhere).
+2. Read the entity. `entity.state ≠ task.sourceState` → the entity already moved
+   on (transitioned out, or already fired) → **silent drop** (no audit), delete
+   any stale row.
+3. `task.scheduledTime > now` → re-armed to the future by a loopback since
+   dispatch → **drop** (leave the row for its new time).
+4. Else apply the grace-band decision (§5.5): fire / expire / decline.
+
+The fire's entity write is **ordinary read-then-`CompareAndSave`** — expected =
+the txID read in *this* fire transaction, applied at the **first flush** (reusing
+the existing `IfMatch` first-segment machinery, `service.go:1502` vs
+`1525-1536`, so a segmenting fire is handled). A concurrent loopback/transition
+during the fire writes the entity → this CAS conflicts → the fire aborts and the
+task is retried.
+
+This encodes loopback-reset (step 3 + `scheduledTime` pushed forward), supersede
+and still-in-state (step 2), and needs **no** knowledge of how any backend stamps
+txIDs — so it is sound on core *and* commercial backends without the HLC caveat.
+Phase 1 still confirms the commercial backend honours the same `scheduledTime`
+re-read + first-flush CAS semantics.
 
 ### 5.4 One-shot criterion vs polling patterns (§15 H3)
 
@@ -241,24 +259,31 @@ A worker resolves a due task in three zones of `lateness = now − scheduledTime
 (worker's own clock), where `grace = CYODA_SCHEDULER_EXPIRY_GRACE` (default
 100 ms, sized ≥ 10× typical inter-node skew):
 
+This decision is reached only *after* the guard (§5.3) passes — i.e. the entity
+is still in `sourceState` and hasn't fired. It applies to a task that genuinely
+hasn't resolved:
+
 - `lateness ≤ timeoutMs` → **attempt** (evaluate criterion once → fire/decline).
 - `timeoutMs < lateness ≤ timeoutMs + grace` → **drop and wait** (no fire, no
-  expire, task left in place). The next scan resolves it (lateness has grown far
-  past the band by then, since scan interval ≫ grace).
+  expire, row left in place). A later scan resolves it (within `redispatchBackoff`,
+  since the dispatch throttle hides it that long, §15 F4 — immaterial, expiry
+  timing doesn't matter).
 - `lateness > timeoutMs + grace` → **Expired** (delete + delete-gated audit).
 
 `timeoutMs` nil → never expires (always attempt).
 
-**Why this is correct, not just rare:** the fire zone (`≤ timeoutMs`) and the
-expire zone (`> timeoutMs + grace`) are separated by a gap of width `grace`. Two
-members' clocks differ by at most the skew `δ`. For one member to decide *fire*
-while another decides *expire* on the same task, their `lateness` views would
-have to differ by more than `grace`; they cannot differ by more than `δ`. **So
-long as `grace > δ`, fire-and-expire for one task is impossible** — no lease or
-dispatch-claim required. Residual risk is a member whose clock is more than
-`grace` out of sync (an NTP/operator concern; `grace` is configurable to cover
-observed skew). Cost: expiry is *recorded* up to one scan-interval late — immaterial,
-the task is late by definition.
+**What the grace band buys, precisely (§15 F3):** the fire zone (`≤ timeoutMs`)
+and expire zone (`> timeoutMs + grace`) are separated by a gap `grace`. Two
+members evaluating the *same task at the same instant* differ in `lateness` only
+by the clock skew `δ`; if `grace > δ` they cannot land in opposite zones — so a
+**simultaneous, skew-induced** fire-and-expire contradiction is impossible. It
+does **not** by itself cover the *temporal* case (a member fires, then the row is
+re-evaluated much later and looks expired); that is closed separately by the
+in-transaction reconcile — a committed fire deletes its own task atomically
+(§5.1), and the guard (§5.3 step 2) drops any task whose entity already left
+`sourceState` before the expire branch is ever reached. Together: no
+contradictory `Expired`. Residual is a member whose clock is >`grace` out of sync
+(NTP/operator concern; `grace` is configurable).
 
 ---
 
@@ -295,9 +320,11 @@ an **injectable clock** used at **both** arm-time and scan-time (§11, §15 L3).
   because `TransactionManager.Begin` rejects a missing tenant
   (`plugins/memory/txmanager.go:98-104`) and the background loop has none
   (§15 H1).
-- `engine.FireScheduledTransition(task)` → Fired / Declined / Expired → emit
-  audit → `Delete(id)`. Guard-CAS-fail → **silent** `Delete`, no audit (§15 M3).
-  The entity load/write routes through the normal cluster tx/proxy path.
+- `engine.FireScheduledTransition(task)` opens one tx, applies the §5.3 re-read
+  guard, then Fired / Declined / Expired → emit audit → resolve the row (Fired
+  removes it via the reconcile; Expired/Declined delete it). A guard drop
+  (§5.3 steps 1–3) is **silent** — no audit. The entity load/write routes through
+  the normal cluster tx path.
 
 Long tasks don't block the coordinator (fire-and-forget) — the reason for
 delegation.
@@ -356,10 +383,11 @@ New `StateMachineEventType` constants (`types.go:268` block):
 | Expired (lateness) | `SMEventScheduledTransitionExpired` = `SCHEDULED_TRANSITION_EXPIRE` |
 | Cancelled (explicit exit only) | `SMEventScheduledTransitionCancelled` = `SCHEDULED_TRANSITION_CANCEL` |
 
-`Cancelled` is emitted **only** from the definitive cancel-on-exit path (§5.1);
-a guard-CAS-fail during a fire deletes silently (§15 M3). Emitted via
-`recordEvent` (`engine.go:765`); the read model surfaces them with no new
-endpoint. No new HTTP error codes → no `errors/<CODE>.md` additions.
+`Cancelled` is emitted **only** from the cancel-on-exit reconcile for tasks whose
+entity left their `sourceState` (§5.1) — a loopback staying in state emits none
+(§15 F5); a guard drop during a fire is silent (§5.3). Emitted via `recordEvent`
+(`engine.go:765`); the read model surfaces them with no new endpoint. No new HTTP
+error codes → no `errors/<CODE>.md` additions.
 
 ---
 
@@ -411,16 +439,18 @@ thresholds, to avoid CI flakes.
 
 | Scenario | U | E | P | G |
 |---|---|---|---|---|
-| Arm on entry (task row created, in-tx atomic) | ✓ | ✓ | ✓ | — |
-| Arm rolled back with entity (no orphan on abort) | ✓ | — | — | — |
+| Arm on entry, atomic with entity (all 3 backends) | ✓ | ✓ | ✓ | — |
+| Arm rolled back with entity (no orphan on abort) | ✓ | — | ✓ | — |
 | Fire on time, no criterion | ✓ | ✓ | ✓ | — |
 | Fire, criterion true (inline + FUNCTION) | ✓ | ✓ | ✓ | — |
 | Decline, criterion false (one-shot, no retry) | ✓ | ✓ | ✓ | — |
-| Expire (`lateness > timeoutMs`) — exact boundary | ✓ | — | — | — |
+| Expire (`lateness > timeoutMs + grace`) — boundary | ✓ | — | — | — |
 | No expire when `timeoutMs` nil (fires late) | ✓ | ✓ | ✓ | — |
 | Cancel on state exit → `…Cancelled` audit | ✓ | ✓ | ✓ | — |
+| Loopback in scheduled state → re-arm, **no** `Cancelled` | ✓ | ✓ | ✓ | — |
 | Re-arm / clock reset on loopback | ✓ | ✓ | ✓ | — |
-| Guard mismatch → silent delete, **no** audit | ✓ | ✓ | — | — |
+| Guard re-read: superseded/moved-on → silent drop | ✓ | ✓ | — | — |
+| Fire under segmenting (CBD) cascade — CAS at 1st flush | ✓ | ✓ | — | — |
 | Cascade from `Next` after fire | ✓ | ✓ | ✓ | — |
 | Unconditional scheduled cycle = heartbeat | ✓ | ✓ | — | — |
 | Explicit fire-by-name → 400 (reworded) | ✓ | ✓ | ✓ | ✓ |
@@ -441,16 +471,22 @@ scenarios register in `e2e/parity/registry.go`.
 ## 12. Cross-repo & release logistics
 
 - **SPI additions** (cyoda-go-spi): `ScheduledTask` type, `ScheduledTaskStore`
-  interface (`Upsert`, `ScanDue`, `MarkRedispatch`, `Delete` returning
-  rows-affected for the delete-gated audit, `CancelForEntity`),
+  interface (`Upsert`, `ScanDue`, `MarkRedispatch`, `Get`/re-read for the guard,
+  `Delete` returning rows-affected for the delete-gated audit,
+  `ReconcileForEntity` = upsert-current-state + delete-other-state tasks),
   `StoreFactory.ScheduledTaskStore()`, new `StateMachineEventType` constants.
-  Coordinated release per MAINTAINING.md — **SPI tag first, then the cyoda-go
-  pin bump in one commit**; rides the in-flight v0.8.x SPI work; local
-  composition via `go.work`, never a committed `replace`.
-- **In-tree plugins:** memory (incl. **tx-buffer staging for atomic co-commit**,
-  §5.1), sqlite, postgres each implement `ScheduledTaskStore` (a
+  `ScheduledTaskStore` is a **tenant-pattern exception** like `AsyncSearchStore`
+  — its `ScanDue` is cross-tenant (obtained with `context.Background()`, tenant
+  per row), so its impls must not follow the per-tenant-at-construction pattern,
+  and the postgres impl must run the scan under a role/path that RLS does not
+  filter to a single tenant (§15 F7). Coordinated release per MAINTAINING.md —
+  **SPI tag first, then the cyoda-go pin bump in one commit**; rides the in-flight
+  v0.8.x SPI work; local composition via `go.work`, never a committed `replace`.
+- **In-tree plugins:** **memory and sqlite** both need **tx-buffer staging for
+  atomic co-commit** (§5.1/§15 F2 — both are buffer-and-flush); postgres is
+  atomic via the context-resolving querier. Each implements a
   `scheduledTime`-indexed table; plain `MarkRedispatch`; `Delete` returns
-  rows-affected). Per-plugin tests + `make test-all`.
+  rows-affected. Per-plugin tests + `make test-all`.
 - **Commercial backend:** implements `ScheduledTaskStore` (due-time-bucketed
   table). Leader-scan works over it — **no shard-ownership pull-up needed**. Must
   confirm two backend-specific invariants: the §5.3 guard-token (token changes on
@@ -469,12 +505,13 @@ scenarios register in `e2e/parity/registry.go`.
 ## 13. Suggested implementation phasing (for writing-plans)
 
 1. SPI: `ScheduledTask`, `ScheduledTaskStore`, factory accessor, SMEvent
-   constants. Confirm guard-token invariant incl. HLC.
-2. Store impls — memory first (incl. tx-buffer co-commit), then sqlite,
-   postgres; plain `MarkRedispatch`; `Delete` returns rows-affected.
-3. Engine: extract `fireTransition`; `FireScheduledTransition` (grace-band
-   lateness gate + CAS guard at first flush + one-shot); replace cascade-skip
-   with arm-on-entry; cancel-on-exit — all in-tx; `finalTxID` guard capture.
+   constants.
+2. Store impls — memory + sqlite (both incl. tx-buffer co-commit), then
+   postgres; plain `MarkRedispatch`; `Delete` returns rows-affected; cross-tenant
+   `ScanDue` (tenant-pattern exception).
+3. Engine: extract `fireTransition`; `FireScheduledTransition` (re-read guard +
+   grace-band gate + read-then-CAS at first flush + one-shot); replace
+   cascade-skip with the arm/cancel **reconcile** — all in-tx.
 4. Scheduler service: coordinator + distribution, scan loop, `redispatchAfter`
    throttle, grace band, system `UserContext`, PeerAuth peer RPC
    `ExecuteScheduledTask`; wire `app.New`/`Shutdown`; injectable clock at arm +
@@ -489,25 +526,33 @@ scenarios register in `e2e/parity/registry.go`.
 
 ## 14. Open risks
 
-- **Guard-token invariant on the commercial HLC backend** (§5.3) — verified for
-  core; confirm for Cassandra in phase 1 with a test.
-- **Memory tx-buffer co-commit** (§5.1) — the one genuine tx-model addition;
-  scoped to the memory plugin. SQL backends atomic for free.
+- **Memory + sqlite tx-buffer co-commit** (§5.1/§15 F2) — the genuine tx-model
+  addition; two buffer-and-flush plugins, not one. Postgres atomic for free.
+- **Timer starvation from frequent writes** (§15 F6) — because every save
+  re-arms, an entity written more often than `DelayMs` never fires its scheduled
+  transition. A direct consequence of "a data write resets the clock" — document
+  as a known semantic in the help topic. *(Pending user confirmation this is
+  intended vs. resetting only on state entry.)*
 - **Infinite-heartbeat load** (§5.4) — unconditional scheduled cycles fire
   forever; documented operator opt-in, bounded by batch/scan config.
-- **Failover latency** (§6.3) — fires delayed by the memberlist detection window
-  on coordinator death; not lost.
+- **Failover / RPC latency** (§6.3, §15 F8) — fires delayed by the memberlist
+  detection window on coordinator death, and by up to `redispatchBackoff` on a
+  silently-failed delegation RPC; not lost.
+- **Commercial backend** (§12) — must honour the §5.3 re-read + first-flush CAS
+  guard and §5.1 atomic reconcile; confirmed in its own implementation issue.
 
 ---
 
 ## 15. Independent-review reconciliation
 
+### 15.1 First review (pre-grace-band draft)
+
 A fresh-context reviewer audited the first draft. Dispositions:
 
 - **C1 (arm-in-tx atomicity)** — draft's "like every other store" was wrong for
-  memory. **Corrected:** atomic for free on SQL backends (context-resolving
-  querier shares the DB tx, `store_factory.go:117`); memory needs a tx-buffer
-  co-commit (§5.1). Scoped, not a cross-backend rewrite.
+  memory. Corrected here to "atomic on SQL backends," then **further corrected by
+  F2**: only *postgres* is free; sqlite buffers like memory, so memory + sqlite
+  both need the tx-buffer co-commit (§5.1).
 - **C2 (unguarded expire vs fire under dual-coordinator + skew)** — real, but
   cosmetic (entity fires once via CAS; damage is a contradictory Expired audit
   line). **Fixed** by an **expiry grace band** (§5.5) that makes fire and expire
@@ -524,8 +569,9 @@ A fresh-context reviewer audited the first draft. Dispositions:
 - **H3 (one-shot vs accepted polling cycles)** — **clarified:** unconditional
   cycle = heartbeat; conditional scheduled = one-shot deadline; poll = tick +
   conditional cascade exits (§5.4). Documentation, not redesign.
-- **M1 (CBD segmentation / which txID)** — **fixed:** guard = `finalTxID` at
-  arm; CAS applied at first flush (§5.3).
+- **M1 (CBD segmentation / which txID)** — the `finalTxID`-at-arm fix here was
+  **superseded by F1**: no arm-time token at all; guard is a fire-time re-read
+  (§5.3).
 - **M2 (round-robin hops)** — the draft's "proxy hop to the entity owner" was
   **wrong**: proxy forwarding only fires for an *open-transaction* token
   (`internal/cluster/proxy/http.go:18-27`); a scheduled fire opens its own tx and
@@ -539,11 +585,51 @@ A fresh-context reviewer audited the first draft. Dispositions:
 - **M3 (spurious Cancelled after crash-then-refire)** — **fixed:** guard-fail
   deletes silently; `Cancelled` only from explicit exit (§5.3, §8).
 - **M4 (failover window)** — **documented** (§6.3).
-- **M5 (guard invariant)** — reviewer **confirmed sound** for core backends;
-  folded into §5.3 as verified.
+- **M5 (guard invariant)** — reviewer confirmed `TransactionID` changes on every
+  save; but **F1 showed that was the wrong invariant** (postgres persists the
+  *entry* txID after segmentation), so the arm-time-token guard was dropped
+  entirely for the re-read guard (§5.3). The invariant is now moot.
 - **L1 (id collision)** — **fixed:** `id` includes `sourceState` (§4).
 - **L2 (cross-tenant scan)** — **fixed:** tenant is a row column; single
   cross-tenant `ScanDue` (§4).
 - **L3 (clock threading / e2e flake)** — **fixed:** inject the clock at arm +
   scan; exact-threshold tests are unit, not e2e (§11).
+
+### 15.2 Second review (post-grace-band revision)
+
+A second fresh-context reviewer audited the revised design. Dispositions:
+
+- **F1 (arm-time `finalTxID` guard is *wrong* on postgres → silent lost fire)** —
+  confirmed real (`entity_store.go:46-48`, `entity_doc.go:49`: postgres persists
+  the entry txID after a segmenting cascade; memory/sqlite persist the final).
+  **Fixed by redesign:** no arm-time token — the guard is a fire-time task
+  re-read (existence + `sourceState` + `scheduledTime ≤ now`) plus ordinary
+  read-then-CAS for the entity write (§5.3). Backend-agnostic; removes the HLC
+  caveat too.
+- **F2 (sqlite is *not* atomic-for-free)** — confirmed (`sqlite/entity_store.go:206`
+  buffers like memory). **Corrected:** memory *and* sqlite need the tx-buffer
+  co-commit; only postgres is free (§5.1, §12, §13).
+- **F3 (grace "proof" oversold)** — correct: the band only covers *simultaneous*
+  skew, not fire-then-later-expire. **Fixed:** the fired task is removed
+  atomically by the in-tx reconcile (§5.1) and the guard drops a moved-on entity
+  before the expire branch (§5.3 step 2); wording softened (§5.5).
+- **F4 (redispatch throttle vs "next scan" timing)** — **corrected:** an in-band
+  drop resolves within `redispatchBackoff`, not one scan (§5.5). Immaterial.
+- **F5 (spurious `Cancelled` on loopback)** — **fixed:** arm is now a
+  **reconcile** — delete only tasks whose `sourceState ≠ current state`; a
+  loopback emits no `Cancelled` (§5.1, §8).
+- **F6 (timer starvation from frequent writes)** — a consequence of "every save
+  re-arms." **Pending user confirmation** (intended + documented, vs. reset only
+  on state entry); tracked in §14.
+- **F7 (cross-tenant scan / RLS)** — **addressed:** `ScheduledTaskStore` is a
+  tenant-pattern exception like `AsyncSearchStore`; postgres scan must not be
+  RLS-filtered to one tenant (§12).
+- **F8 (RPC-failure latency ≈ `redispatchBackoff`)** — **documented** (§14).
+- **F9 (round-robin default is YAGNI; prefer `SELF`)** — reviewer's call noted;
+  round-robin kept as a deliberate user decision (load-spread exposure), with
+  its delegation-surface concerns (F3/F8) now resolved.
+- **Confirmed sound:** postgres atomic-arm-in-tx, `CompareAndSave` compares
+  `transaction_id`, the cascade-skip→arm site, and bounded per-fire cascade
+  (`maxCascadeDepth`/`maxStateVisits`) so an unconditional scheduled cycle can't
+  runaway (§5.4).
 ```
