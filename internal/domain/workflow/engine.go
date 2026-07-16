@@ -529,13 +529,32 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 			transitionName, entity.Meta.State, scheduledNotYetImplementedReason, ErrTransitionNotFound)
 	}
 
+	newCtx, newTxID, _, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
+	return newCtx, newTxID, err
+}
+
+// fireTransition runs the transition *mechanism* for an already-resolved
+// transition: criterion evaluation, processor execution, and the audited
+// state advance. It applies no policy — callers are responsible for
+// rejecting disabled or scheduled transitions before invoking it, so a
+// later scheduled-transition firing path can reuse the mechanism without
+// going through attemptTransition's manual/scheduled reject policy.
+//
+// matched reports whether the transition actually fired (criterion matched
+// and the state advanced). It is false whenever the criterion evaluated to
+// false or processor execution failed; in both cases entity.Meta.State is
+// left unchanged and err carries the same error attemptTransition has
+// always returned in that case.
+func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, bool, error) {
+	transitionName := transition.Name
+
 	// Evaluate transition criterion.
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
 		matched, reason, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
-			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
+			return ctx, txID, false, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
 		if !matched {
 			external := reason != ""
@@ -552,9 +571,9 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 					"reason":       reason,
 				})
 			if external {
-				return ctx, txID, fmt.Errorf("transition %q criterion not matched: %s", transitionName, reason)
+				return ctx, txID, false, fmt.Errorf("transition %q criterion not matched: %s", transitionName, reason)
 			}
-			return ctx, txID, fmt.Errorf("transition %q criterion not matched", transitionName)
+			return ctx, txID, false, fmt.Errorf("transition %q criterion not matched", transitionName)
 		}
 	}
 
@@ -564,7 +583,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
 			map[string]any{"success": false})
-		return newCtx, newTxID, err
+		return newCtx, newTxID, false, err
 	}
 
 	// Record transition and move state. The audit event uses the cascade-entry
@@ -575,7 +594,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
 	entity.Meta.State = transition.Next
 
-	return newCtx, newTxID, nil
+	return newCtx, newTxID, true, nil
 }
 
 // cascadeAutomated loops through automated transitions until a stable state
