@@ -37,6 +37,37 @@ var defaultWorkflowJSON []byte
 // errors.Is(err, ErrTransitionNotFound).
 var ErrTransitionNotFound = errors.New("transition not found")
 
+// ErrCriterionNotMatched is the sentinel FireScheduledTransition uses to
+// distinguish "the transition's criterion evaluated to false" (Declined —
+// terminal, one-shot, no retry) from every other fireTransition failure
+// (criterion-evaluation error, processor failure — both retried on the next
+// scan). errors.Is(err, ErrCriterionNotMatched) reports true for the error
+// fireTransition returns from either of its criterion-not-matched branches.
+//
+// fireTransition cannot wrap with a plain %w here: attemptTransition's tests
+// assert the criterion-not-matched message byte-for-byte
+// (`transition %q criterion not matched: %s` / `transition %q criterion not
+// matched`), and %w appends the sentinel's own "criterion not matched" text,
+// which would change that message. criterionNotMatchedError instead carries
+// the exact pre-existing text in Error() while still satisfying errors.Is
+// via a custom Is method.
+var ErrCriterionNotMatched = errors.New("criterion not matched")
+
+// criterionNotMatchedError preserves fireTransition's existing
+// criterion-not-matched error text exactly while satisfying
+// errors.Is(err, ErrCriterionNotMatched).
+type criterionNotMatchedError struct {
+	msg string
+}
+
+func (e *criterionNotMatchedError) Error() string { return e.msg }
+
+// Is reports whether target is ErrCriterionNotMatched, so callers can use
+// errors.Is instead of a type assertion.
+func (e *criterionNotMatchedError) Is(target error) bool {
+	return target == ErrCriterionNotMatched
+}
+
 // scheduledNotYetImplementedReason is the human-readable cause emitted by
 // both the audit event Details and the wrapped error message when an explicit
 // fire of a scheduled transition is rejected. Extracted as a const so the
@@ -112,15 +143,20 @@ type Engine struct {
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
-	// and, later, for FireScheduledTransition's lateness/grace-band math and the
+	// and for FireScheduledTransition's lateness/grace-band math and the
 	// scheduler's scan loop. Defaults to time.Now; overridden via
 	// WithScheduledClock for deterministic tests.
 	clock func() time.Time
+	// expiryGraceMs is the margin (ms) above a scheduled transition's
+	// TimeoutMs that FireScheduledTransition tolerates before expiring a
+	// late task instead of leaving it for the next scan (design §5.5).
+	// Defaults to defaultExpiryGraceMs; overridden via WithExpiryGrace.
+	expiryGraceMs int64
 }
 
 // NewEngine creates a new workflow engine.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -616,9 +652,9 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 					"reason":       reason,
 				})
 			if external {
-				return ctx, txID, false, fmt.Errorf("transition %q criterion not matched: %s", transitionName, reason)
+				return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
 			}
-			return ctx, txID, false, fmt.Errorf("transition %q criterion not matched", transitionName)
+			return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
 		}
 	}
 
