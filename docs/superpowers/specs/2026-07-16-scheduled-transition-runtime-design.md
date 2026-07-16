@@ -531,9 +531,9 @@ A fresh-context reviewer audited the first draft. Dispositions:
   worker) with round-robin, **zero** with `SELF` — no owner hop. **Decision:
   round-robin default** (kept) to exercise the delegation path and spread
   orchestration load off the coordinator under high scheduling volume; `SELF`
-  available. **Back-pressure is a noted future item** — today the only bounds are
+  available. **Back-pressure is tracked as #416** — today the only bounds are
   batch size × scan interval × the redispatch throttle; real load-feedback /
-  bounded in-flight dispatch is a follow-on, not v1.
+  bounded in-flight dispatch is that follow-on, not v1.
 - **M3 (spurious Cancelled after crash-then-refire)** — **fixed:** guard-fail
   deletes silently; `Cancelled` only from explicit exit (§5.3, §8).
 - **M4 (failover window)** — **documented** (§6.3).
