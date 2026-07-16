@@ -12,13 +12,22 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-// Executor runs one due ScheduledTask. Execute is fire-and-forget: it
-// returns nothing, and the Service never blocks the scan loop on it. A real
-// implementation (Task D3) decides whether to fire the transition locally or
-// forward it to the task's assigned peer over the cluster RPC channel; the
-// Service itself has no opinion on that routing.
+// Executor runs one due ScheduledTask against the cluster member picked by
+// Distribution.Pick. target is that pick, passed through verbatim — the
+// Service calls Pick exactly once per task (RoundRobin is stateful; a
+// second call would advance the cursor and could return a different node
+// than the one the coordinator actually decided on), so Execute must not
+// re-derive it. A real implementation (Task D3) uses target to decide
+// whether to fire the transition locally (target == this node's ID) or
+// forward it to the peer over the cluster RPC channel.
+//
+// The Service invokes Execute from its own goroutine, recovered from panics
+// (see tick), so the scan loop never blocks on or is brought down by a slow
+// or panicking implementation. Execute itself may therefore be synchronous —
+// it need not spawn its own goroutine or be otherwise async — though it may
+// be if that's convenient.
 type Executor interface {
-	Execute(ctx context.Context, task spi.ScheduledTask)
+	Execute(ctx context.Context, task spi.ScheduledTask, target string)
 }
 
 // Config controls the scan loop's cadence and behavior.
@@ -67,16 +76,20 @@ type Deps struct {
 // this node is the coordinator and, if so, scans for due ScheduledTasks and
 // dispatches each to Executor. Non-coordinators idle every tick.
 //
-// Start launches exactly one background goroutine; Stop is safe to call any
-// number of times (idempotent) and blocks until that goroutine has been
-// signalled to exit. Follows the reaper pattern used elsewhere in the
+// Start launches exactly one background goroutine; a second Start call is a
+// no-op rather than spawning a duplicate loop. Stop is safe to call any
+// number of times (idempotent): it closes the stop channel to signal the
+// goroutine to exit on its next select iteration, but it does not itself
+// wait for that goroutine to finish — callers needing that guarantee must
+// synchronize separately. Follows the reaper pattern used elsewhere in the
 // codebase (e.g. the search-snapshot TTL reaper in app/app.go).
 type Service struct {
 	cfg  Config
 	deps Deps
 
-	stop     chan struct{}
-	stopOnce sync.Once
+	stop      chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
 }
 
 // NewService constructs a Service. Start must be called to begin scanning.
@@ -89,20 +102,24 @@ func NewService(cfg Config, deps Deps) *Service {
 }
 
 // Start launches the scan-loop goroutine. It returns immediately; the loop
-// runs until Stop is called.
+// runs until Stop is called. A second call to Start is a no-op — only the
+// first spawns a goroutine — so callers can't accidentally end up with two
+// concurrent scan loops racing on the same Service.
 func (s *Service) Start() {
-	go func() {
-		ticker := time.NewTicker(s.cfg.ScanInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				s.tick()
-			case <-s.stop:
-				return
+	s.startOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(s.cfg.ScanInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					s.tick()
+				case <-s.stop:
+					return
+				}
 			}
-		}
-	}()
+		}()
+	})
 }
 
 // Stop signals the scan-loop goroutine to exit. Safe to call multiple times.
@@ -157,7 +174,25 @@ func (s *Service) tick() {
 		target := s.deps.Distribution.Pick(members, s.deps.SelfID, task)
 		slog.Debug("scheduler dispatching task", "pkg", "scheduler", "taskId", task.ID, "target", target)
 
-		// Fire-and-forget: the loop never blocks on Execute.
-		s.deps.Executor.Execute(ctx, task)
+		// Dispatch on its own goroutine so a slow local fire (processors run
+		// synchronously) or a slow peer RPC can never stall the scan loop —
+		// tick returns as soon as every due task in the batch has been
+		// handed off, not once each Execute has finished. Panics are
+		// recovered here so one bad task can't take down the scan-loop
+		// goroutine and silently stop all future scanning.
+		//
+		// This intentionally has no back-pressure: a slow Executor means
+		// concurrent in-flight dispatches accumulate, bounded only by
+		// RedispatchBackoff (a due task isn't re-scanned until its
+		// redispatch window elapses) and BatchSize per tick. Real
+		// back-pressure is a future enhancement.
+		go func(task spi.ScheduledTask, target string) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("scheduled task dispatch panicked", "pkg", "scheduler", "taskId", task.ID, "panic", r)
+				}
+			}()
+			s.deps.Executor.Execute(ctx, task, target)
+		}(task, target)
 	}
 }
