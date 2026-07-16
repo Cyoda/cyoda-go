@@ -35,6 +35,9 @@ func (f *failingStoreFactory) StateMachineAuditStore(_ context.Context) (spi.Sta
 func (f *failingStoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
 	return nil, f.err
 }
+func (f *failingStoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, f.err
+}
 func (f *failingStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, f.err
 }
@@ -140,6 +143,9 @@ func (f *modelGetErrFactory) StateMachineAuditStore(_ context.Context) (spi.Stat
 	return nil, errUnusedEntity
 }
 func (f *modelGetErrFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
 	return nil, errUnusedEntity
 }
 func (f *modelGetErrFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {

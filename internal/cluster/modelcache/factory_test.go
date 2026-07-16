@@ -31,6 +31,9 @@ func (f *stubFactory) AsyncSearchStore(context.Context) (spi.AsyncSearchStore, e
 func (f *stubFactory) StateMachineAuditStore(context.Context) (spi.StateMachineAuditStore, error) {
 	return nil, nil
 }
+func (f *stubFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, nil
+}
 func (f *stubFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }
@@ -174,6 +177,10 @@ func (f *recordingFactory) AsyncSearchStore(context.Context) (spi.AsyncSearchSto
 }
 func (f *recordingFactory) StateMachineAuditStore(context.Context) (spi.StateMachineAuditStore, error) {
 	f.bump("StateMachineAuditStore")
+	return nil, nil
+}
+func (f *recordingFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStore, error) {
+	f.bump("ScheduledTaskStore")
 	return nil, nil
 }
 func (f *recordingFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
