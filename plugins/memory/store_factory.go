@@ -83,6 +83,13 @@ type StoreFactory struct {
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
 	uniqueClaims   map[claimKey]string            // claimKey → entityID currently holding it
 	claimsByEntity map[entityTenantKey][]claimKey // (tenant,entityID) → its claimKeys (for release)
+
+	// scheduledTasks holds durable ScheduledTask rows, keyed by ScheduledTask.ID.
+	// Guarded by entityMu (write lock for mutation, read lock for lookup) —
+	// same mutex as entityData/uniqueClaims — so that a transaction's
+	// scheduled-task arm/cancel commits inside the exact same critical
+	// section as the entity buffer flush (see TransactionManager.Commit).
+	scheduledTasks map[string]spi.ScheduledTask
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {
@@ -101,6 +108,7 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		blobDir:        blobDir,
 		uniqueClaims:   make(map[claimKey]string),
 		claimsByEntity: make(map[entityTenantKey][]claimKey),
+		scheduledTasks: make(map[string]spi.ScheduledTask),
 	}
 	for _, o := range opts {
 		o(f)
@@ -171,6 +179,14 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
 	return f.searchStore, nil
+}
+
+// ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
+// per-tenant stores above, no tenant resolution happens here: ScanDue is
+// cross-tenant and Upsert/Delete/Reconcile carry the tenant on the
+// task/request itself (see spi.StoreFactory.ScheduledTaskStore godoc).
+func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
+	return &scheduledTaskStore{f: f}, nil
 }
 
 func (f *StoreFactory) Close() error {

@@ -50,6 +50,15 @@ type TransactionManager struct {
 	// different key set in its context. Protected by mu. Cleaned up after commit
 	// or rollback (no leak).
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
+
+	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
+	// transaction is open (mirrors txUniqueKeys's staging pattern — it
+	// exists because *spi.TransactionState is a shared cyoda-go-spi type
+	// plugins may not add fields to). Applied to factory.scheduledTasks
+	// inside Commit's entityMu critical section, atomically with the entity
+	// buffer flush; discarded, never applied, on Rollback or any abort path.
+	// Protected by mu. Cleaned up after commit or rollback (no leak).
+	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
 }
 
 // Verify interface compliance at compile time.
@@ -58,14 +67,15 @@ var _ spi.TransactionManager = (*TransactionManager)(nil)
 // NewTransactionManager creates and registers a TransactionManager on the StoreFactory.
 func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *TransactionManager {
 	tm := &TransactionManager{
-		factory:      f,
-		uuids:        uuids,
-		active:       make(map[string]*spi.TransactionState),
-		committedLog: nil,
-		committing:   make(map[string]bool),
-		submitTimes:  make(map[string]time.Time),
-		savepoints:   make(map[string]map[string]savepointSnapshot),
-		txUniqueKeys: make(map[string]map[string][]spi.UniqueKey),
+		factory:          f,
+		uuids:            uuids,
+		active:           make(map[string]*spi.TransactionState),
+		committedLog:     nil,
+		committing:       make(map[string]bool),
+		submitTimes:      make(map[string]time.Time),
+		savepoints:       make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
+		scheduledTaskOps: make(map[string][]scheduledTaskOp),
 	}
 	f.txManager = tm
 	return tm
@@ -81,6 +91,17 @@ func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.
 		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
 	}
 	m.txUniqueKeys[txID][entityID] = keys
+}
+
+// stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
+// Commit applies the accumulated ops inside its entityMu critical section
+// (atomically with the entity buffer flush); every abort path — FCW
+// conflict, claim violation, and Rollback — discards them unapplied.
+// Protected by mu.
+func (m *TransactionManager) stageScheduledTaskOp(txID string, op scheduledTaskOp) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
 }
 
 // GetTransactionManager returns the registered TransactionManager, or nil.
@@ -207,9 +228,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		defer m.factory.entityMu.Unlock()
 
 		// 3. Conflict detection: check committed log for overlapping write sets.
-		// Also snapshot per-entity unique keys captured at Save time so that
-		// step 3.5 can read them without re-acquiring m.mu.
+		// Also snapshot per-entity unique keys and staged scheduled-task ops
+		// captured at Save/Upsert/Delete time so that step 3.5 and step 4.5
+		// can read them without re-acquiring m.mu.
 		var capturedKeys map[string][]spi.UniqueKey
+		var capturedScheduledTaskOps []scheduledTaskOp
 		if err := func() error {
 			m.mu.Lock()
 			defer m.mu.Unlock()
@@ -221,12 +244,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 							delete(m.active, txID)
 							delete(m.savepoints, txID)
 							delete(m.txUniqueKeys, txID)
+							delete(m.scheduledTaskOps, txID)
 							return spi.ErrConflict
 						}
 					}
 				}
 			}
-			capturedKeys = m.txUniqueKeys[txID] // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
+			capturedKeys = m.txUniqueKeys[txID]                 // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
+			capturedScheduledTaskOps = m.scheduledTaskOps[txID] // safe: tx.OpMu.Lock() prevents new stageScheduledTaskOp
 			return nil
 		}(); err != nil {
 			return err
@@ -247,6 +272,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				delete(m.active, txID)
 				delete(m.savepoints, txID)
 				delete(m.txUniqueKeys, txID)
+				delete(m.scheduledTaskOps, txID)
 			}()
 			return err
 		}
@@ -375,6 +401,15 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			})
 		}
 
+		// 5.5. Apply staged ScheduledTaskStore ops. Still inside the entityMu
+		// critical section acquired at the top of this func — this is what
+		// makes the scheduled-task arm/cancel commit atomically with the
+		// entity write (and, symmetrically, why every abort path above
+		// discards capturedScheduledTaskOps unapplied).
+		for _, op := range capturedScheduledTaskOps {
+			applyScheduledTaskOp(m.factory.scheduledTasks, op)
+		}
+
 		// 6. Record in committed log, submit times, and prune.
 		func() {
 			m.mu.Lock()
@@ -397,6 +432,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.committing, txID)
 			delete(m.savepoints, txID)
 			delete(m.txUniqueKeys, txID)
+			delete(m.scheduledTaskOps, txID)
 			var oldest time.Time
 			for _, activeTx := range m.active {
 				if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -452,6 +488,7 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
 	delete(m.txUniqueKeys, txID)
+	delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
 	m.mu.Unlock()
 	return nil
 }
