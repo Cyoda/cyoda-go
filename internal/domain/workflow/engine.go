@@ -111,11 +111,16 @@ type Engine struct {
 	extProc          contract.ExternalProcessingService
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
+	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
+	// and, later, for FireScheduledTransition's lateness/grace-band math and the
+	// scheduler's scan loop. Defaults to time.Now; overridden via
+	// WithScheduledClock for deterministic tests.
+	clock func() time.Time
 }
 
 // NewEngine creates a new workflow engine.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -147,6 +152,26 @@ func WithMaxStateVisits(n int) EngineOption {
 			e.maxStateVisits = n
 		}
 	}
+}
+
+// WithScheduledClock overrides the engine's clock, used for
+// reconcileScheduledTasks' scheduledTime/armedAt computation and, later, by
+// FireScheduledTransition and the scan-loop scheduler. Defaults to
+// time.Now; tests inject a deterministic clock instead.
+func WithScheduledClock(clock func() time.Time) EngineOption {
+	return func(e *Engine) {
+		if clock != nil {
+			e.clock = clock
+		}
+	}
+}
+
+// now returns the engine's current time per its configured clock.
+func (e *Engine) now() time.Time {
+	if e.clock != nil {
+		return e.clock()
+	}
+	return time.Now()
 }
 
 // Execute runs the workflow engine for entity creation. It selects the matching
@@ -222,6 +247,14 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	currentTxID = nTxID
 	if err != nil {
 		return nil, err
+	}
+
+	// Arm/cancel the settled state's scheduled tasks. Runs after the cascade
+	// settles, using the FINAL ctx/txID — the write joins whatever
+	// transaction currentCtx carries, atomic with the entity write it just
+	// cascaded into.
+	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, currentTxID); err != nil {
+		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
 	// Record FINISHED. Recorded via currentCtx so it lands in whichever segment
@@ -312,6 +345,12 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	currentCtx, currentTxID, err = e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
+	// treatment as Execute, atomic with the entity write.
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID); err != nil {
+		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
@@ -405,6 +444,12 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	currentCtx, currentTxID, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
+	// treatment as Execute/ManualTransition, atomic with the entity write.
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID); err != nil {
+		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
