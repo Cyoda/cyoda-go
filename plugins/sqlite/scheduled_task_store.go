@@ -33,15 +33,44 @@ type scheduledTaskOp struct {
 // non-transactional immediate-apply path (applyScheduledTaskOpDirect) and
 // the transactional flush path (flushToSQLite), so both use the exact same
 // statements.
+// The ON CONFLICT DO UPDATE clause sets every non-id column from excluded.*
+// so a re-arm upsert on an existing ID fully replaces the row (matching the
+// memory plugin's full-replace semantics) rather than merging a subset —
+// notably model_version is NOT part of the deterministic ID hash and can
+// legitimately change between two arms, so it must be included here.
 const upsertScheduledTaskSQL = `INSERT INTO scheduled_tasks
 	 (id,tenant_id,type,scheduled_time,timeout_ms,redispatch_after,entity_id,model_name,model_version,transition,source_state,armed_at,attempt_count)
 	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-	 ON CONFLICT(id) DO UPDATE SET scheduled_time=excluded.scheduled_time,
+	 ON CONFLICT(id) DO UPDATE SET tenant_id=excluded.tenant_id,
+	   type=excluded.type, scheduled_time=excluded.scheduled_time,
 	   timeout_ms=excluded.timeout_ms, redispatch_after=excluded.redispatch_after,
+	   entity_id=excluded.entity_id, model_name=excluded.model_name,
+	   model_version=excluded.model_version, transition=excluded.transition,
 	   source_state=excluded.source_state, armed_at=excluded.armed_at,
 	   attempt_count=excluded.attempt_count`
 
 const deleteScheduledTaskSQL = `DELETE FROM scheduled_tasks WHERE id=?`
+
+// copyScheduledTask returns a value copy of t that shares no pointers with
+// t, so that neither the caller nor the store can mutate the other's copy
+// after the call returns. A transactional Upsert only stages t on the
+// transactionManager (see stage) — it is not serialized to SQL args until
+// flushToSQLite runs the deferred ExecContext call, so the caller mutating
+// its *int64 fields between Upsert and Commit would otherwise leak through.
+// Mirrors the memory plugin's copyScheduledTask (store copy-on-write
+// discipline, matching copyEntity).
+func copyScheduledTask(t spi.ScheduledTask) spi.ScheduledTask {
+	cp := t
+	if t.TimeoutMs != nil {
+		v := *t.TimeoutMs
+		cp.TimeoutMs = &v
+	}
+	if t.RedispatchAfter != nil {
+		v := *t.RedispatchAfter
+		cp.RedispatchAfter = &v
+	}
+	return cp
+}
 
 // upsertScheduledTaskArgs returns the positional args for upsertScheduledTaskSQL.
 func upsertScheduledTaskArgs(t spi.ScheduledTask) []any {
@@ -100,7 +129,7 @@ func (s *scheduledTaskStore) stage(ctx context.Context, op scheduledTaskOp) erro
 }
 
 func (s *scheduledTaskStore) Upsert(ctx context.Context, task spi.ScheduledTask) error {
-	return s.stage(ctx, scheduledTaskOp{kind: scheduledTaskUpsert, id: task.ID, task: task})
+	return s.stage(ctx, scheduledTaskOp{kind: scheduledTaskUpsert, id: task.ID, task: copyScheduledTask(task)})
 }
 
 func (s *scheduledTaskStore) Delete(ctx context.Context, id string) (bool, error) {
