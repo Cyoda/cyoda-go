@@ -57,12 +57,17 @@ explicit fires. This design supplies the timer runtime.
 4. **One-shot criterion.** At the lateness-valid pickup, evaluate the criterion
    once: `true` → fire; `false` → **Declined**, terminal, no retry. The
    criterion is the intelligent gate; retrying overrides its judgment (§5.4).
-5. **Coordinator scans, distribution delegates, idempotency + a lightweight
-   atomic dispatch-claim guarantee correctness.** Pluggable coordinator (default
-   lowest-live-`NodeID`) and distribution (default round-robin, plus `SELF`).
-   Pure idempotency covers the *fire*; an **atomic visibility-claim on dispatch**
-   (§6.1) additionally serialises the mutually-exclusive expire/cancel decision
-   that idempotency alone cannot (§15 C2).
+5. **Coordinator scans, distribution delegates, idempotency + an expiry grace
+   band guarantee correctness — no dispatch lease.** Pluggable coordinator
+   (default lowest-live-`NodeID`) and distribution (default round-robin, plus
+   `SELF`). Pure idempotency (guard CAS) covers the *fire*. The
+   mutually-exclusive *expire vs. fire* decision is made safe by an **expiry
+   grace band** (§5.5): a worker expires only when `lateness > timeoutMs + grace`
+   with `grace` sized above max clock skew, so no two members can ever decide
+   fire-and-expire for the same task (§15 C2). At-least-once double-dispatch is
+   already the engine's documented processor contract (idempotency is the
+   author's responsibility, `workflows.md:170`) — so no dispatch lease is
+   needed; `redispatchAfter` is a plain best-effort throttle only.
 6. **Explicit fire-by-name stays rejected**, reworded (§7).
 
 ---
@@ -84,15 +89,15 @@ Two layers:
         ▼
   engine: cancel entity's pending tasks + arm current state's scheduled transitions
         │
-        ▼   ScheduledTaskStore (SPI, per-backend): Upsert / ScanDue / ClaimForDispatch / Delete / CancelForEntity
+        ▼   ScheduledTaskStore (SPI, per-backend): Upsert / ScanDue / MarkRedispatch / Delete / CancelForEntity
                                     ▲                          │
- coordinator (lowest NodeID) ───────┘ scan due                │ atomic claim (CAS on visibility)
+ coordinator (lowest NodeID) ───────┘ scan due                │ plain redispatch throttle
         │  DistributionStrategy picks target member            │
-        │  ClaimForDispatch(id) → won?  (serialises dispatch)  │
+        │  MarkRedispatch(id) (best-effort, no lease)          │
         ▼  fire-and-forget peer RPC (PeerAuth/AEAD)  ExecuteScheduledTask(task)
  worker: system UserContext(task.tenantId) → engine.FireScheduledTransition(task)
-        │  lateness gate → fire via CompareAndSave(guardToken) → one-shot criterion
-        ▼  Fired / Declined / Expired  → audit + Delete(task)   (guard-fail → silent Delete)
+        │  grace-band lateness gate → fire via CompareAndSave(guardToken) → one-shot criterion
+        ▼  Fired / Declined / Expired  → delete-gated audit + Delete(task)   (guard-fail → silent Delete)
 ```
 
 ---
@@ -106,20 +111,24 @@ Two layers:
 | `type` | string | `"fire-transition"` (only value in v1). |
 | `scheduledTime` | int64 ms | `armTime + DelayMs`. Due when `≤ now`. |
 | `timeoutMs` | *int64 | From `Schedule.TimeoutMs`. |
-| `visibleAfter` | int64 ms, nullable | Dispatch-claim deadline. `ClaimForDispatch` atomically sets `now + backoff` iff currently `≤ now`; scan excludes rows inside the window. Serialises dispatch under dual-coordinator (§6.1). |
+| `redispatchAfter` | int64 ms, nullable | Best-effort throttle. Set (plain write) to `now + backoff` at dispatch; scan excludes rows inside the window so a long-running task isn't re-dispatched every tick. **Not** a lease and **not** conditional — correctness rests on the guard CAS + grace band, not on this. |
 | `payload` | json | fire-transition: `entityId`, `modelRef` (name+version), `transition`, `sourceState`, `guardToken` (§5.3). |
 | `armedAt` | int64 ms | Observability. |
 | `attemptCount` | int | Bumped on each claim; observability. |
 
 **Scan index:** on `scheduledTime`, filtered `scheduledTime ≤ now AND
-(visibleAfter IS NULL OR visibleAfter ≤ now)`, `ORDER BY scheduledTime`,
+(redispatchAfter IS NULL OR redispatchAfter ≤ now)`, `ORDER BY scheduledTime`,
 `LIMIT batch`, across tenants. Small table (pending only), isolated from the
 entity hot path.
 
-**No stored terminal status.** On resolution the row is **deleted** after the
-audit event; the audit event is the durable record. Re-processing a
-not-yet-deleted row is safe (guard fails on the second attempt), so delete need
-not be atomic with the fire.
+**No stored terminal status.** On resolution the row is **deleted**; the audit
+event is the durable record. Re-processing a not-yet-deleted row is safe (guard
+fails on the second attempt). **Terminal audit is delete-gated:** a worker emits
+the terminal event (`Expired`/`Declined`/`Cancelled`) **only if its `Delete`
+actually removed the row** — the delete is atomic per backend, so under a rare
+dual-dispatch exactly one worker "wins" the audit (dedups duplicate Expired
+lines without a claim protocol). `Fired` rides the `TRANSITION_MAKE`, already
+single via the entity CAS.
 
 ---
 
@@ -170,7 +179,9 @@ Refactor `attemptTransition` (`engine.go:496`) to split policy from mechanism:
 - **Manual/API door** (`attemptTransition` ← `ManualTransition`): find → reject
   if `disabled` → **reject if `Schedule != nil`** → `fireTransition`.
 - **Scheduler door** (`FireScheduledTransition(ctx, task)`, new, internal): load
-  entity → **lateness gate** (→ Expired) → `fireTransition` via
+  entity → **lateness gate with grace band** (§5.5: fire-eligible if
+  `lateness ≤ timeoutMs`; expire if `lateness > timeoutMs + grace`; in between
+  → drop-and-wait) → `fireTransition` via
   `CompareAndSave(expectedTxID = guardToken)`. Criterion `false` → Declined;
   success → Fired.
 
@@ -224,6 +235,31 @@ accepts under `allowCycles`:
 The help topic documents these three so a conditional scheduled transition's
 "Declined and stranded" outcome is expected, not surprising.
 
+### 5.5 Expiry grace band — makes expire vs. fire skew-safe (§15 C2)
+
+A worker resolves a due task in three zones of `lateness = now − scheduledTime`
+(worker's own clock), where `grace = CYODA_SCHEDULER_EXPIRY_GRACE` (default
+100 ms, sized ≥ 10× typical inter-node skew):
+
+- `lateness ≤ timeoutMs` → **attempt** (evaluate criterion once → fire/decline).
+- `timeoutMs < lateness ≤ timeoutMs + grace` → **drop and wait** (no fire, no
+  expire, task left in place). The next scan resolves it (lateness has grown far
+  past the band by then, since scan interval ≫ grace).
+- `lateness > timeoutMs + grace` → **Expired** (delete + delete-gated audit).
+
+`timeoutMs` nil → never expires (always attempt).
+
+**Why this is correct, not just rare:** the fire zone (`≤ timeoutMs`) and the
+expire zone (`> timeoutMs + grace`) are separated by a gap of width `grace`. Two
+members' clocks differ by at most the skew `δ`. For one member to decide *fire*
+while another decides *expire* on the same task, their `lateness` views would
+have to differ by more than `grace`; they cannot differ by more than `δ`. **So
+long as `grace > δ`, fire-and-expire for one task is impossible** — no lease or
+dispatch-claim required. Residual risk is a member whose clock is more than
+`grace` out of sync (an NTP/operator concern; `grace` is configurable to cover
+observed skew). Cost: expiry is *recorded* up to one scan-interval late — immaterial,
+the task is late by definition.
+
 ---
 
 ## 6. Scheduler service (core, generic layer)
@@ -238,14 +274,12 @@ an **injectable clock** used at **both** arm-time and scan-time (§11, §15 L3).
 1. `CoordinatorStrategy.IsCoordinator(registry.List(), selfNodeID)` — default
    `LowestLiveNodeID`. Non-coordinators idle.
 2. Coordinator: `ScanDue(now, batchSize)` (cross-tenant). For each task:
-   a. `ClaimForDispatch(id, visibleAfter = now + backoff)` — **atomic
-      conditional update** (`SET visibleAfter WHERE visibleAfter ≤ now`),
-      returns whether this node won. Only the winner proceeds. This serialises
-      dispatch even under **transient dual-coordinator**, so a given task is
-      dispatched once per window → one worker → no expire-vs-fire divergence
-      (§15 C2). Per-backend: postgres/sqlite `UPDATE … RETURNING`, memory mutex,
-      commercial LWT. It is a **visibility window, not a renewed lease** — no
-      heartbeat, no ownership record.
+   a. `MarkRedispatch(id, redispatchAfter = now + backoff)` — **plain write**, a
+      best-effort throttle so a long-running task isn't re-dispatched every tick
+      (§4). Not conditional, not a lease. Under transient dual-coordinator both
+      may still dispatch; that's safe — the fire is idempotent (guard CAS) and
+      the expire is skew-safe (grace band, §5.5); double-dispatch is the same
+      at-least-once replay the engine already documents (`workflows.md:170`).
    b. `target = DistributionStrategy.Pick(registry.List(), task)` — default
       round-robin (cursor in coordinator memory); `SELF` = self.
    c. Fire-and-forget peer RPC `ExecuteScheduledTask(task)` to `target`
@@ -272,11 +306,13 @@ delegation.
 
 - **Exactly-once fire** — guard-token CAS: any second delivery / residual
   dual-worker re-fires against a changed token → `ErrConflict` → no-op.
-- **Single dispatch decision** — atomic `ClaimForDispatch` (§6.1) ensures one
-  outcome-decider per task per window, closing the unguarded expire/cancel
-  divergence that CAS alone can't (§15 C2).
-- **At-least-once** — coordinator re-scans; the claim window suppresses storms
-  and lapses on worker death → re-dispatch.
+- **No expire/fire contradiction** — the grace band (§5.5) makes the two
+  decisions mutually exclusive under any skew `< grace`, without a dispatch
+  lease. Double-dispatch of a normal fire is the engine's already-documented
+  at-least-once replay (processor idempotency is the author's contract,
+  `workflows.md:170`) — no new hazard.
+- **At-least-once** — coordinator re-scans; the `redispatchAfter` throttle
+  suppresses storms and lapses on worker death → re-dispatch.
 - **Coordinator uniqueness** — best-effort lowest-`NodeID` (unique memberlist
   name, `gossip.go:69`); converged view → one coordinator. Transient
   dual-coordinator (flux/partition) is safe (claim + idempotency) and collapses
@@ -284,10 +320,10 @@ delegation.
   lowest-ID node dies, scanning pauses until it is reaped, so fires are
   **delayed, not lost** (§15 M4). No election protocol, no takeover.
 - **Restart durability** — pending rows survive; the scan resumes.
-- **Clock skew** — with dispatch serialised by the claim, skew no longer
-  produces contradictory expire/fire; it only shifts effective fire time within
-  `TimeoutMs` tolerance. Core backends rely on NTP-grade sync (acceptable for a
-  timing primitive); the commercial backend has HLC.
+- **Clock skew** — the grace band (§5.5) absorbs skew `< grace` so it cannot
+  produce a contradictory expire/fire; it only shifts effective fire time within
+  `TimeoutMs` tolerance. Core backends rely on NTP-grade sync (`grace` is
+  configurable above observed skew); the commercial backend has HLC.
 
 **Pluggable seams:** `CoordinatorStrategy` (default `LowestLiveNodeID`),
 `DistributionStrategy` (default `round-robin`, plus `SELF`). Future strategies
@@ -339,7 +375,8 @@ New `CYODA_`-prefixed vars (add to `DefaultConfig()`, config help topic,
 | `CYODA_SCHEDULER_BATCH_SIZE` | `100` | Max due tasks per scan. |
 | `CYODA_SCHEDULER_DISTRIBUTION` | `round-robin` | `round-robin` \| `self`. |
 | `CYODA_SCHEDULER_COORDINATOR` | `lowest-node-id` | Coordinator strategy. |
-| `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Dispatch-claim visibility window. |
+| `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Best-effort re-dispatch throttle window (§4). |
+| `CYODA_SCHEDULER_EXPIRY_GRACE` | `100ms` | Grace band above `timeoutMs` before expiring; size ≥ max inter-node clock skew (§5.5). |
 
 ---
 
@@ -388,7 +425,9 @@ thresholds, to avoid CI flakes.
 | Unconditional scheduled cycle = heartbeat | ✓ | ✓ | — | — |
 | Explicit fire-by-name → 400 (reworded) | ✓ | ✓ | ✓ | ✓ |
 | Restart durability (pending survives) | — | ✓ | — | — |
-| `ClaimForDispatch` atomic under dual-coordinator | ✓ | ✓ (isolated) | — | — |
+| Grace band: no fire+expire under skew (fake clock) | ✓ | — | — | — |
+| Drop-and-wait in grace band, resolves next round | ✓ | — | — | — |
+| Delete-gated audit: one Expired under dual-dispatch | ✓ | ✓ (isolated) | — | — |
 | Idempotent double-delivery → one fire | ✓ | ✓ (isolated) | — | — |
 | Failover: dead worker re-dispatch | ✓ | ✓ (isolated) | — | — |
 | Peer RPC rejects unauthenticated / wrong-tenant | ✓ | — | — | ✓ |
@@ -402,20 +441,21 @@ scenarios register in `e2e/parity/registry.go`.
 ## 12. Cross-repo & release logistics
 
 - **SPI additions** (cyoda-go-spi): `ScheduledTask` type, `ScheduledTaskStore`
-  interface (incl. `ClaimForDispatch`, `ScanDue`, `CancelForEntity`),
+  interface (`Upsert`, `ScanDue`, `MarkRedispatch`, `Delete` returning
+  rows-affected for the delete-gated audit, `CancelForEntity`),
   `StoreFactory.ScheduledTaskStore()`, new `StateMachineEventType` constants.
   Coordinated release per MAINTAINING.md — **SPI tag first, then the cyoda-go
   pin bump in one commit**; rides the in-flight v0.8.x SPI work; local
   composition via `go.work`, never a committed `replace`.
 - **In-tree plugins:** memory (incl. **tx-buffer staging for atomic co-commit**,
   §5.1), sqlite, postgres each implement `ScheduledTaskStore` (a
-  `scheduledTime`-indexed table + atomic conditional `ClaimForDispatch`).
-  Per-plugin tests + `make test-all`.
+  `scheduledTime`-indexed table; plain `MarkRedispatch`; `Delete` returns
+  rows-affected). Per-plugin tests + `make test-all`.
 - **Commercial backend (Cassandra):** implements `ScheduledTaskStore`
-  (due-time-bucketed table; `ClaimForDispatch` via LWT). Leader-scan works over
-  it — **no shard-ownership pull-up needed**. Also confirm the §5.3 guard-token
-  invariant on HLC. Substantial commercial-side task — **flag for scheduling**;
-  keep any courtesy PR strictly in-scope.
+  (due-time-bucketed table). Leader-scan works over it — **no shard-ownership
+  pull-up needed**. Also confirm the §5.3 guard-token invariant on HLC.
+  Substantial commercial-side task — **flag for scheduling**; keep any courtesy
+  PR strictly in-scope.
 - **Gate 7 cloud-parity:** changes workflow runtime semantics Cloud mirrors →
   one `docs/cloud-parity/` file.
 - **Gate 4 docs:** rewrite the "runtime not yet implemented" section of
@@ -426,15 +466,15 @@ scenarios register in `e2e/parity/registry.go`.
 
 ## 13. Suggested implementation phasing (for writing-plans)
 
-1. SPI: `ScheduledTask`, `ScheduledTaskStore` (with `ClaimForDispatch`), factory
-   accessor, SMEvent constants. Confirm guard-token invariant incl. HLC.
+1. SPI: `ScheduledTask`, `ScheduledTaskStore`, factory accessor, SMEvent
+   constants. Confirm guard-token invariant incl. HLC.
 2. Store impls — memory first (incl. tx-buffer co-commit), then sqlite,
-   postgres; each with the atomic conditional claim.
-3. Engine: extract `fireTransition`; `FireScheduledTransition` (lateness + CAS
-   guard at first flush + one-shot); replace cascade-skip with arm-on-entry;
-   cancel-on-exit — all in-tx; `finalTxID` guard capture.
-4. Scheduler service: coordinator + distribution, scan loop, atomic
-   `ClaimForDispatch`, system `UserContext`, PeerAuth peer RPC
+   postgres; plain `MarkRedispatch`; `Delete` returns rows-affected.
+3. Engine: extract `fireTransition`; `FireScheduledTransition` (grace-band
+   lateness gate + CAS guard at first flush + one-shot); replace cascade-skip
+   with arm-on-entry; cancel-on-exit — all in-tx; `finalTxID` guard capture.
+4. Scheduler service: coordinator + distribution, scan loop, `redispatchAfter`
+   throttle, grace band, system `UserContext`, PeerAuth peer RPC
    `ExecuteScheduledTask`; wire `app.New`/`Shutdown`; injectable clock at arm +
    scan.
 5. Explicit-fire reject rewording (+ gRPC).
@@ -466,9 +506,16 @@ A fresh-context reviewer audited the first draft. Dispositions:
   memory. **Corrected:** atomic for free on SQL backends (context-resolving
   querier shares the DB tx, `store_factory.go:117`); memory needs a tx-buffer
   co-commit (§5.1). Scoped, not a cross-backend rewrite.
-- **C2 (unguarded expire/cancel vs idempotency)** — real. **Fixed** by the
-  atomic `ClaimForDispatch` visibility-claim (§6.1) serialising the dispatch
-  decision under dual-coordinator; idempotency remains the fire backstop.
+- **C2 (unguarded expire vs fire under dual-coordinator + skew)** — real, but
+  cosmetic (entity fires once via CAS; damage is a contradictory Expired audit
+  line). **Fixed** by an **expiry grace band** (§5.5) that makes fire and expire
+  provably mutually exclusive for skew `< grace` — no dispatch lease. The atomic
+  claim I first proposed was dropped: its other purpose (preventing double-
+  *dispatch* → double-*processor* side effects) is unnecessary because the engine
+  **already** documents processors as at-least-once with author-owned
+  idempotency (`workflows.md:170`), so a double-dispatch is no new hazard.
+  Duplicate (non-contradictory) Expired audit under rare dual-dispatch is deduped
+  by the delete-gated audit (§4). Net: simpler than the draft.
 - **H1 (background identity)** — **fixed:** system `UserContext(task.tenantId)`
   (§6.2).
 - **H2 (peer RPC auth)** — **fixed:** rides existing `PeerAuth`/AEAD (§6.2).
@@ -477,11 +524,16 @@ A fresh-context reviewer audited the first draft. Dispositions:
   conditional cascade exits (§5.4). Documentation, not redesign.
 - **M1 (CBD segmentation / which txID)** — **fixed:** guard = `finalTxID` at
   arm; CAS applied at first flush (§5.3).
-- **M2 (round-robin YAGNI / extra hop)** — trimmed speculative fields; kept the
-  pluggable seam + `SELF`. **Round-robin-vs-`SELF` default is an open call for
-  the user** (round-robin spreads orchestration load — the reason for delegation
-  — but adds a proxy hop to the entity owner, since no entity-ownership routing
-  exists to target the owner directly).
+- **M2 (round-robin hops)** — the draft's "proxy hop to the entity owner" was
+  **wrong**: proxy forwarding only fires for an *open-transaction* token
+  (`internal/cluster/proxy/http.go:18-27`); a scheduled fire opens its own tx and
+  writes the entity directly on the worker. So it's **one** hop (coordinator →
+  worker) with round-robin, **zero** with `SELF` — no owner hop. **Decision:
+  round-robin default** (kept) to exercise the delegation path and spread
+  orchestration load off the coordinator under high scheduling volume; `SELF`
+  available. **Back-pressure is a noted future item** — today the only bounds are
+  batch size × scan interval × the redispatch throttle; real load-feedback /
+  bounded in-flight dispatch is a follow-on, not v1.
 - **M3 (spurious Cancelled after crash-then-refire)** — **fixed:** guard-fail
   deletes silently; `Cancelled` only from explicit exit (§5.3, §8).
 - **M4 (failover window)** — **documented** (§6.3).
