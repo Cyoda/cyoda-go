@@ -50,7 +50,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 	}
 
 	// Verify tables exist
-	tables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages", "search_jobs", "search_job_results"}
+	tables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages", "search_jobs", "search_job_results", "scheduled_tasks"}
 	for _, table := range tables {
 		var exists bool
 		err := pool.QueryRow(context.Background(),
