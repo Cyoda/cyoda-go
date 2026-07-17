@@ -89,7 +89,7 @@ func TestFireScheduled_DualCoordinatorConcurrency_ExactlyOnceFire(t *testing.T) 
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			outcomes[i], errs[i] = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+			outcomes[i], errs[i] = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 		}(i)
 	}
 	wg.Wait()
@@ -212,7 +212,7 @@ func TestFireScheduled_ExpireDualDispatch_StateConsistent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			outcomes[i], errs[i] = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+			outcomes[i], errs[i] = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 		}(i)
 	}
 	wg.Wait()

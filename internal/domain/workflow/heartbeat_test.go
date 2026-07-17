@@ -54,7 +54,7 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	// --- Hop 1: S1 -> S2 ---
 	advance(delayMs)
 	nowMs += delayMs
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s1ToS2})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s1ToS2, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("hop 1 FireScheduledTransition: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	// --- Hop 2: S2 -> S1 ---
 	advance(delayMs)
 	nowMs += delayMs
-	outcome, err = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s2ToS1})
+	outcome, err = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s2ToS1, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("hop 2 FireScheduledTransition: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	// single round trip, not just once around the cycle. ---
 	advance(delayMs)
 	nowMs += delayMs
-	outcome, err = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s1ToS2})
+	outcome, err = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s1ToS2, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("hop 3 FireScheduledTransition: %v", err)
 	}

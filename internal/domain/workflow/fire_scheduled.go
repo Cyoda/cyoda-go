@@ -62,7 +62,13 @@ func WithExpiryGrace(d time.Duration) EngineOption {
 // from the store inside the transaction (the "re-read guard", design §5.3),
 // because the argument may be stale by the time a worker picks it up (a
 // concurrent loopback can have re-armed it to a new ScheduledTime, or the
-// entity may have already left task.SourceState).
+// entity may have already left task.SourceState). task.TenantID is the one
+// exception with a bespoke check: it is not re-read (the row found by
+// task.ID already carries the authoritative TenantID), but it IS verified
+// against that authoritative value immediately after the re-read, before
+// any tenant-scoped store is touched — see the tenant guard below. A
+// dispatch whose ctx/task.TenantID doesn't match the row's real tenant is
+// forged or corrupted and is dropped with zero effect on the row.
 //
 // See design doc §5.2 (two doors, one mechanism), §5.3 (re-read guard),
 // §5.4 (one-shot criterion), §5.5 (grace band) for the rationale below.
@@ -114,6 +120,32 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		// Already resolved (fired/declined/expired) or cancelled elsewhere.
 		committed = true
 		return OutcomeDropped, e.txMgr.Commit(ctx, txID)
+	}
+
+	// --- Tenant guard: does the authoritative row's tenant match the
+	// dispatch's asserted tenant? ---
+	//
+	// task.ID is the only trusted field in the argument (see the doc
+	// comment above), so cur — the row just re-read by that id — is the
+	// authoritative source of truth, including cur.TenantID. task.TenantID
+	// is caller-supplied (ultimately a peer-RPC payload field) and MUST be
+	// cross-checked against it here, before the entity is ever touched:
+	// txCtx (and therefore every tenant-scoped store opened below, e.g.
+	// EntityStore) is scoped to task.TenantID, not cur.TenantID. Without
+	// this guard, a forged dispatch naming a real task.ID from tenant A but
+	// asserting task.TenantID == tenant B would have es.Get fail closed
+	// with spi.ErrNotFound (correctly finding no such entity under tenant
+	// B), which the entity-load branch below would otherwise misread as
+	// "hard-deleted" and self-heal by deleting tenant A's live task — a
+	// cross-tenant integrity/DoS effect with no audit trail. Silently drop
+	// instead: no delete, no fire, no entity access, no audit (the request
+	// is forged/inconsistent, not a legitimate lifecycle event of either
+	// tenant's data).
+	if cur.TenantID != task.TenantID {
+		slog.WarnContext(txCtx, "scheduled task dispatch tenant mismatch; dropping without touching the task row",
+			slog.String("pkg", "workflow"),
+			slog.String("taskId", task.ID))
+		return OutcomeDropped, nil
 	}
 
 	// --- Re-read guard step 2: is the entity still in the task's source state? ---

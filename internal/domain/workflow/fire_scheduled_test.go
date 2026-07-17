@@ -8,8 +8,16 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
+
+// testTenantB is a second tenant distinct from testTenant, used only by the
+// tenant-mismatch security test below: it plays the role of the attacker-
+// asserted tenant in a forged dispatch payload (task.TenantID), while
+// testTenant plays the victim whose real task/entity rows must be
+// unaffected.
+const testTenantB = spi.TenantID("test-tenant-b")
 
 // seedFireEntity saves entity id directly to the EntityStore in state,
 // bypassing engine.Execute/reconcile entirely — FireScheduledTransition
@@ -125,7 +133,7 @@ func TestFireScheduled_FiresOnTime(t *testing.T) {
 
 	advance(delayMs) // lateness == 0
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -182,7 +190,7 @@ func TestFireScheduled_DeclineOnCriterionFalse(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -234,7 +242,7 @@ func TestFireScheduled_ExpireBeyondGrace(t *testing.T) {
 	// now = scheduledTime + timeout + 2*grace: past timeout+grace, so Expired.
 	advance(delayMs + timeoutMs + 2*grace)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -286,7 +294,7 @@ func TestFireScheduled_DropInGraceBand(t *testing.T) {
 	// lateness = timeout + grace/2: strictly inside (timeout, timeout+grace].
 	advance(delayMs + timeoutMs + grace/2)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -338,7 +346,7 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 
 	advance(1) // due
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -358,6 +366,99 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 		spi.SMEventScheduledTransitionFired, spi.SMEventTransitionCriterionNoMatch,
 	} {
 		if n := countAuditEvents(t, factory, ctx, "movedon-e1", et); n != 0 {
+			t.Errorf("event %v: got %d, want 0 (silent drop)", et, n)
+		}
+	}
+}
+
+// TestFireScheduled_TenantMismatch_DropsWithoutDeletingVictimTask is the
+// Gate-3 security regression: a forged dispatch whose task.ID is real (it
+// names a genuine pending task belonging to testTenant, the "victim") but
+// whose task.TenantID asserts a different tenant (testTenantB, the
+// "attacker's" asserted identity) must have ZERO effect on the victim's
+// row.
+//
+// This mirrors the real dispatch shape exactly: the ctx is built via
+// scheduler.SystemUserContext(task.TenantID) — precisely what both
+// LocalExecutor.Execute and the peer RPC handler do with the (here,
+// attacker-controlled) task.TenantID field — scoping every tenant-aware
+// store the engine opens (EntityStore, WorkflowStore, ...) to testTenantB.
+// Only task.ID is authoritative; ScheduledTaskStore.Get is tenant-agnostic
+// by design (see plugins/memory/store_factory.go's ScheduledTaskStore
+// godoc), so it returns the VICTIM's real row (cur.TenantID == testTenant)
+// even though the surrounding ctx/task assert testTenantB.
+//
+// Before the fix: cur.TenantID is never compared to task.TenantID, so the
+// subsequent es.Get(txCtx, cur.EntityID) — scoped to testTenantB — misses
+// the victim's entity (it lives under testTenant) and returns
+// spi.ErrNotFound. That trips the "entity hard-deleted, self-heal" branch,
+// which unconditionally deletes the task by ID — destroying the victim's
+// live, legitimate pending task — and reports a silent OutcomeDropped, nil
+// with no audit trail.
+//
+// After the fix: the tenant mismatch must be caught immediately after the
+// task re-read, before the entity is ever touched, and must never invoke
+// sts.Delete.
+func TestFireScheduled_TenantMismatch_DropsWithoutDeletingVictimTask(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
+	victimCtx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "tenant-mismatch-order", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "TenantMismatchWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
+			}},
+			"CLOSED": {},
+		},
+	}
+	saveWorkflow(t, factory, victimCtx, modelRef, []spi.WorkflowDefinition{wf})
+	seedFireEntity(t, factory, victimCtx, "victim-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+
+	// The victim's real task ID, keyed off the victim's real tenant.
+	id := taskID(testTenant, "victim-e1", "OPEN", "AutoClose")
+	armTask(t, factory, victimCtx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "victim-e1", ModelName: modelRef.EntityName,
+		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+
+	advance(delayMs) // due
+
+	// Forged dispatch: real task.ID, but task.TenantID asserts testTenantB.
+	// The ctx is built exactly as the real dispatch paths build it — scoped
+	// to the (attacker-controlled) task.TenantID.
+	forgedCtx := scheduler.SystemUserContext(testTenantB)
+	forgedTask := spi.ScheduledTask{ID: id, TenantID: testTenantB}
+
+	outcome, err := engine.FireScheduledTransition(forgedCtx, forgedTask)
+	if err != nil {
+		t.Fatalf("FireScheduledTransition: %v", err)
+	}
+	if outcome != OutcomeDropped {
+		t.Fatalf("outcome = %v, want Dropped", outcome)
+	}
+
+	// The victim's task row must survive untouched — read back using the
+	// victim's own context (ScheduledTaskStore is tenant-agnostic, so any
+	// ctx would do, but the victim's is the natural choice here).
+	if _, found := getTask(t, factory, victimCtx, id); !found {
+		t.Error("expected victim's real task to survive a tenant-mismatched forged dispatch")
+	}
+	// The victim's entity must not have fired.
+	if got := getEntityState(t, factory, victimCtx, "victim-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN (unchanged by forged cross-tenant dispatch)", got)
+	}
+	// No audit trail should be attributed to the victim's entity for this
+	// forged, silently-dropped request.
+	for _, et := range []spi.StateMachineEventType{
+		spi.SMEventScheduledTransitionCancelled, spi.SMEventScheduledTransitionExpired,
+		spi.SMEventScheduledTransitionFired, spi.SMEventTransitionCriterionNoMatch,
+	} {
+		if n := countAuditEvents(t, factory, victimCtx, "victim-e1", et); n != 0 {
 			t.Errorf("event %v: got %d, want 0 (silent drop)", et, n)
 		}
 	}
@@ -392,7 +493,7 @@ func TestFireScheduled_GuardReArmedToFuture(t *testing.T) {
 
 	// Do NOT advance the clock — "now" (armMs) is before ScheduledTime.
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -452,7 +553,7 @@ func TestFireScheduled_OrphanedTransitionDropped(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{reimported})
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -506,7 +607,7 @@ func TestFireScheduled_CascadeAfterFire(t *testing.T) {
 	advance(delayMs)
 	fireNowMs := armMs + delayMs
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: openTaskID})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: openTaskID, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -584,7 +685,7 @@ func TestFireScheduled_SiblingScheduledTaskStillCancelled(t *testing.T) {
 
 	advance(delayMs) // only AutoClose is due
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: closeID})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: closeID, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -649,7 +750,7 @@ func TestFireScheduled_GraceBoundary_LatenessEqualsTimeout_Fires(t *testing.T) {
 	// falls through to fire (design's strict ">" comparisons).
 	advance(delayMs + timeoutMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -695,7 +796,7 @@ func TestFireScheduled_GraceBoundary_LatenessEqualsTimeoutPlusGrace_DropsAndWait
 	// but IS > timeout (grace-band gate) -> drop-and-wait, row remains.
 	advance(delayMs + timeoutMs + grace)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -746,7 +847,7 @@ func TestFireScheduled_GraceBoundary_LatenessEqualsTimeoutPlusGracePlusOne_Expir
 	// lateness == timeout+grace+1: strictly > timeout+grace -> Expired.
 	advance(delayMs + timeoutMs + grace + 1)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -890,7 +991,7 @@ func TestFireScheduled_CBDSegmentedFire_HappyPath(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
 	}
@@ -967,7 +1068,7 @@ func TestFireScheduled_CBDSegmentedFire_ErrorAfterTXPre_NoLeak(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err == nil {
 		t.Fatal("expected FireScheduledTransition to return an error (cascade abort after segmenting)")
 	}
@@ -1092,7 +1193,7 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 
 	engine := NewEngine(racingFactory, uuids, txMgr, WithScheduledClock(fixedClock(armMs)))
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err == nil {
 		t.Fatal("expected FireScheduledTransition to return a CAS-conflict error")
 	}
