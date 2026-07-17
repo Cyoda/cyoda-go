@@ -9,9 +9,18 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 )
 
-func TestDispatchProcessorRequest_JSONRoundTrip(t *testing.T) {
+func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	entityData := json.RawMessage(`{"foo":"bar","count":42}`)
-	req := dispatch.DispatchProcessorRequest{
+	processor := spi.ProcessorDefinition{
+		Type: "HTTP",
+		Name: "my-processor",
+		Config: spi.ProcessorConfig{
+			AttachEntity:         true,
+			CalculationNodesTags: "gpu",
+		},
+	}
+	req := dispatch.DispatchCalloutRequest{
+		Kind:   "processor",
 		Entity: entityData,
 		EntityMeta: spi.EntityMeta{
 			ID:       "ent-123",
@@ -20,14 +29,7 @@ func TestDispatchProcessorRequest_JSONRoundTrip(t *testing.T) {
 			State:    "CREATED",
 			Version:  3,
 		},
-		Processor: spi.ProcessorDefinition{
-			Type: "HTTP",
-			Name: "my-processor",
-			Config: spi.ProcessorConfig{
-				AttachEntity:         true,
-				CalculationNodesTags: "gpu",
-			},
-		},
+		Processor:      &processor,
 		WorkflowName:   "order-workflow",
 		TransitionName: "approve",
 		TxID:           "tx-999",
@@ -42,11 +44,14 @@ func TestDispatchProcessorRequest_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchProcessorRequest
+	var got dispatch.DispatchCalloutRequest
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
+	if got.Kind != "processor" {
+		t.Errorf("Kind = %q, want processor", got.Kind)
+	}
 	if got.WorkflowName != req.WorkflowName {
 		t.Errorf("WorkflowName = %q, want %q", got.WorkflowName, req.WorkflowName)
 	}
@@ -68,8 +73,8 @@ func TestDispatchProcessorRequest_JSONRoundTrip(t *testing.T) {
 	if len(got.Roles) != 2 || got.Roles[0] != "admin" || got.Roles[1] != "editor" {
 		t.Errorf("Roles = %v, want [admin editor]", got.Roles)
 	}
-	if got.Processor.Type != "HTTP" {
-		t.Errorf("Processor.Type = %q, want HTTP", got.Processor.Type)
+	if got.Processor == nil || got.Processor.Type != "HTTP" {
+		t.Errorf("Processor.Type = %v, want HTTP", got.Processor)
 	}
 	if got.Processor.Config.CalculationNodesTags != "gpu" {
 		t.Errorf("Processor.Config.CalculationNodesTags = %q, want gpu", got.Processor.Config.CalculationNodesTags)
@@ -82,9 +87,9 @@ func TestDispatchProcessorRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatchProcessorResponse_JSONRoundTrip(t *testing.T) {
-	entityData := json.RawMessage(`{"updated":true}`)
-	resp := dispatch.DispatchProcessorResponse{
+func TestDispatchCalloutResponse_ProcessorJSONRoundTrip(t *testing.T) {
+	entityData := []byte(`{"updated":true}`)
+	resp := dispatch.DispatchCalloutResponse{
 		EntityData: entityData,
 		Success:    true,
 		Error:      "",
@@ -96,7 +101,7 @@ func TestDispatchProcessorResponse_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchProcessorResponse
+	var got dispatch.DispatchCalloutResponse
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -115,8 +120,8 @@ func TestDispatchProcessorResponse_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatchProcessorResponse_Error_JSONRoundTrip(t *testing.T) {
-	resp := dispatch.DispatchProcessorResponse{
+func TestDispatchCalloutResponse_ProcessorError_JSONRoundTrip(t *testing.T) {
+	resp := dispatch.DispatchCalloutResponse{
 		Success:  false,
 		Error:    "PROCESSOR_FAILED: something went wrong",
 		Warnings: nil,
@@ -127,7 +132,7 @@ func TestDispatchProcessorResponse_Error_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchProcessorResponse
+	var got dispatch.DispatchCalloutResponse
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -143,11 +148,12 @@ func TestDispatchProcessorResponse_Error_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatchCriteriaRequest_JSONRoundTrip(t *testing.T) {
+func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 	entityData := json.RawMessage(`{"status":"pending"}`)
 	criterion := json.RawMessage(`{"type":"FIELD_MATCH","field":"status","value":"pending"}`)
 
-	req := dispatch.DispatchCriteriaRequest{
+	req := dispatch.DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         entityData,
 		EntityMeta:     spi.EntityMeta{ID: "ent-456", TenantID: "tenant-xyz"},
 		Criterion:      criterion,
@@ -167,11 +173,14 @@ func TestDispatchCriteriaRequest_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchCriteriaRequest
+	var got dispatch.DispatchCalloutRequest
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
+	if got.Kind != "criteria" {
+		t.Errorf("Kind = %q, want criteria", got.Kind)
+	}
 	if got.Target != "TRANSITION" {
 		t.Errorf("Target = %q, want TRANSITION", got.Target)
 	}
@@ -207,13 +216,14 @@ func TestDispatchCriteriaRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatchCriteriaResponse_ReasonRoundTrip(t *testing.T) {
-	in := dispatch.DispatchCriteriaResponse{Matches: false, Success: true, Reason: "amount 5 below minimum 10"}
+func TestDispatchCalloutResponse_CriteriaReasonRoundTrip(t *testing.T) {
+	matches := false
+	in := dispatch.DispatchCalloutResponse{Matches: &matches, Success: true, Reason: "amount 5 below minimum 10"}
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var out dispatch.DispatchCriteriaResponse
+	var out dispatch.DispatchCalloutResponse
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -222,9 +232,10 @@ func TestDispatchCriteriaResponse_ReasonRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatchCriteriaResponse_JSONRoundTrip(t *testing.T) {
-	resp := dispatch.DispatchCriteriaResponse{
-		Matches:  true,
+func TestDispatchCalloutResponse_CriteriaJSONRoundTrip(t *testing.T) {
+	matches := true
+	resp := dispatch.DispatchCalloutResponse{
+		Matches:  &matches,
 		Success:  true,
 		Error:    "",
 		Warnings: []string{"w1"},
@@ -235,12 +246,12 @@ func TestDispatchCriteriaResponse_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchCriteriaResponse
+	var got dispatch.DispatchCalloutResponse
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if !got.Matches {
+	if got.Matches == nil || !*got.Matches {
 		t.Error("Matches = false, want true")
 	}
 	if !got.Success {
@@ -251,9 +262,10 @@ func TestDispatchCriteriaResponse_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatchCriteriaResponse_NoMatch_JSONRoundTrip(t *testing.T) {
-	resp := dispatch.DispatchCriteriaResponse{
-		Matches: false,
+func TestDispatchCalloutResponse_CriteriaNoMatch_JSONRoundTrip(t *testing.T) {
+	matches := false
+	resp := dispatch.DispatchCalloutResponse{
+		Matches: &matches,
 		Success: true,
 	}
 
@@ -262,12 +274,12 @@ func TestDispatchCriteriaResponse_NoMatch_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchCriteriaResponse
+	var got dispatch.DispatchCalloutResponse
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if got.Matches {
+	if got.Matches == nil || *got.Matches {
 		t.Error("Matches = true, want false")
 	}
 	if !got.Success {
@@ -275,11 +287,12 @@ func TestDispatchCriteriaResponse_NoMatch_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDispatchProcessorRequest_EntityMetaTimestamps ensures time.Time fields
+// TestDispatchCalloutRequest_EntityMetaTimestamps ensures time.Time fields
 // in EntityMeta survive a JSON round-trip.
-func TestDispatchProcessorRequest_EntityMetaTimestamps(t *testing.T) {
+func TestDispatchCalloutRequest_EntityMetaTimestamps(t *testing.T) {
 	now := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
-	req := dispatch.DispatchProcessorRequest{
+	req := dispatch.DispatchCalloutRequest{
+		Kind:   "processor",
 		Entity: json.RawMessage(`{}`),
 		EntityMeta: spi.EntityMeta{
 			ID:               "ent-ts",
@@ -293,7 +306,7 @@ func TestDispatchProcessorRequest_EntityMetaTimestamps(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got dispatch.DispatchProcessorRequest
+	var got dispatch.DispatchCalloutRequest
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}

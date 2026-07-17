@@ -98,7 +98,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 	slog.Debug("forwarding processor to peer",
 		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
 
-	resp, err := d.forwarder.ForwardProcessor(ctx, peer.Addr, req)
+	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
 	}
@@ -157,7 +157,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 	slog.Debug("forwarding criteria to peer",
 		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
 
-	resp, err := d.forwarder.ForwardCriteria(ctx, peer.Addr, req)
+	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
 	if err != nil {
 		return false, "", fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
 	}
@@ -168,7 +168,8 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 		common.AddWarning(ctx, w)
 	}
 
-	return resp.Matches, resp.Reason, nil
+	peerMatches := resp.Matches != nil && *resp.Matches
+	return peerMatches, resp.Reason, nil
 }
 
 // findPeerWithPolling polls the gossip registry for a peer with matching tags,
@@ -232,11 +233,12 @@ func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags 
 }
 
 // buildProcessorRequest constructs the cross-node dispatch request for a processor.
-func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) *DispatchProcessorRequest {
-	return &DispatchProcessorRequest{
+func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
+	return DispatchCalloutRequest{
+		Kind:           "processor",
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
-		Processor:      processor,
+		Processor:      &processor,
 		WorkflowName:   workflowName,
 		TransitionName: transitionName,
 		TxID:           txID,
@@ -249,8 +251,9 @@ func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor 
 }
 
 // buildCriteriaRequest constructs the cross-node dispatch request for criteria.
-func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string, tok string) *DispatchCriteriaRequest {
-	return &DispatchCriteriaRequest{
+func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
+	return DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
 		Criterion:      criterion,

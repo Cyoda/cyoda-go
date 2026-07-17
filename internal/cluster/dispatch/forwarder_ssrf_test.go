@@ -32,13 +32,13 @@ func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
 		"http://[::1]:8080",
 	}
 	for _, addr := range cases {
-		_, err := fw.ForwardProcessor(context.Background(), addr, makeProcessorReq())
+		_, err := fw.ForwardCallout(context.Background(), addr, makeProcessorReq())
 		if err == nil {
-			t.Errorf("ForwardProcessor(%q) accepted loopback address", addr)
+			t.Errorf("ForwardCallout(%q) accepted loopback address", addr)
 			continue
 		}
 		if !errors.Is(err, dispatch.ErrForbiddenPeerAddress) {
-			t.Errorf("ForwardProcessor(%q) = %v, want wraps ErrForbiddenPeerAddress", addr, err)
+			t.Errorf("ForwardCallout(%q) = %v, want wraps ErrForbiddenPeerAddress", addr, err)
 		}
 	}
 }
@@ -53,7 +53,7 @@ func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
 func TestHTTPForwarder_RejectsIPv6LinkLocalWithZoneID(t *testing.T) {
 	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
 
-	_, err := fw.ForwardProcessor(context.Background(), "[fe80::1%eth0]:8080", makeProcessorReq())
+	_, err := fw.ForwardCallout(context.Background(), "[fe80::1%eth0]:8080", makeProcessorReq())
 	if err == nil {
 		t.Fatal("forwarder accepted IPv6 link-local with zone ID")
 	}
@@ -86,13 +86,13 @@ func TestHTTPForwarder_RejectsLinkLocalAddresses(t *testing.T) {
 		"[fe80::1]:8080",                     // IPv6 link-local
 	}
 	for _, addr := range cases {
-		_, err := fw.ForwardCriteria(context.Background(), addr, makeCriteriaReq())
+		_, err := fw.ForwardCallout(context.Background(), addr, makeCriteriaReq())
 		if err == nil {
-			t.Errorf("ForwardCriteria(%q) accepted link-local address", addr)
+			t.Errorf("ForwardCallout(%q) accepted link-local address", addr)
 			continue
 		}
 		if !errors.Is(err, dispatch.ErrForbiddenPeerAddress) {
-			t.Errorf("ForwardCriteria(%q) = %v, want wraps ErrForbiddenPeerAddress", addr, err)
+			t.Errorf("ForwardCallout(%q) = %v, want wraps ErrForbiddenPeerAddress", addr, err)
 		}
 	}
 }
@@ -106,7 +106,7 @@ func TestHTTPForwarder_AcceptsRoutableAddress(t *testing.T) {
 	// the guard must let it through and the call must fail with a
 	// *network* error, not ErrForbiddenPeerAddress.
 	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 50*time.Millisecond)
-	_, err := fw.ForwardProcessor(context.Background(), "192.0.2.1:8080", makeProcessorReq())
+	_, err := fw.ForwardCallout(context.Background(), "192.0.2.1:8080", makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected network error for unreachable TEST-NET-1 address")
 	}

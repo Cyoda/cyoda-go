@@ -21,13 +21,12 @@ import (
 
 // schedulerTaskPath is the peer-authenticated route a coordinator posts to
 // so another node fires a ScheduledTask on its behalf. Namespaced alongside
-// the processor/criteria dispatch routes
-// (internal/cluster/dispatch/handler.go: /internal/dispatch/processor,
-// /internal/dispatch/criteria) even though it is served by this package's
-// own handler rather than dispatch.DispatchHandler — the scheduled-task
-// payload and its engine seam are scheduler-specific, not processor/
-// criteria-specific, so it gets its own small handler rather than widening
-// DispatchHandler's contract.
+// the generic callout dispatch route
+// (internal/cluster/dispatch/handler.go: /internal/dispatch/callout) even
+// though it is served by this package's own handler rather than
+// dispatch.DispatchHandler — the scheduled-task payload and its engine seam
+// are scheduler-specific, not callout-specific, so it gets its own small
+// handler rather than widening DispatchHandler's contract.
 const schedulerTaskPath = "/internal/dispatch/scheduled-task"
 
 // SchedulerTaskRequest is the cross-node payload for ExecuteScheduledTask.
@@ -67,9 +66,9 @@ func NewSchedulerEngine(engine *workflow.Engine) scheduler.Engine {
 // ClusterExecutor implements scheduler.Executor: it fires a ScheduledTask
 // locally when the coordinator picked this node as the dispatch target, or
 // forwards it to the target peer over the existing PeerAuth-authenticated
-// dispatch channel — the same AEAD-wrapped transport processor/criteria
-// dispatch uses (internal/cluster/dispatch/forwarder.go) — when the target
-// is a peer. There is no unauthenticated forwarding path.
+// dispatch channel — the same AEAD-wrapped transport callout dispatch uses
+// (internal/cluster/dispatch/forwarder.go) — when the target is a peer.
+// There is no unauthenticated forwarding path.
 //
 // A peer-forward failure (unresolvable target, unreachable peer, auth
 // rejected) is logged and dropped — it never falls back to firing locally,
@@ -133,12 +132,12 @@ func (c *ClusterExecutor) Execute(ctx context.Context, task spi.ScheduledTask, t
 
 // SchedulerRPCClient forwards ExecuteScheduledTask calls to a peer over the
 // PeerAuth-authenticated channel. Mirrors
-// dispatch.HTTPForwarder.ForwardProcessor/ForwardCriteria's sign/POST/
-// decode shape (internal/cluster/dispatch/forwarder.go) so it reuses the
-// exact same auth implementation instance the app wires for processor/
-// criteria dispatch; it is a separate ~small type rather than a method on
-// HTTPForwarder because its request/response payload is scheduler-specific
-// and DispatchForwarder's interface is scoped to processor/criteria.
+// dispatch.HTTPForwarder.ForwardCallout's sign/POST/decode shape
+// (internal/cluster/dispatch/forwarder.go) so it reuses the exact same auth
+// implementation instance the app wires for callout dispatch; it is a
+// separate ~small type rather than a method on HTTPForwarder because its
+// request/response payload is scheduler-specific and DispatchForwarder's
+// interface is scoped to callout dispatch.
 type SchedulerRPCClient struct {
 	auth          dispatch.PeerAuth
 	httpClient    *http.Client

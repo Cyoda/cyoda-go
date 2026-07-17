@@ -31,18 +31,19 @@ func NewDispatchHandler(local contract.ExternalProcessingService, auth PeerAuth)
 
 // Register registers the dispatch routes on the provided ServeMux.
 func (h *DispatchHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /internal/dispatch/processor", h.handleProcessor)
-	mux.HandleFunc("POST /internal/dispatch/criteria", h.handleCriteria)
+	mux.HandleFunc("POST /internal/dispatch/callout", h.handleCallout)
 }
 
-// handleProcessor handles POST /internal/dispatch/processor.
-func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request) {
+// handleCallout handles POST /internal/dispatch/callout. It dispatches to
+// the local ExternalProcessingService method matching req.Kind and maps the
+// result into the union DispatchCalloutResponse.
+func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) {
 	body, identity, ok := h.verifyRequest(w, r)
 	if !ok {
 		return
 	}
 
-	var req DispatchProcessorRequest
+	var req DispatchCalloutRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -56,58 +57,43 @@ func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request
 		Data: []byte(req.Entity),
 	}
 
-	result, err := h.local.DispatchProcessor(ctx, entity, req.Processor, req.WorkflowName, req.TransitionName, req.TxID)
-	if err != nil {
-		slog.Error("dispatch processor failed", "pkg", "dispatch", "err", err)
-		writeJSON(w, http.StatusOK, DispatchProcessorResponse{
-			Success: false,
-			Error:   "dispatch processor failed",
+	switch req.Kind {
+	case "processor":
+		var processor spi.ProcessorDefinition
+		if req.Processor != nil {
+			processor = *req.Processor
+		}
+		result, err := h.local.DispatchProcessor(ctx, entity, processor, req.WorkflowName, req.TransitionName, req.TxID)
+		if err != nil {
+			slog.Error("dispatch processor failed", "pkg", "dispatch", "err", err)
+			writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+				Success: false,
+				Error:   "dispatch processor failed",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+			Success:    true,
+			EntityData: result.Data,
 		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, DispatchProcessorResponse{
-		Success:    true,
-		EntityData: result.Data,
-	})
-}
-
-// handleCriteria handles POST /internal/dispatch/criteria.
-func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request) {
-	body, identity, ok := h.verifyRequest(w, r)
-	if !ok {
-		return
-	}
-
-	var req DispatchCriteriaRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
-	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
-
-	entity := &spi.Entity{
-		Meta: req.EntityMeta,
-		Data: []byte(req.Entity),
-	}
-
-	matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
-	if err != nil {
-		slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
-		writeJSON(w, http.StatusOK, DispatchCriteriaResponse{
-			Success: false,
-			Error:   "dispatch criteria failed",
+	case "criteria":
+		matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
+		if err != nil {
+			slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
+			writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+				Success: false,
+				Error:   "dispatch criteria failed",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+			Success: true,
+			Matches: &matches,
+			Reason:  reason,
 		})
-		return
+	default:
+		http.Error(w, "unknown callout kind", http.StatusBadRequest)
 	}
-
-	writeJSON(w, http.StatusOK, DispatchCriteriaResponse{
-		Success: true,
-		Matches: matches,
-		Reason:  reason,
-	})
 }
 
 // verifyRequest runs peer authentication over the incoming request. On
