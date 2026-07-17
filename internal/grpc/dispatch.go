@@ -3,7 +3,6 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,13 +13,20 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
 // ErrNoMatchingMember is returned when no calculation member is registered for
 // the requested tags. Callers (e.g. ClusterDispatcher) test for this sentinel
 // via errors.Is rather than string matching.
-var ErrNoMatchingMember = errors.New("no matching calculation member")
+//
+// Aliased from contract.ErrNoMatchingMember (the canonical definition lives
+// in the leaf internal/contract package) so error-classification code in
+// internal/domain/entity, which internal/grpc already depends on, can match
+// this sentinel without an import cycle. See contract.ErrNoMatchingMember's
+// doc comment for the full rationale.
+var ErrNoMatchingMember = contract.ErrNoMatchingMember
 
 const defaultResponseTimeoutMs = 30000
 

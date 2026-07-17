@@ -3,9 +3,23 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
+
+// ErrNoMatchingMember is returned by ExternalProcessingService implementations
+// when no calculation member is registered for the requested tags. Callers
+// test for this sentinel via errors.Is rather than string matching.
+//
+// Defined here (rather than in internal/grpc, where the dispatcher that
+// mints it lives) so error-classification code in internal/domain/entity can
+// reference it without an import cycle: internal/grpc already imports
+// internal/domain/entity (server.go, entity.go, search.go wire the gRPC
+// handlers over the entity service), so internal/domain/entity cannot import
+// internal/grpc back. internal/contract is a leaf package with no cyoda-go
+// dependencies, safe for both sides to import.
+var ErrNoMatchingMember = errors.New("no matching calculation member")
 
 // ExternalProcessingService dispatches processor execution and criteria evaluation
 // to external calculation nodes.

@@ -18,6 +18,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -1928,6 +1929,12 @@ func classifyError(err error) *common.AppError {
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
 // error code:
 //
+//   - An already-classified *common.AppError (matched via errors.As, so it is
+//     found even several layers deep behind %w-wrapping) passes through
+//     unchanged — the minted status/code/retryable flags are authoritative.
+//   - ErrNoMatchingMember (no calculation member registered for the
+//     processor/criterion's tags — a compute-infra condition, not a bad
+//     request) → retryable 503 NO_COMPUTE_MEMBER_FOR_TAG.
 //   - ErrCommitBeforeDispatchInfra (Begin/Commit/Save plugin failure inside
 //     the engine's segment-boundary code) → sanitized 5xx via common.Internal,
 //     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
@@ -1935,6 +1942,13 @@ func classifyError(err error) *common.AppError {
 //   - Everything else (processor-domain failures, criterion mismatches, CAS
 //     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	if errors.Is(err, contract.ErrNoMatchingMember) {
+		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag, err.Error()).AsRetryable()
+	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)
 	}
