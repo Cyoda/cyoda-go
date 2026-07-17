@@ -11,6 +11,8 @@ github.com/containerd/errdefs/pkg v0.3.0/go.mod h1:NJw6s9HwNuRhnjJhM7pylWwMyAkmC
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/cyoda-platform/cyoda-go-spi v0.8.2 h1:DQZXp7Y/RSrobzx3gczDo+/N4gwIPD/cD0TTwzqofQw=
 github.com/cyoda-platform/cyoda-go-spi v0.8.2/go.mod h1:XW6gNhtnOaseSSVxcLm87+3fAcTYfgVJYKhNwJL3F8s=
+github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260716224445-52bca554ecf2 h1:9iBeHc/vkCtd07WTykxKgHrd3czbQdDblrMT+BI2U4c=
+github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260716224445-52bca554ecf2/go.mod h1:XW6gNhtnOaseSSVxcLm87+3fAcTYfgVJYKhNwJL3F8s=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
