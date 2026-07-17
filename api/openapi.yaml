@@ -10890,6 +10890,10 @@ components:
                 - PROCESS_NOT_MATCH_CRITERION
                 - PAUSE_FOR_PROCESSING
                 - STATE_PROCESS_RESULT
+                - SCHEDULED_TRANSITION_ARM
+                - SCHEDULED_TRANSITION_FIRE
+                - SCHEDULED_TRANSITION_EXPIRE
+                - SCHEDULED_TRANSITION_CANCEL
             data:
               type: object
               nullable: true
