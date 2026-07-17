@@ -32,6 +32,15 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
+// set updates the fake clock's current time, letting a test advance "now"
+// deterministically between ticks (e.g. to cross a RedispatchBackoff window)
+// without any wall-clock sleeping.
+func (c *fakeClock) set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+
 // fakeRegistry returns a fixed member list.
 type fakeRegistry struct {
 	members []contract.NodeInfo
@@ -422,5 +431,83 @@ func TestService_StartIsIdempotent(t *testing.T) {
 	const maxSingleLoopTicks = 60
 	if got > maxSingleLoopTicks {
 		t.Fatalf("Registry.List called %d times in ~50ms at a 2ms interval after 3 Start() calls — looks like more than one scan loop is running (want <= %d)", got, maxSingleLoopTicks)
+	}
+}
+
+// TestService_DeadWorkerRedispatchAfterBackoffElapses proves the
+// at-least-once failover property end-to-end (design §6.1/§6.3): a task
+// dispatched to a "dead worker" — one that records the dispatch but never
+// resolves the task (never fires it, never deletes the row, exactly what a
+// worker that crashes mid-flight leaves behind) — is NOT re-dispatched while
+// MarkRedispatch's throttle window is still open, but IS re-dispatched once
+// the clock passes redispatchAfter. That re-dispatch is the property under
+// test: a task a dead worker never completed is not lost, it is retried once
+// its backoff lapses.
+//
+// capturingExecutor (already used by TestService_ScansAndDispatchesDueTasks)
+// stands in for the dead worker unmodified: its Execute only records the
+// call, it never touches the store, so the task row survives exactly as a
+// crashed worker would leave it.
+func TestService_DeadWorkerRedispatchAfterBackoffElapses(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	const start = int64(10_000)
+	const backoff = 5 * time.Minute
+	clock := newFakeClock(time.UnixMilli(start))
+
+	armTestTask(t, factory, "dead-worker-task", 9_000) // due
+
+	exec := newCapturingExecutor()
+	svc := NewService(Config{
+		Enabled:           true,
+		ScanInterval:      time.Hour, // irrelevant — test calls tick() directly
+		RedispatchBackoff: backoff,
+		BatchSize:         10,
+	}, Deps{
+		Store:        factory,
+		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
+		Coordinator:  LowestLiveNodeID{},
+		Distribution: Self{},
+		Clock:        clock,
+		Executor:     exec,
+		SelfID:       "n1",
+	})
+
+	// tick 1: the due task is dispatched to the dead worker.
+	svc.tick()
+	exec.waitForDispatches(t, 1, 2*time.Second)
+	if seen := exec.seen(); len(seen) != 1 || seen[0].ID != "dead-worker-task" {
+		t.Fatalf("expected dead-worker-task dispatched once, got %+v", seen)
+	}
+
+	// The task row is still present — the dead worker never resolved it.
+	sts, err := factory.ScheduledTaskStore(context.Background())
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	if _, found, err := sts.Get(context.Background(), "dead-worker-task"); err != nil || !found {
+		t.Fatalf("expected task row still present after dead-worker dispatch, found=%v err=%v", found, err)
+	}
+
+	// tick 2: clock is unchanged (still inside the backoff window) —
+	// MarkRedispatch's throttle must hold, so no re-dispatch.
+	svc.tick()
+	if seen := exec.seen(); len(seen) != 1 {
+		t.Fatalf("expected still only 1 dispatch inside the backoff window, got %d: %+v", len(seen), seen)
+	}
+
+	// Advance the clock past redispatchAfter (start + backoff) — the
+	// failover window has lapsed.
+	clock.set(time.UnixMilli(start).Add(backoff + time.Millisecond))
+
+	// tick 3: the dead worker's task is picked up again.
+	svc.tick()
+	exec.waitForDispatches(t, 1, 2*time.Second)
+
+	seen := exec.seen()
+	if len(seen) != 2 {
+		t.Fatalf("expected the dead worker's task re-dispatched once backoff elapsed, got %d dispatches: %+v", len(seen), seen)
+	}
+	if seen[1].ID != "dead-worker-task" {
+		t.Errorf("re-dispatched task ID = %q, want dead-worker-task", seen[1].ID)
 	}
 }

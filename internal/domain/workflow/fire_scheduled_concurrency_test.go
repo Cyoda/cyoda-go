@@ -151,3 +151,118 @@ func TestFireScheduled_DualCoordinatorConcurrency_ExactlyOnceFire(t *testing.T) 
 		t.Error("expected task to be deleted after the winning fire")
 	}
 }
+
+// TestFireScheduled_ExpireDualDispatch_StateConsistent is an ISOLATED
+// single-backend (memory) concurrency test — never part of the e2e/parity
+// suite, per .claude/rules/test-coverage.md — covering the Expire path's
+// dual-dispatch consistency, complementing
+// TestFireScheduled_DualCoordinatorConcurrency_ExactlyOnceFire (which covers
+// Fired).
+//
+// Setup: one task is armed whose lateness already exceeds
+// timeoutMs+grace (design §5.5), so both coordinators will resolve it as
+// Expired. Two goroutines call engine.FireScheduledTransition on the SAME
+// task.ID concurrently, standing in for two cluster members that both
+// dispatched the same due task (§6.1's "under transient dual-coordinator
+// both may still dispatch; that's safe").
+//
+// Ground truth is STATE consistency (per .claude/rules/test-coverage.md:
+// "assert consistency ... not a precise interleave"): the Expire branch
+// never writes the entity at all (FireScheduledTransition returns before
+// ever calling EntityStore.CompareAndSave/Save on the expire path — see
+// fire_scheduled.go's grace-band lateness gate), so the entity state must
+// stay exactly as seeded regardless of how the race resolves, and the task
+// row must end up deleted (gone), not left behind or resurrected.
+func TestFireScheduled_ExpireDualDispatch_StateConsistent(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	const timeoutMs = int64(500)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "expire-dual-order", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "ExpireDualWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: ptrInt64(timeoutMs)}},
+			}},
+			"CLOSED": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	seedFireEntity(t, factory, ctx, "expire-dual-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+
+	id := taskID(testTenant, "expire-dual-e1", "OPEN", "AutoClose")
+	grace := defaultExpiryGraceMs
+	// lateness = nowMs - scheduledTime = timeoutMs + grace + 100: strictly
+	// past the expire threshold (design §5.5's `lateness > timeoutMs+grace`).
+	scheduledTime := nowMs - (timeoutMs + grace + 100)
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: scheduledTime, TimeoutMs: ptrInt64(timeoutMs),
+		EntityID: "expire-dual-e1", ModelName: modelRef.EntityName,
+		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: scheduledTime,
+	})
+
+	const coordinators = 2
+	var wg sync.WaitGroup
+	outcomes := make([]ScheduledOutcome, coordinators)
+	errs := make([]error, coordinators)
+	for i := 0; i < coordinators; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			outcomes[i], errs[i] = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id})
+		}(i)
+	}
+	wg.Wait()
+
+	// --- State-consistency assertions (ground truth) ---
+
+	// Expire must NEVER advance entity state, under dual dispatch or
+	// otherwise — the grace-band gate returns before any entity write.
+	if got := getEntityState(t, factory, ctx, "expire-dual-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN (Expire must never advance state, even under dual dispatch)", got)
+	}
+	// The task is resolved (deleted) exactly once in effect — gone at the
+	// end, not left behind for a phantom retry, not resurrected by a
+	// discarded buffer.
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("expected task deleted after dual-dispatch expire")
+	}
+
+	// Every attempt must land on a safe, non-corrupting outcome — either it
+	// won/observed the expire, or it lost a commit-time conflict. Never an
+	// unexplained failure or panic (a panic would fail the test directly).
+	for i := range outcomes {
+		switch {
+		case errs[i] == nil && (outcomes[i] == OutcomeExpired || outcomes[i] == OutcomeDropped):
+			// Expected: this goroutine resolved the expire, or it re-read
+			// the guard after the row was already gone/handled.
+		case errors.Is(errs[i], spi.ErrConflict):
+			// Lost a commit-time SI+FCW conflict — also a safe, non-torn
+			// loss.
+		default:
+			t.Errorf("goroutine %d: unexpected outcome/err combination: outcome=%v err=%v", i, outcomes[i], errs[i])
+		}
+	}
+
+	// --- Informational only: audit-event COUNT, deliberately not part of
+	// the ground truth (design doc §8 "Accepted edge (E3)"). E3 documents
+	// this exact duplication mechanism for the Fired event on the memory
+	// backend's non-transactional audit store; the same mechanism applies
+	// here to Expired: ScheduledTaskStore.Delete's "removed" check
+	// (plugins/memory/scheduled_task_store.go) reads COMMITTED state at
+	// call time, not the outcome of the eventual transactional flush — and
+	// unlike Fired, neither racing transaction ever writes the entity, so
+	// there is no CAS to make one dual-dispatch attempt "lose" the way
+	// Fired's entity CompareAndSave does. Both goroutines can therefore
+	// legitimately observe existed==true, both call recordEvent (which
+	// writes directly, non-transactionally, to the memory audit store), and
+	// both commits can succeed — duplicating the audit trail, not the
+	// state. Entity state and task existence (asserted above) are the
+	// consistency ground truth here, per .claude/rules/test-coverage.md.
+	if n := countAuditEvents(t, factory, ctx, "expire-dual-e1", spi.SMEventScheduledTransitionExpired); n != 1 {
+		t.Logf("informational: SCHEDULED_TRANSITION_EXPIRE events = %d (accepted cosmetic dup under transient dual-dispatch on memory backend; see design doc §8 Accepted edge (E3))", n)
+	}
+}
