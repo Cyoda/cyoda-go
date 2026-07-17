@@ -144,7 +144,10 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	if cur.TenantID != task.TenantID {
 		slog.WarnContext(txCtx, "scheduled task dispatch tenant mismatch; dropping without touching the task row",
 			slog.String("pkg", "workflow"),
-			slog.String("taskId", task.ID))
+			slog.String("taskId", task.ID),
+			slog.String("entityId", cur.EntityID),
+			slog.String("tenantId", string(cur.TenantID)),
+			slog.String("assertedTenantId", string(task.TenantID)))
 		return OutcomeDropped, nil
 	}
 
