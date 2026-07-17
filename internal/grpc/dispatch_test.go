@@ -217,8 +217,21 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if got := err.Error(); got != "processor dispatch timed out after 1ms" {
-		t.Errorf("unexpected error: %s", got)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeDispatchTimeout {
+		t.Errorf("expected code %s, got %s", common.ErrCodeDispatchTimeout, appErr.Code)
+	}
+	if appErr.Status != 503 {
+		t.Errorf("expected status 503, got %d", appErr.Status)
+	}
+	if !appErr.Retryable {
+		t.Error("expected timeout error to be retryable")
+	}
+	if got := appErr.Error(); got != "DISPATCH_TIMEOUT: processor dispatch timed out after 1ms" {
+		t.Errorf("unexpected message: %s", got)
 	}
 }
 
@@ -666,6 +679,19 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 	_, err = dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req2, "req-timeout", "tx-1", 20, "processor", "my-proc")
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeDispatchTimeout {
+		t.Errorf("expected code %s, got %s", common.ErrCodeDispatchTimeout, appErr.Code)
+	}
+	if appErr.Status != 503 {
+		t.Errorf("expected status 503, got %d", appErr.Status)
+	}
+	if !appErr.Retryable {
+		t.Error("expected timeout error to be retryable")
 	}
 }
 

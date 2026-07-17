@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,7 +149,8 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		return resp, nil
 	case <-time.After(timeout):
 		slog.Error("dispatch timeout", "pkg", "grpc", "label", label, "name", name, "requestId", requestID, "timeout", timeout)
-		return nil, fmt.Errorf("%s dispatch timed out after %dms", label, timeoutMs)
+		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+			fmt.Sprintf("%s dispatch timed out after %dms", label, timeoutMs)).AsRetryable()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
