@@ -86,6 +86,61 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 	}
 }
 
+// dispatchCalloutToMember carries out the transport sequence shared by every
+// calculation callout: attach auth/tx-token to a CloudEvent wrapping req,
+// track the request, send it, and wait for the tracked response or a
+// timeout. Member resolution (FindByTags/ErrNoMatchingMember), request-struct
+// construction, and response parsing stay with the caller — this handles only
+// the wire protocol common to processor and criteria dispatch.
+func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, ceType string, req any, requestID, txID string, timeoutMs int64, label string) (*ProcessingResponse, error) {
+	ce, err := NewCloudEvent(ceType, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build %s cloud event: %w", label, err)
+	}
+	AttachAuthContext(ctx, ce)
+	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
+
+	ceData := ce.GetTextData()
+	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
+
+	ch := member.TrackRequest(requestID)
+
+	if err := member.Send(ce); err != nil {
+		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
+		return nil, fmt.Errorf("failed to send %s request: %w", label, err)
+	}
+
+	if timeoutMs <= 0 {
+		timeoutMs = defaultResponseTimeoutMs
+	}
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+
+	select {
+	case resp := <-ch:
+		// Propagate warnings to request diagnostics.
+		if resp != nil {
+			for _, w := range resp.Warnings {
+				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, requestID, w))
+			}
+		}
+		if resp == nil || !resp.Success {
+			errMsg := label + " returned failure"
+			if resp != nil && resp.Error != "" {
+				errMsg = resp.Error
+				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, requestID, errMsg))
+			}
+			return nil, fmt.Errorf("%s dispatch failed: %s", label, errMsg)
+		}
+		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "requestId", requestID, "success", true)
+		return resp, nil
+	case <-time.After(timeout):
+		slog.Error("dispatch timeout", "pkg", "grpc", "label", label, "requestId", requestID, "timeout", timeout)
+		return nil, fmt.Errorf("%s dispatch timed out after %dms", label, timeoutMs)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // DispatchProcessor sends an entity processor calculation request to a matching
 // calculation member and waits for the response.
 func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
@@ -123,54 +178,11 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	ce, err := NewCloudEvent(EntityProcessorCalculationRequest, req)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, processor.Config.ResponseTimeoutMs, "processor")
 	if err != nil {
-		return nil, fmt.Errorf("failed to build processor cloud event: %w", err)
+		return nil, err
 	}
-	AttachAuthContext(ctx, ce)
-	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
-
-	ceData := ce.GetTextData()
-	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
-
-	ch := member.TrackRequest(requestID)
-
-	if err := member.Send(ce); err != nil {
-		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
-		return nil, fmt.Errorf("failed to send processor request: %w", err)
-	}
-
-	timeoutMs := processor.Config.ResponseTimeoutMs
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
-	}
-
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-
-	select {
-	case resp := <-ch:
-		// Propagate warnings from processor to request diagnostics.
-		if resp != nil {
-			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("processor %s: %s", processor.Name, w))
-			}
-		}
-		if resp == nil || !resp.Success {
-			errMsg := "processor returned failure"
-			if resp != nil && resp.Error != "" {
-				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("processor %s: %s", processor.Name, errMsg))
-			}
-			return nil, fmt.Errorf("processor dispatch failed: %s", errMsg)
-		}
-		slog.Info("processor completed", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "requestId", requestID, "success", true)
-		return d.applyProcessorResponse(entity, resp)
-	case <-time.After(timeout):
-		slog.Error("dispatch timeout", "pkg", "grpc", "processor", processor.Name, "requestId", requestID, "timeout", timeout)
-		return nil, fmt.Errorf("processor dispatch timed out after %dms", timeoutMs)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return d.applyProcessorResponse(entity, resp)
 }
 
 // applyProcessorResponse extracts updated entity data from the response payload.
@@ -258,55 +270,12 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	ce, err := NewCloudEvent(EntityCriteriaCalculationRequest, req)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria")
 	if err != nil {
-		return false, "", fmt.Errorf("failed to build criteria cloud event: %w", err)
+		return false, "", err
 	}
-	AttachAuthContext(ctx, ce)
-	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
-
-	ceData := ce.GetTextData()
-	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
-
-	ch := member.TrackRequest(requestID)
-
-	if err := member.Send(ce); err != nil {
-		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
-		return false, "", fmt.Errorf("failed to send criteria request: %w", err)
+	if resp.Matches != nil {
+		return *resp.Matches, resp.Reason, nil
 	}
-
-	timeoutMs := parsed.Function.Config.ResponseTimeoutMs
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
-	}
-
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-
-	select {
-	case resp := <-ch:
-		// Propagate warnings from criteria to request diagnostics.
-		if resp != nil {
-			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("criteria %s: %s", parsed.Function.Name, w))
-			}
-		}
-		if resp == nil || !resp.Success {
-			errMsg := "criteria returned failure"
-			if resp != nil && resp.Error != "" {
-				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("criteria %s: %s", parsed.Function.Name, errMsg))
-			}
-			return false, "", fmt.Errorf("criteria dispatch failed: %s", errMsg)
-		}
-		slog.Info("criteria completed", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "requestId", requestID, "success", true)
-		if resp.Matches != nil {
-			return *resp.Matches, resp.Reason, nil
-		}
-		return false, resp.Reason, nil
-	case <-time.After(timeout):
-		slog.Error("dispatch timeout", "pkg", "grpc", "criteria", parsed.Function.Name, "requestId", requestID, "timeout", timeout)
-		return false, "", fmt.Errorf("criteria dispatch timed out after %dms", timeoutMs)
-	case <-ctx.Done():
-		return false, "", ctx.Err()
-	}
+	return false, resp.Reason, nil
 }

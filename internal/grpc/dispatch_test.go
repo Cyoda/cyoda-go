@@ -625,6 +625,50 @@ func TestDispatchProcessor_AnnotationsNotSentToMember(t *testing.T) {
 	}
 }
 
+// TestDispatchCalloutToMember_SuccessAndTimeout drives the shared transport
+// primitive directly (rather than through DispatchProcessor/DispatchCriteria)
+// to pin its two outcomes: a tracked response is returned on success, and a
+// non-nil error is returned when nobody answers before the timeout.
+func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	member := registry.Get(memberID)
+
+	// Success: answer the tracked request.
+	go func() {
+		ce := <-sentCh
+		if ce.Type != EntityProcessorCalculationRequest {
+			t.Errorf("expected event type %s, got %s", EntityProcessorCalculationRequest, ce.Type)
+			return
+		}
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		if reqID != "req-success" {
+			t.Errorf("expected requestId=req-success, got %s", reqID)
+		}
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
+	}()
+
+	req := map[string]any{"requestId": "req-success"}
+	resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-success", "tx-1", 5000, "processor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil || !resp.Success {
+		t.Fatalf("expected successful response, got %v", resp)
+	}
+
+	// Timeout: nobody answers the second request.
+	req2 := map[string]any{"requestId": "req-timeout"}
+	_, err = dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req2, "req-timeout", "tx-1", 20, "processor")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
 func TestBuildEntityPayload(t *testing.T) {
 	e := &spi.Entity{Meta: spi.EntityMeta{
 		ID: "e1", State: "S1", TransactionID: "tx1",
