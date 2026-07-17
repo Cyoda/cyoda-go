@@ -4,8 +4,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // DistributionStrategy picks which cluster member a due ScheduledTask should

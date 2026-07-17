@@ -1099,6 +1099,10 @@ const (
 	FORCESUCCESS                StateMachineAuditEventDtoEventType = "FORCE_SUCCESS"
 	PAUSEFORPROCESSING          StateMachineAuditEventDtoEventType = "PAUSE_FOR_PROCESSING"
 	PROCESSNOTMATCHCRITERION    StateMachineAuditEventDtoEventType = "PROCESS_NOT_MATCH_CRITERION"
+	SCHEDULEDTRANSITIONARM      StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_ARM"
+	SCHEDULEDTRANSITIONCANCEL   StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_CANCEL"
+	SCHEDULEDTRANSITIONEXPIRE   StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_EXPIRE"
+	SCHEDULEDTRANSITIONFIRE     StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_FIRE"
 	STATEMACHINEFINISH          StateMachineAuditEventDtoEventType = "STATE_MACHINE_FINISH"
 	STATEMACHINESTART           StateMachineAuditEventDtoEventType = "STATE_MACHINE_START"
 	STATEPROCESSRESULT          StateMachineAuditEventDtoEventType = "STATE_PROCESS_RESULT"
@@ -1121,6 +1125,14 @@ func (e StateMachineAuditEventDtoEventType) Valid() bool {
 	case PAUSEFORPROCESSING:
 		return true
 	case PROCESSNOTMATCHCRITERION:
+		return true
+	case SCHEDULEDTRANSITIONARM:
+		return true
+	case SCHEDULEDTRANSITIONCANCEL:
+		return true
+	case SCHEDULEDTRANSITIONEXPIRE:
+		return true
+	case SCHEDULEDTRANSITIONFIRE:
 		return true
 	case STATEMACHINEFINISH:
 		return true
