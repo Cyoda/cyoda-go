@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -262,8 +263,18 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error")
 		}
-		if !containsStr(err.Error(), common.ErrCodeNoComputeMemberForTag) {
-			t.Fatalf("expected NO_COMPUTE_MEMBER_FOR_TAG error, got %v", err)
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeNoComputeMemberForTag {
+			t.Fatalf("expected code %s, got %s", common.ErrCodeNoComputeMemberForTag, appErr.Code)
+		}
+		if !appErr.Retryable {
+			t.Fatal("expected retryable=true")
 		}
 		// Should have polled for approximately the wait timeout.
 		if elapsed < 400*time.Millisecond {
@@ -277,8 +288,80 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error")
 		}
-		if !containsStr(err.Error(), common.ErrCodeNoComputeMemberForTag) {
-			t.Fatalf("expected NO_COMPUTE_MEMBER_FOR_TAG error, got %v", err)
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeNoComputeMemberForTag {
+			t.Fatalf("expected code %s, got %s", common.ErrCodeNoComputeMemberForTag, appErr.Code)
+		}
+		if !appErr.Retryable {
+			t.Fatal("expected retryable=true")
+		}
+	})
+}
+
+// TestClusterDispatcher_ForwardFailure covers the terminal case where a peer
+// IS selected (it advertises the required tag) but the transport-level
+// forward to that peer fails (e.g. connection refused). This must surface a
+// retryable 503 DISPATCH_FORWARD_FAILED, distinct from the no-peer-found
+// case (NO_COMPUTE_MEMBER_FOR_TAG).
+func TestClusterDispatcher_ForwardFailure(t *testing.T) {
+	registry := &stubNodeRegistry{
+		nodes: []contract.NodeInfo{
+			// Peer advertises the tag but is unreachable — forward transport fails.
+			{NodeID: "peer-1", Addr: "http://localhost:1", Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
+		},
+	}
+	selector := NewRandomSelector()
+	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	forwarder := NewHTTPForwarder(auth, 2*time.Second).AllowLoopbackForTesting()
+
+	local := &stubDispatcher{noMember: true}
+	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+
+	t.Run("processor_forward_transport_fails", func(t *testing.T) {
+		ctx := testContext()
+		_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeDispatchForwardFailed {
+			t.Fatalf("expected code %s, got %s", common.ErrCodeDispatchForwardFailed, appErr.Code)
+		}
+		if !appErr.Retryable {
+			t.Fatal("expected retryable=true")
+		}
+	})
+
+	t.Run("criteria_forward_transport_fails", func(t *testing.T) {
+		ctx := testContext()
+		_, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d", appErr.Status)
+		}
+		if appErr.Code != common.ErrCodeDispatchForwardFailed {
+			t.Fatalf("expected code %s, got %s", common.ErrCodeDispatchForwardFailed, appErr.Code)
+		}
+		if !appErr.Retryable {
+			t.Fatal("expected retryable=true")
 		}
 	})
 }

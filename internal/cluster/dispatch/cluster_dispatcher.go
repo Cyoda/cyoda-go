@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -100,7 +101,8 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 
 	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
+		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+			fmt.Sprintf("forward to %s: %v", peer.NodeID, err)).AsRetryable()
 	}
 	if !resp.Success {
 		return nil, fmt.Errorf("peer %s dispatch failed: %s", peer.NodeID, resp.Error)
@@ -159,7 +161,8 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 
 	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
 	if err != nil {
-		return false, "", fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
+		return false, "", common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+			fmt.Sprintf("forward to %s: %v", peer.NodeID, err)).AsRetryable()
 	}
 	if !resp.Success {
 		return false, "", fmt.Errorf("peer %s criteria dispatch failed: %s", peer.NodeID, resp.Error)
@@ -188,8 +191,8 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 
 		select {
 		case <-deadline:
-			return contract.NodeInfo{}, fmt.Errorf("%s: no peer with tags %q for tenant %s after %v",
-				common.ErrCodeNoComputeMemberForTag, tags, tenantID, d.waitTimeout)
+			return contract.NodeInfo{}, common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag,
+				fmt.Sprintf("no peer with tags %q for tenant %s after %v", tags, tenantID, d.waitTimeout)).AsRetryable()
 		case <-ctx.Done():
 			return contract.NodeInfo{}, ctx.Err()
 		case <-ticker.C:
