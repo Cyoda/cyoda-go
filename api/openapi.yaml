@@ -9944,11 +9944,12 @@ components:
           description: |
             Optional scheduling configuration. Presence marks the transition
             as scheduled — it fires automatically `delayMs` milliseconds
-            after the entity enters the source state. Mutually exclusive
-            with `manual=true`. The runtime scheduler is not yet
-            implemented; until it ships, the engine silently skips
-            scheduled transitions during automated cascade selection, and
-            explicit fires by name return HTTP 400 `TRANSITION_NOT_FOUND`.
+            after the entity enters the source state, driven by a
+            coordinator-only background scan loop. Mutually exclusive with
+            `manual=true`. Explicit fires of a scheduled transition by name
+            return HTTP 400 `TRANSITION_NOT_FOUND` — it is not manually
+            fireable. See `cyoda help workflows` (authoring) and
+            `cyoda help config.scheduler` (runtime tuning).
         criterion:
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
@@ -9980,10 +9981,11 @@ components:
 
         Mutually exclusive with parent transition's manual=true.
 
-        The runtime that arms and fires the timer is not yet implemented.
-        Until it ships, the engine silently skips scheduled transitions
-        during automated cascade selection, and explicit fires by name are
-        rejected with HTTP 400 TRANSITION_NOT_FOUND.
+        The timer is armed on entry to the source state and re-armed by
+        every write that leaves the entity in that state (the settled-
+        interval semantic), atomically with the entity write. Explicit
+        fires of a scheduled transition by name are rejected with HTTP 400
+        TRANSITION_NOT_FOUND — it is not manually fireable.
       properties:
         delayMs:
           type: integer
