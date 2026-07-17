@@ -92,7 +92,13 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 // timeout. Member resolution (FindByTags/ErrNoMatchingMember), request-struct
 // construction, and response parsing stay with the caller — this handles only
 // the wire protocol common to processor and criteria dispatch.
-func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, ceType string, req any, requestID, txID string, timeoutMs int64, label string) (*ProcessingResponse, error) {
+//
+// label is the callout kind ("processor"/"criteria") and name is the
+// configured processor/criteria name; both flow into client-facing
+// diagnostics (warnings/errors surface in the gRPC warnings array and HTTP
+// body — see .claude/rules/error-handling.md) and server logs, so operators
+// and clients keep name-based correlation.
+func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, ceType string, req any, requestID, txID string, timeoutMs int64, label, name string) (*ProcessingResponse, error) {
 	ce, err := NewCloudEvent(ceType, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build %s cloud event: %w", label, err)
@@ -117,24 +123,25 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 
 	select {
 	case resp := <-ch:
-		// Propagate warnings to request diagnostics.
+		// Propagate warnings to request diagnostics, keyed by callout name
+		// so the client sees which processor/criteria warned.
 		if resp != nil {
 			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, requestID, w))
+				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, w))
 			}
 		}
 		if resp == nil || !resp.Success {
 			errMsg := label + " returned failure"
 			if resp != nil && resp.Error != "" {
 				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, requestID, errMsg))
+				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, errMsg))
 			}
 			return nil, fmt.Errorf("%s dispatch failed: %s", label, errMsg)
 		}
-		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "requestId", requestID, "success", true)
+		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "success", true)
 		return resp, nil
 	case <-time.After(timeout):
-		slog.Error("dispatch timeout", "pkg", "grpc", "label", label, "requestId", requestID, "timeout", timeout)
+		slog.Error("dispatch timeout", "pkg", "grpc", "label", label, "name", name, "requestId", requestID, "timeout", timeout)
 		return nil, fmt.Errorf("%s dispatch timed out after %dms", label, timeoutMs)
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -178,7 +185,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, processor.Config.ResponseTimeoutMs, "processor")
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, processor.Config.ResponseTimeoutMs, "processor", processor.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +277,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria")
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria", parsed.Function.Name)
 	if err != nil {
 		return false, "", err
 	}
