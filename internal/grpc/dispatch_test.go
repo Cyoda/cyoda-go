@@ -624,3 +624,24 @@ func TestDispatchProcessor_AnnotationsNotSentToMember(t *testing.T) {
 		t.Fatalf("DispatchProcessor: %v", err)
 	}
 }
+
+func TestBuildEntityPayload(t *testing.T) {
+	e := &spi.Entity{Meta: spi.EntityMeta{
+		ID: "e1", State: "S1", TransactionID: "tx1",
+		ModelRef:         spi.ModelRef{EntityName: "order", ModelVersion: "3"},
+		CreationDate:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastModifiedDate: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	}, Data: []byte(`{"k":"v"}`)}
+	p := buildEntityPayload(e)
+	if p.Type != "JSON" {
+		t.Fatalf("Type = %q, want JSON", p.Type)
+	}
+	meta := p.Meta.(map[string]any)
+	mk := meta["modelKey"].(map[string]any)
+	if mk["version"] != 3 {
+		t.Fatalf("version = %v, want int 3", mk["version"])
+	}
+	if meta["state"] != "S1" {
+		t.Fatalf("state = %v", meta["state"])
+	}
+}

@@ -64,6 +64,28 @@ func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID string) s
 	return tok
 }
 
+// buildEntityPayload builds the DataPayloadJson attached to a calc request when
+// AttachEntity is set. Shared by every callout shape.
+func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
+	versionInt := 0
+	fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
+	return &events.DataPayloadJson{
+		Type: "JSON",
+		Data: json.RawMessage(entity.Data),
+		Meta: map[string]any{
+			"id": entity.Meta.ID,
+			"modelKey": map[string]any{
+				"name":    entity.Meta.ModelRef.EntityName,
+				"version": versionInt,
+			},
+			"state":          entity.Meta.State,
+			"creationDate":   entity.Meta.CreationDate.Format(time.RFC3339Nano),
+			"lastUpdateTime": entity.Meta.LastModifiedDate.Format(time.RFC3339Nano),
+			"transactionId":  entity.Meta.TransactionID,
+		},
+	}
+}
+
 // DispatchProcessor sends an entity processor calculation request to a matching
 // calculation member and waits for the response.
 func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
@@ -98,23 +120,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		req.Parameters = processor.Config.Context
 	}
 	if processor.Config.AttachEntity {
-		versionInt := 0
-		fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
-		req.Payload = &events.DataPayloadJson{
-			Type: "JSON",
-			Data: json.RawMessage(entity.Data),
-			Meta: map[string]any{
-				"id": entity.Meta.ID,
-				"modelKey": map[string]any{
-					"name":    entity.Meta.ModelRef.EntityName,
-					"version": versionInt,
-				},
-				"state":          entity.Meta.State,
-				"creationDate":   entity.Meta.CreationDate.Format(time.RFC3339Nano),
-				"lastUpdateTime": entity.Meta.LastModifiedDate.Format(time.RFC3339Nano),
-				"transactionId":  entity.Meta.TransactionID,
-			},
-		}
+		req.Payload = buildEntityPayload(entity)
 	}
 
 	ce, err := NewCloudEvent(EntityProcessorCalculationRequest, req)
@@ -249,23 +255,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		req.Parameters = parsed.Function.Config.Context
 	}
 	if attachEntity {
-		versionInt := 0
-		fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
-		req.Payload = &events.DataPayloadJson{
-			Type: "JSON",
-			Data: json.RawMessage(entity.Data),
-			Meta: map[string]any{
-				"id": entity.Meta.ID,
-				"modelKey": map[string]any{
-					"name":    entity.Meta.ModelRef.EntityName,
-					"version": versionInt,
-				},
-				"state":          entity.Meta.State,
-				"creationDate":   entity.Meta.CreationDate.Format(time.RFC3339Nano),
-				"lastUpdateTime": entity.Meta.LastModifiedDate.Format(time.RFC3339Nano),
-				"transactionId":  entity.Meta.TransactionID,
-			},
-		}
+		req.Payload = buildEntityPayload(entity)
 	}
 
 	ce, err := NewCloudEvent(EntityCriteriaCalculationRequest, req)
