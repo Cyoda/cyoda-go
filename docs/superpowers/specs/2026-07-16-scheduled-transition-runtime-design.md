@@ -127,23 +127,28 @@ entity hot path.
 event is the durable record. Re-processing a not-yet-deleted row is safe (guard
 fails on the second attempt). **Terminal audit is delete-gated:** a worker emits
 the terminal event (`Expired`/`Declined`/`Cancelled`) **only if its `Delete`
-actually removed the row** — the delete is atomic per backend, so under a rare
-dual-dispatch exactly one worker "wins" the audit (dedups duplicate Expired
-lines without a claim protocol). `Fired` rides the `TRANSITION_MAKE`.
+actually removed the row**. On **postgres** the delete's rows-affected is
+tx-scoped, so under a rare dual-dispatch exactly one worker "wins" and the audit
+is deduped. On **memory/sqlite** the `Delete` "removed" check reads committed
+state at call time (not the eventual commit outcome) and the audit store is
+non-transactional, so the terminal audit can still duplicate under dual-dispatch
+— see the accepted edge below. `Fired` rides the `TRANSITION_MAKE`.
 
-> **Accepted edge (E3): `Fired` audit is NOT delete-gated and can duplicate
-> under a transient dual-coordinator on memory/sqlite.** Those backends' audit
-> store writes non-transactionally, so a *losing* coordinator's `recordEvent`
-> lands durably even though its entity/task writes are correctly discarded on the
-> CAS conflict → two `SCHEDULED_TRANSITION_FIRE` lines for one real fire. The
-> **entity state is always exactly-once correct** (CAS guarantees it); only the
-> audit duplicates. Postgres's audit store is tx-scoped (via the context querier)
-> and does not duplicate. This backend divergence is a **pre-existing** property
-> of the non-transactional memory/sqlite audit store, surfaced by the
-> dual-coordinator concurrency test; it is **accepted as a rare cosmetic dup**
-> (state correctness is unaffected) rather than making the shared audit subsystem
-> transactional. The isolated concurrency test therefore asserts exactly-once
-> *state* consistency, not audit-event count (per `.claude/rules/test-coverage.md`).
+> **Accepted edge (E3): scheduled-transition audit events can duplicate under a
+> transient dual-coordinator on memory/sqlite.** Applies to `SCHEDULED_TRANSITION_FIRE`
+> (rides `TRANSITION_MAKE`, never delete-gated) AND the delete-gated terminals
+> (`Expired`/`Declined`/`Cancelled`) on memory/sqlite (the `Delete` "removed" check
+> is pre-commit and the audit store writes non-transactionally, so a *losing*
+> worker's `recordEvent` lands durably even though its entity/task writes are
+> discarded on the CAS/commit conflict). The **entity state and task deletion are
+> always exactly-once correct** (CAS/commit guarantees it); only the audit line
+> duplicates. Postgres's audit + rows-affected are tx-scoped and do not duplicate.
+> This is a **pre-existing** property of the non-transactional memory/sqlite audit
+> store, surfaced by the dual-dispatch concurrency tests; **accepted as a rare
+> cosmetic dup** (state correctness unaffected) rather than making the shared audit
+> subsystem transactional. The isolated concurrency tests therefore assert
+> exactly-once *state* consistency, not audit-event count (per
+> `.claude/rules/test-coverage.md`).
 
 ---
 
@@ -478,6 +483,19 @@ thresholds, to avoid CI flakes.
 Concurrency/multi-node scenarios are **isolated single-backend e2e** asserting
 consistency (one fire, one winner), never the shared parity suite. Parity
 scenarios register in `e2e/parity/registry.go`.
+
+**Coverage waivers (Phase G audit).** The matrix's `E` (dedicated `internal/e2e`)
+cells for decline, no-expire-when-nil, cancel-on-exit, guard re-read, CBD-segmenting
+fire, cascade-after-fire, and idempotent double-delivery are **waived**: each is
+covered by a unit test (`internal/domain/workflow/*_test.go`) **and** by the parity
+suite, which runs the behavior through the full HTTP stack across memory/sqlite/
+**postgres** (real running backends) — a duplicate single-backend `internal/e2e`
+test adds no distinct coverage. The criterion-**true** parity cell is waived
+(criterion evaluation is backend-independent engine logic, unit-tested; the
+store/fire path is covered by parity `FiresOnTime`). The heartbeat-fires-repeatedly,
+expire-under-dual-dispatch, and failover-re-dispatch cells were **closed with new
+tests** (`heartbeat_test.go`, `fire_scheduled_concurrency_test.go`,
+`internal/scheduler/service_test.go`).
 
 ---
 
