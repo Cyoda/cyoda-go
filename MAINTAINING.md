@@ -193,38 +193,50 @@ git tag "plugins/sqlite/$V"
 git push origin "plugins/memory/$V" "plugins/postgres/$V" "plugins/sqlite/$V"
 ```
 
-### 3. Drop the `replace` directives and pin plugin module versions
+### 3. Pin plugin module versions to the release tags
 
-Root `go.mod` currently has three `replace` directives pointing at
-`./plugins/*` for dev-time convenience. Release builds must resolve
-to published modules, not local paths — so these must be dropped.
-The release workflow's pre-flight rejects any `replace` and would
-abort cleanly, but removing them explicitly is cleaner:
+The root `go.mod` pins the three plugin submodules. During the pre-release
+window it pins them to a **pseudo-version of the in-dev HEAD** (set with
+`make repin-plugins`; see the window note below). At release cut, re-pin them
+to the tags you cut in step 1:
 
 ```bash
-go mod edit -dropreplace github.com/cyoda-platform/cyoda-go/plugins/memory
-go mod edit -dropreplace github.com/cyoda-platform/cyoda-go/plugins/postgres
-go mod edit -dropreplace github.com/cyoda-platform/cyoda-go/plugins/sqlite
-go mod tidy
+V=v0.6.0   # the root release version
+for p in memory postgres sqlite; do
+  go mod edit -require="github.com/cyoda-platform/cyoda-go/plugins/$p@$V"
+done
+GOWORK=off go mod download   # refresh go.sum against the tagged modules
 ```
 
-`go mod tidy` pins the plugin modules to the tags you just cut in
-step 1. Review the diff to `go.mod` and `go.sum` — the `require`
-block should gain entries for each plugin at the release version,
-and the `replace` directives should be gone.
+Review the diff — the `require` block should pin each plugin at the release
+tag, replacing the dev-window pseudo-versions.
 
 ```bash
 git add go.mod go.sum
-git commit -m "chore: drop replace directives; pin plugin modules at $V"
+git commit -m "chore: pin plugin modules at $V"
 git push origin main
 ```
 
-**Why not delete the replace directives now?** Because pre-public
-development uses `GOWORK=off go build ./...` occasionally (reviews,
-snapshot checks) and the replaces make that work without requiring
-every plugin change to be tagged and pushed. After the first release
-they become vestigial and can stay dropped; dev-time workflows use
-`go.work` for local composition going forward.
+There are **no** `replace` directives to drop — the repo composes locally via
+`go.work`, not `replace` (the release workflow's pre-flight rejects any
+`replace`).
+
+**Dev-window plugin composition (`make repin-plugins`).** When the root depends
+on plugin code that isn't tagged yet — e.g. an SPI change adds a **required**
+method to a plugin-implemented interface (`StoreFactory`, `EntityStore`) that
+the old plugin tags don't implement — the `test` job stays green via `go.work`
+(local plugins), but the `GOWORK=off` jobs (`per-module-hygiene`,
+`smoke`/goreleaser) resolve the **root `go.mod` pins as a consumer would**, so
+those pins must point at the in-dev plugin code. On the feature branch, after
+pushing your plugin changes, run **`make repin-plugins`** to pseudo-version-pin
+all three plugins to HEAD and refresh `go.sum`, then commit. The SPI is pinned
+the same way (see "Bumping cyoda-go-spi"). Pseudo-pins are used deliberately
+rather than `replace` directives: they keep the `GOWORK=off` jobs a genuine
+consumer-resolution test, whereas `replace` (local dirs) would make those jobs
+a redundant copy of the `go.work` `test` job — and would have to be unwound at
+release cut anyway. Forgetting this step is the classic failure mode: the SPI
+gets pseudo-pinned but the plugins are left at the old tags, and only the
+`GOWORK=off` jobs go red.
 
 ### 4. Homebrew tap setup (from the section above)
 
@@ -352,8 +364,8 @@ Release in topological order:
    plugin submodule's `go.mod`. Remove the `go.work` entry pointing
    at the local SPI checkout. Verify tests still pass. Merge to
    `main`. Then run steps 1, 2, 3, 7 of this checklist (plugin
-   submodule tags, drop replace directives, cut root release) using
-   the same `$V`.
+   submodule tags, re-pin plugins from dev-window pseudo-versions to
+   the release tags, cut root release) using the same `$V`.
 
 3. **`cyoda-go-cassandra`**: on its feature branch, bump `go.mod`'s
    `cyoda-go-spi`, `cyoda-go`, and `cyoda-go/plugins/*` require

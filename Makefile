@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt
+.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
 
 # Plugin submodules: each has its own go.mod, so `go test ./...` from the
 # repo root does not recurse into them. The aggregator targets below close
@@ -99,6 +99,9 @@ clean:                 ## Remove build artifacts
 
 check-spi-pin-sync:    ## Verify cyoda-go-spi is pinned to the same version across root and all plugin go.mods
 	@./scripts/check-spi-pin-sync.sh
+
+repin-plugins:         ## Pseudo-version-pin plugin submodules to the current (pushed) HEAD in root go.mod (coordinated-release window; see MAINTAINING.md §3)
+	@./scripts/repin-plugins.sh
 
 check-codegen:         ## Verify api/generated.go is in sync with api/openapi.yaml (go generate is up to date)
 	@./scripts/check-generated-in-sync.sh
