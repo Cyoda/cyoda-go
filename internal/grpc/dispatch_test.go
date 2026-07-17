@@ -695,6 +695,43 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 	}
 }
 
+// TestDispatchCalloutToMember_MemberDisconnects guards that a member
+// disconnecting mid-request (FailAllPending, e.g. on stream drop/Unregister)
+// surfaces a distinguishable 503 COMPUTE_MEMBER_DISCONNECTED to the waiting
+// dispatch, not a generic failure that maps to 400.
+func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	member := registry.Get(memberID)
+
+	// Simulate the stream dropping mid-flight: once the request is sent
+	// (and therefore tracked), fail all pending requests as Unregister does
+	// on disconnect, instead of ever completing the request normally.
+	go func() {
+		<-sentCh
+		member.FailAllPending("compute member disconnected")
+	}()
+
+	req := map[string]any{"requestId": "req-disconnect"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-disconnect", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error for member disconnect")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeComputeMemberDisconnected {
+		t.Errorf("expected code %s, got %s", common.ErrCodeComputeMemberDisconnected, appErr.Code)
+	}
+	if appErr.Status != 503 {
+		t.Errorf("expected status 503, got %d", appErr.Status)
+	}
+	if !appErr.Retryable {
+		t.Error("expected disconnect error to be retryable")
+	}
+}
+
 // TestDispatchProcessor_WarningPropagatesName guards that response warnings
 // surface to the client keyed by the processor NAME, not the opaque request
 // ID. These strings appear in the gRPC warnings array and HTTP body

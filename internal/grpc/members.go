@@ -39,6 +39,12 @@ type ProcessingResponse struct {
 	// loop; the current dispatcher is single-shot and does not consult
 	// this field.
 	Retryable *bool
+	// Disconnected is true when this response was synthesized by
+	// FailAllPending because the member's stream dropped while the request
+	// was in flight, rather than a substantive failure returned by the
+	// member. dispatchCalloutToMember uses this to surface a distinguishable
+	// 503 COMPUTE_MEMBER_DISCONNECTED instead of a generic failure.
+	Disconnected bool
 }
 
 // Member represents a connected calculation member.
@@ -99,8 +105,9 @@ func (m *Member) FailAllPending(errMsg string) {
 
 	for _, ch := range reqs {
 		ch <- &ProcessingResponse{
-			Success: false,
-			Error:   errMsg,
+			Success:      false,
+			Error:        errMsg,
+			Disconnected: true,
 		}
 	}
 }

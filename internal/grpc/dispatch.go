@@ -137,6 +137,11 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, w))
 			}
 		}
+		if resp != nil && resp.Disconnected {
+			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+			return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
+				fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
+		}
 		if resp == nil || !resp.Success {
 			errMsg := label + " returned failure"
 			if resp != nil && resp.Error != "" {
