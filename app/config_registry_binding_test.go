@@ -151,6 +151,15 @@ func defaultFor(c app.Config) map[string]string {
 
 		// --- grpc ---
 		"CYODA_GRPC_PORT": strconv.Itoa(c.GRPC.Port),
+
+		// --- scheduler ---
+		"CYODA_SCHEDULER_ENABLED":            strconv.FormatBool(c.Scheduler.Enabled),
+		"CYODA_SCHEDULER_SCAN_INTERVAL":      renderDuration(c.Scheduler.ScanInterval),
+		"CYODA_SCHEDULER_BATCH_SIZE":         strconv.Itoa(c.Scheduler.BatchSize),
+		"CYODA_SCHEDULER_DISTRIBUTION":       c.Scheduler.Distribution,
+		"CYODA_SCHEDULER_COORDINATOR":        c.Scheduler.Coordinator,
+		"CYODA_SCHEDULER_REDISPATCH_BACKOFF": renderDuration(c.Scheduler.RedispatchBackoff),
+		"CYODA_SCHEDULER_EXPIRY_GRACE":       renderDuration(c.Scheduler.ExpiryGrace),
 	}
 }
 

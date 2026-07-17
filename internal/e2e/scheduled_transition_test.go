@@ -14,8 +14,10 @@ import (
 // scheduled transition (Schedule.DelayMs > 0, manual=false), cascade silently
 // skips it on entity creation (no other automated exit), and a client-issued
 // PUT against the transition by name returns 400 TRANSITION_NOT_FOUND with a
-// message containing "scheduled transitions are not yet implemented". The
-// entity stays in the source state.
+// message containing "is scheduled and fires automatically; it is not
+// manually fireable" (reworded once the scheduled-transition runtime existed
+// to fire it — see engine.go's scheduledReason). The delay (1000ms) comfortably
+// outlives this test, so the entity stays in the source state throughout.
 //
 // Mirrors the Disabled-transition precedent (TestEntityLifecycle_DisabledTransition):
 // the transition exists in config but is not currently dispatchable from the
@@ -72,13 +74,12 @@ func TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound(t *test
 	if code, _ := pd.Properties["errorCode"].(string); code != "TRANSITION_NOT_FOUND" {
 		t.Errorf("properties.errorCode: got %q, want TRANSITION_NOT_FOUND; body=%s", code, body)
 	}
-	// The "scheduled transitions are not yet implemented" substring may appear
-	// in detail, title, or another problem-detail field — assert against the
-	// raw body so we're robust to where common.WriteError surfaces the wrapped
-	// error string.
-	if !strings.Contains(body, "scheduled transitions are not yet implemented") {
-		t.Errorf("expected response body to contain rejection cause %q; got: %s",
-			"scheduled transitions are not yet implemented", body)
+	// The rejection-cause substring may appear in detail, title, or another
+	// problem-detail field — assert against the raw body so we're robust to
+	// where common.WriteError surfaces the wrapped error string.
+	const wantCause = "is scheduled and fires automatically; it is not manually fireable"
+	if !strings.Contains(body, wantCause) {
+		t.Errorf("expected response body to contain rejection cause %q; got: %s", wantCause, body)
 	}
 
 	// 5: Entity must remain in the source state after rejection.

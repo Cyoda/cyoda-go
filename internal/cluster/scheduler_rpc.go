@@ -102,6 +102,18 @@ func NewClusterExecutor(engine scheduler.Engine, selfID string, registry contrac
 // Execute implements scheduler.Executor.
 func (c *ClusterExecutor) Execute(ctx context.Context, task spi.ScheduledTask, target string) {
 	if target == c.selfID || target == "" || c.registry == nil || c.client == nil {
+		// A nil registry/client for a genuinely non-self target means this
+		// ClusterExecutor was constructed without cluster wiring (mis-wire)
+		// even though the coordinator picked a peer — the distribution
+		// strategy is being silently defeated (every task lands on this
+		// node regardless of Pick's choice). Fire locally anyway
+		// (fail-toward-runs: a due task must never be dropped), but make
+		// the mis-wire loud so it's observable rather than quietly
+		// concentrating load onto whichever node happens to scan.
+		if (c.registry == nil || c.client == nil) && target != c.selfID && target != "" {
+			slog.Warn("scheduled task: cluster executor has no registry/client wired, firing locally instead of on picked target",
+				"pkg", "scheduler", "taskId", task.ID, "target", target, "selfID", c.selfID)
+		}
 		c.local.Execute(ctx, task, target)
 		return
 	}

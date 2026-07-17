@@ -202,6 +202,20 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 **Key cap:** `CYODA_SEARCH_MAX_SORT_KEYS` (default `16`) — see `cyoda help config` (Search and transaction internals).
 
+## Scheduled transitions
+
+A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. See `cyoda help config.scheduler` for the full topic.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch for the scan loop. |
+| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | Coordinator scan cadence. |
+| `CYODA_SCHEDULER_BATCH_SIZE` | `100` | Max due tasks pulled per scan. |
+| `CYODA_SCHEDULER_DISTRIBUTION` | `round-robin` | Dispatch-target strategy: `round-robin` or `self`. Forced to `self` when `CYODA_CLUSTER_ENABLED=false`. |
+| `CYODA_SCHEDULER_COORDINATOR` | `lowest-node-id` | Coordinator-election strategy. |
+| `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Best-effort re-dispatch throttle window after a due task is picked up. |
+| `CYODA_SCHEDULER_EXPIRY_GRACE` | `100ms` | Grace band above a transition's `timeoutMs` before it expires instead of firing late; size to at least the max inter-node clock skew. |
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.

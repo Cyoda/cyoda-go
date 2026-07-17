@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,17 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
+
+// captureSlog swaps slog.Default with a JSON handler writing to buf at the
+// given level for the duration of the test.
+func captureSlog(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 const testTenant = spi.TenantID("cluster-sched-tenant")
 
@@ -235,4 +248,49 @@ func TestExecutor_PeerLookupFailure_DropsWithoutLocalFallback(t *testing.T) {
 	if fake.calls != 0 {
 		t.Error("an unresolvable peer target must not fall back to a local fire")
 	}
+}
+
+// TestExecutor_MisWiredNonSelfTarget_WarnsThenFiresLocally proves a mis-wire
+// (registry or client nil, e.g. a deployment that forgot to pass the
+// cluster's NodeRegistry/SchedulerRPCClient into NewClusterExecutor) that
+// silently defeats the distribution strategy is observable: Execute still
+// fires locally (fail-toward-runs — a due task is never dropped) but emits a
+// slog.Warn naming the taskId and target so an operator can see the
+// distribution never happened. A self/empty target is the expected
+// single-node shape and must NOT warn.
+func TestExecutor_MisWiredNonSelfTarget_WarnsThenFiresLocally(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, _ := setupRealEngine(t, nowMs)
+	schedEngine := NewSchedulerEngine(engine)
+
+	t.Run("nil registry and client, non-self target warns", func(t *testing.T) {
+		buf := captureSlog(t, slog.LevelWarn)
+		exec := NewClusterExecutor(schedEngine, "self-node", nil, nil)
+		exec.Execute(context.Background(), spi.ScheduledTask{ID: "mis-wired-task", TenantID: testTenant}, "other-node")
+
+		out := buf.String()
+		if !strings.Contains(out, "mis-wired-task") || !strings.Contains(out, "other-node") {
+			t.Errorf("expected a slog.Warn naming taskId=mis-wired-task and target=other-node, got: %s", out)
+		}
+	})
+
+	t.Run("self target does not warn", func(t *testing.T) {
+		buf := captureSlog(t, slog.LevelWarn)
+		exec := NewClusterExecutor(schedEngine, "self-node", nil, nil)
+		exec.Execute(context.Background(), spi.ScheduledTask{ID: "self-task", TenantID: testTenant}, "self-node")
+
+		if buf.Len() != 0 {
+			t.Errorf("expected no warning for a self target, got: %s", buf.String())
+		}
+	})
+
+	t.Run("empty target does not warn", func(t *testing.T) {
+		buf := captureSlog(t, slog.LevelWarn)
+		exec := NewClusterExecutor(schedEngine, "self-node", nil, nil)
+		exec.Execute(context.Background(), spi.ScheduledTask{ID: "empty-target-task", TenantID: testTenant}, "")
+
+		if buf.Len() != 0 {
+			t.Errorf("expected no warning for an empty target, got: %s", buf.String())
+		}
+	})
 }
