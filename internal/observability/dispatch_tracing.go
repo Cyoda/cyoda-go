@@ -5,12 +5,20 @@ import (
 	"encoding/json"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+)
+
+// Dispatch kind labels for the "type" metric attribute. Values are preserved exactly
+// as before the kind-labeled refactor so existing dashboards/alerts keep working.
+const (
+	kindProcessor = "processor"
+	kindCriteria  = "criteria"
 )
 
 // TracingExternalProcessingService wraps an ExternalProcessingService with OTel spans and metrics.
@@ -42,8 +50,48 @@ func NewTracingExternalProcessingService(inner contract.ExternalProcessingServic
 		tracer:           tracer,
 		dispatchDuration: duration,
 		dispatchTotal:    total,
-		typeProcessor:    metric.WithAttributes(AttrDispatchType.String("processor")),
-		typeCriteria:     metric.WithAttributes(AttrDispatchType.String("criteria")),
+		typeProcessor:    metric.WithAttributes(AttrDispatchType.String(kindProcessor)),
+		typeCriteria:     metric.WithAttributes(AttrDispatchType.String(kindCriteria)),
+	}
+}
+
+// record opens a span named spanName with spanAttrs, runs fn, and records the elapsed
+// duration and count against the metric attribute set for kind. It centralizes the
+// span/metric bookkeeping shared by every dispatch kind (processor, criteria, and
+// future kinds such as "function") so each DispatchXxx method only supplies what
+// differs: the span name/attributes and the inner call itself.
+func (t *TracingExternalProcessingService) record(
+	ctx context.Context, kind, spanName string, spanAttrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	ctx, span := t.tracer.Start(ctx, spanName, trace.WithAttributes(spanAttrs...))
+	defer span.End()
+
+	opt := t.measurementOption(kind)
+	start := time.Now()
+	err := fn(ctx, span)
+	elapsed := time.Since(start).Seconds()
+
+	t.dispatchDuration.Record(ctx, elapsed, opt)
+	t.dispatchTotal.Add(ctx, 1, opt)
+
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+// measurementOption returns the cached MeasurementOption for kind, falling back to a
+// freshly-built one for kinds not pre-cached in NewTracingExternalProcessingService.
+func (t *TracingExternalProcessingService) measurementOption(kind string) metric.MeasurementOption {
+	switch kind {
+	case kindProcessor:
+		return t.typeProcessor
+	case kindCriteria:
+		return t.typeCriteria
+	default:
+		return metric.WithAttributes(AttrDispatchType.String(kind))
 	}
 }
 
@@ -51,26 +99,18 @@ func (t *TracingExternalProcessingService) DispatchProcessor(
 	ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition,
 	workflowName, transitionName, txID string,
 ) (*spi.Entity, error) {
-	ctx, span := t.tracer.Start(ctx, "dispatch.processor", trace.WithAttributes(
+	var result *spi.Entity
+	err := t.record(ctx, kindProcessor, "dispatch.processor", []attribute.KeyValue{
 		AttrProcessorName.String(processor.Name),
 		AttrProcessorMode.String(processor.ExecutionMode),
 		AttrProcessorTags.String(processor.Config.CalculationNodesTags),
 		AttrWorkflowName.String(workflowName),
 		AttrTransitionName.String(transitionName),
-	))
-	defer span.End()
-
-	start := time.Now()
-	result, err := t.inner.DispatchProcessor(ctx, entity, processor, workflowName, transitionName, txID)
-	elapsed := time.Since(start).Seconds()
-
-	t.dispatchDuration.Record(ctx, elapsed, t.typeProcessor)
-	t.dispatchTotal.Add(ctx, 1, t.typeProcessor)
-
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
+	}, func(ctx context.Context, span trace.Span) error {
+		var err error
+		result, err = t.inner.DispatchProcessor(ctx, entity, processor, workflowName, transitionName, txID)
+		return err
+	})
 	return result, err
 }
 
@@ -78,24 +118,17 @@ func (t *TracingExternalProcessingService) DispatchCriteria(
 	ctx context.Context, entity *spi.Entity, criterion json.RawMessage,
 	target, workflowName, transitionName, processorName, txID string,
 ) (bool, string, error) {
-	ctx, span := t.tracer.Start(ctx, "dispatch.criteria", trace.WithAttributes(
+	var matches bool
+	var reason string
+	err := t.record(ctx, kindCriteria, "dispatch.criteria", []attribute.KeyValue{
 		AttrCriterionTarget.String(target),
 		AttrWorkflowName.String(workflowName),
 		AttrTransitionName.String(transitionName),
-	))
-	defer span.End()
-
-	start := time.Now()
-	matches, reason, err := t.inner.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
-	elapsed := time.Since(start).Seconds()
-
-	t.dispatchDuration.Record(ctx, elapsed, t.typeCriteria)
-	t.dispatchTotal.Add(ctx, 1, t.typeCriteria)
-
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	span.SetAttributes(AttrCriteriaMatches.Bool(matches))
+	}, func(ctx context.Context, span trace.Span) error {
+		var err error
+		matches, reason, err = t.inner.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
+		span.SetAttributes(AttrCriteriaMatches.Bool(matches))
+		return err
+	})
 	return matches, reason, err
 }

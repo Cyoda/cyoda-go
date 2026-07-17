@@ -124,6 +124,62 @@ func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *te
 	}
 }
 
+// singleDispatchTypeAttr drives exactly one dispatch (via dispatch) through a fresh
+// ManualReader and returns the sole "type" attribute value recorded on
+// cyoda.dispatch.count. Isolating each call to its own reader lets the caller
+// correlate a specific dispatch method to the exact kind label it emitted — a
+// swapped label (DispatchProcessor emitting "criteria", etc.) is then caught,
+// which an aggregate set-equality assertion across both calls would miss.
+func singleDispatchTypeAttr(t *testing.T, dispatch func(traced *observability.TracingExternalProcessingService)) string {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	traced := observability.NewTracingExternalProcessingService(&fakeDispatcher{}, mp.Meter("test"))
+
+	dispatch(traced)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, md := range sm.Metrics {
+			if md.Name != "cyoda.dispatch.count" {
+				continue
+			}
+			sum := md.Data.(metricdata.Sum[int64])
+			if len(sum.DataPoints) != 1 {
+				t.Fatalf("expected exactly 1 cyoda.dispatch.count data point, got %d", len(sum.DataPoints))
+			}
+			v, ok := sum.DataPoints[0].Attributes.Value(observability.AttrDispatchType)
+			if !ok {
+				t.Fatalf("missing %q attribute on data point %+v", observability.AttrDispatchType, sum.DataPoints[0])
+			}
+			return v.AsString()
+		}
+	}
+	t.Fatal("cyoda.dispatch.count not found")
+	return ""
+}
+
+func TestTracingDispatch_RecordsKindLabeledAttributes(t *testing.T) {
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-1"}}
+
+	gotProcessor := singleDispatchTypeAttr(t, func(traced *observability.TracingExternalProcessingService) {
+		_, _ = traced.DispatchProcessor(context.Background(), entity, spi.ProcessorDefinition{Name: "p"}, "wf", "tr", "tx")
+	})
+	if gotProcessor != "processor" {
+		t.Errorf("DispatchProcessor recorded type=%q, want %q", gotProcessor, "processor")
+	}
+
+	gotCriteria := singleDispatchTypeAttr(t, func(traced *observability.TracingExternalProcessingService) {
+		_, _, _ = traced.DispatchCriteria(context.Background(), entity, json.RawMessage(`{}`), "target1", "wf", "tr", "p", "tx")
+	})
+	if gotCriteria != "criteria" {
+		t.Errorf("DispatchCriteria recorded type=%q, want %q", gotCriteria, "criteria")
+	}
+}
+
 func TestTracingDispatch_DurationHasExplicitBuckets(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
