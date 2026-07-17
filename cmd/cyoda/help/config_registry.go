@@ -112,6 +112,15 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_COMPUTE_GRPC_ENDPOINT", Topic: "grpc", Type: "string", Default: "", Description: "gRPC endpoint for a compute node to connect to (compute-client side)."},
 	{Name: "CYODA_COMPUTE_TOKEN", Topic: "grpc", Type: "string", Default: "", Description: "Bearer token for compute-node authentication (compute-client side)."},
 	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},
+
+	// --- scheduler ---
+	{Name: "CYODA_SCHEDULER_ENABLED", Topic: "scheduler", Type: "bool", Default: "true", Description: "Kill switch for the scheduled-transition coordinator scan loop."},
+	{Name: "CYODA_SCHEDULER_SCAN_INTERVAL", Topic: "scheduler", Type: "duration", Default: "1s", Description: "Coordinator scan cadence."},
+	{Name: "CYODA_SCHEDULER_BATCH_SIZE", Topic: "scheduler", Type: "int", Default: "100", Description: "Max due tasks pulled per scan."},
+	{Name: "CYODA_SCHEDULER_DISTRIBUTION", Topic: "scheduler", Type: "string", Default: "round-robin", Description: "Dispatch-target selection strategy: round-robin or self. Forced to self when CYODA_CLUSTER_ENABLED=false."},
+	{Name: "CYODA_SCHEDULER_COORDINATOR", Topic: "scheduler", Type: "string", Default: "lowest-node-id", Description: "Coordinator-election strategy."},
+	{Name: "CYODA_SCHEDULER_REDISPATCH_BACKOFF", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Best-effort re-dispatch throttle window after a due task is picked up."},
+	{Name: "CYODA_SCHEDULER_EXPIRY_GRACE", Topic: "scheduler", Type: "duration", Default: "100ms", Description: "Grace band above a scheduled transition's timeoutMs before it is expired instead of fired late; size to at least the max inter-node clock skew."},
 }
 
 // RootConfigVars returns a copy of the root var table.

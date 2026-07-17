@@ -197,6 +197,13 @@ func newCallbackHarness(t *testing.T) *callbackHarness {
 
 	go func() { _ = a.GRPCServer().Serve(grpcLis) }()
 	t.Cleanup(func() { _ = a.Close() })
+	// t.Cleanup runs LIFO: this Shutdown (stops the scheduler and TTL/tx
+	// reapers) is registered after Close so it runs BEFORE Close tears down
+	// the store pool. Without it the scheduler's 1s scan loop keeps ticking
+	// against a closed pool and spams ERROR logs for the rest of the test
+	// binary's life (mirrors the app.New/Shutdown/Close ordering used by
+	// cors_e2e_test.go and iam_gated_fixtures_test.go).
+	t.Cleanup(a.Shutdown)
 
 	// Connect the compute member and wait for it to be ready.
 	h.member = newComputeMember(t, h, grpcLis.Addr().String())

@@ -52,6 +52,40 @@ type Config struct {
 	// SearchMaxSortKeys caps the number of sort keys per search request.
 	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
 	SearchMaxSortKeys int
+	// Scheduler configures the coordinator-only scan loop that fires due
+	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
+	Scheduler SchedulerConfig
+}
+
+// SchedulerConfig controls the scheduled-transition scan loop: cadence,
+// coordinator/distribution strategy selection, redispatch throttling, and
+// the engine's expiry grace band. See design doc §9 and
+// docs/superpowers/plans/2026-07-16-scheduled-transition-runtime.md Task D4.
+type SchedulerConfig struct {
+	// Enabled is the kill switch for the scan loop. CYODA_SCHEDULER_ENABLED,
+	// default true.
+	Enabled bool
+	// ScanInterval is the coordinator's scan cadence.
+	// CYODA_SCHEDULER_SCAN_INTERVAL, default 1s.
+	ScanInterval time.Duration
+	// BatchSize caps how many due tasks a single scan pulls from the store.
+	// CYODA_SCHEDULER_BATCH_SIZE, default 100.
+	BatchSize int
+	// Distribution selects the dispatch-target strategy: "round-robin" or
+	// "self". CYODA_SCHEDULER_DISTRIBUTION, default "round-robin".
+	Distribution string
+	// Coordinator selects the coordinator-election strategy.
+	// CYODA_SCHEDULER_COORDINATOR, default "lowest-node-id".
+	Coordinator string
+	// RedispatchBackoff is the best-effort re-dispatch throttle window
+	// applied after a due task is picked up. CYODA_SCHEDULER_REDISPATCH_BACKOFF,
+	// default 30s.
+	RedispatchBackoff time.Duration
+	// ExpiryGrace is the margin above a scheduled transition's timeoutMs
+	// that the engine tolerates before expiring a late task instead of
+	// firing it. Size to at least the max inter-node clock skew.
+	// CYODA_SCHEDULER_EXPIRY_GRACE, default 100ms.
+	ExpiryGrace time.Duration
 }
 
 type AdminConfig struct {
@@ -270,6 +304,15 @@ func DefaultConfig() Config {
 			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
 			// this false so the SSRF guard stays active.
 			DispatchAllowLoopback: envBool("CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING", false),
+		},
+		Scheduler: SchedulerConfig{
+			Enabled:           envBool("CYODA_SCHEDULER_ENABLED", true),
+			ScanInterval:      envDuration("CYODA_SCHEDULER_SCAN_INTERVAL", 1*time.Second),
+			BatchSize:         envInt("CYODA_SCHEDULER_BATCH_SIZE", 100),
+			Distribution:      envString("CYODA_SCHEDULER_DISTRIBUTION", "round-robin"),
+			Coordinator:       envString("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id"),
+			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
+			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
 		},
 	}
 }

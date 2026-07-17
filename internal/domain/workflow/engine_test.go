@@ -3227,8 +3227,9 @@ func TestEngine_AttemptTransition_Scheduled_ReturnsTransitionNotFound(t *testing
 	if !errors.Is(err, ErrTransitionNotFound) {
 		t.Errorf("expected error to wrap ErrTransitionNotFound (mirrors Disabled precedent); got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "scheduled transitions are not yet implemented") {
-		t.Errorf("expected error message to name the unavailability; got: %v", err)
+	wantMsg := `transition "AutoClose" in state "S1" is scheduled and fires automatically; it is not manually fireable`
+	if err.Error() != wantMsg+`: transition not found` {
+		t.Errorf("expected error message %q; got: %v", wantMsg, err)
 	}
 	if entity.Meta.State != "S1" {
 		t.Errorf("expected entity to stay in source state S1; got %q", entity.Meta.State)

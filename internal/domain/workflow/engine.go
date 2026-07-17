@@ -32,17 +32,49 @@ var defaultWorkflowJSON []byte
 // ErrTransitionNotFound is returned by ManualTransition (and surfaces from
 // Execute) when the requested transition name is absent from the entity's
 // current state — either because no such transition exists, it is disabled,
-// or it is scheduled and the timer runtime is not yet implemented. Callers
-// can discriminate this case from other engine failures via
-// errors.Is(err, ErrTransitionNotFound).
+// or it is scheduled and therefore not manually fireable (it fires
+// automatically via the timer runtime). Callers can discriminate this case
+// from other engine failures via errors.Is(err, ErrTransitionNotFound).
 var ErrTransitionNotFound = errors.New("transition not found")
 
-// scheduledNotYetImplementedReason is the human-readable cause emitted by
-// both the audit event Details and the wrapped error message when an explicit
-// fire of a scheduled transition is rejected. Extracted as a const so the
-// rewording required when the timer runtime ships only has to happen in one
-// place.
-const scheduledNotYetImplementedReason = "scheduled transitions are not yet implemented"
+// ErrCriterionNotMatched is the sentinel FireScheduledTransition uses to
+// distinguish "the transition's criterion evaluated to false" (Declined —
+// terminal, one-shot, no retry) from every other fireTransition failure
+// (criterion-evaluation error, processor failure — both retried on the next
+// scan). errors.Is(err, ErrCriterionNotMatched) reports true for the error
+// fireTransition returns from either of its criterion-not-matched branches.
+//
+// fireTransition cannot wrap with a plain %w here: attemptTransition's tests
+// assert the criterion-not-matched message byte-for-byte
+// (`transition %q criterion not matched: %s` / `transition %q criterion not
+// matched`), and %w appends the sentinel's own "criterion not matched" text,
+// which would change that message. criterionNotMatchedError instead carries
+// the exact pre-existing text in Error() while still satisfying errors.Is
+// via a custom Is method.
+var ErrCriterionNotMatched = errors.New("criterion not matched")
+
+// criterionNotMatchedError preserves fireTransition's existing
+// criterion-not-matched error text exactly while satisfying
+// errors.Is(err, ErrCriterionNotMatched).
+type criterionNotMatchedError struct {
+	msg string
+}
+
+func (e *criterionNotMatchedError) Error() string { return e.msg }
+
+// Is reports whether target is ErrCriterionNotMatched, so callers can use
+// errors.Is instead of a type assertion.
+func (e *criterionNotMatchedError) Is(target error) bool {
+	return target == ErrCriterionNotMatched
+}
+
+// scheduledReason is the human-readable cause emitted by both the audit
+// event Details and the wrapped error message when an explicit fire of a
+// scheduled transition is rejected: a scheduled transition fires
+// automatically via the timer runtime and is never manually fireable by
+// name. Extracted as a const so the two call sites (audit Details, wrapped
+// error) stay in sync.
+const scheduledReason = "scheduled and fires automatically; it is not manually fireable"
 
 // maxCascadeDepth is an absolute safety net for total cascade steps.
 const maxCascadeDepth = 100
@@ -111,11 +143,21 @@ type Engine struct {
 	extProc          contract.ExternalProcessingService
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
+	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
+	// and for FireScheduledTransition's lateness/grace-band math and the
+	// scheduler's scan loop. Defaults to time.Now; overridden via
+	// WithScheduledClock for deterministic tests.
+	clock func() time.Time
+	// expiryGraceMs is the margin (ms) above a scheduled transition's
+	// TimeoutMs that FireScheduledTransition tolerates before expiring a
+	// late task instead of leaving it for the next scan (design §5.5).
+	// Defaults to defaultExpiryGraceMs; overridden via WithExpiryGrace.
+	expiryGraceMs int64
 }
 
 // NewEngine creates a new workflow engine.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -147,6 +189,26 @@ func WithMaxStateVisits(n int) EngineOption {
 			e.maxStateVisits = n
 		}
 	}
+}
+
+// WithScheduledClock overrides the engine's clock, used for
+// reconcileScheduledTasks' scheduledTime/armedAt computation and, later, by
+// FireScheduledTransition and the scan-loop scheduler. Defaults to
+// time.Now; tests inject a deterministic clock instead.
+func WithScheduledClock(clock func() time.Time) EngineOption {
+	return func(e *Engine) {
+		if clock != nil {
+			e.clock = clock
+		}
+	}
+}
+
+// now returns the engine's current time per its configured clock.
+func (e *Engine) now() time.Time {
+	if e.clock != nil {
+		return e.clock()
+	}
+	return time.Now()
 }
 
 // Execute runs the workflow engine for entity creation. It selects the matching
@@ -222,6 +284,14 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	currentTxID = nTxID
 	if err != nil {
 		return nil, err
+	}
+
+	// Arm/cancel the settled state's scheduled tasks. Runs after the cascade
+	// settles, using the FINAL ctx/txID — the write joins whatever
+	// transaction currentCtx carries, atomic with the entity write it just
+	// cascaded into.
+	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, currentTxID, auditStore, ""); err != nil {
+		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
 	// Record FINISHED. Recorded via currentCtx so it lands in whichever segment
@@ -312,6 +382,12 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	currentCtx, currentTxID, err = e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
+	// treatment as Execute, atomic with the entity write.
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
+		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
@@ -405,6 +481,12 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	currentCtx, currentTxID, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
+	// treatment as Execute/ManualTransition, atomic with the entity write.
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
+		return nil, fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
 	}
 
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
@@ -522,12 +604,30 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 	if transition.Schedule != nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound,
-			fmt.Sprintf("Transition %q is scheduled; %s",
-				transitionName, scheduledNotYetImplementedReason), nil)
+			fmt.Sprintf("Transition %q is %s", transitionName, scheduledReason), nil)
 		return ctx, txID, fmt.Errorf(
-			"transition %q in state %q is scheduled; %s: %w",
-			transitionName, entity.Meta.State, scheduledNotYetImplementedReason, ErrTransitionNotFound)
+			"transition %q in state %q is %s: %w",
+			transitionName, entity.Meta.State, scheduledReason, ErrTransitionNotFound)
 	}
+
+	newCtx, newTxID, _, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
+	return newCtx, newTxID, err
+}
+
+// fireTransition runs the transition *mechanism* for an already-resolved
+// transition: criterion evaluation, processor execution, and the audited
+// state advance. It applies no policy — callers are responsible for
+// rejecting disabled or scheduled transitions before invoking it, so a
+// later scheduled-transition firing path can reuse the mechanism without
+// going through attemptTransition's manual/scheduled reject policy.
+//
+// matched reports whether the transition actually fired (criterion matched
+// and the state advanced). It is false whenever the criterion evaluated to
+// false or processor execution failed; in both cases entity.Meta.State is
+// left unchanged and err carries the same error attemptTransition has
+// always returned in that case.
+func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, bool, error) {
+	transitionName := transition.Name
 
 	// Evaluate transition criterion.
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
@@ -535,7 +635,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
-			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
+			return ctx, txID, false, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
 		if !matched {
 			external := reason != ""
@@ -552,9 +652,9 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 					"reason":       reason,
 				})
 			if external {
-				return ctx, txID, fmt.Errorf("transition %q criterion not matched: %s", transitionName, reason)
+				return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
 			}
-			return ctx, txID, fmt.Errorf("transition %q criterion not matched", transitionName)
+			return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
 		}
 	}
 
@@ -564,7 +664,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
 			map[string]any{"success": false})
-		return newCtx, newTxID, err
+		return newCtx, newTxID, false, err
 	}
 
 	// Record transition and move state. The audit event uses the cascade-entry
@@ -575,7 +675,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
 	entity.Meta.State = transition.Next
 
-	return newCtx, newTxID, nil
+	return newCtx, newTxID, true, nil
 }
 
 // cascadeAutomated loops through automated transitions until a stable state

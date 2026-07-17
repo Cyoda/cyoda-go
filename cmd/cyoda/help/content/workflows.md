@@ -246,21 +246,64 @@ automatically at `scheduledTime = stateEntryTime + delayMs`. The
 - No further rule on `timeoutMs` beyond `>= 0` (enforced at the DTO
   boundary).
 
-**Engine behaviour (runtime not yet implemented).** The scheduler
-that arms and fires scheduled transitions is not yet implemented.
-Two guards govern behaviour until it ships:
+**Engine behaviour.** A scheduled transition fires automatically
+`delayMs` after the entity enters the transition's source state — a
+background scheduler arms a timer on entry and fires it when due,
+independently of cascade evaluation and independently of any other
+API call touching the entity.
 
-- During automated cascade evaluation, scheduled transitions are
-  silently skipped — they are never selected for immediate firing.
-  Other automated/manual transitions out of the same state fire
-  normally. An entity whose only exit is scheduled rests in its
-  current state.
-- Explicitly firing a scheduled transition by name returns HTTP 400
-  `TRANSITION_NOT_FOUND` with the message `transition "X" in state
-  "Y" is scheduled; scheduled transitions are not yet implemented`.
-  Same code returned when a transition is `disabled: true` — same
-  semantic: "the transition exists but is not currently dispatchable
-  from the caller's POV." The entity remains in the source state.
+- **Firing.** When the timer is due, the engine re-evaluates the
+  transition's criterion exactly **once**. A `true` (or absent)
+  criterion fires the transition normally (processors run, state
+  advances, `TRANSITION_MAKE` is recorded). A `false` criterion
+  **declines** the transition — the entity stays in its current
+  state and the timer is **not** retried (`TRANSITION_NOT_MATCH_CRITERION`).
+  See "One-shot vs. polling" below for how to model a retry.
+- **Lateness (`timeoutMs`).** `timeoutMs` bounds how late the
+  scheduler may pick up a due timer before giving up: if the timer
+  is picked up more than `timeoutMs` past its scheduled time, it is
+  **dropped** without evaluating the criterion (`Expired`) — the
+  transition never fires and the entity stays put. Absent `timeoutMs`
+  means no upper bound: the timer fires whenever it is eventually
+  picked up.
+- **Settled-interval reset.** Any write to the entity that leaves it
+  in the same state — including an ordinary in-place data update or a
+  self-loop — **resets the timer** to `delayMs` from that write. An
+  entity written more often than its `delayMs` interval never reaches
+  the scheduled fire. Authors relying on "escalate N after entry"
+  semantics should account for this: routine touch-writes on a busy
+  entity postpone escalation indefinitely.
+- **Explicitly firing a scheduled transition by name still returns**
+  HTTP 400 `TRANSITION_NOT_FOUND`, with the message `transition "X"
+  in state "Y" is scheduled and fires automatically; it is not
+  manually fireable`. Same code returned when a transition is
+  `disabled: true` — same semantic: "the transition exists but is not
+  currently dispatchable from the caller's POV." The entity remains
+  in the source state. To allow early firing, give the state an
+  ordinary manual transition alongside the scheduled one.
+- **Audit trail.** Arming, firing, expiry, and cancellation (the
+  entity leaving the source state before the timer fires) each emit a
+  dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`
+  (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`,
+  `SCHEDULED_TRANSITION_CANCEL`. A loopback that re-arms the same state
+  emits only `ARM`, not `CANCEL`.
+
+**One-shot vs. polling.** The criterion is evaluated once per fire —
+there is no built-in retry-until-true. Three shapes cover the common
+cases:
+
+- **Unconditional scheduled cycle** (`S1 →scheduled→ S2 →scheduled→
+  S1`, no criteria) — an intentional recurring heartbeat: it fires
+  every `delayMs`, forever, for every entity in the cycle. Requires
+  `allowCycles: true` at import (below).
+- **Conditional scheduled transition** (a criterion on the scheduled
+  transition) — a one-shot deadline gate: "at the deadline, fire iff
+  the condition holds, else abandon." A `false` criterion is a
+  deliberate Decline, not a retry.
+- **Poll-until-condition** — model it as an *unconditional* scheduled
+  tick into a state whose **ordinary** (non-scheduled) transitions
+  carry the condition and exit when it holds. The retry loop lives in
+  normal workflow structure, not in the timer.
 
 **Importing cyclic scheduled workflows.** A canonical scheduled-
 transition use case is a polling pattern such as `S1 →scheduled→ S2

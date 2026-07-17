@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -74,5 +75,81 @@ func TestDefaultConfig_OIDCEnvOverrides(t *testing.T) {
 	}
 	if cfg.IAM.OIDC.DefaultRolesClaim != "cognito:groups" {
 		t.Errorf("DefaultRolesClaim = %q, want cognito:groups", cfg.IAM.OIDC.DefaultRolesClaim)
+	}
+}
+
+// TestDefaultConfig_Scheduler asserts the seven CYODA_SCHEDULER_* defaults
+// (design doc §9 / plan Task D4) under an empty environment.
+func TestDefaultConfig_Scheduler(t *testing.T) {
+	for _, v := range []string{
+		"CYODA_SCHEDULER_ENABLED",
+		"CYODA_SCHEDULER_SCAN_INTERVAL",
+		"CYODA_SCHEDULER_BATCH_SIZE",
+		"CYODA_SCHEDULER_DISTRIBUTION",
+		"CYODA_SCHEDULER_COORDINATOR",
+		"CYODA_SCHEDULER_REDISPATCH_BACKOFF",
+		"CYODA_SCHEDULER_EXPIRY_GRACE",
+	} {
+		// t.Setenv registers test-scoped restoration; os.Unsetenv then
+		// actually removes the var for this test body — envString returns
+		// "" (not its fallback) for a var that is set-but-empty, so a plain
+		// t.Setenv(v, "") would defeat the Distribution/Coordinator defaults.
+		t.Setenv(v, "")
+		os.Unsetenv(v)
+	}
+
+	c := DefaultConfig()
+	if !c.Scheduler.Enabled {
+		t.Error("Scheduler.Enabled default should be true")
+	}
+	if c.Scheduler.ScanInterval != time.Second {
+		t.Errorf("Scheduler.ScanInterval = %v, want 1s", c.Scheduler.ScanInterval)
+	}
+	if c.Scheduler.BatchSize != 100 {
+		t.Errorf("Scheduler.BatchSize = %d, want 100", c.Scheduler.BatchSize)
+	}
+	if c.Scheduler.Distribution != "round-robin" {
+		t.Errorf("Scheduler.Distribution = %q, want round-robin", c.Scheduler.Distribution)
+	}
+	if c.Scheduler.Coordinator != "lowest-node-id" {
+		t.Errorf("Scheduler.Coordinator = %q, want lowest-node-id", c.Scheduler.Coordinator)
+	}
+	if c.Scheduler.RedispatchBackoff != 30*time.Second {
+		t.Errorf("Scheduler.RedispatchBackoff = %v, want 30s", c.Scheduler.RedispatchBackoff)
+	}
+	if c.Scheduler.ExpiryGrace != 100*time.Millisecond {
+		t.Errorf("Scheduler.ExpiryGrace = %v, want 100ms", c.Scheduler.ExpiryGrace)
+	}
+}
+
+// TestDefaultConfig_SchedulerEnvOverrides confirms each var actually binds
+// through envBool/envDuration/envInt/envString rather than being hardcoded.
+func TestDefaultConfig_SchedulerEnvOverrides(t *testing.T) {
+	t.Setenv("CYODA_SCHEDULER_ENABLED", "false")
+	t.Setenv("CYODA_SCHEDULER_SCAN_INTERVAL", "2s")
+	t.Setenv("CYODA_SCHEDULER_BATCH_SIZE", "50")
+	t.Setenv("CYODA_SCHEDULER_DISTRIBUTION", "self")
+	t.Setenv("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id")
+	t.Setenv("CYODA_SCHEDULER_REDISPATCH_BACKOFF", "1m")
+	t.Setenv("CYODA_SCHEDULER_EXPIRY_GRACE", "250ms")
+
+	c := DefaultConfig()
+	if c.Scheduler.Enabled {
+		t.Error("Scheduler.Enabled override failed")
+	}
+	if c.Scheduler.ScanInterval != 2*time.Second {
+		t.Errorf("Scheduler.ScanInterval = %v, want 2s", c.Scheduler.ScanInterval)
+	}
+	if c.Scheduler.BatchSize != 50 {
+		t.Errorf("Scheduler.BatchSize = %d, want 50", c.Scheduler.BatchSize)
+	}
+	if c.Scheduler.Distribution != "self" {
+		t.Errorf("Scheduler.Distribution = %q, want self", c.Scheduler.Distribution)
+	}
+	if c.Scheduler.RedispatchBackoff != time.Minute {
+		t.Errorf("Scheduler.RedispatchBackoff = %v, want 1m", c.Scheduler.RedispatchBackoff)
+	}
+	if c.Scheduler.ExpiryGrace != 250*time.Millisecond {
+		t.Errorf("Scheduler.ExpiryGrace = %v, want 250ms", c.Scheduler.ExpiryGrace)
 	}
 }

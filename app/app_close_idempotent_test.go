@@ -35,6 +35,9 @@ func (f *countingStoreFactory) StateMachineAuditStore(context.Context) (spi.Stat
 func (f *countingStoreFactory) AsyncSearchStore(context.Context) (spi.AsyncSearchStore, error) {
 	return nil, nil
 }
+func (f *countingStoreFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, nil
+}
 func (f *countingStoreFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }

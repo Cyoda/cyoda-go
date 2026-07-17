@@ -6,6 +6,29 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Scheduled state transitions now fire automatically.** A transition
+  carrying `schedule: {delayMs, timeoutMs}` fires `delayMs` after the entity
+  enters its source state, via a durable per-backend `ScheduledTask` store
+  (memory/sqlite/postgres) armed and cancelled atomically with the entity
+  write. A cluster coordinator (lowest-live-node-ID, pluggable) scans due
+  tasks and distributes them (round-robin, pluggable) to a fire-and-forget
+  peer RPC; the firing node re-reads the task and entity as a guard before
+  acting, so a stale or superseded task is a silent no-op. The transition's
+  criterion is evaluated **once** at fire time — `false` declines the
+  transition (the entity stays put, not retried); a lateness grace band
+  separates expiry (`timeoutMs` exceeded, dropped unfired) from firing so
+  clock skew across nodes cannot produce a contradictory expire-and-fire.
+  Any entity write that leaves the entity in the same state (including a
+  routine data update or self-loop) resets the timer. Explicitly firing a
+  scheduled transition by name still returns `400 TRANSITION_NOT_FOUND`
+  (reworded: "is scheduled and fires automatically; it is not manually
+  fireable"). New audit events: `SCHEDULED_TRANSITION_ARM`/`FIRE`/`EXPIRE`/`CANCEL`.
+  New env vars: `CYODA_SCHEDULER_ENABLED`, `CYODA_SCHEDULER_SCAN_INTERVAL`,
+  `CYODA_SCHEDULER_BATCH_SIZE`, `CYODA_SCHEDULER_DISTRIBUTION`,
+  `CYODA_SCHEDULER_COORDINATOR`, `CYODA_SCHEDULER_REDISPATCH_BACKOFF`,
+  `CYODA_SCHEDULER_EXPIRY_GRACE`. No new error codes.
+  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+
 - **Criterion stoppage reason** — a criteria compute node's `EntityCriteriaCalculationResponse`
   may now carry an optional `reason` string on `matches: false`, explaining why a passage was
   blocked. A manual explicit transition rejected by its criterion appends the reason to the

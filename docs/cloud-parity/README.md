@@ -24,3 +24,5 @@ Cloud needs to adopt.
 | `search-sort.md` | Search result sorting — HTTP `sort` grammar, gRPC `orderBy`, canonical ordering semantics |
 | `processor-criteria-annotations.md` | Processor `annotations` + workflow/transition `criterionAnnotations`, well-known renderer keys, schema 1.1 → 1.2 |
 | `nested-join-tx-serialisation.md` | Per-tx gate must release across external dispatch so depth-2+ nested joined cascades commit atomically instead of deadlocking |
+| `criterion-stoppage-reason.md` | Criteria `reason` field: 400-response delivery + durable audit `data.reason` on automated/skip paths |
+| `scheduled-transitions.md` | Scheduled-transition runtime: arm/cancel atomicity, one-shot criterion, grace-band expiry, explicit-fire reject, audit events, settled-interval reset |

@@ -32,6 +32,7 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 | `cyoda-go` | Root `go.mod` pins | In-tree plugin go.mods pin | SPI surface added in this release |
 |---|---|---|---|
+| **`v0.8.3`** _(planned)_ | `cyoda-go-spi v0.8.3` | `cyoda-go-spi v0.8.3` | Scheduled-transition runtime: `ScheduledTask` type, `ScheduledTaskStore` interface (durable per-backend task store — `Upsert`/`ScanDue`/`MarkRedispatch`/`Get`/`Delete`/`ReconcileForEntity`), and `SCHEDULED_TRANSITION_ARM`/`FIRE`/`EXPIRE`/`CANCEL` `StateMachineEventType` constants. |
 | **`v0.8.2`** | `cyoda-go-spi v0.8.2` | `cyoda-go-spi v0.8.2` | Composite-unique-key support: `CompositeUniqueKeyCapable` optional interface, `UniqueKey`, `UniqueClaim` types, `WithUniqueKeys`/`UniqueKeysFromContext` context helpers; search-sort ordering: `OrderKind` enum (`OrderText`, `OrderNumeric`, `OrderBool`, `OrderTemporal`) + `OrderSpec.Kind OrderKind` field; client-owned annotations extended to processors and criteria: `ProcessorDefinition.Annotations`, `WorkflowDefinition.CriterionAnnotations`, `TransitionDefinition.CriterionAnnotations` (workflow schema 1.1 → 1.2, dual-shape). Binary-only additions: compute-node callback tx-join (token minted per dispatch, `cyodatxtoken` CloudEvent attribute, `Join`-not-`Begin` semantics on callback, cross-node routing via HTTP proxy / gRPC B→A forward); new env vars `CYODA_TX_TOKEN_TTL`, `CYODA_GRPC_NODE_ADDR`, `CYODA_COMPUTE_HTTP_BASE`. |
 | **`v0.8.1`** | `cyoda-go-spi v0.8.1` | `cyoda-go-spi v0.8.1` | Transaction-state sentinel hierarchy: `ErrTxNotFound`, `ErrSavepointNotFound`, `ErrTxTerminated`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxCommitInProgress`, `ErrTxTenantMismatch`; grouped-stats optional capabilities: `Iterable` (`Iterate`, `Iterator`, `IterateOptions`, `Filter`) and `GroupedAggregator` (`GroupedAggregate`, `GroupedAggregationOptions`, `ErrAggregationNotPushdownable`); scheduled-transition shape: `TransitionDefinition.Schedule *TransitionSchedule` (`DelayMs`, `TimeoutMs *int64`); async-result shape: `ProcessorConfig.AsyncResult *bool`, `ProcessorConfig.CrossoverToAsyncMs *int64`; client-owned annotations: `Annotations json.RawMessage` on the workflow, state, and transition definitions |
 | **`v0.7.1`** | `cyoda-go-spi v0.7.1` | `cyoda-go-spi v0.7.1` | — (pin-sync correction; no new SPI surface) |
@@ -58,6 +59,10 @@ In practice, today: **all SPI versions `v0.5.0` … `v0.8.1` are mutually source
 ### Migration window
 
 cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugins are using. Consumers compose at runtime — the active plugin's pinned SPI version determines which SPI surface is actually exercised, and unused additions are inert. There is no requirement that the binary's SPI pin and the plugin's SPI pin match exactly.
+
+### v0.8.3 milestone — SPI pseudo-version pin
+
+During the v0.8.3 development milestone the root `go.mod` and every in-tree plugin submodule pin a pseudo-version of `cyoda-go-spi` against the `feat/scheduled-task-store` branch HEAD (currently `v0.8.3-0.20260716211908-9e6100cc6e9b`) while the `ScheduledTaskStore` surface lands. The final pin bump to the real `cyoda-go-spi v0.8.3` tag happens at end of milestone, per the coordinated-release procedure in [`MAINTAINING.md`](./MAINTAINING.md), not per-PR.
 
 ### Why there is no `v0.8.0` (SPI or binary)
 

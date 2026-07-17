@@ -44,6 +44,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -67,6 +68,7 @@ type App struct {
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	txLifecycle        *lifecycle.Manager
+	scheduler          *scheduler.Service
 	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
 	grpcStopOnce       sync.Once
@@ -514,9 +516,15 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
+	// schedClock is shared by the engine's scheduled-transition arm/fire math
+	// (reconcileScheduledTasks, FireScheduledTransition) and the scheduler
+	// scan loop below, so both sides of the runtime agree on "now".
+	schedClock := scheduler.NewRealClock()
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),
-		workflow.WithMaxStateVisits(cfg.MaxStateVisits))
+		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
+		workflow.WithScheduledClock(schedClock.Now),
+		workflow.WithExpiryGrace(cfg.Scheduler.ExpiryGrace))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -528,6 +536,62 @@ func New(cfg Config) *App {
 			}
 		})
 	}
+
+	// Scheduled-transition scan loop (Task D4). Constructed and started
+	// unconditionally — cfg.Scheduler.Enabled gates the tick body itself, so
+	// the Service always exists and Shutdown always has something to Stop.
+	schedEngine := cluster.NewSchedulerEngine(a.workflowEngine)
+	var schedulerRPCClient *cluster.SchedulerRPCClient
+	if cfg.Cluster.Enabled {
+		schedulerRPCClient = cluster.NewSchedulerRPCClient(peerAuth, cfg.Cluster.DispatchForwardTimeout)
+		if cfg.Cluster.DispatchAllowLoopback {
+			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
+			// Never set in production (SSRF guard stays active by default).
+			schedulerRPCClient = schedulerRPCClient.AllowLoopbackForTesting()
+		}
+	}
+	clusterExecutor := cluster.NewClusterExecutor(schedEngine, a.selfNodeID, a.nodeRegistry, schedulerRPCClient)
+
+	// Self is forced when cluster mode is off (there are no peers to
+	// distribute to — a.nodeRegistry is a single-member registry.NewLocal
+	// in that case) or when the operator explicitly opted out of
+	// round-robin distribution.
+	var distStrategy scheduler.DistributionStrategy
+	switch {
+	case !cfg.Cluster.Enabled || cfg.Scheduler.Distribution == "self":
+		distStrategy = scheduler.Self{}
+	default:
+		if cfg.Scheduler.Distribution != "round-robin" {
+			slog.Warn("unknown CYODA_SCHEDULER_DISTRIBUTION, defaulting to round-robin",
+				"pkg", "app", "value", cfg.Scheduler.Distribution)
+		}
+		distStrategy = scheduler.NewRoundRobin()
+	}
+
+	var coordStrategy scheduler.CoordinatorStrategy = scheduler.LowestLiveNodeID{}
+	if cfg.Scheduler.Coordinator != "lowest-node-id" {
+		slog.Warn("unknown CYODA_SCHEDULER_COORDINATOR, defaulting to lowest-node-id",
+			"pkg", "app", "value", cfg.Scheduler.Coordinator)
+	}
+
+	a.scheduler = scheduler.NewService(
+		scheduler.Config{
+			Enabled:           cfg.Scheduler.Enabled,
+			ScanInterval:      cfg.Scheduler.ScanInterval,
+			RedispatchBackoff: cfg.Scheduler.RedispatchBackoff,
+			BatchSize:         cfg.Scheduler.BatchSize,
+		},
+		scheduler.Deps{
+			Store:        a.storeFactory,
+			Registry:     a.nodeRegistry,
+			Coordinator:  coordStrategy,
+			Distribution: distStrategy,
+			Clock:        schedClock,
+			Executor:     clusterExecutor,
+			SelfID:       a.selfNodeID,
+		},
+	)
+	a.scheduler.Start()
 
 	// Domain handlers
 	a.txGate = txgate.New()
@@ -665,6 +729,7 @@ func New(cfg Config) *App {
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(outerMux)
+			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
 		}
 		a.handler = outerMux
 	} else {
@@ -676,6 +741,7 @@ func New(cfg Config) *App {
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(mux)
+			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
 		}
 		a.handler = mux
 	}
@@ -804,6 +870,9 @@ func (a *App) Shutdown() {
 	}
 	if a.stopReaper != nil {
 		close(a.stopReaper)
+	}
+	if a.scheduler != nil {
+		a.scheduler.Stop()
 	}
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {

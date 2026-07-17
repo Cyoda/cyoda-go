@@ -28,6 +28,13 @@ type savepointSnapshot struct {
 	readSet  map[string]bool
 	writeSet map[string]bool
 	deletes  map[string]bool
+
+	// scheduledTaskOpsLen is len(TransactionManager.scheduledTaskOps[txID])
+	// at the moment this savepoint was taken. scheduledTaskOps is append-only
+	// (see stageScheduledTaskOp), so — unlike the maps above, which are
+	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
+	// truncating back to this recorded length instead of snapshotting it.
+	scheduledTaskOpsLen int
 }
 
 // TransactionManager implements spi.TransactionManager using Snapshot Isolation
@@ -50,6 +57,20 @@ type TransactionManager struct {
 	// different key set in its context. Protected by mu. Cleaned up after commit
 	// or rollback (no leak).
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
+
+	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
+	// transaction is open (mirrors txUniqueKeys's staging pattern — it
+	// exists because *spi.TransactionState is a shared cyoda-go-spi type
+	// plugins may not add fields to). Applied to factory.scheduledTasks
+	// inside Commit's entityMu critical section, atomically with the entity
+	// buffer flush; discarded, never applied, on Rollback and on every
+	// mid-Commit abort path (FCW conflict, claim violation). Also
+	// savepoint-scoped like tx.Buffer/ReadSet/WriteSet/Deletes: Savepoint
+	// records the current length and RollbackToSavepoint truncates back to
+	// it, so an op staged after a savepoint that is then rolled back is
+	// discarded too, never orphaned from the entity work it must be atomic
+	// with. Protected by mu. Cleaned up after commit or rollback (no leak).
+	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
 }
 
 // Verify interface compliance at compile time.
@@ -58,14 +79,15 @@ var _ spi.TransactionManager = (*TransactionManager)(nil)
 // NewTransactionManager creates and registers a TransactionManager on the StoreFactory.
 func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *TransactionManager {
 	tm := &TransactionManager{
-		factory:      f,
-		uuids:        uuids,
-		active:       make(map[string]*spi.TransactionState),
-		committedLog: nil,
-		committing:   make(map[string]bool),
-		submitTimes:  make(map[string]time.Time),
-		savepoints:   make(map[string]map[string]savepointSnapshot),
-		txUniqueKeys: make(map[string]map[string][]spi.UniqueKey),
+		factory:          f,
+		uuids:            uuids,
+		active:           make(map[string]*spi.TransactionState),
+		committedLog:     nil,
+		committing:       make(map[string]bool),
+		submitTimes:      make(map[string]time.Time),
+		savepoints:       make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
+		scheduledTaskOps: make(map[string][]scheduledTaskOp),
 	}
 	f.txManager = tm
 	return tm
@@ -81,6 +103,17 @@ func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.
 		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
 	}
 	m.txUniqueKeys[txID][entityID] = keys
+}
+
+// stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
+// Commit applies the accumulated ops inside its entityMu critical section
+// (atomically with the entity buffer flush); every abort path — FCW
+// conflict, claim violation, and Rollback — discards them unapplied.
+// Protected by mu.
+func (m *TransactionManager) stageScheduledTaskOp(txID string, op scheduledTaskOp) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
 }
 
 // GetTransactionManager returns the registered TransactionManager, or nil.
@@ -207,9 +240,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		defer m.factory.entityMu.Unlock()
 
 		// 3. Conflict detection: check committed log for overlapping write sets.
-		// Also snapshot per-entity unique keys captured at Save time so that
-		// step 3.5 can read them without re-acquiring m.mu.
+		// Also snapshot per-entity unique keys and staged scheduled-task ops
+		// captured at Save/Upsert/Delete time so that step 3.5 and step 4.5
+		// can read them without re-acquiring m.mu.
 		var capturedKeys map[string][]spi.UniqueKey
+		var capturedScheduledTaskOps []scheduledTaskOp
 		if err := func() error {
 			m.mu.Lock()
 			defer m.mu.Unlock()
@@ -221,12 +256,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 							delete(m.active, txID)
 							delete(m.savepoints, txID)
 							delete(m.txUniqueKeys, txID)
+							delete(m.scheduledTaskOps, txID)
 							return spi.ErrConflict
 						}
 					}
 				}
 			}
-			capturedKeys = m.txUniqueKeys[txID] // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
+			capturedKeys = m.txUniqueKeys[txID]                 // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
+			capturedScheduledTaskOps = m.scheduledTaskOps[txID] // safe: tx.OpMu.Lock() prevents new stageScheduledTaskOp
 			return nil
 		}(); err != nil {
 			return err
@@ -247,6 +284,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				delete(m.active, txID)
 				delete(m.savepoints, txID)
 				delete(m.txUniqueKeys, txID)
+				delete(m.scheduledTaskOps, txID)
 			}()
 			return err
 		}
@@ -375,6 +413,15 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			})
 		}
 
+		// 5.5. Apply staged ScheduledTaskStore ops. Still inside the entityMu
+		// critical section acquired at the top of this func — this is what
+		// makes the scheduled-task arm/cancel commit atomically with the
+		// entity write (and, symmetrically, why every abort path above
+		// discards capturedScheduledTaskOps unapplied).
+		for _, op := range capturedScheduledTaskOps {
+			applyScheduledTaskOp(m.factory.scheduledTasks, op)
+		}
+
 		// 6. Record in committed log, submit times, and prune.
 		func() {
 			m.mu.Lock()
@@ -397,6 +444,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.committing, txID)
 			delete(m.savepoints, txID)
 			delete(m.txUniqueKeys, txID)
+			delete(m.scheduledTaskOps, txID)
 			var oldest time.Time
 			for _, activeTx := range m.active {
 				if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -452,6 +500,7 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
 	delete(m.txUniqueKeys, txID)
+	delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
 	m.mu.Unlock()
 	return nil
 }
@@ -482,7 +531,8 @@ func (m *TransactionManager) CommittedLogLen() int {
 }
 
 // Savepoint creates a named savepoint within the given transaction by
-// deep-copying the transaction's buffer maps.
+// deep-copying the transaction's buffer maps and recording the current
+// length of the transaction's staged scheduledTaskOps.
 //
 // Locking discipline (issue #199): Savepoint reads tx.Buffer / tx.ReadSet /
 // tx.WriteSet / tx.Deletes — the same fields Commit's flush phase iterates
@@ -490,7 +540,9 @@ func (m *TransactionManager) CommittedLogLen() int {
 // mutate under tx.OpMu.RLock. Savepoint must therefore hold tx.OpMu.RLock
 // across those reads. The lock interleaving with m.mu follows Commit's
 // pattern: drop m.mu before taking tx.OpMu, re-take m.mu briefly for the
-// m.savepoints update.
+// m.savepoints update — the same m.mu section also reads
+// len(m.scheduledTaskOps[txID]), since that map is m.mu-protected, not
+// tx.OpMu-protected.
 //
 // Tenant isolation (issue #199 PR-A review I-1): rejects callers whose
 // UserContext tenant does not match the transaction's tenant, mirroring
@@ -552,21 +604,27 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 		m.savepoints[txID] = make(map[string]savepointSnapshot)
 	}
 	m.savepoints[txID][spID] = savepointSnapshot{
-		buffer:   bufCopy,
-		readSet:  readCopy,
-		writeSet: writeCopy,
-		deletes:  delCopy,
+		buffer:              bufCopy,
+		readSet:             readCopy,
+		writeSet:            writeCopy,
+		deletes:             delCopy,
+		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
 	}
 	return spID, nil
 }
 
 // RollbackToSavepoint restores the transaction's buffer maps from the snapshot
-// captured when the savepoint was created, then removes the snapshot.
+// captured when the savepoint was created, truncates the transaction's staged
+// scheduledTaskOps back to the length recorded at that savepoint, then
+// removes the snapshot.
 //
 // Locking discipline (issue #199): RollbackToSavepoint replaces tx.Buffer /
 // tx.ReadSet / tx.WriteSet / tx.Deletes — exclusive against every other
 // tx-path op. Holds tx.OpMu.Lock (write) for the duration of the field
-// replacement. Lock interleaving with m.mu follows Commit's pattern.
+// replacement. Lock interleaving with m.mu follows Commit's pattern. The
+// scheduledTaskOps truncation happens in the same m.mu section as the
+// snapshot lookup, since that map is m.mu-protected (see
+// stageScheduledTaskOp), not tx.OpMu-protected.
 //
 // Tenant isolation (issue #199 PR-A review I-1): rejects cross-tenant
 // callers — RollbackToSavepoint is destructive on tx-state.
@@ -608,6 +666,19 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	tx.ReadSet = snap.readSet
 	tx.WriteSet = snap.writeSet
 	tx.Deletes = snap.deletes
+
+	// Truncate staged scheduled-task ops back to the length recorded at the
+	// savepoint — append-only, so truncation (not replacement) is how it is
+	// "restored". Clamp to the current length defensively: rolling back to a
+	// savepoint ID whose recorded length exceeds what's currently staged
+	// cannot happen via the normal linear-nesting flow (only a stale
+	// savepoint ID from an already-superseded rollback could produce it),
+	// but truncating past slice bounds would panic, and Savepoint's other
+	// restored fields (whole-map replacement) have no equivalent failure
+	// mode to mirror here.
+	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
+		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
+	}
 
 	delete(txSavepoints, savepointID)
 	return nil

@@ -72,6 +72,9 @@ func (f *CachingStoreFactory) StateMachineAuditStore(ctx context.Context) (spi.S
 func (f *CachingStoreFactory) AsyncSearchStore(ctx context.Context) (spi.AsyncSearchStore, error) {
 	return f.inner.AsyncSearchStore(ctx)
 }
+func (f *CachingStoreFactory) ScheduledTaskStore(ctx context.Context) (spi.ScheduledTaskStore, error) {
+	return f.inner.ScheduledTaskStore(ctx)
+}
 func (f *CachingStoreFactory) TransactionManager(ctx context.Context) (spi.TransactionManager, error) {
 	return f.inner.TransactionManager(ctx)
 }
