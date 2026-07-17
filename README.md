@@ -9,6 +9,8 @@
 
 cyoda-go is an EDBMS (Entity Database Management System) — state machine, processors, and full revision history live inside the record, committed atomically. Minimizes the need for sagas, CDC pipelines, and external orchestration.
 
+**Correctness over availability.** When the two conflict, cyoda-go fails closed: an operation that cannot be completed correctly is rejected, never committed partially or with a substituted value. A required dependency being unavailable fails the operation rather than degrading it.
+
 ## Four storage engines, one application contract
 
 Same application code, four operational shapes:
