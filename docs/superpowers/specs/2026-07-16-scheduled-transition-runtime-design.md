@@ -129,8 +129,21 @@ fails on the second attempt). **Terminal audit is delete-gated:** a worker emits
 the terminal event (`Expired`/`Declined`/`Cancelled`) **only if its `Delete`
 actually removed the row** — the delete is atomic per backend, so under a rare
 dual-dispatch exactly one worker "wins" the audit (dedups duplicate Expired
-lines without a claim protocol). `Fired` rides the `TRANSITION_MAKE`, already
-single via the entity CAS.
+lines without a claim protocol). `Fired` rides the `TRANSITION_MAKE`.
+
+> **Accepted edge (E3): `Fired` audit is NOT delete-gated and can duplicate
+> under a transient dual-coordinator on memory/sqlite.** Those backends' audit
+> store writes non-transactionally, so a *losing* coordinator's `recordEvent`
+> lands durably even though its entity/task writes are correctly discarded on the
+> CAS conflict → two `SCHEDULED_TRANSITION_FIRE` lines for one real fire. The
+> **entity state is always exactly-once correct** (CAS guarantees it); only the
+> audit duplicates. Postgres's audit store is tx-scoped (via the context querier)
+> and does not duplicate. This backend divergence is a **pre-existing** property
+> of the non-transactional memory/sqlite audit store, surfaced by the
+> dual-coordinator concurrency test; it is **accepted as a rare cosmetic dup**
+> (state correctness is unaffected) rather than making the shared audit subsystem
+> transactional. The isolated concurrency test therefore asserts exactly-once
+> *state* consistency, not audit-event count (per `.claude/rules/test-coverage.md`).
 
 ---
 
