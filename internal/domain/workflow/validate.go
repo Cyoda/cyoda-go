@@ -338,10 +338,39 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					"workflow %q state %q transition %q: manual and scheduled are mutually exclusive",
 					wf.Name, stateName, tr.Name)
 			}
-			if tr.Schedule != nil && tr.Schedule.DelayMs <= 0 {
-				return fmt.Errorf(
-					"workflow %q state %q transition %q: schedule.delayMs must be > 0 (got %d)",
-					wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
+			if tr.Schedule != nil {
+				hasDelay := tr.Schedule.DelayMs > 0
+				hasFn := tr.Schedule.Function != nil
+				// Exactly one of delayMs or function is required — a static
+				// delay or a Function callout that computes the firing time
+				// per entity. Both-present and neither-present are rejected
+				// alike; the mutual-exclusion is not expressible in the
+				// OpenAPI schema (see TransitionScheduleDto), so it is
+				// enforced here.
+				if hasDelay == hasFn {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: exactly one of schedule.delayMs or schedule.function is required",
+						wf.Name, stateName, tr.Name)
+				}
+				if hasFn {
+					f := tr.Schedule.Function
+					if f.ResultKind != "Schedule" {
+						return fmt.Errorf(
+							`workflow %q state %q transition %q: schedule.function.resultKind must be "Schedule" (got %q)`,
+							wf.Name, stateName, tr.Name, f.ResultKind)
+					}
+					if f.Name == "" || f.CalculationNodesTags == "" {
+						return fmt.Errorf(
+							"workflow %q state %q transition %q: schedule.function requires name and calculationNodesTags",
+							wf.Name, stateName, tr.Name)
+					}
+				}
+				// No separate `else if DelayMs <= 0` branch: once the XOR
+				// check above has passed with hasFn == false, hasDelay must
+				// be true (DelayMs > 0), so a dedicated delayMs<=0 rejection
+				// here would be unreachable. DelayMs <= 0 with no function
+				// is already caught by the XOR check as the "neither
+				// present" shape.
 			}
 
 			for _, p := range tr.Processors {

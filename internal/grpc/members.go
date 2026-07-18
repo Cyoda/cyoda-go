@@ -29,8 +29,16 @@ type ProcessingResponse struct {
 	// Reason is the criteria-response explanation for a matches=false result
 	// (EntityCriteriaCalculationResponse.reason). Empty for processor
 	// responses and for criteria that supply no reason.
-	Reason   string
-	Warnings []string // warnings from processor/criteria, propagated to client
+	Reason string
+	// Result is the function-response result payload (raw JSON object) from
+	// EntityFunctionCalculationResponse.result. Nil/empty for processor and
+	// criteria responses.
+	Result json.RawMessage
+	// ResultKind is the function-response discriminator string from
+	// EntityFunctionCalculationResponse.resultKind. Empty for processor and
+	// criteria responses.
+	ResultKind string
+	Warnings   []string // warnings from processor/criteria, propagated to client
 	// Retryable carries the member-supplied retryable flag from the inbound
 	// CloudEvent error shape (api/grpc/events/types.go: every *EventJsonError
 	// variant declares Retryable *bool). The pointer is nil when the wire
@@ -39,6 +47,12 @@ type ProcessingResponse struct {
 	// loop; the current dispatcher is single-shot and does not consult
 	// this field.
 	Retryable *bool
+	// Disconnected is true when this response was synthesized by
+	// FailAllPending because the member's stream dropped while the request
+	// was in flight, rather than a substantive failure returned by the
+	// member. dispatchCalloutToMember uses this to surface a distinguishable
+	// 503 COMPUTE_MEMBER_DISCONNECTED instead of a generic failure.
+	Disconnected bool
 }
 
 // Member represents a connected calculation member.
@@ -68,9 +82,11 @@ func (m *Member) Send(ce *cepb.CloudEvent) error {
 // wait for the response.
 func (m *Member) TrackRequest(requestID string) chan *ProcessingResponse {
 	ch := make(chan *ProcessingResponse, 1)
-	m.pendingMu.Lock()
-	m.pendingReqs[requestID] = ch
-	m.pendingMu.Unlock()
+	func() {
+		m.pendingMu.Lock()
+		defer m.pendingMu.Unlock()
+		m.pendingReqs[requestID] = ch
+	}()
 	return ch
 }
 
@@ -78,12 +94,15 @@ func (m *Member) TrackRequest(requestID string) chan *ProcessingResponse {
 // removes the entry from the pending map. If the requestID is not found, this
 // is a no-op.
 func (m *Member) CompleteRequest(requestID string, resp *ProcessingResponse) {
-	m.pendingMu.Lock()
-	ch, ok := m.pendingReqs[requestID]
-	if ok {
-		delete(m.pendingReqs, requestID)
-	}
-	m.pendingMu.Unlock()
+	ch, ok := func() (chan *ProcessingResponse, bool) {
+		m.pendingMu.Lock()
+		defer m.pendingMu.Unlock()
+		ch, ok := m.pendingReqs[requestID]
+		if ok {
+			delete(m.pendingReqs, requestID)
+		}
+		return ch, ok
+	}()
 	if ok {
 		ch <- resp
 	}
@@ -92,15 +111,19 @@ func (m *Member) CompleteRequest(requestID string, resp *ProcessingResponse) {
 // FailAllPending sends an error response to every pending request channel and
 // clears the pending map.
 func (m *Member) FailAllPending(errMsg string) {
-	m.pendingMu.Lock()
-	reqs := m.pendingReqs
-	m.pendingReqs = make(map[string]chan *ProcessingResponse)
-	m.pendingMu.Unlock()
+	reqs := func() map[string]chan *ProcessingResponse {
+		m.pendingMu.Lock()
+		defer m.pendingMu.Unlock()
+		reqs := m.pendingReqs
+		m.pendingReqs = make(map[string]chan *ProcessingResponse)
+		return reqs
+	}()
 
 	for _, ch := range reqs {
 		ch <- &ProcessingResponse{
-			Success: false,
-			Error:   errMsg,
+			Success:      false,
+			Error:        errMsg,
+			Disconnected: true,
 		}
 	}
 }

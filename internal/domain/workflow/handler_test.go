@@ -939,6 +939,126 @@ func TestImport_ExplicitActiveNull_DefaultsToTrue(t *testing.T) {
 	}
 }
 
+// TestImport_ScheduleFunction_AttachEntityOmitted_DefaultsToTrue asserts the
+// import→export round trip for schedule.function.attachEntity: the OpenAPI
+// ScheduleFunctionDto documents "Defaults to true" for an omitted
+// attachEntity, but the SPI's ScheduleFunction.AttachEntity is a plain bool
+// (no pointer, matching ProcessorConfig.AttachEntity's wire shape) — so the
+// default has to be resolved at the import decode boundary, same as the
+// Active *bool → bool bridge already done for workflowImportDef.Active.
+func TestImport_ScheduleFunction_AttachEntityOmitted_DefaultsToTrue(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.1",
+				"name": "fn-schedule-flow",
+				"initialState": "NEW",
+				"states": {
+					"NEW": {
+						"transitions": [
+							{
+								"name": "AUTO_CLOSE",
+								"next": "CLOSED",
+								"manual": false,
+								"schedule": {
+									"function": {
+										"name": "computeNextFireTime",
+										"resultKind": "Schedule",
+										"calculationNodesTags": "billing"
+									}
+								}
+							}
+						]
+					},
+					"CLOSED": {
+						"transitions": []
+					}
+				}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(wfs))
+	}
+	tr := wfs[0].States["NEW"].Transitions[0]
+	if tr.Schedule == nil || tr.Schedule.Function == nil {
+		t.Fatalf("expected schedule.function to round-trip, got %+v", tr)
+	}
+	if !tr.Schedule.Function.AttachEntity {
+		t.Errorf("expected omitted attachEntity to default to true, got AttachEntity=false")
+	}
+}
+
+// TestImport_ScheduleFunction_AttachEntityExplicitFalse_Preserved is the
+// companion regression guard: an explicit `false` must NOT be overridden by
+// the default.
+func TestImport_ScheduleFunction_AttachEntityExplicitFalse_Preserved(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.1",
+				"name": "fn-schedule-flow",
+				"initialState": "NEW",
+				"states": {
+					"NEW": {
+						"transitions": [
+							{
+								"name": "AUTO_CLOSE",
+								"next": "CLOSED",
+								"manual": false,
+								"schedule": {
+									"function": {
+										"name": "computeNextFireTime",
+										"resultKind": "Schedule",
+										"calculationNodesTags": "billing",
+										"attachEntity": false
+									}
+								}
+							}
+						]
+					},
+					"CLOSED": {
+						"transitions": []
+					}
+				}
+			}
+		]
+	}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	wfs := readWorkflows(t, doWorkflowExport(t, srv.URL, "Order", 1))
+	tr := wfs[0].States["NEW"].Transitions[0]
+	if tr.Schedule == nil || tr.Schedule.Function == nil {
+		t.Fatalf("expected schedule.function to round-trip, got %+v", tr)
+	}
+	if tr.Schedule.Function.AttachEntity {
+		t.Errorf("expected explicit attachEntity=false to be preserved, got AttachEntity=true")
+	}
+}
+
 func TestImport_EmptyArrayReplace_Rejected(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)

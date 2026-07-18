@@ -3,9 +3,9 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,13 +14,20 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
 // ErrNoMatchingMember is returned when no calculation member is registered for
 // the requested tags. Callers (e.g. ClusterDispatcher) test for this sentinel
 // via errors.Is rather than string matching.
-var ErrNoMatchingMember = errors.New("no matching calculation member")
+//
+// Aliased from contract.ErrNoMatchingMember (the canonical definition lives
+// in the leaf internal/contract package) so error-classification code in
+// internal/domain/entity, which internal/grpc already depends on, can match
+// this sentinel without an import cycle. See contract.ErrNoMatchingMember's
+// doc comment for the full rationale.
+var ErrNoMatchingMember = contract.ErrNoMatchingMember
 
 const defaultResponseTimeoutMs = 30000
 
@@ -64,6 +71,96 @@ func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID string) s
 	return tok
 }
 
+// buildEntityPayload builds the DataPayloadJson attached to a calc request when
+// AttachEntity is set. Shared by every callout shape.
+func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
+	versionInt := 0
+	fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
+	return &events.DataPayloadJson{
+		Type: "JSON",
+		Data: json.RawMessage(entity.Data),
+		Meta: map[string]any{
+			"id": entity.Meta.ID,
+			"modelKey": map[string]any{
+				"name":    entity.Meta.ModelRef.EntityName,
+				"version": versionInt,
+			},
+			"state":          entity.Meta.State,
+			"creationDate":   entity.Meta.CreationDate.Format(time.RFC3339Nano),
+			"lastUpdateTime": entity.Meta.LastModifiedDate.Format(time.RFC3339Nano),
+			"transactionId":  entity.Meta.TransactionID,
+		},
+	}
+}
+
+// dispatchCalloutToMember carries out the transport sequence shared by every
+// calculation callout: attach auth/tx-token to a CloudEvent wrapping req,
+// track the request, send it, and wait for the tracked response or a
+// timeout. Member resolution (FindByTags/ErrNoMatchingMember), request-struct
+// construction, and response parsing stay with the caller — this handles only
+// the wire protocol common to processor and criteria dispatch.
+//
+// label is the callout kind ("processor"/"criteria") and name is the
+// configured processor/criteria name; both flow into client-facing
+// diagnostics (warnings/errors surface in the gRPC warnings array and HTTP
+// body — see .claude/rules/error-handling.md) and server logs, so operators
+// and clients keep name-based correlation.
+func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, ceType string, req any, requestID, txID string, timeoutMs int64, label, name string) (*ProcessingResponse, error) {
+	ce, err := NewCloudEvent(ceType, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build %s cloud event: %w", label, err)
+	}
+	AttachAuthContext(ctx, ce)
+	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
+
+	ceData := ce.GetTextData()
+	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
+
+	ch := member.TrackRequest(requestID)
+
+	if err := member.Send(ce); err != nil {
+		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
+		return nil, fmt.Errorf("failed to send %s request: %w", label, err)
+	}
+
+	if timeoutMs <= 0 {
+		timeoutMs = defaultResponseTimeoutMs
+	}
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+
+	select {
+	case resp := <-ch:
+		// Propagate warnings to request diagnostics, keyed by callout name
+		// so the client sees which processor/criteria warned.
+		if resp != nil {
+			for _, w := range resp.Warnings {
+				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, w))
+			}
+		}
+		if resp != nil && resp.Disconnected {
+			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+			return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
+				fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
+		}
+		if resp == nil || !resp.Success {
+			errMsg := label + " returned failure"
+			if resp != nil && resp.Error != "" {
+				errMsg = resp.Error
+				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, errMsg))
+			}
+			return nil, fmt.Errorf("%s dispatch failed: %s", label, errMsg)
+		}
+		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "success", true)
+		return resp, nil
+	case <-time.After(timeout):
+		slog.Error("dispatch timeout", "pkg", "grpc", "label", label, "name", name, "requestId", requestID, "timeout", timeout)
+		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+			fmt.Sprintf("%s dispatch timed out after %dms", label, timeoutMs)).AsRetryable()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // DispatchProcessor sends an entity processor calculation request to a matching
 // calculation member and waits for the response.
 func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
@@ -98,73 +195,14 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		req.Parameters = processor.Config.Context
 	}
 	if processor.Config.AttachEntity {
-		versionInt := 0
-		fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
-		req.Payload = &events.DataPayloadJson{
-			Type: "JSON",
-			Data: json.RawMessage(entity.Data),
-			Meta: map[string]any{
-				"id": entity.Meta.ID,
-				"modelKey": map[string]any{
-					"name":    entity.Meta.ModelRef.EntityName,
-					"version": versionInt,
-				},
-				"state":          entity.Meta.State,
-				"creationDate":   entity.Meta.CreationDate.Format(time.RFC3339Nano),
-				"lastUpdateTime": entity.Meta.LastModifiedDate.Format(time.RFC3339Nano),
-				"transactionId":  entity.Meta.TransactionID,
-			},
-		}
+		req.Payload = buildEntityPayload(entity)
 	}
 
-	ce, err := NewCloudEvent(EntityProcessorCalculationRequest, req)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, processor.Config.ResponseTimeoutMs, "processor", processor.Name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build processor cloud event: %w", err)
+		return nil, err
 	}
-	AttachAuthContext(ctx, ce)
-	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
-
-	ceData := ce.GetTextData()
-	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
-
-	ch := member.TrackRequest(requestID)
-
-	if err := member.Send(ce); err != nil {
-		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
-		return nil, fmt.Errorf("failed to send processor request: %w", err)
-	}
-
-	timeoutMs := processor.Config.ResponseTimeoutMs
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
-	}
-
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-
-	select {
-	case resp := <-ch:
-		// Propagate warnings from processor to request diagnostics.
-		if resp != nil {
-			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("processor %s: %s", processor.Name, w))
-			}
-		}
-		if resp == nil || !resp.Success {
-			errMsg := "processor returned failure"
-			if resp != nil && resp.Error != "" {
-				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("processor %s: %s", processor.Name, errMsg))
-			}
-			return nil, fmt.Errorf("processor dispatch failed: %s", errMsg)
-		}
-		slog.Info("processor completed", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "requestId", requestID, "success", true)
-		return d.applyProcessorResponse(entity, resp)
-	case <-time.After(timeout):
-		slog.Error("dispatch timeout", "pkg", "grpc", "processor", processor.Name, "requestId", requestID, "timeout", timeout)
-		return nil, fmt.Errorf("processor dispatch timed out after %dms", timeoutMs)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return d.applyProcessorResponse(entity, resp)
 }
 
 // applyProcessorResponse extracts updated entity data from the response payload.
@@ -249,74 +287,57 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		req.Parameters = parsed.Function.Config.Context
 	}
 	if attachEntity {
-		versionInt := 0
-		fmt.Sscanf(entity.Meta.ModelRef.ModelVersion, "%d", &versionInt)
-		req.Payload = &events.DataPayloadJson{
-			Type: "JSON",
-			Data: json.RawMessage(entity.Data),
-			Meta: map[string]any{
-				"id": entity.Meta.ID,
-				"modelKey": map[string]any{
-					"name":    entity.Meta.ModelRef.EntityName,
-					"version": versionInt,
-				},
-				"state":          entity.Meta.State,
-				"creationDate":   entity.Meta.CreationDate.Format(time.RFC3339Nano),
-				"lastUpdateTime": entity.Meta.LastModifiedDate.Format(time.RFC3339Nano),
-				"transactionId":  entity.Meta.TransactionID,
-			},
-		}
+		req.Payload = buildEntityPayload(entity)
 	}
 
-	ce, err := NewCloudEvent(EntityCriteriaCalculationRequest, req)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria", parsed.Function.Name)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to build criteria cloud event: %w", err)
+		return false, "", err
 	}
-	AttachAuthContext(ctx, ce)
-	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
+	if resp.Matches != nil {
+		return *resp.Matches, resp.Reason, nil
+	}
+	return false, resp.Reason, nil
+}
 
-	ceData := ce.GetTextData()
-	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
+// DispatchFunction sends a generic Function calculation request (e.g. a
+// scheduled-transition timing computation) to a matching calculation member
+// and returns its typed result.
+func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
+	uc := spi.MustGetUserContext(ctx)
+	tenantID := uc.Tenant.ID
 
-	ch := member.TrackRequest(requestID)
-
-	if err := member.Send(ce); err != nil {
-		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
-		return false, "", fmt.Errorf("failed to send criteria request: %w", err)
+	member := d.registry.FindByTags(tenantID, fn.CalculationNodesTags)
+	if member == nil {
+		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.CalculationNodesTags, "entityId", entity.Meta.ID)
+		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.CalculationNodesTags)
 	}
 
-	timeoutMs := parsed.Function.Config.ResponseTimeoutMs
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
+	slog.Info("dispatching function", "pkg", "grpc", "memberId", member.ID, "function", fn.Name, "entityId", entity.Meta.ID)
+
+	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
+
+	req := events.EntityFunctionCalculationRequestJson{
+		ID:            requestID,
+		RequestID:     requestID,
+		EntityID:      entity.Meta.ID,
+		FunctionID:    fn.Name,
+		FunctionName:  fn.Name,
+		Workflow:      events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
+		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
+		TransactionID: &txID,
+		Success:       true,
+	}
+	if fn.Context != "" {
+		req.Parameters = fn.Context
+	}
+	if fn.AttachEntity {
+		req.Payload = buildEntityPayload(entity)
 	}
 
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-
-	select {
-	case resp := <-ch:
-		// Propagate warnings from criteria to request diagnostics.
-		if resp != nil {
-			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("criteria %s: %s", parsed.Function.Name, w))
-			}
-		}
-		if resp == nil || !resp.Success {
-			errMsg := "criteria returned failure"
-			if resp != nil && resp.Error != "" {
-				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("criteria %s: %s", parsed.Function.Name, errMsg))
-			}
-			return false, "", fmt.Errorf("criteria dispatch failed: %s", errMsg)
-		}
-		slog.Info("criteria completed", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "requestId", requestID, "success", true)
-		if resp.Matches != nil {
-			return *resp.Matches, resp.Reason, nil
-		}
-		return false, resp.Reason, nil
-	case <-time.After(timeout):
-		slog.Error("dispatch timeout", "pkg", "grpc", "criteria", parsed.Function.Name, "requestId", requestID, "timeout", timeout)
-		return false, "", fmt.Errorf("criteria dispatch timed out after %dms", timeoutMs)
-	case <-ctx.Done():
-		return false, "", ctx.Err()
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityFunctionCalculationRequest, req, requestID, txID, fn.ResponseTimeoutMs, "function", fn.Name)
+	if err != nil {
+		return contract.FunctionResult{}, err
 	}
+	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
 }

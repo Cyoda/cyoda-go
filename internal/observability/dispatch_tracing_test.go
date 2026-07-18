@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -15,6 +16,7 @@ import (
 type fakeDispatcher struct {
 	processorCalled bool
 	criteriaCalled  bool
+	functionCalled  bool
 	returnErr       error
 }
 
@@ -38,6 +40,17 @@ func (f *fakeDispatcher) DispatchCriteria(
 		return false, "", f.returnErr
 	}
 	return true, "", nil
+}
+
+func (f *fakeDispatcher) DispatchFunction(
+	ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction,
+	workflowName, transitionName, txID string,
+) (contract.FunctionResult, error) {
+	f.functionCalled = true
+	if f.returnErr != nil {
+		return contract.FunctionResult{}, f.returnErr
+	}
+	return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{}`)}, nil
 }
 
 func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *testing.T) {
@@ -121,6 +134,62 @@ func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *te
 	_, _, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")
 	if !errors.Is(err, wantErr) {
 		t.Errorf("expected %v, got %v", wantErr, err)
+	}
+}
+
+// singleDispatchTypeAttr drives exactly one dispatch (via dispatch) through a fresh
+// ManualReader and returns the sole "type" attribute value recorded on
+// cyoda.dispatch.count. Isolating each call to its own reader lets the caller
+// correlate a specific dispatch method to the exact kind label it emitted — a
+// swapped label (DispatchProcessor emitting "criteria", etc.) is then caught,
+// which an aggregate set-equality assertion across both calls would miss.
+func singleDispatchTypeAttr(t *testing.T, dispatch func(traced *observability.TracingExternalProcessingService)) string {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	traced := observability.NewTracingExternalProcessingService(&fakeDispatcher{}, mp.Meter("test"))
+
+	dispatch(traced)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, md := range sm.Metrics {
+			if md.Name != "cyoda.dispatch.count" {
+				continue
+			}
+			sum := md.Data.(metricdata.Sum[int64])
+			if len(sum.DataPoints) != 1 {
+				t.Fatalf("expected exactly 1 cyoda.dispatch.count data point, got %d", len(sum.DataPoints))
+			}
+			v, ok := sum.DataPoints[0].Attributes.Value(observability.AttrDispatchType)
+			if !ok {
+				t.Fatalf("missing %q attribute on data point %+v", observability.AttrDispatchType, sum.DataPoints[0])
+			}
+			return v.AsString()
+		}
+	}
+	t.Fatal("cyoda.dispatch.count not found")
+	return ""
+}
+
+func TestTracingDispatch_RecordsKindLabeledAttributes(t *testing.T) {
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-1"}}
+
+	gotProcessor := singleDispatchTypeAttr(t, func(traced *observability.TracingExternalProcessingService) {
+		_, _ = traced.DispatchProcessor(context.Background(), entity, spi.ProcessorDefinition{Name: "p"}, "wf", "tr", "tx")
+	})
+	if gotProcessor != "processor" {
+		t.Errorf("DispatchProcessor recorded type=%q, want %q", gotProcessor, "processor")
+	}
+
+	gotCriteria := singleDispatchTypeAttr(t, func(traced *observability.TracingExternalProcessingService) {
+		_, _, _ = traced.DispatchCriteria(context.Background(), entity, json.RawMessage(`{}`), "target1", "wf", "tr", "p", "tx")
+	})
+	if gotCriteria != "criteria" {
+		t.Errorf("DispatchCriteria recorded type=%q, want %q", gotCriteria, "criteria")
 	}
 }
 

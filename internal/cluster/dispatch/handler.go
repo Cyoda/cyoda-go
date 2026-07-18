@@ -3,17 +3,20 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// DispatchHandler serves the internal dispatch endpoints for processor and
-// criteria execution. Authenticates each request via PeerAuth — today AEAD
-// over a shared secret, tomorrow potentially mTLS — and annotates the
+// DispatchHandler serves the internal dispatch endpoint (POST
+// /internal/dispatch/callout) that a peer node forwards processor, criteria,
+// and function callouts to. Authenticates each request via PeerAuth — today
+// AEAD over a shared secret, tomorrow potentially mTLS — and annotates the
 // request context with the authenticated PeerIdentity so downstream code
 // can audit origin regardless of the transport.
 type DispatchHandler struct {
@@ -31,18 +34,19 @@ func NewDispatchHandler(local contract.ExternalProcessingService, auth PeerAuth)
 
 // Register registers the dispatch routes on the provided ServeMux.
 func (h *DispatchHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /internal/dispatch/processor", h.handleProcessor)
-	mux.HandleFunc("POST /internal/dispatch/criteria", h.handleCriteria)
+	mux.HandleFunc("POST /internal/dispatch/callout", h.handleCallout)
 }
 
-// handleProcessor handles POST /internal/dispatch/processor.
-func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request) {
+// handleCallout handles POST /internal/dispatch/callout. It dispatches to
+// the local ExternalProcessingService method matching req.Kind and maps the
+// result into the union DispatchCalloutResponse.
+func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) {
 	body, identity, ok := h.verifyRequest(w, r)
 	if !ok {
 		return
 	}
 
-	var req DispatchProcessorRequest
+	var req DispatchCalloutRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -56,58 +60,53 @@ func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request
 		Data: []byte(req.Entity),
 	}
 
-	result, err := h.local.DispatchProcessor(ctx, entity, req.Processor, req.WorkflowName, req.TransitionName, req.TxID)
-	if err != nil {
-		slog.Error("dispatch processor failed", "pkg", "dispatch", "err", err)
-		writeJSON(w, http.StatusOK, DispatchProcessorResponse{
-			Success: false,
-			Error:   "dispatch processor failed",
+	switch req.Kind {
+	case "processor":
+		var processor spi.ProcessorDefinition
+		if req.Processor != nil {
+			processor = *req.Processor
+		}
+		result, err := h.local.DispatchProcessor(ctx, entity, processor, req.WorkflowName, req.TransitionName, req.TxID)
+		if err != nil {
+			slog.Error("dispatch processor failed", "pkg", "dispatch", "err", err)
+			writeJSON(w, http.StatusOK, dispatchErrorResponse("dispatch processor failed", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+			Success:    true,
+			EntityData: result.Data,
 		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, DispatchProcessorResponse{
-		Success:    true,
-		EntityData: result.Data,
-	})
-}
-
-// handleCriteria handles POST /internal/dispatch/criteria.
-func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request) {
-	body, identity, ok := h.verifyRequest(w, r)
-	if !ok {
-		return
-	}
-
-	var req DispatchCriteriaRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
-	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
-
-	entity := &spi.Entity{
-		Meta: req.EntityMeta,
-		Data: []byte(req.Entity),
-	}
-
-	matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
-	if err != nil {
-		slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
-		writeJSON(w, http.StatusOK, DispatchCriteriaResponse{
-			Success: false,
-			Error:   "dispatch criteria failed",
+	case "criteria":
+		matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
+		if err != nil {
+			slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
+			writeJSON(w, http.StatusOK, dispatchErrorResponse("dispatch criteria failed", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+			Success: true,
+			Matches: &matches,
+			Reason:  reason,
 		})
-		return
+	case "function":
+		var fn spi.ScheduleFunction
+		if req.Function != nil {
+			fn = *req.Function
+		}
+		result, err := h.local.DispatchFunction(ctx, entity, fn, req.WorkflowName, req.TransitionName, req.TxID)
+		if err != nil {
+			slog.Error("dispatch function failed", "pkg", "dispatch", "err", err)
+			writeJSON(w, http.StatusOK, dispatchErrorResponse("dispatch function failed", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+			Success:    true,
+			Result:     result.Value,
+			ResultKind: result.Kind,
+		})
+	default:
+		http.Error(w, "unknown callout kind", http.StatusBadRequest)
 	}
-
-	writeJSON(w, http.StatusOK, DispatchCriteriaResponse{
-		Success: true,
-		Matches: matches,
-		Reason:  reason,
-	})
 }
 
 // verifyRequest runs peer authentication over the incoming request. On
@@ -143,6 +142,42 @@ func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, t
 	ctx := spi.WithUserContext(r.Context(), uc)
 	ctx = WithPeerIdentity(ctx, identity)
 	return ctx
+}
+
+// dispatchErrorResponse builds the client-facing DispatchCalloutResponse for
+// a failed local dispatch (processor/criteria/function). genericMsg is the
+// sanitized, kind-specific message that goes in Error — never internal
+// detail from err (matches the existing sanitization the surrounding tests
+// enforce). The ErrorCode/ErrorStatus/ErrorRetryable trio classifies err
+// using the same taxonomy single-node dispatch uses, so a forwarding node
+// can re-mint the identical *common.AppError instead of collapsing every
+// peer failure into a generic 400 (see B1, scheduled-transition-function
+// final review):
+//   - An *common.AppError (matched via errors.As, so it's found even
+//     several layers deep behind %w-wrapping) contributes its own
+//     Code/Status/Retryable.
+//   - contract.ErrNoMatchingMember (the peer lost its matching calculation
+//     member between gossip advertisement and forward) maps to the same
+//     NO_COMPUTE_MEMBER_FOR_TAG/503/retryable trio single-node dispatch
+//     uses for the equivalent condition.
+//   - Anything else leaves the trio zero-valued; the forwarding node falls
+//     back to its historical plain-error behavior.
+func dispatchErrorResponse(genericMsg string, err error) DispatchCalloutResponse {
+	resp := DispatchCalloutResponse{Success: false, Error: genericMsg}
+
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		resp.ErrorCode = appErr.Code
+		resp.ErrorStatus = appErr.Status
+		resp.ErrorRetryable = appErr.Retryable
+		return resp
+	}
+	if errors.Is(err, contract.ErrNoMatchingMember) {
+		resp.ErrorCode = common.ErrCodeNoComputeMemberForTag
+		resp.ErrorStatus = http.StatusServiceUnavailable
+		resp.ErrorRetryable = true
+	}
+	return resp
 }
 
 // writeJSON encodes v as JSON and writes it with the given status code.

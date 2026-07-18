@@ -182,6 +182,10 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 				s.handleCriteriaResponse(memberID, evtPayload)
 				slog.Debug("criteria response routed", "pkg", "grpc", "memberId", memberID)
 
+			case EntityFunctionCalculationResponse:
+				s.handleFunctionResponse(memberID, evtPayload)
+				slog.Debug("function response routed", "pkg", "grpc", "memberId", memberID)
+
 			case EventAckResponse:
 				// Client acknowledged a server event — proves liveness.
 				member := s.registry.Get(memberID)
@@ -314,5 +318,53 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Reason:    resp.Reason,
 		Warnings:  resp.Warnings,
 		Retryable: retryable,
+	})
+}
+
+// handleFunctionResponse routes a function calculation response to the
+// pending request on the given member.
+func (s *CloudEventsServiceImpl) handleFunctionResponse(memberID string, payload json.RawMessage) {
+	var resp struct {
+		RequestID  string           `json:"requestId"`
+		Success    bool             `json:"success"`
+		Result     *json.RawMessage `json:"result"`
+		ResultKind *string          `json:"resultKind"`
+		Error      *struct {
+			Message   string `json:"message"`
+			Retryable *bool  `json:"retryable"`
+		} `json:"error"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", memberID, "error", err)
+		return
+	}
+
+	member := s.registry.Get(memberID)
+	if member == nil {
+		return
+	}
+
+	errMsg := ""
+	var retryable *bool
+	if resp.Error != nil {
+		errMsg = resp.Error.Message
+		retryable = resp.Error.Retryable
+	}
+	var result json.RawMessage
+	if resp.Result != nil {
+		result = *resp.Result
+	}
+	resultKind := ""
+	if resp.ResultKind != nil {
+		resultKind = *resp.ResultKind
+	}
+	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
+		Success:    resp.Success,
+		Error:      errMsg,
+		Result:     result,
+		ResultKind: resultKind,
+		Warnings:   resp.Warnings,
+		Retryable:  retryable,
 	})
 }

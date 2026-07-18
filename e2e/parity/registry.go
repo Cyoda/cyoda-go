@@ -10,9 +10,11 @@ import "testing"
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
 // + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
 // + Phase 9.6 Audit fixes + grouped stats + unknown-model 404 contract).
-// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/
-// and scheduled-transition-runtime scenarios registered via parity.Register()
-// in e2e/parity/scheduledtransition/ are additional to this count.
+// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/,
+// scheduled-transition-runtime scenarios registered via parity.Register()
+// in e2e/parity/scheduledtransition/, and scheduled-transition Function
+// scenarios registered via parity.Register() in e2e/parity/scheduledfunction/
+// are additional to this count.
 //
 // Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
 // model extension, transaction stress tests, workflow failure paths,
@@ -359,9 +361,9 @@ var allTests = []NamedTest{
 // plugin like cyoda-go-cassandra) MUST blank-import every parity-extension
 // package — otherwise the extension's init() never runs and the wrapper
 // silently misses the entire scenario set. Current extension packages are
-// `e2e/parity/externalapi` and `e2e/parity/scheduledtransition`. New
-// parity-extension packages added in future tranches must be added to all
-// backend wrappers in lockstep.
+// `e2e/parity/externalapi`, `e2e/parity/scheduledtransition`, and
+// `e2e/parity/scheduledfunction`. New parity-extension packages added in
+// future tranches must be added to all backend wrappers in lockstep.
 func Register(tests ...NamedTest) {
 	allTests = append(allTests, tests...)
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // taskID deterministically derives a ScheduledTask's ID from the tenant,
@@ -75,38 +76,66 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		return nil
 	}
 
-	nowMs := e.now().UnixMilli()
+	// armMs is the single "now" reference for every schedule computed in
+	// this reconcile pass — both the static DelayMs arithmetic and the
+	// base a Function's relative fireAfterMs/expireAfterMs resolve against
+	// (see resolveSchedule). Computed once so a slow dispatch to one
+	// Function callout doesn't skew the "now" seen by a sibling
+	// transition's static or relative computation.
+	armMs := e.now().UnixMilli()
 	state := entity.Meta.State
 
 	var arm []spi.ScheduledTask
+	// cancelIDs carries born-expired task IDs into ReconcileRequest.Cancel
+	// — deleted in the same transaction as the entity write (Task 6.1's
+	// store-side Cancel branch) without ever having been armed.
+	var cancelIDs []string
+	var bornExpired []expiredSchedule
+
 	if stateDef, ok := wf.States[state]; ok {
 		for i := range stateDef.Transitions {
 			tr := &stateDef.Transitions[i]
 			if tr.Schedule == nil || tr.Manual || tr.Disabled {
 				continue
 			}
-			var timeoutMs *int64
-			if tr.Schedule.TimeoutMs != nil {
-				v := *tr.Schedule.TimeoutMs
-				timeoutMs = &v
-			}
 			// ModelRef.ModelVersion is the wire/string form ("1.0"); the
 			// ScheduledTask payload stores the numeric form, matching the
 			// existing ref.ModelVersion -> int conversion used elsewhere
 			// (e.g. internal/domain/model/service.go ListModels).
 			modelVersion, _ := strconv.ParseInt(entity.Meta.ModelRef.ModelVersion, 10, 32)
+			id := taskID(entity.Meta.TenantID, entity.Meta.ID, state, tr.Name)
+
+			if tr.Schedule.Function != nil {
+				task, expired, err := e.armViaFunction(ctx, entity, wf, tr, state, id, armMs, int(modelVersion), txID)
+				if err != nil {
+					return err
+				}
+				if expired != nil {
+					cancelIDs = append(cancelIDs, id)
+					bornExpired = append(bornExpired, *expired)
+					continue
+				}
+				arm = append(arm, *task)
+				continue
+			}
+
+			var timeoutMs *int64
+			if tr.Schedule.TimeoutMs != nil {
+				v := *tr.Schedule.TimeoutMs
+				timeoutMs = &v
+			}
 			arm = append(arm, spi.ScheduledTask{
-				ID:            taskID(entity.Meta.TenantID, entity.Meta.ID, state, tr.Name),
+				ID:            id,
 				TenantID:      entity.Meta.TenantID,
 				Type:          spi.ScheduledTaskFireTransition,
-				ScheduledTime: nowMs + tr.Schedule.DelayMs,
+				ScheduledTime: armMs + tr.Schedule.DelayMs,
 				TimeoutMs:     timeoutMs,
 				EntityID:      entity.Meta.ID,
 				ModelName:     entity.Meta.ModelRef.EntityName,
 				ModelVersion:  int(modelVersion),
 				Transition:    tr.Name,
 				SourceState:   state,
-				ArmedAt:       nowMs,
+				ArmedAt:       armMs,
 			})
 		}
 	}
@@ -121,6 +150,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		EntityID:     entity.Meta.ID,
 		CurrentState: state,
 		Arm:          arm,
+		Cancel:       cancelIDs,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
@@ -129,7 +159,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 	for _, a := range arm {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
 			spi.SMEventScheduledTransitionArmed,
-			fmt.Sprintf("Scheduled transition %q armed for %dms from now", a.Transition, a.ScheduledTime-nowMs),
+			fmt.Sprintf("Scheduled transition %q armed for %dms from now", a.Transition, a.ScheduledTime-armMs),
 			map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
 	}
 	for _, c := range cancelled {
@@ -141,6 +171,78 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 			fmt.Sprintf("Scheduled transition %q cancelled (left state %q)", c.Transition, c.SourceState),
 			map[string]any{"transition": c.Transition, "sourceState": c.SourceState})
 	}
+	// Born-expired Function results are cancelled via req.Cancel above but
+	// deliberately excluded from ReconcileForEntity's returned cancelled
+	// slice (Task 6.1) so they are audited distinctly here as EXPIRE, not
+	// CANCEL — a "left the state" cancel and "never fired, expired on
+	// arrival" are different operational stories.
+	for _, be := range bornExpired {
+		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
+			spi.SMEventScheduledTransitionExpired,
+			fmt.Sprintf("Scheduled transition %q born expired (Function result already past its resolved expiry)", be.transition),
+			map[string]any{"transition": be.transition, "sourceState": state})
+	}
 
 	return nil
+}
+
+// expiredSchedule records a born-expired scheduled transition for the
+// post-reconcile EXPIRE audit pass. Cancellation of the born-expired task's
+// row is driven separately by cancelIDs (built alongside bornExpired in
+// reconcileScheduledTasks) — this struct only carries what the EXPIRE audit
+// event itself reports.
+type expiredSchedule struct {
+	transition string
+}
+
+// armViaFunction dispatches tr's Schedule.Function callout and resolves its
+// result into either a ScheduledTask ready to arm, or a born-expired
+// signal. Exactly one of the two return values is non-nil on a nil error.
+//
+// The per-tx gate is released (txgate.Suspend) across the blocking dispatch
+// and re-acquired immediately on return — BEFORE this function's caller
+// does any further tx-buffer work — because the callout can re-enter with a
+// descendant callback joined on the same txID (same H3 rationale as
+// evaluateCriterion's FUNCTION-criterion dispatch and
+// executeSyncProcessor). Unlike evaluateCriterion, resume is NOT deferred:
+// reconcileScheduledTasks writes the tx buffer (ReconcileForEntity) after
+// every transition in the loop has been resolved, so the gate must already
+// be held again by the time this call returns, not merely by the time the
+// whole loop unwinds.
+func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
+	if e.extProc == nil {
+		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
+	}
+
+	resume := txgate.Suspend(ctx)
+	res, derr := e.extProc.DispatchFunction(ctx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
+	resume() // BEFORE any tx-buffer write — see doc comment above.
+	if derr != nil {
+		return nil, nil, derr // already a classified AppError (503) — fails the write, fail-closed
+	}
+	if res.Kind != "Schedule" {
+		return nil, nil, invalidScheduleResult("function %q returned resultKind %q, want %q", tr.Schedule.Function.Name, res.Kind, "Schedule")
+	}
+
+	sched, timeoutMs, born, rerr := resolveSchedule(res.Value, armMs)
+	if rerr != nil {
+		return nil, nil, rerr
+	}
+	if born {
+		return nil, &expiredSchedule{transition: tr.Name}, nil
+	}
+
+	return &spi.ScheduledTask{
+		ID:            id,
+		TenantID:      entity.Meta.TenantID,
+		Type:          spi.ScheduledTaskFireTransition,
+		ScheduledTime: sched,
+		TimeoutMs:     timeoutMs,
+		EntityID:      entity.Meta.ID,
+		ModelName:     entity.Meta.ModelRef.EntityName,
+		ModelVersion:  modelVersion,
+		Transition:    tr.Name,
+		SourceState:   state,
+		ArmedAt:       armMs,
+	}, nil, nil
 }

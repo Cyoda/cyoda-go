@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // ProcessorFunc is a callback invoked when a processor is dispatched.
@@ -22,14 +23,19 @@ type CriteriaFunc func(ctx context.Context, entity *spi.Entity, criterion json.R
 // criteriaFuncR is the internal reason-returning criterion form.
 type criteriaFuncR func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, string, error)
 
+// FunctionFunc is a callback invoked when a generic Function callout is dispatched.
+type FunctionFunc func(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction) (contract.FunctionResult, error)
+
 // LocalProcessingService dispatches processors and criteria to registered
 // Go function callbacks. It implements contract.ExternalProcessingService.
 type LocalProcessingService struct {
 	mu             sync.RWMutex
 	processors     map[string]ProcessorFunc
 	criteria       map[string]criteriaFuncR
+	functions      map[string]FunctionFunc
 	processorCalls map[string]*atomic.Int64
 	criteriaCalls  map[string]*atomic.Int64
+	functionCalls  map[string]*atomic.Int64
 }
 
 // New creates a new LocalProcessingService.
@@ -37,8 +43,10 @@ func New() *LocalProcessingService {
 	return &LocalProcessingService{
 		processors:     make(map[string]ProcessorFunc),
 		criteria:       make(map[string]criteriaFuncR),
+		functions:      make(map[string]FunctionFunc),
 		processorCalls: make(map[string]*atomic.Int64),
 		criteriaCalls:  make(map[string]*atomic.Int64),
+		functionCalls:  make(map[string]*atomic.Int64),
 	}
 }
 
@@ -67,6 +75,16 @@ func (s *LocalProcessingService) RegisterCriteriaReason(name string, fn criteria
 	s.criteria[name] = fn
 	if _, ok := s.criteriaCalls[name]; !ok {
 		s.criteriaCalls[name] = &atomic.Int64{}
+	}
+}
+
+// RegisterFunction registers a Function callout callback by name.
+func (s *LocalProcessingService) RegisterFunction(name string, fn FunctionFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.functions[name] = fn
+	if _, ok := s.functionCalls[name]; !ok {
+		s.functionCalls[name] = &atomic.Int64{}
 	}
 }
 
@@ -116,6 +134,26 @@ func (s *LocalProcessingService) DispatchCriteria(ctx context.Context, entity *s
 	return fn(ctx, entity, criterion)
 }
 
+// DispatchFunction dispatches to the registered Function callback by name.
+func (s *LocalProcessingService) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (result contract.FunctionResult, err error) {
+	s.mu.RLock()
+	f, ok := s.functions[fn.Name]
+	counter := s.functionCalls[fn.Name]
+	s.mu.RUnlock()
+
+	if !ok {
+		return contract.FunctionResult{}, fmt.Errorf("no local function registered for %q", fn.Name)
+	}
+	counter.Add(1)
+
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("function %q panicked: %v", fn.Name, r)
+		}
+	}()
+	return f(ctx, entity, fn)
+}
+
 // ProcessorCallCount returns how many times a processor was invoked.
 func (s *LocalProcessingService) ProcessorCallCount(name string) int {
 	s.mu.RLock()
@@ -136,6 +174,16 @@ func (s *LocalProcessingService) CriteriaCallCount(name string) int {
 	return 0
 }
 
+// FunctionCallCount returns how many times a Function callout was invoked.
+func (s *LocalProcessingService) FunctionCallCount(name string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if c, ok := s.functionCalls[name]; ok {
+		return int(c.Load())
+	}
+	return 0
+}
+
 // Reset clears all invocation counters but keeps registrations.
 func (s *LocalProcessingService) Reset() {
 	s.mu.Lock()
@@ -144,6 +192,9 @@ func (s *LocalProcessingService) Reset() {
 		c.Store(0)
 	}
 	for _, c := range s.criteriaCalls {
+		c.Store(0)
+	}
+	for _, c := range s.functionCalls {
 		c.Store(0)
 	}
 }

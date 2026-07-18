@@ -16,6 +16,7 @@ see_also:
   - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
   - errors.VALIDATION_FAILED
   - errors.MODEL_NOT_FOUND
+  - errors.SCHEDULE_FUNCTION_INVALID_RESULT
 ---
 
 # workflows
@@ -47,7 +48,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.2",
+  "version": "1.3",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -208,10 +209,24 @@ Import-time validation rejects any `executionMode` value not in the list above (
 
 ## SCHEDULED TRANSITIONS
 
-A transition may carry an optional `schedule` object marking it as
-scheduled. Presence of `schedule` declares that the transition fires
-automatically at `scheduledTime = stateEntryTime + delayMs`. The
-`schedule` shape is:
+A transition may carry an optional `schedule` object, marking it as
+**scheduled**: rather than being fired by an API call or by automated
+cascade, it fires on its own at a computed **scheduled time**. How that
+time is determined is chosen per transition, in one of two mutually
+exclusive ways:
+
+- **`delayMs`** — a static delay, the same for every entity.
+- **`function`** — a per-entity Function callout that computes the
+  firing time (and optionally an expiry) from the entity itself.
+
+Exactly one of `delayMs` / `function` is required whenever `schedule` is
+present, and both are mutually exclusive with `manual: true`. The two
+modes differ *only* in how the scheduled time (and expiry) are
+determined; everything under **Engine behaviour** below applies to a
+scheduled transition either way.
+
+**Static timing — `delayMs`.** The transition fires at
+`scheduledTime = stateEntryTime + delayMs`:
 
 ```json
 {
@@ -225,54 +240,120 @@ automatically at `scheduledTime = stateEntryTime + delayMs`. The
 }
 ```
 
-**Fields:**
-
-- `delayMs` (integer, required) — delay between source-state entry
-  and the scheduled execution time, in milliseconds. Must be `> 0`.
+- `delayMs` (integer) — delay between source-state entry and the
+  scheduled time, in milliseconds. Must be `> 0`.
 - `timeoutMs` (integer, optional) — late-tolerance window past the
-  scheduled execution time, in milliseconds. When the scheduler
-  picks the task up, if `(executionTime - scheduledTime) > timeoutMs`
-  the task is dropped and the transition is NOT attempted. Absent
-  (omitted) means no timeout — fire whenever the scheduler
-  eventually picks it up. Explicit `0` is the strictest setting —
-  drop on any lateness. Independent of `delayMs`; the two measure
-  different quantities.
+  scheduled time (see **Lateness / expiry** below). Absent means no
+  timeout; explicit `0` is strictest (drop on any lateness). Independent
+  of `delayMs` — the two measure different quantities.
 
-**Import-time validation rules:**
+**Per-entity timing — `function`.** The transition computes its firing
+time (and optional expiry) per entity via a Function callout — the same
+dispatch mechanism as an externalized processor or a `function`-type
+criterion, but returning a typed `Schedule` result instead of an entity
+payload or a boolean:
 
-- `manual: true` and `schedule` present are mutually exclusive
+```json
+{
+  "name": "Escalate",
+  "next": "Escalated",
+  "manual": false,
+  "schedule": {
+    "function": {
+      "name": "compute-escalation-time",
+      "resultKind": "Schedule",
+      "calculationNodesTags": "escalation-service",
+      "attachEntity": true
+    }
+  }
+}
+```
+
+- `name` (string, required) — registered function name.
+- `resultKind` (string, required) — must be `"Schedule"`.
+- `calculationNodesTags` (string, required) — comma-separated tags
+  selecting the dispatch target, same as a processor or criterion.
+- `attachEntity` (boolean, optional, default `true`) — whether the
+  entity payload is attached to the request.
+- `context` (string, optional) — pass-through string forwarded verbatim
+  as the request's `parameters`; omitted when empty.
+- `responseTimeoutMs` (integer, optional) — response timeout for this
+  callout.
+
+The function responds with `resultKind: "Schedule"` and a `result`
+object giving the fire time and, optionally, an expiry:
+
+```json
+{ "fireAfterMs": 3600000, "expireAfterMs": 600000 }
+```
+
+- **Fire time** (required) — exactly one of `fireAt` (absolute,
+  epoch-ms) or `fireAfterMs` (relative to arm time). A past `fireAt` (or
+  non-positive `fireAfterMs`) is not an error — the transition is due
+  immediately.
+- **Expiry** (optional) — at most one of `expireAt` (absolute) or
+  `expireAfterMs` (relative to the *resolved fire time*, not arm time).
+  Both absent means no expiry (equivalent to an absent `timeoutMs`). A
+  resolved expiry *after* the fire time becomes the `timeoutMs`
+  late-tolerance window — the gap between the two. A resolved expiry *at
+  or before* the fire time is **born expired**: the transition is not
+  armed, any existing scheduling for it is cancelled
+  (`SCHEDULED_TRANSITION_EXPIRE`), and the triggering write still
+  succeeds.
+
+*Fail-closed.* The callout runs synchronously inside the entity-write
+transaction (see **Arming** below), so a callout failure fails that
+write. If the compute node is unreachable, disconnected, or times out,
+the write fails as a retryable `503` with the same dispatch error codes
+as a processor or criterion (`NO_COMPUTE_MEMBER_FOR_TAG`,
+`DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`) — no state change
+commits against an unschedulable transition. A structurally valid
+response with the wrong `resultKind`, or a malformed `Schedule` value,
+fails with `500 SCHEDULE_FUNCTION_INVALID_RESULT` (see that error topic).
+
+**Import-time validation.**
+
+- Exactly one of `schedule.delayMs` / `schedule.function` must be
+  present (`VALIDATION_FAILED`).
+- `schedule` and `manual: true` are mutually exclusive
   (`VALIDATION_FAILED`).
-- `schedule.delayMs <= 0` is rejected (`VALIDATION_FAILED`).
-- No further rule on `timeoutMs` beyond `>= 0` (enforced at the DTO
-  boundary).
+- Static mode: `delayMs <= 0` is rejected (`VALIDATION_FAILED`);
+  `timeoutMs` need only be `>= 0`.
+- Function mode: `name` and `calculationNodesTags` must be non-empty,
+  and `resultKind` must be `"Schedule"` (`VALIDATION_FAILED`).
 
-**Engine behaviour.** A scheduled transition fires automatically
-`delayMs` after the entity enters the transition's source state — a
-background scheduler arms a timer on entry and fires it when due,
-independently of cascade evaluation and independently of any other
-API call touching the entity.
+**Engine behaviour (applies to both timing modes).** A scheduled
+transition is driven by a background scheduler, independently of cascade
+evaluation and of any other API call touching the entity.
 
-- **Firing.** When the timer is due, the engine re-evaluates the
-  transition's criterion exactly **once**. A `true` (or absent)
+- **Arming.** On every write that leaves the entity in the transition's
+  source state — the initial entry AND every subsequent settled write
+  (an ordinary in-place data update or a self-loop) — the transition is
+  (re-)armed with a freshly computed scheduled time. Static mode sets it
+  to `now + delayMs`; function mode **invokes the callout**
+  synchronously, inside that write's transaction, and each call fully
+  replaces the previous scheduling decision.
+- **Settled-interval reset.** Because arming happens on *every* settled
+  write, an entity written more often than its scheduled interval never
+  reaches the fire. Authors relying on "escalate N after entry"
+  semantics must account for this: routine touch-writes on a busy entity
+  postpone the fire indefinitely (and, in function mode, make a callout
+  on each such write).
+- **Firing.** When the scheduled time is due, the engine re-evaluates
+  the transition's criterion exactly **once**. A `true` (or absent)
   criterion fires the transition normally (processors run, state
   advances, `TRANSITION_MAKE` is recorded). A `false` criterion
-  **declines** the transition — the entity stays in its current
-  state and the timer is **not** retried (`TRANSITION_NOT_MATCH_CRITERION`).
+  **declines** the transition — the entity stays in its current state
+  and the timer is **not** retried (`TRANSITION_NOT_MATCH_CRITERION`).
   See "One-shot vs. polling" below for how to model a retry.
-- **Lateness (`timeoutMs`).** `timeoutMs` bounds how late the
-  scheduler may pick up a due timer before giving up: if the timer
-  is picked up more than `timeoutMs` past its scheduled time, it is
+- **Lateness / expiry (`timeoutMs`).** `timeoutMs` — set directly on a
+  static schedule, or derived from a function schedule's expiry — bounds
+  how late the scheduler may pick up a due timer before giving up: if it
+  is picked up more than `timeoutMs` past the scheduled time, it is
   **dropped** without evaluating the criterion (`Expired`) — the
-  transition never fires and the entity stays put. Absent `timeoutMs`
-  means no upper bound: the timer fires whenever it is eventually
-  picked up.
-- **Settled-interval reset.** Any write to the entity that leaves it
-  in the same state — including an ordinary in-place data update or a
-  self-loop — **resets the timer** to `delayMs` from that write. An
-  entity written more often than its `delayMs` interval never reaches
-  the scheduled fire. Authors relying on "escalate N after entry"
-  semantics should account for this: routine touch-writes on a busy
-  entity postpone escalation indefinitely.
+  transition never fires and the entity stays put. No `timeoutMs` (no
+  expiry) means no upper bound: the timer fires whenever it is
+  eventually picked up.
 - **Explicitly firing a scheduled transition by name still returns**
   HTTP 400 `TRANSITION_NOT_FOUND`, with the message `transition "X"
   in state "Y" is scheduled and fires automatically; it is not
@@ -321,10 +402,10 @@ level field `allowCycles: true` on the import body:
 ```
 
 `allowCycles: true` bypasses only the cycle-detection check. Schedule
-shape rules (manual+schedule, delayMs) and all other validators
-remain unconditional. The runtime cascade-depth and per-state visit
-caps still catch actual runaway at fire time. Use only for workflows
-whose cyclicity is intentional.
+shape rules (the `delayMs`/`function` XOR, `manual`+`schedule`
+exclusion) and all other validators remain unconditional. The runtime
+cascade-depth and per-state visit caps still catch actual runaway at
+fire time. Use only for workflows whose cyclicity is intentional.
 
 ## CRITERIA
 
@@ -456,7 +537,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.2",
+        "version": "1.3",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -508,7 +589,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.2",
+        "version": "1.3",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,

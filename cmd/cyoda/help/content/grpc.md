@@ -5,9 +5,11 @@ stability: stable
 see_also:
   - config.grpc
   - workflows
+  - cloudevents
   - errors.COMPUTE_MEMBER_DISCONNECTED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.DISPATCH_TIMEOUT
+  - errors.SCHEDULE_FUNCTION_INVALID_RESULT
   - errors.DISPATCH_FORWARD_FAILED
 ---
 
@@ -118,6 +120,8 @@ message CloudEvent {
 - `EntityProcessorCalculationResponse` — client → server; processor result
 - `EntityCriteriaCalculationRequest` — server → client; criteria dispatch request
 - `EntityCriteriaCalculationResponse` — client → server; criteria result
+- `EntityFunctionCalculationRequest` — server → client; function dispatch request
+- `EntityFunctionCalculationResponse` — client → server; function result
 - `EventAckResponse` — client → server; acknowledges any server event
 
 **EventAckResponse `text_data` JSON shape:**
@@ -307,6 +311,46 @@ guaranteed, backend-independent delivery for a manual rejection), and the
 workflow-selection paths, since a manual rejection rolls its transaction back.
 An omitted `reason` defaults to `"criterion did not match"` in the audit and
 is left out of the 400 detail (bare `criterion not matched`).
+
+**Function callout wire shape:**
+
+`EntityFunctionCalculationRequest`/`EntityFunctionCalculationResponse` are the wire types for the Function callout — a third callout shape alongside processor and criteria that returns a declared typed value instead of a boolean or entity payload (e.g. computing a scheduled state transition's fire time). Request shape mirrors the processor request, naming the callout target `functionId`/`functionName`:
+
+```json
+{
+  "id": "<requestId>",
+  "requestId": "<requestId>",
+  "entityId": "<entityUUID>",
+  "functionId": "compute-fire-at",
+  "functionName": "compute-fire-at",
+  "workflow": {"id": "prize-lifecycle", "name": "prize-lifecycle"},
+  "transition": {"id": "APPROVE", "name": "APPROVE"},
+  "transactionId": "<txUUID>",
+  "success": true
+}
+```
+
+Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON object) plus a `resultKind` discriminator string identifying its shape:
+
+```json
+{
+  "requestId": "<same requestId>",
+  "success": true,
+  "result": {"fireAt": 1},
+  "resultKind": "Schedule",
+  "warnings": [],
+  "error": null
+}
+```
+
+`resultKind: "Schedule"` is the only shape currently defined — it drives a
+scheduled transition's `schedule.function` (see `cyoda help workflows`).
+`success: false` or an `error` fails the dispatch the same way a processor
+or criteria failure does; a `result` that doesn't parse against the
+declared `resultKind` is rejected by the caller (a scheduled transition's
+`SCHEDULE_FUNCTION_INVALID_RESULT`), not by this wire contract. Full JSON
+Schemas for both messages: `docs/cyoda/schema/processing/EntityFunctionCalculationRequest.json`
+and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
 
 **Auth context on dispatched events:**
 

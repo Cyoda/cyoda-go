@@ -14,6 +14,8 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // fakeLocalDispatcher implements contract.ExternalProcessingService for testing.
@@ -25,6 +27,8 @@ type fakeLocalDispatcher struct {
 	criteriaResult  bool
 	criteriaReason  string
 	criteriaErr     error
+	functionResult  contract.FunctionResult
+	functionErr     error
 	capturedCtx     context.Context
 }
 
@@ -46,6 +50,16 @@ func (f *fakeLocalDispatcher) DispatchCriteria(
 ) (bool, string, error) {
 	f.capturedCtx = ctx
 	return f.criteriaResult, f.criteriaReason, f.criteriaErr
+}
+
+func (f *fakeLocalDispatcher) DispatchFunction(
+	ctx context.Context,
+	_ *spi.Entity,
+	_ spi.ScheduleFunction,
+	_, _, _ string,
+) (contract.FunctionResult, error) {
+	f.capturedCtx = ctx
+	return f.functionResult, f.functionErr
 }
 
 var testSecret32 = bytes.Repeat([]byte{0xAB}, 32)
@@ -87,10 +101,12 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	req := DispatchProcessorRequest{
+	processor := spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"}
+	req := DispatchCalloutRequest{
+		Kind:           "processor",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
-		Processor:      spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
+		Processor:      &processor,
 		WorkflowName:   "wf",
 		TransitionName: "t1",
 		TxID:           "tx-1",
@@ -99,7 +115,7 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 		Roles:          []string{"ROLE_USER"},
 	}
 	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -108,7 +124,7 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp DispatchProcessorResponse
+	var resp DispatchCalloutResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -128,7 +144,8 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	req := DispatchCriteriaRequest{
+	req := DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
 		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
@@ -142,7 +159,7 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 		Roles:          []string{"ROLE_USER"},
 	}
 	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/criteria", plain)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -151,14 +168,14 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp DispatchCriteriaResponse
+	var resp DispatchCalloutResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if !resp.Success {
 		t.Errorf("expected success=true")
 	}
-	if !resp.Matches {
+	if resp.Matches == nil || !*resp.Matches {
 		t.Errorf("expected matches=true")
 	}
 }
@@ -169,7 +186,7 @@ func TestHandler_MissingAEADHeaders(t *testing.T) {
 	handler.Register(mux)
 
 	body := []byte(`{}`)
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout", bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	// No X-Dispatch-Timestamp header, plain JSON body — rejected by AEAD Verify.
 
@@ -187,7 +204,7 @@ func TestHandler_RejectsPlainJSONWithoutAEAD(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor",
+	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout",
 		bytes.NewReader([]byte(`{"not":"encrypted"}`)))
 	httpReq.Header.Set("Content-Type", DispatchContentType)
 	httpReq.Header.Set(DispatchTimestampHdr, fmt.Sprintf("%d", time.Now().Unix()))
@@ -209,19 +226,21 @@ func TestHandler_RejectsReplayedRequest(t *testing.T) {
 	handler.Register(mux)
 
 	// Sign once, then submit the same wire body twice.
-	plain, _ := json.Marshal(DispatchProcessorRequest{
+	processor := spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"}
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind:     "processor",
 		TenantID: "t", UserID: "u",
-		Processor:    spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+		Processor:    &processor,
 		WorkflowName: "w", TransitionName: "t", TxID: "x",
 		EntityMeta: spi.EntityMeta{ID: "e"},
 		Entity:     json.RawMessage(`{}`),
 	})
-	first := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
+	first := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 	wire, _ := io.ReadAll(first.Body)
 	ts := first.Header.Get(DispatchTimestampHdr)
 
 	build := func() *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(wire))
+		r := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout", bytes.NewReader(wire))
 		r.Header.Set("Content-Type", DispatchContentType)
 		r.Header.Set(DispatchTimestampHdr, ts)
 		return r
@@ -249,14 +268,16 @@ func TestHandler_PopulatesPeerIdentityInContext(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	plain, _ := json.Marshal(DispatchProcessorRequest{
+	processor := spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"}
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind:     "processor",
 		TenantID: "t", UserID: "u", TxID: "tx",
-		Processor:    spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+		Processor:    &processor,
 		WorkflowName: "w", TransitionName: "t",
 		EntityMeta: spi.EntityMeta{ID: "e"},
 		Entity:     json.RawMessage(`{}`),
 	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -292,10 +313,12 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	plain, _ := json.Marshal(DispatchProcessorRequest{
+	processor := spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"}
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind:           "processor",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
-		Processor:      spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
+		Processor:      &processor,
 		WorkflowName:   "wf",
 		TransitionName: "t1",
 		TxID:           "tx-1",
@@ -303,12 +326,12 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
 	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
-	var resp DispatchProcessorResponse
+	var resp DispatchCalloutResponse
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Success {
 		t.Fatal("expected success=false")
@@ -329,7 +352,8 @@ func TestHandleCriteria_PropagatesReason(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	req := DispatchCriteriaRequest{
+	req := DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
 		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
@@ -343,7 +367,7 @@ func TestHandleCriteria_PropagatesReason(t *testing.T) {
 		Roles:          []string{"ROLE_USER"},
 	}
 	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/criteria", plain)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -352,7 +376,7 @@ func TestHandleCriteria_PropagatesReason(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp DispatchCriteriaResponse
+	var resp DispatchCalloutResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -370,7 +394,8 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	plain, _ := json.Marshal(DispatchCriteriaRequest{
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
 		Criterion:      json.RawMessage(`{"type":"eq"}`),
@@ -383,17 +408,220 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
 	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/criteria", plain)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
-	var resp DispatchCriteriaResponse
+	var resp DispatchCalloutResponse
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Success {
 		t.Fatal("expected success=false")
 	}
 	if strings.Contains(resp.Error, "password") {
 		t.Errorf("error response must not contain internal details, got %q", resp.Error)
+	}
+}
+
+// TestHandler_ErrorTaxonomy_AppError verifies that when the local dispatch
+// (processor/criteria/function) fails with an *common.AppError, the handler
+// classifies ErrorCode/ErrorStatus/ErrorRetryable on the response from that
+// AppError, so a forwarding node can re-mint the same taxonomy instead of
+// collapsing every peer failure into a generic error (B1, final review).
+func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
+	auth := newAEAD(t)
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+		"processor dispatch timed out after 3000ms").AsRetryable()
+
+	cases := []struct {
+		name string
+		req  DispatchCalloutRequest
+		fake *fakeLocalDispatcher
+	}{
+		{
+			name: "processor",
+			req: DispatchCalloutRequest{
+				Kind: "processor", TenantID: "t", UserID: "u", TxID: "tx",
+				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{processorErr: appErr},
+		},
+		{
+			name: "criteria",
+			req: DispatchCalloutRequest{
+				Kind: "criteria", TenantID: "t", UserID: "u", TxID: "tx",
+				Criterion:      json.RawMessage(`{"type":"eq"}`),
+				Target:         "target",
+				WorkflowName:   "w",
+				TransitionName: "t",
+				ProcessorName:  "p",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{criteriaErr: appErr},
+		},
+		{
+			name: "function",
+			req: DispatchCalloutRequest{
+				Kind: "function", TenantID: "t", UserID: "u", TxID: "tx",
+				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{functionErr: appErr},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewDispatchHandler(tc.fake, auth)
+			mux := http.NewServeMux()
+			handler.Register(mux)
+
+			plain, _ := json.Marshal(tc.req)
+			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httpReq)
+
+			var resp DispatchCalloutResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Success {
+				t.Fatal("expected success=false")
+			}
+			if resp.ErrorCode != common.ErrCodeDispatchTimeout {
+				t.Errorf("ErrorCode = %q, want %q", resp.ErrorCode, common.ErrCodeDispatchTimeout)
+			}
+			if resp.ErrorStatus != http.StatusServiceUnavailable {
+				t.Errorf("ErrorStatus = %d, want %d", resp.ErrorStatus, http.StatusServiceUnavailable)
+			}
+			if !resp.ErrorRetryable {
+				t.Error("ErrorRetryable = false, want true")
+			}
+			// The client-facing Error text must stay generic — no AppError
+			// internal message content (coordinated with B2).
+			if strings.Contains(resp.Error, "3000ms") {
+				t.Errorf("Error field leaked AppError detail: %q", resp.Error)
+			}
+		})
+	}
+}
+
+// TestHandler_ErrorTaxonomy_NoMatchingMember verifies that when the local
+// dispatch fails with contract.ErrNoMatchingMember (a peer that lost its
+// matching member between gossip and forward), the handler classifies the
+// response as the NO_COMPUTE_MEMBER_FOR_TAG/503/retryable trio.
+func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
+	auth := newAEAD(t)
+	noMemberErr := fmt.Errorf("%w: tags %q", contract.ErrNoMatchingMember, "python")
+
+	cases := []struct {
+		name string
+		req  DispatchCalloutRequest
+		fake *fakeLocalDispatcher
+	}{
+		{
+			name: "processor",
+			req: DispatchCalloutRequest{
+				Kind: "processor", TenantID: "t", UserID: "u", TxID: "tx",
+				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{processorErr: noMemberErr},
+		},
+		{
+			name: "criteria",
+			req: DispatchCalloutRequest{
+				Kind: "criteria", TenantID: "t", UserID: "u", TxID: "tx",
+				Criterion:      json.RawMessage(`{"type":"eq"}`),
+				Target:         "target",
+				WorkflowName:   "w",
+				TransitionName: "t",
+				ProcessorName:  "p",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{criteriaErr: noMemberErr},
+		},
+		{
+			name: "function",
+			req: DispatchCalloutRequest{
+				Kind: "function", TenantID: "t", UserID: "u", TxID: "tx",
+				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{functionErr: noMemberErr},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewDispatchHandler(tc.fake, auth)
+			mux := http.NewServeMux()
+			handler.Register(mux)
+
+			plain, _ := json.Marshal(tc.req)
+			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httpReq)
+
+			var resp DispatchCalloutResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Success {
+				t.Fatal("expected success=false")
+			}
+			if resp.ErrorCode != common.ErrCodeNoComputeMemberForTag {
+				t.Errorf("ErrorCode = %q, want %q", resp.ErrorCode, common.ErrCodeNoComputeMemberForTag)
+			}
+			if resp.ErrorStatus != http.StatusServiceUnavailable {
+				t.Errorf("ErrorStatus = %d, want %d", resp.ErrorStatus, http.StatusServiceUnavailable)
+			}
+			if !resp.ErrorRetryable {
+				t.Error("ErrorRetryable = false, want true")
+			}
+		})
+	}
+}
+
+// TestHandler_UnknownCalloutKind covers the default branch of handleCallout:
+// an unrecognized Kind must return 400 with a descriptive message (C2).
+func TestHandler_UnknownCalloutKind(t *testing.T) {
+	auth := newAEAD(t)
+	handler := NewDispatchHandler(&fakeLocalDispatcher{}, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind: "bogus-kind", TenantID: "t", UserID: "u",
+		EntityMeta: spi.EntityMeta{ID: "e"},
+		Entity:     json.RawMessage(`{}`),
+	})
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown callout kind") {
+		t.Errorf("expected body to mention unknown callout kind, got %q", rec.Body.String())
 	}
 }

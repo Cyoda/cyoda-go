@@ -217,8 +217,21 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if got := err.Error(); got != "processor dispatch timed out after 1ms" {
-		t.Errorf("unexpected error: %s", got)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeDispatchTimeout {
+		t.Errorf("expected code %s, got %s", common.ErrCodeDispatchTimeout, appErr.Code)
+	}
+	if appErr.Status != 503 {
+		t.Errorf("expected status 503, got %d", appErr.Status)
+	}
+	if !appErr.Retryable {
+		t.Error("expected timeout error to be retryable")
+	}
+	if got := appErr.Error(); got != "DISPATCH_TIMEOUT: processor dispatch timed out after 1ms" {
+		t.Errorf("unexpected message: %s", got)
 	}
 }
 
@@ -622,5 +635,296 @@ func TestDispatchProcessor_AnnotationsNotSentToMember(t *testing.T) {
 	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf", "t", "tx-1")
 	if err != nil {
 		t.Fatalf("DispatchProcessor: %v", err)
+	}
+}
+
+// TestDispatchCalloutToMember_SuccessAndTimeout drives the shared transport
+// primitive directly (rather than through DispatchProcessor/DispatchCriteria)
+// to pin its two outcomes: a tracked response is returned on success, and a
+// non-nil error is returned when nobody answers before the timeout.
+func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	member := registry.Get(memberID)
+
+	// Success: answer the tracked request.
+	go func() {
+		ce := <-sentCh
+		if ce.Type != EntityProcessorCalculationRequest {
+			t.Errorf("expected event type %s, got %s", EntityProcessorCalculationRequest, ce.Type)
+			return
+		}
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		if reqID != "req-success" {
+			t.Errorf("expected requestId=req-success, got %s", reqID)
+		}
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
+	}()
+
+	req := map[string]any{"requestId": "req-success"}
+	resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-success", "tx-1", 5000, "processor", "my-proc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil || !resp.Success {
+		t.Fatalf("expected successful response, got %v", resp)
+	}
+
+	// Timeout: nobody answers the second request.
+	req2 := map[string]any{"requestId": "req-timeout"}
+	_, err = dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req2, "req-timeout", "tx-1", 20, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeDispatchTimeout {
+		t.Errorf("expected code %s, got %s", common.ErrCodeDispatchTimeout, appErr.Code)
+	}
+	if appErr.Status != 503 {
+		t.Errorf("expected status 503, got %d", appErr.Status)
+	}
+	if !appErr.Retryable {
+		t.Error("expected timeout error to be retryable")
+	}
+}
+
+// TestDispatchCalloutToMember_MemberDisconnects guards that a member
+// disconnecting mid-request (FailAllPending, e.g. on stream drop/Unregister)
+// surfaces a distinguishable 503 COMPUTE_MEMBER_DISCONNECTED to the waiting
+// dispatch, not a generic failure that maps to 400.
+func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	member := registry.Get(memberID)
+
+	// Simulate the stream dropping mid-flight: once the request is sent
+	// (and therefore tracked), fail all pending requests as Unregister does
+	// on disconnect, instead of ever completing the request normally.
+	go func() {
+		<-sentCh
+		member.FailAllPending("compute member disconnected")
+	}()
+
+	req := map[string]any{"requestId": "req-disconnect"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-disconnect", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error for member disconnect")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeComputeMemberDisconnected {
+		t.Errorf("expected code %s, got %s", common.ErrCodeComputeMemberDisconnected, appErr.Code)
+	}
+	if appErr.Status != 503 {
+		t.Errorf("expected status 503, got %d", appErr.Status)
+	}
+	if !appErr.Retryable {
+		t.Error("expected disconnect error to be retryable")
+	}
+}
+
+// TestDispatchProcessor_WarningPropagatesName guards that response warnings
+// surface to the client keyed by the processor NAME, not the opaque request
+// ID. These strings appear in the gRPC warnings array and HTTP body
+// (.claude/rules/error-handling.md); a refactor must not swap the name for a
+// UUID.
+func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := common.WithDiagnostics(testContext())
+	entity := testEntity()
+
+	processor := spi.ProcessorDefinition{
+		Name: "validate-order",
+		Config: spi.ProcessorConfig{
+			AttachEntity:         false,
+			CalculationNodesTags: "python",
+			ResponseTimeoutMs:    5000,
+		},
+	}
+
+	go func() {
+		ce := <-sentCh
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{
+			Success:  true,
+			Warnings: []string{"stock low"},
+		})
+	}()
+
+	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	warnings := common.GetDiagnostics(ctx).GetWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	if warnings[0] != "processor validate-order: stock low" {
+		t.Errorf("warning must carry processor name, got %q", warnings[0])
+	}
+	if strings.Contains(warnings[0], "-") && !strings.Contains(warnings[0], "validate-order") {
+		t.Errorf("warning appears to leak requestId instead of name: %q", warnings[0])
+	}
+}
+
+// TestDispatchCriteria_FailurePropagatesName guards the error path: a failed
+// criteria response surfaces to the client keyed by the criteria NAME.
+func TestDispatchCriteria_FailurePropagatesName(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := common.WithDiagnostics(testContext())
+	entity := testEntity()
+
+	// Production criterion shape: name/config nested under "function".
+	criterion := json.RawMessage(`{
+		"type": "function",
+		"function": {
+			"name": "amount-check",
+			"config": {
+				"calculationNodesTags": "python",
+				"responseTimeoutMs": 5000
+			}
+		}
+	}`)
+
+	go func() {
+		ce := <-sentCh
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		member := registry.Get(memberID)
+		member.CompleteRequest(reqID, &ProcessingResponse{
+			Success: false,
+			Error:   "boom",
+		})
+	}()
+
+	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1"); err == nil {
+		t.Fatal("expected dispatch failure error")
+	}
+
+	errs := common.GetDiagnostics(ctx).GetErrors()
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error diagnostic, got %d: %v", len(errs), errs)
+	}
+	if errs[0] != "criteria amount-check: boom" {
+		t.Errorf("error diagnostic must carry criteria name, got %q", errs[0])
+	}
+}
+
+func TestDispatchFunction_HappyPath(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	fn := spi.ScheduleFunction{
+		Name:                 "my-schedule-fn",
+		ResultKind:           "Schedule",
+		CalculationNodesTags: "python",
+		AttachEntity:         true,
+		ResponseTimeoutMs:    5000,
+	}
+
+	go func() {
+		ce := <-sentCh
+		if ce.Type != EntityFunctionCalculationRequest {
+			t.Errorf("expected event type %s, got %s", EntityFunctionCalculationRequest, ce.Type)
+		}
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+
+		var typedReq events.EntityFunctionCalculationRequestJson
+		_, payload, _ := ParseCloudEvent(ce)
+		if err := json.Unmarshal(payload, &typedReq); err != nil {
+			t.Errorf("sent function request doesn't match schema: %v", err)
+			return
+		}
+		if typedReq.FunctionName != "my-schedule-fn" {
+			t.Errorf("expected functionName my-schedule-fn, got %s", typedReq.FunctionName)
+		}
+		if typedReq.Payload == nil {
+			t.Error("expected payload to be attached when AttachEntity=true")
+		}
+
+		member := registry.Get(memberID)
+		result := json.RawMessage(`{"fireAfterMs":1000}`)
+		member.CompleteRequest(reqID, &ProcessingResponse{
+			Success:    true,
+			Result:     result,
+			ResultKind: "Schedule",
+		})
+	}()
+
+	result, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Kind != "Schedule" {
+		t.Errorf("expected Kind=Schedule, got %s", result.Kind)
+	}
+	if string(result.Value) != `{"fireAfterMs":1000}` {
+		t.Errorf("expected Value={\"fireAfterMs\":1000}, got %s", string(result.Value))
+	}
+}
+
+func TestDispatchFunction_NoMember(t *testing.T) {
+	registry := NewMemberRegistry()
+	uuids := common.NewTestUUIDGenerator()
+	signer, _ := token.NewSigner(make32(t))
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	ctx := testContext()
+	entity := testEntity()
+
+	fn := spi.ScheduleFunction{
+		Name:                 "my-schedule-fn",
+		ResultKind:           "Schedule",
+		CalculationNodesTags: "java",
+	}
+
+	_, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	if err == nil {
+		t.Fatal("expected error for missing member")
+	}
+	if !errors.Is(err, ErrNoMatchingMember) {
+		t.Errorf("expected ErrNoMatchingMember, got: %s", err)
+	}
+}
+
+func TestBuildEntityPayload(t *testing.T) {
+	e := &spi.Entity{Meta: spi.EntityMeta{
+		ID: "e1", State: "S1", TransactionID: "tx1",
+		ModelRef:         spi.ModelRef{EntityName: "order", ModelVersion: "3"},
+		CreationDate:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastModifiedDate: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	}, Data: []byte(`{"k":"v"}`)}
+	p := buildEntityPayload(e)
+	if p.Type != "JSON" {
+		t.Fatalf("Type = %q, want JSON", p.Type)
+	}
+	meta := p.Meta.(map[string]any)
+	mk := meta["modelKey"].(map[string]any)
+	if mk["version"] != 3 {
+		t.Fatalf("version = %v, want int 3", mk["version"])
+	}
+	if meta["state"] != "S1" {
+		t.Fatalf("state = %v", meta["state"])
 	}
 }

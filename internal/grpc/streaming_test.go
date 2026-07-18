@@ -750,6 +750,106 @@ func TestStreaming_CriteriaResponse_PropagatesRetryableFlag(t *testing.T) {
 	})
 }
 
+// TestStreaming_FunctionResponse exercises the inbound handler for the
+// Function callout (a third callout shape alongside processor/criteria):
+// EntityFunctionCalculationResponse carries Result (raw JSON) + ResultKind
+// (a discriminator string) instead of the processor's Payload or the
+// criteria's Matches/Reason.
+func TestStreaming_FunctionResponse(t *testing.T) {
+	svc := newServiceForTest()
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	defer cancel()
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{"python"}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StartStreaming(stream)
+	}()
+
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	_, greetPayload, _ := ParseCloudEvent(greetCE)
+	memberID := ExtractStringField(greetPayload, "memberId")
+
+	member := svc.registry.Get(memberID)
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	respCh := member.TrackRequest("req-fn-1")
+
+	respPayload := map[string]any{
+		"requestId":  "req-fn-1",
+		"entityId":   "e",
+		"success":    true,
+		"result":     map[string]any{"fireAfterMs": 1000},
+		"resultKind": "Schedule",
+	}
+	respCE, err := NewCloudEvent(EntityFunctionCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create function response event: %v", err)
+	}
+	stream.enqueue(respCE)
+
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if !resp.Success {
+			t.Error("expected success=true")
+		}
+		if resp.ResultKind != "Schedule" {
+			t.Errorf("expected resultKind=%q, got %q", "Schedule", resp.ResultKind)
+		}
+		if resp.Result == nil {
+			t.Fatal("expected non-nil Result")
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(resp.Result, &decoded); err != nil {
+			t.Fatalf("failed to unmarshal Result: %v", err)
+		}
+		if decoded["fireAfterMs"] != float64(1000) {
+			t.Errorf("expected fireAfterMs=1000, got %v", decoded["fireAfterMs"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for function response")
+	}
+
+	stream.closeRecv()
+	<-done
+}
+
+func TestStreaming_FunctionResponse_PropagatesError(t *testing.T) {
+	h := newRetryableHarness(t, "req-fn-err")
+	defer h.closeAndWait()
+
+	respPayload := map[string]any{
+		"requestId": "req-fn-err",
+		"success":   false,
+		"error": map[string]any{
+			"message":   "function boom",
+			"retryable": true,
+		},
+	}
+	respCE, err := NewCloudEvent(EntityFunctionCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create function response event: %v", err)
+	}
+	h.stream.enqueue(respCE)
+
+	resp := h.awaitResponse(t)
+	if resp.Success {
+		t.Error("expected success=false")
+	}
+	if resp.Error != "function boom" {
+		t.Errorf("expected error message propagated, got %q", resp.Error)
+	}
+	if resp.Retryable == nil || !*resp.Retryable {
+		t.Errorf("expected Retryable=true, got %v", resp.Retryable)
+	}
+}
+
 func TestStreaming_KeepAliveTimeout(t *testing.T) {
 	svc := newServiceForTest()
 	// Set very short keep-alive for testing.

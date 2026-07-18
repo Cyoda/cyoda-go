@@ -107,6 +107,18 @@ const (
 	ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
 )
 
+// Scheduled transition Function callouts
+const (
+	// ErrCodeScheduleFunctionInvalidResult is returned when a scheduled
+	// transition's arm-time Function callout completes but its result
+	// cannot be interpreted as a Schedule (wrong resultKind, or a
+	// malformed/ambiguous fireAt/fireAfterMs/expireAt/expireAfterMs
+	// payload). Non-retryable: the compute node's implementation must be
+	// fixed. Internal (500 + ticket) because the caller supplied a valid
+	// transition; the failure is in the compute node's response.
+	ErrCodeScheduleFunctionInvalidResult = "SCHEDULE_FUNCTION_INVALID_RESULT"
+)
+
 // OIDC provider management
 const (
 	// ErrCodeOidcInvalidTenant is returned when an OIDC provider registration

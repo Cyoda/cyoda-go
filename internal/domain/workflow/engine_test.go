@@ -12,6 +12,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -876,6 +877,10 @@ func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.
 	return m.criteriaResult, m.criteriaReason, m.criteriaErr
 }
 
+func (m *mockExtProc) DispatchFunction(_ context.Context, _ *spi.Entity, _ spi.ScheduleFunction, _, _, _ string) (contract.FunctionResult, error) {
+	return contract.FunctionResult{}, nil
+}
+
 func TestProcessorDispatchWithExtProc(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
@@ -1600,6 +1605,10 @@ func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *
 
 func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
 	return true, "", nil
+}
+
+func (m *mockExternalProcessing) DispatchFunction(_ context.Context, _ *spi.Entity, _ spi.ScheduleFunction, _, _, _ string) (contract.FunctionResult, error) {
+	return contract.FunctionResult{}, nil
 }
 
 func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {

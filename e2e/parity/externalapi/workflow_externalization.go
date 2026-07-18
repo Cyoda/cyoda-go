@@ -38,6 +38,7 @@ package externalapi
 // error-flag scenarios (09/05/06/07) are skipped accordingly.
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
@@ -244,8 +245,8 @@ func RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave(t *testing.T, fixt
 //
 // A SYNC `noop` processor under a fresh tenant (NOT ComputeTenant) — the
 // MemberRegistry routes by tenant and no member is registered for this fresh
-// tenant. The engine returns ErrNoMatchingMember and the API surfaces a non-2xx
-// error.
+// tenant. The engine returns ErrNoMatchingMember and the API surfaces a
+// retryable 503.
 func RunExternalAPI_09_08_NoExternalRegisteredFails(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	// Use NewTenant — no calculation member is registered for a fresh tenant.
@@ -270,16 +271,27 @@ func RunExternalAPI_09_08_NoExternalRegisteredFails(t *testing.T, fixture parity
 		t.Fatalf("CreateEntityRaw transport: %v", err)
 	}
 	// Engine returns ErrNoMatchingMember, which the workflow layer wraps as
-	// `processor noop failed: no matching calculation member: tags ""`. The
-	// API surfaces this as HTTP 400 + errorCode=WORKFLOW_FAILED — the same
-	// surface as 09/02. Discover-and-compare confirmed across all backends.
-	// Classified equiv_or_better: cyoda-go returns 4xx with a stable errorCode
-	// rather than a 5xx; the dictionary's "no available calculation member"
-	// language-neutral semantic is preserved in the detail string.
+	// `processor noop failed: no matching calculation member: tags ""`.
+	// classifyWorkflowError (internal/domain/entity/service.go) maps this
+	// compute-infra condition — not a bad request — to a retryable 503
+	// NO_COMPUTE_MEMBER_FOR_TAG rather than 400 WORKFLOW_FAILED: a client
+	// cannot fix "your request was bad" by editing the request, but it CAN
+	// retry once a compute member connects.
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
-		HTTPStatus: 400,
-		ErrorCode:  "WORKFLOW_FAILED",
+		HTTPStatus: 503,
+		ErrorCode:  "NO_COMPUTE_MEMBER_FOR_TAG",
 	})
+	var problem struct {
+		Properties struct {
+			Retryable bool `json:"retryable"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("failed to parse response body as JSON: %v\nbody: %s", err, body)
+	}
+	if !problem.Properties.Retryable {
+		t.Errorf("expected properties.retryable=true, got false (body: %s)", body)
+	}
 }
 
 // RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry — dictionary 09/09.

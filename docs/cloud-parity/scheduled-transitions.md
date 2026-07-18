@@ -8,11 +8,17 @@ and implemented code.
 
 ## 1. Timing contract
 
-A transition carrying `schedule: {delayMs, timeoutMs}` fires automatically at
-`scheduledTime = stateEntryTime + delayMs` — no manual or automated-cascade
-call is involved. `stateEntryTime` is captured at **arm time** (the write
-that lands the entity in the source state), not read back from entity
-metadata at fire time.
+A transition carries a `schedule` object with exactly one of two mutually
+exclusive timing sources:
+
+- **`delayMs`** — a static delay. `scheduledTime = stateEntryTime + delayMs`.
+- **`function`** — an arm-time compute-node callout that computes
+  `scheduledTime` (and optionally an expiry) per entity. See §9.
+
+Either way, no manual or automated-cascade call is involved once armed.
+`stateEntryTime` (for `delayMs`) or the callout dispatch instant (for
+`function`) is captured at **arm time** (the write that lands the entity in
+the source state), not read back from entity metadata at fire time.
 
 At pickup, `lateness = now − scheduledTime` (the worker's own clock):
 
@@ -43,6 +49,12 @@ atomic: an entity commit that lands in a scheduled state with no
 corresponding armed task is a silent lost fire, and is the failure mode this
 contract exists to prevent. A committed fire removes its own task in the
 same transaction — there is no window where a fired task is still live.
+
+A `function`-timed transition's step 1 is not a plain upsert: the callout
+result may resolve to **born expired** (§9), in which case the transition is
+never armed at all, and any prior row for that transition is cancelled via
+the same atomic write instead — see §9 for the resolution rules and the
+distinct `EXPIRE` (not `CANCEL`) audit outcome this produces.
 
 ## 3. One-shot criterion
 
@@ -139,3 +151,112 @@ Cloud's audit store, if transactional, need not reproduce this dup; if
 Cloud's audit path is similarly non-transactional under a comparable
 concurrency window, the same accepted-edge reasoning applies: state
 correctness is the invariant to preserve, not audit-line count.
+
+## 9. Arm-time Function computation (alternative to static `delayMs`)
+
+A `schedule` object carries exactly one of `delayMs` (§1) or `function`
+(this section) — never both, never neither. `function` names a compute-node
+callout that determines the firing time (and optionally an expiry) **per
+entity**, evaluated once at arm time — the same moment a static `delayMs`
+would be added to `stateEntryTime`.
+
+**Dispatch.** The callout is a generic Function calculation request — same
+routing (`calculationNodesTags`), attach-entity, and context conventions as
+an externalized processor or criterion, targeting a compute node reachable
+by tag. It is dispatched synchronously, inside the entity write's
+transaction, before the write commits — arming is part of the write, not a
+follow-up step.
+
+**Result contract.** The callout must return a result of kind `Schedule`
+shaped:
+
+```json
+{ "fireAt": 1700000000000 }
+```
+
+or the relative form:
+
+```json
+{ "fireAfterMs": 60000, "expireAfterMs": 30000 }
+```
+
+- Exactly one of `fireAt` (absolute unix-millis) or `fireAfterMs` (relative
+  to the arm-time dispatch instant) is required.
+- At most one of `expireAt` (absolute) or `expireAfterMs` (relative to the
+  *resolved* fire time, not to arm time) may additionally be present.
+- A `fireAt`/`fireAfterMs` that resolves into the past is **not** an error —
+  the transition arms to fire immediately, same as a due `delayMs` task
+  would on the next scan.
+
+**Resolution to the stored task.** The resolved values map onto the same
+`ScheduledTask` fields a static `delayMs` schedule uses — there is no
+separate wire shape at the storage layer:
+
+- resolved fire time → `scheduledTime`
+- resolved expiry minus resolved fire time (when an expiry was given) →
+  `timeoutMs`
+- no expiry given → `timeoutMs` is absent (never expires), identical to an
+  absent static `timeoutMs`.
+
+From the fire/expire/audit machinery's point of view (§1, §3, §6) a
+`function`-resolved task is indistinguishable from a `delayMs`-resolved one
+— the distinction exists only at arm time.
+
+**Born expired.** If the resolved expiry is at or before the resolved fire
+time, the transition is **born expired**: it is deliberately never armed at
+all (no row is ever written with an already-passed timeout). Instead, in the
+same atomic write as the rest of arming (§2):
+
+- any pending task for this transition/source-state is cancelled, and
+- a `SCHEDULED_TRANSITION_EXPIRE` audit event is recorded directly — not
+  `SCHEDULED_TRANSITION_CANCEL` — because this is "never had a chance to
+  fire," not "entity left the state that would have fired it."
+
+The entity write itself still succeeds; a born-expired result is a valid,
+handled outcome, not a failure.
+
+**Failure surface — fail-closed.** A malformed or wrong-kind result (missing
+or duplicate fire/expiry fields, an unknown field, a non-`Schedule`
+`resultKind`) is a compute-node implementation defect: the engine rejects
+the *entity write* rather than guessing or silently skipping the schedule,
+so no state change ever commits with an unschedulable transition sitting
+behind it. This is a `500` internal error (the failure is in the callout's
+response shape, not the caller's request) — cyoda-go's code is
+`SCHEDULE_FUNCTION_INVALID_RESULT`, not retryable as-is (the caller must fix
+the Function's implementation first). See §10 for the distinct, retryable
+failure mode of the compute node being *unreachable*.
+
+## 10. Uniform infra-failure surface (503) across processor / criterion / function callouts
+
+A compute node being unreachable, disconnected mid-request, or timing out is
+an **infrastructure** failure, not a request-validation failure — it applies
+identically regardless of which of the three callout kinds (externalized
+processor, externalized/FUNCTION criterion, or a scheduled transition's
+`function`) triggered the dispatch. cyoda-go surfaces exactly one retryable
+`503` outcome for this failure class, uniformly across all three:
+
+| Condition | Code |
+|---|---|
+| No connected compute member matches `calculationNodesTags` | `NO_COMPUTE_MEMBER_FOR_TAG` |
+| The dispatch round-trip exceeds its deadline | `DISPATCH_TIMEOUT` |
+| A cluster peer forward of the callout fails | `DISPATCH_FORWARD_FAILED` |
+| The target compute member disconnects mid-request | `COMPUTE_MEMBER_DISCONNECTED` |
+
+All four are `503`, all four are `retryable: true`. The entity write that
+triggered the callout is rejected (nothing commits); the client's own retry
+is expected to succeed once the compute-node infrastructure recovers — no
+engine-side retry loop is implied. This is a request-time surface: a
+`function` callout dispatched synchronously inside an entity write hits it
+exactly like a processor or criterion callout would.
+
+**Background re-arm on the fire path.** A scheduled transition's own fire
+can itself trigger a *downstream* arm (the cascade lands the entity in a new
+state that has its own `function`-timed schedule — §2). If that downstream
+arm's callout hits one of the four conditions above, the entire fire
+transaction rolls back (same CAS/atomicity guarantee as any other failed
+write) and the task is left in place, retried on a later scan under the
+existing best-effort redispatch throttle (§7) — there is no separate error
+surface here because there is no synchronous caller to return a `503` to;
+this path runs on the scan loop's own background goroutine. Operators are
+expected to observe this via server-side error logging (structured with the
+entity/transition/task identity), not via a client-facing status code.

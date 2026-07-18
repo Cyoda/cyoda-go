@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -100,5 +102,107 @@ func TestLocalExecutor_ErrorDoesNotPanic(t *testing.T) {
 
 	if fake.calls != 1 {
 		t.Fatalf("expected the engine to still be invoked once, got %d", fake.calls)
+	}
+}
+
+// capturedRecord is a decoded slog record — level, message, and attrs — used
+// by captureSlog below so tests can assert on log level without depending on
+// a specific handler's text/JSON encoding.
+type capturedRecord struct {
+	level slog.Level
+	msg   string
+	attrs map[string]any
+}
+
+// captureHandler is a minimal slog.Handler that records every emitted
+// record (at any level) into a shared slice, guarded by a mutex since the
+// scheduler's fire path runs on its own goroutine in production.
+type captureHandler struct {
+	mu      *sync.Mutex
+	records *[]capturedRecord
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := map[string]any{}
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.records = append(*h.records, capturedRecord{level: r.Level, msg: r.Message, attrs: attrs})
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+// captureSlog swaps slog.Default with captureHandler for the duration of the
+// test and returns the backing slice of decoded records, restoring the
+// previous default handler on cleanup.
+func captureSlog(t *testing.T) *[]capturedRecord {
+	t.Helper()
+	records := &[]capturedRecord{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(&captureHandler{mu: &sync.Mutex{}, records: records}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return records
+}
+
+// TestLocalExecutor_FireFailure_LogsErrorWithStructuredFields drives a fire
+// whose engine call fails — the scenario the design calls out: a downstream
+// arm-Function's compute node is unavailable, the fire transaction rolls
+// back, and today's only surface is a slog.Warn. A broken downstream
+// function silently blocking an unrelated scheduled transition (and
+// retrying every scan) must be observable at ERROR, with the task's
+// identity in the structured fields so an operator can find it.
+func TestLocalExecutor_FireFailure_LogsErrorWithStructuredFields(t *testing.T) {
+	engineErr := errors.New("compute node unavailable")
+	fake := &fakeEngine{err: engineErr}
+	exec := NewLocalExecutor(fake)
+
+	task := spi.ScheduledTask{
+		ID:          "t-fail-1",
+		TenantID:    "tenant-x",
+		EntityID:    "entity-1",
+		Transition:  "ARM_NEXT",
+		SourceState: "PENDING",
+	}
+	records := captureSlog(t)
+
+	exec.Execute(context.Background(), task, "self")
+
+	if fake.calls != 1 {
+		t.Fatalf("expected the engine to still be invoked once, got %d", fake.calls)
+	}
+
+	var found *capturedRecord
+	for i := range *records {
+		if (*records)[i].msg == "scheduled task local fire failed" {
+			found = &(*records)[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a 'scheduled task local fire failed' log record, got %+v", *records)
+	}
+	if found.level != slog.LevelError {
+		t.Errorf("level = %v, want %v (a broken downstream arm-Function must be ERROR-visible, not WARN)", found.level, slog.LevelError)
+	}
+	if got := found.attrs["pkg"]; got != "scheduler" {
+		t.Errorf("pkg = %v, want %q", got, "scheduler")
+	}
+	if got := found.attrs["entityId"]; got != task.EntityID {
+		t.Errorf("entityId = %v, want %q", got, task.EntityID)
+	}
+	if got := found.attrs["transition"]; got != task.Transition {
+		t.Errorf("transition = %v, want %q", got, task.Transition)
+	}
+	if got := found.attrs["sourceState"]; got != task.SourceState {
+		t.Errorf("sourceState = %v, want %q", got, task.SourceState)
+	}
+	if found.attrs["err"] == nil {
+		t.Errorf("expected an 'err' attr carrying the engine error, got none")
 	}
 }

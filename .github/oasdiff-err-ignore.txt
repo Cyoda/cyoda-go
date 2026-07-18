@@ -193,3 +193,13 @@ error at api/openapi.yaml, in API PUT /sql/schema/putDefault/{schemaName} the re
 error at api/openapi.yaml, in API PUT /sql/schema/putDefault/{schemaName} the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].
 error at api/openapi.yaml, in API GET /sql/schema/{schemaId} the response property `tables/items/fields/items/hidden` became optional for the status `200` [response-property-became-optional].
 error at api/openapi.yaml, in API GET /sql/schema/{schemaId} the response property `tables/items/fields/items/isArray` became optional for the status `200` [response-property-became-optional].
+
+# scheduled-transition Function (schedule.function) — delayMs de-required on TransitionScheduleDto.
+# NOTE: unlike the reconciliation entries above, this is an INTENTIONAL, schema-version-gated
+# feature evolution, not a spec-to-reality drift fix. A schedule now sources its firing time from
+# EITHER `delayMs` OR `function` (mutually exclusive), so `delayMs` can no longer be required; the
+# workflow-import contract bumped 1.2 -> 1.3 for this. An exported workflow that uses `function`
+# legitimately has no `delayMs`. No pre-1.3 workflow lacks `delayMs`, so existing exports are
+# unaffected; consumers of exported definitions must handle `delayMs` absence on 1.3+ schedules.
+# This accepted breaking change is called out in CHANGELOG.md.
+error at api/openapi.yaml, in API GET /model/{entityName}/{modelVersion}/workflow/export the response property `workflows/items/states/additionalProperties/transitions/items/schedule/delayMs` became optional for the status `200` [response-property-became-optional].

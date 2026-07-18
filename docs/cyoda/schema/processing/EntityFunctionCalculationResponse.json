@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/processing/EntityFunctionCalculationResponse.json",
+  "title": "EntityFunctionCalculationResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original function calculation request."
+    },
+    "entityId": {
+      "type": "string",
+      "description": "Entity ID.",
+      "format": "uuid"
+    },
+    "result": {
+      "type": "object",
+      "goJSONSchema": {
+        "type": "json.RawMessage"
+      },
+      "description": "Function calculation result."
+    },
+    "resultKind": {
+      "type": "string",
+      "description": "Discriminator identifying the shape of `result`."
+    }
+  },
+  "required": [
+    "requestId",
+    "entityId"
+  ]
+}

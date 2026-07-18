@@ -117,6 +117,30 @@ func Internal(message string, err error) *AppError {
 	}
 }
 
+// InternalWithCode creates a 500 error with internal detail, like Internal,
+// but stamps a specific client-facing error code instead of the generic
+// ErrCodeServerError. Use when the 500 is precise enough for the caller to
+// distinguish it from an opaque infra failure (e.g. a compute node returned
+// a result the engine could not interpret) — the code needs a matching
+// errors/<CODE>.md topic (TestErrCode_Parity enforces the pairing). Unlike
+// Internal, this does not remap known sentinel errors (unique-violation,
+// partial-key, tx-conflict) to their dedicated 4xx codes; callers with a
+// custom code are not passing those sentinels.
+func InternalWithCode(code, message string, err error) *AppError {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	return &AppError{
+		Level:   LevelInternal,
+		Status:  http.StatusInternalServerError,
+		Code:    code,
+		Message: fmt.Sprintf("%s: %s", code, message),
+		Detail:  detail,
+		Err:     err,
+	}
+}
+
 // Fatal creates a 500 error indicating an unrecoverable failure.
 func Fatal(message string, err error) *AppError {
 	detail := ""

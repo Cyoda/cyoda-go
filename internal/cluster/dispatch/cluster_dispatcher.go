@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -17,6 +18,14 @@ import (
 
 const (
 	gossipPollInterval = 200 * time.Millisecond
+
+	// forwardFailedClientMessage is the sanitized, client-facing message for
+	// a DISPATCH_FORWARD_FAILED error. The underlying transport error (from
+	// HTTPForwarder.forward) embeds the peer's internal address, port, and
+	// route — that detail must never reach the client (topology leak, see
+	// .claude/rules/security.md and B2 in the final review); it is logged
+	// server-side instead via slog at the call site.
+	forwardFailedClientMessage = "forwarding the callout to a peer node failed"
 )
 
 // ClusterDispatcher implements contract.ExternalProcessingService with cluster-aware
@@ -98,12 +107,18 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 	slog.Debug("forwarding processor to peer",
 		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
 
-	resp, err := d.forwarder.ForwardProcessor(ctx, peer.Addr, req)
+	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
+		slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", "processor", "peer", peer.NodeID, "err", err)
+		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+			forwardFailedClientMessage).AsRetryable()
 	}
 	if !resp.Success {
-		return nil, fmt.Errorf("peer %s dispatch failed: %s", peer.NodeID, resp.Error)
+		if resp.ErrorCode != "" {
+			return nil, remintPeerError(*resp)
+		}
+		slog.Warn("peer processor dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		return nil, fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
 		common.AddWarning(ctx, w)
@@ -157,18 +172,86 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 	slog.Debug("forwarding criteria to peer",
 		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
 
-	resp, err := d.forwarder.ForwardCriteria(ctx, peer.Addr, req)
+	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
 	if err != nil {
-		return false, "", fmt.Errorf("%s: forward to %s: %w", common.ErrCodeDispatchForwardFailed, peer.NodeID, err)
+		slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", "criteria", "peer", peer.NodeID, "err", err)
+		return false, "", common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+			forwardFailedClientMessage).AsRetryable()
 	}
 	if !resp.Success {
-		return false, "", fmt.Errorf("peer %s criteria dispatch failed: %s", peer.NodeID, resp.Error)
+		if resp.ErrorCode != "" {
+			return false, "", remintPeerError(*resp)
+		}
+		slog.Warn("peer criteria dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		return false, "", fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
 		common.AddWarning(ctx, w)
 	}
 
-	return resp.Matches, resp.Reason, nil
+	peerMatches := resp.Matches != nil && *resp.Matches
+	return peerMatches, resp.Reason, nil
+}
+
+// DispatchFunction tries the local node first. If the local node has no matching
+// calculation member, it looks up peers via gossip and forwards the request.
+func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
+	// Mint the owner token once before the local-vs-forward split so that
+	// a callback landing on a peer node routes back to this (owner) node.
+	tok := ""
+	if txID != "" && d.signer != nil {
+		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
+			tok = t
+		} else {
+			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
+		}
+	}
+	ctx = internalgrpc.WithTxToken(ctx, tok)
+
+	// Try local first.
+	result, err := d.local.DispatchFunction(ctx, entity, fn, workflowName, transitionName, txID)
+	if err == nil {
+		return result, nil
+	}
+	if !isNoMatchingMember(err) {
+		return contract.FunctionResult{}, err
+	}
+
+	tags := fn.CalculationNodesTags
+	uc := spi.MustGetUserContext(ctx)
+	tenantID := string(uc.Tenant.ID)
+
+	slog.Debug("local function dispatch found no member, looking up cluster peers",
+		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
+
+	req := d.buildFunctionRequest(entity, fn, workflowName, transitionName, txID, uc, tags, tok)
+
+	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
+	if err != nil {
+		return contract.FunctionResult{}, err
+	}
+
+	slog.Debug("forwarding function to peer",
+		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
+
+	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
+	if err != nil {
+		slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", "function", "peer", peer.NodeID, "err", err)
+		return contract.FunctionResult{}, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+			forwardFailedClientMessage).AsRetryable()
+	}
+	if !resp.Success {
+		if resp.ErrorCode != "" {
+			return contract.FunctionResult{}, remintPeerError(*resp)
+		}
+		slog.Warn("peer function dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		return contract.FunctionResult{}, fmt.Errorf("peer dispatch failed")
+	}
+	for _, w := range resp.Warnings {
+		common.AddWarning(ctx, w)
+	}
+
+	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
 }
 
 // findPeerWithPolling polls the gossip registry for a peer with matching tags,
@@ -187,8 +270,8 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 
 		select {
 		case <-deadline:
-			return contract.NodeInfo{}, fmt.Errorf("%s: no peer with tags %q for tenant %s after %v",
-				common.ErrCodeNoComputeMemberForTag, tags, tenantID, d.waitTimeout)
+			return contract.NodeInfo{}, common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag,
+				fmt.Sprintf("no peer with tags %q for tenant %s after %v", tags, tenantID, d.waitTimeout)).AsRetryable()
 		case <-ctx.Done():
 			return contract.NodeInfo{}, ctx.Err()
 		case <-ticker.C:
@@ -232,11 +315,12 @@ func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags 
 }
 
 // buildProcessorRequest constructs the cross-node dispatch request for a processor.
-func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) *DispatchProcessorRequest {
-	return &DispatchProcessorRequest{
+func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
+	return DispatchCalloutRequest{
+		Kind:           "processor",
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
-		Processor:      processor,
+		Processor:      &processor,
 		WorkflowName:   workflowName,
 		TransitionName: transitionName,
 		TxID:           txID,
@@ -249,8 +333,9 @@ func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor 
 }
 
 // buildCriteriaRequest constructs the cross-node dispatch request for criteria.
-func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string, tok string) *DispatchCriteriaRequest {
-	return &DispatchCriteriaRequest{
+func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
+	return DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
 		Criterion:      criterion,
@@ -265,6 +350,55 @@ func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion j
 		Roles:          uc.Roles,
 		TxToken:        tok,
 	}
+}
+
+// buildFunctionRequest constructs the cross-node dispatch request for a function callout.
+func (d *ClusterDispatcher) buildFunctionRequest(entity *spi.Entity, fn spi.ScheduleFunction, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
+	return DispatchCalloutRequest{
+		Kind:           "function",
+		Entity:         json.RawMessage(entity.Data),
+		EntityMeta:     entity.Meta,
+		Function:       &fn,
+		WorkflowName:   workflowName,
+		TransitionName: transitionName,
+		TxID:           txID,
+		TenantID:       string(uc.Tenant.ID),
+		Tags:           tags,
+		UserID:         uc.UserID,
+		Roles:          uc.Roles,
+		TxToken:        tok,
+	}
+}
+
+// remintPeerError re-mints a peer's classified dispatch failure (see
+// dispatchErrorResponse in handler.go, which populates the
+// ErrorCode/ErrorStatus/ErrorRetryable trio) as a fresh *common.AppError on
+// the forwarding node, so the caller sees the SAME taxonomy single-node
+// dispatch would have produced for the equivalent failure — not a plain
+// error that classifyWorkflowError collapses into 400 WORKFLOW_FAILED (B1,
+// final review). Only called when resp.ErrorCode != "".
+//
+// The message is a generic, sanitized string — never resp.Error verbatim —
+// matching the same client-safety posture as forwardFailedClientMessage
+// (B2): the peer's local dispatch failure text (e.g. a compute-node error)
+// must not leak through an untrusted intermediate hop unreviewed.
+//
+// Status 500 re-mints via InternalWithCode (matching how single-node
+// dispatch mints SCHEDULE_FUNCTION_INVALID_RESULT — LevelInternal, sanitized
+// ticket response). Every other status re-mints via Operational, chaining
+// .AsRetryable() iff the peer classified it retryable — matching how
+// single-node dispatch mints DISPATCH_TIMEOUT / NO_COMPUTE_MEMBER_FOR_TAG /
+// COMPUTE_MEMBER_DISCONNECTED (LevelOperational, 503, retryable).
+func remintPeerError(resp DispatchCalloutResponse) error {
+	const genericMsg = "peer node dispatch failed"
+	if resp.ErrorStatus == http.StatusInternalServerError {
+		return common.InternalWithCode(resp.ErrorCode, genericMsg, nil)
+	}
+	appErr := common.Operational(resp.ErrorStatus, resp.ErrorCode, genericMsg)
+	if resp.ErrorRetryable {
+		appErr = appErr.AsRetryable()
+	}
+	return appErr
 }
 
 // isNoMatchingMember returns true if the error indicates no local calculation
