@@ -175,5 +175,14 @@ func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.Rec
 			return nil, err
 		}
 	}
+	// req.Cancel deletes are staged in the same transaction as the above,
+	// but deliberately excluded from the returned cancelled slice: the
+	// caller audits them separately as EXPIRE (born-expired scheduled
+	// transitions), not CANCEL (SourceState mismatch).
+	for _, id := range req.Cancel {
+		if _, err := s.Delete(ctx, id); err != nil {
+			return nil, err
+		}
+	}
 	return cancelled, nil
 }
