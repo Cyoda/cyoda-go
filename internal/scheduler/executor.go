@@ -72,8 +72,22 @@ func (l *LocalExecutor) Execute(_ context.Context, task spi.ScheduledTask, _ str
 	sysCtx := SystemUserContext(task.TenantID)
 	outcome, err := l.engine.FireScheduledTransition(sysCtx, task)
 	if err != nil {
-		slog.Warn("scheduled task local fire failed",
-			"pkg", "scheduler", "taskId", task.ID, "err", err)
+		// ERROR, not WARN: a fire failure here most commonly means the
+		// cascade re-armed into a downstream state whose schedule.function
+		// compute node is unavailable, so the fire transaction rolled back.
+		// The task is left in place — Execute has no store handle to delete
+		// it with — and the scan loop's existing redispatch backoff
+		// (internal/scheduler/service.go) still throttles the retry. Left
+		// at WARN, a broken downstream function silently blocks an
+		// unrelated scheduled transition and retries every scan with no
+		// operator-visible signal; ERROR makes that observable.
+		slog.Error("scheduled task local fire failed",
+			"pkg", "scheduler",
+			"taskId", task.ID,
+			"entityId", task.EntityID,
+			"transition", task.Transition,
+			"sourceState", task.SourceState,
+			"err", err)
 		return
 	}
 	slog.Debug("scheduled task local fire resolved",
