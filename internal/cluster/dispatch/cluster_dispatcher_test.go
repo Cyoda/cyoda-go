@@ -552,6 +552,56 @@ func TestClusterDispatcher_RemintsPeerErrorTaxonomy(t *testing.T) {
 		if errors.As(err, &appErr) {
 			t.Fatalf("expected plain fallback error (no AppError), got %+v", appErr)
 		}
+		// B1 (final review): the fallback error must not embed the peer's
+		// NodeID — that's cluster topology, and classifyWorkflowError maps
+		// this plain error straight to a 400 WORKFLOW_FAILED whose Message
+		// is copied verbatim into the client-facing problem+json detail.
+		if strings.Contains(err.Error(), "peer-1") {
+			t.Errorf("client-facing fallback error leaks peer NodeID: %q", err.Error())
+		}
+	})
+
+	// TestClusterDispatcher_RemintsPeerErrorTaxonomy/empty_error_code_* above
+	// covers criteria; the two subtests below cover the processor and
+	// function fallback sites (B1) with the same NodeID-redaction assertion.
+	t.Run("empty_error_code_processor_fallback_redacts_node_id", func(t *testing.T) {
+		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
+			Success: false,
+			Error:   "dispatch processor failed",
+		}}
+		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+		ctx := testContext()
+		_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			t.Fatalf("expected plain fallback error (no AppError), got %+v", appErr)
+		}
+		if strings.Contains(err.Error(), "peer-1") {
+			t.Errorf("client-facing fallback error leaks peer NodeID: %q", err.Error())
+		}
+	})
+
+	t.Run("empty_error_code_function_fallback_redacts_node_id", func(t *testing.T) {
+		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
+			Success: false,
+			Error:   "dispatch function failed",
+		}}
+		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+		ctx := testContext()
+		_, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			t.Fatalf("expected plain fallback error (no AppError), got %+v", appErr)
+		}
+		if strings.Contains(err.Error(), "peer-1") {
+			t.Errorf("client-facing fallback error leaks peer NodeID: %q", err.Error())
+		}
 	})
 }
 

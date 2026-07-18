@@ -117,7 +117,8 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 		if resp.ErrorCode != "" {
 			return nil, remintPeerError(*resp)
 		}
-		return nil, fmt.Errorf("peer %s dispatch failed: %s", peer.NodeID, resp.Error)
+		slog.Warn("peer processor dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		return nil, fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
 		common.AddWarning(ctx, w)
@@ -181,7 +182,8 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 		if resp.ErrorCode != "" {
 			return false, "", remintPeerError(*resp)
 		}
-		return false, "", fmt.Errorf("peer %s criteria dispatch failed: %s", peer.NodeID, resp.Error)
+		slog.Warn("peer criteria dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		return false, "", fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
 		common.AddWarning(ctx, w)
@@ -242,7 +244,8 @@ func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.En
 		if resp.ErrorCode != "" {
 			return contract.FunctionResult{}, remintPeerError(*resp)
 		}
-		return contract.FunctionResult{}, fmt.Errorf("peer %s function dispatch failed: %s", peer.NodeID, resp.Error)
+		slog.Warn("peer function dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		return contract.FunctionResult{}, fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
 		common.AddWarning(ctx, w)
