@@ -118,6 +118,8 @@ message CloudEvent {
 - `EntityProcessorCalculationResponse` — client → server; processor result
 - `EntityCriteriaCalculationRequest` — server → client; criteria dispatch request
 - `EntityCriteriaCalculationResponse` — client → server; criteria result
+- `EntityFunctionCalculationRequest` — server → client; function dispatch request
+- `EntityFunctionCalculationResponse` — client → server; function result
 - `EventAckResponse` — client → server; acknowledges any server event
 
 **EventAckResponse `text_data` JSON shape:**
@@ -307,6 +309,37 @@ guaranteed, backend-independent delivery for a manual rejection), and the
 workflow-selection paths, since a manual rejection rolls its transaction back.
 An omitted `reason` defaults to `"criterion did not match"` in the audit and
 is left out of the 400 detail (bare `criterion not matched`).
+
+**Function callout wire shape:**
+
+`EntityFunctionCalculationRequest`/`EntityFunctionCalculationResponse` are the wire types for the Function callout — a third callout shape alongside processor and criteria that returns a declared typed value instead of a boolean or entity payload (e.g. computing a scheduled state transition's fire time). Request shape mirrors the processor request, naming the callout target `functionId`/`functionName`:
+
+```json
+{
+  "id": "<requestId>",
+  "requestId": "<requestId>",
+  "entityId": "<entityUUID>",
+  "functionId": "compute-fire-at",
+  "functionName": "compute-fire-at",
+  "workflow": {"id": "prize-lifecycle", "name": "prize-lifecycle"},
+  "transition": {"id": "APPROVE", "name": "APPROVE"},
+  "transactionId": "<txUUID>",
+  "success": true
+}
+```
+
+Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON object) plus a `resultKind` discriminator string identifying its shape:
+
+```json
+{
+  "requestId": "<same requestId>",
+  "success": true,
+  "result": {"fireAt": 1},
+  "resultKind": "Schedule",
+  "warnings": [],
+  "error": null
+}
+```
 
 **Auth context on dispatched events:**
 
