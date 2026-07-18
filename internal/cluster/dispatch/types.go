@@ -49,6 +49,21 @@ type DispatchCalloutResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 
+	// ErrorCode, ErrorStatus, and ErrorRetryable classify a failed local
+	// dispatch (Success == false) using the same taxonomy single-node
+	// dispatch uses (*common.AppError's Code/Status/Retryable, or the
+	// NO_COMPUTE_MEMBER_FOR_TAG/503/retryable trio for
+	// contract.ErrNoMatchingMember). The forwarding node re-mints an
+	// *common.AppError from this trio instead of collapsing every peer
+	// failure into a generic 400 WORKFLOW_FAILED — see B1 in the
+	// scheduled-transition-function final review. Error stays the
+	// sanitized human-readable message; ErrorCode == "" means the peer
+	// predates this classification (or the failure wasn't classifiable),
+	// so the forwarding node falls back to the historical plain error.
+	ErrorCode      string `json:"errorCode,omitempty"`
+	ErrorStatus    int    `json:"errorStatus,omitempty"`
+	ErrorRetryable bool   `json:"errorRetryable,omitempty"`
+
 	// EntityData is populated for a processor callout response.
 	EntityData []byte `json:"entityData,omitempty"`
 

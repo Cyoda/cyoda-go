@@ -14,6 +14,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -419,5 +420,208 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 	}
 	if strings.Contains(resp.Error, "password") {
 		t.Errorf("error response must not contain internal details, got %q", resp.Error)
+	}
+}
+
+// TestHandler_ErrorTaxonomy_AppError verifies that when the local dispatch
+// (processor/criteria/function) fails with an *common.AppError, the handler
+// classifies ErrorCode/ErrorStatus/ErrorRetryable on the response from that
+// AppError, so a forwarding node can re-mint the same taxonomy instead of
+// collapsing every peer failure into a generic error (B1, final review).
+func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
+	auth := newAEAD(t)
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+		"processor dispatch timed out after 3000ms").AsRetryable()
+
+	cases := []struct {
+		name string
+		req  DispatchCalloutRequest
+		fake *fakeLocalDispatcher
+	}{
+		{
+			name: "processor",
+			req: DispatchCalloutRequest{
+				Kind: "processor", TenantID: "t", UserID: "u", TxID: "tx",
+				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{processorErr: appErr},
+		},
+		{
+			name: "criteria",
+			req: DispatchCalloutRequest{
+				Kind: "criteria", TenantID: "t", UserID: "u", TxID: "tx",
+				Criterion:      json.RawMessage(`{"type":"eq"}`),
+				Target:         "target",
+				WorkflowName:   "w",
+				TransitionName: "t",
+				ProcessorName:  "p",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{criteriaErr: appErr},
+		},
+		{
+			name: "function",
+			req: DispatchCalloutRequest{
+				Kind: "function", TenantID: "t", UserID: "u", TxID: "tx",
+				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{functionErr: appErr},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewDispatchHandler(tc.fake, auth)
+			mux := http.NewServeMux()
+			handler.Register(mux)
+
+			plain, _ := json.Marshal(tc.req)
+			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httpReq)
+
+			var resp DispatchCalloutResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Success {
+				t.Fatal("expected success=false")
+			}
+			if resp.ErrorCode != common.ErrCodeDispatchTimeout {
+				t.Errorf("ErrorCode = %q, want %q", resp.ErrorCode, common.ErrCodeDispatchTimeout)
+			}
+			if resp.ErrorStatus != http.StatusServiceUnavailable {
+				t.Errorf("ErrorStatus = %d, want %d", resp.ErrorStatus, http.StatusServiceUnavailable)
+			}
+			if !resp.ErrorRetryable {
+				t.Error("ErrorRetryable = false, want true")
+			}
+			// The client-facing Error text must stay generic — no AppError
+			// internal message content (coordinated with B2).
+			if strings.Contains(resp.Error, "3000ms") {
+				t.Errorf("Error field leaked AppError detail: %q", resp.Error)
+			}
+		})
+	}
+}
+
+// TestHandler_ErrorTaxonomy_NoMatchingMember verifies that when the local
+// dispatch fails with contract.ErrNoMatchingMember (a peer that lost its
+// matching member between gossip and forward), the handler classifies the
+// response as the NO_COMPUTE_MEMBER_FOR_TAG/503/retryable trio.
+func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
+	auth := newAEAD(t)
+	noMemberErr := fmt.Errorf("%w: tags %q", contract.ErrNoMatchingMember, "python")
+
+	cases := []struct {
+		name string
+		req  DispatchCalloutRequest
+		fake *fakeLocalDispatcher
+	}{
+		{
+			name: "processor",
+			req: DispatchCalloutRequest{
+				Kind: "processor", TenantID: "t", UserID: "u", TxID: "tx",
+				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{processorErr: noMemberErr},
+		},
+		{
+			name: "criteria",
+			req: DispatchCalloutRequest{
+				Kind: "criteria", TenantID: "t", UserID: "u", TxID: "tx",
+				Criterion:      json.RawMessage(`{"type":"eq"}`),
+				Target:         "target",
+				WorkflowName:   "w",
+				TransitionName: "t",
+				ProcessorName:  "p",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{criteriaErr: noMemberErr},
+		},
+		{
+			name: "function",
+			req: DispatchCalloutRequest{
+				Kind: "function", TenantID: "t", UserID: "u", TxID: "tx",
+				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
+				WorkflowName:   "w",
+				TransitionName: "t",
+				EntityMeta:     spi.EntityMeta{ID: "e"},
+				Entity:         json.RawMessage(`{}`),
+			},
+			fake: &fakeLocalDispatcher{functionErr: noMemberErr},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewDispatchHandler(tc.fake, auth)
+			mux := http.NewServeMux()
+			handler.Register(mux)
+
+			plain, _ := json.Marshal(tc.req)
+			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httpReq)
+
+			var resp DispatchCalloutResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Success {
+				t.Fatal("expected success=false")
+			}
+			if resp.ErrorCode != common.ErrCodeNoComputeMemberForTag {
+				t.Errorf("ErrorCode = %q, want %q", resp.ErrorCode, common.ErrCodeNoComputeMemberForTag)
+			}
+			if resp.ErrorStatus != http.StatusServiceUnavailable {
+				t.Errorf("ErrorStatus = %d, want %d", resp.ErrorStatus, http.StatusServiceUnavailable)
+			}
+			if !resp.ErrorRetryable {
+				t.Error("ErrorRetryable = false, want true")
+			}
+		})
+	}
+}
+
+// TestHandler_UnknownCalloutKind covers the default branch of handleCallout:
+// an unrecognized Kind must return 400 with a descriptive message (C2).
+func TestHandler_UnknownCalloutKind(t *testing.T) {
+	auth := newAEAD(t)
+	handler := NewDispatchHandler(&fakeLocalDispatcher{}, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind: "bogus-kind", TenantID: "t", UserID: "u",
+		EntityMeta: spi.EntityMeta{ID: "e"},
+		Entity:     json.RawMessage(`{}`),
+	})
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown callout kind") {
+		t.Errorf("expected body to mention unknown callout kind, got %q", rec.Body.String())
 	}
 }
