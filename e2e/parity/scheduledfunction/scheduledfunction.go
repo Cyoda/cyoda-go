@@ -50,6 +50,8 @@ func init() {
 		parity.NamedTest{Name: "ScheduledFunction_BornExpiredCancelsPriorRow", Fn: RunScheduledFunction_BornExpiredCancelsPriorRow},
 		parity.NamedTest{Name: "ScheduledFunction_PastFireAtFiresPromptly", Fn: RunScheduledFunction_PastFireAtFiresPromptly},
 		parity.NamedTest{Name: "ScheduledFunction_ExpiryElapsedExpiresNoFire", Fn: RunScheduledFunction_ExpiryElapsedExpiresNoFire},
+		parity.NamedTest{Name: "ScheduledFunction_CancelOnStateExit", Fn: RunScheduledFunction_CancelOnStateExit},
+		parity.NamedTest{Name: "ScheduledFunction_ReArmReplacesSchedule", Fn: RunScheduledFunction_ReArmReplacesSchedule},
 	)
 }
 
@@ -218,6 +220,37 @@ func entityJSON(schedMode string, offsetMs, expireOffsetMs int64) string {
 }
 
 const sampleDoc = `{"k":1,"schedMode":"none","offsetMs":0,"expireOffsetMs":0}`
+
+// scheduleFunctionCancelWorkflowJSON builds a REPLACE-mode workflow import
+// payload mirroring scheduleFunctionWorkflowJSON's single schedule.function
+// transition, but additionally giving Open a manual "Divert" transition to a
+// third, unrelated state (Diverted). This is the function-side sibling of
+// e2e/parity/scheduledtransition's cancel-wf: it lets a manual state exit be
+// exercised against a still-armed Function-computed task without ever
+// letting that task fire.
+func scheduleFunctionCancelWorkflowJSON(wfName string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": %q, "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [
+					{"name": "AutoClose", "next": "Closed", "manual": false,
+						"schedule": {"function": {
+							"name": %q,
+							"resultKind": "Schedule",
+							"calculationNodesTags": %q,
+							"attachEntity": true
+						}}
+					},
+					{"name": "Divert", "next": "Diverted", "manual": true}
+				]},
+				"Closed": {},
+				"Diverted": {}
+			}
+		}]
+	}`, wfName, functionName, functionTag)
+}
 
 // RunScheduledFunction_ArmAbsoluteFireAt verifies the absolute-fireAt arm
 // path end-to-end: "sched-fn-resolve" returns a Schedule result with fireAt
@@ -402,5 +435,134 @@ func RunScheduledFunction_ExpiryElapsedExpiresNoFire(t *testing.T, fixture parit
 	events := stateMachineEvents(t, c, entityID)
 	if hasStateMachineEvent(events, eventFired, "") {
 		t.Errorf("expected no %s event — lateness already exceeded timeout+grace before any scanner ran; got events: %+v", eventFired, events)
+	}
+}
+
+// RunScheduledFunction_CancelOnStateExit verifies that an entity explicitly
+// leaving a state via a DIFFERENT (manual) transition cancels that state's
+// pending Function-armed task: a SCHEDULED_TRANSITION_CANCEL audit event is
+// recorded (design §5.1, same contract as the static-delayMs sibling
+// e2e/parity/scheduledtransition's RunScheduledTransition_CancelOnStateExit)
+// and the abandoned task never fires. Like that sibling, this needs no
+// wall-clock wait at all — the cancel is synchronous within the manual
+// transition's own request — but the far-future (10 minute) arm still
+// comfortably outlives fireTimeout, so any FIRE observed later would be a
+// genuine bug, not a race.
+func RunScheduledFunction_CancelOnStateExit(t *testing.T, fixture parity.BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "schedfn-cancel-on-exit"
+	const modelVersion = 1
+
+	setupModelWithWorkflow(t, c, modelName, modelVersion, sampleDoc, scheduleFunctionCancelWorkflowJSON("schedfn-cancel-wf"))
+
+	// relative mode, 600_000ms (10 min) offset — far enough in the future
+	// that it cannot fire within fireTimeout regardless of scan cadence.
+	entityID, err := c.CreateEntity(t, modelName, modelVersion, entityJSON("relative", 600_000, 0))
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	events := stateMachineEvents(t, c, entityID)
+	if !hasStateMachineEvent(events, eventArmed, "Open") {
+		t.Fatalf("expected the %s audit event for state Open after entity creation; got events: %+v", eventArmed, events)
+	}
+
+	if err := c.UpdateEntity(t, entityID, "Divert", entityJSON("relative", 600_000, 0)); err != nil {
+		t.Fatalf("UpdateEntity(Divert): %v", err)
+	}
+
+	got, err := c.GetEntity(t, entityID)
+	if err != nil {
+		t.Fatalf("GetEntity: %v", err)
+	}
+	if got.Meta.State != "Diverted" {
+		t.Fatalf("expected entity in Diverted after the manual exit; got %q", got.Meta.State)
+	}
+
+	events = stateMachineEvents(t, c, entityID)
+	if !hasStateMachineEvent(events, eventCancelled, "Open") {
+		t.Errorf("expected a %s audit event for the abandoned AutoClose task (state Open); got events: %+v", eventCancelled, events)
+	}
+	// The 10 minute arm comfortably outlives this scenario, so any FIRE
+	// would be a genuine bug (cancel didn't actually remove the row), not a
+	// race — mirroring the static sibling's identical reasoning.
+	if hasStateMachineEvent(events, eventFired, "") {
+		t.Errorf("expected no %s event — the scheduled task should have been cancelled, not fired; got events: %+v", eventFired, events)
+	}
+}
+
+// RunScheduledFunction_ReArmReplacesSchedule verifies the non-expired
+// complement to RunScheduledFunction_BornExpiredCancelsPriorRow: a same-state
+// re-arm whose recomputed Function result is still a VALID (non-expired)
+// schedule must supersede the prior armed row rather than leave it in place
+// or fire it twice (design: reconcileScheduledTasks re-arms via the same
+// deterministic taskID — see arm.go — so the store upserts in place).
+//
+// The first arm is far in the future (10 minutes, like
+// BornExpiredCancelsPriorRow's "proves a real row existed" arm) — it cannot
+// fire within fireTimeout on its own. The re-arm's recomputed Function
+// result is a near (150ms) fire time. If the prior far-future row were left
+// untouched instead of superseded, the entity would never reach Closed
+// within fireTimeout; if the engine somehow fired the same task twice,
+// there would be more than one SCHEDULED_TRANSITION_FIRE / ARM(Open) event.
+// Observing exactly "fires promptly, exactly once, after exactly two arms"
+// is the only assertion available through this API-only harness (see the
+// package doc comment) but is sufficient to prove supersession rather than
+// duplication or a stale schedule.
+func RunScheduledFunction_ReArmReplacesSchedule(t *testing.T, fixture parity.BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "schedfn-rearm-replaces"
+	const modelVersion = 1
+
+	setupModelWithWorkflow(t, c, modelName, modelVersion, sampleDoc, scheduleFunctionWorkflowJSON("schedfn-rearm-wf"))
+
+	// First arm: far in the future (10 min) — cannot fire within
+	// fireTimeout, so any fire observed later must be on the RE-ARMED
+	// schedule, not this original one.
+	entityID, err := c.CreateEntity(t, modelName, modelVersion, entityJSON("relative", 600_000, 0))
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	events := stateMachineEvents(t, c, entityID)
+	if !hasStateMachineEvent(events, eventArmed, "Open") {
+		t.Fatalf("expected the first arm's %s audit event for state Open; got events: %+v", eventArmed, events)
+	}
+
+	// Re-arm via a data-only loopback (still Open, no transition): the new
+	// Function result is a near (150ms) fire time.
+	if err := c.UpdateEntityData(t, entityID, entityJSON("relative", 150, 0)); err != nil {
+		t.Fatalf("UpdateEntityData (near re-arm): %v", err)
+	}
+
+	awaitEntityState(t, c, entityID, "Closed", fireTimeout)
+
+	events = stateMachineEvents(t, c, entityID)
+	if !hasStateMachineEvent(events, eventFired, "Closed") {
+		t.Errorf("expected a %s audit event with state Closed on the re-armed near schedule; got events: %+v", eventFired, events)
+	}
+
+	// Exactly two arms (create + re-arm) and exactly one fire: if the prior
+	// far-future row had been left in place alongside a second, independent
+	// row for the re-arm, either the fire would never have landed within
+	// fireTimeout (stale schedule never superseded) or a duplicate FIRE
+	// would appear once both eventually resolved.
+	armCount, fireCount := 0, 0
+	for _, ev := range events {
+		if ev.EventType == eventArmed && ev.State == "Open" {
+			armCount++
+		}
+		if ev.EventType == eventFired {
+			fireCount++
+		}
+	}
+	if armCount != 2 {
+		t.Errorf("expected exactly 2 %s events for Open (create + re-arm); got %d in events: %+v", eventArmed, armCount, events)
+	}
+	if fireCount != 1 {
+		t.Errorf("expected exactly 1 %s event (no duplicate fire from an un-superseded prior row); got %d in events: %+v", eventFired, fireCount, events)
 	}
 }
