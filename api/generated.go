@@ -883,6 +883,21 @@ func (e RegisterTrustedKeyRequestDtoAudience) Valid() bool {
 	}
 }
 
+// Defines values for ScheduleFunctionDtoResultKind.
+const (
+	Schedule ScheduleFunctionDtoResultKind = "Schedule"
+)
+
+// Valid indicates whether the value is a known member of the ScheduleFunctionDtoResultKind enum.
+func (e ScheduleFunctionDtoResultKind) Valid() bool {
+	switch e {
+	case Schedule:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SimpleConditionDtoOperatorType.
 const (
 	SimpleConditionDtoOperatorTypeAND                 SimpleConditionDtoOperatorType = "AND"
@@ -2611,6 +2626,39 @@ type RegisterTrustedKeyRequestDto struct {
 // RegisterTrustedKeyRequestDtoAudience defines model for RegisterTrustedKeyRequestDto.Audience.
 type RegisterTrustedKeyRequestDtoAudience string
 
+// ScheduleFunctionDto A Function callout that computes a scheduled transition's firing
+// time (and optionally its expiry) per entity, in place of a static
+// `delayMs`. Dispatched like an externalized processor/criterion
+// function: a calculation node selected by `calculationNodesTags`
+// receives the request and returns a result with
+// `resultKind: "Schedule"`.
+type ScheduleFunctionDto struct {
+	// AttachEntity Whether to attach entity data to the function call. Defaults to true.
+	AttachEntity *bool `json:"attachEntity,omitempty"`
+
+	// CalculationNodesTags Comma-separated list of calculation node tags used to select the dispatch target.
+	CalculationNodesTags string `json:"calculationNodesTags"`
+
+	// Context Pass-through string forwarded verbatim as the `parameters` JSON
+	// node of the outgoing calculation request. Empty value causes
+	// the `parameters` field to be omitted entirely.
+	Context *string `json:"context,omitempty"`
+
+	// Name Name of the registered function to call.
+	Name string `json:"name"`
+
+	// ResponseTimeoutMs Response timeout in milliseconds.
+	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
+
+	// ResultKind Result-shape discriminator the calculation node must echo back.
+	// Only `Schedule` is supported for scheduled-transition timing.
+	ResultKind ScheduleFunctionDtoResultKind `json:"resultKind"`
+}
+
+// ScheduleFunctionDtoResultKind Result-shape discriminator the calculation node must echo back.
+// Only `Schedule` is supported for scheduled-transition timing.
+type ScheduleFunctionDtoResultKind string
+
 // SetUniqueKeysRequest defines model for SetUniqueKeysRequest.
 type SetUniqueKeysRequest struct {
 	UniqueKeys []UniqueKeyDto `json:"uniqueKeys"`
@@ -2912,11 +2960,12 @@ type TransitionDefinitionDto struct {
 
 	// Schedule Optional scheduling configuration. Presence marks the transition
 	// as scheduled — it fires automatically `delayMs` milliseconds
-	// after the entity enters the source state. Mutually exclusive
-	// with `manual=true`. The runtime scheduler is not yet
-	// implemented; until it ships, the engine silently skips
-	// scheduled transitions during automated cascade selection, and
-	// explicit fires by name return HTTP 400 `TRANSITION_NOT_FOUND`.
+	// after the entity enters the source state, driven by a
+	// coordinator-only background scan loop. Mutually exclusive with
+	// `manual=true`. Explicit fires of a scheduled transition by name
+	// return HTTP 400 `TRANSITION_NOT_FOUND` — it is not manually
+	// fireable. See `cyoda help workflows` (authoring) and
+	// `cyoda help config.scheduler` (runtime tuning).
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
 }
 
@@ -2935,26 +2984,37 @@ type TransitionNameList = []string
 
 // TransitionScheduleDto Scheduling configuration for an automatic future state transition.
 // Presence of this object marks the parent transition as scheduled.
-// The transition is scheduled to fire at `stateEntryTime + delayMs`
-// (the "scheduledTime"). When the scheduler picks the task up for
-// execution at `executionTime`, it computes `lateness = executionTime
-// - scheduledTime`; if `lateness > timeoutMs` the task is dropped
-// and the transition is NOT attempted. `timeoutMs` gives operators
-// control over how the system should handle backlog or intermittent-
-// offline conditions: short timeoutMs values prefer freshness over
-// eventual execution; absent timeoutMs always eventually fires.
+// Exactly one of `delayMs` or `function` must be present — a static
+// delay or a Function callout that computes the firing time per
+// entity; this is enforced server-side (not expressible in the OpenAPI
+// schema). With `delayMs`, the transition is scheduled to fire at
+// `stateEntryTime + delayMs` (the "scheduledTime"). When the scheduler
+// picks the task up for execution at `executionTime`, it computes
+// `lateness = executionTime - scheduledTime`; if `lateness >
+// timeoutMs` the task is dropped and the transition is NOT attempted.
+// `timeoutMs` gives operators control over how the system should
+// handle backlog or intermittent-offline conditions: short timeoutMs
+// values prefer freshness over eventual execution; absent timeoutMs
+// always eventually fires.
 //
 // Mutually exclusive with parent transition's manual=true.
 //
-// The runtime that arms and fires the timer is not yet implemented.
-// Until it ships, the engine silently skips scheduled transitions
-// during automated cascade selection, and explicit fires by name are
-// rejected with HTTP 400 TRANSITION_NOT_FOUND.
+// The timer is armed on entry to the source state and re-armed by
+// every write that leaves the entity in that state (the settled-
+// interval semantic), atomically with the entity write. Explicit
+// fires of a scheduled transition by name are rejected with HTTP 400
+// TRANSITION_NOT_FOUND — it is not manually fireable.
 type TransitionScheduleDto struct {
 	// DelayMs Delay between source-state entry and the scheduled execution
 	// time, in milliseconds. Must be a positive integer (zero or
 	// negative would make this a regular automated transition).
-	DelayMs int64 `json:"delayMs"`
+	// Mutually exclusive with `function`.
+	DelayMs *int64 `json:"delayMs,omitempty"`
+
+	// Function Function callout that computes the firing time (and optional
+	// expiry) per entity, instead of a static `delayMs`. Mutually
+	// exclusive with `delayMs`.
+	Function *ScheduleFunctionDto `json:"function,omitempty"`
 
 	// TimeoutMs Late-tolerance window past the scheduled execution time, in
 	// milliseconds. When the scheduler picks the task up, if

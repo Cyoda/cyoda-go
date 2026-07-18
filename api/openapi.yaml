@@ -9965,19 +9965,67 @@ components:
         - manual
         - name
         - next
+    ScheduleFunctionDto:
+      type: object
+      description: |
+        A Function callout that computes a scheduled transition's firing
+        time (and optionally its expiry) per entity, in place of a static
+        `delayMs`. Dispatched like an externalized processor/criterion
+        function: a calculation node selected by `calculationNodesTags`
+        receives the request and returns a result with
+        `resultKind: "Schedule"`.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Name of the registered function to call.
+        resultKind:
+          type: string
+          enum:
+            - Schedule
+          description: |
+            Result-shape discriminator the calculation node must echo back.
+            Only `Schedule` is supported for scheduled-transition timing.
+        calculationNodesTags:
+          type: string
+          description: Comma-separated list of calculation node tags used to
+            select the dispatch target.
+        attachEntity:
+          type: boolean
+          default: true
+          description: Whether to attach entity data to the function call.
+            Defaults to true.
+        context:
+          type: string
+          description: |
+            Pass-through string forwarded verbatim as the `parameters` JSON
+            node of the outgoing calculation request. Empty value causes
+            the `parameters` field to be omitted entirely.
+        responseTimeoutMs:
+          type: integer
+          format: int64
+          description: Response timeout in milliseconds.
+      required:
+        - name
+        - resultKind
+        - calculationNodesTags
     TransitionScheduleDto:
       type: object
       description: |
         Scheduling configuration for an automatic future state transition.
         Presence of this object marks the parent transition as scheduled.
-        The transition is scheduled to fire at `stateEntryTime + delayMs`
-        (the "scheduledTime"). When the scheduler picks the task up for
-        execution at `executionTime`, it computes `lateness = executionTime
-        - scheduledTime`; if `lateness > timeoutMs` the task is dropped
-        and the transition is NOT attempted. `timeoutMs` gives operators
-        control over how the system should handle backlog or intermittent-
-        offline conditions: short timeoutMs values prefer freshness over
-        eventual execution; absent timeoutMs always eventually fires.
+        Exactly one of `delayMs` or `function` must be present — a static
+        delay or a Function callout that computes the firing time per
+        entity; this is enforced server-side (not expressible in the OpenAPI
+        schema). With `delayMs`, the transition is scheduled to fire at
+        `stateEntryTime + delayMs` (the "scheduledTime"). When the scheduler
+        picks the task up for execution at `executionTime`, it computes
+        `lateness = executionTime - scheduledTime`; if `lateness >
+        timeoutMs` the task is dropped and the transition is NOT attempted.
+        `timeoutMs` gives operators control over how the system should
+        handle backlog or intermittent-offline conditions: short timeoutMs
+        values prefer freshness over eventual execution; absent timeoutMs
+        always eventually fires.
 
         Mutually exclusive with parent transition's manual=true.
 
@@ -9995,6 +10043,7 @@ components:
             Delay between source-state entry and the scheduled execution
             time, in milliseconds. Must be a positive integer (zero or
             negative would make this a regular automated transition).
+            Mutually exclusive with `function`.
         timeoutMs:
           type: integer
           format: int64
@@ -10007,8 +10056,12 @@ components:
             whenever the scheduler eventually picks it up. Explicit zero
             is the strictest setting — drop on any lateness. Independent
             of `delayMs`; the two measure different quantities.
-      required:
-        - delayMs
+        function:
+          $ref: "#/components/schemas/ScheduleFunctionDto"
+          description: |
+            Function callout that computes the firing time (and optional
+            expiry) per entity, instead of a static `delayMs`. Mutually
+            exclusive with `delayMs`.
     WorkflowConfigurationDto:
       type: object
       properties:
