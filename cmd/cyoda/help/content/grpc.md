@@ -5,9 +5,11 @@ stability: stable
 see_also:
   - config.grpc
   - workflows
+  - cloudevents
   - errors.COMPUTE_MEMBER_DISCONNECTED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.DISPATCH_TIMEOUT
+  - errors.SCHEDULE_FUNCTION_INVALID_RESULT
   - errors.DISPATCH_FORWARD_FAILED
 ---
 
@@ -340,6 +342,15 @@ Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON
   "error": null
 }
 ```
+
+`resultKind: "Schedule"` is the only shape currently defined — it drives a
+scheduled transition's `schedule.function` (see `cyoda help workflows`).
+`success: false` or an `error` fails the dispatch the same way a processor
+or criteria failure does; a `result` that doesn't parse against the
+declared `resultKind` is rejected by the caller (a scheduled transition's
+`SCHEDULE_FUNCTION_INVALID_RESULT`), not by this wire contract. Full JSON
+Schemas for both messages: `docs/cyoda/schema/processing/EntityFunctionCalculationRequest.json`
+and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
 
 **Auth context on dispatched events:**
 

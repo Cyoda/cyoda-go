@@ -16,6 +16,7 @@ see_also:
   - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
   - errors.VALIDATION_FAILED
   - errors.MODEL_NOT_FOUND
+  - errors.SCHEDULE_FUNCTION_INVALID_RESULT
 ---
 
 # workflows
@@ -325,6 +326,81 @@ shape rules (manual+schedule, delayMs) and all other validators
 remain unconditional. The runtime cascade-depth and per-state visit
 caps still catch actual runaway at fire time. Use only for workflows
 whose cyclicity is intentional.
+
+**Function-computed firing time (`schedule.function`).** In place of a
+static `delayMs`, a transition can compute its own firing time (and
+optionally an expiry) per entity via a Function callout — the same
+dispatch mechanism as an externalized processor or a `function`-type
+criterion, but returning a typed `Schedule` result instead of an
+entity payload or a boolean. `delayMs` and `function` are mutually
+exclusive: exactly one is required whenever `schedule` is present
+(both are also mutually exclusive with `manual: true`).
+
+```json
+{
+  "name": "Escalate",
+  "next": "Escalated",
+  "manual": false,
+  "schedule": {
+    "function": {
+      "name": "compute-escalation-time",
+      "resultKind": "Schedule",
+      "calculationNodesTags": "escalation-service",
+      "attachEntity": true
+    }
+  }
+}
+```
+
+- `name` (string, required) — registered function name.
+- `resultKind` (string, required) — must be `"Schedule"`.
+- `calculationNodesTags` (string, required) — comma-separated tags
+  selecting the dispatch target, same as a processor or criterion.
+- `attachEntity` (boolean, optional, default `true`) — whether the
+  entity payload is attached to the request.
+- `context` (string, optional) — pass-through string forwarded
+  verbatim as the request's `parameters`. Omitted when empty.
+- `responseTimeoutMs` (integer, optional) — response timeout for this
+  callout.
+
+**Invocation.** The Function is called at arm time — synchronously,
+inside the entity-write transaction — on every re-arm: the initial
+entry into the source state, and every subsequent settled write that
+leaves the entity in that state (the same trigger as the
+settled-interval reset described above for `delayMs`). Each call
+fully replaces the previous scheduling decision for that transition.
+
+**Fail-closed.** If the compute node is unreachable, disconnected, or
+times out, the triggering entity write fails as a retryable `503` —
+the same dispatch error codes as a processor or criterion callout
+(e.g. `NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`,
+`COMPUTE_MEMBER_DISCONNECTED`). No state change commits against an
+unschedulable transition. A structurally valid response with the
+wrong `resultKind`, or a malformed `Schedule` value, is a `500`
+`SCHEDULE_FUNCTION_INVALID_RESULT` instead of a dispatch failure — see
+that error topic.
+
+**The `Schedule` result.** The function responds with `resultKind:
+"Schedule"` and a `result` object shaped:
+
+```json
+{ "fireAfterMs": 3600000, "expireAfterMs": 600000 }
+```
+
+- Exactly one of `fireAt` (absolute, epoch-ms) or `fireAfterMs`
+  (relative to arm time) is required.
+- At most one of `expireAt` (absolute) or `expireAfterMs` (relative to
+  the *resolved fire time*, not arm time) may be present; both absent
+  means no expiry, matching an absent `timeoutMs` for `delayMs`.
+- A past `fireAt` (or non-positive `fireAfterMs`) is not an error —
+  the transition is due immediately.
+- A resolved expiry at or before the resolved fire time is **born
+  expired**: the transition is not armed, any existing scheduling for
+  it is cancelled, a `SCHEDULED_TRANSITION_EXPIRE` audit event is
+  recorded, and the triggering write still succeeds.
+- A resolved expiry after the fire time becomes `timeoutMs` (the gap
+  between the two), applying the same late-tolerance semantics
+  described above for `schedule.timeoutMs`.
 
 ## CRITERIA
 
