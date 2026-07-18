@@ -90,6 +90,67 @@ type importRequest struct {
 	Workflows   []workflowImportDef `json:"workflows"`
 }
 
+// scheduleFunctionAttachEntityProbe captures the raw-JSON presence of
+// schedule.function.attachEntity per transition. ScheduleFunctionDto
+// documents "Defaults to true" for an omitted attachEntity, but the SPI's
+// ScheduleFunction.AttachEntity is a plain bool (matching the wire shape
+// ProcessorConfig.AttachEntity already uses) — decoding straight into it,
+// as workflowImportDef.States does for the whole state graph, collapses
+// "omitted" and "explicit false" to the same zero value. This probe is a
+// second, non-strict decode of the same request body that declares only
+// the field path needed to recover the distinction; every other field is
+// ignored. Applied only to schedule.function — ProcessorConfig.AttachEntity
+// has the identical gap but is a separate, already-shipped feature and out
+// of scope here.
+type scheduleFunctionAttachEntityProbe struct {
+	Workflows []struct {
+		States map[string]struct {
+			Transitions []struct {
+				Schedule *struct {
+					Function *struct {
+						AttachEntity *bool `json:"attachEntity"`
+					} `json:"function"`
+				} `json:"schedule"`
+			} `json:"transitions"`
+		} `json:"states"`
+	} `json:"workflows"`
+}
+
+// applyScheduleFunctionAttachEntityDefault defaults
+// schedule.function.attachEntity to true for every transition where the
+// client omitted it, using probe (decoded from the same raw request body)
+// to distinguish omission from an explicit false. workflows and probe.
+// Workflows are index-aligned (both decoded from the same top-level JSON
+// array in the same order); states are matched by map key; transitions
+// within a state are index-aligned (both decoded from the same JSON array).
+func applyScheduleFunctionAttachEntityDefault(workflows []workflowImportDef, probe scheduleFunctionAttachEntityProbe) {
+	for i, w := range workflows {
+		if i >= len(probe.Workflows) {
+			continue
+		}
+		pwf := probe.Workflows[i]
+		for stateName, state := range w.States {
+			pState, ok := pwf.States[stateName]
+			if !ok {
+				continue
+			}
+			for j := range state.Transitions {
+				if j >= len(pState.Transitions) {
+					continue
+				}
+				sched := state.Transitions[j].Schedule
+				pSched := pState.Transitions[j].Schedule
+				if sched == nil || sched.Function == nil || pSched == nil || pSched.Function == nil {
+					continue
+				}
+				if pSched.Function.AttachEntity == nil {
+					sched.Function.AttachEntity = true
+				}
+			}
+		}
+	}
+}
+
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
 func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
@@ -123,6 +184,17 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
 		return
 	}
+
+	// Second, non-strict decode of the same bytes to recover the
+	// "attachEntity omitted" signal the strict decode above collapsed into
+	// spi.ScheduleFunction.AttachEntity's zero value. data was already
+	// proven valid JSON matching this shape by the strict decode, so this
+	// unmarshal cannot fail on a well-formed request; ignoring a defensive
+	// error here just leaves every attachEntity un-defaulted, which is the
+	// pre-existing (safe) behaviour.
+	var probe scheduleFunctionAttachEntityProbe
+	_ = json.Unmarshal(data, &probe)
+	applyScheduleFunctionAttachEntityDefault(req.Workflows, probe)
 
 	mode := strings.ToUpper(req.ImportMode)
 	if mode == "" {

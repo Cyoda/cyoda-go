@@ -76,3 +76,67 @@ func TestSchedule_RoundTrip_TimeoutMsPointerStates(t *testing.T) {
 		})
 	}
 }
+
+// TestSchedule_RoundTrip_Function asserts spi.TransitionSchedule.Function
+// (spi.ScheduleFunction) round-trips every field through JSON marshal/
+// unmarshal byte-identically — the wire shape encoding/json produces for
+// spi.ScheduleFunction is exactly what the OpenAPI ScheduleFunctionDto
+// documents (name, resultKind, calculationNodesTags, attachEntity, context,
+// responseTimeoutMs), so no separate DTO struct is needed on the import/
+// export path; the workflow-import handler decodes/encodes spi types
+// directly (see ImportEntityModelWorkflow / ExportEntityModelWorkflow).
+func TestSchedule_RoundTrip_Function(t *testing.T) {
+	fn := spi.ScheduleFunction{
+		Name:                 "computeNextFireTime",
+		ResultKind:           "Schedule",
+		CalculationNodesTags: "billing",
+		AttachEntity:         true,
+		Context:              "role=nightly",
+		ResponseTimeoutMs:    5000,
+	}
+	tr := spi.TransitionDefinition{
+		Name:   "AutoClose",
+		Next:   "Closed",
+		Manual: false,
+		Schedule: &spi.TransitionSchedule{
+			Function: &fn,
+		},
+	}
+
+	bs, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// spi.TransitionSchedule.DelayMs has no `omitempty` (see the
+	// TimeoutMsPointerStates cases above for the analogous TimeoutMs
+	// contrast), so a function-only schedule still emits `"delayMs":0` —
+	// this is the SPI wire shape, not a round-trip defect; the delayMs/
+	// function XOR is an import-time validation rule (validate.go), not a
+	// marshalling one.
+	if !strings.Contains(string(bs), `"delayMs":0`) {
+		t.Errorf("expected delayMs:0 (SPI has no omitempty on DelayMs): %s", bs)
+	}
+	for _, want := range []string{
+		`"name":"computeNextFireTime"`,
+		`"resultKind":"Schedule"`,
+		`"calculationNodesTags":"billing"`,
+		`"context":"role=nightly"`,
+		`"responseTimeoutMs":5000`,
+	} {
+		if !strings.Contains(string(bs), want) {
+			t.Errorf("expected JSON to contain %q; got %s", want, bs)
+		}
+	}
+
+	var back spi.TransitionDefinition
+	if err := json.Unmarshal(bs, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Schedule == nil || back.Schedule.Function == nil {
+		t.Fatal("Schedule.Function lost on round-trip")
+	}
+	got := *back.Schedule.Function
+	if got != fn {
+		t.Errorf("Function round-trip mismatch: got %+v, want %+v", got, fn)
+	}
+}
