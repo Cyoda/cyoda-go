@@ -153,6 +153,19 @@ type callbackHarness struct {
 // run), so callers must use per-test-unique model names to stay isolated.
 func newCallbackHarness(t *testing.T) *callbackHarness {
 	t.Helper()
+	return newCallbackHarnessConfigured(t, nil)
+}
+
+// newCallbackHarnessConfigured is newCallbackHarness with an optional cfg
+// mutator applied to app.DefaultConfig() just before app.New — e.g. Task
+// 9.2's expiry-elapsed-before-scan scenario disables this stack's built-in
+// scheduler (cfg.Scheduler.Enabled = false) so it can drive its own
+// bespoke, precisely-timed scheduler.Service instead (mirrors
+// TestE2E_ScheduledTransition_RestartDurability's approach), eliminating
+// the race window a live default-cadence scheduler ticking mid-flight would
+// otherwise create. configure may be nil (identical to newCallbackHarness).
+func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *callbackHarness {
+	t.Helper()
 
 	// Fresh JWT signing key for this stack (self-contained OAuth + JWKS).
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -198,6 +211,10 @@ func newCallbackHarness(t *testing.T) *callbackHarness {
 		t.Fatalf("grpc listen: %v", err)
 	}
 	cfg.GRPC.Port = grpcLis.Addr().(*net.TCPAddr).Port
+
+	if configure != nil {
+		configure(&cfg)
+	}
 
 	a := app.New(cfg)
 	h.app = a
@@ -433,6 +450,30 @@ func (h *callbackHarness) GetEntityData(t *testing.T, entityID string) map[strin
 	json.Unmarshal([]byte(body), &m)
 	data, _ := m["data"].(map[string]any)
 	return data
+}
+
+// GetSMAuditEvents retrieves an entity's StateMachine audit events from this
+// stack — the callback-harness counterpart of getSMAuditEvents
+// (workflow_proc_test.go), which queries the shared package-level testApp
+// and therefore cannot see entities created on a callback harness's own
+// separate stack.
+func (h *callbackHarness) GetSMAuditEvents(t *testing.T, entityID string) []map[string]any {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodGet, fmt.Sprintf("/api/audit/entity/%s?eventType=StateMachine", entityID), "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("audit GET %s: expected 200, got %d: %s", entityID, resp.StatusCode, body)
+	}
+	var auditResp map[string]any
+	json.Unmarshal([]byte(body), &auditResp)
+	items, _ := auditResp["items"].([]any)
+	var events []map[string]any
+	for _, item := range items {
+		if ev, ok := item.(map[string]any); ok {
+			events = append(events, ev)
+		}
+	}
+	return events
 }
 
 // --- compute member (real gRPC calc member) ---
