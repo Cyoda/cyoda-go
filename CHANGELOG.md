@@ -47,7 +47,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   fail-closed either way, never a silent skip. Additive workflow schema
   change: the workflow schema moves to **1.3** and every existing 1.1/1.2
   payload remains valid (dual-shape). New error code:
-  `SCHEDULE_FUNCTION_INVALID_RESULT` (500).
+  `SCHEDULE_FUNCTION_INVALID_RESULT` (500). Contract note: because a
+  `function` schedule carries no `delayMs`, `TransitionScheduleDto.delayMs`
+  is no longer a `required` property — consumers of the workflow-**export**
+  response (`GET …/workflow/export`) must treat `delayMs` as optional on a
+  1.3+ schedule (a pre-1.3 exported workflow always has it). This is an
+  intentional, schema-version-gated contract change, allowlisted in the
+  oasdiff breaking-change gate.
 
   **Uniform compute-infra `503`s across processor/criterion/function
   callouts.** `NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`,
