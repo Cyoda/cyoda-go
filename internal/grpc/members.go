@@ -29,8 +29,16 @@ type ProcessingResponse struct {
 	// Reason is the criteria-response explanation for a matches=false result
 	// (EntityCriteriaCalculationResponse.reason). Empty for processor
 	// responses and for criteria that supply no reason.
-	Reason   string
-	Warnings []string // warnings from processor/criteria, propagated to client
+	Reason string
+	// Result is the function-response result payload (raw JSON object) from
+	// EntityFunctionCalculationResponse.result. Nil/empty for processor and
+	// criteria responses.
+	Result json.RawMessage
+	// ResultKind is the function-response discriminator string from
+	// EntityFunctionCalculationResponse.resultKind. Empty for processor and
+	// criteria responses.
+	ResultKind string
+	Warnings   []string // warnings from processor/criteria, propagated to client
 	// Retryable carries the member-supplied retryable flag from the inbound
 	// CloudEvent error shape (api/grpc/events/types.go: every *EventJsonError
 	// variant declares Retryable *bool). The pointer is nil when the wire
