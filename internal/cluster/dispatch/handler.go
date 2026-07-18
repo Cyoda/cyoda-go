@@ -91,6 +91,25 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 			Matches: &matches,
 			Reason:  reason,
 		})
+	case "function":
+		var fn spi.ScheduleFunction
+		if req.Function != nil {
+			fn = *req.Function
+		}
+		result, err := h.local.DispatchFunction(ctx, entity, fn, req.WorkflowName, req.TransitionName, req.TxID)
+		if err != nil {
+			slog.Error("dispatch function failed", "pkg", "dispatch", "err", err)
+			writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+				Success: false,
+				Error:   "dispatch function failed",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+			Success:    true,
+			Result:     result.Value,
+			ResultKind: result.Kind,
+		})
 	default:
 		http.Error(w, "unknown callout kind", http.StatusBadRequest)
 	}

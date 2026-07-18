@@ -26,6 +26,7 @@ type stubDispatcher struct {
 	processorResp  *spi.Entity
 	criteriaResult bool
 	criteriaReason string
+	functionResult contract.FunctionResult
 }
 
 func (f *stubDispatcher) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _ string, _ string, _ string) (*spi.Entity, error) {
@@ -46,6 +47,16 @@ func (f *stubDispatcher) DispatchCriteria(_ context.Context, _ *spi.Entity, _ js
 		return false, "", fmt.Errorf("%w: tags %q", internalgrpc.ErrNoMatchingMember, "python")
 	}
 	return f.criteriaResult, f.criteriaReason, nil
+}
+
+func (f *stubDispatcher) DispatchFunction(_ context.Context, _ *spi.Entity, _ spi.ScheduleFunction, _ string, _ string, _ string) (contract.FunctionResult, error) {
+	if f.otherErr != nil {
+		return contract.FunctionResult{}, f.otherErr
+	}
+	if f.noMember {
+		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", internalgrpc.ErrNoMatchingMember, "python")
+	}
+	return f.functionResult, nil
 }
 
 // stubNodeRegistry returns a fixed list of nodes.
@@ -102,6 +113,16 @@ func testCriterion() json.RawMessage {
 	return json.RawMessage(`{"type":"function","function":{"name":"myCriteria","config":{"calculationNodesTags":"python","attachEntity":true}}}`)
 }
 
+// testFunction builds a ScheduleFunction with calculationNodesTags="python".
+func testFunction() spi.ScheduleFunction {
+	return spi.ScheduleFunction{
+		Name:                 "myScheduleFn",
+		ResultKind:           "Schedule",
+		CalculationNodesTags: "python",
+		AttachEntity:         true,
+	}
+}
+
 // --- tests ---
 
 func TestClusterDispatcher_LocalFirst(t *testing.T) {
@@ -113,6 +134,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 	local := &stubDispatcher{
 		processorResp:  updatedEntity,
 		criteriaResult: true,
+		functionResult: contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{"fireAfterMs":1000}`)},
 	}
 	registry := &stubNodeRegistry{}
 	selector := NewRandomSelector()
@@ -140,6 +162,20 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 		}
 		if !matches {
 			t.Fatal("expected matches=true")
+		}
+	})
+
+	t.Run("function_local_success", func(t *testing.T) {
+		ctx := testContext()
+		result, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if result.Kind != "Schedule" {
+			t.Fatalf("expected Kind=Schedule, got %s", result.Kind)
+		}
+		if string(result.Value) != `{"fireAfterMs":1000}` {
+			t.Fatalf("expected fireAfterMs value, got %s", string(result.Value))
 		}
 	})
 
@@ -235,6 +271,46 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		// (producer -> DispatchCriteriaResponse.Reason -> peer-branch return).
 		if reason != "peer-evaluated reason" {
 			t.Fatalf("expected peer reason propagated, got %q", reason)
+		}
+	})
+
+	t.Run("function_forwarded_to_peer", func(t *testing.T) {
+		peerLocal := &stubDispatcher{
+			functionResult: contract.FunctionResult{
+				Kind:  "Schedule",
+				Value: json.RawMessage(`{"fireAfterMs":2000}`),
+			},
+		}
+		handler := NewDispatchHandler(peerLocal, auth)
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		peer := httptest.NewServer(mux)
+		defer peer.Close()
+
+		local := &stubDispatcher{noMember: true}
+		registry := &stubNodeRegistry{
+			nodes: []contract.NodeInfo{
+				{NodeID: "self-node", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
+				{NodeID: "peer-1", Addr: peer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
+			},
+		}
+		selector := NewRandomSelector()
+		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
+
+		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+
+		ctx := testContext()
+		result, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		// Result and ResultKind must survive the full forward round-trip
+		// (producer -> DispatchCalloutResponse.{Result,ResultKind} -> peer-branch return).
+		if result.Kind != "Schedule" {
+			t.Fatalf("expected Kind=Schedule propagated from peer, got %q", result.Kind)
+		}
+		if string(result.Value) != `{"fireAfterMs":2000}` {
+			t.Fatalf("expected peer result value propagated, got %s", string(result.Value))
 		}
 	})
 }

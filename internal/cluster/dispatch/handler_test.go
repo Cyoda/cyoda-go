@@ -14,6 +14,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // fakeLocalDispatcher implements contract.ExternalProcessingService for testing.
@@ -25,6 +26,8 @@ type fakeLocalDispatcher struct {
 	criteriaResult  bool
 	criteriaReason  string
 	criteriaErr     error
+	functionResult  contract.FunctionResult
+	functionErr     error
 	capturedCtx     context.Context
 }
 
@@ -46,6 +49,16 @@ func (f *fakeLocalDispatcher) DispatchCriteria(
 ) (bool, string, error) {
 	f.capturedCtx = ctx
 	return f.criteriaResult, f.criteriaReason, f.criteriaErr
+}
+
+func (f *fakeLocalDispatcher) DispatchFunction(
+	ctx context.Context,
+	_ *spi.Entity,
+	_ spi.ScheduleFunction,
+	_, _, _ string,
+) (contract.FunctionResult, error) {
+	f.capturedCtx = ctx
+	return f.functionResult, f.functionErr
 }
 
 var testSecret32 = bytes.Repeat([]byte{0xAB}, 32)

@@ -50,6 +50,18 @@ func (d *capturingLocalDispatcher) DispatchCriteria(
 	return d.matches, "", nil
 }
 
+func (d *capturingLocalDispatcher) DispatchFunction(
+	ctx context.Context,
+	_ *spi.Entity,
+	_ spi.ScheduleFunction,
+	_, _, _ string,
+) (contract.FunctionResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.capturedCtx = ctx
+	return contract.FunctionResult{}, nil
+}
+
 func (d *capturingLocalDispatcher) captured() context.Context {
 	d.mu.Lock()
 	defer d.mu.Unlock()

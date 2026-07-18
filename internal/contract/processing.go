@@ -21,6 +21,19 @@ import (
 // dependencies, safe for both sides to import.
 var ErrNoMatchingMember = errors.New("no matching calculation member")
 
+// FunctionResult holds the outcome of a generic Function callout dispatch —
+// used, e.g., by scheduled-transition timing where a compute node computes a
+// fire time (kind "Schedule") rather than mutating entity data or evaluating
+// a boolean criterion.
+type FunctionResult struct {
+	// Kind is the function-response discriminator string
+	// (EntityFunctionCalculationResponse.resultKind), e.g. "Schedule".
+	Kind string
+	// Value is the raw JSON result payload
+	// (EntityFunctionCalculationResponse.result).
+	Value json.RawMessage
+}
+
 // ExternalProcessingService dispatches processor execution and criteria evaluation
 // to external calculation nodes.
 type ExternalProcessingService interface {
@@ -30,4 +43,8 @@ type ExternalProcessingService interface {
 	// when none was supplied); it is only consumed on a matches=false
 	// rejection.
 	DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (matches bool, reason string, err error)
+	// DispatchFunction sends a generic Function callout (e.g. a scheduled-
+	// transition timing computation) to an external node and returns its
+	// typed result.
+	DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (FunctionResult, error)
 }

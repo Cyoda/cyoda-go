@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -15,6 +16,7 @@ import (
 type fakeDispatcher struct {
 	processorCalled bool
 	criteriaCalled  bool
+	functionCalled  bool
 	returnErr       error
 }
 
@@ -38,6 +40,17 @@ func (f *fakeDispatcher) DispatchCriteria(
 		return false, "", f.returnErr
 	}
 	return true, "", nil
+}
+
+func (f *fakeDispatcher) DispatchFunction(
+	ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction,
+	workflowName, transitionName, txID string,
+) (contract.FunctionResult, error) {
+	f.functionCalled = true
+	if f.returnErr != nil {
+		return contract.FunctionResult{}, f.returnErr
+	}
+	return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{}`)}, nil
 }
 
 func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *testing.T) {

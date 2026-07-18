@@ -299,3 +299,45 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 	}
 	return false, resp.Reason, nil
 }
+
+// DispatchFunction sends a generic Function calculation request (e.g. a
+// scheduled-transition timing computation) to a matching calculation member
+// and returns its typed result.
+func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
+	uc := spi.MustGetUserContext(ctx)
+	tenantID := uc.Tenant.ID
+
+	member := d.registry.FindByTags(tenantID, fn.CalculationNodesTags)
+	if member == nil {
+		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.CalculationNodesTags, "entityId", entity.Meta.ID)
+		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.CalculationNodesTags)
+	}
+
+	slog.Info("dispatching function", "pkg", "grpc", "memberId", member.ID, "function", fn.Name, "entityId", entity.Meta.ID)
+
+	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
+
+	req := events.EntityFunctionCalculationRequestJson{
+		ID:            requestID,
+		RequestID:     requestID,
+		EntityID:      entity.Meta.ID,
+		FunctionID:    fn.Name,
+		FunctionName:  fn.Name,
+		Workflow:      events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
+		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
+		TransactionID: &txID,
+		Success:       true,
+	}
+	if fn.Context != "" {
+		req.Parameters = fn.Context
+	}
+	if fn.AttachEntity {
+		req.Payload = buildEntityPayload(entity)
+	}
+
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityFunctionCalculationRequest, req, requestID, txID, fn.ResponseTimeoutMs, "function", fn.Name)
+	if err != nil {
+		return contract.FunctionResult{}, err
+	}
+	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
+}

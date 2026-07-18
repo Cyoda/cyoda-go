@@ -19,6 +19,7 @@ import (
 const (
 	kindProcessor = "processor"
 	kindCriteria  = "criteria"
+	kindFunction  = "function"
 )
 
 // TracingExternalProcessingService wraps an ExternalProcessingService with OTel spans and metrics.
@@ -29,6 +30,7 @@ type TracingExternalProcessingService struct {
 	dispatchTotal    metric.Int64Counter
 	typeProcessor    metric.MeasurementOption
 	typeCriteria     metric.MeasurementOption
+	typeFunction     metric.MeasurementOption
 }
 
 // NewTracingExternalProcessingService returns a TracingExternalProcessingService that decorates
@@ -52,6 +54,7 @@ func NewTracingExternalProcessingService(inner contract.ExternalProcessingServic
 		dispatchTotal:    total,
 		typeProcessor:    metric.WithAttributes(AttrDispatchType.String(kindProcessor)),
 		typeCriteria:     metric.WithAttributes(AttrDispatchType.String(kindCriteria)),
+		typeFunction:     metric.WithAttributes(AttrDispatchType.String(kindFunction)),
 	}
 }
 
@@ -90,6 +93,8 @@ func (t *TracingExternalProcessingService) measurementOption(kind string) metric
 		return t.typeProcessor
 	case kindCriteria:
 		return t.typeCriteria
+	case kindFunction:
+		return t.typeFunction
 	default:
 		return metric.WithAttributes(AttrDispatchType.String(kind))
 	}
@@ -131,4 +136,22 @@ func (t *TracingExternalProcessingService) DispatchCriteria(
 		return err
 	})
 	return matches, reason, err
+}
+
+func (t *TracingExternalProcessingService) DispatchFunction(
+	ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction,
+	workflowName, transitionName, txID string,
+) (contract.FunctionResult, error) {
+	var result contract.FunctionResult
+	err := t.record(ctx, kindFunction, "dispatch.function", []attribute.KeyValue{
+		AttrFunctionName.String(fn.Name),
+		AttrFunctionTags.String(fn.CalculationNodesTags),
+		AttrWorkflowName.String(workflowName),
+		AttrTransitionName.String(transitionName),
+	}, func(ctx context.Context, span trace.Span) error {
+		var err error
+		result, err = t.inner.DispatchFunction(ctx, entity, fn, workflowName, transitionName, txID)
+		return err
+	})
+	return result, err
 }

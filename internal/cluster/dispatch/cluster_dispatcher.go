@@ -175,6 +175,62 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 	return peerMatches, resp.Reason, nil
 }
 
+// DispatchFunction tries the local node first. If the local node has no matching
+// calculation member, it looks up peers via gossip and forwards the request.
+func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
+	// Mint the owner token once before the local-vs-forward split so that
+	// a callback landing on a peer node routes back to this (owner) node.
+	tok := ""
+	if txID != "" && d.signer != nil {
+		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
+			tok = t
+		} else {
+			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
+		}
+	}
+	ctx = internalgrpc.WithTxToken(ctx, tok)
+
+	// Try local first.
+	result, err := d.local.DispatchFunction(ctx, entity, fn, workflowName, transitionName, txID)
+	if err == nil {
+		return result, nil
+	}
+	if !isNoMatchingMember(err) {
+		return contract.FunctionResult{}, err
+	}
+
+	tags := fn.CalculationNodesTags
+	uc := spi.MustGetUserContext(ctx)
+	tenantID := string(uc.Tenant.ID)
+
+	slog.Debug("local function dispatch found no member, looking up cluster peers",
+		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
+
+	req := d.buildFunctionRequest(entity, fn, workflowName, transitionName, txID, uc, tags, tok)
+
+	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
+	if err != nil {
+		return contract.FunctionResult{}, err
+	}
+
+	slog.Debug("forwarding function to peer",
+		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
+
+	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
+	if err != nil {
+		return contract.FunctionResult{}, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+			fmt.Sprintf("forward to %s: %v", peer.NodeID, err)).AsRetryable()
+	}
+	if !resp.Success {
+		return contract.FunctionResult{}, fmt.Errorf("peer %s function dispatch failed: %s", peer.NodeID, resp.Error)
+	}
+	for _, w := range resp.Warnings {
+		common.AddWarning(ctx, w)
+	}
+
+	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
+}
+
 // findPeerWithPolling polls the gossip registry for a peer with matching tags,
 // retrying every gossipPollInterval up to waitTimeout.
 func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID string, tags string) (contract.NodeInfo, error) {
@@ -264,6 +320,24 @@ func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion j
 		WorkflowName:   workflowName,
 		TransitionName: transitionName,
 		ProcessorName:  processorName,
+		TxID:           txID,
+		TenantID:       string(uc.Tenant.ID),
+		Tags:           tags,
+		UserID:         uc.UserID,
+		Roles:          uc.Roles,
+		TxToken:        tok,
+	}
+}
+
+// buildFunctionRequest constructs the cross-node dispatch request for a function callout.
+func (d *ClusterDispatcher) buildFunctionRequest(entity *spi.Entity, fn spi.ScheduleFunction, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
+	return DispatchCalloutRequest{
+		Kind:           "function",
+		Entity:         json.RawMessage(entity.Data),
+		EntityMeta:     entity.Meta,
+		Function:       &fn,
+		WorkflowName:   workflowName,
+		TransitionName: transitionName,
 		TxID:           txID,
 		TenantID:       string(uc.Tenant.ID),
 		Tags:           tags,

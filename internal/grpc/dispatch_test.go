@@ -827,6 +827,87 @@ func TestDispatchCriteria_FailurePropagatesName(t *testing.T) {
 	}
 }
 
+func TestDispatchFunction_HappyPath(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := testContext()
+	entity := testEntity()
+
+	fn := spi.ScheduleFunction{
+		Name:                 "my-schedule-fn",
+		ResultKind:           "Schedule",
+		CalculationNodesTags: "python",
+		AttachEntity:         true,
+		ResponseTimeoutMs:    5000,
+	}
+
+	go func() {
+		ce := <-sentCh
+		if ce.Type != EntityFunctionCalculationRequest {
+			t.Errorf("expected event type %s, got %s", EntityFunctionCalculationRequest, ce.Type)
+		}
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+
+		var typedReq events.EntityFunctionCalculationRequestJson
+		_, payload, _ := ParseCloudEvent(ce)
+		if err := json.Unmarshal(payload, &typedReq); err != nil {
+			t.Errorf("sent function request doesn't match schema: %v", err)
+			return
+		}
+		if typedReq.FunctionName != "my-schedule-fn" {
+			t.Errorf("expected functionName my-schedule-fn, got %s", typedReq.FunctionName)
+		}
+		if typedReq.Payload == nil {
+			t.Error("expected payload to be attached when AttachEntity=true")
+		}
+
+		member := registry.Get(memberID)
+		result := json.RawMessage(`{"fireAfterMs":1000}`)
+		member.CompleteRequest(reqID, &ProcessingResponse{
+			Success:    true,
+			Result:     result,
+			ResultKind: "Schedule",
+		})
+	}()
+
+	result, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Kind != "Schedule" {
+		t.Errorf("expected Kind=Schedule, got %s", result.Kind)
+	}
+	if string(result.Value) != `{"fireAfterMs":1000}` {
+		t.Errorf("expected Value={\"fireAfterMs\":1000}, got %s", string(result.Value))
+	}
+}
+
+func TestDispatchFunction_NoMember(t *testing.T) {
+	registry := NewMemberRegistry()
+	uuids := common.NewTestUUIDGenerator()
+	signer, _ := token.NewSigner(make32(t))
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	ctx := testContext()
+	entity := testEntity()
+
+	fn := spi.ScheduleFunction{
+		Name:                 "my-schedule-fn",
+		ResultKind:           "Schedule",
+		CalculationNodesTags: "java",
+	}
+
+	_, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	if err == nil {
+		t.Fatal("expected error for missing member")
+	}
+	if !errors.Is(err, ErrNoMatchingMember) {
+		t.Errorf("expected ErrNoMatchingMember, got: %s", err)
+	}
+}
+
 func TestBuildEntityPayload(t *testing.T) {
 	e := &spi.Entity{Meta: spi.EntityMeta{
 		ID: "e1", State: "S1", TransactionID: "tx1",
