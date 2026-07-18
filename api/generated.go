@@ -2959,13 +2959,15 @@ type TransitionDefinitionDto struct {
 	Processors *[]TransitionDefinitionDto_Processors_Item `json:"processors,omitempty"`
 
 	// Schedule Optional scheduling configuration. Presence marks the transition
-	// as scheduled — it fires automatically `delayMs` milliseconds
-	// after the entity enters the source state, driven by a
-	// coordinator-only background scan loop. Mutually exclusive with
-	// `manual=true`. Explicit fires of a scheduled transition by name
-	// return HTTP 400 `TRANSITION_NOT_FOUND` — it is not manually
-	// fireable. See `cyoda help workflows` (authoring) and
-	// `cyoda help config.scheduler` (runtime tuning).
+	// as scheduled — it fires automatically at a computed time (driven
+	// by a coordinator-only background scan loop) rather than by an API
+	// call or automated cascade. The firing time comes from either a
+	// static `delayMs` or a per-entity `function` callout — see
+	// `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
+	// Explicit fires of a scheduled transition by name return HTTP 400
+	// `TRANSITION_NOT_FOUND` — it is not manually fireable. See
+	// `cyoda help workflows` (authoring) and `cyoda help config.scheduler`
+	// (runtime tuning).
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
 }
 
@@ -2983,27 +2985,33 @@ type TransitionDefinitionDto_Processors_Item struct {
 type TransitionNameList = []string
 
 // TransitionScheduleDto Scheduling configuration for an automatic future state transition.
-// Presence of this object marks the parent transition as scheduled.
-// Exactly one of `delayMs` or `function` must be present — a static
-// delay or a Function callout that computes the firing time per
-// entity; this is enforced server-side (not expressible in the OpenAPI
-// schema). With `delayMs`, the transition is scheduled to fire at
-// `stateEntryTime + delayMs` (the "scheduledTime"). When the scheduler
-// picks the task up for execution at `executionTime`, it computes
-// `lateness = executionTime - scheduledTime`; if `lateness >
-// timeoutMs` the task is dropped and the transition is NOT attempted.
-// `timeoutMs` gives operators control over how the system should
-// handle backlog or intermittent-offline conditions: short timeoutMs
-// values prefer freshness over eventual execution; absent timeoutMs
-// always eventually fires.
+// Presence of this object marks the parent transition as scheduled, and
+// is mutually exclusive with the parent transition's `manual=true`.
 //
-// Mutually exclusive with parent transition's manual=true.
+// The firing time is set one of two mutually exclusive ways — exactly
+// one is required (enforced server-side; not expressible in the OpenAPI
+// schema):
 //
-// The timer is armed on entry to the source state and re-armed by
-// every write that leaves the entity in that state (the settled-
-// interval semantic), atomically with the entity write. Explicit
-// fires of a scheduled transition by name are rejected with HTTP 400
-// TRANSITION_NOT_FOUND — it is not manually fireable.
+//   - `delayMs` — a static delay: the transition fires at
+//     `scheduledTime = stateEntryTime + delayMs`.
+//   - `function` — a per-entity Function callout that computes the
+//     firing time (and optionally an expiry) from the entity itself
+//     (see `ScheduleFunctionDto`).
+//
+// Late-tolerance: when the scheduler picks a due task up at
+// `executionTime`, if `executionTime - scheduledTime > timeoutMs` the
+// task is dropped and the transition is NOT attempted. `timeoutMs` is
+// set directly on a `delayMs` schedule, or derived from a `function`
+// schedule's returned expiry; absent, the task always eventually fires.
+//
+// The timer is armed on entry to the source state and re-armed by every
+// write that leaves the entity in that state (the settled-interval
+// semantic), atomically with the entity write — for a `function`
+// schedule, each re-arm re-invokes the callout. Explicit fires of a
+// scheduled transition by name are rejected with HTTP 400
+// `TRANSITION_NOT_FOUND` — it is not manually fireable. See
+// `cyoda help workflows` for full authoring semantics (the `Schedule`
+// result shape, born-expired, and fail-closed dispatch behaviour).
 type TransitionScheduleDto struct {
 	// DelayMs Delay between source-state entry and the scheduled execution
 	// time, in milliseconds. Must be a positive integer (zero or
