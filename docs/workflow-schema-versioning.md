@@ -61,7 +61,31 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.2 — v0.8.2 contract (current)
+### 1.3 — v0.8.3 contract (current)
+
+Additive MINOR — one new optional field, mutually exclusive with an existing
+one, both still under the same parent object:
+
+- **`function` on `TransitionScheduleDto`** (the `schedule` object) — a
+  compute-node Function callout that computes a scheduled transition's
+  firing time (and optional expiry) per entity, as an alternative to the
+  existing static `delayMs`. Mutually exclusive with `delayMs` (exactly one
+  of the two is required); this exclusivity is enforced by the import
+  validator, not expressible in the OpenAPI schema itself, matching the
+  existing `manual`/`schedule` mutual-exclusion precedent.
+
+Every 1.2 payload — including every existing `schedule: {delayMs, timeoutMs}`
+transition — is byte-identical and remains valid; `function` is purely
+additive alongside `delayMs`, not a replacement for it. See
+[`docs/cloud-parity/scheduled-transitions.md`](./cloud-parity/scheduled-transitions.md)
+§9 for the full `function`/`Schedule`-result contract.
+
+**Dual-shape retention of 1.1 and 1.2.** Nothing is retired:
+`SupportedSchemaRanges` widens in place to
+`{Major: 1, MinMinor: 1, MaxMinor: 3}` — 1.1- and 1.2-stamped imports keep
+working alongside 1.3.
+
+### 1.2 — v0.8.2 contract
 
 Additive MINOR — two new optional fields, both reusing the existing `annotations` validation (client-owned JSON object, ≤ 64 KB compacted, engine-ignored):
 

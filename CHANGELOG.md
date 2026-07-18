@@ -26,7 +26,36 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   New env vars: `CYODA_SCHEDULER_ENABLED`, `CYODA_SCHEDULER_SCAN_INTERVAL`,
   `CYODA_SCHEDULER_BATCH_SIZE`, `CYODA_SCHEDULER_DISTRIBUTION`,
   `CYODA_SCHEDULER_COORDINATOR`, `CYODA_SCHEDULER_REDISPATCH_BACKOFF`,
-  `CYODA_SCHEDULER_EXPIRY_GRACE`. No new error codes.
+  `CYODA_SCHEDULER_EXPIRY_GRACE`.
+  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+
+  **Per-entity firing time via a `schedule.function` compute-node callout.**
+  A scheduled transition's `schedule` may now carry `function` instead of a
+  static `delayMs` — mutually exclusive with it — naming a compute node
+  (routed by `calculationNodesTags`, same conventions as an externalized
+  processor/criterion) that computes the firing time per entity at arm time.
+  The callout returns a `resultKind: "Schedule"` result shaped
+  `{fireAt|fireAfterMs, expireAt?|expireAfterMs?}` (absolute epoch-ms or
+  relative), resolved into the same `scheduledTime`/`timeoutMs` a static
+  `delayMs` schedule would populate. A resolved expiry at or before the
+  resolved fire time is **born expired**: the transition is never armed, any
+  prior scheduling for it is cancelled, and a `SCHEDULED_TRANSITION_EXPIRE`
+  audit event is recorded directly — the entity write still succeeds. A
+  malformed or wrong-kind result rejects the entity write with the new
+  `500 SCHEDULE_FUNCTION_INVALID_RESULT`; the compute node being unreachable,
+  disconnected, or timing out surfaces the retryable `503`s below instead —
+  fail-closed either way, never a silent skip. Additive workflow schema
+  change: the workflow schema moves to **1.3** and every existing 1.1/1.2
+  payload remains valid (dual-shape). New error code:
+  `SCHEDULE_FUNCTION_INVALID_RESULT` (500).
+
+  **Uniform compute-infra `503`s across processor/criterion/function
+  callouts.** `NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`,
+  `DISPATCH_FORWARD_FAILED`, and `COMPUTE_MEMBER_DISCONNECTED` now surface
+  as retryable `503` uniformly regardless of which of the three callout
+  kinds triggered the dispatch — previously some of these paths
+  (e.g. no matching compute member) fell through to a misleading
+  `400 WORKFLOW_FAILED`. No new error codes.
   ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
 
 - **Criterion stoppage reason** — a criteria compute node's `EntityCriteriaCalculationResponse`
