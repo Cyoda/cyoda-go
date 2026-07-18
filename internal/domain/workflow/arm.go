@@ -187,9 +187,11 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 }
 
 // expiredSchedule records a born-expired scheduled transition for the
-// post-reconcile EXPIRE audit pass.
+// post-reconcile EXPIRE audit pass. Cancellation of the born-expired task's
+// row is driven separately by cancelIDs (built alongside bornExpired in
+// reconcileScheduledTasks) — this struct only carries what the EXPIRE audit
+// event itself reports.
 type expiredSchedule struct {
-	id         string
 	transition string
 }
 
@@ -227,7 +229,7 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		return nil, nil, rerr
 	}
 	if born {
-		return nil, &expiredSchedule{id: id, transition: tr.Name}, nil
+		return nil, &expiredSchedule{transition: tr.Name}, nil
 	}
 
 	return &spi.ScheduledTask{
