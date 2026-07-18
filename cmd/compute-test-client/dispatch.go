@@ -26,6 +26,8 @@ const (
 	ceTypeProcessorResponse = "EntityProcessorCalculationResponse"
 	ceTypeCriteriaRequest   = "EntityCriteriaCalculationRequest"
 	ceTypeCriteriaResponse  = "EntityCriteriaCalculationResponse"
+	ceTypeFunctionRequest   = "EntityFunctionCalculationRequest"
+	ceTypeFunctionResponse  = "EntityFunctionCalculationResponse"
 )
 
 // dispatcher manages the gRPC connection to cyoda and the dispatch loop.
@@ -157,6 +159,16 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			}
 			if err := stream.Send(resp); err != nil {
 				slog.Error("failed to send criteria response", "pkg", "compute-test-client", "error", err)
+			}
+
+		case ceTypeFunctionRequest:
+			resp, err := d.handleFunctionRequest(ctx, payload, txToken)
+			if err != nil {
+				slog.Error("function dispatch failed", "pkg", "compute-test-client", "error", err)
+				continue
+			}
+			if err := stream.Send(resp); err != nil {
+				slog.Error("failed to send function response", "pkg", "compute-test-client", "error", err)
 			}
 
 		case ceTypeKeepAlive:
@@ -341,6 +353,73 @@ func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.Raw
 	}
 
 	return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "")
+}
+
+// handleFunctionRequest dispatches a generic Function calculation request
+// (spi.ScheduleFunction — issue #419) to the catalog and returns the
+// response CloudEvent.
+func (d *dispatcher) handleFunctionRequest(ctx context.Context, payload json.RawMessage, txToken string) (*cepb.CloudEvent, error) {
+	var req struct {
+		RequestID    string          `json:"requestId"`
+		FunctionID   string          `json:"functionId"`
+		FunctionName string          `json:"functionName"`
+		EntityID     string          `json:"entityId"`
+		Parameters   json.RawMessage `json:"parameters"`
+		Payload      *struct {
+			Data json.RawMessage `json:"data"`
+			Meta json.RawMessage `json:"meta"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal function request: %w", err)
+	}
+
+	name := req.FunctionName
+	if name == "" {
+		name = req.FunctionID
+	}
+	slog.Info("function request", "pkg", "compute-test-client", "requestId", req.RequestID, "function", name, "entityId", req.EntityID)
+
+	entity := &Entity{
+		ID: req.EntityID,
+	}
+	if req.Payload != nil && req.Payload.Data != nil {
+		entity.Data = req.Payload.Data
+	}
+
+	fn, ok := d.cat.function(name)
+	if !ok {
+		return d.buildFunctionResponse(req.RequestID, "", nil, false, fmt.Sprintf("unknown function: %s", name))
+	}
+
+	resultKind, result, err := fn(ctx, entity, req.Parameters)
+	if err != nil {
+		return d.buildFunctionResponse(req.RequestID, "", nil, false, err.Error())
+	}
+
+	return d.buildFunctionResponse(req.RequestID, resultKind, result, true, "")
+}
+
+// buildFunctionResponse constructs an EntityFunctionCalculationResponse CloudEvent.
+func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result map[string]any, success bool, errMsg string) (*cepb.CloudEvent, error) {
+	resp := map[string]any{
+		"id":        uuid.NewString(),
+		"requestId": requestID,
+		"success":   success,
+	}
+	if resultKind != "" {
+		resp["resultKind"] = resultKind
+	}
+	if result != nil {
+		resp["result"] = result
+	}
+	if errMsg != "" {
+		resp["error"] = map[string]any{
+			"code":    "FUNCTION_ERROR",
+			"message": errMsg,
+		}
+	}
+	return newCloudEvent(ceTypeFunctionResponse, resp)
 }
 
 // buildCriteriaResponse constructs an EntityCriteriaCalculationResponse CloudEvent.

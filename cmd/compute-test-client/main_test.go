@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCatalog_NoopReturnsEntityUnchanged verifies the noop processor
@@ -305,4 +306,115 @@ func TestCatalog_ContextEquals(t *testing.T) {
 	if got {
 		t.Error("context-equals: expected false when context absent")
 	}
+}
+
+// TestCatalog_SchedFnResolve verifies every schedMode "sched-fn-resolve"
+// serves for the e2e/parity/scheduledfunction parity scenarios: it must
+// read entity.Data (funcSchedData) and return the matching resolveSchedule
+// Schedule result — see catalog.go's "sched-fn-resolve" entry doc comment.
+func TestCatalog_SchedFnResolve(t *testing.T) {
+	cat := newCatalog(nil, nil)
+	fn, ok := cat.function("sched-fn-resolve")
+	if !ok {
+		t.Fatal("sched-fn-resolve function not registered")
+	}
+
+	call := func(t *testing.T, data string) map[string]any {
+		t.Helper()
+		_, result, err := fn(context.Background(), &Entity{ID: "e-1", Data: json.RawMessage(data)}, nil)
+		if err != nil {
+			t.Fatalf("sched-fn-resolve(%s): %v", data, err)
+		}
+		return result
+	}
+
+	t.Run("absolute default offset", func(t *testing.T) {
+		before := time.Now().UnixMilli()
+		result := call(t, `{"schedMode":"absolute","offsetMs":0,"expireOffsetMs":0}`)
+		after := time.Now().UnixMilli()
+		fireAt, ok := result["fireAt"].(int64)
+		if !ok {
+			t.Fatalf("expected fireAt int64, got %T: %v", result["fireAt"], result["fireAt"])
+		}
+		if fireAt < before+300 || fireAt > after+300 {
+			t.Errorf("fireAt=%d not in [%d,%d] (now+300ms default)", fireAt, before+300, after+300)
+		}
+		if _, present := result["fireAfterMs"]; present {
+			t.Error("absolute mode must not set fireAfterMs")
+		}
+	})
+
+	t.Run("absolute explicit offset", func(t *testing.T) {
+		before := time.Now().UnixMilli()
+		result := call(t, `{"schedMode":"absolute","offsetMs":1000,"expireOffsetMs":0}`)
+		after := time.Now().UnixMilli()
+		fireAt := result["fireAt"].(int64)
+		if fireAt < before+1000 || fireAt > after+1000 {
+			t.Errorf("fireAt=%d not in [%d,%d]", fireAt, before+1000, after+1000)
+		}
+	})
+
+	t.Run("relative default offset", func(t *testing.T) {
+		result := call(t, `{"schedMode":"relative","offsetMs":0,"expireOffsetMs":0}`)
+		if got := result["fireAfterMs"]; got != int64(300) {
+			t.Errorf("fireAfterMs=%v, want 300 (default)", got)
+		}
+		if _, present := result["fireAt"]; present {
+			t.Error("relative mode must not set fireAt")
+		}
+	})
+
+	t.Run("relative explicit offset", func(t *testing.T) {
+		result := call(t, `{"schedMode":"relative","offsetMs":500,"expireOffsetMs":0}`)
+		if got := result["fireAfterMs"]; got != int64(500) {
+			t.Errorf("fireAfterMs=%v, want 500", got)
+		}
+	})
+
+	t.Run("bornExpired default offset", func(t *testing.T) {
+		result := call(t, `{"schedMode":"bornExpired","offsetMs":0,"expireOffsetMs":0}`)
+		if got := result["fireAfterMs"]; got != int64(1000) {
+			t.Errorf("fireAfterMs=%v, want 1000 (default)", got)
+		}
+		if got := result["expireAfterMs"]; got != int64(0) {
+			t.Errorf("expireAfterMs=%v, want 0 (born expired: expiry == fire time)", got)
+		}
+	})
+
+	t.Run("pastFire default offset", func(t *testing.T) {
+		before := time.Now().UnixMilli()
+		result := call(t, `{"schedMode":"pastFire","offsetMs":0,"expireOffsetMs":0}`)
+		after := time.Now().UnixMilli()
+		fireAt := result["fireAt"].(int64)
+		if fireAt < before-5000 || fireAt > after-5000 {
+			t.Errorf("fireAt=%d not in [%d,%d] (now-5000ms default, already due)", fireAt, before-5000, after-5000)
+		}
+	})
+
+	t.Run("expiryElapsed default offsets", func(t *testing.T) {
+		before := time.Now().UnixMilli()
+		result := call(t, `{"schedMode":"expiryElapsed","offsetMs":0,"expireOffsetMs":0}`)
+		after := time.Now().UnixMilli()
+		fireAt, ok := result["fireAt"].(int64)
+		if !ok {
+			t.Fatalf("expected fireAt int64, got %T: %v", result["fireAt"], result["fireAt"])
+		}
+		if fireAt < before-5000 || fireAt > after-5000 {
+			t.Errorf("fireAt=%d not in [%d,%d] (now-5000ms default)", fireAt, before-5000, after-5000)
+		}
+		expireAt, ok := result["expireAt"].(int64)
+		if !ok {
+			t.Fatalf("expected expireAt int64, got %T: %v", result["expireAt"], result["expireAt"])
+		}
+		if want := fireAt + 110; expireAt != want {
+			t.Errorf("expireAt=%d, want fireAt+110=%d (expiry > fire time, but lateness already vast)", expireAt, want)
+		}
+	})
+
+	t.Run("unknown schedMode errors", func(t *testing.T) {
+		_, _, err := fn(context.Background(), &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"bogus"}`)}, nil)
+		if err == nil {
+			t.Fatal("expected an error for an unrecognized schedMode")
+		}
+	})
 }
