@@ -34,6 +34,13 @@ type SearchOptions struct {
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
 	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
+
+	// TrackingRead, when true and a transaction is active, records the
+	// entities this search returns into the transaction's read-set, so
+	// commit-time first-committer-wins validates them (a FOR-SHARE /
+	// locking read, implemented optimistically). Default false: a plain
+	// snapshot predicate read that records nothing.
+	TrackingRead bool
 }
 
 // ResultOptions controls pagination when retrieving async search results.
@@ -179,6 +186,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				Limit:        spiLimit,
 				Offset:       opts.Offset,
 				OrderBy:      orderBy,
+				TrackingRead: opts.TrackingRead,
 			})
 		}
 		// Fall through to in-memory filtering if translation fails.

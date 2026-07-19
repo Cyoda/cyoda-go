@@ -731,6 +731,54 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 	}
 }
 
+// TestSearch_TrackingReadPushedToSearcher verifies that Search with
+// opts.TrackingRead set threads the flag through to the spi.SearchOptions
+// passed to the plugin Searcher's Search call (pushdown branch).
+func TestSearch_TrackingReadPushedToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveMinimalModel(t, ctx, base, ref)
+
+	realStore, _ := base.EntityStore(ctx)
+
+	var capturedOpts spi.SearchOptions
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			capturedOpts = opts
+			return nil, nil
+		},
+	}
+
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{TrackingRead: true})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if ses.searchCalls != 1 {
+		t.Fatalf("expected searcher to be called once, got %d", ses.searchCalls)
+	}
+	if !capturedOpts.TrackingRead {
+		t.Errorf("capturedOpts.TrackingRead = false, want true")
+	}
+}
+
 func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	// Wrap the memory store so it does NOT implement spi.Searcher (the memory
 	// plugin implements it directly now), forcing the GetAll+match fallback.
