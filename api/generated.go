@@ -3758,6 +3758,9 @@ type SearchEntitiesParams struct {
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
 	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// TrackingRead When true and the request runs inside an active transaction, the entities this search returns are recorded into the transaction's read-set so commit-time first-committer-wins validates them. Defaults to false (a plain snapshot read that records nothing). Ignored outside a transaction.
+	TrackingRead *bool `form:"trackingRead,omitempty" json:"trackingRead,omitempty"`
 }
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
@@ -8387,6 +8390,19 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sort"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "trackingRead" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "trackingRead", r.URL.Query(), &params.TrackingRead, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "trackingRead"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "trackingRead", Err: err})
 		}
 		return
 	}

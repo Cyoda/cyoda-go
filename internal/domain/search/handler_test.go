@@ -327,6 +327,35 @@ func TestHandlerDirectSearchPagination(t *testing.T) {
 	}
 }
 
+// TestHandlerDirectSearch_TrackingReadQueryParam_Accepted is an end-to-end
+// sanity check that the sync search endpoint's router accepts the
+// trackingRead query parameter (both true and false) over the real HTTP
+// stack without error. The DTO-to-SearchOptions mapping itself is covered
+// at a finer grain by TestHandlerDirectSearch_TrackingReadTrue_ReachesSearchOptions
+// and TestHandlerDirectSearch_TrackingReadAbsent_DefaultsFalse in
+// handler_tracking_read_test.go.
+func TestHandlerDirectSearch_TrackingReadQueryParam_Accepted(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
+	createEntity(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
+
+	cond := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
+
+	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "trackingRead=true")
+	expectStatus(t, resp, http.StatusOK)
+	results := parseNDJSON(t, readBody(t, resp))
+	if len(results) != 1 {
+		t.Fatalf("trackingRead=true: expected 1 result, got %d", len(results))
+	}
+
+	resp = doDirectSearch(t, srv.URL, "Person", 1, cond, "trackingRead=false")
+	expectStatus(t, resp, http.StatusOK)
+	results = parseNDJSON(t, readBody(t, resp))
+	if len(results) != 1 {
+		t.Fatalf("trackingRead=false: expected 1 result, got %d", len(results))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Async search tests
 // ---------------------------------------------------------------------------
