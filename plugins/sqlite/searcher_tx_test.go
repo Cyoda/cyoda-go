@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -373,4 +374,162 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+// TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite: an in-tx Search with
+// PointInTime set to before a buffered write must be committed-only — the
+// buffered write is excluded (no overlay) — and must equal
+// GetAllAsAt(pit) + spi.MatchFilter exactly. It must also record NOTHING in
+// tx.ReadSet even with TrackingRead:true (PIT does not participate in RYW
+// read-set tracking; it mirrors GetAllAsAt, which always reads committed data).
+func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
+	dir := t.TempDir()
+	clock := sqlite.NewTestClockAt(pitBase)
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), filepath.Join(dir, "pit_tx.db"), sqlite.WithClock(clock))
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	t.Cleanup(func() { factory.Close() })
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	// Committed Berlin match at pitBase.
+	if _, err := store.Save(ctx, mkPerson2(ref, "e1", "Berlin", "committed")); err != nil {
+		t.Fatalf("Save e1: %v", err)
+	}
+	pit := pitBase
+	clock.Advance(time.Millisecond)
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	searcher := store.(spi.Searcher)
+
+	// Buffered write, AFTER pit, inside the tx: must be excluded from a
+	// committed-only PIT search at pit (which predates it).
+	if _, err := store.Save(txCtx, mkPerson2(ref, "e2", "Berlin", "buffered")); err != nil {
+		t.Fatalf("Save e2 (buffered): %v", err)
+	}
+
+	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, TrackingRead: true,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	gotIDs := idSetTx(got)
+	if gotIDs["e2"] {
+		t.Errorf("buffered write postdating pit must be excluded from committed-only PIT search, got %v", gotIDs)
+	}
+	if !gotIDs["e1"] {
+		t.Errorf("committed e1 must be present, got %v", gotIDs)
+	}
+
+	// Must equal GetAllAsAt(pit) + MatchFilter exactly (the committed-pushdown
+	// contract; no overlay dimension participates).
+	wantAll, err := store.GetAllAsAt(ctx, ref, pit)
+	if err != nil {
+		t.Fatalf("GetAllAsAt: %v", err)
+	}
+	wantIDs := map[string]bool{}
+	for _, e := range wantAll {
+		if spi.MatchFilter(cityBerlin, e.Data, e.Meta) {
+			wantIDs[e.Meta.ID] = true
+		}
+	}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+MatchFilter %v", gotIDs, wantIDs)
+	}
+	for id := range wantIDs {
+		if !gotIDs[id] {
+			t.Errorf("expected id %s from GetAllAsAt+MatchFilter, missing from Search(PIT) %v", id, gotIDs)
+		}
+	}
+
+	// Committed-only PIT must record NOTHING in tx.ReadSet, even though
+	// TrackingRead was true.
+	tx := spi.GetTransaction(txCtx)
+	if len(tx.ReadSet) != 0 {
+		t.Errorf("in-tx PIT search must record no read-set entries, got %v", tx.ReadSet)
+	}
+}
+
+// TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget: an in-tx PIT search
+// with a narrow pushable predicate over a large model must stay within
+// SearchScanLimit (the pushdown, not a GetAllAsAt-style full scan), while a
+// broad residual over the same model still exhausts the budget.
+func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tx_pit_budget.db")
+	clock := sqlite.NewTestClockAt(pitBase)
+	// Scan budget of 5: far below the 50-row model size.
+	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5, sqlite.WithClock(clock))
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	store, _ := factory.EntityStore(ctx)
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// 50 committed persons; only e-berlin-0 and e-berlin-1 live in Berlin.
+	for i := 0; i < 48; i++ {
+		if _, err := store.Save(ctx, mkPerson2(ref, "e-other-"+itoa(i), "Munich", "target")); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := store.Save(ctx, mkPerson2(ref, "e-berlin-"+itoa(i), "Berlin", "target")); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	pit := clock.Now() // snapshot after all 50 committed rows
+	clock.Advance(time.Millisecond)
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	searcher := store.(spi.Searcher)
+
+	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; residual regex
+	// on name then post-filters those 2 — scanned (2) <= budget (5). If the
+	// pushdown were dropped (full scan), 50 > 5 would trip the budget.
+	mixed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+		cityBerlin,
+		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
+	}}
+	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
+	})
+	if err != nil {
+		t.Fatalf("narrow in-tx PIT search must stay within budget, got: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 Berlin matches, got %d", len(got))
+	}
+
+	// Broad residual over the whole model still exhausts the budget.
+	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
+	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
+	})
+	if !errors.Is(err, sqlite.ErrScanBudgetExhausted) {
+		t.Fatalf("broad in-tx PIT post-filter must exhaust budget, got: %v", err)
+	}
 }
