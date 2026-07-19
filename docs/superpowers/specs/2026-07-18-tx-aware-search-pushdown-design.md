@@ -182,13 +182,31 @@ unsafe), documented in code. `search.sortEntities` delegates to
 
 ## Plugin change (`sqlite`, `postgres`, `memory`)
 
+**Correction (discovered during implementation):** the three backends do NOT
+share one RYW mechanism. `memory` and `sqlite` keep uncommitted writes in the
+in-process `tx.Buffer`/`tx.Deletes` and need the buffer overlay described below.
+`postgres` does NOT — it runs each transaction as a real `pgx.Tx` (REPEATABLE
+READ) and executes every store query through a context-resolving `Querier` that
+resolves the active `pgx.Tx` from `ctx`, so an in-tx `Search` sees its own
+uncommitted writes **DB-natively** (it never populates `tx.Buffer`/`tx.Deletes`).
+For postgres the buffer overlay / `spi.MergePage` machinery is therefore
+inapplicable: the committed-style pushdown on the tx connection *is* the RYW
+result (and keeps its SQL `LIMIT`/`OFFSET` push — no reason to drop it). The only
+gap postgres had was **read-set recording** (its `Search` never recorded reads,
+though `Get`/`GetAll` do), added conditionally on `TrackingRead`. The uniform
+*contract* holds across all three (in-tx `Search` == `GetAll`+match; read-set
+only under `TrackingRead`); only the mechanism differs. The commercial Cassandra
+backend (downstream) is its own mechanism again (durable WAL). The overlay
+description below applies to `memory` and `sqlite`.
+
 `memory` gains a `Searcher` implementation (iterate model snapshot + overlay
 buffer via the same helpers) so the flag and the tx-aware path are uniform and
 the engine's `GetAll` fallback is translate-failure-only. `GetAll` itself is
 unchanged (still always-tracking — the fence relies on it).
 
-All three `Search` implementations read `tx := spi.GetTransaction(ctx)` and
-branch:
+The `memory`/`sqlite` `Search` implementations read `tx := spi.GetTransaction(ctx)`
+and branch (postgres branches the same way but its `tx != nil && PIT == nil` arm
+is the ordinary pushdown-on-the-tx plus read-set recording, not a buffer merge):
 
 - **`tx == nil`** (unchanged for sqlite/postgres): committed pushdown; SQL
   `LIMIT`/`OFFSET` when no residual, else Go paging.
