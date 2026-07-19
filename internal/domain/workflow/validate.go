@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
 // Processor execution-mode tokens. Sourced from the OpenAPI enum in
@@ -195,6 +197,70 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
+// validateCriterionRegex rejects a criterion whose MATCHES_PATTERN operator
+// carries a regex that fails to compile. Criteria are stored opaquely
+// (json.RawMessage) and previously were only parsed at transition-evaluation
+// time (engine.go's evaluateCriterion -> match.Match -> operators.go's
+// opMatchesPattern), so a malformed regex imported successfully and then
+// errored on every subsequent evaluation of that transition. This closes
+// that fail-open gap by compiling MATCHES_PATTERN regexes at import time.
+//
+// location names the workflow/state/transition the criterion belongs to, for
+// the error message. Empty/null criteria are skipped. A criterion that does
+// not parse as a predicate.Condition at all is left alone — this validator
+// only tightens already-parseable conditions, it does not newly reject
+// shapes ParseCondition already rejects (that is out of scope for this
+// check; those criteria fail at evaluation time exactly as before).
+func validateCriterionRegex(criterion json.RawMessage, location string) error {
+	trimmed := bytes.TrimSpace(criterion)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	cond, err := predicate.ParseCondition(trimmed)
+	if err != nil {
+		return nil
+	}
+	return walkCriterionForRegex(cond, location)
+}
+
+// walkCriterionForRegex recurses into GroupCondition.Conditions and checks
+// every SimpleCondition / LifecycleCondition leaf whose OperatorType is
+// MATCHES_PATTERN. Other condition kinds (FunctionCondition, ArrayCondition)
+// carry no OperatorType to check and are silently skipped — in particular
+// this is how a FUNCTION criterion is exempted from regex validation.
+func walkCriterionForRegex(cond predicate.Condition, location string) error {
+	switch c := cond.(type) {
+	case *predicate.SimpleCondition:
+		return compileMatchesPattern(c.OperatorType, c.Value, location)
+	case *predicate.LifecycleCondition:
+		return compileMatchesPattern(c.OperatorType, c.Value, location)
+	case *predicate.GroupCondition:
+		for _, sub := range c.Conditions {
+			if err := walkCriterionForRegex(sub, location); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// compileMatchesPattern compiles value as a regex exactly the way
+// the evaluator does — internal/match/operators.go's opMatchesPattern calls
+// regexp.MatchString(fmt.Sprintf("%v", expected), actual.String()), which
+// itself compiles via regexp.Compile. Mirroring the %v stringification
+// and Compile call here means a pattern accepted here is guaranteed
+// compilable at evaluation time, and vice versa — no accept/reject skew.
+func compileMatchesPattern(operatorType string, value any, location string) error {
+	if operatorType != "MATCHES_PATTERN" {
+		return nil
+	}
+	pattern := fmt.Sprintf("%v", value)
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("%s: invalid MATCHES_PATTERN regex %q: %v", location, pattern, err)
+	}
+	return nil
+}
+
 // validateImportRequest enforces the per-incoming-workflow structural
 // rules (audit §H4, §H6.a–e, §M4). Violations are returned as plain
 // errors that the caller wraps in a 400 with ErrCodeValidationFailed.
@@ -267,11 +333,13 @@ func validateWorkflows(workflows []spi.WorkflowDefinition, allowCycles bool) err
 // validateWorkflowStructure enforces the per-workflow structural rules
 // (H6.a–e, H4) plus the security-audit follow-ups M-1 (empty state-map
 // keys), L-1 (empty transition / processor names) and L-2 (identifier
-// length cap). Any violation is a 4xx at import time —
-// the engine would otherwise silently degrade at runtime (park entity
-// in an undefined state, shadow duplicate transitions, coerce typo'd
-// ExecutionMode to SYNC) or accept arbitrarily long identifiers into
-// operational logs and audit events.
+// length cap), plus criterion regex validation. Any violation is a 4xx at
+// import time — the engine would otherwise silently degrade at runtime
+// (park entity in an undefined state, shadow duplicate transitions, coerce
+// typo'd ExecutionMode to SYNC) or accept arbitrarily long identifiers into
+// operational logs and audit events. A malformed MATCHES_PATTERN regex in a
+// workflow-level or transition-level criterion is rejected here rather than
+// at every subsequent transition-evaluation attempt.
 func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	// H6.c — Name non-empty.
 	if wf.Name == "" {
@@ -291,6 +359,12 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 		return fmt.Errorf("workflow %q: initialState %q is not declared in states", wf.Name, wf.InitialState)
 	}
 
+	// Workflow-level criterion — reject a malformed MATCHES_PATTERN regex
+	// at import instead of failing every evaluation.
+	if err := validateCriterionRegex(wf.Criterion, fmt.Sprintf("workflow %q", wf.Name)); err != nil {
+		return err
+	}
+
 	// Iterate states once and enforce:
 	//   M-1 — state-map keys must be non-empty.
 	//   L-2 — state-map keys length cap.
@@ -302,6 +376,7 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
 	//   M1  — RetryPolicy ∈ {NONE, FIXED, ""}.
+	//   Transition.Criterion — a MATCHES_PATTERN regex, if present, must compile.
 	for stateName, stateDef := range wf.States {
 		if stateName == "" {
 			return fmt.Errorf("workflow %q: empty state name is not allowed in the states map",
@@ -331,6 +406,11 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 			if _, ok := wf.States[tr.Next]; !ok {
 				return fmt.Errorf("workflow %q state %q transition %q: next state %q is not declared in states",
 					wf.Name, stateName, tr.Name, tr.Next)
+			}
+
+			if err := validateCriterionRegex(tr.Criterion,
+				fmt.Sprintf("workflow %q state %q transition %q", wf.Name, stateName, tr.Name)); err != nil {
+				return err
 			}
 
 			if tr.Manual && tr.Schedule != nil {
