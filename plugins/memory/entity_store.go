@@ -120,6 +120,12 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		cp := copyEntity(entity)
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
+		// If the entity was previously marked for deletion in this tx, unmark it
+		// (last-write-wins: Save-after-Delete → present). Keeps tx.Buffer and
+		// tx.Deletes mutually exclusive, the invariant txmanager.Commit assumes
+		// and that GetAll / Search / commit all rely on to agree. Mirrors
+		// plugins/sqlite/entity_store.go Save.
+		delete(tx.Deletes, entity.Meta.ID)
 		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer
 		// semantics). Commit sees ONE ctx but a mixed-model batch may buffer
 		// entities with different key contexts, so keys must be stored per-entity.

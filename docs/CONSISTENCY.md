@@ -158,6 +158,44 @@ commit is racing with the `Unlock`'s delete). The assertion exists
 to catch such misuse loudly in development rather than have it
 manifest as silent data loss in production.
 
+## 3c. In-transaction `Search` is a predicate read
+
+An in-transaction `Search` (`spi.Searcher.Search`, pushed down to the storage
+plugin) is read-your-own-writes correct — it sees the transaction's own
+uncommitted writes overlaid on the committed snapshot — but its read-set
+participation is governed by a per-query boolean, **`TrackingRead`**
+(default `false`), not by the mere act of searching:
+
+- **`TrackingRead=false` (default).** A plain snapshot read: returns the
+  RYW-correct rows and records **nothing** in the read-set. This is a
+  predicate read, so it does not prevent phantoms — consistent with §3/§7.3
+  above, not a new exception to them.
+- **`TrackingRead=true`.** Additionally records the entities the search
+  **returns** into the read-set, so commit-time FCW validates them
+  (entity-level, same mechanism as §1/§7.2). This still does not protect
+  against phantoms: a concurrent *insert* of a new matching entity is not
+  caught, only writes to rows the search actually returned.
+
+This is a lighter-weight lever than `GetAll`: today `GetAll` is implicitly
+"always tracking" and `Count` is "never" (§7.3, Appendix A.5); `TrackingRead`
+lets a `Search` call declare its own read-set intent instead of inheriting
+one from a full-model scan.
+
+**Fence guidance, reworded.** §5 and Appendix A rely on reading *every*
+peer entity the invariant covers so FCW can catch a concurrent violator. A
+predicate `Search` — even with `TrackingRead=true` — only records the rows
+it *returns*; if the predicate can return a strict subset of the peer set
+the invariant depends on (e.g. it excludes a state the invariant also
+cares about), the fence has a gap a `GetAll`-based peer scan would not have.
+Use `GetAll` (unchanged, always-tracking) for a fence, or a `TrackingRead`
+search whose predicate is provably peer-complete for the invariant.
+
+The per-backend mechanism that makes the overlay RYW-correct differs
+(`memory`/`sqlite` overlay the in-process transaction buffer over the
+committed stream; `postgres` runs the query natively on its `pgx.Tx`, so it
+never needs a buffer overlay) — the observable contract above is uniform
+across all three.
+
 ## 4. Why the transactional umbrella doesn't fix this by itself
 
 Every transaction in cyoda is started by an entity create/update at the
@@ -686,7 +724,11 @@ Non-negotiables for the author:
 
 - Use `GetAll` (or an equivalent predicate scan that returns entities).
   **Never** use `Count` / `CountByState` here — aggregates do not
-  populate the read-set and silently disable the fence.
+  populate the read-set and silently disable the fence. A `Search` with
+  `TrackingRead=true` (§3c) is an alternative to `GetAll` only if its
+  predicate is provably peer-complete for the invariant; a predicate that
+  can exclude a relevant peer breaks the fence just like a subset scan
+  would.
 - Read then filter. Filter-then-read via a non-transactional pre-fetch
   shrinks the read-set and lets peers slip past.
 - The criterion's `GetAll` and the processor's `GetAll` hit the same

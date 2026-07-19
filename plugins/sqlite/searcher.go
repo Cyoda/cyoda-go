@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -18,9 +19,18 @@ var _ spi.Searcher = (*entityStore)(nil)
 var ErrScanBudgetExhausted = errors.New("scan budget exhausted")
 
 // Search implements spi.Searcher for the SQLite entity store.
-// It uses the query planner to push down pushable predicates to SQL and
-// post-filters the residual in Go. Pagination is applied in SQL when no
-// residual exists, or in Go after post-filtering.
+//
+// Three branches, all producing the same result set that GetAll + spi.MatchFilter
+// would for the same transaction state:
+//   - non-tx (or in-tx point-in-time): committed pushdown via searchCommitted —
+//     the query planner pushes pushable predicates to SQL and post-filters the
+//     residual in Go; pagination is applied in SQL when no residual exists, or in
+//     Go after post-filtering. In-tx PIT is committed-only (no buffer overlay, no
+//     read-set) — the overlay for that dimension is a later task.
+//   - in-tx, PointInTime==nil: read-your-own-writes overlay via searchTxOverlay —
+//     a bounded streaming merge of the committed snapshot (at tx.SnapshotTime,
+//     suppressing tx.Deletes and buffered ids) with the matching buffer entries.
+//     Returned committed ids enter tx.ReadSet only when opts.TrackingRead is set.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
@@ -28,6 +38,19 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	if err := validateOrderSpecs(opts.OrderBy); err != nil {
 		return nil, err
 	}
+
+	tx := spi.GetTransaction(ctx)
+	if tx != nil && opts.PointInTime == nil {
+		return s.searchTxOverlay(ctx, tx, filter, opts)
+	}
+	// Non-tx (committed pushdown) or in-tx point-in-time (committed-only, unchanged).
+	return s.searchCommitted(ctx, filter, opts)
+}
+
+// searchCommitted runs the committed pushdown: plan the filter, push the
+// pushable portion to SQL, post-filter the residual in Go, and page. Used by
+// the non-tx path and the in-tx point-in-time path (committed-only).
+func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	plan := planQuery(filter)
 
 	var baseQuery string
@@ -132,11 +155,19 @@ func (s *entityStore) searchCurrentStateBase(opts spi.SearchOptions) (string, []
 }
 
 // searchPointInTimeBase returns the base SQL for point-in-time search.
+func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []any) {
+	return s.searchSnapshotBase(opts, timeToMicro(*opts.PointInTime))
+}
+
+// searchSnapshotBase returns the base SQL selecting the latest non-deleted
+// version of each entity for the model as of snapshotMicro. Shared by the
+// point-in-time path (snapshotMicro = opts.PointInTime) and the in-tx overlay
+// (snapshotMicro = tx.SnapshotTime) so both agree with getSnapshot/getAllTx.
+//
 // Uses submit_time <= ? (non-strict) matching the memory plugin's convention
 // (!v.submitTime.After(snapshotTime)) and all other snapshot queries in this
-// package (getSnapshot, getAllTx, DeleteAll tx).
-func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []any) {
-	pit := timeToMicro(*opts.PointInTime)
+// package (getSnapshot, getAllTx, DeleteAll tx). Rows scan via scanVersionEntity.
+func (s *entityStore) searchSnapshotBase(opts spi.SearchOptions, snapshotMicro int64) (string, []any) {
 	query := `SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
 	                 json(ev.data), json(ev.meta), ev.submit_time
 	          FROM entity_versions ev
@@ -147,8 +178,138 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 	              GROUP BY entity_id
 	          ) latest ON ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
 	          WHERE ev.tenant_id = ? AND ev.change_type != 'DELETED'`
-	args := []any{string(s.tenantID), opts.ModelName, opts.ModelVersion, pit, string(s.tenantID)}
+	args := []any{string(s.tenantID), opts.ModelName, opts.ModelVersion, snapshotMicro, string(s.tenantID)}
 	return query, args
+}
+
+// sortEntitiesByOrder sorts entities in place by the canonical spi.LessByOrder
+// comparator (a strict total order with an entity_id ascending tiebreaker), so
+// the buffer `adds` slice is ordered identically to the SQL ORDER BY stream
+// before the merge.
+func sortEntitiesByOrder(rows []*spi.Entity, order []spi.OrderSpec) {
+	sort.Slice(rows, func(i, j int) bool {
+		return spi.LessByOrder(rows[i], rows[j], order)
+	})
+}
+
+// searchTxOverlay implements the in-transaction read-your-own-writes overlay for
+// PointInTime==nil: a bounded streaming merge (spi.MergePage) of the committed
+// snapshot at tx.SnapshotTime with the tx's matching buffered writes.
+//
+// Committed candidates are streamed in ORDER BY order WITHOUT SQL LIMIT/OFFSET
+// (paging is applied by MergePage over the merged sequence). The residual
+// post-filter and SearchScanLimit still apply to the committed stream, so a
+// filter whose pushable part narrows the candidate set does not full-scan; a
+// broad residual can still exhaust the budget as in the non-tx path.
+//
+// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack) so
+// Commit/Rollback (which take tx.OpMu.Lock) cannot race our reads of
+// tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order: tx.OpMu before
+// the sql.DB query — identical to Save/GetAll/getAllTx in this package.
+func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
+	plan := planQuery(filter)
+
+	// Committed candidate SQL: snapshot at tx.SnapshotTime, ORDER BY, no LIMIT/OFFSET.
+	baseQuery, baseArgs := s.searchSnapshotBase(opts, timeToMicro(tx.SnapshotTime))
+	if plan.where != "" {
+		baseQuery += " AND (" + plan.where + ")"
+		baseArgs = append(baseArgs, plan.args...)
+	}
+	baseQuery += orderByClause(opts, "ev")
+
+	var results []*spi.Entity
+	err := func() error {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+
+		rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)
+		if err != nil {
+			return fmt.Errorf("search query: %w", err)
+		}
+		defer rows.Close()
+
+		// Lazy committed source: scan one row per call, apply the residual
+		// post-filter, honour the scan budget. Never drains into a slice.
+		scanned := 0
+		next := func() (*spi.Entity, bool, error) {
+			for rows.Next() {
+				if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
+					return nil, false, fmt.Errorf("%w: examined %d rows", ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
+				}
+				scanned++
+				e, scanErr := scanVersionEntity(rows)
+				if scanErr != nil {
+					return nil, false, scanErr
+				}
+				if plan.postFilter != nil {
+					matches, evalErr := evaluateFilter(*plan.postFilter, e)
+					if evalErr != nil {
+						return nil, false, fmt.Errorf("post-filter evaluation: %w", evalErr)
+					}
+					if !matches {
+						continue
+					}
+				}
+				return e, true, nil
+			}
+			if err := rows.Err(); err != nil {
+				return nil, false, fmt.Errorf("row iteration: %w", err)
+			}
+			return nil, false, nil
+		}
+
+		// adds = matching buffered own-writes for this model, excluding staged
+		// deletes. copyEntity so no store-internal pointer escapes the lock.
+		adds := make([]*spi.Entity, 0, len(tx.Buffer))
+		for id, e := range tx.Buffer {
+			if tx.Deletes[id] {
+				continue
+			}
+			if e.Meta.ModelRef != modelRef {
+				continue
+			}
+			if spi.MatchFilter(filter, e.Data, e.Meta) {
+				adds = append(adds, copyEntity(e))
+			}
+		}
+		sortEntitiesByOrder(adds, opts.OrderBy)
+
+		// A committed row is suppressed if staged for delete OR shadowed by a
+		// buffered own-write (the buffered version, if matching, arrives via adds).
+		deleted := func(id string) bool {
+			if tx.Deletes[id] {
+				return true
+			}
+			_, buffered := tx.Buffer[id]
+			return buffered
+		}
+
+		page, mErr := spi.MergePage(next, adds, deleted, opts.OrderBy, opts.Offset, opts.Limit)
+		if mErr != nil {
+			return mErr
+		}
+
+		// Read-set recording is CONDITIONAL on TrackingRead (unlike GetAll, which
+		// records unconditionally). Only returned committed rows (not buffered —
+		// those are own-writes already in the write-set) enter the read-set.
+		if opts.TrackingRead {
+			for _, e := range page {
+				if _, buffered := tx.Buffer[e.Meta.ID]; !buffered {
+					tx.ReadSet[e.Meta.ID] = true
+				}
+			}
+		}
+		results = page
+		return nil
+	}()
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // metaBlobKey maps canonical meta sort-path names (as used in spi.OrderSpec)

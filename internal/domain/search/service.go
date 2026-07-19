@@ -34,6 +34,13 @@ type SearchOptions struct {
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
 	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
+
+	// TrackingRead, when true and a transaction is active, records the
+	// entities this search returns into the transaction's read-set, so
+	// commit-time first-committer-wins validates them (a FOR-SHARE /
+	// locking read, implemented optimistically). Default false: a plain
+	// snapshot predicate read that records nothing.
+	TrackingRead bool
 }
 
 // ResultOptions controls pagination when retrieving async search results.
@@ -112,9 +119,15 @@ func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 
 // Search performs a synchronous entity search, returning matching entities.
 //
-// When the plugin's EntityStore implements spi.Searcher and there is no active
-// transaction, Search delegates to the plugin for SQL predicate pushdown.
-// Otherwise it falls back to GetAll + in-memory filtering.
+// When the plugin's EntityStore implements spi.Searcher, Search delegates to
+// the plugin for SQL predicate pushdown — tx or not. Every OSS backend's
+// Searcher.Search is transaction-aware: called with an active transaction in
+// ctx, it honors the transaction's buffered writes and produces
+// read-your-own-writes results equal to GetAll+match, so the engine no
+// longer needs to special-case "in a transaction" to preserve correctness.
+// The GetAll/GetAllAsAt + in-memory match fallback below now serves only two
+// cases: (1) a store that does not implement spi.Searcher at all, and (2) a
+// condition ConditionToFilter cannot translate to a pushdownable filter.
 //
 // Pre-execution path validation: every condition path is checked against
 // the cached model schema's FieldsMap. When a path is unknown, the
@@ -144,6 +157,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return nil, vErr
 	}
+	if rErr := ValidateRegexPatterns(cond); rErr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
 	if oerr != nil {
@@ -155,11 +172,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// Delegate to plugin Searcher when available and not in a transaction.
-	// In-transaction searches bypass pushdown because the search would miss
-	// buffered writes that haven't been flushed to the store yet.
-	tx := spi.GetTransaction(ctx)
-	if searcher, ok := store.(spi.Searcher); ok && tx == nil {
+	// Delegate to the plugin Searcher whenever it's available. Searcher.Search
+	// is transaction-aware on every OSS backend (RYW), so this is safe with or
+	// without an active transaction in ctx — see the Search doc comment.
+	if searcher, ok := store.(spi.Searcher); ok {
 		filter, translateErr := ConditionToFilter(cond)
 		if translateErr == nil {
 			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
@@ -175,6 +191,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				Limit:        spiLimit,
 				Offset:       opts.Offset,
 				OrderBy:      orderBy,
+				TrackingRead: opts.TrackingRead,
 			})
 		}
 		// Fall through to in-memory filtering if translation fails.
@@ -182,7 +199,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			"pkg", "search", "error", translateErr)
 	}
 
-	// Fallback: GetAll + in-memory filtering.
+	// Fallback: GetAll/GetAllAsAt + in-memory filtering. In-tx, this path is a
+	// rare edge (a store without Searcher, or a translate-failure condition):
+	// GetAll unconditionally records every returned entity into the
+	// transaction's read-set (unlike the Searcher's TrackingRead-gated
+	// pushdown path above), so a translate-failure search conservatively
+	// widens the read-set to the whole model regardless of opts.TrackingRead.
+	// The GetAllAsAt (point-in-time) branch of this same fallback records no
+	// read-set at all, matching GetAsAt/GetAllAsAt's historical-read semantics.
 	var entities []*spi.Entity
 	if opts.PointInTime != nil {
 		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)
@@ -255,6 +279,10 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return "", vErr
+	}
+	if rErr := ValidateRegexPatterns(cond); rErr != nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400

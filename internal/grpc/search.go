@@ -330,7 +330,8 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		ModelVersion: fmt.Sprintf("%d", req.Model.Version),
 	}
 	opts := search.SearchOptions{
-		PointInTime: req.PointInTime,
+		PointInTime:  req.PointInTime,
+		TrackingRead: req.TrackingRead,
 	}
 	if req.Limit != nil {
 		opts.Limit = *req.Limit

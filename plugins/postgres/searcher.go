@@ -25,6 +25,19 @@ var _ spi.Searcher = (*entityStore)(nil)
 // and bounds memory via the early-stop when a limit is set. An unbounded
 // request with a residual is O(n) memory — the same profile as the in-memory
 // fallback it replaces.
+//
+// Transaction awareness (read-your-own-writes). Unlike the memory and sqlite
+// backends — which stage a transaction's writes in an in-process buffer
+// (spi.TransactionState.Buffer/.Deletes) and must overlay that buffer onto a
+// committed snapshot to serve RYW — the postgres backend runs every transaction
+// as a real pgx.Tx under REPEATABLE READ. The query below executes through the
+// context-resolving Querier (s.q), which resolves the active pgx.Tx from ctx, so
+// it already observes the transaction's own uncommitted creates/updates/deletes:
+// RYW is provided by the database, and the committed pushdown IS the RYW result.
+// No buffer overlay, no spi.MergePage, and no tx.OpMu are involved (postgres
+// never populates those TransactionState fields; Get/GetAll don't take tx.OpMu
+// either). The one tx-specific behaviour Search adds over the committed pushdown
+// is read-set recording — see the TrackingRead block at the end of the function.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
@@ -33,6 +46,42 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		return nil, err
 	}
 
+	results, err := s.searchCommitted(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read-set recording. Only in-transaction, current-state (PointInTime==nil),
+	// and only when TrackingRead is requested. Each returned entity's observed
+	// version enters the tx read-set so commit-time first-committer-wins
+	// validates it (mirroring Get/GetAll, which record via recordReadIfInTx —
+	// but they record unconditionally; Search records only when asked).
+	//
+	// Recording only the RETURNED page (post-LIMIT/OFFSET) is intentional and
+	// matches the sqlite overlay: a search "reads" exactly the rows it returns.
+	// recordReadIfInTx → RecordRead no-ops for ids already in the tx write-set,
+	// so an in-tx UPDATE's row never enters the read-set (it's in the write-set).
+	// A fresh in-tx INSERT is NOT tracked in the write-set (see Save's isNew
+	// comment), so a TrackingRead search returning it DOES add it to the
+	// read-set — harmless: ValidateReadSet runs inside the same pgx.Tx at
+	// commit and sees the own write at the recorded version, so it matches and
+	// never false-conflicts. In-tx point-in-time search is committed-only and
+	// records nothing (consistent with GetAsAt / GetAllAsAt, which deliberately
+	// skip read-set tracking for historical reads).
+	if opts.TrackingRead && opts.PointInTime == nil && s.tm != nil {
+		for _, e := range results {
+			s.tm.recordReadIfInTx(ctx, e.Meta.ID, e.Meta.Version)
+		}
+	}
+	return results, nil
+}
+
+// searchCommitted runs the committed pushdown: plan the filter, push the
+// pushable portion (and, when there is no residual, LIMIT/OFFSET) to SQL, then
+// post-filter the residual and page in Go. Executed through the context-
+// resolving Querier, so inside a transaction it observes the tx's own writes
+// (read-your-own-writes) natively; outside a transaction it reads committed data.
+func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	// Zero-value Filter means "match all" — skip planQuery (it would treat the
 	// empty Op as non-pushable and install the zero filter as a residual).
 	var plan sqlPlan

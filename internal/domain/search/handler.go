@@ -127,6 +127,9 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
 	}
+	if params.TrackingRead != nil {
+		opts.TrackingRead = *params.TrackingRead
+	}
 
 	if params.Sort != nil {
 		keys, perr := ParseSortParam(*params.Sort, h.maxSortKeys)
