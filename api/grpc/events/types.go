@@ -3009,6 +3009,12 @@ type EntitySearchRequestJson struct {
 	// The maximum time to wait in milliseconds for the query to complete.
 	TimeoutMillis *int `json:"timeoutMillis,omitempty" yaml:"timeoutMillis,omitempty" mapstructure:"timeoutMillis,omitempty"`
 
+	// When true and this search runs inside an active transaction, the entities it
+	// returns are recorded into the transaction's read-set so commit-time
+	// first-committer-wins validates them. Defaults to false. Ignored outside a
+	// transaction.
+	TrackingRead bool `json:"trackingRead,omitempty" yaml:"trackingRead,omitempty" mapstructure:"trackingRead,omitempty"`
+
 	// Warnings (if applicable).
 	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
 }
@@ -3137,6 +3143,9 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
 		plain.Success = true
+	}
+	if v, ok := raw["trackingRead"]; !ok || v == nil {
+		plain.TrackingRead = false
 	}
 	*j = EntitySearchRequestJson(plain)
 	return nil

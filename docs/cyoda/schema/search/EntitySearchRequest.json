@@ -40,6 +40,11 @@
         },
         "required": ["path"]
       }
+    },
+    "trackingRead": {
+      "type": "boolean",
+      "description": "When true and this search runs inside an active transaction, the entities it returns are recorded into the transaction's read-set so commit-time first-committer-wins validates them. Defaults to false. Ignored outside a transaction.",
+      "default": false
     }
   },
   "required": [
