@@ -640,16 +640,24 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 // --- Searcher delegation tests ---
 
 // searcherEntityStore wraps an EntityStore and implements spi.Searcher.
-// It records Search calls and delegates to a provided function.
+// It records Search calls and delegates to a provided function. It also
+// counts GetAll calls so tests can assert the fallback path was (or was
+// not) reached.
 type searcherEntityStore struct {
 	spi.EntityStore
 	searchFn    func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
 	searchCalls int
+	getAllCalls int
 }
 
 func (s *searcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	s.searchCalls++
 	return s.searchFn(ctx, filter, opts)
+}
+
+func (s *searcherEntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
+	s.getAllCalls++
+	return s.EntityStore.GetAll(ctx, modelRef)
 }
 
 // searcherFactory wraps a StoreFactory and returns a Searcher-implementing EntityStore.
@@ -820,7 +828,15 @@ func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	}
 }
 
-func TestSearchFallsBackWhenInTransaction(t *testing.T) {
+// TestSearchDelegatesToSearcherInTransaction verifies the de-guarded
+// contract (Task 13): a plugin Searcher is now tx-aware (read-your-own-writes)
+// on every OSS backend, so Search delegates to it even with an active
+// transaction in ctx — it must NOT fall back to GetAll+match just because a
+// tx is present. This replaces the pre-Task-13 expectation (formerly
+// TestSearchFallsBackWhenInTransaction) that in-tx searches always bypassed
+// pushdown; that expectation was correct for the old tx==nil gate but is now
+// the wrong contract now that all backends implement a tx-aware Searcher.
+func TestSearchDelegatesToSearcherInTransaction(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 
@@ -868,13 +884,87 @@ func TestSearchFallsBackWhenInTransaction(t *testing.T) {
 		t.Fatalf("Search: %v", err)
 	}
 
-	// Should NOT have used the searcher (in-tx fallback).
-	if ses.searchCalls != 0 {
-		t.Errorf("searchCalls = %d, want 0 (should fall back when in transaction)", ses.searchCalls)
+	// Should delegate to the plugin Searcher, NOT the GetAll fallback.
+	if ses.searchCalls != 1 {
+		t.Errorf("searchCalls = %d, want 1 (in-tx search must delegate to the tx-aware Searcher)", ses.searchCalls)
 	}
-	// Should get result from the fallback path.
+	if ses.getAllCalls != 0 {
+		t.Errorf("getAllCalls = %d, want 0 (must not use the GetAll fallback when a Searcher is available)", ses.getAllCalls)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "from-searcher" {
+		t.Fatalf("expected 1 result from the searcher, got %d results", len(results))
+	}
+}
+
+// TestSearch_TranslateFailure_FallsBackEvenInTransaction verifies the other
+// half of the Task 13 contract: a condition ConditionToFilter cannot
+// translate (a wildcard JsonPath, which is not pushdownable) still falls
+// back to GetAll+in-memory match, even with an active transaction — the
+// de-guard only removes the "in-tx ⇒ never pushdown" rule, it does not
+// change the translate-failure fallback.
+func TestSearch_TranslateFailure_FallsBackEvenInTransaction(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveMinimalModel(t, ctx, base, ref)
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"items":[{"name":"gadget"},{"name":"widget"}]}`))
+	saveEntity(t, ctx, base, ref, "e2", []byte(`{"items":[{"name":"gadget"},{"name":"other"}]}`))
+
+	realStore, _ := base.EntityStore(ctx)
+
+	// Searcher is available (so the "no Searcher" fallback branch isn't what's
+	// exercised here) but must NOT be called: the wildcard path fails
+	// ConditionToFilter translation before the searcher is ever invoked.
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return []*spi.Entity{{Meta: spi.EntityMeta{ID: "from-searcher"}}}, nil
+		},
+	}
+
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// Active transaction — should not change the translate-failure fallback.
+	tx := &spi.TransactionState{
+		ID:           "test-tx-2",
+		TenantID:     "tenant-1",
+		SnapshotTime: time.Now(),
+		ReadSet:      make(map[string]bool),
+		WriteSet:     make(map[string]bool),
+		Buffer:       make(map[string]*spi.Entity),
+		Deletes:      make(map[string]bool),
+	}
+	txCtx := spi.WithTransaction(ctx, tx)
+
+	// Wildcard JsonPath: ConditionToFilter rejects "[*]" as non-pushdownable
+	// syntax, forcing the in-memory fallback; match.Match evaluates the
+	// wildcard against each element of "items" and matches e1 only.
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.items[*].name",
+		OperatorType: "EQUALS",
+		Value:        "widget",
+	}
+
+	results, err := svc.Search(txCtx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (translate failure must not reach the Searcher)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 1 {
+		t.Errorf("getAllCalls = %d, want 1 (translate failure must use the GetAll fallback)", ses.getAllCalls)
+	}
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
-		t.Fatalf("expected 1 result (e1) from fallback, got %d results", len(results))
+		t.Fatalf("expected 1 result (e1) from the in-memory fallback, got %d results", len(results))
 	}
 }
 
