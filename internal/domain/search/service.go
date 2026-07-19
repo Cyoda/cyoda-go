@@ -144,6 +144,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return nil, vErr
 	}
+	if rErr := ValidateRegexPatterns(cond); rErr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
 	if oerr != nil {
@@ -255,6 +259,10 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return "", vErr
+	}
+	if rErr := ValidateRegexPatterns(cond); rErr != nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400
