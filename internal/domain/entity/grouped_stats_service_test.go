@@ -406,3 +406,61 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 		t.Fatalf("want ErrGroupCardinalityExceeded, got %v", err)
 	}
 }
+
+// TestQueryGroupedStats_MalformedRegexRejected is a regression test for a
+// fail-open bug: the plugin residual filter evaluators
+// (plugins/sqlite/post_filter.go evaluateFilter, plugins/postgres/grouped_stats.go
+// evalPostFilter) delegate to the error-free spi.MatchFilter, which returns
+// false (non-match) rather than erroring on a malformed MATCHES_PATTERN
+// regex. Without upstream validation this silently under-includes buckets
+// instead of rejecting the request. QueryGroupedStats must reject a
+// malformed regex before dispatching to any backend, the same way the
+// search path already does.
+func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "MATCHES_PATTERN",
+		"value": "["
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if !errors.Is(err, entity.ErrInvalidCondition) {
+		t.Fatalf("want ErrInvalidCondition for malformed regex, got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ValidRegexStillSucceeds guards against an
+// over-broad fix: a well-formed MATCHES_PATTERN must still succeed.
+func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "MATCHES_PATTERN",
+		"value": "^r.*$"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 1 {
+		t.Fatalf("buckets = %+v, want one bucket count=1", buckets)
+	}
+}

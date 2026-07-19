@@ -14,11 +14,11 @@ import (
 // rejecting the request before the filter tree is built if any pattern
 // fails to compile.
 //
-// This closes a fail-open regression: Task 6 delegated the plugin residual
-// filter evaluators to the error-free spi.MatchFilter contract, so a
-// malformed pattern that reaches the matcher no longer surfaces an error —
-// it silently returns under-inclusive (or, for sqlite/postgres, previously
-// an opaque 500) results. Rejecting here, in the backend-independent domain
+// This closes a fail-open regression: the plugin residual filter evaluators
+// delegate to the error-free spi.MatchFilter contract, so a malformed
+// pattern that reaches the matcher no longer surfaces an error — it
+// silently returns under-inclusive (or, for sqlite/postgres, previously an
+// opaque 500) results. Rejecting here, in the backend-independent domain
 // layer, makes every backend (memory/sqlite/postgres) reject identically
 // with 400 INVALID_CONDITION, before any store or plugin code runs.
 //
