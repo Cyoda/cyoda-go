@@ -124,6 +124,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (default `16`). New SPI field: `OrderSpec.Kind OrderKind` (enum: `OrderText`, `OrderNumeric`,
   `OrderBool`, `OrderTemporal`); ships with `cyoda-go-spi v0.8.2`.
 
+- **Tx-aware search pushdown + `trackingRead`** — an in-transaction search no
+  longer falls back to a full `GetAll` scan plus in-memory filtering; the
+  plugin-level `Searcher` now honours the active transaction directly,
+  read-your-own-writes correct against the transaction's own uncommitted
+  writes, with no full-model materialisation (memory/sqlite overlay the
+  transaction buffer on the committed stream; postgres runs the query
+  natively on its own `pgx.Tx`). A new optional `trackingRead` boolean
+  (default `false`) on the synchronous search endpoints (HTTP
+  `POST /api/search/direct/{entityName}/{modelVersion}` and the gRPC
+  `Search` RPC) opts a search into recording its **returned** entities into
+  the transaction's read-set, so a concurrent write to one of them aborts
+  the transaction at commit — entity-level, same as `GetAll`, still no
+  phantom-write-skew protection. Default behaviour (`trackingRead=false`)
+  is a plain snapshot read that records nothing, a lighter-weight read-set
+  footprint than before. See `docs/CONSISTENCY.md` §3c for the updated fence
+  guidance. Async search does not expose the flag (it runs detached, outside
+  any transaction). No new error codes.
+
 - **Compute-node callback transaction-join** — processor and criteria-evaluation
   callbacks from a compute node now join the originating workflow transaction
   (`T`) rather than running in a standalone transaction. The engine mints a

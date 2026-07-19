@@ -7094,6 +7094,18 @@ paths:
               type: string
           style: form
           explode: true
+        - name: trackingRead
+          in: query
+          description: >
+            When true and the request runs inside an active transaction, the
+            entities this search returns are recorded into the transaction's
+            read-set so commit-time first-committer-wins validates them.
+            Defaults to false (a plain snapshot read that records nothing).
+            Ignored outside a transaction.
+          required: false
+          schema:
+            type: boolean
+            default: false
       requestBody:
         content:
           application/json:

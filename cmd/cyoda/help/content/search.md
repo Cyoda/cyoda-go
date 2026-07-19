@@ -42,7 +42,7 @@ Search operates against a specific entity model `(entityName, modelVersion)`. Tw
 
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
-Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend. When translation fails (unsupported condition type) or an active transaction is present, the service falls back to in-memory filtering after a full `GetAll` scan.
+Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend — including inside an active transaction, where the pushdown is read-your-own-writes correct against the transaction's own uncommitted writes (see `trackingRead` below and `docs/CONSISTENCY.md` §3c). Only when translation fails (unsupported condition type) does the service fall back to in-memory filtering after a full `GetAll` scan.
 
 ## CONDITION DSL
 
@@ -179,6 +179,7 @@ The function is dispatched as `EntityCriteriaCalculationRequest` to the matching
   Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
   see `cyoda help crud` ("Point-in-time semantics").
 - `limit` (query, optional): string-encoded integer, maximum 10000 (values above 10000 are rejected with `400 BAD_REQUEST`); default 1000
+- `trackingRead` (query, optional): boolean, default `false`. Only meaningful inside an active transaction (see `crud` topic and `docs/CONSISTENCY.md` §3c for the transactional read-set): when `true`, the entities this search returns are recorded into the transaction's read-set, so a concurrent commit touching any of them aborts with `409 Conflict` at commit time. When `false` (default), the search is a plain snapshot read that records nothing — cheap, but it does not protect the returned rows from concurrent writes, and neither setting protects against phantoms (a new entity matching the predicate after the snapshot was taken). Ignored outside a transaction.
 
 Request body: `Condition` JSON document.
 
