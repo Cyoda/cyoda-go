@@ -138,15 +138,21 @@ consumer already imports); existing sites delegate:
    gathered. Reused by all backends (Cassandra's `adds`/`deleted` come from its
    WAL).
 
-**Dependency consequence:** `spi.MatchFilter` uses `tidwall/gjson`, absent from
-the SPI's `go.mod` today (SPI depends only on `google/uuid`). `internal/match`,
-`sqlite`, and `postgres` all already depend on gjson, so this **centralises** a
-dependency every in-tree consumer already carries. The SPI is nonetheless the
-**public** contract module (out-of-tree plugins, compute-node authors inherit
-its deps transitively). This is the one notable dependency-surface decision and
-is called out for explicit sign-off; the alternative (a dedicated
-`cyoda-go-spi/search` sub-package or sibling helper module) keeps the core SPI
-thin at the cost of another import path.
+**Dependency consequence (decided — core `spi` package).** `spi.MatchFilter`
+uses `tidwall/gjson`, absent from the SPI's `go.mod` today (SPI depends only on
+`google/uuid`). The helpers land in the **core `spi` package**, so gjson becomes
+a direct require of `cyoda-go-spi`. Rationale: the helpers are canonical
+behaviour for SPI-owned types (`Filter`/`OrderSpec`/`Entity`) — contract, not
+utility — consistent with the existing `default_save_all.go` shared-behaviour
+precedent; and every real Go consumer of the module (cyoda-go, the in-tree
+plugins, the out-of-tree Cassandra storage plugin) already depends on gjson or
+will call these helpers. Compute-node authors integrate over gRPC/CloudEvents,
+not the Go module, so they are unaffected. A separate helper module was
+considered and rejected: it keeps the core SPI `uuid`-only but pays recurring
+release-coordination overhead (second tag/pin/`COMPATIBILITY` row on every
+coordinated release, double-import) for consumers who in practice all already
+carry gjson. Dropping gjson (reimplementing JSON-path extraction on
+`encoding/json`) reintroduces the semantic-drift risk this move exists to kill.
 
 These land on `cyoda-go-spi` main and are picked up via a re-pinned
 pseudo-version (the v0.8.3 coordinated-release window is open — no per-issue
