@@ -662,6 +662,26 @@ func (f *searcherFactory) EntityStore(ctx context.Context) (spi.EntityStore, err
 	return f.entityStore, nil
 }
 
+// nonSearcherEntityStore embeds the spi.EntityStore INTERFACE (not a concrete
+// type), so no Search method is promoted and the wrapper does NOT satisfy
+// spi.Searcher. The memory plugin now implements spi.Searcher itself, so a
+// dedicated non-Searcher store is required to exercise the search service's
+// in-memory GetAll+match fallback path.
+type nonSearcherEntityStore struct {
+	spi.EntityStore
+}
+
+// nonSearcherFactory returns a non-Searcher EntityStore, delegating everything
+// else to the wrapped StoreFactory.
+type nonSearcherFactory struct {
+	spi.StoreFactory
+	entityStore spi.EntityStore
+}
+
+func (f *nonSearcherFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
 func TestSearchDelegatesToSearcher(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -712,18 +732,30 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 }
 
 func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
-	// The memory plugin doesn't implement Searcher, so this tests the fallback.
-	factory := memory.NewStoreFactory()
-	defer factory.Close()
-	uuids := common.NewTestUUIDGenerator()
-	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	// Wrap the memory store so it does NOT implement spi.Searcher (the memory
+	// plugin implements it directly now), forcing the GetAll+match fallback.
+	base := memory.NewStoreFactory()
+	defer base.Close()
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
-	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+	saveMinimalModel(t, ctx, base, ref)
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	if _, ok := realStore.(spi.Searcher); !ok {
+		t.Fatal("precondition: memory store expected to implement spi.Searcher")
+	}
+	nonSearcher := &nonSearcherEntityStore{EntityStore: realStore}
+	if _, ok := any(nonSearcher).(spi.Searcher); ok {
+		t.Fatal("wrapper must NOT implement spi.Searcher")
+	}
+	factory := &nonSearcherFactory{StoreFactory: base, entityStore: nonSearcher}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
