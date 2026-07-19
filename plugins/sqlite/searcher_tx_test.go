@@ -282,6 +282,78 @@ func TestSearchTx_TrackingRead_RecordsReturnedCommittedOnly(t *testing.T) {
 	}
 }
 
+// TestSearchTx_TrackingRead_PagedWindowOnly: an in-tx TrackingRead=true search
+// with a non-trivial Offset/Limit must record into tx.ReadSet only the
+// committed ids that fall inside the RETURNED page window — matching
+// committed rows that were paged OUT (before the offset or beyond the limit)
+// must NOT be recorded, even though they satisfied the filter.
+func TestSearchTx_TrackingRead_PagedWindowOnly(t *testing.T) {
+	factory, ctx := setupSearcherTest(t)
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	// Widen the committed Berlin set beyond the standard e1,e3 so a 5-row
+	// window with offset/limit has rows on both sides of the returned page.
+	for _, id := range []string{"e6", "e7", "e8"} {
+		if _, err := store.Save(ctx, mkPerson(id, "Berlin", "NEW")); err != nil {
+			t.Fatalf("Save %s: %v", id, err)
+		}
+	}
+	// Committed Berlin set, id-asc order: e1, e3, e6, e7, e8 (5 rows).
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	searcher, ok := store.(spi.Searcher)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.Searcher")
+	}
+
+	// Offset=1, Limit=2 over id-asc order [e1,e3,e6,e7,e8] returns exactly
+	// the page [e3,e6] — e1 is paged out by Offset, e7/e8 are paged out by Limit.
+	order := []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}}
+	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", OrderBy: order,
+		Offset: 1, Limit: 2, TrackingRead: true,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	gotIDs := idSetTx(got)
+	wantPage := map[string]bool{"e3": true, "e6": true}
+	if len(gotIDs) != len(wantPage) {
+		t.Fatalf("page id-set mismatch: got %v, want %v", gotIDs, wantPage)
+	}
+	for id := range wantPage {
+		if !gotIDs[id] {
+			t.Errorf("expected %s in returned page, got %v", id, gotIDs)
+		}
+	}
+
+	tx := spi.GetTransaction(txCtx)
+	for id := range wantPage {
+		if !tx.ReadSet[id] {
+			t.Errorf("returned page id %s must be in read-set, got %v", id, tx.ReadSet)
+		}
+	}
+	// Matched but paged-out: e1 (before offset), e7 and e8 (beyond limit).
+	for _, id := range []string{"e1", "e7", "e8"} {
+		if tx.ReadSet[id] {
+			t.Errorf("paged-out matching id %s must NOT be in read-set, got %v", id, tx.ReadSet)
+		}
+	}
+	if len(tx.ReadSet) != len(wantPage) {
+		t.Errorf("read-set must contain exactly the returned page, got %v", tx.ReadSet)
+	}
+}
+
 // TestSearchTx_TrackingReadFalse_RecordsNothing: TrackingRead=false records no ids.
 func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 	_, txCtx, searcher := beginTxSearcher(t)

@@ -59,11 +59,15 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	//
 	// Recording only the RETURNED page (post-LIMIT/OFFSET) is intentional and
 	// matches the sqlite overlay: a search "reads" exactly the rows it returns.
-	// recordReadIfInTx → RecordRead no-ops for ids already in the tx write-set
-	// (the transaction's own writes), so buffered/own-written rows never enter
-	// the read-set — again matching sqlite/memory semantics. In-tx point-in-time
-	// search is committed-only and records nothing (consistent with GetAsAt /
-	// GetAllAsAt, which deliberately skip read-set tracking for historical reads).
+	// recordReadIfInTx → RecordRead no-ops for ids already in the tx write-set,
+	// so an in-tx UPDATE's row never enters the read-set (it's in the write-set).
+	// A fresh in-tx INSERT is NOT tracked in the write-set (see Save's isNew
+	// comment), so a TrackingRead search returning it DOES add it to the
+	// read-set — harmless: ValidateReadSet runs inside the same pgx.Tx at
+	// commit and sees the own write at the recorded version, so it matches and
+	// never false-conflicts. In-tx point-in-time search is committed-only and
+	// records nothing (consistent with GetAsAt / GetAllAsAt, which deliberately
+	// skip read-set tracking for historical reads).
 	if opts.TrackingRead && opts.PointInTime == nil && s.tm != nil {
 		for _, e := range results {
 			s.tm.recordReadIfInTx(ctx, e.Meta.ID, e.Meta.Version)

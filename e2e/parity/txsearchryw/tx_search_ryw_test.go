@@ -396,7 +396,7 @@ func runInTxPIT(t *testing.T, b backend) {
 
 	o := opts()
 	o.PointInTime = &pit
-	o.TrackingRead = true // PIT must still record nothing; asserted via no side effect below
+	o.TrackingRead = true // PIT must still record nothing (postgres readSet isn't exposed here; see per-plugin tests)
 
 	got, err := sr.Search(txCtx, cityBerlin, o)
 	if err != nil {

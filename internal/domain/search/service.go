@@ -199,12 +199,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			"pkg", "search", "error", translateErr)
 	}
 
-	// Fallback: GetAll + in-memory filtering. In-tx, this path is a rare
-	// edge (a store without Searcher, or a translate-failure condition):
+	// Fallback: GetAll/GetAllAsAt + in-memory filtering. In-tx, this path is a
+	// rare edge (a store without Searcher, or a translate-failure condition):
 	// GetAll unconditionally records every returned entity into the
 	// transaction's read-set (unlike the Searcher's TrackingRead-gated
 	// pushdown path above), so a translate-failure search conservatively
 	// widens the read-set to the whole model regardless of opts.TrackingRead.
+	// The GetAllAsAt (point-in-time) branch of this same fallback records no
+	// read-set at all, matching GetAsAt/GetAllAsAt's historical-read semantics.
 	var entities []*spi.Entity
 	if opts.PointInTime != nil {
 		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)

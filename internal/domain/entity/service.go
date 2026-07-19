@@ -862,9 +862,12 @@ type DeleteResult struct {
 // deletes all (backward-compatible). A present condBody is parsed and only
 // matching entities (as-at pointInTime, when supplied) are deleted — reusing
 // the search condition primitive so no special engine rights are claimed
-// (design §6.1). Selection and deletion run inside one transaction; because
-// SearchService.Search bypasses backend pushdown when a tx is on the context,
-// buffered writes are visible to the selection.
+// (design §6.1). Selection and deletion run inside one transaction; in-tx
+// Search is tx-aware (overlay/native-pgx.Tx pushdown) and returns
+// read-your-own-writes results, so buffered writes are visible to the
+// selection. TrackingRead is left default-false: the deleted ids are already
+// conflict-protected via the write-set, so the selection need not also record
+// a read-set — that would widen the conflict footprint beyond what's needed.
 func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
 	ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 
@@ -926,9 +929,9 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 disables
-	// the in-memory fallback's default 1000-entity cap so a scoped delete is never
-	// silently partial regardless of match-set size.
+	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 maps to
+	// spiLimit=0 (unbounded) in the tx-aware Searcher path, so a scoped delete is
+	// never silently capped regardless of match-set size.
 	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
 	if err != nil {
 		h.rollbackOwned(txCtx, txID, owned)

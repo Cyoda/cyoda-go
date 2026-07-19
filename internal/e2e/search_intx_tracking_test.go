@@ -34,12 +34,14 @@ import (
 // tests assert CONSISTENCY (one coherent outcome — conflict vs no-conflict),
 // never a precise interleave, and belong as isolated single-backend tests.
 //
-// Determinism: FCW is COMMIT-ORDER based, not a data race. We always commit the
-// concurrent writer (tx B) BEFORE committing the tracked reader (tx A), so the
-// outcome is a deterministic function of commit order, not of goroutine timing.
-// tx B's submit time is naturally after tx A's snapshot (A begins first, B
-// commits after several intervening operations); a short sleep makes the
-// ordering robust against millisecond-granularity timestamps.
+// Determinism: FCW validates against the entity's VERSION NUMBER, not a
+// timestamp, so it is not a data race. Every test here runs single-goroutine,
+// sequential program order: tx A's tracked search happens-before
+// commitConcurrentWrite (tx B, itself synchronous begin+commit) happens-before
+// tx A's commit — so tx B always commits before tx A regardless of wall-clock
+// timing. The time.Sleep calls are not load-bearing for FCW; they exist only
+// to keep unrelated wall-clock fields (e.g. valid_time/transaction_time)
+// visibly ordered across the two commits.
 
 const intxTrackingTenant = "test-tenant"
 

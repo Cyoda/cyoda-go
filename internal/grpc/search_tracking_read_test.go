@@ -92,8 +92,8 @@ func newTrackingReadTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Cont
 // TestEntitySearch_DirectSearch_TrackingReadTrue_ReachesSearchOptions verifies
 // that a sync (direct) gRPC search request carrying trackingRead:true in the
 // CloudEvent payload maps through to spi.SearchOptions.TrackingRead == true at
-// the SearchService.DirectSearch call — the sync, in-tx-reachable search path
-// (#402 tx-token join). The async snapshot-submit path is detached (background
+// the SearchService.DirectSearch call — the sync, tx-token-join-reachable
+// search path. The async snapshot-submit path is detached (background
 // ctx, no tx) and does not expose trackingRead — mirrors the HTTP rule.
 func TestEntitySearch_DirectSearch_TrackingReadTrue_ReachesSearchOptions(t *testing.T) {
 	svc, ctx, capturedOpts := newTrackingReadTestEnv(t)
