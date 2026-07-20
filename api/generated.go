@@ -2092,7 +2092,7 @@ type ErrorResponseDtoError string
 
 // ExternalizedFunctionConfigDto defines model for ExternalizedFunctionConfigDto.
 type ExternalizedFunctionConfigDto struct {
-	// AttachEntity Whether to attach entity data to the function call
+	// AttachEntity Whether to attach the full entity payload to the criterion function calculation request. Defaults to true.
 	AttachEntity *bool `json:"attachEntity,omitempty"`
 
 	// CalculationNodesTags Comma-separated list of calculation node tags
@@ -2148,7 +2148,7 @@ type ExternalizedProcessorConfigDto struct {
 	// false case.
 	AsyncResult *bool `json:"asyncResult,omitempty"`
 
-	// AttachEntity Whether to attach entity data to the function call
+	// AttachEntity Whether to attach the full entity payload to the processor calculation request. Defaults to true.
 	AttachEntity *bool `json:"attachEntity,omitempty"`
 
 	// CalculationNodesTags Comma-separated list of calculation node tags
