@@ -90,19 +90,16 @@ type importRequest struct {
 	Workflows   []workflowImportDef `json:"workflows"`
 }
 
-// scheduleFunctionAttachEntityProbe captures the raw-JSON presence of
-// schedule.function.attachEntity per transition. ScheduleFunctionDto
-// documents "Defaults to true" for an omitted attachEntity, but the SPI's
-// ScheduleFunction.AttachEntity is a plain bool (matching the wire shape
-// ProcessorConfig.AttachEntity already uses) — decoding straight into it,
-// as workflowImportDef.States does for the whole state graph, collapses
+// attachEntityProbe captures the raw-JSON presence of an omitted attachEntity
+// per transition, for both callout shapes that carry one:
+// schedule.function.attachEntity and each processors[].config.attachEntity.
+// The OpenAPI DTOs document these as "Defaults to true", but the SPI decodes
+// them into plain bool fields, which — decoded straight from the request body
+// as workflowImportDef.States does for the whole state graph — collapse
 // "omitted" and "explicit false" to the same zero value. This probe is a
-// second, non-strict decode of the same request body that declares only
-// the field path needed to recover the distinction; every other field is
-// ignored. Applied only to schedule.function — ProcessorConfig.AttachEntity
-// has the identical gap but is a separate, already-shipped feature and out
-// of scope here.
-type scheduleFunctionAttachEntityProbe struct {
+// second, non-strict decode of the same request body that declares only the
+// field paths needed to recover the distinction; every other field is ignored.
+type attachEntityProbe struct {
 	Workflows []struct {
 		States map[string]struct {
 			Transitions []struct {
@@ -111,19 +108,25 @@ type scheduleFunctionAttachEntityProbe struct {
 						AttachEntity *bool `json:"attachEntity"`
 					} `json:"function"`
 				} `json:"schedule"`
+				Processors []struct {
+					Config struct {
+						AttachEntity *bool `json:"attachEntity"`
+					} `json:"config"`
+				} `json:"processors"`
 			} `json:"transitions"`
 		} `json:"states"`
 	} `json:"workflows"`
 }
 
-// applyScheduleFunctionAttachEntityDefault defaults
-// schedule.function.attachEntity to true for every transition where the
-// client omitted it, using probe (decoded from the same raw request body)
-// to distinguish omission from an explicit false. workflows and probe.
-// Workflows are index-aligned (both decoded from the same top-level JSON
-// array in the same order); states are matched by map key; transitions
-// within a state are index-aligned (both decoded from the same JSON array).
-func applyScheduleFunctionAttachEntityDefault(workflows []workflowImportDef, probe scheduleFunctionAttachEntityProbe) {
+// applyAttachEntityDefaults defaults an omitted attachEntity to true for every
+// callout in every transition — schedule.function.attachEntity and each
+// processors[].config.attachEntity — using probe (decoded from the same raw
+// request body) to distinguish omission from an explicit false. workflows and
+// probe.Workflows are index-aligned (both decoded from the same top-level JSON
+// array in the same order); states are matched by map key; transitions and
+// processors within a state are index-aligned (both decoded from the same JSON
+// arrays).
+func applyAttachEntityDefaults(workflows []workflowImportDef, probe attachEntityProbe) {
 	for i, w := range workflows {
 		if i >= len(probe.Workflows) {
 			continue
@@ -138,13 +141,23 @@ func applyScheduleFunctionAttachEntityDefault(workflows []workflowImportDef, pro
 				if j >= len(pState.Transitions) {
 					continue
 				}
-				sched := state.Transitions[j].Schedule
-				pSched := pState.Transitions[j].Schedule
-				if sched == nil || sched.Function == nil || pSched == nil || pSched.Function == nil {
-					continue
+				// state.Transitions shares its backing array with the stored
+				// StateDefinition, so mutations via tr propagate to the value
+				// the handler goes on to persist.
+				tr := &state.Transitions[j]
+				pTr := pState.Transitions[j]
+				if tr.Schedule != nil && tr.Schedule.Function != nil &&
+					pTr.Schedule != nil && pTr.Schedule.Function != nil &&
+					pTr.Schedule.Function.AttachEntity == nil {
+					tr.Schedule.Function.AttachEntity = true
 				}
-				if pSched.Function.AttachEntity == nil {
-					sched.Function.AttachEntity = true
+				for k := range tr.Processors {
+					if k >= len(pTr.Processors) {
+						continue
+					}
+					if pTr.Processors[k].Config.AttachEntity == nil {
+						tr.Processors[k].Config.AttachEntity = true
+					}
 				}
 			}
 		}
@@ -187,14 +200,15 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 
 	// Second, non-strict decode of the same bytes to recover the
 	// "attachEntity omitted" signal the strict decode above collapsed into
-	// spi.ScheduleFunction.AttachEntity's zero value. data was already
-	// proven valid JSON matching this shape by the strict decode, so this
-	// unmarshal cannot fail on a well-formed request; ignoring a defensive
-	// error here just leaves every attachEntity un-defaulted, which is the
-	// pre-existing (safe) behaviour.
-	var probe scheduleFunctionAttachEntityProbe
+	// the SPI's plain-bool AttachEntity zero value (both on
+	// ScheduleFunction and ProcessorConfig). data was already proven valid
+	// JSON matching this shape by the strict decode, so this unmarshal
+	// cannot fail on a well-formed request; ignoring a defensive error here
+	// just leaves every attachEntity un-defaulted, which is the safe
+	// fallback.
+	var probe attachEntityProbe
 	_ = json.Unmarshal(data, &probe)
-	applyScheduleFunctionAttachEntityDefault(req.Workflows, probe)
+	applyAttachEntityDefaults(req.Workflows, probe)
 
 	mode := strings.ToUpper(req.ImportMode)
 	if mode == "" {

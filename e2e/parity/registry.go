@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 198 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 199 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -49,6 +49,7 @@ var allTests = []NamedTest{
 	{"WorkflowImportExport", RunWorkflowImportExport},
 	{"WorkflowAnnotationsRoundTrip", RunWorkflowAnnotationsRoundTrip},
 	{"WorkflowProcCriterionAnnotationsRoundTrip", RunWorkflowProcCriterionAnnotationsRoundTrip},
+	{"WorkflowProcAttachEntityDefaultRoundTrip", RunWorkflowProcAttachEntityDefaultRoundTrip},
 
 	// Phase 4a — entity CRUD (Task 4a.2)
 	{"EntityCreateAndGet", RunEntityCreateAndGet},
