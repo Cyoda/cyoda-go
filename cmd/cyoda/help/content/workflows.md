@@ -183,7 +183,7 @@ Import-time validation rejects any `executionMode` value not in the list above (
 
 **ProcessorConfig fields:**
 
-- `attachEntity` — boolean — when `true`, the full entity payload is sent to the processor
+- `attachEntity` — boolean, optional, default `true` — when `true`, the full entity payload is sent to the processor; set `false` to omit it
 - `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
 - `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
 - `retryPolicy` — string — selects the server-resolved retry strategy.

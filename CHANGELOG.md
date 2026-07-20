@@ -191,6 +191,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **Processor `config.attachEntity` now defaults to `true`.** A processor whose
+  `config` omits `attachEntity` is imported with `attachEntity: true`, so the
+  full entity payload is attached to its calculation request — matching
+  `schedule.function` and the criterion `function` callout, which already
+  default to `true`. Set `attachEntity: false` explicitly to opt out. Existing
+  workflows that omit the field and re-import (e.g. export → import) will start
+  attaching the entity payload; compute nodes that ignore the payload are
+  unaffected.
+  ([#421](https://github.com/Cyoda-platform/cyoda-go/issues/421))
+
 - **`DELETE /model/{entityName}/{modelVersion}` now enforces the documented
   UNLOCKED precondition** — deleting a `LOCKED` model returns `409
   MODEL_ALREADY_LOCKED` (previously the lock state was ignored). Unlock the model

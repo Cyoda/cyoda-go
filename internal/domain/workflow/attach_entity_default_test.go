@@ -5,11 +5,10 @@ import (
 	"testing"
 )
 
-// TestApplyScheduleFunctionAttachEntityDefault_HeterogeneousTransitions is a
-// direct unit test (C1, final review) guarding
-// applyScheduleFunctionAttachEntityDefault's raw-JSON re-decode/index-align
-// probe. The logic itself is unchanged — this only adds coverage the
-// existing single-transition, full-HTTP-import tests
+// TestApplyAttachEntityDefaults_HeterogeneousTransitions is a direct unit
+// test guarding applyAttachEntityDefaults' raw-JSON re-decode/index-align
+// probe for schedule.function.attachEntity. It covers a case the existing
+// single-transition, full-HTTP-import tests
 // (TestImport_ScheduleFunction_AttachEntityOmitted_DefaultsToTrue /
 // ...ExplicitFalse_Preserved in handler_test.go) don't reach: a
 // multi-workflow request with a heterogeneous transition mix in one state
@@ -21,10 +20,10 @@ import (
 //
 // Mirrors ImportEntityModelWorkflow's own mechanism (handler.go): decode
 // the SAME raw JSON bytes twice — once strictly into []workflowImportDef,
-// once loosely into scheduleFunctionAttachEntityProbe — rather than
-// hand-building the probe's unexported anonymous-struct literals, so the
-// test input is guaranteed aligned the same way production input is.
-func TestApplyScheduleFunctionAttachEntityDefault_HeterogeneousTransitions(t *testing.T) {
+// once loosely into attachEntityProbe — rather than hand-building the
+// probe's unexported anonymous-struct literals, so the test input is
+// guaranteed aligned the same way production input is.
+func TestApplyAttachEntityDefaults_HeterogeneousTransitions(t *testing.T) {
 	raw := []byte(`{
 		"importMode": "REPLACE",
 		"workflows": [
@@ -123,12 +122,12 @@ func TestApplyScheduleFunctionAttachEntityDefault_HeterogeneousTransitions(t *te
 	if err := json.Unmarshal(raw, &req); err != nil {
 		t.Fatalf("decode importRequest: %v", err)
 	}
-	var probe scheduleFunctionAttachEntityProbe
+	var probe attachEntityProbe
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		t.Fatalf("decode probe: %v", err)
 	}
 
-	applyScheduleFunctionAttachEntityDefault(req.Workflows, probe)
+	applyAttachEntityDefaults(req.Workflows, probe)
 
 	wf1Trs := req.Workflows[0].States["S"].Transitions
 	if len(wf1Trs) != 5 {
@@ -159,5 +158,77 @@ func TestApplyScheduleFunctionAttachEntityDefault_HeterogeneousTransitions(t *te
 	}
 	if got := wf2Trs[1].Schedule.Function.AttachEntity; !got {
 		t.Errorf("T2_FN_OMITTED: AttachEntity = %v, want true (defaulted) — workflow-index alignment broken", got)
+	}
+}
+
+// TestApplyAttachEntityDefaults_Processors is the processor companion to the
+// schedule.function test above: it exercises the processor-index alignment of
+// applyAttachEntityDefaults. One transition carries three processors whose
+// config.attachEntity is omitted / explicit-false / explicit-true; a second
+// transition carries none. Decodes the same raw bytes twice, mirroring the
+// handler, so the probe indices line up the same way production input does.
+func TestApplyAttachEntityDefaults_Processors(t *testing.T) {
+	raw := []byte(`{
+		"importMode": "REPLACE",
+		"workflows": [
+			{
+				"version": "1.3",
+				"name": "wf",
+				"initialState": "S",
+				"states": {
+					"S": {
+						"transitions": [
+							{
+								"name": "T_NO_PROC",
+								"next": "S",
+								"manual": false
+							},
+							{
+								"name": "T_PROCS",
+								"next": "S",
+								"manual": false,
+								"processors": [
+									{"name": "p_omitted", "type": "externalized", "config": {"calculationNodesTags": "billing"}},
+									{"name": "p_false", "type": "externalized", "config": {"attachEntity": false}},
+									{"name": "p_true", "type": "externalized", "config": {"attachEntity": true}}
+								]
+							}
+						]
+					}
+				}
+			}
+		]
+	}`)
+
+	var req importRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("decode importRequest: %v", err)
+	}
+	var probe attachEntityProbe
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("decode probe: %v", err)
+	}
+
+	applyAttachEntityDefaults(req.Workflows, probe)
+
+	trs := req.Workflows[0].States["S"].Transitions
+	if len(trs) != 2 {
+		t.Fatalf("expected 2 transitions, got %d", len(trs))
+	}
+	if len(trs[0].Processors) != 0 {
+		t.Errorf("T_NO_PROC: expected no processors, got %d", len(trs[0].Processors))
+	}
+	procs := trs[1].Processors
+	if len(procs) != 3 {
+		t.Fatalf("T_PROCS: expected 3 processors, got %d", len(procs))
+	}
+	if got := procs[0].Config.AttachEntity; !got {
+		t.Errorf("p_omitted: AttachEntity = %v, want true (defaulted)", got)
+	}
+	if got := procs[1].Config.AttachEntity; got {
+		t.Errorf("p_false: AttachEntity = %v, want false (preserved)", got)
+	}
+	if got := procs[2].Config.AttachEntity; !got {
+		t.Errorf("p_true: AttachEntity = %v, want true (preserved)", got)
 	}
 }

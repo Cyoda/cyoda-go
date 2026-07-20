@@ -9078,7 +9078,9 @@ components:
       properties:
         attachEntity:
           type: boolean
-          description: Whether to attach entity data to the function call
+          default: true
+          description: Whether to attach the full entity payload to the
+            criterion function calculation request. Defaults to true.
         calculationNodesTags:
           type: string
           description: Comma-separated list of calculation node tags
@@ -9788,7 +9790,9 @@ components:
       properties:
         attachEntity:
           type: boolean
-          description: Whether to attach entity data to the function call
+          default: true
+          description: Whether to attach the full entity payload to the
+            processor calculation request. Defaults to true.
         calculationNodesTags:
           type: string
           description: Comma-separated list of calculation node tags
