@@ -156,22 +156,16 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 
 			switch evtType {
 			case CalculationMemberKeepAliveEvent:
+				// Liveness-only: an inbound keep-alive refreshes the member's
+				// LastSeen and nothing more. The server pings on its own ticker
+				// (keepAliveLoop); it must NOT echo a keep-alive back. Echoing
+				// against a client that also echoes inbound keep-alives produces
+				// a zero-delay, unbounded ping-pong storm pinning both processes
+				// at 100% CPU.
 				slog.Debug("keep-alive received", "pkg", "grpc", "memberId", memberID)
 				member := s.registry.Get(memberID)
 				if member != nil {
 					member.UpdateLastSeen()
-				}
-				// Send keep-alive response.
-				kaResp := events.CalculationMemberKeepAliveEventJson{
-					ID:       res.msg.Id,
-					MemberID: memberID,
-					Success:  true,
-				}
-				kaCE, err := NewCloudEvent(CalculationMemberKeepAliveEvent, kaResp)
-				if err == nil {
-					if err := stream.Send(kaCE); err != nil {
-						slog.Warn("failed to send keep-alive response", "pkg", "grpc", "memberId", memberID, "error", err)
-					}
 				}
 
 			case EntityProcessorCalculationResponse:
