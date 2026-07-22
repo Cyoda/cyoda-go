@@ -554,7 +554,7 @@ and always stored `…Z`, so the *stored* side is never offset-varying. Mixed
   (only well-formed engine meta flows through it) but prevents a Go/SQL
   disagreement once #137 routes body text through the same function.
 
-## 13. Relationship to the evaluator-convergence successor
+## 13. Relationship to the evaluator-convergence successor (#431)
 
 Root cause of both the temporal (MAJOR-1) split and the numeric divergence: two
 independent Go leaf-comparison implementations — `internal/match` (over
@@ -566,11 +566,11 @@ single `value <op> operand` behaves has no reason to differ, and its drift is th
 bug source. A third semantics — the SQL the planners emit — genuinely cannot
 share Go code and is kept in line by the parity suite, not by reuse.
 
-The agreed successor effort (its own spec/plan, immediately after #423) converges
-the two Go evaluators onto **one shared leaf-comparison kernel**: each keeps only
-its own tree-walk, delegating every leaf op to the shared kernel; the SQL planners
-mirror it under parity guard. That structurally removes the whole class of
-fallback-vs-pushdown divergence.
+The agreed successor effort — tracked as **#431** (its own spec/plan, immediately
+after #423) — converges the two Go evaluators onto **one shared leaf-comparison
+kernel**: each keeps only its own tree-walk, delegating every leaf op to the
+shared kernel; the SQL planners mirror it under parity guard. That structurally
+removes the whole class of fallback-vs-pushdown divergence.
 
 **#423 is the first slice of that convergence, not a patch it discards.** Its
 temporal dispatch (§7) and its numeric alignment (§6.6) are authored as shared
