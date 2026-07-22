@@ -3,11 +3,8 @@ package memory
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
-	"strings"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -44,15 +41,11 @@ import (
 //     matching the service-layer's buildGroupKeyFromEntity. Object/array/
 //     missing values coerce to nil.
 //
-// The filter evaluator below (msEvalFilter and friends) mirrors the
-// semantics of plugins/sqlite/post_filter.go::evaluateFilter and
-// internal/match/match.go::MatchFilter so all three in-process evaluators
-// produce bit-identical results for the same (filter, entity) input.
-// Drift between them would silently change grouped-stats results across
-// backends. The plugin module cannot import internal/match (Go module
-// visibility) and cannot depend on the sqlite plugin module, so this is
-// the third sibling implementation by necessity — kept short by leaning
-// on spi types.
+//   - Filter evaluation (msMatchFilter, below) delegates to the shared
+//     spi.MatchFilter kernel — the same evaluator plugins/sqlite/
+//     post_filter.go and plugins/postgres/grouped_stats.go delegate to —
+//     so all backends agree bit-for-bit on filter semantics. There is no
+//     plugin-local leaf evaluator here; see msMatchFilter's doc comment.
 
 // Iterate implements spi.Iterable. Snapshots matching *spi.Entity pointers
 // under the entity read-lock, releases the lock, and yields them through
@@ -497,285 +490,14 @@ func gjsonPath(p string) string {
 	return p
 }
 
-// --- Filter evaluation (plugin-local, sibling to sqlite post_filter and
-// internal/match.MatchFilter — see the file-level commentary). ---
-
-// msMatchFilter evaluates an spi.Filter against an entity. Zero-value
-// filter (empty Op) matches everything.
+// msMatchFilter evaluates an spi.Filter against an entity by delegating to
+// the shared spi.MatchFilter kernel — the same evaluator the sqlite
+// (plugins/sqlite/post_filter.go) and postgres (plugins/postgres/
+// grouped_stats.go) backends use, so all three backends agree bit-for-bit
+// on filter semantics (including CoerceTemporal and the canonical
+// client-name meta vocabulary, e.g. "creationDate"/"lastUpdateTime").
+// spi.MatchFilter already returns true for a zero-value (empty Op) filter,
+// matching the historical "no filter" contract.
 func msMatchFilter(f spi.Filter, e *spi.Entity) bool {
-	if f.Op == "" {
-		return true
-	}
-	return msEvalFilter(f, e)
-}
-
-func msEvalFilter(f spi.Filter, e *spi.Entity) bool {
-	switch f.Op {
-	case spi.FilterAnd:
-		for _, c := range f.Children {
-			if !msEvalFilter(c, e) {
-				return false
-			}
-		}
-		return true
-	case spi.FilterOr:
-		for _, c := range f.Children {
-			if msEvalFilter(c, e) {
-				return true
-			}
-		}
-		return false
-	}
-	return msEvalLeaf(f, e)
-}
-
-func msExtractFieldValue(f spi.Filter, e *spi.Entity) (any, bool) {
-	if f.Source == spi.SourceMeta {
-		return msExtractMetaValue(f.Path, e)
-	}
-	res := gjson.GetBytes(e.Data, f.Path)
-	if !res.Exists() {
-		return nil, false
-	}
-	if res.Type == gjson.Null {
-		return nil, true
-	}
-	return res.Value(), true
-}
-
-func msExtractMetaValue(path string, e *spi.Entity) (any, bool) {
-	switch path {
-	case "entity_id":
-		return e.Meta.ID, true
-	case "state":
-		return e.Meta.State, true
-	case "version":
-		return e.Meta.Version, true
-	case "model_name":
-		return e.Meta.ModelRef.EntityName, true
-	case "model_version":
-		return e.Meta.ModelRef.ModelVersion, true
-	case "change_type":
-		return e.Meta.ChangeType, true
-	case "transaction_id":
-		return e.Meta.TransactionID, true
-	default:
-		return nil, false
-	}
-}
-
-func msEvalLeaf(f spi.Filter, e *spi.Entity) bool {
-	switch f.Op {
-	case spi.FilterIsNull:
-		_, found := msExtractFieldValue(f, e)
-		return !found
-	case spi.FilterNotNull:
-		val, found := msExtractFieldValue(f, e)
-		return found && val != nil
-	}
-
-	val, found := msExtractFieldValue(f, e)
-
-	switch f.Op {
-	case spi.FilterEq:
-		if !found || val == nil {
-			return false
-		}
-		return msCmp(val, f.Value) == 0
-	case spi.FilterNe:
-		if !found || val == nil {
-			return true
-		}
-		return msCmp(val, f.Value) != 0
-	case spi.FilterGt:
-		if !found || val == nil {
-			return false
-		}
-		return msCmp(val, f.Value) > 0
-	case spi.FilterLt:
-		if !found || val == nil {
-			return false
-		}
-		return msCmp(val, f.Value) < 0
-	case spi.FilterGte:
-		if !found || val == nil {
-			return false
-		}
-		return msCmp(val, f.Value) >= 0
-	case spi.FilterLte:
-		if !found || val == nil {
-			return false
-		}
-		return msCmp(val, f.Value) <= 0
-	case spi.FilterContains:
-		if !found || val == nil {
-			return false
-		}
-		return strings.Contains(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterStartsWith:
-		if !found || val == nil {
-			return false
-		}
-		return strings.HasPrefix(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterEndsWith:
-		if !found || val == nil {
-			return false
-		}
-		return strings.HasSuffix(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterLike:
-		if !found || val == nil {
-			return false
-		}
-		return msMatchLike(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterBetween:
-		if !found || val == nil {
-			return false
-		}
-		if len(f.Values) < 2 {
-			return false
-		}
-		return msCmp(val, f.Values[0]) >= 0 && msCmp(val, f.Values[1]) <= 0
-	case spi.FilterMatchesRegex:
-		if !found || val == nil {
-			return false
-		}
-		re, err := regexp.Compile(fmt.Sprint(f.Value))
-		if err != nil {
-			return false
-		}
-		return re.MatchString(fmt.Sprint(val))
-	case spi.FilterIEq:
-		if !found || val == nil {
-			return false
-		}
-		return strings.EqualFold(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterINe:
-		if !found || val == nil {
-			return true
-		}
-		return !strings.EqualFold(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterIContains:
-		if !found || val == nil {
-			return false
-		}
-		return strings.Contains(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterINotContains:
-		if !found || val == nil {
-			return true
-		}
-		return !strings.Contains(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterIStartsWith:
-		if !found || val == nil {
-			return false
-		}
-		return strings.HasPrefix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterINotStartsWith:
-		if !found || val == nil {
-			return true
-		}
-		return !strings.HasPrefix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterIEndsWith:
-		if !found || val == nil {
-			return false
-		}
-		return strings.HasSuffix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterINotEndsWith:
-		if !found || val == nil {
-			return true
-		}
-		return !strings.HasSuffix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	}
-	// Unknown op: treat as non-match (pushdown contract guarantees ops are
-	// well-formed; reaching here implies SPI/plugin drift).
-	return false
-}
-
-// msCmp compares two values for ordering. Numeric values compare
-// numerically; everything else compares by string representation.
-// Mirrors sqlite post_filter's compareValues for cross-backend parity.
-func msCmp(a, b any) int {
-	af := msToFloat64(a)
-	bf := msToFloat64(b)
-	if af != nil && bf != nil {
-		switch {
-		case *af < *bf:
-			return -1
-		case *af > *bf:
-			return 1
-		default:
-			return 0
-		}
-	}
-	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
-}
-
-func msToFloat64(v any) *float64 {
-	switch n := v.(type) {
-	case float64:
-		return &n
-	case float32:
-		f := float64(n)
-		return &f
-	case int:
-		f := float64(n)
-		return &f
-	case int64:
-		f := float64(n)
-		return &f
-	case json.Number:
-		f, err := n.Float64()
-		if err != nil {
-			return nil
-		}
-		return &f
-	}
-	return nil
-}
-
-// msMatchLike implements SQL LIKE semantics in Go (byte-wise, not rune-wise,
-// matching sqlite's default LIKE behaviour for cross-backend parity).
-func msMatchLike(s, pattern string) bool {
-	return msMatchLikeHelper(s, 0, pattern, 0)
-}
-
-func msMatchLikeHelper(s string, si int, pattern string, pi int) bool {
-	for pi < len(pattern) {
-		ch := pattern[pi]
-		switch {
-		case ch == '\\' && pi+1 < len(pattern):
-			pi++
-			if si >= len(s) || s[si] != pattern[pi] {
-				return false
-			}
-			si++
-			pi++
-		case ch == '%':
-			for pi < len(pattern) && pattern[pi] == '%' {
-				pi++
-			}
-			if pi == len(pattern) {
-				return true
-			}
-			for si <= len(s) {
-				if msMatchLikeHelper(s, si, pattern, pi) {
-					return true
-				}
-				si++
-			}
-			return false
-		case ch == '_':
-			if si >= len(s) {
-				return false
-			}
-			si++
-			pi++
-		default:
-			if si >= len(s) || s[si] != ch {
-				return false
-			}
-			si++
-			pi++
-		}
-	}
-	return si == len(s)
+	return spi.MatchFilter(f, e.Data, e.Meta)
 }

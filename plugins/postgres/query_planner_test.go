@@ -545,6 +545,12 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
+// C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
+// (exclude every row), matching memory's spi.MatchFilter behavior, not
+// match-all ("1=1"). Validation now rejects this upstream (see
+// internal/domain/search/operators.go validateBetweenArity), so this guard
+// is defense-in-depth for any Filter constructed directly (bypassing the
+// domain validator), never a panic and never a false match-all.
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterBetween,
@@ -553,8 +559,40 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 		Values: []any{float64(10)},
 	}
 	plan := planQuery(f)
-	if plan.where != "1=1" {
-		t.Errorf("where = %s, want 1=1", plan.where)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude, matching memory's fail-closed semantics)", plan.where)
+	}
+}
+
+// TestPlan_TemporalBetween_NilValues_DoesNotPanic is the C1 regression test:
+// a CoerceTemporal BETWEEN leaf with Values=nil (the shape produced by
+// betweenValues for a malformed BETWEEN operand, before the fix landed) must
+// not panic indexing f.Values[0]/[1], and must emit an exclude predicate —
+// never the sqlite/memory-diverging match-all.
+func TestPlan_TemporalBetween_NilValues_DoesNotPanic(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: nil,
+	}
+	plan := planQuery(f)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with no values", plan.where)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want none", plan.args)
+	}
+}
+
+// TestPlan_TemporalBetween_OneValue_DoesNotPanic covers the 1-element-array
+// shape of the same malformed condition.
+func TestPlan_TemporalBetween_OneValue_DoesNotPanic(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z"},
+	}
+	plan := planQuery(f)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with one value", plan.where)
 	}
 }
 
@@ -694,5 +732,147 @@ func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
 		if isPushable(op) {
 			t.Errorf("op %s should NOT be pushable", op)
 		}
+	}
+}
+
+// TestFieldExpr_MetaCanonicalMapping asserts fieldExpr resolves canonical
+// SourceMeta lifecycle-filter paths through the same metaJSONKey map
+// orderByFieldExpr uses for ORDER BY, and special-cases "id" to the
+// entity_id column (not present in metaJSONKey).
+func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"creationDate", "creationDate", "doc->'_meta'->>'creation_date'"},
+		{"lastUpdateTime", "lastUpdateTime", "doc->'_meta'->>'last_modified_date'"},
+		{"transitionForLatestSave", "transitionForLatestSave", "doc->'_meta'->>'transition'"},
+		{"transactionId", "transactionId", "doc->'_meta'->>'transaction_id'"},
+		{"id", "id", "entity_id"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fieldExpr(spi.Filter{Source: spi.SourceMeta, Path: tc.path})
+			if got != tc.want {
+				t.Errorf("fieldExpr(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlan_TemporalMetaEmitsEpochMillis asserts a CoerceTemporal meta leaf
+// routes through cyoda_epoch_millis on the canonically-mapped JSONB key, and
+// binds a Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
+func TestPlan_TemporalMetaEmitsEpochMillis(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	if !strings.Contains(plan.where, "cyoda_epoch_millis(doc->'_meta'->>'creation_date')") {
+		t.Errorf("where = %q", plan.where)
+	}
+	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') > $1)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != int64(1609459200000) {
+		t.Errorf("args = %v, want [1609459200000]", plan.args)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil for pushable temporal op, got %+v", plan.postFilter)
+	}
+}
+
+// TestPlan_TemporalMetaNE asserts the NE 3VL form (IS NULL OR != ) is
+// preserved for temporal leaves, mirroring the non-temporal NE shape.
+func TestPlan_TemporalMetaNE(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNe, Source: spi.SourceMeta, Path: "lastUpdateTime", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'last_modified_date') IS NULL OR cyoda_epoch_millis(doc->'_meta'->>'last_modified_date') != $1)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != int64(1609459200000) {
+		t.Errorf("args = %v, want [1609459200000]", plan.args)
+	}
+}
+
+// TestPlan_TemporalMetaBetween asserts BETWEEN binds two Go-precomputed
+// int64 epoch-ms operands from f.Values.
+func TestPlan_TemporalMetaBetween(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z", "2021-06-01T14:00:00+02:00"},
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') BETWEEN $1 AND $2)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 2 || plan.args[0] != int64(1609459200000) || plan.args[1] != int64(1622548800000) {
+		t.Errorf("args = %v, want [1609459200000 1622548800000]", plan.args)
+	}
+}
+
+// TestPlan_TemporalData covers a SourceData temporal leaf (non-meta path)
+// to confirm CoerceTemporal routing is independent of Source.
+func TestPlan_TemporalData(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_epoch_millis(doc->>'occurredAt') IS NOT NULL AND cyoda_epoch_millis(doc->>'occurredAt') <= $1)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+}
+
+// TestPlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
+// FilterIsNull/FilterNotNull emits a plain null-check on the raw field
+// expression (doc->'_meta'->>'creation_date') — NOT the cyoda_epoch_millis(...)
+// wrapped form and NOT the "col = $1" / "= 0" nonsense that sqlOpForTemporal's
+// unconditional "default: return \"=\"" previously produced for an op it
+// doesn't recognize. Presence checks are coercion-independent: they must be
+// handled before the CoerceTemporal routing, mirroring spi.evalLeafFilter's
+// ordering.
+func TestPlan_TemporalIsNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	plan := planQuery(f)
+	wantWhere := "doc->'_meta'->>'creation_date' IS NULL"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want []", plan.args)
+	}
+	if strings.Contains(plan.where, "cyoda_epoch_millis") {
+		t.Errorf("where must not route through cyoda_epoch_millis for a presence check: %s", plan.where)
+	}
+	if strings.Contains(plan.where, "= $1") || strings.Contains(plan.where, "= 0") {
+		t.Errorf("where must not be the nonsense equality fallback: predicate was silently corrupted: %s", plan.where)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil — IsNull must remain pushable, just correct: %+v", plan.postFilter)
+	}
+	if !isPushable(spi.FilterIsNull) {
+		t.Errorf("FilterIsNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+func TestPlan_TemporalNotNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	plan := planQuery(f)
+	wantWhere := "doc->'_meta'->>'creation_date' IS NOT NULL"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want []", plan.args)
+	}
+	if strings.Contains(plan.where, "cyoda_epoch_millis") {
+		t.Errorf("where must not route through cyoda_epoch_millis for a presence check: %s", plan.where)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil — NotNull must remain pushable, just correct: %+v", plan.postFilter)
+	}
+	if !isPushable(spi.FilterNotNull) {
+		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
 	}
 }

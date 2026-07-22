@@ -3,12 +3,11 @@ module github.com/cyoda-platform/cyoda-go/plugins/sqlite
 go 1.26.5
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260719054509-ad1f8a9e95a4
+	github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260722164413-f84cde1ebb18
 	github.com/gofrs/flock v0.13.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/ncruces/go-sqlite3 v0.35.1
-	github.com/tidwall/gjson v1.19.0
 )
 
 require (
@@ -23,12 +22,14 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
-	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/tools v0.45.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/uint128 v1.2.0 // indirect
 	modernc.org/cc/v3 v3.36.3 // indirect

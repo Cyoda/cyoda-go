@@ -217,9 +217,12 @@ func orderByClause(opts spi.SearchOptions) string {
 //   - OrderNumeric  → cyoda_try_float8(base): NULL-safe coercion (not a raw
 //     ::double precision cast which would error on non-numeric text); the
 //     helper is already used elsewhere in this plugin.
-//   - OrderTemporal → floor(extract(epoch from (base)::timestamptz)*1000):
-//     converts RFC3339 text to epoch-milliseconds (canonical resolution for
-//     cross-backend parity).
+//   - OrderTemporal → cyoda_epoch_millis(base) (migration 000005): converts
+//     RFC3339 text to epoch-milliseconds (canonical resolution for
+//     cross-backend parity), NULL-safe on offset-less/malformed stored text
+//     rather than raising — the same IMMUTABLE function used by temporal
+//     filter pushdown in query_planner.go, so ORDER BY and WHERE agree on a
+//     single epoch-ms SQL form.
 //   - OrderBool     → (base)::boolean
 //   - OrderText     → (base) COLLATE "C" (byte-order comparison)
 //
@@ -249,9 +252,11 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 		// error the whole query on non-numeric stored values.
 		return "cyoda_try_float8(" + base + ")"
 	case spi.OrderTemporal:
-		// _meta value is RFC3339 text; floor the instant to epoch-milliseconds
-		// (the canonical cross-backend resolution) so all backends agree.
-		return "floor(extract(epoch from (" + base + ")::timestamptz)*1000)"
+		// _meta value is RFC3339 text; cyoda_epoch_millis floors the instant to
+		// epoch-milliseconds (the canonical cross-backend resolution) so all
+		// backends agree, and returns NULL (→ NULLS LAST) rather than raising
+		// on offset-less/malformed stored text.
+		return "cyoda_epoch_millis(" + base + ")"
 	case spi.OrderBool:
 		return "(" + base + ")::boolean"
 	default: // OrderText (zero value)

@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260719054509-ad1f8a9e95a4
+	github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260722164413-f84cde1ebb18
 	github.com/getkin/kin-openapi v0.140.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/google/uuid v1.6.0
@@ -102,9 +102,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.3-0.20260719190029-4381d3b66c98
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.3-0.20260719190029-4381d3b66c98
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.3-0.20260719190029-4381d3b66c98
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.3-0.20260722175934-75b3b62a6017
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.3-0.20260722175934-75b3b62a6017
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.3-0.20260722175934-75b3b62a6017
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
@@ -162,12 +162,12 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
-	golang.org/x/tools v0.45.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/yaml.v3 v3.0.1

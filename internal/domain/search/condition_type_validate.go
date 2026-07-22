@@ -1,11 +1,16 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -30,10 +35,21 @@ var skipTypeCheckOperators = map[string]struct{}{
 // Polymorphic fields (>1 type) accept values matching any participating type.
 // Null values are accepted for any field type.
 func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Condition) error {
-	if model == nil || cond == nil {
+	if cond == nil {
 		return nil
 	}
-	fm := model.FieldsMap()
+	// fm stays nil when model is nil. walkConditionTypes/validateSimpleConditionType
+	// gracefully skip the data-field-vs-schema check on a nil map (an
+	// unknown-path lookup returns ok=false, the "accept" branch) — so the
+	// only checks that still run without a model are the model-independent
+	// ones: operator/BETWEEN-arity (via the caller's ValidateCondition) and
+	// lifecycle/temporal type-soundness (validateLifecycleType below). This
+	// lets callers with no schema plumbing (e.g. grouped-stats) reuse this
+	// function for temporal/lifecycle validation by passing model=nil.
+	var fm map[string]schema.FieldDescriptor
+	if model != nil {
+		fm = model.FieldsMap()
+	}
 	return walkConditionTypes(fm, cond, 0)
 }
 
@@ -55,9 +71,7 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 		}
 		return nil
 	case *predicate.LifecycleCondition:
-		// Lifecycle conditions match entity metadata, not data fields.
-		// No DataType constraint applies here.
-		return nil
+		return validateLifecycleType(c)
 	case *predicate.ArrayCondition, *predicate.FunctionCondition:
 		return nil
 	default:
@@ -113,6 +127,98 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 // Handlers check errors.Is(err, errConditionTypeMismatch) to emit HTTP 400
 // with ErrCodeConditionTypeMismatch.
 var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
+
+// errInvalidFieldPath is the sentinel error for a condition referencing a
+// meta field path the vocabulary does not recognize. Handlers check
+// errors.Is(err, errInvalidFieldPath) to emit HTTP 400 with
+// ErrCodeInvalidFieldPath (distinct from errConditionTypeMismatch's
+// CONDITION_TYPE_MISMATCH: the field itself is unknown, not merely
+// type-incompatible with its operator/operand).
+var errInvalidFieldPath = fmt.Errorf("invalid field path")
+
+// ErrConditionTypeMismatch and ErrInvalidFieldPath are exported aliases of
+// the sentinels above, letting other domain packages (e.g. entity's
+// grouped-stats validation, which calls ValidateConditionValueTypes(nil, ...)
+// for its own model-independent temporal/lifecycle type-soundness check)
+// classify the returned error via errors.Is without duplicating the sentinel
+// or depending on package-internal identifiers.
+var (
+	ErrConditionTypeMismatch = errConditionTypeMismatch
+	ErrInvalidFieldPath      = errInvalidFieldPath
+)
+
+// comparisonOps is the operator family valid against temporal meta fields:
+// ordering, equality, BETWEEN, and the null-presence checks. String-shaped
+// operators (CONTAINS, STARTS_WITH, LIKE, regex, case-insensitive variants,
+// ...) have no meaningful temporal semantics and are rejected.
+var comparisonOps = map[string]bool{
+	"EQUALS": true, "NOT_EQUAL": true, "GREATER_THAN": true, "LESS_THAN": true,
+	"GREATER_OR_EQUAL": true, "LESS_OR_EQUAL": true, "BETWEEN": true,
+	"IS_NULL": true, "NOT_NULL": true,
+}
+
+// validateLifecycleType enforces type-soundness for LifecycleCondition
+// (meta) clauses:
+//   - the field must be a known meta filter field (sortableMetaFields key,
+//     or the previousTransition alias) — otherwise errInvalidFieldPath.
+//   - for fields the meta vocabulary classifies as temporal (creationDate,
+//     lastUpdateTime), the operator must be one of comparisonOps and every
+//     operand (skipped for IS_NULL/NOT_NULL) must be an offset-bearing
+//     RFC3339 timestamp per spi.ParseTemporalMillis — otherwise
+//     errConditionTypeMismatch.
+//
+// Non-temporal meta fields (state, transitionForLatestSave, transactionId,
+// id) carry no further constraint here: they compare as their stored
+// text/string form regardless of operator.
+// ValidateLifecycleCondition checks a lifecycle/meta condition for type
+// soundness (known meta field; valid operator + offset-bearing RFC3339
+// operand on temporal fields). Shared by the search API boundary and
+// workflow-criterion import so both reject the same malformed conditions.
+// Returns a descriptive error; callers map it to their own 4xx code.
+func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error {
+	return validateLifecycleType(c)
+}
+
+func validateLifecycleType(c *predicate.LifecycleCondition) error {
+	if !isKnownMetaFilterField(c.Field) {
+		return fmt.Errorf("unknown meta filter field %q: %w", c.Field, errInvalidFieldPath)
+	}
+	field := c.Field
+	if field == "previousTransition" {
+		field = "transitionForLatestSave"
+	}
+	if !isTemporalMetaField(field) {
+		return nil
+	}
+	if !comparisonOps[c.OperatorType] {
+		return fmt.Errorf("operator %q is not valid on temporal field %q: %w", c.OperatorType, c.Field, errConditionTypeMismatch)
+	}
+	if c.OperatorType == "IS_NULL" || c.OperatorType == "NOT_NULL" {
+		return nil
+	}
+	for _, v := range operandStrings(c.Value) {
+		if _, ok := spi.ParseTemporalMillis(v); !ok {
+			return fmt.Errorf("operand %q is not a valid timestamp for temporal field %q: %w", v, c.Field, errConditionTypeMismatch)
+		}
+	}
+	return nil
+}
+
+// operandStrings normalizes a condition value into its comparable operand
+// strings: a scalar becomes a single-element slice; a []any (BETWEEN's
+// [lo, hi] pair) becomes one element per member, each stringified via
+// fmt.Sprint to match the formatting evalTemporalLeaf/spi.ParseTemporalMillis
+// callers use elsewhere in the temporal pipeline.
+func operandStrings(v any) []string {
+	if arr, ok := v.([]any); ok {
+		out := make([]string, 0, len(arr))
+		for _, elem := range arr {
+			out = append(out, fmt.Sprint(elem))
+		}
+		return out
+	}
+	return []string{fmt.Sprint(v)}
+}
 
 // checkSingleValueType checks whether a single scalar value is compatible with
 // the field's TypeSet. Null values are accepted for any field type. String-only
@@ -170,4 +276,49 @@ func inferValueDataType(v any) schema.DataType {
 		return schema.InferDataType(json.Number(strconv.FormatFloat(val, 'f', -1, 64)))
 	}
 	return schema.InferDataType(v)
+}
+
+// loadModelNode fetches and parses the model schema for ref, returning the
+// *schema.ModelNode used for condition-type validation. Returns nil when
+// the store lookup fails, the descriptor has no schema bound, or the schema
+// fails to parse — callers treat this as "no type constraints available"
+// rather than failing the search on a schema-load hiccup. EnsureModelRegistered
+// has already confirmed the model exists by the time this runs, so in the
+// normal case the node is present.
+func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+	desc, err := store.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil
+	}
+	return node
+}
+
+// validateConditionTypes is the single boundary enforcing condition
+// type-soundness for every SearchService entry point (HTTP, gRPC, and any
+// future transport funnel through Search/SubmitAsync). It loads the model
+// schema and delegates to ValidateConditionValueTypes, mapping the returned
+// sentinel error to the appropriate 400-classified *common.AppError:
+// errInvalidFieldPath → INVALID_FIELD_PATH (the field itself is unknown),
+// anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
+// with a known field/operator).
+//
+// A schema-load hiccup (see loadModelNode) returns nil — the search
+// proceeds without type constraints rather than failing on infra flakiness.
+func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
+	node := loadModelNode(ctx, modelStore, modelRef)
+	if node == nil {
+		return nil
+	}
+	if err := ValidateConditionValueTypes(node, cond); err != nil {
+		code := common.ErrCodeConditionTypeMismatch
+		if errors.Is(err, errInvalidFieldPath) {
+			code = common.ErrCodeInvalidFieldPath
+		}
+		return common.Operational(http.StatusBadRequest, code, err.Error())
+	}
+	return nil
 }

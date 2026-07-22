@@ -95,25 +95,101 @@ func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected 
 	return matched, nil
 }
 
+// matchLifecycle evaluates a lifecycle (meta) condition. Field routing is
+// identity-driven, never operand-driven: creationDate/lastUpdateTime always
+// compare chronologically (epoch-ms) regardless of operator, and the
+// remaining canonical meta fields compare lexically via the existing
+// string-operator mechanism. See spec §6.3-§6.5 (temporal-search-filters
+// design) for the canonical vocabulary and the rationale for unconditional
+// field-identity routing.
 func matchLifecycle(c *predicate.LifecycleCondition, meta spi.EntityMeta) (bool, error) {
-	var fieldValue string
+	field := c.Field
+	if field == "previousTransition" {
+		field = "transitionForLatestSave"
+	}
 
-	switch c.Field {
-	case "state":
-		fieldValue = meta.State
+	switch field {
 	case "creationDate":
-		fieldValue = meta.CreationDate.Format(time.RFC3339Nano)
-	case "previousTransition", "transitionForLatestSave":
-		fieldValue = meta.TransitionForLatestSave
+		return matchTemporalMeta(c.OperatorType, meta.CreationDate, c.Value)
+	case "lastUpdateTime":
+		return matchTemporalMeta(c.OperatorType, meta.LastModifiedDate, c.Value)
+	case "state":
+		return applyStringLifecycle(c, meta.State)
+	case "transitionForLatestSave":
+		return applyStringLifecycle(c, meta.TransitionForLatestSave)
+	case "transactionId":
+		return applyStringLifecycle(c, meta.TransactionID)
+	case "id":
+		return applyStringLifecycle(c, meta.ID)
 	default:
 		return false, fmt.Errorf("unknown lifecycle field: %s", c.Field)
 	}
+}
 
-	// Wrap the field value in a gjson.Result for uniform operator dispatch.
-	fakeJSON := fmt.Sprintf(`{"v":%q}`, fieldValue)
+// applyStringLifecycle preserves the pre-existing lexical lifecycle-field
+// evaluation: wrap the field value in a fake gjson document and dispatch
+// through the same applyOperator used by simple/array conditions.
+func applyStringLifecycle(c *predicate.LifecycleCondition, value string) (bool, error) {
+	fakeJSON := fmt.Sprintf(`{"v":%q}`, value)
 	result := gjson.Get(fakeJSON, "v")
-
 	return applyOperator(c.OperatorType, result, c.Value)
+}
+
+// matchTemporalMeta compares a stored meta time.Time chronologically
+// (epoch-ms) against the condition operand(s), via the shared
+// spi.CompareTemporal dispatcher. Field routing already established that
+// this is a temporal field (matchLifecycle); this function does not sniff
+// the operand.
+func matchTemporalMeta(op string, stored time.Time, value any) (bool, error) {
+	storedMs, storedOK := stored.UnixMilli(), !stored.IsZero()
+
+	if op == "BETWEEN" || op == "BETWEEN_INCLUSIVE" {
+		lo, hi, ok := twoTemporalBounds(value)
+		return spi.CompareTemporal(spi.FilterBetween, storedMs, storedOK, lo, hi, ok), nil
+	}
+
+	ms, ok := spi.ParseTemporalMillis(fmt.Sprint(value))
+	return spi.CompareTemporal(mapOpToFilterOp(op), storedMs, storedOK, ms, 0, ok), nil
+}
+
+// mapOpToFilterOp maps the predicate comparison operator names to spi.FilterOp
+// for the temporal dispatcher. BETWEEN is handled separately by the caller.
+// An operator with no temporal meaning (e.g. CONTAINS reaching this function
+// unvalidated) maps to the zero value, which spi.CompareTemporal treats as
+// "no match" — matchLifecycle degrades safely rather than erroring; the
+// search boundary is what rejects invalid operator/temporal-field
+// combinations (spec §6.4).
+func mapOpToFilterOp(op string) spi.FilterOp {
+	switch op {
+	case "EQUALS":
+		return spi.FilterEq
+	case "NOT_EQUAL":
+		return spi.FilterNe
+	case "GREATER_THAN":
+		return spi.FilterGt
+	case "LESS_THAN":
+		return spi.FilterLt
+	case "GREATER_OR_EQUAL":
+		return spi.FilterGte
+	case "LESS_OR_EQUAL":
+		return spi.FilterLte
+	default:
+		return ""
+	}
+}
+
+// twoTemporalBounds parses a BETWEEN operand ([]any of exactly two values)
+// into (lo, hi) epoch-ms. ok is false if the shape is wrong or either bound
+// fails to parse — matchTemporalMeta then excludes/vacuous-matches per the
+// shared CompareTemporal rule rather than erroring.
+func twoTemporalBounds(value any) (lo, hi int64, ok bool) {
+	values, isSlice := value.([]any)
+	if !isSlice || len(values) != 2 {
+		return 0, 0, false
+	}
+	lo, lok := spi.ParseTemporalMillis(fmt.Sprint(values[0]))
+	hi, hok := spi.ParseTemporalMillis(fmt.Sprint(values[1]))
+	return lo, hi, lok && hok
 }
 
 func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (bool, error) {

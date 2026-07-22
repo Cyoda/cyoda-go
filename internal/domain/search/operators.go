@@ -75,9 +75,15 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	}
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
-		return validateOperator(c.OperatorType)
+		if err := validateOperator(c.OperatorType); err != nil {
+			return err
+		}
+		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.LifecycleCondition:
-		return validateOperator(c.OperatorType)
+		if err := validateOperator(c.OperatorType); err != nil {
+			return err
+		}
+		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
 		// ArrayCondition doesn't carry an operator — each positional value
 		// becomes an equality check in arrayToFilter. Nothing to validate.
@@ -104,6 +110,35 @@ func validateOperator(op string) error {
 	}
 	if _, ok := canonicalOperators[op]; !ok {
 		return fmt.Errorf("unknown operatorType %q; valid: %s", op, canonicalOperatorList())
+	}
+	return nil
+}
+
+// validateBetweenArity enforces that a BETWEEN / BETWEEN_INCLUSIVE
+// condition's value is exactly a 2-element array (the [lo, hi] bounds pair).
+// Model-independent and shared by SimpleCondition (data leaves) and
+// LifecycleCondition (meta leaves, including temporal fields) — the same
+// malformed-arity bug affects both.
+//
+// A scalar or a 1- or 3-element array previously slipped past validation:
+// betweenValues (filter_translate.go) rejects anything but a 2-element []any
+// and leaves spi.Filter.Values nil, and that nil-Values filter reaches the
+// storage plugins with catastrophically divergent behavior — postgres
+// panicked indexing f.Values[0] with no length guard, sqlite's BETWEEN
+// fallback emitted a match-all "1=1", and only memory's spi.MatchFilter
+// correctly excluded. Rejecting the malformed condition here, at the single
+// validation boundary every transport (HTTP, gRPC) funnels through, closes
+// the gap before any of that divergence can occur.
+func validateBetweenArity(op string, value any) error {
+	if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
+		return nil
+	}
+	vals, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("operator %q requires exactly two operands, got %T", op, value)
+	}
+	if len(vals) != 2 {
+		return fmt.Errorf("operator %q requires exactly two operands, got %d", op, len(vals))
 	}
 	return nil
 }

@@ -146,6 +146,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — model-independent, so it runs before any model-store access.
+	// This is the single boundary every transport (HTTP, gRPC) funnels
+	// through; the HTTP handler no longer duplicates this check.
+	if cErr := ValidateCondition(cond); cErr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+	}
+
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
@@ -160,6 +168,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	if rErr := ValidateRegexPatterns(cond); rErr != nil {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
 			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
+	// Condition type-soundness (correctness-over-availability): every
+	// transport funnels through Search, so this is the single boundary that
+	// closes the gap where gRPC previously bypassed HTTP-only validation.
+	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+		return nil, tErr
 	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
@@ -176,7 +190,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// is transaction-aware on every OSS backend (RYW), so this is safe with or
 	// without an active transaction in ctx — see the Search doc comment.
 	if searcher, ok := store.(spi.Searcher); ok {
-		filter, translateErr := ConditionToFilter(cond)
+		fields, _ := loadFieldsMap(ctx, modelStore, modelRef) // best-effort; nil-tolerant
+		filter, translateErr := ConditionToFilter(cond, fields)
 		if translateErr == nil {
 			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
 			// "no explicit limit" in all store implementations.
@@ -264,6 +279,13 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — same single boundary as Search, so an async job is never
+	// created for a structurally-malformed condition regardless of transport.
+	if cErr := ValidateCondition(cond); cErr != nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+	}
+
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
@@ -283,6 +305,12 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	if rErr := ValidateRegexPatterns(cond); rErr != nil {
 		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
 			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
+	// Condition type-soundness (correctness-over-availability): same
+	// single-boundary guard as Search, so an async job is never created for
+	// a type-unsound condition regardless of transport.
+	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+		return "", tErr
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400

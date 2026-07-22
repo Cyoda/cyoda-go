@@ -25,7 +25,11 @@ Each field in a locked model has an inferred DataType (e.g. INTEGER, DOUBLE, BOO
 
 String fields are not strictly enforced — any comparison value (numeric or string) is accepted to support lexicographic and coerced comparisons. Conditions that reference field paths not present in the model schema are rejected by a separate pre-execution validation pass with `INVALID_FIELD_PATH`; the type-checker itself has no opinion on unknown paths.
 
+Lifecycle/meta conditions (e.g. `state`, `creationDate`, `lastUpdateTime`) are also type-checked: temporal fields (`creationDate`, `lastUpdateTime`) only accept ordering/equality/BETWEEN/null-presence operators with an offset-bearing RFC3339 operand — a string-shaped operator such as `CONTAINS` or a non-date operand against a temporal field is this same error.
+
 IS_NULL and NOT_NULL operators bypass type checking entirely. Null values are compatible with any field type.
+
+Both `/search` and the grouped-statistics endpoint (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) enforce this check.
 
 Correct the condition value so that its type matches the target field's declared DataType.
 

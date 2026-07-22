@@ -17,7 +17,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 )
 
@@ -36,66 +35,34 @@ func jobLookupError(err error) *common.AppError {
 }
 
 // Handler handles search-related HTTP endpoints.
+//
+// Structural condition validation (canonical operator set, BETWEEN arity —
+// operators.go's ValidateCondition) and condition type-soundness
+// (schema-vs-value, meta-vocabulary checks — condition_type_validate.go's
+// validateConditionTypes) are both enforced inside SearchService.Search /
+// SubmitAsync — the single boundary every transport (HTTP via this handler,
+// gRPC via internal/grpc/search.go) funnels through — not here.
 type Handler struct {
 	searchSvc   *SearchService
-	factory     spi.StoreFactory
 	maxSortKeys int
 }
 
 // NewHandler creates a new search handler wired to the given SearchService.
-// Uses a default cap of 16 sort keys per request.
+// Uses a default cap of 16 sort keys per request; override with
+// WithMaxSortKeys.
 func NewHandler(searchSvc *SearchService) *Handler {
 	return &Handler{searchSvc: searchSvc, maxSortKeys: 16}
 }
 
-// NewHandlerWithModel creates a search handler that additionally validates
-// condition value types against the model schema before executing search.
-// Pass a nil factory to disable condition-type validation (e.g. in tests
-// that don't need it). maxSortKeys caps the number of sort keys per request.
-func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory, maxSortKeys int) *Handler {
-	return &Handler{searchSvc: searchSvc, factory: factory, maxSortKeys: maxSortKeys}
-}
-
-// lookupModelSchema fetches the parsed model schema for the given entity/version.
-// Returns nil (with no error) when the model is not found or cannot be parsed —
-// callers treat this as "no type constraints available".
-func (h *Handler) lookupModelSchema(r *http.Request, entityName string, modelVersion int32) *schema.ModelNode {
-	if h.factory == nil {
-		return nil
+// WithMaxSortKeys sets the per-request sort-key cap enforced when parsing
+// the sort parameter. A value <= 0 restores the built-in default (16).
+// Returns the receiver for chaining after NewHandler.
+func (h *Handler) WithMaxSortKeys(n int) *Handler {
+	if n <= 0 {
+		n = 16
 	}
-	modelStore, err := h.factory.ModelStore(r.Context())
-	if err != nil {
-		return nil
-	}
-	ref := spi.ModelRef{
-		EntityName:   entityName,
-		ModelVersion: fmt.Sprintf("%d", modelVersion),
-	}
-	desc, err := modelStore.Get(r.Context(), ref)
-	if err != nil || len(desc.Schema) == 0 {
-		return nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return nil
-	}
-	return node
-}
-
-// validateConditionTypes checks all simple clauses in cond against the model
-// schema for the given entity. Returns a non-nil AppError (HTTP 400) if any
-// clause has a type-mismatched value. Returns nil when the model is not found
-// or the condition has no type violations.
-func (h *Handler) validateConditionTypes(r *http.Request, entityName string, modelVersion int32, cond predicate.Condition) *common.AppError {
-	node := h.lookupModelSchema(r, entityName, modelVersion)
-	if node == nil {
-		return nil // model not found or unparseable — no constraints to apply
-	}
-	if err := ValidateConditionValueTypes(node, cond); err != nil {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch,
-			err.Error())
-	}
-	return nil
+	h.maxSortKeys = n
+	return h
 }
 
 // ---------------------------------------------------------------------------
@@ -115,14 +82,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
-	if err := ValidateCondition(cond); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
-		return
-	}
-	if appErr := h.validateConditionTypes(r, entityName, modelVersion, cond); appErr != nil {
-		common.WriteError(w, r, appErr)
-		return
-	}
+	// Structural validation (canonical operator set, BETWEEN arity) and
+	// condition type-soundness are both enforced by SearchService.Search
+	// itself (the single boundary shared with gRPC) — see this file's doc
+	// comment.
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -210,14 +173,10 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
-	if err := ValidateCondition(cond); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
-		return
-	}
-	if appErr := h.validateConditionTypes(r, entityName, modelVersion, cond); appErr != nil {
-		common.WriteError(w, r, appErr)
-		return
-	}
+	// Structural validation (canonical operator set, BETWEEN arity) and
+	// condition type-soundness are both enforced by SearchService.SubmitAsync
+	// itself (the single boundary shared with gRPC) — see this file's doc
+	// comment.
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,

@@ -94,6 +94,45 @@ func (s *GroupedStatsService) QueryGroupedStats(
 		}
 	}
 
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — model-independent, mirrors the single boundary the search
+	// path enforces in SearchService.Search/SubmitAsync via the same
+	// search.ValidateCondition call. Without this, a malformed-arity
+	// BETWEEN (or an unknown operatorType) slips past every downstream
+	// layer here exactly as the regex case above did: ConditionToFilter and
+	// match.Match both fail closed (never matching) rather than erroring,
+	// so the request would silently degrade to an empty/wrong result
+	// instead of failing with 400.
+	if parsedCond != nil {
+		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
+		}
+	}
+
+	// Condition type-soundness (correctness-over-availability): mirrors the
+	// search path's validateConditionTypes boundary for its model-independent
+	// parts. A nil model is passed deliberately — grouped-stats has no
+	// model-schema plumbing (a separate, unflagged concern), but the
+	// lifecycle/temporal/meta-field rules validateLifecycleType enforces
+	// (known meta field; valid operator + RFC3339 operand on temporal
+	// fields) don't need the schema at all, and ValidateConditionValueTypes
+	// gracefully skips the schema-dependent data-field check when model is
+	// nil. Without this, e.g. a CONTAINS operator against the temporal
+	// creationDate meta field would silently produce an empty result here
+	// (never matching in ConditionToFilter/match.Match) instead of the 400
+	// CONDITION_TYPE_MISMATCH the equivalent /search request returns.
+	if parsedCond != nil {
+		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
+			// Propagate tErr directly (not re-wrapped): it already wraps
+			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
+			// so the handler classifies it via errors.Is against those same
+			// exported sentinels — the identical classification the search
+			// path's validateConditionTypes performs — and maps to the
+			// matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
+			return nil, tErr
+		}
+	}
+
 	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
 	// yields the zero-value Filter ("match all"); a parsedCond that the
 	// translator can't handle (e.g. function conditions, wildcard paths)
@@ -102,7 +141,7 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
-		f, terr := search.ConditionToFilter(parsedCond)
+		f, terr := search.ConditionToFilter(parsedCond, nil)
 		if terr != nil {
 			pushable = false
 		} else {

@@ -475,6 +475,12 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
+// C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
+// (exclude every row), matching memory's spi.MatchFilter behavior, not
+// match-all ("1=1"). Validation now rejects this upstream (see
+// internal/domain/search/operators.go validateBetweenArity), so this is
+// defense-in-depth for any Filter constructed directly (bypassing the
+// domain validator).
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterBetween,
@@ -483,9 +489,41 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 		Values: []any{float64(10)}, // only 1 value
 	}
 	plan := planQuery(f)
-	// Should produce a no-op WHERE.
-	if plan.where != "1=1" {
-		t.Errorf("where = %s, want 1=1", plan.where)
+	// Should produce an exclude predicate, never match-all.
+	if plan.where != "0" {
+		t.Errorf("where = %s, want 0 (exclude, matching memory's fail-closed semantics)", plan.where)
+	}
+}
+
+// TestSqlitePlan_TemporalBetween_NilValues_Excludes is the C1 regression
+// test for sqlite: a CoerceTemporal BETWEEN leaf with Values=nil (the shape
+// produced by betweenValues for a malformed BETWEEN operand, before the fix
+// landed) must emit an exclude predicate — never the match-all "1=1" that
+// previously let every row through.
+func TestSqlitePlan_TemporalBetween_NilValues_Excludes(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: nil,
+	}
+	sql, args := leafToSQL(f)
+	if sql != "0" {
+		t.Errorf("sql = %s, want 0 (exclude) for a malformed temporal BETWEEN with no values", sql)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want none", args)
+	}
+}
+
+// TestSqlitePlan_TemporalBetween_OneValue_Excludes covers the 1-element-array
+// shape of the same malformed condition.
+func TestSqlitePlan_TemporalBetween_OneValue_Excludes(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z"},
+	}
+	sql, _ := leafToSQL(f)
+	if sql != "0" {
+		t.Errorf("sql = %s, want 0 (exclude) for a malformed temporal BETWEEN with one value", sql)
 	}
 }
 
@@ -569,6 +607,145 @@ func TestPlanQuery_MetaColumnMapping(t *testing.T) {
 	wantWhere := "(entity_id IS NOT NULL AND entity_id = ?)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+}
+
+// TestFieldExpr_MetaCanonicalMapping asserts fieldExpr resolves canonical
+// SourceMeta lifecycle-filter paths through the same metaBlobKey map
+// orderByFieldExpr uses for ORDER BY, and special-cases "id" to the
+// entity_id column (not present in metaBlobKey).
+func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"creationDate", "creationDate", "json_extract(json(meta), '$.creation_date')"},
+		{"lastUpdateTime", "lastUpdateTime", "json_extract(json(meta), '$.last_modified_date')"},
+		{"transitionForLatestSave", "transitionForLatestSave", "json_extract(json(meta), '$.transition_for_latest_save')"},
+		{"transactionId", "transactionId", "json_extract(json(meta), '$.transaction_id')"},
+		{"id", "id", "entity_id"},
+		// Pre-existing storage-key vocabulary keeps working via the
+		// directMetaColumns fallback / raw json_extract.
+		{"state (storage key)", "state", "json_extract(json(meta), '$.state')"},
+		{"entity_id (direct column)", "entity_id", "entity_id"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fieldExpr(spi.Filter{Source: spi.SourceMeta, Path: tc.path})
+			if got != tc.want {
+				t.Errorf("fieldExpr(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSqlitePlan_TemporalMetaDividesMicros asserts a CoerceTemporal meta leaf
+// routes through the canonically-mapped meta blob key, divides the stored
+// microseconds by 1000 (matching orderByFieldExpr's µs->ms floor), and binds
+// a Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
+func TestSqlitePlan_TemporalMetaDividesMicros(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	sql, args := leafToSQL(f)
+	if !strings.Contains(sql, "/ 1000") || !strings.Contains(sql, "creation_date") {
+		t.Errorf("sql = %q", sql)
+	}
+	wantSQL := "((json_extract(json(meta), '$.creation_date') / 1000) IS NOT NULL AND (json_extract(json(meta), '$.creation_date') / 1000) > ?)"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 1 || args[0] != int64(1609459200000) {
+		t.Errorf("args = %v, want [1609459200000]", args)
+	}
+}
+
+// TestSqlitePlan_TemporalMetaNE asserts the NE 3VL form (IS NULL OR !=) is
+// preserved for temporal leaves, mirroring the non-temporal NE shape.
+func TestSqlitePlan_TemporalMetaNE(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNe, Source: spi.SourceMeta, Path: "lastUpdateTime", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	sql, args := leafToSQL(f)
+	wantSQL := "((json_extract(json(meta), '$.last_modified_date') / 1000) IS NULL OR (json_extract(json(meta), '$.last_modified_date') / 1000) != ?)"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 1 || args[0] != int64(1609459200000) {
+		t.Errorf("args = %v, want [1609459200000]", args)
+	}
+}
+
+// TestSqlitePlan_TemporalMetaBetween asserts BETWEEN binds two
+// Go-precomputed int64 epoch-ms operands from f.Values.
+func TestSqlitePlan_TemporalMetaBetween(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z", "2021-06-01T14:00:00+02:00"},
+	}
+	sql, args := leafToSQL(f)
+	wantSQL := "((json_extract(json(meta), '$.creation_date') / 1000) IS NOT NULL AND (json_extract(json(meta), '$.creation_date') / 1000) BETWEEN ? AND ?)"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 2 || args[0] != int64(1609459200000) || args[1] != int64(1622548800000) {
+		t.Errorf("args = %v, want [1609459200000 1622548800000]", args)
+	}
+}
+
+// TestSqlitePlan_TemporalData covers a SourceData temporal leaf (non-meta
+// path) to confirm CoerceTemporal routing is independent of Source.
+func TestSqlitePlan_TemporalData(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	sql, args := leafToSQL(f)
+	wantSQL := "((json_extract(data, '$.occurredAt') / 1000) IS NOT NULL AND (json_extract(data, '$.occurredAt') / 1000) <= ?)"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 1 || args[0] != int64(1609459200000) {
+		t.Errorf("args = %v, want [1609459200000]", args)
+	}
+}
+
+// TestSqlitePlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
+// FilterIsNull/FilterNotNull emits a plain null-check on the raw field
+// expression — NOT the temporal "/1000" epoch-ms form and NOT the "1=1"
+// no-op that sqlOpForTemporal's empty-string default previously produced.
+// Presence checks are coercion-independent: they must be handled before the
+// CoerceTemporal routing, mirroring spi.evalLeafFilter's ordering.
+func TestSqlitePlan_TemporalIsNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	sql, args := leafToSQL(f)
+	wantSQL := "json_extract(json(meta), '$.creation_date') IS NULL"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want []", args)
+	}
+	if strings.Contains(sql, "/ 1000") {
+		t.Errorf("sql must not divide by 1000 for a presence check: %s", sql)
+	}
+	if sql == "1=1" {
+		t.Errorf("sql must not be the no-op 1=1 fallback: predicate was silently dropped")
+	}
+	if !isPushable(spi.FilterIsNull) {
+		t.Errorf("FilterIsNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+func TestSqlitePlan_TemporalNotNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	sql, args := leafToSQL(f)
+	wantSQL := "json_extract(json(meta), '$.creation_date') IS NOT NULL"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want []", args)
+	}
+	if strings.Contains(sql, "/ 1000") {
+		t.Errorf("sql must not divide by 1000 for a presence check: %s", sql)
+	}
+	if !isPushable(spi.FilterNotNull) {
+		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
 	}
 }
 

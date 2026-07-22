@@ -997,9 +997,9 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// EnsureModelRegistered + validateConditionPaths (for $.surname) + resolveSortKeys
-		// each call Get once.
-		getQueue: []*spi.ModelDescriptor{desc, desc, desc},
+		// EnsureModelRegistered + validateConditionPaths (for $.surname) +
+		// validateConditionTypes + resolveSortKeys each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc, desc, desc},
 	}
 
 	var capturedOpts spi.SearchOptions
@@ -1540,4 +1540,98 @@ func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
 			t.Fatalf("expected success for unbounded limit=-1, got: %v", err)
 		}
 	})
+}
+
+// --- FieldsMap threading (Task 6b) ---
+
+// wrapModelStoreCounter wraps a real spi.ModelStore and counts Get calls, so
+// tests can observe whether a code path actually consults the schema.
+type wrapModelStoreCounter struct {
+	spi.ModelStore
+	getCalls int
+}
+
+func (m *wrapModelStoreCounter) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	m.getCalls++
+	return m.ModelStore.Get(ctx, ref)
+}
+
+// wrapModelStoreCounterFactory wraps a StoreFactory and returns a
+// wrapModelStoreCounter, delegating everything else (notably EntityStore, so
+// the real memory Searcher is still exercised) to the wrapped StoreFactory.
+type wrapModelStoreCounterFactory struct {
+	spi.StoreFactory
+	modelStore *wrapModelStoreCounter
+}
+
+func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
+	return f.modelStore, nil
+}
+
+// TestSearch_ThreadsFieldsMapIntoConditionToFilter verifies that the
+// Searcher pushdown branch of Search loads the model's FieldsMap and
+// threads it into ConditionToFilter, rather than hardcoding nil.
+//
+// A LifecycleCondition addresses no data-field paths, so
+// validateConditionPaths short-circuits without touching the ModelStore
+// (extractFieldPaths returns empty — see path_validate.go), and an empty
+// OrderBy makes resolveSortKeys return before touching it too. That isolates
+// the count: with no OrderBy and a lifecycle-only condition, the only
+// ModelStore.Get call before this task's change is EnsureModelRegistered's
+// single lookup. Once Search's Searcher branch calls loadFieldsMap to build
+// the fields argument for ConditionToFilter, a second Get call appears.
+//
+// (dataCoercion's routing effect is not separately observable via the
+// result set today — classifyType never classifies a *data* field as
+// spi.OrderTemporal until the polymorphic-temporal-typing follow-up (#137)
+// flips scalarClass; meta-field temporal stamping, exercised in Task 6,
+// already works unconditionally of this fields argument. This test proves
+// the wiring itself: the schema is loaded and handed to ConditionToFilter
+// on the pushdown path, which is the forward-compatible behavior #137 needs.)
+func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveMinimalModel(t, ctx, base, ref)
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	baseMS, err := base.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	cms := &wrapModelStoreCounter{ModelStore: baseMS}
+	factory := &wrapModelStoreCounterFactory{StoreFactory: base, modelStore: cms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "NEW",
+	}
+
+	// Precondition: EnsureModelRegistered is the only ModelStore.Get call a
+	// lifecycle-only, no-OrderBy search makes before Search's pushdown
+	// branch is threaded with a real FieldsMap.
+	realStore, err := base.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, ok := realStore.(spi.Searcher); !ok {
+		t.Fatal("precondition: memory store expected to implement spi.Searcher")
+	}
+
+	_, err = svc.Search(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if cms.getCalls < 2 {
+		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + Search's FieldsMap load for ConditionToFilter)", cms.getCalls)
+	}
 }

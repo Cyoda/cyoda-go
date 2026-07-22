@@ -166,3 +166,170 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 		t.Fatalf("expected no error for array with null element, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle (meta) conditions — temporal operator/operand validation and
+// unknown-meta-field rejection (Task 7).
+// ---------------------------------------------------------------------------
+
+// TestValidate_TemporalRejectsStringOp verifies that a string-comparison
+// operator (CONTAINS) against a temporal meta field (creationDate) is
+// rejected as a type mismatch — temporal fields only support the ordering/
+// equality/null comparison family.
+func TestValidate_TemporalRejectsStringOp(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("CONTAINS on creationDate should be CONDITION_TYPE_MISMATCH, got %v", err)
+	}
+}
+
+// TestValidate_TemporalRejectsBadOperand verifies that a non-RFC3339,
+// non-offset-bearing operand against a temporal meta field is rejected.
+func TestValidate_TemporalRejectsBadOperand(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
+	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("non-RFC3339 operand on creationDate should be CONDITION_TYPE_MISMATCH, got %v", err)
+	}
+}
+
+// TestValidate_TemporalAcceptsValidComparison verifies that a well-formed
+// comparison operator with an offset-bearing RFC3339 operand against a
+// temporal meta field is accepted.
+func TestValidate_TemporalAcceptsValidComparison(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2021-01-01T00:00:00Z"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("valid comparison on creationDate should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_TemporalBetweenValidOperands verifies that BETWEEN with two
+// offset-bearing RFC3339 operands against a temporal meta field is accepted.
+func TestValidate_TemporalBetweenValidOperands(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field: "lastUpdateTime", OperatorType: "BETWEEN",
+		Value: []any{"2021-01-01T00:00:00Z", "2021-12-31T00:00:00Z"},
+	}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("valid BETWEEN on lastUpdateTime should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_TemporalBetweenRejectsBadOperand verifies that BETWEEN with
+// one bad operand against a temporal meta field is rejected.
+func TestValidate_TemporalBetweenRejectsBadOperand(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field: "lastUpdateTime", OperatorType: "BETWEEN",
+		Value: []any{"2021-01-01T00:00:00Z", "not-a-date"},
+	}
+	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("BETWEEN with a bad operand on lastUpdateTime should be CONDITION_TYPE_MISMATCH, got %v", err)
+	}
+}
+
+// TestValidate_TemporalIsNullSkipsOperandCheck verifies that IS_NULL/NOT_NULL
+// on a temporal meta field skip operand validation (the value is unused).
+func TestValidate_TemporalIsNullSkipsOperandCheck(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_NULL", Value: nil}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("IS_NULL on creationDate should be accepted regardless of operand, got %v", err)
+	}
+}
+
+// TestValidate_NonTemporalMetaFieldSkipsTemporalChecks verifies that a
+// non-temporal meta field (state) is not subject to the comparison-op /
+// RFC3339-operand constraints — any operator and operand are accepted.
+func TestValidate_NonTemporalMetaFieldSkipsTemporalChecks(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "state", OperatorType: "CONTAINS", Value: "ACT"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("CONTAINS on non-temporal meta field state should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_PreviousTransitionAliasKnown verifies that the
+// previousTransition alias is recognized as a known meta filter field (it
+// canonicalizes to transitionForLatestSave, a non-temporal field).
+func TestValidate_PreviousTransitionAliasKnown(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "previousTransition", OperatorType: "EQUALS", Value: "SUBMIT"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("previousTransition alias should be a known field, got %v", err)
+	}
+}
+
+// TestValidate_UnknownMetaField verifies that an unrecognized meta field
+// name is rejected via errInvalidFieldPath (mapped by the handler to 400
+// INVALID_FIELD_PATH).
+func TestValidate_UnknownMetaField(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
+	err := validateLifecycleType(c)
+	if err == nil {
+		t.Fatal("unknown meta field must be rejected")
+	}
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath sentinel, got: %v", err)
+	}
+}
+
+// TestValidate_WalkConditionTypes_LifecycleNoLongerExempt verifies that
+// walkConditionTypes (invoked via ValidateConditionValueTypes) now routes
+// LifecycleCondition through validateLifecycleType instead of the old
+// blanket exemption.
+func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
+	model := buildDoubleModel()
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	err := ValidateConditionValueTypes(model, cond)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch through ValidateConditionValueTypes, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Nil model — lifecycle/temporal (model-independent) validation must still
+// run when no schema is available; only the data-field-vs-schema check is
+// schema-dependent and gracefully skipped. This is what lets grouped-stats
+// (which has no model-schema plumbing) reuse ValidateConditionValueTypes for
+// temporal/lifecycle type-soundness by passing a nil model.
+// ---------------------------------------------------------------------------
+
+// TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound verifies that
+// a nil model no longer causes ValidateConditionValueTypes to no-op: a
+// type-unsound lifecycle/temporal condition (CONTAINS against creationDate)
+// is still rejected even without a model schema.
+func TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	err := ValidateConditionValueTypes(nil, cond)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch even with nil model, got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_UnknownMetaField verifies that an
+// unknown meta filter field is still rejected as INVALID_FIELD_PATH even
+// without a model schema (model-independent check).
+func TestValidateConditionValueTypes_NilModel_UnknownMetaField(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
+	err := ValidateConditionValueTypes(nil, cond)
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath even with nil model, got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted
+// verifies that a nil model gracefully skips the schema-dependent data-field
+// type check (no schema to check against) rather than rejecting a
+// perfectly valid condition.
+func TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.price", OperatorType: "EQUALS", Value: float64(10)}
+	err := ValidateConditionValueTypes(nil, cond)
+	if err != nil {
+		t.Fatalf("expected no error for data condition with nil model (schema check skipped), got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_NilCondition_Accepted verifies the
+// remaining nil-tolerant branch: a nil condition is always accepted
+// regardless of model.
+func TestValidateConditionValueTypes_NilModel_NilCondition_Accepted(t *testing.T) {
+	if err := ValidateConditionValueTypes(nil, nil); err != nil {
+		t.Fatalf("expected no error for nil condition, got: %v", err)
+	}
+}

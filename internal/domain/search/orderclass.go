@@ -79,3 +79,24 @@ func resolveMetaField(name string) (metaField, bool) {
 	mf, ok := sortableMetaFields[name]
 	return mf, ok
 }
+
+// isTemporalMetaField reports whether the given (already-canonicalized) meta
+// field name is classified as temporal in sortableMetaFields — the single
+// source of truth for the meta vocabulary. Callers translating or validating
+// lifecycle conditions derive temporal routing from this lookup rather than
+// maintaining a separate hardcoded field set.
+func isTemporalMetaField(field string) bool {
+	mf, ok := resolveMetaField(field)
+	return ok && mf.Kind == spi.OrderTemporal
+}
+
+// isKnownMetaFilterField reports whether name is a valid meta filter field:
+// either a sortableMetaFields key, or the "previousTransition" alias that
+// canonicalizes to "transitionForLatestSave".
+func isKnownMetaFilterField(field string) bool {
+	if field == "previousTransition" {
+		return true
+	}
+	_, ok := resolveMetaField(field)
+	return ok
+}
