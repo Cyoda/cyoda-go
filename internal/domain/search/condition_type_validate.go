@@ -153,7 +153,9 @@ var comparisonOps = map[string]bool{
 // operand on temporal fields). Shared by the search API boundary and
 // workflow-criterion import so both reject the same malformed conditions.
 // Returns a descriptive error; callers map it to their own 4xx code.
-func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error { return validateLifecycleType(c) }
+func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error {
+	return validateLifecycleType(c)
+}
 
 func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isKnownMetaFilterField(c.Field) {

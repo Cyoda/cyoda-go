@@ -5,4 +5,5 @@ use (
 	./plugins/memory
 	./plugins/postgres
 	./plugins/sqlite
+	/Users/paul/go-projects/cyoda-light/cyoda-go-spi
 )

@@ -116,7 +116,9 @@ func RunSearchTemporalCreationDate(t *testing.T, fixture BackendFixture) {
 	// opMillis truncates to millisecond precision (same offset-bearing
 	// RFC3339 form spi.ParseTemporalMillis requires) — the mixed-precision
 	// operand for the EQUALS-floor guard.
-	opMillis := func(tm time.Time) string { return tm.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z07:00") }
+	opMillis := func(tm time.Time) string {
+		return tm.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z07:00")
+	}
 
 	cases := []struct {
 		label string
