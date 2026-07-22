@@ -32,13 +32,6 @@ func TestToFloat64_JSONNumber(t *testing.T) {
 	}
 }
 
-// TestOpEquals_JSONNumber proves that the toFloat64 extension propagates
-// through opEquals on the scalar EQUALS path — not just the array path.
-// Spec Section 4.3 calls for this integration-level coverage explicitly,
-// because PR-2's XML import produces json.Number values that flow into
-// EQUALS predicates against scalar entity fields, not only into array
-// predicates. This test guards against future regressions to opEquals
-// or toFloat64 that would silently break the scalar EQUALS path.
 // TestOpCompare_NoStringOperandCoercion pins the numeric-alignment contract
 // change (#423 §6.6 / #431 seed): a string operand is not numerically
 // coerced against a numeric field, aligning internal/match with
@@ -81,6 +74,13 @@ func TestOpEquals_NoStringOperandCoercion(t *testing.T) {
 	}
 }
 
+// TestOpEquals_JSONNumber proves that the toFloat64 extension propagates
+// through opEquals on the scalar EQUALS path — not just the array path.
+// Spec Section 4.3 calls for this integration-level coverage explicitly,
+// because PR-2's XML import produces json.Number values that flow into
+// EQUALS predicates against scalar entity fields, not only into array
+// predicates. This test guards against future regressions to opEquals
+// or toFloat64 that would silently break the scalar EQUALS path.
 func TestOpEquals_JSONNumber(t *testing.T) {
 	data := []byte(`{"score":1.5}`)
 	cond := &predicate.SimpleCondition{

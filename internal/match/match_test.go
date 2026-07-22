@@ -628,6 +628,71 @@ func TestMatchLifecycle_LastUpdateTime(t *testing.T) {
 	}
 }
 
+// TestMatchLifecycle_TemporalGteLte pins the boundary-inclusive behavior of
+// the GREATER_OR_EQUAL / LESS_OR_EQUAL temporal branches in mapOpToFilterOp:
+// GE/LE of the exact stored instant matches, and GE of a strictly later
+// instant does not.
+func TestMatchLifecycle_TemporalGteLte(t *testing.T) {
+	instant := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+	m := spi.EntityMeta{CreationDate: instant}
+
+	geExact := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_OR_EQUAL", Value: "2026-01-15T10:30:00Z"}
+	if ok, err := matchLifecycle(geExact, m); err != nil || !ok {
+		t.Errorf("GE of the exact instant should match; ok=%v err=%v", ok, err)
+	}
+
+	leExact := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "LESS_OR_EQUAL", Value: "2026-01-15T10:30:00Z"}
+	if ok, err := matchLifecycle(leExact, m); err != nil || !ok {
+		t.Errorf("LE of the exact instant should match; ok=%v err=%v", ok, err)
+	}
+
+	geLater := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_OR_EQUAL", Value: "2026-01-15T10:30:00.001Z"}
+	if ok, err := matchLifecycle(geLater, m); err != nil || ok {
+		t.Errorf("GE of a later instant should not match; ok=%v err=%v", ok, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalBetweenUnsetExcluded pins spec §7.1 for BETWEEN:
+// a zero-value stored CreationDate (storedOK=false) is excluded, never a
+// vacuous match, for BETWEEN.
+func TestMatchLifecycle_TemporalBetweenUnsetExcluded(t *testing.T) {
+	unsetMeta := spi.EntityMeta{} // CreationDate is zero-value
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"},
+	}
+	got, err := matchLifecycle(cond, unsetMeta)
+	if err != nil || got {
+		t.Errorf("expected exclude (false) for BETWEEN against unset stored value; got=%v err=%v", got, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalBetweenMalformedOperand exercises
+// twoTemporalBounds' ok=false branches: a malformed bound set must degrade
+// safely to no-match rather than panicking.
+func TestMatchLifecycle_TemporalBetweenMalformedOperand(t *testing.T) {
+	m := spi.EntityMeta{CreationDate: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)}
+
+	oneElement := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2026-01-01T00:00:00Z"}, // wrong shape: only one bound
+	}
+	if got, err := matchLifecycle(oneElement, m); err != nil || got {
+		t.Errorf("expected no-match for malformed (1-element) BETWEEN operand; got=%v err=%v", got, err)
+	}
+
+	nonRFC3339Bound := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"not-a-timestamp", "2026-01-31T00:00:00Z"}, // lo bound not offset-RFC3339
+	}
+	if got, err := matchLifecycle(nonRFC3339Bound, m); err != nil || got {
+		t.Errorf("expected no-match for malformed (non-RFC3339 bound) BETWEEN operand; got=%v err=%v", got, err)
+	}
+}
+
 func TestMatchLifecycle_TransactionId(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "transactionId", OperatorType: "EQUALS", Value: "tx-123"}
 	got, err := Match(cond, sampleData, meta())
@@ -984,5 +1049,28 @@ func TestMatchArrayCondition_NumericFormatDivergence(t *testing.T) {
 	}
 	if !got {
 		t.Error("expected match: float64(1e10) against JSON 1e10 — numeric equality required, string comparison would fail")
+	}
+}
+
+// TestMatchArrayCondition_NoStringOperandCoercion pins the transitive effect
+// of the numeric-alignment change (#423 §6.6 / #431 seed) on matchArray: it
+// delegates per-element comparison to opEquals, which no longer coerces a
+// string operand against a numeric element — it falls through to lexical
+// comparison instead. A numeric array element (100) must NOT match a
+// numeric-looking-but-lexically-different string Values entry ("100.0") at
+// the same position: numeric coercion would treat them equal (100 == 100.0),
+// but lexical comparison of "100" (actual.String()) vs "100.0" does not.
+func TestMatchArrayCondition_NoStringOperandCoercion(t *testing.T) {
+	data := []byte(`{"scores":[100]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{"100.0"}, // string operand, numeric JSON element
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected no match: string operand \"100.0\" must not be numerically coerced against numeric element 100 (lexical \"100\" != \"100.0\")")
 	}
 }
