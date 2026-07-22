@@ -545,6 +545,12 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
+// C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
+// (exclude every row), matching memory's spi.MatchFilter behavior, not
+// match-all ("1=1"). Validation now rejects this upstream (see
+// internal/domain/search/operators.go validateBetweenArity), so this guard
+// is defense-in-depth for any Filter constructed directly (bypassing the
+// domain validator), never a panic and never a false match-all.
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterBetween,
@@ -553,8 +559,40 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 		Values: []any{float64(10)},
 	}
 	plan := planQuery(f)
-	if plan.where != "1=1" {
-		t.Errorf("where = %s, want 1=1", plan.where)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude, matching memory's fail-closed semantics)", plan.where)
+	}
+}
+
+// TestPlan_TemporalBetween_NilValues_DoesNotPanic is the C1 regression test:
+// a CoerceTemporal BETWEEN leaf with Values=nil (the shape produced by
+// betweenValues for a malformed BETWEEN operand, before the fix landed) must
+// not panic indexing f.Values[0]/[1], and must emit an exclude predicate —
+// never the sqlite/memory-diverging match-all.
+func TestPlan_TemporalBetween_NilValues_DoesNotPanic(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: nil,
+	}
+	plan := planQuery(f)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with no values", plan.where)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want none", plan.args)
+	}
+}
+
+// TestPlan_TemporalBetween_OneValue_DoesNotPanic covers the 1-element-array
+// shape of the same malformed condition.
+func TestPlan_TemporalBetween_OneValue_DoesNotPanic(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z"},
+	}
+	plan := planQuery(f)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with one value", plan.where)
 	}
 }
 

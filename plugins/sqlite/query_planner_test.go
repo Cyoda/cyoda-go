@@ -475,6 +475,12 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
+// C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
+// (exclude every row), matching memory's spi.MatchFilter behavior, not
+// match-all ("1=1"). Validation now rejects this upstream (see
+// internal/domain/search/operators.go validateBetweenArity), so this is
+// defense-in-depth for any Filter constructed directly (bypassing the
+// domain validator).
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterBetween,
@@ -483,9 +489,41 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 		Values: []any{float64(10)}, // only 1 value
 	}
 	plan := planQuery(f)
-	// Should produce a no-op WHERE.
-	if plan.where != "1=1" {
-		t.Errorf("where = %s, want 1=1", plan.where)
+	// Should produce an exclude predicate, never match-all.
+	if plan.where != "0" {
+		t.Errorf("where = %s, want 0 (exclude, matching memory's fail-closed semantics)", plan.where)
+	}
+}
+
+// TestSqlitePlan_TemporalBetween_NilValues_Excludes is the C1 regression
+// test for sqlite: a CoerceTemporal BETWEEN leaf with Values=nil (the shape
+// produced by betweenValues for a malformed BETWEEN operand, before the fix
+// landed) must emit an exclude predicate — never the match-all "1=1" that
+// previously let every row through.
+func TestSqlitePlan_TemporalBetween_NilValues_Excludes(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: nil,
+	}
+	sql, args := leafToSQL(f)
+	if sql != "0" {
+		t.Errorf("sql = %s, want 0 (exclude) for a malformed temporal BETWEEN with no values", sql)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want none", args)
+	}
+}
+
+// TestSqlitePlan_TemporalBetween_OneValue_Excludes covers the 1-element-array
+// shape of the same malformed condition.
+func TestSqlitePlan_TemporalBetween_OneValue_Excludes(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z"},
+	}
+	sql, _ := leafToSQL(f)
+	if sql != "0" {
+		t.Errorf("sql = %s, want 0 (exclude) for a malformed temporal BETWEEN with one value", sql)
 	}
 }
 

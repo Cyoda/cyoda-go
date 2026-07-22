@@ -250,7 +250,11 @@ func leafToSQL(f spi.Filter) (string, []any) {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
 				[]any{f.Values[0], f.Values[1]}
 		}
-		return "1=1", nil
+		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
+		// every row, matching memory's spi.MatchFilter semantics. Validation
+		// upstream (search.validateBetweenArity) rejects this shape before it
+		// ever reaches a plugin; this is defense-in-depth only.
+		return "0", nil
 	}
 	return "1=1", nil
 }
@@ -284,7 +288,12 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	switch f.Op {
 	case spi.FilterBetween:
 		if len(f.Values) < 2 {
-			return "1=1", nil
+			// Malformed BETWEEN (not exactly 2 operands) fails closed —
+			// exclude every row, matching memory's spi.MatchFilter semantics.
+			// Validation upstream (search.validateBetweenArity) rejects this
+			// shape before it ever reaches a plugin; this is defense-in-depth
+			// only.
+			return "0", nil
 		}
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))
 		hi, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[1]))

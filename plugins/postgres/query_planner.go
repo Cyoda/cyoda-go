@@ -403,7 +403,11 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)",
 				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
 		}
-		return "1=1", nil
+		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
+		// every row, matching memory's spi.MatchFilter semantics. Validation
+		// upstream (search.validateBetweenArity) rejects this shape before it
+		// ever reaches a plugin; this is defense-in-depth only.
+		return "false", nil
 	}
 	return "1=1", nil
 }
@@ -432,6 +436,14 @@ func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
 	col := "cyoda_epoch_millis(" + fieldExpr(f) + ")"
 	switch f.Op {
 	case spi.FilterBetween:
+		if len(f.Values) < 2 {
+			// Malformed BETWEEN (not exactly 2 operands) fails closed —
+			// exclude every row, matching memory's spi.MatchFilter
+			// semantics, and never index f.Values out of range. Validation
+			// upstream (search.validateBetweenArity) rejects this shape
+			// before it ever reaches a plugin; this is defense-in-depth only.
+			return "false", nil
+		}
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))
 		hi, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[1]))
 		p1 := nextPlaceholder(counter)
