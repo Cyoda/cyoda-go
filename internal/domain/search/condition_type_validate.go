@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
@@ -55,9 +56,7 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 		}
 		return nil
 	case *predicate.LifecycleCondition:
-		// Lifecycle conditions match entity metadata, not data fields.
-		// No DataType constraint applies here.
-		return nil
+		return validateLifecycleType(c)
 	case *predicate.ArrayCondition, *predicate.FunctionCondition:
 		return nil
 	default:
@@ -113,6 +112,78 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 // Handlers check errors.Is(err, errConditionTypeMismatch) to emit HTTP 400
 // with ErrCodeConditionTypeMismatch.
 var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
+
+// errInvalidFieldPath is the sentinel error for a condition referencing a
+// meta field path the vocabulary does not recognize. Handlers check
+// errors.Is(err, errInvalidFieldPath) to emit HTTP 400 with
+// ErrCodeInvalidFieldPath (distinct from errConditionTypeMismatch's
+// CONDITION_TYPE_MISMATCH: the field itself is unknown, not merely
+// type-incompatible with its operator/operand).
+var errInvalidFieldPath = fmt.Errorf("invalid field path")
+
+// comparisonOps is the operator family valid against temporal meta fields:
+// ordering, equality, BETWEEN, and the null-presence checks. String-shaped
+// operators (CONTAINS, STARTS_WITH, LIKE, regex, case-insensitive variants,
+// ...) have no meaningful temporal semantics and are rejected.
+var comparisonOps = map[string]bool{
+	"EQUALS": true, "NOT_EQUAL": true, "GREATER_THAN": true, "LESS_THAN": true,
+	"GREATER_OR_EQUAL": true, "LESS_OR_EQUAL": true, "BETWEEN": true,
+	"IS_NULL": true, "NOT_NULL": true,
+}
+
+// validateLifecycleType enforces type-soundness for LifecycleCondition
+// (meta) clauses:
+//   - the field must be a known meta filter field (sortableMetaFields key,
+//     or the previousTransition alias) — otherwise errInvalidFieldPath.
+//   - for fields the meta vocabulary classifies as temporal (creationDate,
+//     lastUpdateTime), the operator must be one of comparisonOps and every
+//     operand (skipped for IS_NULL/NOT_NULL) must be an offset-bearing
+//     RFC3339 timestamp per spi.ParseTemporalMillis — otherwise
+//     errConditionTypeMismatch.
+//
+// Non-temporal meta fields (state, transitionForLatestSave, transactionId,
+// id) carry no further constraint here: they compare as their stored
+// text/string form regardless of operator.
+func validateLifecycleType(c *predicate.LifecycleCondition) error {
+	if !isKnownMetaFilterField(c.Field) {
+		return fmt.Errorf("unknown meta filter field %q: %w", c.Field, errInvalidFieldPath)
+	}
+	field := c.Field
+	if field == "previousTransition" {
+		field = "transitionForLatestSave"
+	}
+	if !isTemporalMetaField(field) {
+		return nil
+	}
+	if !comparisonOps[c.OperatorType] {
+		return fmt.Errorf("operator %q is not valid on temporal field %q: %w", c.OperatorType, c.Field, errConditionTypeMismatch)
+	}
+	if c.OperatorType == "IS_NULL" || c.OperatorType == "NOT_NULL" {
+		return nil
+	}
+	for _, v := range operandStrings(c.Value) {
+		if _, ok := spi.ParseTemporalMillis(v); !ok {
+			return fmt.Errorf("operand %q is not a valid timestamp for temporal field %q: %w", v, c.Field, errConditionTypeMismatch)
+		}
+	}
+	return nil
+}
+
+// operandStrings normalizes a condition value into its comparable operand
+// strings: a scalar becomes a single-element slice; a []any (BETWEEN's
+// [lo, hi] pair) becomes one element per member, each stringified via
+// fmt.Sprint to match the formatting evalTemporalLeaf/spi.ParseTemporalMillis
+// callers use elsewhere in the temporal pipeline.
+func operandStrings(v any) []string {
+	if arr, ok := v.([]any); ok {
+		out := make([]string, 0, len(arr))
+		for _, elem := range arr {
+			out = append(out, fmt.Sprint(elem))
+		}
+		return out
+	}
+	return []string{fmt.Sprint(v)}
+}
 
 // checkSingleValueType checks whether a single scalar value is compatible with
 // the field's TypeSet. Null values are accepted for any field type. String-only

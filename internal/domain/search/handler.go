@@ -92,8 +92,11 @@ func (h *Handler) validateConditionTypes(r *http.Request, entityName string, mod
 		return nil // model not found or unparseable — no constraints to apply
 	}
 	if err := ValidateConditionValueTypes(node, cond); err != nil {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch,
-			err.Error())
+		code := common.ErrCodeConditionTypeMismatch
+		if errors.Is(err, errInvalidFieldPath) {
+			code = common.ErrCodeInvalidFieldPath
+		}
+		return common.Operational(http.StatusBadRequest, code, err.Error())
 	}
 	return nil
 }
