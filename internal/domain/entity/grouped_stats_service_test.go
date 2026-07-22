@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
@@ -16,11 +18,15 @@ import (
 type fakeIterable struct {
 	entities []*spi.Entity
 	lastFlt  spi.Filter
+	// iterErr, when set, is returned from the yielded fakeIter's Err()
+	// after Next() runs dry — models a mid-stream driver failure (e.g.
+	// a scan-budget sentinel) surfacing after iteration completes.
+	iterErr error
 }
 
 func (f *fakeIterable) Iterate(_ context.Context, _ spi.ModelRef, flt spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
 	f.lastFlt = flt
-	return &fakeIter{rows: f.entities}, nil
+	return &fakeIter{rows: f.entities, err: f.iterErr}, nil
 }
 
 type fakeIter struct {
@@ -66,6 +72,28 @@ func (f *fakeAggregator) GroupedAggregate(
 type dualBackend struct {
 	*fakeIterable
 	*fakeAggregator
+}
+
+// newStreamingStatsFixture builds a service + streaming-only (Iterable)
+// store whose iterator's Err() returns iterErr once Next() runs dry —
+// used to exercise sentinel classification for errors surfaced from the
+// streaming fallback path (e.g. spi.ErrScanBudgetExhausted).
+func newStreamingStatsFixture(t *testing.T, iterErr error) (
+	svc *entity.GroupedStatsService,
+	ctx context.Context,
+	store *fakeIterable,
+	model spi.ModelRef,
+	req *entity.ValidatedGroupedStatsRequest,
+) {
+	t.Helper()
+	svc = entity.NewGroupedStatsService(10000)
+	ctx = context.Background()
+	store = &fakeIterable{iterErr: iterErr}
+	model = spi.ModelRef{}
+	req = &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{IsState: true}},
+	}
+	return svc, ctx, store, model, req
 }
 
 func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
@@ -172,6 +200,36 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, req)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("want %v, got %v", wantErr, err)
+	}
+	// Arbitrary storage/driver errors must NOT be classified as an
+	// AppError — otherwise the handler's default 500 fallback would be
+	// bypassed and an unrecognized failure would surface as a 4xx.
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		t.Errorf("arbitrary storage error must NOT be wrapped as AppError (would become 4xx): %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ScanBudgetMapsTo400 verifies that
+// spi.ErrScanBudgetExhausted surfacing from the streaming path is
+// classified by QueryGroupedStats into a 400 AppError with
+// common.ErrCodeScanBudgetExhausted, while remaining reachable via
+// errors.Is(err, spi.ErrScanBudgetExhausted) (WithCause preserves the
+// sentinel in the chain).
+func TestQueryGroupedStats_ScanBudgetMapsTo400(t *testing.T) {
+	// Iterable whose iter.Err() returns the scan-budget sentinel.
+	svc, ctx, store, model, req := newStreamingStatsFixture(t, spi.ErrScanBudgetExhausted)
+	_, err := svc.QueryGroupedStats(ctx, store, model, req)
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
+	}
+	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
+		t.Errorf("WithCause must preserve the sentinel")
 	}
 }
 
