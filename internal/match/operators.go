@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // applyOperator dispatches to the appropriate operator function.
@@ -91,9 +93,12 @@ func opEquals(actual gjson.Result, expected any) bool {
 
 	expStr := fmt.Sprintf("%v", expected)
 
-	// Try numeric comparison if both are numbers.
+	// Try numeric comparison if both are numbers. spi.NumericFloat
+	// deliberately does not parse strings (unlike toFloat64) — a
+	// string-encoded numeric operand falls through to the lexical
+	// comparison below, aligning with spi.compareFilterValues.
 	if actual.Type == gjson.Number {
-		if expFloat, err := toFloat64(expected); err == nil {
+		if expFloat, ok := spi.NumericFloat(expected); ok {
 			return actual.Float() == expFloat
 		}
 	}
@@ -117,8 +122,10 @@ func opCompare(actual gjson.Result, expected any,
 		return false, nil
 	}
 
-	expFloat, err := toFloat64(expected)
-	if err == nil && actual.Type == gjson.Number {
+	// spi.NumericFloat does not parse strings — a string operand (even a
+	// numeric-looking one) falls through to the lexical strCmp branch below,
+	// aligning with spi.compareFilterValues (the pushdown evaluator).
+	if expFloat, ok := spi.NumericFloat(expected); ok && actual.Type == gjson.Number {
 		return numCmp(actual.Float(), expFloat), nil
 	}
 
