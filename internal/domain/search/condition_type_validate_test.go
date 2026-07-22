@@ -281,3 +281,55 @@ func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
 		t.Errorf("expected errConditionTypeMismatch through ValidateConditionValueTypes, got %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Nil model — lifecycle/temporal (model-independent) validation must still
+// run when no schema is available; only the data-field-vs-schema check is
+// schema-dependent and gracefully skipped. This is what lets grouped-stats
+// (which has no model-schema plumbing) reuse ValidateConditionValueTypes for
+// temporal/lifecycle type-soundness by passing a nil model.
+// ---------------------------------------------------------------------------
+
+// TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound verifies that
+// a nil model no longer causes ValidateConditionValueTypes to no-op: a
+// type-unsound lifecycle/temporal condition (CONTAINS against creationDate)
+// is still rejected even without a model schema.
+func TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	err := ValidateConditionValueTypes(nil, cond)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch even with nil model, got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_UnknownMetaField verifies that an
+// unknown meta filter field is still rejected as INVALID_FIELD_PATH even
+// without a model schema (model-independent check).
+func TestValidateConditionValueTypes_NilModel_UnknownMetaField(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
+	err := ValidateConditionValueTypes(nil, cond)
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath even with nil model, got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted
+// verifies that a nil model gracefully skips the schema-dependent data-field
+// type check (no schema to check against) rather than rejecting a
+// perfectly valid condition.
+func TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.price", OperatorType: "EQUALS", Value: float64(10)}
+	err := ValidateConditionValueTypes(nil, cond)
+	if err != nil {
+		t.Fatalf("expected no error for data condition with nil model (schema check skipped), got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_NilCondition_Accepted verifies the
+// remaining nil-tolerant branch: a nil condition is always accepted
+// regardless of model.
+func TestValidateConditionValueTypes_NilModel_NilCondition_Accepted(t *testing.T) {
+	if err := ValidateConditionValueTypes(nil, nil); err != nil {
+		t.Fatalf("expected no error for nil condition, got: %v", err)
+	}
+}

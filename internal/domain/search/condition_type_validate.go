@@ -35,10 +35,21 @@ var skipTypeCheckOperators = map[string]struct{}{
 // Polymorphic fields (>1 type) accept values matching any participating type.
 // Null values are accepted for any field type.
 func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Condition) error {
-	if model == nil || cond == nil {
+	if cond == nil {
 		return nil
 	}
-	fm := model.FieldsMap()
+	// fm stays nil when model is nil. walkConditionTypes/validateSimpleConditionType
+	// gracefully skip the data-field-vs-schema check on a nil map (an
+	// unknown-path lookup returns ok=false, the "accept" branch) — so the
+	// only checks that still run without a model are the model-independent
+	// ones: operator/BETWEEN-arity (via the caller's ValidateCondition) and
+	// lifecycle/temporal type-soundness (validateLifecycleType below). This
+	// lets callers with no schema plumbing (e.g. grouped-stats) reuse this
+	// function for temporal/lifecycle validation by passing model=nil.
+	var fm map[string]schema.FieldDescriptor
+	if model != nil {
+		fm = model.FieldsMap()
+	}
 	return walkConditionTypes(fm, cond, 0)
 }
 
@@ -124,6 +135,17 @@ var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
 // CONDITION_TYPE_MISMATCH: the field itself is unknown, not merely
 // type-incompatible with its operator/operand).
 var errInvalidFieldPath = fmt.Errorf("invalid field path")
+
+// ErrConditionTypeMismatch and ErrInvalidFieldPath are exported aliases of
+// the sentinels above, letting other domain packages (e.g. entity's
+// grouped-stats validation, which calls ValidateConditionValueTypes(nil, ...)
+// for its own model-independent temporal/lifecycle type-soundness check)
+// classify the returned error via errors.Is without duplicating the sentinel
+// or depending on package-internal identifiers.
+var (
+	ErrConditionTypeMismatch = errConditionTypeMismatch
+	ErrInvalidFieldPath      = errInvalidFieldPath
+)
 
 // comparisonOps is the operator family valid against temporal meta fields:
 // ordering, equality, BETWEEN, and the null-presence checks. String-shaped
