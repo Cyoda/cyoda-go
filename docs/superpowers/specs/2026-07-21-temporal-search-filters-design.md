@@ -76,9 +76,10 @@ and (b) compare the resolved instants *chronologically*.
   (data + meta) so #137 flips a single classifier decision, not the seam.
 - The **instant-comparison kernel**: `spi.ParseTemporalMillis` (canonical
   epoch-ms scalar) and `cyoda_epoch_millis` (postgres `IMMUTABLE` SQL function).
-- The meta-key mapping fix in each SQL backend's filter `fieldExpr` (also
-  incidentally repairs `transitionForLatestSave`/`transactionId` meta filters,
-  which are broken the same way — Gate 6).
+- A **narrow** meta-key mapping fix in each SQL backend's filter `fieldExpr` —
+  applied only to the temporal meta fields `creationDate`/`lastUpdateTime` (so
+  they resolve to `creation_date`/`last_modified_date`), with every other meta
+  path falling through to today's behaviour unchanged (§8.2).
 - Full test coverage (unit per surface, running-backend e2e, cross-backend
   parity, gRPC) — see §11.
 
@@ -96,6 +97,22 @@ and (b) compare the resolved instants *chronologically*.
   comparison is temporal. `String` fields are untouched.
 - No change to the numeric/boolean/text comparison paths — the coercion marker
   only ever distinguishes `temporal` from `none` (existing behaviour).
+
+### Observed but deferred (separate issue — do not half-fix here)
+The **string** meta filter vocabulary is inconsistent and broken *uniformly
+across all backends today*: a `transitionForLatestSave`/`transactionId`/
+`previousTransition` lifecycle filter no-matches on every pushdown backend
+(canonical name ≠ blob key, and absent from `extractFilterMetaValue`), while the
+`match.Match` fallback *errors* on `transactionId` (unknown field) and aliases
+`previousTransition`. This is a pre-existing meta-field-vocabulary mismatch
+orthogonal to temporal comparison. #423 deliberately does **not** generalize the
+meta-key mapping to these fields, because doing so on the SQL backends only
+(without the matching `extractFilterMetaValue` keys) would *introduce* a
+memory-vs-SQL divergence — which this project forbids. Since all backends are
+currently consistently broken here, the correct move is to leave them consistent
+and file a dedicated issue for the string-meta vocabulary reconciliation. The
+narrow mapping in §8.2 touches only the temporal fields and preserves this
+consistency.
 
 ## 5. The canonical scalar and parser
 
@@ -145,9 +162,12 @@ filter. Only `CoerceTemporal` is new. #137 needs **no new marker value**.
 
 ### 6.2 Stamping (domain layer, where the schema lives)
 
-`ConditionToFilter` gains a `fields map[string]schema.FieldDescriptor` parameter
-(the service already loads it for path validation; callers that lack one pass
-`nil`). For each leaf it stamps `Coercion`:
+`ConditionToFilter` gains a `fields map[string]schema.FieldDescriptor` parameter;
+callers that lack a schema pass `nil`. Plumbing note: `Search` currently loads
+the `FieldsMap` only inside `validateConditionPaths`/`resolveSortKeys` (local
+scope); the plan must hoist a `loadFieldsMap` call into `Search` so the resolved
+map is in scope at the `ConditionToFilter` call site (service.go:179). For each
+leaf `ConditionToFilter` stamps `Coercion`:
 
 - **meta leaf:** static table — `creationDate`, `lastUpdateTime` → `CoerceTemporal`;
   everything else → `CoerceNone`.
@@ -163,8 +183,12 @@ ZonedDateTime leaf then stamps `CoerceTemporal` automatically. No change to
 `ConditionToFilter`, the marker, or any backend consumer.
 
 Call sites to update: `service.go:179` (pass resolved `fields`),
-`grouped_stats_service.go:105` (pass `fields` if loaded, else `nil`), and the
-recursive `groupToFilter` child call (thread `fields` through).
+`grouped_stats_service.go:105` (passes `nil` — it loads no schema, so meta
+temporal still stamps correctly via the static table; data-temporal coercion
+stays dormant there until #137 additionally teaches grouped-stats to load a
+`FieldsMap` — a one-line forward-compat gap, acceptable since grouped-stats on a
+body temporal field is meaningless until #137 anyway), and the recursive
+`groupToFilter` child call (thread `fields` through).
 
 ### 6.3 The predicate path (no schema at the comparison point)
 
@@ -172,9 +196,20 @@ recursive `groupToFilter` child call (thread `fields` through).
 `GetAll` fallback, and grouped-stats residual) never goes through
 `ConditionToFilter`. Detection there is **field-identity-driven, still not
 operand-driven**: `matchLifecycle` already special-cases `creationDate` (and we
-add `lastUpdateTime`), so those field names *are* the type signal. Ordering ops
-on those fields compare chronologically; other ops keep their current string
-behaviour on the RFC3339 form.
+add `lastUpdateTime` — it currently *errors* on that field), so those field
+names *are* the type signal.
+
+For those fields, **all comparison ops** — `EQUALS`, `NOT_EQUAL`,
+`GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN` —
+compare chronologically (epoch-ms), not just the ordering ops. This is required
+for two reasons: (1) the motivating §1 bug is a *precision-equality* case
+(`…00Z` vs `…00.000Z` same instant), so `EQUALS` itself must be chronological;
+(2) the memory `GetAll` fallback (`service.go:222`) evaluates via `match.Match`
+while the pushdown path evaluates via `spi.MatchFilter` — if the criteria path
+left `EQUALS` lexical, the *same query* could return different results through
+fallback vs pushdown. Non-comparison ops (`CONTAINS`, `STARTS_WITH`, regex, …)
+on these fields keep their string behaviour on the RFC3339 form (out of scope;
+semantically dubious but unchanged).
 
 ## 7. Per-surface implementation
 
@@ -187,12 +222,12 @@ The comparison the engine performs becomes, uniformly:
 The operand is parsed once in Go via `ParseTemporalMillis`. The stored value is
 converted to epoch-ms from that backend's physical form.
 
-| Surface | Trigger | Stored-value conversion | Operand |
+| Surface | Trigger (all comparison ops: EQ/NE/GT/LT/GE/LE/BETWEEN) | Stored-value conversion | Operand(s) |
 |---|---|---|---|
-| `internal/match` `matchLifecycle` | field is `creationDate`/`lastUpdateTime` | `meta.CreationDate.UnixMilli()` | `ParseTemporalMillis(op)` |
-| `spi.MatchFilter` (memory Search + residuals) | `Filter.Coercion == CoerceTemporal` | stored value → ms: `time.Time`→`UnixMilli`; string→`ParseTemporalMillis` | `ParseTemporalMillis(op)` |
-| postgres planner | `Filter.Coercion == CoerceTemporal` | `cyoda_epoch_millis(<fieldExpr>)` (RFC3339 text → ms) | `$N` = int64 ms |
-| sqlite planner | `Filter.Coercion == CoerceTemporal`, `SourceMeta` | `json_extract(meta,'$.creation_date') / 1000` (µs → ms) | `?` = int64 ms |
+| `internal/match` `matchLifecycle` | field is `creationDate`/`lastUpdateTime` | `meta.CreationDate.UnixMilli()` | `ParseTemporalMillis(op)` (both bounds for BETWEEN) |
+| `spi.MatchFilter` (memory Search + residuals) | `Filter.Coercion == CoerceTemporal` | stored value → ms: `time.Time`→`UnixMilli`; string→`ParseTemporalMillis` | `ParseTemporalMillis(op)` (both bounds for BETWEEN) |
+| postgres planner | `Filter.Coercion == CoerceTemporal` | `cyoda_epoch_millis(<fieldExpr>)` (RFC3339 text → ms) | `$N` = int64 ms (two placeholders for BETWEEN) |
+| sqlite planner | `Filter.Coercion == CoerceTemporal`, `SourceMeta` | `json_extract(meta,'$.creation_date') / 1000` (µs → ms) | `?` = int64 ms (two for BETWEEN) |
 
 Notes:
 - `spi.extractFilterMetaValue` gains `creationDate` → `meta.CreationDate` and
@@ -216,12 +251,21 @@ For a temporal comparison where the stored value does not convert to ms
   → **excluded** (no match).
 - `NOT_EQUAL` → **vacuously true** (matches).
 
-This reuses the existing missing-value branch in `evalLeafFilter`, and the SQL
-`IS NOT NULL` guard already emitted by the planners mirrors it exactly, so Go and
-SQL agree row-for-row. If the **operand** does not parse
-(`ParseTemporalMillis` ok=false), the filter cannot be evaluated as intended —
-the leaf matches nothing for positive ops / everything for `NE` (same rule),
-consistent across surfaces.
+For a truly **missing/null** value the existing `!found || val == nil` branch in
+`evalLeafFilter` already yields this, and the SQL `IS NOT NULL` guard mirrors it.
+But a value that is **present yet does not convert to ms** does *not* hit that
+branch — so the temporal branch needs its **own** unparseable→exclude/vacuous
+handling (it must not fall through to a lexical compare). For #423 this is
+belt-and-suspenders (engine meta `time.Time` always converts); it becomes
+load-bearing for #137 body text. The SQL side gets this for free: a
+non-convertible stored value makes `cyoda_epoch_millis(...)`/`(…/1000)` NULL,
+which the `IS NOT NULL` guard excludes (and the `IS NULL OR` form matches for
+`NE`) — so Go and SQL still agree row-for-row.
+
+`BETWEEN` carries **two** operands (`f.Values[0]`, `f.Values[1]`); each is parsed
+via `ParseTemporalMillis`, and the SQL planners bind two placeholders. If the
+**operand** does not parse, the leaf matches nothing for positive ops / matches
+for `NE` (same rule), consistently across surfaces.
 
 ## 8. `cyoda_epoch_millis` (postgres) and the meta-key mapping fix
 
@@ -236,8 +280,10 @@ CREATE OR REPLACE FUNCTION cyoda_epoch_millis(t text) RETURNS bigint AS $$
 DECLARE result bigint;
 BEGIN
   -- Reject anything without an explicit offset (Z or ±hh:mm) BEFORE the cast,
-  -- so ::timestamptz never falls back to the session TimeZone.
-  IF t IS NULL OR t !~ '\A\d{4}-\d{2}-\d{2}[Tt].+(?:[Zz]|[+-]\d{2}:?\d{2})\Z' THEN
+  -- so ::timestamptz never falls back to the session TimeZone. Uppercase T/Z
+  -- only, to match Go's time.RFC3339 parse (avoids a Go/SQL disagreement that
+  -- would otherwise surface for #137 body text; engine meta is always uppercase).
+  IF t IS NULL OR t !~ '\A\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:?\d{2})\Z' THEN
     RETURN NULL;
   END IF;
   BEGIN
@@ -256,15 +302,25 @@ validated against the RFC3339 forms in tests.)
 
 Down migration drops the function.
 
-### 8.2 Meta-key mapping in filter `fieldExpr`
+### 8.2 Meta-key mapping in filter `fieldExpr` (narrow — temporal fields only)
 
 Both SQL planners currently interpolate the raw `f.Path` for `SourceMeta`
-filters, so canonical names whose blob key differs (`creationDate`→`creation_date`,
-`lastUpdateTime`→`last_modified_date`, `transitionForLatestSave`→`transition`/
-`transition_for_latest_save`, `transactionId`→`transaction_id`) resolve to
-NULL. Apply the existing `metaJSONKey`/`metaBlobKey` maps (today sort-only) in
-the filter `fieldExpr` path too. This is what makes `creationDate` resolve at
-all, and it repairs the sibling string-meta filters as a Gate-6 by-product.
+filters, so `creationDate`/`lastUpdateTime` extract `->>'creationDate'` /
+`$.creationDate` while the stored key is `creation_date`/`last_modified_date`
+→ NULL. In the filter `fieldExpr`, map **only the temporal meta fields**
+`creationDate`→`creation_date` and `lastUpdateTime`→`last_modified_date`; **every
+other meta path falls through to the raw `f.Path` exactly as today** (direct
+columns like `entity_id`, and `state`/`transition`/`transaction_id` string
+paths — unchanged). This makes `creationDate`/`lastUpdateTime` resolve without
+touching any other filter's behaviour.
+
+**Deliberately not generalized.** Applying the full `metaJSONKey`/`metaBlobKey`
+map here would incidentally start resolving `transitionForLatestSave`/
+`transactionId` on the SQL backends while `extractFilterMetaValue` (memory/spi)
+still lacks those keys — introducing a memory-vs-SQL divergence this project
+forbids. Those fields are broken *consistently on all backends today*; keeping
+them consistent (and filing a separate string-meta-vocabulary issue) is correct.
+See "Observed but deferred" in §4.
 
 ## 9. Forward-compatibility contract with #137
 
@@ -284,7 +340,10 @@ kernel**:
    planner change. (sqlite: #137 registers `cyoda_epoch_millis` as a
    deterministic scalar function — required for sqlite expression indexes — and
    adds the data-text planner branch.)
-4. **The exclude/vacuous semantics + ms floor (§7.1):** inherited unchanged.
+4. **The exclude/vacuous semantics + ms floor (§7.1):** inherited unchanged —
+   including the present-but-unparseable→exclude handling in the temporal branch,
+   which is dormant for meta (`time.Time` always converts) but is exactly what
+   #137's body text needs.
 
 What #137 still owns: classifier assignment, `scalarClass` temporal mapping, the
 per-subtype decision that **local** types (`LocalDate`, `YearMonth`,
@@ -332,11 +391,12 @@ real postgres), **P** = cross-backend parity (`e2e/parity`, memory+sqlite+postgr
 | `LESS_OR_EQUAL` boundary | ✓ | ✓ | ✓ | — |
 | `EQUALS`: two different strings, same instant ⇒ equal | ✓ | ✓ | ✓ | ✓ |
 | `NOT_EQUAL`: same instant ⇒ not-matched; different ⇒ matched | ✓ | ✓ | ✓ | — |
-| `BETWEEN` inclusive bounds, mixed precision | ✓ | ✓ | ✓ | — |
-| Same, on `lastUpdateTime` | ✓ | — | ✓ | — |
+| `BETWEEN` inclusive bounds, mixed precision (both bounds parsed) | ✓ | ✓ | ✓ | — |
+| Same suite on `lastUpdateTime` (also asserts it no longer 500s) | ✓ | ✓ | ✓ | — |
 | Malformed operand ⇒ empty set (positive) / vacuous (NE), no 500 | ✓ | ✓ | — | ✓ |
 | `creationDate` filter is accepted (200), not rejected | — | ✓ | — | ✓ |
-| Workflow **criterion** on `creationDate` ordering compares chronologically | ✓ | ✓ | — | — |
+| Workflow **criterion** on `creationDate` — **EQUALS** (precision), NE, and ordering all chronological | ✓ | ✓ | — | — |
+| Memory `GetAll` fallback and pushdown agree on `creationDate` EQUALS (no split) | ✓ | ✓ | — | — |
 
 Each cell that pins chronological semantics is **RED against the current lexical
 / no-match implementation and GREEN after**. New parity scenarios registered in
@@ -369,3 +429,11 @@ and always stored `…Z`, so the *stored* side is never offset-varying. Mixed
 - **grouped-stats `nil` fields.** `ConditionToFilter(cond, nil)` must still
   classify meta temporal correctly (static table) and stamp `CoerceNone` for
   data — unit-tested.
+- **Fallback/pushdown agreement.** Because `matchLifecycle` (fallback) and
+  `spi.MatchFilter` (pushdown/memory) are separate implementations, a unit +
+  e2e test asserts they return the identical set for a `creationDate` `EQUALS`
+  across the precision boundary — guarding MAJOR-1's split.
+- **postgres regex vs Go parse.** `cyoda_epoch_millis` is restricted to
+  uppercase `T`/`Z` to match Go's `time.RFC3339` (§8.1). Immaterial for #423
+  (only well-formed engine meta flows through it) but prevents a Go/SQL
+  disagreement once #137 routes body text through the same function.
