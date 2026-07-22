@@ -748,3 +748,42 @@ func TestDirectSearch_ResultLimitSentinel_ClientError(t *testing.T) {
 		t.Errorf("got code=%q msg=%q, want CLIENT_ERROR / contains %s", typed.Error.Code, typed.Error.Message, common.ErrCodeSearchResultLimit)
 	}
 }
+
+// TestDirectSearch_ScanBudgetExhausted_ClientError mirrors
+// TestDirectSearch_ResultLimitSentinel_ClientError but for the scan-budget
+// sentinel: a stub Searcher returning spi.ErrScanBudgetExhausted must
+// surface through the gRPC envelope as CLIENT_ERROR with a message
+// containing SCAN_BUDGET_EXHAUSTED, exactly like SEARCH_RESULT_LIMIT does
+// for its sentinel.
+func TestDirectSearch_ScanBudgetExhausted_ClientError(t *testing.T) {
+	base := memory.NewStoreFactory()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "capscan", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, spi.ErrScanBudgetExhausted
+		}}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(&searcherFactoryG{StoreFactory: base, entityStore: ses}, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "s-capscan-1",
+		"model":     map[string]any{"name": "capscan", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.val", "operatorType": "MATCHES_PATTERN", "value": ".*"},
+		"limit":     10,
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("want success=false")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" || !strings.Contains(typed.Error.Message, common.ErrCodeScanBudgetExhausted) {
+		t.Errorf("got code=%q msg=%q, want CLIENT_ERROR / contains %s", typed.Error.Code, typed.Error.Message, common.ErrCodeScanBudgetExhausted)
+	}
+}
