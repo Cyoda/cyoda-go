@@ -310,6 +310,62 @@ func TestSearchTemporal_400_OffsetLessOperand(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
 }
 
+// TestSearchTemporal_400_BetweenScalarOperand verifies a BETWEEN condition
+// whose operand is a scalar (not a 2-element array) is rejected with 400
+// BAD_REQUEST at the SearchService validation boundary (ValidateCondition ->
+// validateBetweenArity), rather than reaching a storage plugin. This is the
+// postgres-panic repro: before the fix, betweenValues left spi.Filter.Values
+// nil for a malformed BETWEEN and postgres's query planner panicked indexing
+// f.Values[0] with no length guard (500), while sqlite's fallback silently
+// matched all rows (200). Neither is acceptable — this must be 400.
+func TestSearchTemporal_400_BetweenScalarOperand(t *testing.T) {
+	const model = "e2e-search-temporal-400-between-scalar"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
+
+	cond := lifecycleCond(t, "creationDate", "BETWEEN", "2021-01-01T00:00:00Z")
+	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/%d", model, 1), cond)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body := readBody(t, resp)
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+	}
+	commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+}
+
+// TestSearchTemporal_400_BetweenWrongArity verifies a BETWEEN condition whose
+// operand is an array with the wrong element count (1 or 3, rather than the
+// required [lo, hi] pair) is rejected with 400 BAD_REQUEST at the same
+// validation boundary as the scalar-operand case above.
+func TestSearchTemporal_400_BetweenWrongArity(t *testing.T) {
+	const model = "e2e-search-temporal-400-between-arity"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
+
+	cases := []struct {
+		name  string
+		value []string
+	}{
+		{"one-element", []string{"2021-01-01T00:00:00Z"}},
+		{"three-element", []string{"2021-01-01T00:00:00Z", "2021-06-01T00:00:00Z", "2021-12-01T00:00:00Z"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cond := lifecycleCond(t, "creationDate", "BETWEEN", tc.value)
+			resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/%d", model, 1), cond)
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				body := readBody(t, resp)
+				t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+			}
+			commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+		})
+	}
+}
+
 func TestSearchTemporal_400_UnknownMetaField(t *testing.T) {
 	const model = "e2e-search-temporal-400-unknown-field"
 	setupSearchModel(t, model)

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 203 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 204 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -118,6 +118,7 @@ var allTests = []NamedTest{
 	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
+	{"SearchBetweenArity400", RunSearchBetweenArity400},
 
 	// Phase 4b — workflow selection (Task 4b.7)
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},

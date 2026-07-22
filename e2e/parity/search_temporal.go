@@ -216,6 +216,40 @@ func RunSearchUnknownMetaField400(t *testing.T, fixture BackendFixture) {
 	}
 }
 
+// RunSearchBetweenArity400 asserts a BETWEEN lifecycle condition with a
+// malformed operand (a scalar, not the required 2-element [lo, hi] array) is
+// rejected with HTTP 400 and errorCode BAD_REQUEST on every backend — before
+// the fix, this diverged catastrophically: postgres panicked indexing an
+// empty spi.Filter.Values (500), sqlite's BETWEEN fallback emitted a
+// match-all "1=1" (200, wrong result set), and only memory's spi.MatchFilter
+// happened to exclude correctly. Companion to RunSearchUnknownMetaField400 —
+// both prove the SearchService validation boundary (ValidateCondition) runs
+// identically across backends before any store is touched.
+func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-between-arity-400"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","amount":1,"status":"new"}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	cond := lifecycleTemporalCond(t, "creationDate", "BETWEEN", "2021-01-01T00:00:00Z")
+	status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+	if err != nil {
+		t.Fatalf("SyncSearchRaw: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body=%s", status, body)
+	}
+	if !containsErrorCode(body, "BAD_REQUEST") {
+		t.Errorf("expected errorCode BAD_REQUEST, body=%s", body)
+	}
+}
+
 // RunSearchStringMetaVocabulary verifies the canonical string-shaped meta
 // fields (id, transactionId, state, transitionForLatestSave) resolve
 // identically across backends when filtered with a lifecycle condition —
