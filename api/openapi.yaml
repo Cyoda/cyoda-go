@@ -1141,8 +1141,9 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`,
-        `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
+        `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`,
+        `SCAN_BUDGET_EXHAUSTED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
         - name: entityName
@@ -7043,10 +7044,17 @@ paths:
 
         Limitations:
 
-        - Maximum result limit: 10000 entities (this will silently limit the
-        result to 10000)
+        - Maximum result limit: 10000 entities (values above 10000 are rejected
+        with 400 `BAD_REQUEST`)
 
-        - Default result limit: 1000 entities
+        - Default result limit: 1000 entities (applied when `limit` is omitted)
+
+
+        Error responses use RFC 9457 problem+json with the cyoda-go
+        `properties.errorCode` extension. A storage backend that enforces a
+        bounded result set returns 400 `SEARCH_RESULT_LIMIT` when the matched
+        count exceeds its cap; a non-indexable condition that forces an
+        over-budget residual scan returns 400 `SCAN_BUDGET_EXHAUSTED`.
       operationId: searchEntities
       parameters:
         - name: entityName
