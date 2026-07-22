@@ -89,6 +89,12 @@ and (b) compare the resolved instants *chronologically*.
   `match.Match`**, via the generalized meta-key mapping (§8.2) and matching
   `extractFilterMetaValue`/`matchLifecycle` keys. An unknown meta filter field is
   **rejected 400** on every surface (unifying today's error-vs-no-match split).
+- **Numeric-coercion evaluator alignment (§6.6):** remove the string-operand
+  parsing divergence between `match` and `spi.MatchFilter` by delegating both to
+  one shared coercion — the first slice of the evaluator convergence (§13).
+- **Shared leaf primitives (§13):** the temporal (and now numeric) leaf logic is
+  authored *once* in the SPI and delegated to by both Go evaluators, so it is
+  reused — not replaced — by the convergence successor.
 - Full test coverage (unit per surface, running-backend e2e, cross-backend
   parity, gRPC) — see §11.
 
@@ -107,20 +113,26 @@ and (b) compare the resolved instants *chronologically*.
 - The comparison-class marker only ever distinguishes `temporal` from `none`;
   the numeric/boolean/text *evaluation* paths are unchanged.
 
-### Deferred to a separate new issue (design-heavy, Cloud-parity contract)
-A broader **operator-vs-field-type soundness** gap exists and is *not* fixed
-here: the predicate layer validates operator *name* and value-vs-field *type*,
-but never operator-vs-field-type. So string operators on **numeric/boolean**
-fields silently coerce (`CONTAINS 0` matches numeric `100`), and ordering ops on
-booleans evaluate as lexical `"true"/"false"`. Related: the two evaluators
-disagree on string-encoded numerics — `internal/match.opCompare` parses string
-operands as floats while `spi.compareFilterValues` does not, so `field > "20"`
-can differ between the `GetAll`+`match.Match` fallback and `spi.MatchFilter`
-pushdown. These share one fix shape (an operator-vs-type validation layer +
-unifying the two evaluators' coercion) that touches the Cloud
-`InvalidTypesInClientConditionException` contract — a dedicated issue, not #423.
-#423 fixes the **temporal** slice of this (§6.4) because correctly handling
-temporal fields *is* its remit; the numeric/boolean slice is the separate issue.
+### Also fixed here: the numeric-coercion evaluator divergence
+The two Go evaluators disagree on string-encoded numerics —
+`internal/match.opCompare`/`opEquals` parse a string operand to a float while
+`spi.compareFilterValues` does not — so `numericField > "20"` can differ between
+the `GetAll`+`match.Match` fallback and the `spi.MatchFilter` pushdown/memory
+path. #423 removes the divergence by **aligning `match` down to `spi`**: `match`
+stops parsing string operands as floats and delegates numeric comparison to the
+same shared coercion `spi` uses (§6.6). This is done as *deletion of a divergent
+copy*, not a second implementation — see §6.6 for why it is the first slice of
+the evaluator-convergence successor, not throwaway work.
+
+### Related, but NOT here (a distinct contract decision)
+A separate gap remains: there is no **operator-vs-field-type validation** — string
+operators on **numeric/boolean** fields silently coerce (`CONTAINS 0` matches
+numeric `100`), ordering ops on booleans evaluate lexically. #423 fixes the
+*temporal* slice of operator validity (§6.4) because handling temporal fields is
+its remit, but the numeric/boolean slice is a product/contract decision (it
+touches Cloud's `InvalidTypesInClientConditionException`) and is left for an
+explicit future decision — not silently deferred, just genuinely out of this
+change's remit. It is orthogonal to the evaluator convergence below.
 
 ## 5. The canonical scalar and parser
 
@@ -272,6 +284,25 @@ to NULL/no-match on the SQL backends, are absent from `extractFilterMetaValue`
   every surface — replacing the current error-vs-no-match split with one
   fail-loud response. `cyoda-go` leads this contract (Gate 7).
 
+### 6.6 Numeric-coercion evaluator alignment
+
+`internal/match.opCompare`/`opEquals` parse a **string** operand to a float
+(`toFloat64` accepts strings), so `numericField > "20"` compares numerically;
+`spi.compareFilterValues` deliberately does not, so the same clause compares
+lexically. The two Go evaluators therefore disagree on string-encoded numerics,
+and the disagreement is reachable on any path that skips value-type validation
+(notably **workflow criteria**). #423 removes it by **aligning `match` down to
+`spi`**: `match` stops treating a string operand as numeric — numeric comparison
+applies only when the operand is a genuine numeric type, exactly as `spi` does.
+
+Implementation discipline (this is what makes it convergence-seed, not throwaway):
+the numeric leaf comparison is delegated to a **single shared coercion helper**
+that both evaluators call, rather than edited in two places. The common case
+(numeric operand on a numeric field) is unchanged; only a string-encoded numeric
+operand changes, and it changes *toward* the primary pushdown behaviour. Verify
+against existing `internal/match` tests and the Cloud contract before landing the
+direction; a RED test pins the fallback-vs-pushdown agreement.
+
 ## 7. Per-surface implementation
 
 The comparison the engine performs becomes, uniformly:
@@ -281,7 +312,12 @@ The comparison the engine performs becomes, uniformly:
 ```
 
 The operand is parsed once in Go via `ParseTemporalMillis`. The stored value is
-converted to epoch-ms from that backend's physical form.
+converted to epoch-ms from that backend's physical form. **Both Go evaluators
+(`matchLifecycle` and `evalLeafFilter`) convert only their own value form to ms
+and then call one shared temporal dispatcher** — `spi.CompareTemporal(op,
+storedMs, storedOK, operandMs)` (or equivalent) — which encodes the per-operator
+result and the exclude/vacuous rule (§7.1) exactly once. Neither evaluator gets
+its own temporal branch to later reconcile (§13).
 
 | Surface | Trigger (all comparison ops: EQ/NE/GT/LT/GE/LE/BETWEEN) | Stored-value conversion | Operand(s) |
 |---|---|---|---|
@@ -517,3 +553,38 @@ and always stored `…Z`, so the *stored* side is never offset-varying. Mixed
   uppercase `T`/`Z` to match Go's `time.RFC3339` (§8.1). Immaterial for #423
   (only well-formed engine meta flows through it) but prevents a Go/SQL
   disagreement once #137 routes body text through the same function.
+
+## 13. Relationship to the evaluator-convergence successor
+
+Root cause of both the temporal (MAJOR-1) split and the numeric divergence: two
+independent Go leaf-comparison implementations — `internal/match` (over
+`predicate.Condition`) and `spi.MatchFilter` (over `spi.Filter`). The two
+*representations* are justified (`predicate.Condition` is strictly more
+expressive — `FunctionCondition` callouts, array-wildcards — and is the only form
+workflow criteria have), but the duplicated *leaf-comparison logic* is not: how a
+single `value <op> operand` behaves has no reason to differ, and its drift is the
+bug source. A third semantics — the SQL the planners emit — genuinely cannot
+share Go code and is kept in line by the parity suite, not by reuse.
+
+The agreed successor effort (its own spec/plan, immediately after #423) converges
+the two Go evaluators onto **one shared leaf-comparison kernel**: each keeps only
+its own tree-walk, delegating every leaf op to the shared kernel; the SQL planners
+mirror it under parity guard. That structurally removes the whole class of
+fallback-vs-pushdown divergence.
+
+**#423 is the first slice of that convergence, not a patch it discards.** Its
+temporal dispatch (§7) and its numeric alignment (§6.6) are authored as shared
+SPI primitives that both evaluators already delegate to. The convergence
+*continues* by moving the remaining leaf ops (`CONTAINS`/`STARTS_WITH`/`ENDS_WITH`/
+`LIKE`/`MATCHES_PATTERN`/`IS_NULL`/case-insensitive) into the same kernel and
+collapsing the walkers — deleting nothing #423 built. Implementation constraint
+for #423: **do not add a temporal or numeric branch that lives only inside one
+evaluator** — every leaf-comparison decision #423 introduces must be in a shared
+primitive both call.
+
+### Execution & context plan
+Design is complete and captured here; the spec + the `writing-plans` output are
+the durable handoff. #423 is implemented via `subagent-driven-development`
+(fresh-context subagent per task, reading spec + plan), so implementation detail
+does not accumulate in the design session. The convergence is a fresh effort
+afterwards, reusing #423's shared primitives.
