@@ -404,6 +404,65 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 	}
 }
 
+// TestMemoryGroupedAggregate_TemporalFilterOnCreationDate pins grouped-stats
+// filtering to the shared spi.MatchFilter temporal kernel: a filter with
+// Coercion: CoerceTemporal on the canonical meta path "creationDate" must be
+// evaluated chronologically, not lexically/string-wise. This is the
+// regression guard for the memory plugin's local msMatchFilter evaluator,
+// which had no Coercion handling and no "creationDate" case at all in its
+// meta vocabulary (only storage-key names like entity_id/state/version) —
+// so this filter either silently no-matched everything or (if it happened
+// to fall back to string comparison) compared instants lexically instead of
+// chronologically. Delegating to spi.MatchFilter fixes both.
+func TestMemoryGroupedAggregate_TemporalFilterOnCreationDate(t *testing.T) {
+	clock := memory.NewTestClockAt(msBase)
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	ctx := ctxWithTenant("t1")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	gsSave(t, ctx, store, "e-old", "old", map[string]any{})
+	clock.Advance(time.Hour)
+	gsSave(t, ctx, store, "e-new", "new", map[string]any{})
+
+	// Threshold sits strictly between the two creation instants: e-old was
+	// created at msBase, e-new one hour later.
+	threshold := msBase.Add(30 * time.Minute).Format(time.RFC3339Nano)
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{
+			Op:       spi.FilterGt,
+			Source:   spi.SourceMeta,
+			Path:     "creationDate",
+			Coercion: spi.CoerceTemporal,
+			Value:    threshold,
+		},
+		spi.GroupedAggregationsOptions{MaxBuckets: 100},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+
+	totals := map[string]int64{}
+	for _, b := range res {
+		v, ok := b.GroupKey[0].Value.(string)
+		if !ok {
+			t.Fatalf("group key value is not string: %T %v", b.GroupKey[0].Value, b.GroupKey[0].Value)
+		}
+		totals[v] = b.Count
+	}
+	if totals["old"] != 0 {
+		t.Errorf("state=old count = %d; want 0 (created before threshold)", totals["old"])
+	}
+	if totals["new"] != 1 {
+		t.Errorf("state=new count = %d; want 1 (created after threshold)", totals["new"])
+	}
+}
+
 // TestMemoryGroupedStats_ConcurrentReadersDoNotStarveWriters pins the
 // snapshot-then-iterate contract from plugins/memory/grouped_stats.go:
 // Iterate / GroupedAggregate take entityMu.RLock only during the snapshot
