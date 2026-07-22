@@ -25,6 +25,8 @@ Before executing a search, the server validates that every data-field path refer
 
 If any referenced path is unknown, the server performs at most one bounded `RefreshAndGet` against the model store to recover from a stale cached schema. If the path is still unknown after the refresh, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
 
+A condition referencing an unrecognized lifecycle/meta filter field (not one of the known `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave`/`previousTransition`, `transactionId`, `id` fields) is rejected the same way, on both `/search` and the grouped-statistics endpoint (`POST /api/entity/stats/{entityName}/{modelVersion}/query`). Grouped statistics does not have data-model schema access, so it enforces this meta-field check but not the schema-backed data-field-path check described above.
+
 Programmatic clients should branch on `errorCode == "INVALID_FIELD_PATH"` (not on HTTP 400) to distinguish unknown-field-path errors from other 400s such as `BAD_REQUEST` (malformed JSON) or `CONDITION_TYPE_MISMATCH` (incompatible value type).
 
 Common causes:

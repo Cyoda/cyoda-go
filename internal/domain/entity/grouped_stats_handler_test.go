@@ -180,6 +180,79 @@ func TestGroupedStatsHandler_InvalidConditionReturns400(t *testing.T) {
 	}
 }
 
+func TestGroupedStatsHandler_LifecycleTemporalTypeMismatchReturns400(t *testing.T) {
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	store := &fakeIterable{entities: rows}
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	// CONTAINS is not a valid comparison operator against the temporal
+	// creationDate meta field — parity with /search's CONDITION_TYPE_MISMATCH.
+	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"lifecycle","field":"creationDate","operatorType":"CONTAINS","value":"2021"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "CONDITION_TYPE_MISMATCH" {
+		t.Fatalf("errorCode=%s, want CONDITION_TYPE_MISMATCH (body: %s)", got, rec.Body.String())
+	}
+}
+
+func TestGroupedStatsHandler_UnknownMetaFieldReturns400(t *testing.T) {
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	store := &fakeIterable{entities: rows}
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	// "bogus" is not a recognized meta filter field — parity with /search's
+	// INVALID_FIELD_PATH.
+	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"lifecycle","field":"bogus","operatorType":"EQUALS","value":"x"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "INVALID_FIELD_PATH" {
+		t.Fatalf("errorCode=%s, want INVALID_FIELD_PATH (body: %s)", got, rec.Body.String())
+	}
+}
+
+func TestGroupedStatsHandler_MalformedBetweenArityReturns400(t *testing.T) {
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
+	}
+	store := &fakeIterable{entities: rows}
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.price","operatorType":"BETWEEN","value":[10]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "INVALID_CONDITION" {
+		t.Fatalf("errorCode=%s, want INVALID_CONDITION (body: %s)", got, rec.Body.String())
+	}
+}
+
 func TestGroupedStatsHandler_HappyPathReturns200(t *testing.T) {
 	rows := []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},

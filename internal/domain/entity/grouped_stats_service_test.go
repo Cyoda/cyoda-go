@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // fakeIterable satisfies only spi.Iterable.
@@ -435,6 +436,145 @@ func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
 	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
 	if !errors.Is(err, entity.ErrInvalidCondition) {
 		t.Fatalf("want ErrInvalidCondition for malformed regex, got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected is a
+// regression test for the validation-consistency gap: /search rejects a
+// type-unsound temporal/lifecycle condition (400), but grouped-stats
+// previously accepted the same malformed condition and silently degraded to
+// an empty result (the condition doesn't translate to a pushdown filter and
+// never matches anything via match.Match either). QueryGroupedStats must
+// reject a CONTAINS operator against the temporal creationDate meta field,
+// the same way search.ValidateConditionValueTypes does.
+func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "creationDate",
+		"operatorType": "CONTAINS",
+		"value": "2021"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if err == nil {
+		t.Fatal("expected error for CONTAINS against temporal field creationDate, got nil (previously silently degraded to empty result)")
+	}
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("want search.ErrConditionTypeMismatch (parity with /search's CONDITION_TYPE_MISMATCH), got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_MalformedBetweenArityRejected is a regression test
+// for the same validation-consistency gap: a BETWEEN condition with the
+// wrong number of operands must be rejected up front (search.ValidateCondition),
+// not silently mistranslated by the filter/match layers downstream.
+func TestQueryGroupedStats_MalformedBetweenArityRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.price",
+		"operatorType": "BETWEEN",
+		"value": [10]
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if !errors.Is(err, entity.ErrInvalidCondition) {
+		t.Fatalf("want ErrInvalidCondition for malformed-arity BETWEEN, got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_UnknownMetaFieldRejected is a regression test for
+// the same gap: an unrecognized meta filter field name must be rejected as
+// INVALID_FIELD_PATH parity with /search, not silently treated as
+// never-matching.
+func TestQueryGroupedStats_UnknownMetaFieldRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "bogus",
+		"operatorType": "EQUALS",
+		"value": "x"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if !errors.Is(err, search.ErrInvalidFieldPath) {
+		t.Fatalf("want search.ErrInvalidFieldPath (parity with /search's INVALID_FIELD_PATH), got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ValidTemporalConditionStillSucceeds guards against
+// an over-broad fix: a well-formed temporal lifecycle condition (valid
+// comparison operator + offset-bearing RFC3339 operand) must still succeed.
+func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "creationDate",
+		"operatorType": "GREATER_THAN",
+		"value": "2021-01-01T00:00:00Z"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if err != nil {
+		t.Fatalf("unexpected error for valid temporal condition: %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ValidDataConditionStillSucceeds guards against an
+// over-broad fix: a well-formed data-field condition must still succeed
+// even though grouped-stats now runs search.ValidateConditionValueTypes with
+// a nil model (data-field checks are gracefully skipped without a schema).
+func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "EQUALS",
+		"value": "red"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	if err != nil {
+		t.Fatalf("unexpected error for valid data condition: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 1 {
+		t.Fatalf("buckets = %+v, want one bucket count=1", buckets)
 	}
 }
 

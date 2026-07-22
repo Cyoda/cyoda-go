@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // maxGroupedStatsBodySize bounds the request body for the grouped-stats
@@ -165,6 +166,25 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			common.WriteError(w, r, common.Operational(
 				http.StatusBadRequest,
 				common.ErrCodeInvalidCondition,
+				err.Error(),
+			))
+		case errors.Is(err, search.ErrInvalidFieldPath):
+			// Condition references an unrecognized meta filter field —
+			// same classification and error code as the /search path's
+			// validateConditionTypes (condition_type_validate.go).
+			common.WriteError(w, r, common.Operational(
+				http.StatusBadRequest,
+				common.ErrCodeInvalidFieldPath,
+				err.Error(),
+			))
+		case errors.Is(err, search.ErrConditionTypeMismatch):
+			// Condition value/operator is type-unsound for its field (e.g.
+			// a string-shaped operator against a temporal lifecycle
+			// field) — same classification and error code as the /search
+			// path.
+			common.WriteError(w, r, common.Operational(
+				http.StatusBadRequest,
+				common.ErrCodeConditionTypeMismatch,
 				err.Error(),
 			))
 		default:
