@@ -1,6 +1,7 @@
 package parity
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -255,6 +256,34 @@ func RunSearchAfterUpdate(t *testing.T, fixture BackendFixture) {
 	}
 	if len(results) != 1 {
 		t.Errorf("expected 1 result after update, got %d", len(results))
+	}
+}
+
+// RunSearchOmittedLimitDefaults1000 asserts that a direct search omitting the
+// limit returns at most the documented default (1000), on every backend's
+// Searcher pushdown path.
+func RunSearchOmittedLimitDefaults1000(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	const modelName = "parity-search-omitted-limit-1000"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	// Seed 1001 matching entities so the default 1000 is observably a cap.
+	for i := 0; i < 1001; i++ {
+		if _, err := c.CreateEntity(t, modelName, modelVersion,
+			fmt.Sprintf(`{"name":"n%d","amount":1,"status":"new"}`, i)); err != nil {
+			t.Fatalf("CreateEntity %d: %v", i, err)
+		}
+	}
+
+	cond := `{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"new"}`
+	results, err := c.SyncSearch(t, modelName, modelVersion, cond) // no limit param
+	if err != nil {
+		t.Fatalf("SyncSearch: %v", err)
+	}
+	if len(results) != 1000 {
+		t.Errorf("omitted-limit result count = %d, want 1000 (documented default cap)", len(results))
 	}
 }
 
