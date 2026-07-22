@@ -634,7 +634,7 @@ func TestEntitySearch_SnapshotSearch_OrderBy_InvalidField(t *testing.T) {
 	}
 }
 
-// --- Direct-search omitted-limit default (issue #432) ---
+// --- Direct-search omitted-limit default ---
 
 // grpcTenantCtx builds a context with a UserContext, mirroring newTestEnv's
 // shape, for tests that construct a CloudEventsServiceImpl directly over
