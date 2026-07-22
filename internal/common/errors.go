@@ -74,6 +74,17 @@ func (e *AppError) AsRetryable() *AppError {
 	return e
 }
 
+// WithCause attaches a wrapped cause to a freshly-constructed *AppError and
+// returns the receiver for fluent chaining. The cause is exposed via Unwrap,
+// so errors.Is(returned, cause) holds — use this when translating a storage
+// SPI sentinel into a client-facing AppError while keeping the sentinel
+// inspectable by callers. Like AsRetryable, this mutates the receiver; call
+// only on a just-constructed Operational(...), never on a shared instance.
+func (e *AppError) WithCause(err error) *AppError {
+	e.Err = err
+	return e
+}
+
 // Operational creates a client error (4xx). No internal detail is captured.
 //
 // Default is non-retryable; for the rare retry-eligible 4xx (e.g. an

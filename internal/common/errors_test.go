@@ -439,3 +439,19 @@ func TestWriteError_RetryableConflict_AdvertisesRetryable(t *testing.T) {
 		t.Errorf("retryable conflict must advertise properties.retryable=true, got %v", props["retryable"])
 	}
 }
+
+func TestAppError_WithCause_PreservesErrorsIs(t *testing.T) {
+	sentinel := errors.New("some sentinel")
+	appErr := common.Operational(http.StatusBadRequest, "SOME_CODE", "human message").WithCause(sentinel)
+
+	if !errors.Is(appErr, sentinel) {
+		t.Errorf("errors.Is(appErr, sentinel) = false, want true")
+	}
+	var ae *common.AppError
+	if !errors.As(appErr, &ae) {
+		t.Fatalf("errors.As(appErr, &AppError) = false, want true")
+	}
+	if ae.Status != http.StatusBadRequest || ae.Code != "SOME_CODE" {
+		t.Errorf("got status=%d code=%q, want 400/SOME_CODE", ae.Status, ae.Code)
+	}
+}
