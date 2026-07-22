@@ -304,6 +304,7 @@ func nextPlaceholder(counter *int) string {
 // leafToSQL translates a single leaf filter node to SQL with NULL/3VL handling.
 //
 // NULL/3VL rules (mirrored from sqlite):
+//   - is_null/not_null: presence checks, handled first — see below.
 //   - eq/gt/lt/gte/lte/between: wrap with IS NOT NULL guard so missing fields
 //     don't silently evaluate to NULL (which WHERE would filter out, diverging
 //     from Go semantics where missing != value is true)
@@ -320,6 +321,21 @@ func nextPlaceholder(counter *int) string {
 // boolean operands are rendered to their text form ("true"/"false") via textArg
 // so they encode against the text-typed extraction (see textArg).
 func leafToSQL(f spi.Filter, counter *int) (string, []any) {
+	// Presence checks (IS_NULL/NOT_NULL) are coercion-independent: a raw
+	// null-check on fieldExpr(f) is correct regardless of f.Coercion, so
+	// they are handled here BEFORE the CoerceTemporal routing below —
+	// mirroring spi.evalLeafFilter's ordering. Routing these into
+	// temporalLeafToSQL would fall into its default branch, whose
+	// sqlOpForTemporal has no case for IsNull/NotNull and falls back to
+	// "=" — previously silently corrupting the predicate into
+	// "cyoda_epoch_millis(col) = $1" bound to ms=0 (1970-01-01), matching
+	// every non-null row instead of performing a null check.
+	switch f.Op {
+	case spi.FilterIsNull:
+		return fmt.Sprintf("%s IS NULL", fieldExpr(f)), nil
+	case spi.FilterNotNull:
+		return fmt.Sprintf("%s IS NOT NULL", fieldExpr(f)), nil
+	}
 	if f.Coercion == spi.CoerceTemporal {
 		return temporalLeafToSQL(f, counter)
 	}
@@ -374,12 +390,6 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
 		return fmt.Sprintf("%s LIKE %s ESCAPE '\\'", col, p), []any{escapeLike(fmt.Sprint(f.Value))}
-	case spi.FilterIsNull:
-		col := fieldExpr(f)
-		return fmt.Sprintf("%s IS NULL", col), nil
-	case spi.FilterNotNull:
-		col := fieldExpr(f)
-		return fmt.Sprintf("%s IS NOT NULL", col), nil
 	case spi.FilterBetween:
 		if len(f.Values) >= 2 {
 			numeric := isNumericValue(f.Values[0]) && isNumericValue(f.Values[1])
@@ -399,8 +409,10 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 }
 
 // temporalLeafToSQL translates a CoerceTemporal leaf (spi.Filter.Coercion ==
-// spi.CoerceTemporal) into SQL. The field expression is wrapped in
-// cyoda_epoch_millis(...) (migration 000005) so chronological comparisons
+// spi.CoerceTemporal) into SQL. Presence checks (IsNull/NotNull) never reach
+// this function — leafToSQL handles them first, coercion-independent. The
+// field expression is wrapped in cyoda_epoch_millis(...) (migration 000005)
+// so chronological comparisons
 // compare as bigint epoch-ms rather than lexicographic text — matching the
 // canonical temporal-scalar rule shared by spi.ParseTemporalMillis /
 // spi.CompareTemporal and the sqlite/memory Go evaluators.
@@ -437,7 +449,10 @@ func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
 }
 
 // sqlOpForTemporal maps a comparison FilterOp to its SQL operator for the
-// default (non-BETWEEN, non-NE) branch of temporalLeafToSQL.
+// default (non-BETWEEN, non-NE) branch of temporalLeafToSQL. IsNull/NotNull
+// never reach here — leafToSQL intercepts them before CoerceTemporal routing
+// even applies (see leafToSQL's doc comment), so this function's domain is
+// Eq/Gt/Lt/Gte/Lte only.
 func sqlOpForTemporal(op spi.FilterOp) string {
 	switch op {
 	case spi.FilterGt:

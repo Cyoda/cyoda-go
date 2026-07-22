@@ -198,6 +198,7 @@ func fieldExpr(f spi.Filter) string {
 // leafToSQL translates a single leaf filter node to SQL with NULL/3VL handling.
 //
 // NULL/3VL rules:
+//   - is_null/not_null: presence checks, handled first — see below.
 //   - eq/gt/lt/gte/lte/between: wrap with IS NOT NULL guard so missing fields
 //     don't silently evaluate to NULL (which WHERE would filter out, diverging
 //     from Go semantics where missing != value is true)
@@ -205,6 +206,20 @@ func fieldExpr(f spi.Filter) string {
 //   - String ops (contains, starts_with, ends_with): use instr/substr, not LIKE
 //   - like: uses LIKE with ESCAPE '\' and value preprocessing
 func leafToSQL(f spi.Filter) (string, []any) {
+	// Presence checks (IS_NULL/NOT_NULL) are coercion-independent: a raw
+	// null-check on fieldExpr(f) is correct regardless of f.Coercion, so
+	// they are handled here BEFORE the CoerceTemporal routing below —
+	// mirroring spi.evalLeafFilter's ordering. Routing these into
+	// temporalLeafToSQL would divide a NULL by 1000 (still NULL, harmless)
+	// but then fall through sqlOpForTemporal's op switch, which has no
+	// case for IsNull/NotNull and previously silently dropped the
+	// predicate (sqlite: emitted "1=1"; postgres: emitted "col = 0").
+	switch f.Op {
+	case spi.FilterIsNull:
+		return fmt.Sprintf("%s IS NULL", fieldExpr(f)), nil
+	case spi.FilterNotNull:
+		return fmt.Sprintf("%s IS NOT NULL", fieldExpr(f)), nil
+	}
 	if f.Coercion == spi.CoerceTemporal {
 		return temporalLeafToSQL(f)
 	}
@@ -230,10 +245,6 @@ func leafToSQL(f spi.Filter) (string, []any) {
 		return fmt.Sprintf("substr(%s, -length(?)) = ?", col), []any{f.Value, f.Value}
 	case spi.FilterLike:
 		return fmt.Sprintf("%s LIKE ? ESCAPE '\\'", col), []any{escapeLike(fmt.Sprint(f.Value))}
-	case spi.FilterIsNull:
-		return fmt.Sprintf("%s IS NULL", col), nil
-	case spi.FilterNotNull:
-		return fmt.Sprintf("%s IS NOT NULL", col), nil
 	case spi.FilterBetween:
 		if len(f.Values) >= 2 {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
@@ -245,10 +256,12 @@ func leafToSQL(f spi.Filter) (string, []any) {
 }
 
 // temporalLeafToSQL translates a CoerceTemporal leaf (spi.Filter.Coercion ==
-// spi.CoerceTemporal) into SQL. The meta/data blob stores timestamps as
-// microsecond integers, so the field expression is divided by 1000 (µs->ms
-// floor) — mirroring orderByFieldExpr's OrderTemporal handling exactly, so
-// filter and ORDER BY compare the same representation.
+// spi.CoerceTemporal) into SQL. Presence checks (IsNull/NotNull) never reach
+// this function — leafToSQL handles them first, coercion-independent. The
+// meta/data blob stores timestamps as microsecond integers, so the field
+// expression is divided by 1000 (µs->ms floor) — mirroring
+// orderByFieldExpr's OrderTemporal handling exactly, so filter and ORDER BY
+// compare the same representation.
 //
 // Operands are parsed to int64 epoch-ms Go-side via spi.ParseTemporalMillis
 // and bound as ordinary ? args (never string-formatted into the SQL text);
@@ -261,6 +274,12 @@ func leafToSQL(f spi.Filter) (string, []any) {
 // stored value vacuously satisfies "not equal" (matching CompareTemporal's
 // vacuous-true-for-NE rule).
 func temporalLeafToSQL(f spi.Filter) (string, []any) {
+	// SQLite integer division truncates toward zero; postgres' floor()
+	// (used by cyoda_epoch_millis in the postgres plugin) truncates toward
+	// -inf. The two floors coincide for non-negative operands, which holds
+	// here because the engine only ever stores post-1970 (non-negative µs)
+	// timestamps — so the cross-backend µs->ms floor is consistent in
+	// practice despite the differing primitive semantics.
 	col := "(" + fieldExpr(f) + " / 1000)"
 	switch f.Op {
 	case spi.FilterBetween:
@@ -284,9 +303,10 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 }
 
 // sqlOpForTemporal maps a comparison FilterOp to its SQL operator for
-// temporal leaves. Returns "" for ops that don't reach here (Between/Ne are
-// handled separately by temporalLeafToSQL; anything else is not pushable
-// under CoerceTemporal).
+// temporal leaves. Returns "" for ops that don't reach here: Between/Ne are
+// handled separately by temporalLeafToSQL, and IsNull/NotNull are handled
+// earlier still, in leafToSQL, before CoerceTemporal routing even applies
+// (a presence check is coercion-independent — see leafToSQL's doc comment).
 func sqlOpForTemporal(op spi.FilterOp) string {
 	switch op {
 	case spi.FilterEq:

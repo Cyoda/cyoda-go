@@ -785,3 +785,56 @@ func TestPlan_TemporalData(t *testing.T) {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
 }
+
+// TestPlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
+// FilterIsNull/FilterNotNull emits a plain null-check on the raw field
+// expression (doc->'_meta'->>'creation_date') — NOT the cyoda_epoch_millis(...)
+// wrapped form and NOT the "col = $1" / "= 0" nonsense that sqlOpForTemporal's
+// unconditional "default: return \"=\"" previously produced for an op it
+// doesn't recognize. Presence checks are coercion-independent: they must be
+// handled before the CoerceTemporal routing, mirroring spi.evalLeafFilter's
+// ordering.
+func TestPlan_TemporalIsNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	plan := planQuery(f)
+	wantWhere := "doc->'_meta'->>'creation_date' IS NULL"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want []", plan.args)
+	}
+	if strings.Contains(plan.where, "cyoda_epoch_millis") {
+		t.Errorf("where must not route through cyoda_epoch_millis for a presence check: %s", plan.where)
+	}
+	if strings.Contains(plan.where, "= $1") || strings.Contains(plan.where, "= 0") {
+		t.Errorf("where must not be the nonsense equality fallback: predicate was silently corrupted: %s", plan.where)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil — IsNull must remain pushable, just correct: %+v", plan.postFilter)
+	}
+	if !isPushable(spi.FilterIsNull) {
+		t.Errorf("FilterIsNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+func TestPlan_TemporalNotNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	plan := planQuery(f)
+	wantWhere := "doc->'_meta'->>'creation_date' IS NOT NULL"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want []", plan.args)
+	}
+	if strings.Contains(plan.where, "cyoda_epoch_millis") {
+		t.Errorf("where must not route through cyoda_epoch_millis for a presence check: %s", plan.where)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil — NotNull must remain pushable, just correct: %+v", plan.postFilter)
+	}
+	if !isPushable(spi.FilterNotNull) {
+		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}

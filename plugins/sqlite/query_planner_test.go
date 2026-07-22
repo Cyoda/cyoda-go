@@ -666,6 +666,51 @@ func TestSqlitePlan_TemporalData(t *testing.T) {
 	}
 }
 
+// TestSqlitePlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
+// FilterIsNull/FilterNotNull emits a plain null-check on the raw field
+// expression — NOT the temporal "/1000" epoch-ms form and NOT the "1=1"
+// no-op that sqlOpForTemporal's empty-string default previously produced.
+// Presence checks are coercion-independent: they must be handled before the
+// CoerceTemporal routing, mirroring spi.evalLeafFilter's ordering.
+func TestSqlitePlan_TemporalIsNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	sql, args := leafToSQL(f)
+	wantSQL := "json_extract(json(meta), '$.creation_date') IS NULL"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want []", args)
+	}
+	if strings.Contains(sql, "/ 1000") {
+		t.Errorf("sql must not divide by 1000 for a presence check: %s", sql)
+	}
+	if sql == "1=1" {
+		t.Errorf("sql must not be the no-op 1=1 fallback: predicate was silently dropped")
+	}
+	if !isPushable(spi.FilterIsNull) {
+		t.Errorf("FilterIsNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+func TestSqlitePlan_TemporalNotNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	sql, args := leafToSQL(f)
+	wantSQL := "json_extract(json(meta), '$.creation_date') IS NOT NULL"
+	if sql != wantSQL {
+		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want []", args)
+	}
+	if strings.Contains(sql, "/ 1000") {
+		t.Errorf("sql must not divide by 1000 for a presence check: %s", sql)
+	}
+	if !isPushable(spi.FilterNotNull) {
+		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
 // FuzzQueryPlanner generates random spi.Filter trees and verifies that
 // planQuery never panics, and that the pushable/residual split is consistent:
 //   - If postFilter is nil, the original filter was fully pushable
