@@ -70,16 +70,25 @@ and (b) compare the resolved instants *chronologically*.
   `creationDate` and `lastUpdateTime`, for `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`,
   `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, across all four
   evaluation surfaces.
+- **Type-sound operator handling on temporal fields (§6.4):** a temporal field
+  supports only the comparison + null operators above; string/pattern/
+  case-insensitive operators (`CONTAINS`, `STARTS_WITH`, `ENDS_WITH`, `LIKE`,
+  `MATCHES_PATTERN`, `I*`) are **rejected 400**, not silently lexically
+  evaluated. A temporal operand that is not offset-bearing RFC3339 is likewise
+  **rejected 400** (fail-loud), not silently emptied.
 - The **type-classification seam** for filters: `ConditionToFilter` consults the
   schema (`FieldsMap`) and stamps a comparison-coercion marker on `spi.Filter`
   (mirroring `OrderSpec.Kind`); backends consume the marker. Built generically
   (data + meta) so #137 flips a single classifier decision, not the seam.
 - The **instant-comparison kernel**: `spi.ParseTemporalMillis` (canonical
   epoch-ms scalar) and `cyoda_epoch_millis` (postgres `IMMUTABLE` SQL function).
-- A **narrow** meta-key mapping fix in each SQL backend's filter `fieldExpr` —
-  applied only to the temporal meta fields `creationDate`/`lastUpdateTime` (so
-  they resolve to `creation_date`/`last_modified_date`), with every other meta
-  path falling through to today's behaviour unchanged (§8.2).
+- **Meta filter vocabulary reconciliation (§6.5):** make the filter path resolve
+  the full canonical `sortableMetaFields` vocabulary (`state`, `creationDate`,
+  `lastUpdateTime`, `transitionForLatestSave` [alias `previousTransition`],
+  `transactionId`, `id`) **consistently across all three backends and
+  `match.Match`**, via the generalized meta-key mapping (§8.2) and matching
+  `extractFilterMetaValue`/`matchLifecycle` keys. An unknown meta filter field is
+  **rejected 400** on every surface (unifying today's error-vs-no-match split).
 - Full test coverage (unit per surface, running-backend e2e, cross-backend
   parity, gRPC) — see §11.
 
@@ -95,24 +104,23 @@ and (b) compare the resolved instants *chronologically*.
 ### Explicit non-goals
 - **No operand-sniffing.** The operand's shape never determines whether a
   comparison is temporal. `String` fields are untouched.
-- No change to the numeric/boolean/text comparison paths — the coercion marker
-  only ever distinguishes `temporal` from `none` (existing behaviour).
+- The comparison-class marker only ever distinguishes `temporal` from `none`;
+  the numeric/boolean/text *evaluation* paths are unchanged.
 
-### Observed but deferred (separate issue — do not half-fix here)
-The **string** meta filter vocabulary is inconsistent and broken *uniformly
-across all backends today*: a `transitionForLatestSave`/`transactionId`/
-`previousTransition` lifecycle filter no-matches on every pushdown backend
-(canonical name ≠ blob key, and absent from `extractFilterMetaValue`), while the
-`match.Match` fallback *errors* on `transactionId` (unknown field) and aliases
-`previousTransition`. This is a pre-existing meta-field-vocabulary mismatch
-orthogonal to temporal comparison. #423 deliberately does **not** generalize the
-meta-key mapping to these fields, because doing so on the SQL backends only
-(without the matching `extractFilterMetaValue` keys) would *introduce* a
-memory-vs-SQL divergence — which this project forbids. Since all backends are
-currently consistently broken here, the correct move is to leave them consistent
-and file a dedicated issue for the string-meta vocabulary reconciliation. The
-narrow mapping in §8.2 touches only the temporal fields and preserves this
-consistency.
+### Deferred to a separate new issue (design-heavy, Cloud-parity contract)
+A broader **operator-vs-field-type soundness** gap exists and is *not* fixed
+here: the predicate layer validates operator *name* and value-vs-field *type*,
+but never operator-vs-field-type. So string operators on **numeric/boolean**
+fields silently coerce (`CONTAINS 0` matches numeric `100`), and ordering ops on
+booleans evaluate as lexical `"true"/"false"`. Related: the two evaluators
+disagree on string-encoded numerics — `internal/match.opCompare` parses string
+operands as floats while `spi.compareFilterValues` does not, so `field > "20"`
+can differ between the `GetAll`+`match.Match` fallback and `spi.MatchFilter`
+pushdown. These share one fix shape (an operator-vs-type validation layer +
+unifying the two evaluators' coercion) that touches the Cloud
+`InvalidTypesInClientConditionException` contract — a dedicated issue, not #423.
+#423 fixes the **temporal** slice of this (§6.4) because correctly handling
+temporal fields *is* its remit; the numeric/boolean slice is the separate issue.
 
 ## 5. The canonical scalar and parser
 
@@ -207,9 +215,62 @@ for two reasons: (1) the motivating §1 bug is a *precision-equality* case
 (2) the memory `GetAll` fallback (`service.go:222`) evaluates via `match.Match`
 while the pushdown path evaluates via `spi.MatchFilter` — if the criteria path
 left `EQUALS` lexical, the *same query* could return different results through
-fallback vs pushdown. Non-comparison ops (`CONTAINS`, `STARTS_WITH`, regex, …)
-on these fields keep their string behaviour on the RFC3339 form (out of scope;
-semantically dubious but unchanged).
+fallback vs pushdown. String/pattern/case-insensitive operators on these fields
+are **rejected**, not evaluated (§6.4).
+
+### 6.4 Type-sound operators on temporal fields
+
+A temporal field is not a string; it does not offer string predicates. The
+**valid** operators on `creationDate`/`lastUpdateTime` are exactly `EQUALS`,
+`NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`,
+`BETWEEN`, `IS_NULL`, `NOT_NULL`. Any other operator (`CONTAINS`, `STARTS_WITH`,
+`ENDS_WITH`, `LIKE`, `MATCHES_PATTERN`, and the `I*` case-insensitive variants)
+is **rejected with 400** (`ErrCodeConditionTypeMismatch`) — it is not silently
+evaluated as a lexical string op.
+
+Additionally, for a comparison op the **operand must be offset-bearing RFC3339**
+(`ParseTemporalMillis` ok); a non-temporal operand on a temporal field is a type
+mismatch → **400** (fail-loud, at validation time), never a silent empty result.
+(The *stored*-value non-parseable case is different — it is per-row runtime data,
+handled by exclude/vacuous in §7.1.)
+
+Enforcement point: this operator-and-operand check lives in the shared condition
+validator (`ValidateCondition`/a temporal-aware companion) which
+`walkConditionTypes` currently exempts for lifecycle fields — the exemption is
+lifted for the two temporal fields. It runs on every entry point that validates
+conditions (HTTP, gRPC) and the workflow-criteria import validation path, so a
+temporal criterion with an invalid operator is rejected at import, not silently
+mis-evaluated at transition time.
+
+This is deliberately scoped to temporal fields; the equivalent operator-vs-type
+soundness for numeric/boolean fields is the separate issue noted in §4.
+
+### 6.5 Meta filter vocabulary reconciliation
+
+The canonical set of filterable meta fields is exactly `sortableMetaFields`
+(orderclass.go — "canonical client names"): `state`, `creationDate`,
+`lastUpdateTime`, `transitionForLatestSave`, `transactionId`, `id`, with
+`previousTransition` an accepted alias of `transitionForLatestSave`. Today the
+filter path is inconsistent — canonical names whose physical key differs resolve
+to NULL/no-match on the SQL backends, are absent from `extractFilterMetaValue`
+(memory), and `match.Match` *errors* on some. #423 makes all four surfaces agree:
+
+- `lifecycleToFilter` normalizes `previousTransition`→`transitionForLatestSave`
+  and stamps the canonical name as `Filter.Path`.
+- Each backend maps the canonical name → its physical storage (§8.2):
+  postgres/sqlite via the existing `metaJSONKey`/`metaBlobKey` (+ `id`→entity_id),
+  spi `extractFilterMetaValue` via added canonical-name cases
+  (`creationDate`/`lastUpdateTime`→`time.Time` temporal; `state`/
+  `transitionForLatestSave`/`transactionId`→string; `id`→`meta.ID`). The
+  pre-existing storage-key cases (`created_at`, `entity_id`, …) are left in place
+  — no current filter producer emits them (only `lifecycleToFilter` produces
+  `SourceMeta` filters), so this is purely additive.
+- `matchLifecycle` is aligned to the same canonical vocabulary (adds
+  `lastUpdateTime`, `transactionId`, `id`; keeps `state`,
+  `transitionForLatestSave`/`previousTransition`; temporal ones chronological).
+- **Unknown meta field → 400** (`ErrCodeInvalidFieldPath`) at validation, on
+  every surface — replacing the current error-vs-no-match split with one
+  fail-loud response. `cyoda-go` leads this contract (Gate 7).
 
 ## 7. Per-surface implementation
 
@@ -230,11 +291,13 @@ converted to epoch-ms from that backend's physical form.
 | sqlite planner | `Filter.Coercion == CoerceTemporal`, `SourceMeta` | `json_extract(meta,'$.creation_date') / 1000` (µs → ms) | `?` = int64 ms (two for BETWEEN) |
 
 Notes:
-- `spi.extractFilterMetaValue` gains `creationDate` → `meta.CreationDate` and
-  `lastUpdateTime` → `meta.LastModifiedDate` (returned as `time.Time`); the
-  temporal branch in `evalLeafFilter` converts `time.Time`→`UnixMilli` and
-  string→`ParseTemporalMillis`. Existing `created_at`/`updated_at` (µs) keys are
-  left untouched for grouped-stats callers.
+- `spi.extractFilterMetaValue` gains the canonical vocabulary (§6.5), including
+  `creationDate` → `meta.CreationDate` and `lastUpdateTime` →
+  `meta.LastModifiedDate` (returned as `time.Time`); the temporal branch in
+  `evalLeafFilter` converts `time.Time`→`UnixMilli` and string→`ParseTemporalMillis`.
+  The pre-existing storage-key cases (`created_at`/`updated_at`/`version`/… — a
+  historical mirror of the sqlite post-filter keyset) are left in place but are
+  emitted by no current filter producer (§6.5); this change is purely additive.
 - **sqlite meta is µs-int → `/1000`**, *not* `cyoda_epoch_millis` (which parses
   text). The `cyoda_epoch_millis(text)` form and its sqlite registration are
   **deferred to #137**, where the temporal *data-text* path first needs them.
@@ -263,9 +326,15 @@ which the `IS NOT NULL` guard excludes (and the `IS NULL OR` form matches for
 `NE`) — so Go and SQL still agree row-for-row.
 
 `BETWEEN` carries **two** operands (`f.Values[0]`, `f.Values[1]`); each is parsed
-via `ParseTemporalMillis`, and the SQL planners bind two placeholders. If the
-**operand** does not parse, the leaf matches nothing for positive ops / matches
-for `NE` (same rule), consistently across surfaces.
+via `ParseTemporalMillis`, and the SQL planners bind two placeholders.
+
+The **operand** side is validated **up-front** (§6.4): a non-RFC3339 operand on a
+temporal field is a 400 at validation, so by the time a leaf reaches the
+evaluators the operand always parses. The evaluators therefore never face an
+unparseable operand; the only runtime "can't convert" case is a *stored* value,
+handled by exclude/vacuous above. (The evaluators still guard defensively — an
+unparseable operand degrades to the same exclude/vacuous rule — but the boundary
+validation means that path is unreachable for validated entry points.)
 
 ## 8. `cyoda_epoch_millis` (postgres) and the meta-key mapping fix
 
@@ -302,25 +371,19 @@ validated against the RFC3339 forms in tests.)
 
 Down migration drops the function.
 
-### 8.2 Meta-key mapping in filter `fieldExpr` (narrow — temporal fields only)
+### 8.2 Meta-key mapping in filter `fieldExpr` (generalized — item 12)
 
 Both SQL planners currently interpolate the raw `f.Path` for `SourceMeta`
-filters, so `creationDate`/`lastUpdateTime` extract `->>'creationDate'` /
-`$.creationDate` while the stored key is `creation_date`/`last_modified_date`
-→ NULL. In the filter `fieldExpr`, map **only the temporal meta fields**
-`creationDate`→`creation_date` and `lastUpdateTime`→`last_modified_date`; **every
-other meta path falls through to the raw `f.Path` exactly as today** (direct
-columns like `entity_id`, and `state`/`transition`/`transaction_id` string
-paths — unchanged). This makes `creationDate`/`lastUpdateTime` resolve without
-touching any other filter's behaviour.
-
-**Deliberately not generalized.** Applying the full `metaJSONKey`/`metaBlobKey`
-map here would incidentally start resolving `transitionForLatestSave`/
-`transactionId` on the SQL backends while `extractFilterMetaValue` (memory/spi)
-still lacks those keys — introducing a memory-vs-SQL divergence this project
-forbids. Those fields are broken *consistently on all backends today*; keeping
-them consistent (and filing a separate string-meta-vocabulary issue) is correct.
-See "Observed but deferred" in §4.
+filters, so any canonical name whose physical key differs resolves to NULL. Apply
+the existing `metaJSONKey`/`metaBlobKey` maps (today sort-only) in the filter
+`fieldExpr` path for the **whole** canonical vocabulary (§6.5), with `id` →
+`entity_id` (direct column). Because the memory side (`extractFilterMetaValue`)
+and `match.Match` are reconciled to the *same* vocabulary in the same change
+(§6.5), generalizing the SQL mapping introduces **no** cross-backend divergence —
+all four surfaces resolve the identical canonical set. A name not in the map is
+already rejected 400 at validation (§6.5), so `fieldExpr` never sees an unknown
+meta path; defensively it falls through to the raw path (unreachable for
+validated callers).
 
 ## 9. Forward-compatibility contract with #137
 
@@ -371,11 +434,24 @@ No `cyoda-go` binary-version ↔ SPI-version coupling is implied.
 
 ## 11. Test coverage
 
-No new endpoints, no new error codes — this is a behaviour fix on existing search
-entry points. The search filter/validation error codes are unchanged; the one
-error-adjacent behaviour to assert is that a **malformed operand** does not 500
-(it evaluates to the empty/vacuous set per §7.1) and that a `creationDate` filter
-is accepted (200) rather than rejected.
+No new endpoints and **no new error codes** — reuses `ErrCodeConditionTypeMismatch`
+and `ErrCodeInvalidFieldPath`. But there are new *behaviours* on the existing
+search + workflow-criteria entry points, including new 400s (§6.4/§6.5).
+
+### 11.0 Error / status-code table (search endpoints + workflow-criteria import)
+
+| Condition on a temporal / meta field | HTTP | Error code |
+|---|---|---|
+| Valid comparison op + valid RFC3339 operand on `creationDate`/`lastUpdateTime` | 200 | — |
+| String/pattern/case-insensitive op on a temporal field | 400 | `CONDITION_TYPE_MISMATCH` |
+| Non-RFC3339 (non-temporal) operand on a temporal field | 400 | `CONDITION_TYPE_MISMATCH` |
+| Unknown/unsupported meta filter field | 400 | `INVALID_FIELD_PATH` |
+| Valid string op (`EQUALS`, `CONTAINS`, …) on a string meta field (`state`, `transitionForLatestSave`, `transactionId`, `id`) | 200 | — |
+| Same invalid conditions in a **workflow criterion** (rejected at import) | 400 | as above |
+
+(Exact code constants per `internal/common/error_codes.go`; the HTTP handler
+already maps `errConditionTypeMismatch`→400 `CONDITION_TYPE_MISMATCH` and invalid
+paths→400 `INVALID_FIELD_PATH`.)
 
 ### 11.1 Behaviour matrix (scenario × layer)
 
@@ -393,9 +469,13 @@ real postgres), **P** = cross-backend parity (`e2e/parity`, memory+sqlite+postgr
 | `NOT_EQUAL`: same instant ⇒ not-matched; different ⇒ matched | ✓ | ✓ | ✓ | — |
 | `BETWEEN` inclusive bounds, mixed precision (both bounds parsed) | ✓ | ✓ | ✓ | — |
 | Same suite on `lastUpdateTime` (also asserts it no longer 500s) | ✓ | ✓ | ✓ | — |
-| Malformed operand ⇒ empty set (positive) / vacuous (NE), no 500 | ✓ | ✓ | — | ✓ |
-| `creationDate` filter is accepted (200), not rejected | — | ✓ | — | ✓ |
+| `creationDate` filter with valid op+operand is accepted (200) | — | ✓ | — | ✓ |
+| String/pattern op on a temporal field ⇒ **400** `CONDITION_TYPE_MISMATCH` | ✓ | ✓ | — | ✓ |
+| Non-RFC3339 operand on a temporal field ⇒ **400** `CONDITION_TYPE_MISMATCH` | ✓ | ✓ | — | ✓ |
+| Unknown meta filter field ⇒ **400** `INVALID_FIELD_PATH` (all surfaces agree) | ✓ | ✓ | ✓ | ✓ |
+| String meta filters (`transitionForLatestSave`, `transactionId`, `id`) resolve identically across backends (item 12) | ✓ | ✓ | ✓ | — |
 | Workflow **criterion** on `creationDate` — **EQUALS** (precision), NE, and ordering all chronological | ✓ | ✓ | — | — |
+| Workflow **criterion** with invalid op on a temporal field ⇒ rejected at import (400) | ✓ | ✓ | — | — |
 | Memory `GetAll` fallback and pushdown agree on `creationDate` EQUALS (no split) | ✓ | ✓ | — | — |
 
 Each cell that pins chronological semantics is **RED against the current lexical
