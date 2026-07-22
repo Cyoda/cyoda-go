@@ -4,6 +4,7 @@ title: "SEARCH_RESULT_LIMIT — search result set exceeds the allowed limit"
 stability: stable
 see_also:
   - errors
+  - errors.SCAN_BUDGET_EXHAUSTED
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_SHARD_TIMEOUT
 ---

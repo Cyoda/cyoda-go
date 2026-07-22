@@ -9,7 +9,6 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // maxGroupedStatsBodySize bounds the request body for the grouped-stats
@@ -142,57 +141,18 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Dispatch to the service layer (Task 8). The service decides
-	// pushdown vs streaming based on the store's SPI capabilities.
+	// Dispatch to the service layer. QueryGroupedStats already classifies
+	// the known domain/SPI sentinels into *common.AppError (transport-
+	// symmetric translation site) — forward it as-is; anything else is an
+	// unclassified storage/driver failure.
 	buckets, err := h.svc.QueryGroupedStats(r.Context(), store, model, validated)
 	if err != nil {
-		switch {
-		case errors.Is(err, ErrBackendNotSupported):
-			common.WriteError(w, r, common.Operational(
-				http.StatusNotImplemented,
-				"NOT_IMPLEMENTED_BY_BACKEND",
-				"backend does not support grouped stats",
-			))
-		case errors.Is(err, spi.ErrGroupCardinalityExceeded):
-			common.WriteError(w, r, common.Operational(
-				http.StatusUnprocessableEntity,
-				"GROUP_CARDINALITY_EXCEEDED",
-				"group cardinality exceeds the configured maximum",
-			))
-		case errors.Is(err, ErrInvalidCondition):
-			// Surface the predicate parse error message so the client
-			// can fix the malformed condition. The sentinel keeps the
-			// status/code stable; only the detail varies.
-			common.WriteError(w, r, common.Operational(
-				http.StatusBadRequest,
-				common.ErrCodeInvalidCondition,
-				err.Error(),
-			))
-		case errors.Is(err, search.ErrInvalidFieldPath):
-			// Condition references an unrecognized meta filter field —
-			// same classification and error code as the /search path's
-			// validateConditionTypes (condition_type_validate.go).
-			common.WriteError(w, r, common.Operational(
-				http.StatusBadRequest,
-				common.ErrCodeInvalidFieldPath,
-				err.Error(),
-			))
-		case errors.Is(err, search.ErrConditionTypeMismatch):
-			// Condition value/operator is type-unsound for its field (e.g.
-			// a string-shaped operator against a temporal lifecycle
-			// field) — same classification and error code as the /search
-			// path.
-			common.WriteError(w, r, common.Operational(
-				http.StatusBadRequest,
-				common.ErrCodeConditionTypeMismatch,
-				err.Error(),
-			))
-		default:
-			// Storage/driver failure — 500 with ticket via the standard
-			// helper. The detail (err.Error()) is logged server-side
-			// and never returned to the client in sanitized mode.
-			common.WriteError(w, r, common.Internal("grouped-stats dispatch failed", err))
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
 		}
+		common.WriteError(w, r, common.Internal("grouped-stats dispatch failed", err))
 		return
 	}
 

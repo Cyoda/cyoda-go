@@ -335,6 +335,8 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	}
 	if req.Limit != nil {
 		opts.Limit = *req.Limit
+	} else {
+		opts.Limit = search.DefaultDirectSearchLimit
 	}
 	for _, o := range req.OrderBy {
 		src := spi.SourceData

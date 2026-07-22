@@ -405,10 +405,10 @@ func TestSearcher_ScanBudgetExhausted(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected ErrScanBudgetExhausted, got nil")
+		t.Fatal("expected spi.ErrScanBudgetExhausted, got nil")
 	}
-	if !errors.Is(err, sqlite.ErrScanBudgetExhausted) {
-		t.Fatalf("expected ErrScanBudgetExhausted, got: %v", err)
+	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
+		t.Fatalf("expected spi.ErrScanBudgetExhausted, got: %v", err)
 	}
 }
 

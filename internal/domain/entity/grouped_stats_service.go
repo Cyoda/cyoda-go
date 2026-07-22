@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"sort"
 
 	"github.com/tidwall/gjson"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
@@ -43,9 +45,53 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 	return &GroupedStatsService{maxBuckets: maxBuckets}
 }
 
-// QueryGroupedStats dispatches a validated grouped-stats request against
-// any storage backend. The store parameter is intentionally `any` —
-// capabilities are detected via type assertion so a backend can satisfy
+// QueryGroupedStats runs the grouped-stats query and translates the known
+// domain/SPI sentinels into client-facing *common.AppError before
+// returning, so every transport (HTTP now, gRPC later) surfaces the
+// documented status without a per-handler switch. Unknown storage/driver
+// errors are returned unchanged and surface as 500 via the transport's
+// Internal fallback.
+func (s *GroupedStatsService) QueryGroupedStats(
+	ctx context.Context,
+	store any,
+	model spi.ModelRef,
+	req *ValidatedGroupedStatsRequest,
+) ([]GroupedStatsBucket, error) {
+	buckets, err := s.queryGroupedStatsInner(ctx, store, model, req)
+	if err != nil {
+		return nil, classifyGroupedStatsError(err)
+	}
+	return buckets, nil
+}
+
+// classifyGroupedStatsError maps the six known sentinels to operational
+// AppErrors (each wrapping the sentinel via WithCause so errors.Is still
+// holds); any other error is returned unchanged (surfaces as 500 at the
+// transport).
+func classifyGroupedStatsError(err error) error {
+	switch {
+	case errors.Is(err, ErrBackendNotSupported):
+		return common.Operational(http.StatusNotImplemented, "NOT_IMPLEMENTED_BY_BACKEND",
+			"backend does not support grouped stats").WithCause(err)
+	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
+		return common.Operational(http.StatusUnprocessableEntity, "GROUP_CARDINALITY_EXCEEDED",
+			"group cardinality exceeds the configured maximum").WithCause(err)
+	case errors.Is(err, spi.ErrScanBudgetExhausted):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
+			"scan budget exhausted; narrow the query or add an indexable predicate").WithCause(err)
+	case errors.Is(err, ErrInvalidCondition):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrInvalidFieldPath):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrConditionTypeMismatch):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
+	}
+	return err
+}
+
+// queryGroupedStatsInner dispatches a validated grouped-stats request
+// against any storage backend. The store parameter is intentionally `any`
+// — capabilities are detected via type assertion so a backend can satisfy
 // one or both of spi.Iterable / spi.GroupedAggregator.
 //
 // Decision tree (spec §4, decisions D11/D14/D15):
@@ -57,7 +103,7 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 //     translates, push it; otherwise pass zero-value and re-apply
 //     match.Match per yielded entity (D15).
 //  3. Neither — return ErrBackendNotSupported (handler maps to 501).
-func (s *GroupedStatsService) QueryGroupedStats(
+func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
 	store any,
 	model spi.ModelRef,

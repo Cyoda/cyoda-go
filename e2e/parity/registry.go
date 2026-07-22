@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 204 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 205 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -111,6 +111,7 @@ var allTests = []NamedTest{
 	{"SearchNoMatches", RunSearchNoMatches},
 	{"SearchAfterUpdate", RunSearchAfterUpdate},
 	{"SearchPointInTime", RunSearchPointInTime},
+	{"SearchOmittedLimitDefaults1000", RunSearchOmittedLimitDefaults1000},
 
 	// Temporal search filters (#423) — chronological date-typed meta
 	// compare + meta-vocabulary reconciliation, cross-backend.

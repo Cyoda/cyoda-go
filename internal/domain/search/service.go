@@ -199,7 +199,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			if spiLimit < 0 {
 				spiLimit = 0
 			}
-			return searcher.Search(ctx, filter, spi.SearchOptions{
+			res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
 				ModelName:    modelRef.EntityName,
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
@@ -208,6 +208,17 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				OrderBy:      orderBy,
 				TrackingRead: opts.TrackingRead,
 			})
+			switch {
+			case errors.Is(sErr, spi.ErrSearchResultLimitExceeded):
+				return nil, common.Operational(http.StatusBadRequest,
+					common.ErrCodeSearchResultLimit,
+					"matched result count exceeds the configured limit").WithCause(sErr)
+			case errors.Is(sErr, spi.ErrScanBudgetExhausted):
+				return nil, common.Operational(http.StatusBadRequest,
+					common.ErrCodeScanBudgetExhausted,
+					"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(sErr)
+			}
+			return res, sErr
 		}
 		// Fall through to in-memory filtering if translation fails.
 		slog.Debug("condition-to-filter translation failed, falling back to in-memory",
@@ -253,13 +264,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		matches = matches[opts.Offset:]
 	}
 
-	// Apply limit. Default 1000 when zero; negative means unbounded (no cap).
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 1000
-	}
-	if limit > 0 && limit < len(matches) {
-		matches = matches[:limit]
+	// Apply limit. 0 or negative means unbounded (no cap); the direct entry
+	// points resolve an omitted client limit to DefaultDirectSearchLimit before
+	// reaching the service, so 0 here means an explicit store-all (async submit
+	// or an internal caller), never "client omitted".
+	if opts.Limit > 0 && opts.Limit < len(matches) {
+		matches = matches[:opts.Limit]
 	}
 
 	return matches, nil
