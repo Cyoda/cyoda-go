@@ -26,6 +26,10 @@ BEGIN
   END IF;
   BEGIN
     result := floor(extract(epoch from t::timestamptz) * 1000)::bigint;
+  -- Broad catch (vs. cyoda_try_float8's narrower exception classes): the regex
+  -- above is a weaker pre-filter than float8's, so timezone/format variants
+  -- that pass it can still fail the cast in more ways; NULL-on-any-failure is
+  -- this function's intended total-function contract, not a specific class.
   EXCEPTION WHEN others THEN
     RETURN NULL;
   END;

@@ -274,6 +274,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **`creationDate`/`lastUpdateTime` meta filters now compare chronologically, not
+  lexically** — search conditions and workflow criteria on these fields compare
+  values as floored epoch-milliseconds (consistent across memory/sqlite/postgres),
+  not as raw RFC3339 strings, so results no longer depend on incidental
+  lexical-vs-temporal ordering agreement. Both fields now accept only comparison
+  operators (`EQUALS`/`NOT_EQUAL`/`GREATER_THAN`/`LESS_THAN`/`GREATER_OR_EQUAL`/
+  `LESS_OR_EQUAL`/`BETWEEN`/`IS_NULL`/`NOT_NULL`) with offset-bearing RFC3339
+  operands; a string/pattern operator or a non-RFC3339 operand is rejected
+  `400 CONDITION_TYPE_MISMATCH`, and an unknown meta filter field is rejected
+  `400 INVALID_FIELD_PATH`.
+
 - **Depth-2 nested joined cascade no longer deadlocks the transaction** — when a
   joined compute-node callback ran a transition whose own SYNC processor drove a
   *further* joined write on the same transaction `T` (a 2-deep same-transaction
