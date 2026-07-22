@@ -374,3 +374,79 @@ func TestConditionToFilter_DataLeafStampsNone(t *testing.T) {
 		t.Errorf("data leaf Coercion = %v, want CoerceNone", f.Coercion)
 	}
 }
+
+// TestConditionToFilter_SimpleBetween_PopulatesValues verifies that a
+// BETWEEN SimpleCondition (data leaf) populates Filter.Values with the two
+// bounds. Every downstream BETWEEN consumer (spi.evalLeafFilter,
+// postgres/sqlite query planners) reads Filter.Values, not Filter.Value —
+// leaving Values unset means BETWEEN silently never matches.
+func TestConditionToFilter_SimpleBetween_PopulatesValues(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN",
+		Value:        []any{float64(18), float64(65)},
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterBetween {
+		t.Fatalf("Op = %s, want between", f.Op)
+	}
+	if len(f.Values) != 2 {
+		t.Fatalf("Values = %v, want 2-element slice [18, 65]", f.Values)
+	}
+	if f.Values[0] != float64(18) || f.Values[1] != float64(65) {
+		t.Errorf("Values = %v, want [18 65]", f.Values)
+	}
+}
+
+// TestConditionToFilter_LifecycleBetween_PopulatesValues verifies that a
+// BETWEEN LifecycleCondition on a temporal meta field (creationDate)
+// populates Filter.Values with the two bounds AND stamps CoerceTemporal, so
+// storage-plugin BETWEEN pushdown and spi.MatchFilter can actually match.
+func TestConditionToFilter_LifecycleBetween_PopulatesValues(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2021-01-01T00:00:00Z", "2021-12-31T00:00:00Z"},
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterBetween {
+		t.Fatalf("Op = %s, want between", f.Op)
+	}
+	if f.Source != spi.SourceMeta {
+		t.Errorf("Source = %s, want meta", f.Source)
+	}
+	if f.Coercion != spi.CoerceTemporal {
+		t.Errorf("Coercion = %v, want CoerceTemporal", f.Coercion)
+	}
+	if len(f.Values) != 2 {
+		t.Fatalf("Values = %v, want 2-element slice", f.Values)
+	}
+	if f.Values[0] != "2021-01-01T00:00:00Z" || f.Values[1] != "2021-12-31T00:00:00Z" {
+		t.Errorf("Values = %v, want [2021-01-01T00:00:00Z 2021-12-31T00:00:00Z]", f.Values)
+	}
+}
+
+// TestConditionToFilter_SimpleBetween_MalformedValue_LeavesValuesNil verifies
+// that a malformed BETWEEN value (not a 2-element []any) leaves Filter.Values
+// nil rather than panicking — validation elsewhere rejects malformed BETWEEN
+// conditions, and a nil Values correctly no-matches downstream.
+func TestConditionToFilter_SimpleBetween_MalformedValue_LeavesValuesNil(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN",
+		Value:        "not-a-slice",
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Values != nil {
+		t.Errorf("Values = %v, want nil for malformed BETWEEN value", f.Values)
+	}
+}

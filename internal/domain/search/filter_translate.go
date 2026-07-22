@@ -46,13 +46,33 @@ func simpleToFilter(c *predicate.SimpleCondition, fields map[string]schema.Field
 	if err != nil {
 		return spi.Filter{}, err
 	}
+	op := mapOperator(c.OperatorType)
 	return spi.Filter{
-		Op:       mapOperator(c.OperatorType),
+		Op:       op,
 		Path:     stripped,
 		Source:   spi.SourceData,
 		Value:    c.Value,
+		Values:   betweenValues(op, c.Value),
 		Coercion: dataCoercion(c.JsonPath, fields),
 	}, nil
+}
+
+// betweenValues returns the two BETWEEN bounds as a []any for downstream
+// consumers that read Filter.Values (spi.evalLeafFilter/evalTemporalLeaf,
+// the postgres/sqlite query planners). Every BETWEEN consumer reads Values,
+// not Value — leaving Values unset makes BETWEEN silently never match.
+// Returns nil for non-BETWEEN ops or a malformed (non 2-element []any)
+// BETWEEN value; validation elsewhere rejects malformed BETWEEN conditions,
+// and a nil Values correctly no-matches downstream rather than panicking.
+func betweenValues(op spi.FilterOp, value any) []any {
+	if op != spi.FilterBetween {
+		return nil
+	}
+	vals, ok := value.([]any)
+	if !ok || len(vals) != 2 {
+		return nil
+	}
+	return vals
 }
 
 // dataCoercion returns CoerceTemporal only if the schema classifies the
@@ -89,11 +109,13 @@ func lifecycleToFilter(c *predicate.LifecycleCondition) spi.Filter {
 	if isTemporalMetaField(field) {
 		co = spi.CoerceTemporal
 	}
+	op := mapOperator(c.OperatorType)
 	return spi.Filter{
-		Op:       mapOperator(c.OperatorType),
+		Op:       op,
 		Path:     field,
 		Source:   spi.SourceMeta,
 		Value:    c.Value,
+		Values:   betweenValues(op, c.Value),
 		Coercion: co,
 	}
 }
