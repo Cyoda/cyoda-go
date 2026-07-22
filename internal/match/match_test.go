@@ -11,9 +11,11 @@ import (
 
 func meta() spi.EntityMeta {
 	return spi.EntityMeta{
+		ID:                      "entity-999",
 		State:                   "CREATED",
 		CreationDate:            time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
 		TransitionForLatestSave: "workflow.step1",
+		TransactionID:           "tx-123",
 	}
 }
 
@@ -506,14 +508,153 @@ func TestMatchLifecycleStateNoMatch(t *testing.T) {
 	}
 }
 
-func TestMatchLifecycleCreationDate(t *testing.T) {
+// TestMatchLifecycleCreationDate_ContainsIsNotTemporal proves creationDate is
+// no longer lexically matched: CONTAINS is not a valid comparison operator for
+// a temporal field (spec §6.4 — rejected at validation on validated entry
+// points), and matchLifecycle degrades safely to no-match rather than falling
+// back to substring matching on the formatted date string (the pre-fix
+// behaviour this test used to pin).
+func TestMatchLifecycleCreationDate_ContainsIsNotTemporal(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026-01-15"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got {
+		t.Error("expected false: CONTAINS is not a valid temporal comparison operator")
+	}
+}
+
+func TestMatchLifecycleCreationDate_GreaterThan(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2026-01-15T00:00:00Z"}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !got {
-		t.Error("expected true for creation date contains")
+		t.Error("expected true: 2026-01-15T10:30:00Z > 2026-01-15T00:00:00Z")
+	}
+}
+
+func TestMatchLifecycleCreationDate_LessThan(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "LESS_THAN", Value: "2026-01-15T00:00:00Z"}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected false: 2026-01-15T10:30:00Z is not < 2026-01-15T00:00:00Z")
+	}
+}
+
+func TestMatchLifecycleCreationDate_NotEqual(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "NOT_EQUAL", Value: "2020-01-01T00:00:00Z"}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true: creationDate does not equal an unrelated instant")
+	}
+}
+
+func TestMatchLifecycleCreationDate_Between(t *testing.T) {
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"},
+	}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true: creationDate falls within the January 2026 range")
+	}
+}
+
+func TestMatchLifecycleCreationDate_BetweenOutsideRange(t *testing.T) {
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2020-01-01T00:00:00Z", "2020-01-31T00:00:00Z"},
+	}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected false: creationDate falls outside the 2020 range")
+	}
+}
+
+// TestMatchLifecycleCreationDate_UnsetIsExcluded pins spec §7.1: a stored
+// value that does not convert to ms (zero time.Time) is EXCLUDED for
+// comparison ops, and vacuously true for NOT_EQUAL.
+func TestMatchLifecycleCreationDate_UnsetIsExcluded(t *testing.T) {
+	unsetMeta := spi.EntityMeta{State: "CREATED"} // CreationDate is zero-value
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "EQUALS", Value: "2026-01-15T10:30:00Z"}
+	got, err := matchLifecycle(cond, unsetMeta)
+	if err != nil || got {
+		t.Errorf("expected exclude (false) for unset stored value; got=%v err=%v", got, err)
+	}
+
+	neCond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "NOT_EQUAL", Value: "2026-01-15T10:30:00Z"}
+	got, err = matchLifecycle(neCond, unsetMeta)
+	if err != nil || !got {
+		t.Errorf("expected vacuous true for NOT_EQUAL on unset stored value; got=%v err=%v", got, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalEquals is the driving RED test from the task
+// brief: creationDate EQUALS must compare chronologically (epoch-ms), not
+// lexically, so an operand with a differently-formatted-but-identical
+// instant still matches.
+func TestMatchLifecycle_TemporalEquals(t *testing.T) {
+	m := spi.EntityMeta{CreationDate: time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "EQUALS", Value: "2021-01-01T00:00:00.000Z"}
+	ok, err := matchLifecycle(c, m)
+	if err != nil || !ok {
+		t.Errorf("EQUALS same-instant should match; ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMatchLifecycle_LastUpdateTime(t *testing.T) {
+	m := spi.EntityMeta{LastModifiedDate: time.Date(2021, 6, 1, 12, 0, 0, 0, time.UTC)}
+	c := &predicate.LifecycleCondition{Field: "lastUpdateTime", OperatorType: "GREATER_THAN", Value: "2021-06-01T11:00:00Z"}
+	ok, err := matchLifecycle(c, m)
+	if err != nil || !ok {
+		t.Errorf("lastUpdateTime GT earlier should match; ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMatchLifecycle_TransactionId(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "transactionId", OperatorType: "EQUALS", Value: "tx-123"}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true for transactionId match")
+	}
+}
+
+func TestMatchLifecycle_ID(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "id", OperatorType: "EQUALS", Value: "entity-999"}
+	got, err := Match(cond, sampleData, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true for id match")
+	}
+}
+
+func TestMatchLifecycle_UnknownFieldError(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "bogusField", OperatorType: "EQUALS", Value: "x"}
+	_, err := Match(cond, sampleData, meta())
+	if err == nil {
+		t.Error("expected error for unknown lifecycle field")
 	}
 }
 
