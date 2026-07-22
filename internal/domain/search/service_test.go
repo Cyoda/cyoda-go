@@ -997,9 +997,9 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// EnsureModelRegistered + validateConditionPaths (for $.surname) + resolveSortKeys
-		// each call Get once.
-		getQueue: []*spi.ModelDescriptor{desc, desc, desc},
+		// EnsureModelRegistered + validateConditionPaths (for $.surname) +
+		// validateConditionTypes + resolveSortKeys each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc, desc, desc},
 	}
 
 	var capturedOpts spi.SearchOptions

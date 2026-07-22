@@ -161,6 +161,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
 			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
 	}
+	// Condition type-soundness (correctness-over-availability): every
+	// transport funnels through Search, so this is the single boundary that
+	// closes the gap where gRPC previously bypassed HTTP-only validation.
+	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+		return nil, tErr
+	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
 	if oerr != nil {
@@ -284,6 +290,12 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	if rErr := ValidateRegexPatterns(cond); rErr != nil {
 		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
 			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
+	// Condition type-soundness (correctness-over-availability): same
+	// single-boundary guard as Search, so an async job is never created for
+	// a type-unsound condition regardless of transport.
+	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+		return "", tErr
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400

@@ -1,12 +1,16 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -241,4 +245,49 @@ func inferValueDataType(v any) schema.DataType {
 		return schema.InferDataType(json.Number(strconv.FormatFloat(val, 'f', -1, 64)))
 	}
 	return schema.InferDataType(v)
+}
+
+// loadModelNode fetches and parses the model schema for ref, returning the
+// *schema.ModelNode used for condition-type validation. Returns nil when
+// the store lookup fails, the descriptor has no schema bound, or the schema
+// fails to parse — callers treat this as "no type constraints available"
+// rather than failing the search on a schema-load hiccup. EnsureModelRegistered
+// has already confirmed the model exists by the time this runs, so in the
+// normal case the node is present.
+func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+	desc, err := store.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil
+	}
+	return node
+}
+
+// validateConditionTypes is the single boundary enforcing condition
+// type-soundness for every SearchService entry point (HTTP, gRPC, and any
+// future transport funnel through Search/SubmitAsync). It loads the model
+// schema and delegates to ValidateConditionValueTypes, mapping the returned
+// sentinel error to the appropriate 400-classified *common.AppError:
+// errInvalidFieldPath → INVALID_FIELD_PATH (the field itself is unknown),
+// anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
+// with a known field/operator).
+//
+// A schema-load hiccup (see loadModelNode) returns nil — the search
+// proceeds without type constraints rather than failing on infra flakiness.
+func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
+	node := loadModelNode(ctx, modelStore, modelRef)
+	if node == nil {
+		return nil
+	}
+	if err := ValidateConditionValueTypes(node, cond); err != nil {
+		code := common.ErrCodeConditionTypeMismatch
+		if errors.Is(err, errInvalidFieldPath) {
+			code = common.ErrCodeInvalidFieldPath
+		}
+		return common.Operational(http.StatusBadRequest, code, err.Error())
+	}
+	return nil
 }
