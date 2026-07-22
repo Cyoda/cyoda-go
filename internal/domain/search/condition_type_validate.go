@@ -148,6 +148,13 @@ var comparisonOps = map[string]bool{
 // Non-temporal meta fields (state, transitionForLatestSave, transactionId,
 // id) carry no further constraint here: they compare as their stored
 // text/string form regardless of operator.
+// ValidateLifecycleCondition checks a lifecycle/meta condition for type
+// soundness (known meta field; valid operator + offset-bearing RFC3339
+// operand on temporal fields). Shared by the search API boundary and
+// workflow-criterion import so both reject the same malformed conditions.
+// Returns a descriptive error; callers map it to their own 4xx code.
+func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error { return validateLifecycleType(c) }
+
 func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isKnownMetaFilterField(c.Field) {
 		return fmt.Errorf("unknown meta filter field %q: %w", c.Field, errInvalidFieldPath)
