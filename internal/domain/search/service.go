@@ -199,7 +199,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			if spiLimit < 0 {
 				spiLimit = 0
 			}
-			return searcher.Search(ctx, filter, spi.SearchOptions{
+			res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
 				ModelName:    modelRef.EntityName,
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
@@ -208,6 +208,17 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				OrderBy:      orderBy,
 				TrackingRead: opts.TrackingRead,
 			})
+			switch {
+			case errors.Is(sErr, spi.ErrSearchResultLimitExceeded):
+				return nil, common.Operational(http.StatusBadRequest,
+					common.ErrCodeSearchResultLimit,
+					"matched result count exceeds the configured limit").WithCause(sErr)
+			case errors.Is(sErr, spi.ErrScanBudgetExhausted):
+				return nil, common.Operational(http.StatusBadRequest,
+					common.ErrCodeScanBudgetExhausted,
+					"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(sErr)
+			}
+			return res, sErr
 		}
 		// Fall through to in-memory filtering if translation fails.
 		slog.Debug("condition-to-filter translation failed, falling back to in-memory",

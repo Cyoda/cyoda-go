@@ -1665,3 +1665,56 @@ func TestSearch_LimitZeroPassesUnboundedToSearcher(t *testing.T) {
 		t.Errorf("spiLimit = %d, want 0 (unbounded); service must not inject 1000", ses.capturedOpts.Limit)
 	}
 }
+
+// newStubSearcherService builds a SearchService backed by a memory
+// StoreFactory whose EntityStore.Search is replaced by fn, with a minimal
+// "person" model already registered. Shared by the sentinel-mapping tests
+// below (and reusable by future Searcher-stub tests).
+func newStubSearcherService(t *testing.T, fn func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error)) (*search.SearchService, context.Context, spi.ModelRef) {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{EntityStore: realStore, searchFn: fn}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore), ctx, ref
+}
+
+func TestSearch_SearcherResultLimitSentinel_MapsTo400(t *testing.T) {
+	svc, ctx, ref := newStubSearcherService(t, func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+		return nil, fmt.Errorf("plugin detail: %w", spi.ErrSearchResultLimitExceeded)
+	})
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Errorf("errors.Is(err, ErrSearchResultLimitExceeded) = false; WithCause must preserve the sentinel")
+	}
+}
+
+func TestSearch_SearcherScanBudgetSentinel_MapsTo400(t *testing.T) {
+	svc, ctx, ref := newStubSearcherService(t, func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+		return nil, fmt.Errorf("examined N rows: %w", spi.ErrScanBudgetExhausted)
+	})
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
+	}
+}
