@@ -6,6 +6,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Bounded-search failures now surface as `400`, not `500`** — a storage backend
+  (`Searcher` or grouped-stats aggregator) that detects a matched result set
+  exceeding its configured cap now returns `400 SEARCH_RESULT_LIMIT`; one whose
+  non-indexable residual scan exceeds the backend's row budget now returns
+  `400 SCAN_BUDGET_EXHAUSTED` — both previously surfaced as an opaque `500`
+  ticket on every transport. sqlite raises `SCAN_BUDGET_EXHAUSTED` on direct
+  search today; the commercial backend's index-driven searcher is expected to
+  raise `SEARCH_RESULT_LIMIT`. New error code: `SCAN_BUDGET_EXHAUSTED` (400).
+  ([#433](https://github.com/Cyoda-platform/cyoda-go/issues/433))
+
 - **Scheduled state transitions now fire automatically.** A transition
   carrying `schedule: {delayMs, timeoutMs}` fires `delayMs` after the entity
   enters its source state, via a durable per-backend `ScheduledTask` store
@@ -273,6 +283,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   valid UUID is accepted; the fictional constraint is removed from the spec.
 
 ### Fixed
+
+- **Direct search now applies the documented default limit** — omitting `limit`
+  on `POST /api/search/direct/{entityName}/{modelVersion}` (and the gRPC
+  `EntitySearchCollection`) now caps results at the documented default of 1000
+  on every storage backend; previously this default was applied only on the
+  `GetAll`+match fallback branch, while the `Searcher` pushdown branch used by
+  all three OSS backends (memory/sqlite/postgres) treated an omitted limit as
+  unbounded, returning the entire matched set.
+  ([#432](https://github.com/Cyoda-platform/cyoda-go/issues/432))
 
 - **`creationDate`/`lastUpdateTime` meta filters now compare chronologically, not
   lexically** — search conditions and workflow criteria on these fields compare

@@ -40,10 +40,15 @@ and must surface the documented 400.
 
 `plugins/sqlite/searcher.go:19` defines `ErrScanBudgetExhausted` ("a search
 with a residual filter examined more than `SearchScanLimit` rows"), raised at
-runtime from both `searcher.Search` (line 99) and the grouped-stats streaming
-aggregation path (line 241). Nothing translates it, so it surfaces as **500 on
-both transports** — the same failure shape as #433, and genuinely
-runtime-reachable (it is a data-volume guard, not upstream-guarded validation).
+runtime from **two sites, both inside `Searcher.Search`**: the committed
+pushdown path (`searchCommitted`, ~line 99) and the in-tx read-your-own-writes
+overlay path (`searchTxOverlay`, ~line 241). (Line 241 is *not* the
+grouped-stats path, despite the proximity of the two concerns — the
+grouped-stats streaming aggregation, `Iterable.Iterate` in
+`plugins/sqlite/grouped_stats.go`, enforces no scan budget at all today.)
+Nothing translates the sentinel, so it surfaces as **500 on both transports**
+— the same failure shape as #433, and genuinely runtime-reachable on the
+search path (it is a data-volume guard, not upstream-guarded validation).
 It is semantically **distinct** from `SEARCH_RESULT_LIMIT` (rows *examined*, not
 matched-count exceeding a cap), so it warrants its own error code.
 
@@ -191,8 +196,11 @@ Move sentinel→status translation from the HTTP handler switch
 so `errors.Is` still holds), so the handler collapses to the standard
 `errors.As(&appErr)`-forward + `common.Internal` default. **All six** sentinels
 the handler currently translates must be covered (the first five are today's
-behaviour; the sixth is the new scan-budget mapping, now reachable here too via
-the streaming path at `searcher.go:241`):
+behaviour; the sixth is the new scan-budget mapping, added for forward
+compatibility with a bounded-scan `Iterable`/`GroupedAggregator` — sqlite's
+`Iterate` (`plugins/sqlite/grouped_stats.go`) enforces no scan budget today,
+so this sentinel is **not** reachable on any OSS backend via the grouped-stats
+path; it is exercised only via the service unit test's fake iterable):
 
 | Sentinel | Status + code (unchanged behaviour) |
 |---|---|
@@ -240,13 +248,16 @@ genuine 500s into malformed 4xx. The five existing `errors.Is` service tests
 | malformed condition | 400 `INVALID_CONDITION` | via service `AppError`; handler forwards |
 | unknown meta filter field | 400 `INVALID_FIELD_PATH` | via service `AppError`; handler forwards |
 | type-unsound condition | 400 `CONDITION_TYPE_MISMATCH` | via service `AppError`; handler forwards |
-| scan budget exhausted (sqlite streaming) | **400 `SCAN_BUDGET_EXHAUSTED`** | **new** — was 500 |
+| scan budget exhausted (forward-compat; not reachable on OSS today) | **400 `SCAN_BUDGET_EXHAUSTED`** | **new mapping** — no running OSS backend raises it |
 | arbitrary storage error | 500 ticket | unchanged (`default → Internal`) |
 | success | 200 | unchanged |
 
-(Only the scan-budget row changes behaviour for grouped-stats; the other five
-are identical statuses/codes with the translation site moved for transport
-symmetry.)
+(The scan-budget row adds a translation for forward compatibility — no OSS
+`Iterable`/`GroupedAggregator` currently raises `spi.ErrScanBudgetExhausted`
+on the grouped-stats path, so this row is unreachable via a running backend
+until a future implementation enforces a streaming scan budget; the other
+five rows are identical statuses/codes with the translation site moved for
+transport symmetry.)
 
 ## Test coverage matrix (scenario × layer)
 
@@ -261,7 +272,7 @@ Layers: **U**=service unit · **E**=running-backend e2e (sqlite + postgres) ·
 | async submit still store-all (`Limit=0` unbounded, incl. fallback) | ✓ | ✓ | — | — |
 | stub `Searcher` → `ErrSearchResultLimitExceeded` → 400 `SEARCH_RESULT_LIMIT` | ✓ | — | — | ✓ |
 | sqlite scan budget → `ErrScanBudgetExhausted` → 400 `SCAN_BUDGET_EXHAUSTED` (direct search) | ✓ | ✓ (sqlite) | — | ✓ |
-| sqlite scan budget → 400 `SCAN_BUDGET_EXHAUSTED` (grouped-stats streaming) | ✓ | ✓ (sqlite) | — | n/a |
+| scan budget exhausted → 400 `SCAN_BUDGET_EXHAUSTED` (grouped-stats) | ✓ (fake iterable, forward-compat) | — (not reachable on OSS) | — | n/a |
 | grouped-stats 501/422/400×3 unchanged after refactor | ✓ | — | ✓ (existing) | n/a |
 | `QueryGroupedStats` returns `AppError` wrapping sentinel (`errors.Is` holds) | ✓ | — | — | — |
 | arbitrary storage error still 500 (`PushdownArbitraryErrorPropagates`) | ✓ (existing) | — | — | — |
@@ -271,9 +282,11 @@ RED-first per issue TDDs: (#432) omitted-limit direct search against a
 `Searcher` backend currently returns > 1000 → must cap at 1000, asserted on
 HTTP **and** gRPC, async submission asserted unchanged; (#433) a stub `Searcher`
 returning `spi.ErrSearchResultLimitExceeded` yields HTTP **and** gRPC **400
-`SEARCH_RESULT_LIMIT`** (currently 500); scan-budget: an sqlite search/aggregate
-that exceeds `SearchScanLimit` (test hook `store_factory.go:324`) yields **400
-`SCAN_BUDGET_EXHAUSTED`** (currently 500) on search (HTTP+gRPC) and grouped-stats.
+`SEARCH_RESULT_LIMIT`** (currently 500); scan-budget: an sqlite search that
+exceeds `SearchScanLimit` (test hook `store_factory.go:324`) yields **400
+`SCAN_BUDGET_EXHAUSTED`** (currently 500) on search (HTTP+gRPC); the
+grouped-stats scan-budget mapping is exercised only at the service-unit layer
+(fake iterable), since no OSS `Iterable` currently raises it.
 
 ## Out of scope (investigated)
 
