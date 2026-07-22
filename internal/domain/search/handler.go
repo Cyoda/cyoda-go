@@ -36,10 +36,12 @@ func jobLookupError(err error) *common.AppError {
 
 // Handler handles search-related HTTP endpoints.
 //
-// Condition type-soundness (schema-vs-value, meta-vocabulary checks) is
-// enforced by SearchService.validateConditionTypes — the single boundary
-// every transport (HTTP via this handler, gRPC via internal/grpc/search.go)
-// funnels through — not here. See condition_type_validate.go.
+// Structural condition validation (canonical operator set, BETWEEN arity —
+// operators.go's ValidateCondition) and condition type-soundness
+// (schema-vs-value, meta-vocabulary checks — condition_type_validate.go's
+// validateConditionTypes) are both enforced inside SearchService.Search /
+// SubmitAsync — the single boundary every transport (HTTP via this handler,
+// gRPC via internal/grpc/search.go) funnels through — not here.
 type Handler struct {
 	searchSvc   *SearchService
 	maxSortKeys int
@@ -80,12 +82,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
-	if err := ValidateCondition(cond); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
-		return
-	}
-	// Condition type-soundness is enforced by SearchService.Search itself
-	// (the single boundary shared with gRPC) — see this file's doc comment.
+	// Structural validation (canonical operator set, BETWEEN arity) and
+	// condition type-soundness are both enforced by SearchService.Search
+	// itself (the single boundary shared with gRPC) — see this file's doc
+	// comment.
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -173,11 +173,8 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
-	if err := ValidateCondition(cond); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
-		return
-	}
-	// Condition type-soundness is enforced by SearchService.SubmitAsync
+	// Structural validation (canonical operator set, BETWEEN arity) and
+	// condition type-soundness are both enforced by SearchService.SubmitAsync
 	// itself (the single boundary shared with gRPC) — see this file's doc
 	// comment.
 

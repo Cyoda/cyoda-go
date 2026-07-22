@@ -147,6 +147,27 @@ func TestConditionToFilter_Lifecycle(t *testing.T) {
 	}
 }
 
+// M3b — TestConditionToFilter_PreviousTransitionAlias verifies that a
+// LifecycleCondition naming the "previousTransition" client-facing alias
+// is canonicalized by lifecycleToFilter to the storage-vocabulary path
+// "transitionForLatestSave" (see sortableMetaFields in orderclass.go, the
+// single source of truth for the meta vocabulary). This alias mapping was
+// previously untested at the translator layer.
+func TestConditionToFilter_PreviousTransitionAlias(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field:        "previousTransition",
+		OperatorType: "EQUALS",
+		Value:        "t",
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Path != "transitionForLatestSave" {
+		t.Errorf("Path = %q, want transitionForLatestSave (previousTransition alias canonicalization)", f.Path)
+	}
+}
+
 func TestConditionToFilter_GroupAND(t *testing.T) {
 	cond := &predicate.GroupCondition{
 		Operator: "AND",

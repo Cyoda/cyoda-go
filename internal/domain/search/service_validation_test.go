@@ -136,3 +136,67 @@ func TestSubmitAsyncSearch_NonOffsetTemporalOperand_RejectsAtServiceBoundary(t *
 		t.Errorf("jobID = %q, want empty (no job created before rejection)", jobID)
 	}
 }
+
+// C1 — malformed BETWEEN operand arity bypassed gRPC entirely.
+//
+// search.ValidateCondition (operators.go) — which now also enforces BETWEEN
+// arity (exactly two operands) — previously had a single call site: the HTTP
+// handler. Like Fix B's condition-type validation gap, the gRPC search
+// handlers (internal/grpc/search.go) call DirectSearch/SubmitAsyncSearch
+// directly and never passed through the HTTP handler, so a gRPC client could
+// submit a scalar-operand BETWEEN condition — the exact C1 repro — and reach
+// the storage plugin with no rejection at all.
+//
+// These tests exercise DirectSearch/SubmitAsyncSearch directly (the
+// gRPC-facing entry points) to prove ValidateCondition's arity check now runs
+// at the service boundary, covering every transport uniformly.
+
+// TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary verifies
+// that DirectSearch rejects a lifecycle BETWEEN condition whose value is a
+// bare scalar (not a 2-element array) with a 400 BAD_REQUEST AppError.
+func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ref := registerModelWithSchema(t, factory, "grpc-validate-d", "name")
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// The exact C1 repro condition: a scalar RFC3339 operand against a
+	// temporal lifecycle field's BETWEEN operator.
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        "2021-01-01T00:00:00Z",
+	}
+
+	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
+}
+
+// TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary
+// verifies that SubmitAsyncSearch rejects the same malformed BETWEEN
+// condition with a 400 BAD_REQUEST AppError, and that no job is created
+// before the rejection.
+func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ref := registerModelWithSchema(t, factory, "grpc-validate-e", "age")
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN",
+		Value:        float64(18), // scalar, not the required 2-element array
+	}
+
+	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
+	if jobID != "" {
+		t.Errorf("jobID = %q, want empty (no job created before rejection)", jobID)
+	}
+}

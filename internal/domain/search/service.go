@@ -146,6 +146,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — model-independent, so it runs before any model-store access.
+	// This is the single boundary every transport (HTTP, gRPC) funnels
+	// through; the HTTP handler no longer duplicates this check.
+	if cErr := ValidateCondition(cond); cErr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+	}
+
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
@@ -269,6 +277,13 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	if opts.Limit > pagination.MaxPageSize {
 		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — same single boundary as Search, so an async job is never
+	// created for a structurally-malformed condition regardless of transport.
+	if cErr := ValidateCondition(cond); cErr != nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
 	}
 
 	uc := spi.GetUserContext(ctx)
