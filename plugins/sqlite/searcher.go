@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,11 +11,6 @@ import (
 
 // Compile-time check that entityStore implements spi.Searcher.
 var _ spi.Searcher = (*entityStore)(nil)
-
-// ErrScanBudgetExhausted is returned when a search with a residual filter
-// examines more rows than the configured SearchScanLimit without filling
-// the requested result page. Callers should tighten their filter.
-var ErrScanBudgetExhausted = errors.New("scan budget exhausted")
 
 // Search implements spi.Searcher for the SQLite entity store.
 //
@@ -96,7 +90,7 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 
 	for rows.Next() {
 		if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
-			return nil, fmt.Errorf("%w: examined %d rows", ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
+			return nil, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
 		}
 		scanned++
 
@@ -238,7 +232,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		next := func() (*spi.Entity, bool, error) {
 			for rows.Next() {
 				if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
-					return nil, false, fmt.Errorf("%w: examined %d rows", ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
+					return nil, false, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
 				}
 				scanned++
 				e, scanErr := scanVersionEntity(rows)

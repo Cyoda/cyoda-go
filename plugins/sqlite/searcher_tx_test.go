@@ -372,7 +372,7 @@ func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 // TestSearchTx_NarrowPredicateStaysWithinScanBudget: a mixed filter whose
 // pushable part narrows the committed candidate set must NOT exhaust the scan
 // budget over a large model (no full scan), while a broad post-filter over the
-// same model still errors ErrScanBudgetExhausted.
+// same model still errors spi.ErrScanBudgetExhausted.
 func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "tx_budget.db")
@@ -424,7 +424,7 @@ func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	// Broad residual over the whole model still exhausts the budget.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
 	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1"})
-	if !errors.Is(err, sqlite.ErrScanBudgetExhausted) {
+	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
 		t.Fatalf("broad in-tx post-filter must exhaust budget, got: %v", err)
 	}
 }
@@ -601,7 +601,7 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{
 		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
 	})
-	if !errors.Is(err, sqlite.ErrScanBudgetExhausted) {
+	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
 		t.Fatalf("broad in-tx PIT post-filter must exhaust budget, got: %v", err)
 	}
 }
