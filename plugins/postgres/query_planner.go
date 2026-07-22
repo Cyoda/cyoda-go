@@ -177,8 +177,23 @@ var directMetaColumns = map[string]bool{
 
 // fieldExpr returns the SQL expression for accessing a field's text value.
 //
-// SourceMeta paths in directMetaColumns return the column name directly.
-// SourceMeta paths NOT in that set are extracted as doc->'_meta'->>'<path>'.
+// SourceMeta resolution order (mirrors orderByFieldExpr in searcher.go,
+// which resolves the same canonical meta paths for ORDER BY — do not
+// maintain a second mapping):
+//  1. Path "id" → the entity_id column directly (not in metaJSONKey).
+//  2. Path in metaJSONKey (canonical lifecycle-filter name, e.g.
+//     "creationDate") → doc->'_meta'->>'<storage-key>' using the mapped
+//     storage key (e.g. "creation_date"). Filter paths reaching this
+//     function are always canonical post-validation (ConditionToFilter /
+//     lifecycleToFilter build them, and unknown meta fields are rejected
+//     upstream), so this is the common case for meta filters.
+//  3. Path in directMetaColumns (internal/direct-column paths such as
+//     "entity_id", "tenant_id", "version" used by non-search internal
+//     filters) → the column name directly. Kept as a defensive fallback so
+//     existing internal callers using storage-column names don't regress.
+//  4. Otherwise → raw doc->'_meta'->>'<path>' (unreachable for validated
+//     search filters; kept total for defensiveness).
+//
 // SourceData paths are extracted as doc->>'<path>' (or doc->'a'->>'b' for
 // nested dotted paths).
 //
@@ -188,6 +203,12 @@ var directMetaColumns = map[string]bool{
 // rejects any character that could terminate a quoted literal.
 func fieldExpr(f spi.Filter) string {
 	if f.Source == spi.SourceMeta {
+		if f.Path == "id" {
+			return "entity_id"
+		}
+		if key, ok := metaJSONKey[f.Path]; ok {
+			return jsonbExtractText("doc->'_meta'", key)
+		}
 		if directMetaColumns[f.Path] {
 			return f.Path
 		}
@@ -299,6 +320,9 @@ func nextPlaceholder(counter *int) string {
 // boolean operands are rendered to their text form ("true"/"false") via textArg
 // so they encode against the text-typed extraction (see textArg).
 func leafToSQL(f spi.Filter, counter *int) (string, []any) {
+	if f.Coercion == spi.CoerceTemporal {
+		return temporalLeafToSQL(f, counter)
+	}
 	switch f.Op {
 	case spi.FilterEq:
 		// Numeric operand: cyoda_try_float8 coerces the field to float8, so a field stored
@@ -372,6 +396,61 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		return "1=1", nil
 	}
 	return "1=1", nil
+}
+
+// temporalLeafToSQL translates a CoerceTemporal leaf (spi.Filter.Coercion ==
+// spi.CoerceTemporal) into SQL. The field expression is wrapped in
+// cyoda_epoch_millis(...) (migration 000005) so chronological comparisons
+// compare as bigint epoch-ms rather than lexicographic text — matching the
+// canonical temporal-scalar rule shared by spi.ParseTemporalMillis /
+// spi.CompareTemporal and the sqlite/memory Go evaluators.
+//
+// Operands are parsed to int64 epoch-ms Go-side via spi.ParseTemporalMillis
+// and bound as ordinary $N args (never string-formatted into the SQL text) —
+// cyoda_epoch_millis is NULL-safe/total, so a malformed operand simply binds
+// as 0 with ok=false discarded; upstream validation guarantees operands here
+// are valid offset-bearing RFC3339 instants, so this is defensive only.
+//
+// NULL/3VL rules mirror the non-temporal leaf shapes: BETWEEN/Eq/Gt/Lt/Gte/Lte
+// require the column IS NOT NULL (a NULL/unparseable stored value never
+// matches a positive comparison); NE uses IS NULL OR != so a NULL/unparseable
+// stored value vacuously satisfies "not equal" (matching CompareTemporal's
+// vacuous-true-for-NE rule).
+func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
+	col := "cyoda_epoch_millis(" + fieldExpr(f) + ")"
+	switch f.Op {
+	case spi.FilterBetween:
+		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))
+		hi, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[1]))
+		p1 := nextPlaceholder(counter)
+		p2 := nextPlaceholder(counter)
+		return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)", col, col, p1, p2), []any{lo, hi}
+	case spi.FilterNe:
+		ms, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Value))
+		p := nextPlaceholder(counter)
+		return fmt.Sprintf("(%s IS NULL OR %s != %s)", col, col, p), []any{ms}
+	default:
+		ms, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Value))
+		p := nextPlaceholder(counter)
+		return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s)", col, col, sqlOpForTemporal(f.Op), p), []any{ms}
+	}
+}
+
+// sqlOpForTemporal maps a comparison FilterOp to its SQL operator for the
+// default (non-BETWEEN, non-NE) branch of temporalLeafToSQL.
+func sqlOpForTemporal(op spi.FilterOp) string {
+	switch op {
+	case spi.FilterGt:
+		return ">"
+	case spi.FilterLt:
+		return "<"
+	case spi.FilterGte:
+		return ">="
+	case spi.FilterLte:
+		return "<="
+	default: // spi.FilterEq
+		return "="
+	}
 }
 
 // orderingOp emits a comparison clause for Gt/Lt/Gte/Lte. Numeric values
