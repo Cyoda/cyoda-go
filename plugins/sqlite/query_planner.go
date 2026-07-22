@@ -162,9 +162,16 @@ var directMetaColumns = map[string]bool{
 }
 
 // fieldExpr returns the SQL expression for accessing a field.
-// SourceMeta fields with direct columns use the column name directly.
-// SourceMeta fields without direct columns (e.g., "state") use
-// json_extract on the meta JSONB column.
+// SourceMeta "id" resolves to the entity_id column (direct, no json_extract).
+// SourceMeta fields matching a canonical lifecycle-filter name (as used by
+// post-#423 temporal/lifecycle filters, e.g. "creationDate") are mapped
+// through metaBlobKey to their meta-blob storage key — mirroring
+// orderByFieldExpr's resolution so filter and ORDER BY agree on where a
+// canonical path lives.
+// SourceMeta fields with direct columns (storage-key vocabulary, e.g.
+// "entity_id") use the column name directly.
+// Remaining SourceMeta fields (storage-key vocabulary not backed by a direct
+// column, e.g. "state") use json_extract on the meta JSONB column.
 // SourceData fields use json_extract on the data BLOB column.
 //
 // Safety invariant: f.Path is interpolated into a JSON-path literal and
@@ -174,6 +181,12 @@ var directMetaColumns = map[string]bool{
 // or validateFilterPaths before invoking this function.
 func fieldExpr(f spi.Filter) string {
 	if f.Source == spi.SourceMeta {
+		if f.Path == "id" {
+			return "entity_id"
+		}
+		if key, ok := metaBlobKey[f.Path]; ok {
+			return jsonExtract("meta", key)
+		}
 		if directMetaColumns[f.Path] {
 			return f.Path
 		}
@@ -192,6 +205,9 @@ func fieldExpr(f spi.Filter) string {
 //   - String ops (contains, starts_with, ends_with): use instr/substr, not LIKE
 //   - like: uses LIKE with ESCAPE '\' and value preprocessing
 func leafToSQL(f spi.Filter) (string, []any) {
+	if f.Coercion == spi.CoerceTemporal {
+		return temporalLeafToSQL(f)
+	}
 	col := fieldExpr(f)
 	switch f.Op {
 	case spi.FilterEq:
@@ -226,6 +242,65 @@ func leafToSQL(f spi.Filter) (string, []any) {
 		return "1=1", nil
 	}
 	return "1=1", nil
+}
+
+// temporalLeafToSQL translates a CoerceTemporal leaf (spi.Filter.Coercion ==
+// spi.CoerceTemporal) into SQL. The meta/data blob stores timestamps as
+// microsecond integers, so the field expression is divided by 1000 (µs->ms
+// floor) — mirroring orderByFieldExpr's OrderTemporal handling exactly, so
+// filter and ORDER BY compare the same representation.
+//
+// Operands are parsed to int64 epoch-ms Go-side via spi.ParseTemporalMillis
+// and bound as ordinary ? args (never string-formatted into the SQL text);
+// upstream validation guarantees operands here are valid offset-bearing
+// RFC3339 instants — a parse failure degrades to ms=0, defensive only.
+//
+// NULL/3VL rules mirror the non-temporal leaf shapes: BETWEEN/Eq/Gt/Lt/Gte/Lte
+// require the column IS NOT NULL (a NULL/unparseable stored value never
+// matches a positive comparison); NE uses IS NULL OR != so a NULL/unparseable
+// stored value vacuously satisfies "not equal" (matching CompareTemporal's
+// vacuous-true-for-NE rule).
+func temporalLeafToSQL(f spi.Filter) (string, []any) {
+	col := "(" + fieldExpr(f) + " / 1000)"
+	switch f.Op {
+	case spi.FilterBetween:
+		if len(f.Values) < 2 {
+			return "1=1", nil
+		}
+		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))
+		hi, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[1]))
+		return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col), []any{lo, hi}
+	case spi.FilterNe:
+		ms, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Value))
+		return fmt.Sprintf("(%s IS NULL OR %s != ?)", col, col), []any{ms}
+	default:
+		sqlOp := sqlOpForTemporal(f.Op)
+		if sqlOp == "" {
+			return "1=1", nil
+		}
+		ms, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Value))
+		return fmt.Sprintf("(%s IS NOT NULL AND %s %s ?)", col, col, sqlOp), []any{ms}
+	}
+}
+
+// sqlOpForTemporal maps a comparison FilterOp to its SQL operator for
+// temporal leaves. Returns "" for ops that don't reach here (Between/Ne are
+// handled separately by temporalLeafToSQL; anything else is not pushable
+// under CoerceTemporal).
+func sqlOpForTemporal(op spi.FilterOp) string {
+	switch op {
+	case spi.FilterEq:
+		return "="
+	case spi.FilterGt:
+		return ">"
+	case spi.FilterLt:
+		return "<"
+	case spi.FilterGte:
+		return ">="
+	case spi.FilterLte:
+		return "<="
+	}
+	return ""
 }
 
 // escapeLike escapes LIKE wildcards (%, _, \) in a user-provided value
