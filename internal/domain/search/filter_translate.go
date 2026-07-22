@@ -6,23 +6,30 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // ConditionToFilter translates a domain predicate.Condition into an spi.Filter.
 // This is the anti-corruption layer between the domain's predicate syntax and
 // the SPI's stable filter contract used by storage plugins for pushdown.
-func ConditionToFilter(cond predicate.Condition) (spi.Filter, error) {
+//
+// fields is the model's FieldsMap (JSONPath → FieldDescriptor), used to
+// classify data leaves as temporal so the resulting Filter.Coercion routes
+// storage-plugin comparison correctly. A nil fields map is tolerated — every
+// data leaf then stamps CoerceNone (meta temporal leaves are still classified
+// via the static sortableMetaFields vocabulary regardless of fields).
+func ConditionToFilter(cond predicate.Condition, fields map[string]schema.FieldDescriptor) (spi.Filter, error) {
 	if cond == nil {
 		return spi.Filter{}, fmt.Errorf("condition is nil")
 	}
 
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
-		return simpleToFilter(c)
+		return simpleToFilter(c, fields)
 	case *predicate.LifecycleCondition:
 		return lifecycleToFilter(c), nil
 	case *predicate.GroupCondition:
-		return groupToFilter(c)
+		return groupToFilter(c, fields)
 	case *predicate.ArrayCondition:
 		return arrayToFilter(c)
 	case *predicate.FunctionCondition:
@@ -34,38 +41,72 @@ func ConditionToFilter(cond predicate.Condition) (spi.Filter, error) {
 
 // simpleToFilter translates a SimpleCondition to a Filter with SourceData.
 // Returns an error if the path cannot be represented as a pushdown filter.
-func simpleToFilter(c *predicate.SimpleCondition) (spi.Filter, error) {
+func simpleToFilter(c *predicate.SimpleCondition, fields map[string]schema.FieldDescriptor) (spi.Filter, error) {
 	stripped, err := stripDollarDot(c.JsonPath)
 	if err != nil {
 		return spi.Filter{}, err
 	}
 	return spi.Filter{
-		Op:     mapOperator(c.OperatorType),
-		Path:   stripped,
-		Source: spi.SourceData,
-		Value:  c.Value,
+		Op:       mapOperator(c.OperatorType),
+		Path:     stripped,
+		Source:   spi.SourceData,
+		Value:    c.Value,
+		Coercion: dataCoercion(c.JsonPath, fields),
 	}, nil
 }
 
-// lifecycleToFilter translates a LifecycleCondition to a Filter with SourceMeta.
+// dataCoercion returns CoerceTemporal only if the schema classifies the
+// field's declared type(s) as temporal. Today classifyType never returns
+// spi.OrderTemporal for data fields, so this always yields CoerceNone;
+// polymorphic-temporal typing (#137) lights this up with no change here.
+// A nil fields map (no schema available) also yields CoerceNone.
+func dataCoercion(jsonPath string, fields map[string]schema.FieldDescriptor) spi.FilterCoercion {
+	if fields == nil {
+		return spi.CoerceNone
+	}
+	fd, ok := fields[jsonPath]
+	if !ok {
+		return spi.CoerceNone
+	}
+	if kind, err := classifyType(fd.Types); err == nil && kind == spi.OrderTemporal {
+		return spi.CoerceTemporal
+	}
+	return spi.CoerceNone
+}
+
+// lifecycleToFilter translates a LifecycleCondition to a Filter with
+// SourceMeta. The "previousTransition" alias is canonicalized to its
+// storage-vocabulary name "transitionForLatestSave" (see sortableMetaFields
+// in orderclass.go — the single source of truth for the meta vocabulary).
+// Coercion is stamped CoerceTemporal for meta fields the vocabulary marks
+// spi.OrderTemporal (currently creationDate, lastUpdateTime).
 func lifecycleToFilter(c *predicate.LifecycleCondition) spi.Filter {
+	field := c.Field
+	if field == "previousTransition" {
+		field = "transitionForLatestSave"
+	}
+	co := spi.CoerceNone
+	if isTemporalMetaField(field) {
+		co = spi.CoerceTemporal
+	}
 	return spi.Filter{
-		Op:     mapOperator(c.OperatorType),
-		Path:   c.Field,
-		Source: spi.SourceMeta,
-		Value:  c.Value,
+		Op:       mapOperator(c.OperatorType),
+		Path:     field,
+		Source:   spi.SourceMeta,
+		Value:    c.Value,
+		Coercion: co,
 	}
 }
 
 // groupToFilter translates a GroupCondition to a Filter with AND/OR children.
-func groupToFilter(c *predicate.GroupCondition) (spi.Filter, error) {
+func groupToFilter(c *predicate.GroupCondition, fields map[string]schema.FieldDescriptor) (spi.Filter, error) {
 	op := spi.FilterAnd
 	if strings.EqualFold(c.Operator, "OR") {
 		op = spi.FilterOr
 	}
 	children := make([]spi.Filter, 0, len(c.Conditions))
 	for _, child := range c.Conditions {
-		f, err := ConditionToFilter(child)
+		f, err := ConditionToFilter(child, fields)
 		if err != nil {
 			return spi.Filter{}, err
 		}

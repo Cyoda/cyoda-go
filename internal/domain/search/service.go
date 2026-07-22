@@ -176,7 +176,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// is transaction-aware on every OSS backend (RYW), so this is safe with or
 	// without an active transaction in ctx — see the Search doc comment.
 	if searcher, ok := store.(spi.Searcher); ok {
-		filter, translateErr := ConditionToFilter(cond)
+		filter, translateErr := ConditionToFilter(cond, nil)
 		if translateErr == nil {
 			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
 			// "no explicit limit" in all store implementations.

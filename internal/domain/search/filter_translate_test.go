@@ -13,7 +13,7 @@ func TestConditionToFilter_SimpleEquals(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "Alice",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatalf("ConditionToFilter: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestConditionToFilter_SimpleNoPrefix(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "Berlin",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestConditionToFilter_SimpleNestedPath(t *testing.T) {
 		OperatorType: "NOT_EQUAL",
 		Value:        "Berlin",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestConditionToFilter_AllSimpleOperators(t *testing.T) {
 				OperatorType: tt.op,
 				Value:        "val",
 			}
-			f, err := ConditionToFilter(cond)
+			f, err := ConditionToFilter(cond, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +113,7 @@ func TestConditionToFilter_UnknownOperator(t *testing.T) {
 		OperatorType: "SOME_UNKNOWN_OP",
 		Value:        "val",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestConditionToFilter_Lifecycle(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "ACTIVE",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestConditionToFilter_GroupAND(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(25)},
 		},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestConditionToFilter_GroupOR(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.city", OperatorType: "EQUALS", Value: "Munich"},
 		},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestConditionToFilter_NestedGroup(t *testing.T) {
 			},
 		},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestConditionToFilter_Array(t *testing.T) {
 		JsonPath: "$.tags",
 		Values:   []any{"go", nil, "test"},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestConditionToFilter_ArraySingleValue(t *testing.T) {
 		JsonPath: "$.items",
 		Values:   []any{nil, "only"},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestConditionToFilter_ArrayAllNil(t *testing.T) {
 		JsonPath: "$.arr",
 		Values:   []any{nil, nil},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,14 +294,14 @@ func TestConditionToFilter_ArrayAllNil(t *testing.T) {
 
 func TestConditionToFilter_Function(t *testing.T) {
 	cond := &predicate.FunctionCondition{}
-	_, err := ConditionToFilter(cond)
+	_, err := ConditionToFilter(cond, nil)
 	if err == nil {
 		t.Fatal("expected error for FunctionCondition, got nil")
 	}
 }
 
 func TestConditionToFilter_Nil(t *testing.T) {
-	_, err := ConditionToFilter(nil)
+	_, err := ConditionToFilter(nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nil condition, got nil")
 	}
@@ -323,7 +323,7 @@ func TestConditionToFilter_WildcardPath_ReturnsError(t *testing.T) {
 			OperatorType: "EQUALS",
 			Value:        "x",
 		}
-		_, err := ConditionToFilter(cond)
+		_, err := ConditionToFilter(cond, nil)
 		if err == nil {
 			t.Errorf("ConditionToFilter with path %q: expected error (non-pushdownable), got nil", path)
 		}
@@ -340,11 +340,37 @@ func TestConditionToFilter_HyphenatedPath_Accepted(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatalf("ConditionToFilter with hyphenated path: unexpected error: %v", err)
 	}
 	if f.Path != "some-array.some-object" {
 		t.Errorf("Path = %q, want some-array.some-object", f.Path)
+	}
+}
+
+// TestConditionToFilter_StampsTemporalMeta verifies that a lifecycle
+// condition against a known temporal meta field (creationDate) stamps
+// Filter.Coercion = CoerceTemporal so storage plugins compare it as
+// floored epoch-millis rather than lexicographically.
+func TestConditionToFilter_StampsTemporalMeta(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2021-01-01T00:00:00Z"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Coercion != spi.CoerceTemporal {
+		t.Errorf("creationDate leaf Coercion = %v, want CoerceTemporal", f.Coercion)
+	}
+}
+
+// TestConditionToFilter_DataLeafStampsNone verifies that a data-field leaf
+// without a schema FieldsMap stamps Filter.Coercion = CoerceNone (no
+// classification information available → default, non-temporal comparison).
+func TestConditionToFilter_DataLeafStampsNone(t *testing.T) {
+	c := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "x"}
+	f, _ := ConditionToFilter(c, nil) // no schema → CoerceNone
+	if f.Coercion != spi.CoerceNone {
+		t.Errorf("data leaf Coercion = %v, want CoerceNone", f.Coercion)
 	}
 }
