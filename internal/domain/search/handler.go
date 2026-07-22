@@ -22,6 +22,12 @@ import (
 
 const (
 	maxSearchBodySize = 10 * 1024 * 1024 // 10 MiB
+
+	// DefaultDirectSearchLimit is applied to a direct (synchronous) search when
+	// the client omits the limit, bounding the result set that protects the
+	// cluster. Async submit intentionally leaves the limit unset (store-all,
+	// paginated at retrieval).
+	DefaultDirectSearchLimit = 1000
 )
 
 // jobLookupError maps a service-level error to a handler response. Job-not-
@@ -118,6 +124,8 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 			return
 		}
 		opts.Limit = lim
+	} else {
+		opts.Limit = DefaultDirectSearchLimit
 	}
 
 	modelRef := spi.ModelRef{

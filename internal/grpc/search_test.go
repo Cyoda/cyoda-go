@@ -1,11 +1,16 @@
 package grpc
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // TestEntityStatsByStateGet_UnknownModel_ModelNotFound verifies that
@@ -626,5 +631,87 @@ func TestEntitySearch_SnapshotSearch_OrderBy_InvalidField(t *testing.T) {
 	// No snapshot ID must be issued when submit fails.
 	if typed.Status.SnapshotID != nilUUID {
 		t.Errorf("expected nilUUID for failed submit, got %q", typed.Status.SnapshotID)
+	}
+}
+
+// --- Direct-search omitted-limit default (issue #432) ---
+
+// grpcTenantCtx builds a context with a UserContext, mirroring newTestEnv's
+// shape, for tests that construct a CloudEventsServiceImpl directly over
+// capture stubs rather than via newTestEnv.
+func grpcTenantCtx() context.Context {
+	uc := &spi.UserContext{
+		UserID:   "test-user",
+		UserName: "Test User",
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test Tenant"},
+		Roles:    []string{"ADMIN"},
+	}
+	return spi.WithUserContext(context.Background(), uc)
+}
+
+// saveMinimalModelGRPC registers a minimal model descriptor so
+// EnsureModelRegistered passes.
+func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+	t.Helper()
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// searcherEntityStoreG wraps an EntityStore and implements spi.Searcher,
+// capturing the spi.SearchOptions passed to Search. Mirrors
+// internal/domain/search's searcherEntityStore test helper.
+type searcherEntityStoreG struct {
+	spi.EntityStore
+	searchFn     func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
+	capturedOpts spi.SearchOptions
+}
+
+func (s *searcherEntityStoreG) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	s.capturedOpts = opts
+	return s.searchFn(ctx, filter, opts)
+}
+
+// searcherFactoryG wraps a StoreFactory and returns a Searcher-implementing
+// EntityStore.
+type searcherFactoryG struct {
+	spi.StoreFactory
+	entityStore *searcherEntityStoreG
+}
+
+func (f *searcherFactoryG) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+func TestDirectSearch_OmittedLimitDefaultsTo1000(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "capdef", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
+	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "s-capdef-1",
+		"model":     map[string]any{"name": "capdef", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Alice"},
+		// no "limit"
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if ses.capturedOpts.Limit != 1000 {
+		t.Errorf("gRPC omitted limit → spiLimit %d, want 1000", ses.capturedOpts.Limit)
 	}
 }

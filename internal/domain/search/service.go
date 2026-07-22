@@ -253,13 +253,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		matches = matches[opts.Offset:]
 	}
 
-	// Apply limit. Default 1000 when zero; negative means unbounded (no cap).
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 1000
-	}
-	if limit > 0 && limit < len(matches) {
-		matches = matches[:limit]
+	// Apply limit. 0 or negative means unbounded (no cap); the direct entry
+	// points resolve an omitted client limit to DefaultDirectSearchLimit before
+	// reaching the service, so 0 here means an explicit store-all (async submit
+	// or an internal caller), never "client omitted".
+	if opts.Limit > 0 && opts.Limit < len(matches) {
+		matches = matches[:opts.Limit]
 	}
 
 	return matches, nil

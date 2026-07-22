@@ -645,13 +645,15 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 // not) reached.
 type searcherEntityStore struct {
 	spi.EntityStore
-	searchFn    func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
-	searchCalls int
-	getAllCalls int
+	searchFn     func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
+	searchCalls  int
+	getAllCalls  int
+	capturedOpts spi.SearchOptions
 }
 
 func (s *searcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	s.searchCalls++
+	s.capturedOpts = opts
 	return s.searchFn(ctx, filter, opts)
 }
 
@@ -1633,5 +1635,33 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 
 	if cms.getCalls < 2 {
 		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + Search's FieldsMap load for ConditionToFilter)", cms.getCalls)
+	}
+}
+
+func TestSearch_LimitZeroPassesUnboundedToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil // result set irrelevant here
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if ses.capturedOpts.Limit != 0 {
+		t.Errorf("spiLimit = %d, want 0 (unbounded); service must not inject 1000", ses.capturedOpts.Limit)
 	}
 }
