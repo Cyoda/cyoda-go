@@ -148,7 +148,7 @@ func ResolveOrigin(ctx context.Context) Principal {
     }
     if amb := GetAmbientOrigin(ctx); amb != (Principal{}) {
         return amb           // root seed with no tx yet: scheduled fire (§5.3)
-    }                        // or verified attribution token (§4.3) — both server-verified
+    }
 
     return principalOf(GetUserContext(ctx)) // direct caller (root)
 }
@@ -165,10 +165,9 @@ the concurrency contract) to list `Origin`, or reviewers will flag the new field
 
 The ambient origin is a **new SPI-exported** ctx value (§11 item 7): the plugin `Begin`
 implementations are separate Go modules importing only `cyoda-go-spi`, so
-`WithAmbientOrigin` / `GetAmbientOrigin` / `ResolveOrigin` live in the SPI. Exactly **two seed
-sites** exist, both server-verified: the scheduled fire (§5.3, from the durable task row) and the
-CBD attribution token (§4.3, HMAC-verified at the callback boundary). Each plugin `Begin` calls
-`spi.ResolveOrigin(ctx)`.
+`WithAmbientOrigin` / `GetAmbientOrigin` / `ResolveOrigin` live in the SPI. The **only seed site**
+is the scheduled fire (§5.3), which derives it from the durable task row — the ambient origin is
+always a server-side assertion. Each plugin `Begin` calls `spi.ResolveOrigin(ctx)`.
 
 ### 4.2 Per-plugin capture & Join re-population
 
@@ -183,108 +182,26 @@ repopulation, origin is silently lost on the routed-callback path — the primar
 The per-tx origin map follows the `tm.tenants` lifecycle exactly: populate at `Begin`, delete at
 `Commit`/`Rollback`.
 
-### 4.3 Detached dispatch (COMMIT_BEFORE_DISPATCH `startNewTx=false`) — attribution token
+### 4.3 Detached dispatch (COMMIT_BEFORE_DISPATCH `startNewTx=false`) — handed over to the processor
 
 `engine_processors.go:~311` dispatches the processor with the tx **detached**
-(`spi.WithTransaction(ctx, nil)`, empty txID `:315`): no tx token is minted today
-(`cluster_dispatcher.go:74-82`), and a callback write arrives as a **separate network request** that
-Begins a fresh independent tx — context values do not cross the network, so without a carrier the
-origin is lost and the write would fall to the service account.
+(`spi.WithTransaction(ctx, nil)`, empty txID `:315`): no token is minted, and anything the
+processor does afterwards is an **independent new request** — the platform retains no live
+server-side context for it, by design.
 
-**The carrier is the same pattern the tx-join already uses**: a server-signed token that transits
-the worker. The worker is a courier, not a source — it echoes what the server minted and cannot
-forge it. D1's "origin never rides an M2M relay hop" rejects *worker-supplied* origin, not a
-server-signed assertion the server itself verifies on return.
+**Decision (project lead): attribution is handed over to the processor.** The callout already
+carries the full AuthContext of the triggering principal (§10.1), so the application holds all the
+causal information. Its callback writes are ordinary direct requests, governed by the §7 stamp rule
+on whatever identity they present:
 
-This is a **deliberate scope extension** beyond the issue's acceptance criteria (which cover writes
-"within a user-triggered transaction"): `startNewTx=false` severs the *transaction*, not the
-*cause*, and attribution follows the causal chain (§2). The mechanism:
+- its own service credentials → attributed = executor = that service;
+- OBO with a user identity → attributed = that user (D3);
+- an appropriately configured service/system account for automation → attributed = that account.
 
-- **Claims:** `{type: "attribution", v: 1, origin Principal, tenantID, expiresAt}`, HMAC-signed by
-  the cluster signer (same trust root as `token.Claims`). Stateless: any node verifies with the
-  shared secret — no origin store, no cross-node resolution (a reference-token design would need
-  both, with identical replay/withhold properties — stateless is strictly simpler).
-  - **`type` is mandatory.** The token slot is shared (CloudEvent attr `cyodatxtoken` → echoed as
-    gRPC md `tx-token` / HTTP `X-Tx-Token`, `cluster.md:68-73`), and every existing consumer decodes
-    loosely into `Claims{NodeID,TxRef,ExpiresAt}` — an attribution-shaped payload would today yield
-    `NodeID=""` → registry miss → 503 (or a nil-registry panic path single-node). The payload
-    (including `type`) is readable without verifying the signature, so every consumer
-    **type-dispatches first**, then applies that type's semantics (table below). The existing tx
-    token gains `type: "tx"` (internal wire, pre-1.0, no compat scaffolding; test fixtures inherit
-    it — they all mint via `Signer.Issue`).
-  - **`token.Signer.Verify` API change:** it must return claims alongside `ErrTokenExpired` (today
-    it withholds them, `token.go:87-89`) — expiry semantics diverge by type below, which is
-    unimplementable if an expired token's type is unknowable.
-  - **`tenantID` is mandatory:** verified equal to the authenticated callback tenant at the
-    post-auth seeding sites. Without it, a multi-tenant compute operator could seed tenant A's
-    principal into tenant B's audit records within TTL (Gate 3).
-- **Per-site handling** — the slot's consumers, enumerated (nothing else reads it; the dead,
-  caller-less `proxy.ResolveTarget` (`grpc.go:45-68`) is **removed**, Gate 6):
+The platform adds **no** carrier mechanism for this mode — existing primitives suffice, and the
+engine claims no special rights the application could not implement itself. The boundary is
+documented in the processor-execution-modes help topic so it is explicit to workflow authors.
 
-  | Site | `type:"tx"` | `type:"attribution"` |
-  |---|---|---|
-  | `proxy.HTTPRouting` (outermost, **pre-auth** — must not tenant-check) | route to owner node (today's behavior) | **pass through untouched** (node-agnostic; handled post-auth) |
-  | HTTP TxJoin middleware (post-auth) | delegate to `JoinFromToken` (today) | verify + tenant-check + seed — **the HTTP seeding site** |
-  | txroute unary + stream interceptors (post-auth) | join/proxy (today) | verify + tenant-check + seed — **the gRPC seeding site** |
-  | `txjoin.JoinFromToken` | join | defensively reject (only reachable post-dispatch) |
-
-  Seeding = `spi.WithAmbientOrigin(ctx, origin)`; the callback's fresh `Begin` picks it up via the
-  ambient branch of `ResolveOrigin` (§4.1).
-- **Mint:** by the **engine at the detach site** (`engine_processors.go:~311`), from
-  `spi.ResolveOrigin` on the **pre-detach ctx** (TX_pre still attached) — NOT from the detached
-  dispatch ctx, whose fallthrough is the executor (for a scheduled-fire-rooted chain that would
-  wrongly mint the system principal instead of `ArmedBy`; mirror image of §7's outer-ctx warning).
-  The engine imports neither `internal/cluster/token` nor `internal/grpc` — the minting func is
-  **DI'd into the engine** (constructor seam), and the minted token is injected at the shared ctx
-  slot both dispatchers read.
-- **Cluster-path changes (required — this is the primary deployment mode):**
-  `ClusterDispatcher` today **unconditionally overwrites** the ctx token slot with `""` when
-  `txID == ""` (`cluster_dispatcher.go:74-82, 139-147, 201-209`) and forwards only its
-  locally-minted token to peers (`TxToken` at `:331, :351, :369`) — an engine-injected attribution
-  token would be silently dropped, including on a **CBD-detached callout forwarded to a peer node**.
-  Required: never overwrite a present ctx token with empty; forward it in `DispatchCalloutRequest`
-  (the typed token rides the existing `TxToken` field); the receiving node re-injects it for its
-  local dispatch. The forwarded-detached-callout scenario is in the §14 matrix.
-- **Echo:** conformant SDKs already echo whatever opaque token appears in the slot — that IS the
-  pinned contract (`cluster.md:68-73`), so **no SDK change is needed** and attribution engages from
-  day one. "Absent token" describes only never-conformant clients.
-- **Failure semantics — the token asserts, it does not grant.** A tx token grants join access, so
-  any verification failure must reject. An attribution token confers **no privilege**: forging or
-  stripping one gains an attacker nothing when the response is simply "the assertion isn't used."
-  Hence:
-  - **Verifiable + valid + tenant-match** → attributed = token origin.
-  - **Unverifiable or stale** — absent, expired, bad signature, malformed claims — → **treated as
-    absent**: attributed = executor, WARN log (ERROR for bad signature: possible attack — or secret
-    rotation). Never fails the write: the executor attribution is the *true* non-carrier semantics,
-    not a substitute, and rejecting would brick legitimate writes after restarts/rotation while
-    denying an attacker nothing extra.
-  - **Tenant mismatch on a valid signature** → **403 reject** (consistent with the tx-token tenant
-    mismatch, `txjoin.go:55-56`): a cross-tenant seeding attempt or a serious worker bug — tenant
-    isolation anomalies fail loud (Gate 3), and no legitimate flow produces one.
-  - **Unknown `type`** in the slot → reject: version-skew anomaly in a pre-1.0 single-version
-    cluster.
-  - Log correlation is **request-level**: the middleware precedes the handler, so the WARN cannot
-    name an entity, and an expired token echoed on a read-route callback also logs. Stated so
-    operators aren't surprised.
-  - **Single-node note:** single-node mode signs with a per-process ephemeral secret
-    (`app/app.go:118-134`, justified for tx tokens by "a tx never outlives the process");
-    attribution tokens (1h TTL) can outlive a restart. The treat-as-absent rule makes that harmless
-    — attribution downgrade + ERROR log, never a failed write. Cluster secret rotation within TTL
-    behaves identically.
-  - **TTL:** dedicated config (`CYODA_ATTRIBUTION_TOKEN_TTL`), default generous (1h — the causal
-    window of a detached cascade, not the 90s tx-join TTL, whose job is bounding joins against live
-    tx state). Longer TTL widens the replay window; shorter TTL loses attribution on slow workers.
-    New env var ⇒ Gate-4 doc set (config help topic, `README.md`, `DefaultConfig()`) in the plan.
-- **Disclosure:** the token payload is worker-readable. For user-rooted chains this discloses
-  nothing new (the same dispatch hands the worker `authid` = the origin). For a
-  **scheduled-fire-rooted** chain the AuthContext `authid` is the system executor while the token
-  embeds `ArmedBy` — the arming principal's id is thereby disclosed to the tenant-scoped worker
-  executing that tenant's workflow. Accepted deliberately (encrypting the payload for one id would
-  be disproportionate); noted here rather than claimed away.
-- **Replay surface:** the worker can attach the token to unrelated writes within TTL,
-  mis-attributing them to the origin — bounded to the same tenant (tenant binding), analogous to the
-  joined case (a worker can write anything inside a joined tx, attributed to origin), and auditable
-  via the executor recorded alongside.
 
 ### 4.4 Two-hop / segmented cascade (X→Y→Z)
 
@@ -464,8 +381,8 @@ there yields nil → executor fallback).
 ## 8. Cross-node
 
 Origin lives on the **owner node's** `TransactionState`; the cross-node tx-join token
-(`internal/cluster/token/token.go:20-24`) still carries **no identity** — D1 resolved — its only
-change is the `type: "tx"` discriminator (§4.3). A proxied join reaches the owner's per-tx origin
+(`internal/cluster/token/token.go:20-24`) carries **no identity** and is **unchanged** — D1
+resolved. A proxied join reaches the owner's per-tx origin
 via the existing proxy (`internal/grpc/txroute_interceptor.go:132-151` → `txjoin.JoinFromToken` →
 `txMgr.Join`), so the stamp executes on the owner node with origin in hand.
 
@@ -480,11 +397,10 @@ Cross-node scheduled fire reads `ArmedBy` from the durable task and seeds the am
 
 - **Origin is trustworthy only on the joined platform-tx path** — it comes from server-side
   `TransactionState`, not worker input. This is the anti-forgery property.
-- **Non-joined writes with no verified server-signed carrier** set origin = **executor** — the
-  ordinary direct-write case (`attributed == executor`). They are **not** elevated to a claimed
-  user. Joined-mode cascade callbacks carry the txID; CBD-detached callbacks carry the attribution
-  token (§4.3) — in both cases the origin is a server-side assertion (stored state or verified
-  signature), never worker-supplied.
+- **Non-joined writes** set origin = **executor** — the ordinary direct-write case (`attributed ==
+  executor`). They are **not** elevated to a claimed user. Joined-mode cascade callbacks carry the
+  txID and inherit the transaction's origin; CBD-detached callbacks are deliberately ordinary
+  direct requests (§4.3) — the identity they present governs (D3).
 - **No request field / callout payload can set the attributed principal** (negative test). Verified:
   no code path reads origin from a request body or callout result; the peer scheduled-fire RPC's
   task body is likewise never trusted for origin — the seed comes from the durable row with an
@@ -508,21 +424,16 @@ callout is pinned:
 - `authtype ∈ {user, service, system}`, driven by explicit principal-kind, always present (dispatch
   fails loud rather than emit an unfaithful value — §3.3).
 - `authid` = principal id; `authclaims` = roles (comma-separated).
-- **Attribution token** (new, additive): a CBD-detached dispatch carries a server-signed,
-  tenant-bound attribution token in the existing opaque-echo slot (`cluster.md:68-73`); the pinned
-  contract is already "echo whatever token you received", so **no SDK change is required** (§4.3).
-  A client that never echoes gets executor attribution; forging is not possible (HMAC + strict type
-  check); an expired token degrades to executor attribution, never a failed write.
+- **CBD-detached callouts (`startNewTx=false`) carry no attribution mechanism** — attribution is
+  handed over to the application (§4.3): the AuthContext above gives it the causal information, and
+  its callback writes record whatever identity they present (D3).
 - Trust basis + fail-closed posture as §9.
 
 **Breaking change management:** `service_account → service` breaks external compute nodes switching
 on the old string. No in-repo test asserts `service_account` today (`dispatch_test.go:138-144` only
 covers `user`), so CI stays green while consumers break. Mitigations:
 
-- Update `cmd/cyoda/help/content/grpc.md:359` (names `service_account`) **and**
-  `cmd/cyoda/help/content/cluster.md` "COMPUTE CALLBACK TRANSACTION ROUTING" (describes the token
-  slot exclusively as a routed tx token — must document the typed token and the attribution
-  variant).
+- Update `cmd/cyoda/help/content/grpc.md:359` (names `service_account`).
 - Add test coverage for the `service` and `system` branches (the M2M/service branch is currently
   untested).
 - `internal/scheduler/executor_test.go:33-34` (`TestSystemUserContext_HasTenant`) asserts
@@ -556,8 +467,8 @@ Additive SPI changes (all in `cyoda-go-spi`):
 5. `ScheduledTask.ArmedBy` (durable JSON).
 6. `EntityMeta` executor id+kind + attributed kind; `EntityVersion.Executor` + `AttributedKind`.
 7. `WithAmbientOrigin` / `GetAmbientOrigin` ctx helpers + **`ResolveOrigin(ctx)`** (single shared
-   precedence implementation, §4.1) — consumed by plugin `Begin`; seeded by the scheduled fire
-   (§5.3) and the verified attribution token (§4.3).
+   precedence implementation, §4.1) — consumed by plugin `Begin`; seeded only by the scheduled fire
+   (§5.3).
 
 Conformance: extend `spitest` suites — transaction origin capture/join propagation covering **all
 three `ResolveOrigin` precedence branches** (parent-tx, ambient, UserContext); delete-attribution
@@ -576,10 +487,9 @@ commit, per `MAINTAINING.md`). Pseudo-version pin across all four `go.mod` files
 Additive throughout. Direct user calls unchanged (`attributed == executor`). Existing persisted rows
 have no executor/kind → read API omits the new fields, `user` unchanged. No data migration (executor
 rides in the existing meta blob). In-flight scheduled tasks armed pre-upgrade fire as system (zero
-`ArmedBy`), never as `"scheduler"`. Attribution-token handling never fails a write for staleness
-(expired ⇒ executor attribution + WARN, §4.3), so existing deployed workers — which echo opaque
-tokens automatically — keep working unchanged. `authtype` value change is the one deliberate wire
-break (§10).
+`ArmedBy`), never as `"scheduler"`. CBD-detached callbacks are ordinary direct requests exactly as
+today (§4.3) — no new wire mechanics for deployed workers. `authtype` value change is the one
+deliberate wire break (§10).
 
 ## 13. Error / status-code tables
 
@@ -608,16 +518,6 @@ No gRPC status-code change for well-formed dispatches; the CloudEvents attribute
 as above. New internal failure mode: a dispatch with an unset principal-kind **fails loud** (§3.3)
 instead of emitting an unfaithful `authtype`.
 
-### 13.3 Attribution-token verification (worker callback writes — HTTP entity endpoints & gRPC write RPCs)
-
-| Scenario | HTTP | gRPC envelope | Notes |
-|---|---|---|---|
-| Valid token, tenant matches | 2xx | `Success` | attributed = token origin |
-| No token / **expired** / **bad signature** / malformed claims | 2xx | `Success` | treated as absent: attributed = executor; WARN (ERROR on bad signature) — the token asserts, it does not grant (§4.3) |
-| Tenant mismatch (valid signature) | 403 | `Error.Code` = same class as tx-token tenant mismatch (`txjoin.go:55-56`) | cross-tenant seeding attempt — fail loud (Gate 3) |
-| Unknown `type` in the token slot | 401 `UNAUTHORIZED` | same class as a malformed tx token | version-skew anomaly (§4.3) |
-| `type:"tx"` token semantics | unchanged (410 expired / 403 tenant / 401 tampered) | unchanged | tx tokens grant join access → all failures still reject |
-
 ## 14. Test coverage matrix (scenario × layer)
 
 Layers: **U**=unit, **E**=running-backend e2e (per backend), **P**=cross-backend parity,
@@ -629,10 +529,7 @@ Layers: **U**=unit, **E**=running-backend e2e (per backend), **P**=cross-backend
 | `authtype` emits `service`/`system` (regression for the wire change) | ✅ | | | ✅ |
 | Cascade: service processor writes 2nd entity in user tx → attributed=user, executor=service; node presents **no** user token | | ✅ | ✅ | ✅ |
 | Two-hop cascade X→Y→Z (segmented) → attributed=user | | ✅ | ✅ | |
-| CBD (`startNewTx=false`) detached callback echoing the attribution token → attributed=user | | ✅ | ✅ | ✅ |
-| CBD detached callback without token (never-conformant client) → attributed=executor | ✅ | ✅ | | ✅ |
-| CBD detached callout **forwarded to a peer node** → attribution token forwarded, attributed=user | | ✅ (multinode) | | ✅ |
-| Attribution token: expired / bad signature / malformed → executor + WARN, write **succeeds**; tenant-mismatch → 403; unknown type → 401 | ✅ | ✅ | | ✅ |
+| CBD (`startNewTx=false`) detached callback → ordinary direct request: service creds → attributed=executor=service; OBO user identity → that user (handover, §4.3) | | ✅ | ✅ | |
 | D3: OBO user-token callback joined into another user's tx keeps recording **its own** user | | ✅ | ✅ | |
 | Cross-node (proxied-join) cascade → same attribution as same-node | | ✅ (multinode) | | ✅ |
 | Delete cascade: processor deletes 2nd entity → attributed=user, executor=**service (stager, not committer)** | | ✅ | ✅ | |
@@ -655,10 +552,12 @@ shared-backend parity suite.
 
 - Platform-side authorization inheritance (authorizing cascade writes against the origin's roles).
 - Per-user authorization of any kind; `CheckAccess` stays dead.
-- Changes to the cross-node tx-join `Claims` shape beyond the `type` discriminator (§4.3) — the
-  proxied-join path still carries no identity; worker-*supplied* origin is never trusted anywhere.
-  The only origin that transits a worker is the server-signed, tenant-bound attribution token,
-  verified by the server on return (§4.3).
+- Any cross-node token/claims change — the tx-join `Claims` are untouched, the proxied-join path
+  carries no identity, and no origin ever transits a worker (worker-supplied identity is only ever
+  the executor).
+- Platform-side attribution carriage for CBD-detached (`startNewTx=false`) callouts — **decided
+  (project lead): handed over to the application** (§4.3); the AuthContext supplies the causal
+  information, existing primitives (OBO, configured accounts) supply the mechanism.
 - `StateMachineEvent` actor attribution.
 
 ## 16. Open items for the plan
