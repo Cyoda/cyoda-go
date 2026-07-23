@@ -7,10 +7,18 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// systemSchedulerUserID identifies the scheduler's service principal in
-// audit trails and as the UserContext.UserID TransactionManager.Begin
-// requires. Never a real end-user identity.
-const systemSchedulerUserID = "scheduler"
+// systemPrincipalID identifies the platform system principal (same identity
+// as the app-level system context). Never a real end-user; kind=system.
+const systemPrincipalID = "system"
+
+// SystemPrincipal returns the platform system principal the scheduler fires
+// tasks as — the same identity (ID and Kind) the app layer's system context
+// uses (app/app.go), not a scheduler-specific fake identity. Attribution
+// downstream (audit trails, ChangeUser/ChangeUserKind) must see one system
+// principal regardless of which subsystem drove the write.
+func SystemPrincipal() spi.Principal {
+	return spi.Principal{ID: systemPrincipalID, Kind: spi.PrincipalSystem}
+}
 
 // SystemUserContext derives, from context.Background(), a context.Context
 // carrying a synthesised system UserContext scoped to tenant. It exists
@@ -28,8 +36,9 @@ const systemSchedulerUserID = "scheduler"
 // firing a task must look the same regardless of which node does it.
 func SystemUserContext(tenant spi.TenantID) context.Context {
 	uc := &spi.UserContext{
-		UserID:   systemSchedulerUserID,
-		UserName: systemSchedulerUserID,
+		UserID:   systemPrincipalID,
+		UserName: systemPrincipalID,
+		Kind:     spi.PrincipalSystem,
 		Tenant:   spi.Tenant{ID: tenant},
 	}
 	return spi.WithUserContext(context.Background(), uc)

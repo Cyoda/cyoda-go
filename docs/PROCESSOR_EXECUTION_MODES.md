@@ -231,6 +231,14 @@ rejects this flag for any other execution mode.
 - This is the mode to pick when the processor needs only its own input and
   produces only its own output. The connection is fully released for the
   duration of the dispatch.
+- **Attribution handover.** With no live transaction, the platform tracks
+  no causal chain for these callbacks — each is an ordinary direct request,
+  attributed to whatever identity it presents (its own service credentials,
+  or an OBO user token it forwards). The dispatch's AuthContext carries the
+  causal principal (`authtype`/`authid`/`authclaims` — see
+  `docs/cloud-parity/authcontext-attribution.md`), so an application wanting
+  user-level attribution on its callback writes must present that identity
+  itself; the platform provides no separate carrier for this mode.
 
 #### `startNewTxOnDispatch = true`
 

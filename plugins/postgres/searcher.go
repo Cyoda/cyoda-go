@@ -35,8 +35,9 @@ var _ spi.Searcher = (*entityStore)(nil)
 // it already observes the transaction's own uncommitted creates/updates/deletes:
 // RYW is provided by the database, and the committed pushdown IS the RYW result.
 // No buffer overlay, no spi.MergePage, and no tx.OpMu are involved (postgres
-// never populates those TransactionState fields; Get/GetAll don't take tx.OpMu
-// either). The one tx-specific behaviour Search adds over the committed pushdown
+// never populates Buffer/Deletes/DeleteAttribution or any other
+// TransactionState bookkeeping field; Get/GetAll don't take tx.OpMu either).
+// The one tx-specific behaviour Search adds over the committed pushdown
 // is read-set recording — see the TrackingRead block at the end of the function.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	if err := validateFilterPaths(filter); err != nil {

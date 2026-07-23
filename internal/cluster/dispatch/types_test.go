@@ -36,6 +36,7 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 		TenantID:       "tenant-abc",
 		Tags:           "gpu",
 		UserID:         "user-1",
+		PrincipalKind:  spi.PrincipalUser,
 		Roles:          []string{"admin", "editor"},
 	}
 
@@ -72,6 +73,9 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	}
 	if len(got.Roles) != 2 || got.Roles[0] != "admin" || got.Roles[1] != "editor" {
 		t.Errorf("Roles = %v, want [admin editor]", got.Roles)
+	}
+	if got.PrincipalKind != spi.PrincipalUser {
+		t.Errorf("PrincipalKind = %q, want %q", got.PrincipalKind, spi.PrincipalUser)
 	}
 	if got.Processor == nil || got.Processor.Type != "HTTP" {
 		t.Errorf("Processor.Type = %v, want HTTP", got.Processor)
@@ -165,6 +169,7 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 		TenantID:       "tenant-xyz",
 		Tags:           "cpu",
 		UserID:         "user-2",
+		PrincipalKind:  spi.PrincipalService,
 		Roles:          []string{"viewer"},
 	}
 
@@ -207,6 +212,9 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 	}
 	if len(got.Roles) != 1 || got.Roles[0] != "viewer" {
 		t.Errorf("Roles = %v, want [viewer]", got.Roles)
+	}
+	if got.PrincipalKind != spi.PrincipalService {
+		t.Errorf("PrincipalKind = %q, want %q", got.PrincipalKind, spi.PrincipalService)
 	}
 	if string(got.Entity) != string(entityData) {
 		t.Errorf("Entity = %s, want %s", got.Entity, entityData)

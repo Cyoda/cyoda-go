@@ -24,7 +24,7 @@ type scheduledTaskStore struct {
 
 var _ spi.ScheduledTaskStore = (*scheduledTaskStore)(nil)
 
-const scheduledTaskColumns = `id, tenant_id, type, scheduled_time, timeout_ms, redispatch_after, entity_id, model_name, model_version, transition, source_state, armed_at, attempt_count`
+const scheduledTaskColumns = `id, tenant_id, type, scheduled_time, timeout_ms, redispatch_after, entity_id, model_name, model_version, transition, source_state, armed_at, attempt_count, armed_by_id, armed_by_kind`
 
 // upsertScheduledTaskSQL sets every non-id column from excluded.* so a
 // re-arm Upsert on an existing ID fully replaces the row rather than
@@ -33,7 +33,7 @@ const scheduledTaskColumns = `id, tenant_id, type, scheduled_time, timeout_ms, r
 // arms of the same id, so it must be included here — a partial SET list
 // would leave a stale model_version behind after a model bump.
 const upsertScheduledTaskSQL = `INSERT INTO scheduled_tasks (` + scheduledTaskColumns + `)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 	ON CONFLICT (id) DO UPDATE SET
 	  tenant_id = excluded.tenant_id,
 	  type = excluded.type,
@@ -46,13 +46,16 @@ const upsertScheduledTaskSQL = `INSERT INTO scheduled_tasks (` + scheduledTaskCo
 	  transition = excluded.transition,
 	  source_state = excluded.source_state,
 	  armed_at = excluded.armed_at,
-	  attempt_count = excluded.attempt_count`
+	  attempt_count = excluded.attempt_count,
+	  armed_by_id = excluded.armed_by_id,
+	  armed_by_kind = excluded.armed_by_kind`
 
 func (s *scheduledTaskStore) Upsert(ctx context.Context, task spi.ScheduledTask) error {
 	_, err := s.q.Exec(ctx, upsertScheduledTaskSQL,
 		task.ID, string(task.TenantID), string(task.Type), task.ScheduledTime,
 		task.TimeoutMs, task.RedispatchAfter, task.EntityID, task.ModelName,
-		task.ModelVersion, task.Transition, task.SourceState, task.ArmedAt, task.AttemptCount)
+		task.ModelVersion, task.Transition, task.SourceState, task.ArmedAt, task.AttemptCount,
+		task.ArmedBy.ID, string(task.ArmedBy.Kind))
 	if err != nil {
 		return fmt.Errorf("upsert scheduled task %s: %w", task.ID, err)
 	}
@@ -78,15 +81,19 @@ func (s *scheduledTaskStore) Delete(ctx context.Context, id string) (bool, error
 // populates it) — no intermediate sql.NullInt64 needed.
 func scanScheduledTaskRow(scan func(dest ...any) error) (spi.ScheduledTask, error) {
 	var t spi.ScheduledTask
-	var tenantID, taskType string
+	var tenantID, taskType, armedByID, armedByKind string
 	err := scan(&t.ID, &tenantID, &taskType, &t.ScheduledTime, &t.TimeoutMs, &t.RedispatchAfter,
 		&t.EntityID, &t.ModelName, &t.ModelVersion, &t.Transition, &t.SourceState,
-		&t.ArmedAt, &t.AttemptCount)
+		&t.ArmedAt, &t.AttemptCount, &armedByID, &armedByKind)
 	if err != nil {
 		return spi.ScheduledTask{}, err
 	}
 	t.TenantID = spi.TenantID(tenantID)
 	t.Type = spi.ScheduledTaskType(taskType)
+	// A legacy row (migration's DEFAULT '' backfill) yields armedByID=""
+	// and armedByKind="", so ArmedBy naturally reads back as the zero
+	// Principal — never a synthesized one.
+	t.ArmedBy = spi.Principal{ID: armedByID, Kind: spi.PrincipalKind(armedByKind)}
 	return t, nil
 }
 

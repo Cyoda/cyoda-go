@@ -37,6 +37,16 @@ func timeToMicro(t time.Time) int64 {
 }
 
 // entityMetaDB is the serialized form of EntityMeta stored in the meta BLOB column.
+//
+// ChangeUserKind/ChangeExecutorID/ChangeExecutorKind carry the follow-on-action
+// attribution fields (spi.EntityMeta.ChangeUserKind/ChangeExecutor). They are
+// flat rather than a nested Principal struct so a tombstone-only meta blob
+// (see marshalTombstoneMeta) stays a trivial subset of the same shape. Absent
+// on legacy rows written before this field existed — omitempty means an old
+// blob simply lacks the keys, and unmarshalEntityMeta's zero-value fallback
+// (via json.Unmarshal leaving the struct fields at their zero value) makes
+// that indistinguishable from an explicit zero Principal, which is the
+// correct legacy semantics (empty AttributedKind, zero Executor).
 type entityMetaDB struct {
 	ID                      string `json:"id"`
 	TenantID                string `json:"tenant_id"`
@@ -49,6 +59,9 @@ type entityMetaDB struct {
 	TransactionID           string `json:"transaction_id,omitempty"`
 	ChangeType              string `json:"change_type,omitempty"`
 	ChangeUser              string `json:"change_user,omitempty"`
+	ChangeUserKind          string `json:"change_user_kind,omitempty"`
+	ChangeExecutorID        string `json:"change_executor_id,omitempty"`
+	ChangeExecutorKind      string `json:"change_executor_kind,omitempty"`
 	TransitionForLatestSave string `json:"transition_for_latest_save,omitempty"`
 }
 
@@ -65,7 +78,26 @@ func marshalEntityMeta(m *spi.EntityMeta) ([]byte, error) {
 		TransactionID:           m.TransactionID,
 		ChangeType:              m.ChangeType,
 		ChangeUser:              m.ChangeUser,
+		ChangeUserKind:          string(m.ChangeUserKind),
+		ChangeExecutorID:        m.ChangeExecutor.ID,
+		ChangeExecutorKind:      string(m.ChangeExecutor.Kind),
 		TransitionForLatestSave: m.TransitionForLatestSave,
+	}
+	return json.Marshal(db)
+}
+
+// marshalTombstoneMeta serializes just the attribution fields carried by a
+// DELETED entity_versions row's meta BLOB: the attributed ChangeUser's kind
+// (the ChangeUser ID itself already lives in the user_id COLUMN) and the
+// full Executor principal. A tombstone has no other EntityMeta fields to
+// carry, so this is a minimal entityMetaDB rather than a full marshalEntityMeta
+// call — unmarshalEntityMeta reads it back with the same function used for
+// full entity meta blobs, since it is a strict subset of the same shape.
+func marshalTombstoneMeta(changeUserKind spi.PrincipalKind, executor spi.Principal) ([]byte, error) {
+	db := entityMetaDB{
+		ChangeUserKind:     string(changeUserKind),
+		ChangeExecutorID:   executor.ID,
+		ChangeExecutorKind: string(executor.Kind),
 	}
 	return json.Marshal(db)
 }
@@ -86,6 +118,8 @@ func unmarshalEntityMeta(data []byte) (spi.EntityMeta, error) {
 		TransactionID:           db.TransactionID,
 		ChangeType:              db.ChangeType,
 		ChangeUser:              db.ChangeUser,
+		ChangeUserKind:          spi.PrincipalKind(db.ChangeUserKind),
+		ChangeExecutor:          spi.Principal{ID: db.ChangeExecutorID, Kind: spi.PrincipalKind(db.ChangeExecutorKind)},
 		TransitionForLatestSave: db.TransitionForLatestSave,
 	}, nil
 }
@@ -132,6 +166,8 @@ func scanEntityFromRow(row interface{ Scan(...any) error }) (*spi.Entity, error)
 			meta.TransactionID = parsed.TransactionID
 			meta.ChangeType = parsed.ChangeType
 			meta.ChangeUser = parsed.ChangeUser
+			meta.ChangeUserKind = parsed.ChangeUserKind
+			meta.ChangeExecutor = parsed.ChangeExecutor
 			meta.TransitionForLatestSave = parsed.TransitionForLatestSave
 		}
 	}
@@ -174,6 +210,8 @@ func scanVersionEntity(row interface{ Scan(...any) error }) (*spi.Entity, error)
 			meta.TransactionID = parsed.TransactionID
 			meta.ChangeType = parsed.ChangeType
 			meta.ChangeUser = parsed.ChangeUser
+			meta.ChangeUserKind = parsed.ChangeUserKind
+			meta.ChangeExecutor = parsed.ChangeExecutor
 			meta.TransitionForLatestSave = parsed.TransitionForLatestSave
 			meta.CreationDate = parsed.CreationDate
 			meta.LastModifiedDate = parsed.LastModifiedDate
@@ -219,6 +257,22 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	return s.saveDirectly(ctx, entity)
 }
 
+// deriveChangeType computes the persisted change type from row existence,
+// used by both the non-tx (saveDirectly) and tx-commit write paths so they
+// agree with each other and with the memory/postgres backends. A new entity is
+// always "CREATED" (an incoming value is ignored). For an existing entity a
+// stale "CREATED" (or empty) becomes "UPDATED", while an explicit override set
+// by a caller (e.g. the workflow engine) is preserved.
+func deriveChangeType(caller string, isNew bool) string {
+	if isNew {
+		return "CREATED"
+	}
+	if caller != "" && caller != "CREATED" {
+		return caller
+	}
+	return "UPDATED"
+}
+
 func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int64, error) {
 	cp := copyEntity(entity)
 	cp.Meta.TenantID = s.tenantID
@@ -236,17 +290,15 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 	}
 
 	var nextVersion int64
-	changeType := "CREATED"
 	createdAtMicro := timeToMicro(now)
 	if !isNew {
 		nextVersion = existingVersion.Int64 + 1
-		changeType = "UPDATED"
 		createdAtMicro = existingCreatedAt.Int64
 	}
 
 	cp.Meta.Version = nextVersion
 	cp.Meta.LastModifiedDate = now
-	cp.Meta.ChangeType = changeType
+	cp.Meta.ChangeType = deriveChangeType(cp.Meta.ChangeType, isNew)
 	if isNew {
 		cp.Meta.CreationDate = now
 	} else {
@@ -278,9 +330,10 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 	_, err = sqlTx.ExecContext(ctx,
 		`INSERT INTO entity_versions
 		 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
-		 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, '', ?, '')`,
+		 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, '', ?, ?)`,
 		tid, cp.Meta.ID, cp.Meta.ModelRef.EntityName, cp.Meta.ModelRef.ModelVersion,
-		nextVersion, string(cp.Data), string(metaJSON), changeType, timeToMicro(now))
+		nextVersion, string(cp.Data), string(metaJSON), cp.Meta.ChangeType, timeToMicro(now),
+		cp.Meta.ChangeUser)
 	if err != nil {
 		return 0, fmt.Errorf("insert version: %w", classifyError(err))
 	}
@@ -603,6 +656,12 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		tx.Deletes[entityID] = true
 		delete(tx.Buffer, entityID)
 		tx.WriteSet[entityID] = true
+		// Capture attribution at STAGE time (this caller), not at commit
+		// time (the eventual committer, possibly a different actor) — see
+		// transactionManager.flushToSQLite's flush, which prefers this
+		// entry over re-deriving attribution from the commit ctx.
+		a, e := spi.AttributionFor(ctx)
+		tx.DeleteAttribution[entityID] = spi.WriteAttribution{Attributed: a, Executor: e}
 		return nil
 	}
 
@@ -639,18 +698,18 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		return fmt.Errorf("soft delete entity: %w", err)
 	}
 
-	uc := spi.GetUserContext(ctx)
-	userName := ""
-	if uc != nil {
-		userName = uc.UserID
+	attributed, executor := spi.AttributionFor(ctx)
+	tombstoneMeta, err := marshalTombstoneMeta(attributed.Kind, executor)
+	if err != nil {
+		return fmt.Errorf("marshal tombstone meta: %w", err)
 	}
 
 	_, err = sqlTx.ExecContext(ctx,
 		`INSERT INTO entity_versions
 		 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
-		 VALUES (?, ?, ?, ?, ?, NULL, NULL, 'DELETED', '', ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, NULL, jsonb(?), 'DELETED', '', ?, ?)`,
 		tid, entityID, modelName, modelVersion,
-		nextVersion, nowMicro, userName)
+		nextVersion, string(tombstoneMeta), nowMicro, attributed.ID)
 	if err != nil {
 		return fmt.Errorf("insert delete version: %w", classifyError(err))
 	}
@@ -694,14 +753,21 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		}
 		defer rows.Close()
 
+		// Attribution captured once for this call (this caller, this ctx)
+		// and applied to every entity ID this DeleteAll stages — same
+		// stage-time-not-commit-time posture as single-entity Delete.
+		a, e := spi.AttributionFor(ctx)
+		attribution := spi.WriteAttribution{Attributed: a, Executor: e}
+
 		for rows.Next() {
-			e, err := scanVersionEntity(rows)
+			ent, err := scanVersionEntity(rows)
 			if err != nil {
 				return err
 			}
-			tx.Deletes[e.Meta.ID] = true
-			delete(tx.Buffer, e.Meta.ID)
-			tx.WriteSet[e.Meta.ID] = true
+			tx.Deletes[ent.Meta.ID] = true
+			delete(tx.Buffer, ent.Meta.ID)
+			tx.WriteSet[ent.Meta.ID] = true
+			tx.DeleteAttribution[ent.Meta.ID] = attribution
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("row iteration: %w", err)
@@ -709,8 +775,8 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 
 		// Also delete any buffered entities for this model.
 		toDelete := make([]string, 0)
-		for id, e := range tx.Buffer {
-			if e.Meta.ModelRef == modelRef {
+		for id, ent := range tx.Buffer {
+			if ent.Meta.ModelRef == modelRef {
 				toDelete = append(toDelete, id)
 			}
 		}
@@ -718,6 +784,7 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			delete(tx.Buffer, id)
 			tx.Deletes[id] = true
 			tx.WriteSet[id] = true
+			tx.DeleteAttribution[id] = attribution
 		}
 		return nil
 	}
@@ -988,6 +1055,25 @@ func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 			Deleted:    deleted,
 		}
 
+		// Parse the meta BLOB once, independent of Entity population below.
+		// AttributedKind/Executor must be readable even for DELETED versions,
+		// whose Entity is nil below — a tombstone's meta BLOB carries only
+		// the attribution fields (see marshalTombstoneMeta), never entity
+		// data. A legacy NULL/empty blob (pre-dating tombstone attribution)
+		// yields the zero value here, not an error.
+		var parsedMeta spi.EntityMeta
+		var haveMeta bool
+		if metaJSON.Valid && metaJSON.String != "" {
+			if parsed, parseErr := unmarshalEntityMeta([]byte(metaJSON.String)); parseErr == nil {
+				parsedMeta = parsed
+				haveMeta = true
+			}
+		}
+		if haveMeta {
+			ev.AttributedKind = parsedMeta.ChangeUserKind
+			ev.Executor = parsedMeta.ChangeExecutor
+		}
+
 		if !deleted && dataJSON.Valid {
 			meta := spi.EntityMeta{
 				ID:               eid,
@@ -1000,15 +1086,14 @@ func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 				ChangeUser:       userID,
 			}
 			// Populate additional meta from the stored meta BLOB.
-			if metaJSON.Valid && metaJSON.String != "" {
-				parsed, parseErr := unmarshalEntityMeta([]byte(metaJSON.String))
-				if parseErr == nil {
-					meta.TenantID = parsed.TenantID
-					meta.State = parsed.State
-					meta.CreationDate = parsed.CreationDate
-					meta.LastModifiedDate = parsed.LastModifiedDate
-					meta.TransitionForLatestSave = parsed.TransitionForLatestSave
-				}
+			if haveMeta {
+				meta.TenantID = parsedMeta.TenantID
+				meta.State = parsedMeta.State
+				meta.CreationDate = parsedMeta.CreationDate
+				meta.LastModifiedDate = parsedMeta.LastModifiedDate
+				meta.TransitionForLatestSave = parsedMeta.TransitionForLatestSave
+				meta.ChangeUserKind = parsedMeta.ChangeUserKind
+				meta.ChangeExecutor = parsedMeta.ChangeExecutor
 			}
 
 			ev.Entity = &spi.Entity{

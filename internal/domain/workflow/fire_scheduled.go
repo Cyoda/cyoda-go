@@ -33,6 +33,19 @@ const (
 	OutcomeDropped ScheduledOutcome = "dropped"
 )
 
+// firePrincipalSystemID identifies the platform system principal the fire
+// path executes as and attributes legacy (zero-ArmedBy) rows to. Deliberately
+// the same identity (ID and Kind) as scheduler.SystemPrincipal()/
+// scheduler.SystemUserContext() — attribution must see one system principal
+// regardless of which subsystem drove the write — but defined locally rather
+// than imported: internal/domain/workflow must not import internal/scheduler.
+const firePrincipalSystemID = "system"
+
+// systemPrincipal is the principal FireScheduledTransition always records as
+// the anchor write's executor, and falls back to as the attributed principal
+// for legacy rows whose durable ScheduledTask never recorded an ArmedBy.
+var systemPrincipal = spi.Principal{ID: firePrincipalSystemID, Kind: spi.PrincipalSystem}
+
 // defaultExpiryGraceMs is the engine's default expiry grace band (design
 // §5.5; the scheduler service's config knob for this, tracked separately in
 // Phase D, is not wired here): sized to comfortably exceed typical
@@ -73,6 +86,29 @@ func WithExpiryGrace(d time.Duration) EngineOption {
 // See design doc §5.2 (two doors, one mechanism), §5.3 (re-read guard),
 // §5.4 (one-shot criterion), §5.5 (grace band) for the rationale below.
 func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.ScheduledTask) (ScheduledOutcome, error) {
+	// Seed the causal origin from the DURABLE row — never from the task
+	// argument: the peer-RPC path (scheduler_rpc.go) passes an
+	// RPC-deserialized task, and only task.ID is trusted from it (see the
+	// doc comment above). This point-read happens before Begin so that
+	// spi.ResolveOrigin, evaluated inside the plugin's Begin, sees this
+	// ambient origin as the fire's root-tx Origin — every stamp site the
+	// fire's cascade touches (internal/domain/entity/service.go's
+	// spi.AttributionFor call sites) then inherits it automatically. The
+	// in-tx re-read guard below re-checks ArmedBy against this seed and
+	// aborts if it changed (fail closed; a forged/stale seed must never
+	// silently attribute a fire to the wrong principal).
+	preSts, err := e.factory.ScheduledTaskStore(ctx)
+	if err != nil {
+		return OutcomeDropped, fmt.Errorf("failed to get scheduled task store for origin seed: %w", err)
+	}
+	seeded := spi.Principal{}
+	if pre, found, err := preSts.Get(ctx, task.ID); err != nil {
+		return OutcomeDropped, fmt.Errorf("point-read scheduled task before fire: %w", err)
+	} else if found {
+		seeded = pre.ArmedBy
+	}
+	ctx = spi.WithAmbientOrigin(ctx, seeded) // zero -> no seed -> origin falls through to the system UserContext
+
 	txID, txCtx, err := e.txMgr.Begin(ctx)
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to begin scheduled-fire transaction: %w", err)
@@ -149,6 +185,20 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			slog.String("tenantId", string(cur.TenantID)),
 			slog.String("assertedTenantId", string(task.TenantID)))
 		return OutcomeDropped, nil
+	}
+
+	// --- Verify-or-abort: has the arming principal changed since the
+	// pre-Begin point-read seeded ctx's ambient origin? ---
+	//
+	// A concurrent re-arm between the point-read and this in-tx re-read
+	// (e.g. a racing loopback save arming the same task under a different
+	// principal) means the origin already seeded onto txCtx no longer
+	// matches the row this fire is about to attribute against — every write
+	// in this transaction would silently inherit the STALE principal. Fail
+	// closed: abort without committing anything: the scan loop's existing
+	// backoff retries, and the retry re-seeds from a fresh point-read.
+	if cur.ArmedBy != seeded {
+		return OutcomeDropped, fmt.Errorf("scheduled task re-armed concurrently (arming principal changed); will retry")
 	}
 
 	// --- Re-read guard step 2: is the entity still in the task's source state? ---
@@ -228,6 +278,41 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		}
 	}
 
+	// --- Anchor stamp: attribute the fire's write to the arming principal
+	// (design §5.3) ---
+	//
+	// Stamped here — after every guard above has confirmed the fire will
+	// actually proceed, but BEFORE fireTransition/cascadeAutomated run —
+	// mirroring every other engine caller (internal/domain/entity/
+	// service.go's CreateEntity/UpdateEntity/BatchCreate): Meta is stamped
+	// on ctx's tx-carrying context before the engine is invoked, never
+	// after. This entity is the only write in the fire's cascade that
+	// bypasses internal/domain/entity/service.go's spi.AttributionFor call
+	// sites (it goes straight to the EntityStore below), so it must be
+	// stamped explicitly rather than inheriting attribution automatically.
+	//
+	// Stamping this early matters because a COMMIT_BEFORE_DISPATCH
+	// processor inside fireTransition or cascadeAutomated can flush the
+	// entity mid-cascade (flushAndCommitSegment) — that intermediate,
+	// durable EntityVersion must already carry the correct attribution, not
+	// whatever stale Meta a previous committer left. Stamping only at the
+	// terminal persist (the old location) left that intermediate row
+	// mis-attributed.
+	//
+	// Values: attributed to the arming principal (cur.ArmedBy, re-verified
+	// unchanged by the guard above), falling back to the system principal
+	// for legacy rows that never recorded one — never the literal string
+	// "scheduler". Executed by is always the system principal: the
+	// scheduler, not the arming principal, is what actually performs the
+	// fire.
+	armed := cur.ArmedBy
+	if armed == (spi.Principal{}) {
+		armed = systemPrincipal
+	}
+	entity.Meta.ChangeUser = armed.ID
+	entity.Meta.ChangeUserKind = armed.Kind
+	entity.Meta.ChangeExecutor = systemPrincipal
+
 	// --- Fire (design §5.2/§5.3) ---
 	// expectedTxID is "the txID read in this fire transaction" (design
 	// §5.3): the entity's last-committed TransactionID as of the Get above.
@@ -306,6 +391,10 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		return OutcomeDropped, fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 
+	// Anchor stamp already applied above (before fireTransition), so it is
+	// durable on every EntityVersion the cascade writes — including any
+	// intermediate COMMIT_BEFORE_DISPATCH flush — not just this terminal
+	// persist.
 	finalEntityStore, err := e.factory.EntityStore(finalCtx)
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to get entity store for persist: %w", err)

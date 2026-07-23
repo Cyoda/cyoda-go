@@ -9,10 +9,8 @@ github.com/containerd/errdefs v1.0.0/go.mod h1:+YBYIdtsnF4Iw6nWZhJcqGSg/dwvV7tyJ
 github.com/containerd/errdefs/pkg v0.3.0 h1:9IKJ06FvyNlexW690DXuQNx2KA2cUJXx151Xdx3ZPPE=
 github.com/containerd/errdefs/pkg v0.3.0/go.mod h1:NJw6s9HwNuRhnjJhM7pylWwMyAkmCQvQ4GpJHEqRLVk=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260722164413-f84cde1ebb18 h1:pTEUKeJOHxLlgYNLWclZ4W5QSR4tRh6C8pj0Jxg7leY=
-github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260722164413-f84cde1ebb18/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
-github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260722211647-f41c0522d014 h1:nxp8T1Sot9z47Rp5ejlyOvaBR0fRQfpqvdjcsxJy03A=
-github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260722211647-f41c0522d014/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260723193105-930c29320fb2 h1:/z2buF25AkJGRluJpsNfMewMD2/bJYlIFmXb8LaGcx8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260723193105-930c29320fb2/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

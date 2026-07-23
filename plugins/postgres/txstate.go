@@ -128,10 +128,9 @@ func (s *txState) ValidateReadSet(current map[string]int64) error {
 	return nil
 }
 
-// PushSavepoint stores a deep copy of the current readSet/writeSet under
-// the given savepoint ID. Subsequent RestoreSavepoint(id) restores both
-// sets to this snapshot and trims later savepoints (postgres nested
-// savepoint semantics).
+// PushSavepoint stores a deep copy of the current readSet/writeSet under the
+// given savepoint ID. Subsequent RestoreSavepoint(id) restores them to this
+// snapshot and trims later savepoints (postgres nested savepoint semantics).
 func (s *txState) PushSavepoint(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

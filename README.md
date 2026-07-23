@@ -119,6 +119,10 @@ The `/api/account` response confirms the bootstrap client's tenant and roles. Fr
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 
+In mock mode, `CYODA_IAM_MOCK_KIND` (default `user`) sets the principal kind
+(`user`/`service`/`system`) on the mock default UserContext, so local/CI setups
+can exercise service- or system-attributed code paths without real JWT auth.
+
 ### Federated OIDC providers
 
 cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, Keycloak, or any spec-compliant issuer — alongside its own first-party tokens. Each tenant registers its own providers; tokens are validated against the provider's JWKS endpoint.

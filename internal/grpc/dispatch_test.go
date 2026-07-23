@@ -36,6 +36,7 @@ func testContext() context.Context {
 	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "user-1",
 		UserName: "test-user",
+		Kind:     spi.PrincipalUser,
 		Tenant:   spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
 	})
 }
@@ -729,6 +730,130 @@ func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
 	}
 	if !appErr.Retryable {
 		t.Error("expected disconnect error to be retryable")
+	}
+}
+
+// TestDispatchCalloutToMember_NilUserContext guards the fail-loud rule end
+// to end: a dispatch path with no UserContext on ctx must fail the dispatch
+// and never send the callout to the member.
+func TestDispatchCalloutToMember_NilUserContext(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+
+	req := map[string]any{"requestId": "req-no-uc"}
+	_, err := dispatcher.dispatchCalloutToMember(context.Background(), member, EntityProcessorCalculationRequest, req, "req-no-uc", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error for missing user context")
+	}
+	select {
+	case ce := <-sentCh:
+		t.Fatalf("expected no callout to be sent, got %v", ce)
+	default:
+	}
+}
+
+// TestDispatchCalloutToMember_UnsetKind guards that an unset principal Kind
+// fails the dispatch and never sends the callout.
+func TestDispatchCalloutToMember_UnsetKind(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "user-1",
+		Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
+	})
+
+	req := map[string]any{"requestId": "req-unset-kind"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-unset-kind", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error for unset principal kind")
+	}
+	select {
+	case ce := <-sentCh:
+		t.Fatalf("expected no callout to be sent, got %v", ce)
+	default:
+	}
+}
+
+// TestDispatchCalloutToMember_InvalidKind guards the pinned wire contract
+// (authtype in {user,service,system}): a Kind outside that set — e.g. from a
+// misconfigured mock — must fail the dispatch rather than emit a bogus
+// authtype onto the wire.
+func TestDispatchCalloutToMember_InvalidKind(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "user-1",
+		Kind:   spi.PrincipalKind("bogus"),
+		Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
+	})
+
+	req := map[string]any{"requestId": "req-invalid-kind"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-invalid-kind", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error for invalid principal kind")
+	}
+	select {
+	case ce := <-sentCh:
+		t.Fatalf("expected no callout to be sent, got %v", ce)
+	default:
+	}
+}
+
+// TestDispatchCalloutToMember_KindDrivenAuthType guards that authtype flows
+// end to end from the explicit principal Kind for service and system
+// principals (not just the default user case covered by
+// TestDispatchProcessor_HappyPath), and that a user-kind principal carrying
+// ROLE_M2M still emits authtype=user (role-sniffing regression guard).
+func TestDispatchCalloutToMember_KindDrivenAuthType(t *testing.T) {
+	tests := []struct {
+		name         string
+		kind         spi.PrincipalKind
+		roles        []string
+		wantAuthType string
+	}{
+		{"service kind", spi.PrincipalService, nil, "service"},
+		{"system kind", spi.PrincipalSystem, nil, "system"},
+		{"user kind with ROLE_M2M regression", spi.PrincipalUser, []string{"ROLE_M2M"}, "user"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+			member := registry.Get(memberID)
+			ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "principal-1",
+				Kind:   tt.kind,
+				Roles:  tt.roles,
+				Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
+			})
+
+			go func() {
+				ce := <-sentCh
+				authType, ok := ce.Attributes["authtype"]
+				if !ok {
+					t.Error("expected authtype attribute")
+					return
+				}
+				if got := authType.GetCeString(); got != tt.wantAuthType {
+					t.Errorf("expected authtype=%s, got %s", tt.wantAuthType, got)
+				}
+				reqID, err := extractRequestID(ce)
+				if err != nil {
+					t.Errorf("extractRequestID: %v", err)
+					return
+				}
+				member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
+			}()
+
+			req := map[string]any{"requestId": "req-kind-driven"}
+			resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-kind-driven", "tx-1", 5000, "processor", "my-proc")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp == nil || !resp.Success {
+				t.Fatalf("expected successful response, got %v", resp)
+			}
+		})
 	}
 }
 

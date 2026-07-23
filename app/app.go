@@ -243,6 +243,7 @@ func New(cfg Config) *App {
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
+			Kind:     spi.PrincipalSystem,
 			Tenant:   spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
 		})
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
@@ -376,6 +377,7 @@ func New(cfg Config) *App {
 		defaultUser := &spi.UserContext{
 			UserID:   cfg.IAM.MockUserID,
 			UserName: cfg.IAM.MockUserName,
+			Kind:     spi.PrincipalKind(cfg.IAM.MockKind),
 			Tenant: spi.Tenant{
 				ID:   spi.TenantID(cfg.IAM.MockTenantID),
 				Name: cfg.IAM.MockTenantName,

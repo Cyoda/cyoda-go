@@ -23,10 +23,11 @@ type committedTx struct {
 
 // savepointSnapshot holds a deep copy of transaction state at savepoint time.
 type savepointSnapshot struct {
-	buffer   map[string]*spi.Entity
-	readSet  map[string]bool
-	writeSet map[string]bool
-	deletes  map[string]bool
+	buffer            map[string]*spi.Entity
+	readSet           map[string]bool
+	writeSet          map[string]bool
+	deletes           map[string]bool
+	deleteAttribution map[string]spi.WriteAttribution // paired 1:1 with deletes — see TransactionState godoc
 
 	// scheduledTaskOpsLen is len(transactionManager.scheduledTaskOps[txID]) at
 	// the moment this savepoint was taken. scheduledTaskOps is append-only
@@ -158,12 +159,14 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	nowMicro := m.factory.clock.Now().UnixMicro()
 
 	tx := &spi.TransactionState{
-		ID:       txID,
-		TenantID: uc.Tenant.ID,
-		ReadSet:  make(map[string]bool),
-		WriteSet: make(map[string]bool),
-		Buffer:   make(map[string]*spi.Entity),
-		Deletes:  make(map[string]bool),
+		ID:                txID,
+		TenantID:          uc.Tenant.ID,
+		Origin:            spi.ResolveOrigin(ctx),
+		ReadSet:           make(map[string]bool),
+		WriteSet:          make(map[string]bool),
+		Buffer:            make(map[string]*spi.Entity),
+		Deletes:           make(map[string]bool),
+		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
 
 	// Snapshot time must be at least lastSubmitTime so that the transaction
@@ -415,23 +418,16 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		}
 
 		var nextVersion int64
-		changeType := "CREATED"
 		createdAtMicro := submitMicro
 		if !isNew {
 			nextVersion = existingVersion.Int64 + 1
-			changeType = "UPDATED"
 			createdAtMicro = existingCreatedAt.Int64
-		}
-
-		// Preserve the entity's change type if explicitly set (e.g. by workflow).
-		if entity.Meta.ChangeType != "" && entity.Meta.ChangeType != "CREATED" && !isNew {
-			changeType = entity.Meta.ChangeType
 		}
 
 		entity.Meta.Version = nextVersion
 		entity.Meta.LastModifiedDate = submitTime
 		entity.Meta.TransactionID = tx.ID
-		entity.Meta.ChangeType = changeType
+		entity.Meta.ChangeType = deriveChangeType(entity.Meta.ChangeType, isNew)
 		entity.Meta.TenantID = tx.TenantID
 		if isNew {
 			entity.Meta.CreationDate = submitTime
@@ -463,7 +459,7 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			tid, entityID,
 			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
 			nextVersion, string(entity.Data), string(metaJSON),
-			changeType, tx.ID, submitMicro,
+			entity.Meta.ChangeType, tx.ID, submitMicro,
 			entity.Meta.ChangeUser)
 		if err != nil {
 			return fmt.Errorf("insert version %s: %w", entityID, err)
@@ -503,13 +499,32 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			return fmt.Errorf("soft delete entity %s: %w", entityID, err)
 		}
 
+		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
+		// stage time (the STAGER's context, under the same OpMu section
+		// that set tx.Deletes[entityID] — see entityStore.Delete/DeleteAll).
+		// Fall back to spi.AttributionFor(ctx) — this Commit call's own
+		// ctx, i.e. the committer — only when no staged entry exists (a
+		// caller that mutated tx.Deletes directly, bypassing EntityStore).
+		// This is what fixes the prior bug: the tombstone's user_id column
+		// was always written as '' — no actor at all, staged or committer.
+		attribution, staged := tx.DeleteAttribution[entityID]
+		if !staged {
+			a, e := spi.AttributionFor(ctx)
+			attribution = spi.WriteAttribution{Attributed: a, Executor: e}
+		}
+		tombstoneMeta, err := marshalTombstoneMeta(attribution.Attributed.Kind, attribution.Executor)
+		if err != nil {
+			return fmt.Errorf("marshal tombstone meta %s: %w", entityID, err)
+		}
+
 		_, err = sqlTx.ExecContext(ctx,
 			`INSERT INTO entity_versions
 			 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
-			 VALUES (?, ?, ?, ?, ?, NULL, NULL, 'DELETED', ?, ?, '')`,
+			 VALUES (?, ?, ?, ?, ?, NULL, jsonb(?), 'DELETED', ?, ?, ?)`,
 			tid, entityID,
 			modelName, modelVersion,
-			nextVersion, tx.ID, submitMicro)
+			nextVersion, string(tombstoneMeta), tx.ID, submitMicro,
+			attribution.Attributed.ID)
 		if err != nil {
 			return fmt.Errorf("insert delete version %s: %w", entityID, err)
 		}
@@ -669,6 +684,10 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 	for k, v := range tx.Deletes {
 		delCopy[k] = v
 	}
+	delAttrCopy := make(map[string]spi.WriteAttribution, len(tx.DeleteAttribution))
+	for k, v := range tx.DeleteAttribution {
+		delAttrCopy[k] = v
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -680,6 +699,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 		readSet:             readCopy,
 		writeSet:            writeCopy,
 		deletes:             delCopy,
+		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
 	}
 	return spID, nil
@@ -732,6 +752,7 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	tx.ReadSet = snap.readSet
 	tx.WriteSet = snap.writeSet
 	tx.Deletes = snap.deletes
+	tx.DeleteAttribution = snap.deleteAttribution
 
 	// Truncate staged scheduled-task ops back to the length recorded at the
 	// savepoint — append-only, so truncation (not replacement) is how it is

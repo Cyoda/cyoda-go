@@ -34,7 +34,17 @@ type TransactionManager struct {
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
-	tenants    map[string]spi.TenantID
+	tenants map[string]spi.TenantID
+	// origins records the attribution root (spi.TransactionState.Origin)
+	// captured at Begin for each active transaction. Unlike memory/sqlite,
+	// which share a single *spi.TransactionState pointer across Join calls,
+	// postgres rebuilds a brand-new TransactionState{ID,TenantID} on every
+	// Join (see Join below) — without this map, that rebuild would silently
+	// drop Origin, breaking cross-node/cross-goroutine cascade attribution
+	// (the primary acceptance criterion of the follow-on-action attribution
+	// feature). Populated at Begin, read at Join, deleted at Commit/
+	// Rollback — same lifecycle and mutex (tm.mu) as tenants.
+	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
 }
@@ -47,6 +57,7 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *Transac
 		uuids:       uuids,
 		submitTimes: make(map[string]time.Time),
 		tenants:     make(map[string]spi.TenantID),
+		origins:     make(map[string]spi.Principal),
 		txStates:    make(map[string]*txState),
 	}
 }
@@ -80,10 +91,17 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	tm.registry.Register(txID, pgxTx)
 
+	// Origin: the attribution root for the whole tx, per ResolveOrigin's
+	// documented precedence (parent-tx > ambient > UserContext). Resolved
+	// from the Begin caller's ctx and stored in tm.origins so Join can
+	// repopulate it later (see the origins field godoc above).
+	origin := spi.ResolveOrigin(ctx)
+
 	func() {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
 		tm.tenants[txID] = tenantID
+		tm.origins[txID] = origin
 	}()
 
 	func() {
@@ -92,9 +110,17 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		tm.txStates[txID] = newTxState(tenantID)
 	}()
 
+	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil:
+	// postgres's own persistence never reads them back (see
+	// EntityStore.Delete and Search's documented assumption in searcher.go)
+	// — real row visibility is governed by PostgreSQL's own transaction/
+	// SAVEPOINT machinery, not an in-process buffer. The SPI conformance
+	// contract is the committed outcome (GetVersionHistory), never these
+	// maps' contents.
 	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
+		Origin:   origin,
 	}
 
 	return txID, spi.WithTransaction(ctx, txSpiState), nil
@@ -252,9 +278,23 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 		return nil, err
 	}
 
+	// Join rebuilds TransactionState from scratch (postgres does not share
+	// a single *spi.TransactionState pointer across Join calls the way
+	// memory/sqlite do) — Origin MUST be repopulated from tm.origins here,
+	// or a joined caller's writes silently lose attribution to the tx's
+	// causal root. This is the load-bearing case for cross-node/cross-
+	// goroutine cascade attribution; see the origins field godoc.
+	origin, ok := tm.lookupOrigin(txID)
+	if !ok {
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+
+	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil on the
+	// rebuilt TransactionState too — same rationale as Begin above.
 	txState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
+		Origin:   origin,
 	}
 	return spi.WithTransaction(ctx, txState), nil
 }
@@ -283,6 +323,7 @@ func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 func (tm *TransactionManager) cleanupTx(txID string) {
 	tm.registry.Remove(txID)
 	tm.removeTenant(txID)
+	tm.removeOrigin(txID)
 	tm.removeTxState(txID)
 }
 
@@ -291,6 +332,25 @@ func (tm *TransactionManager) removeTenant(txID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	delete(tm.tenants, txID)
+}
+
+// removeOrigin cleans up the origin mapping for a completed transaction.
+// Called by cleanupTx on every Commit/Rollback exit path so no per-tx origin
+// entry ever leaks past the transaction's lifetime.
+func (tm *TransactionManager) removeOrigin(txID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	delete(tm.origins, txID)
+}
+
+// lookupOrigin returns the origin recorded for a transaction at Begin, or
+// false if the txID is not active. Used by Join to repopulate Origin on the
+// freshly rebuilt TransactionState.
+func (tm *TransactionManager) lookupOrigin(txID string) (spi.Principal, bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	origin, ok := tm.origins[txID]
+	return origin, ok
 }
 
 // removeTxState removes the txState entry for a completed transaction.
@@ -329,6 +389,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return "", fmt.Errorf("Savepoint: %w", err)
 	}
+
 	state.PushSavepoint(spID)
 	return spID, nil
 }

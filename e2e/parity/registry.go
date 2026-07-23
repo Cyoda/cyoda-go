@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 205 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 209 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -359,6 +359,16 @@ var allTests = []NamedTest{
 	// Criterion rejection reason — inline (non-FUNCTION) criterion default
 	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
 	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
+
+	// Follow-on-action attribution — the {attributed principal, executor} pair
+	// recorded on change history must be IDENTICAL on every backend. Guards the
+	// 3-way delete-tombstone divergence staying fixed, plus the executor
+	// round-trip, scheduled-fire (system executor), and joined-cascade
+	// (origin-propagated, distinct executor) contracts.
+	{"AttributionTombstoneUniformity", RunAttributionTombstoneUniformity},
+	{"AttributionExecutorRoundTrip", RunAttributionExecutorRoundTrip},
+	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
+	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

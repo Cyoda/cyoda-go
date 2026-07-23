@@ -356,7 +356,12 @@ and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
 
 The server attaches CloudEvent Auth Context extension attributes to every dispatched request:
 
-- `authtype` — `"user"` or `"service_account"` (based on whether the originating user has `ROLE_M2M`)
+- `authtype` — `"user"`, `"service"`, or `"system"`, driven by the originating
+  principal's explicit kind (not sniffed from roles). **Wire change:** this was
+  previously `"user"` / `"service_account"` inferred from a `ROLE_M2M` role;
+  it is now one of exactly these three values, always. Dispatch fails closed
+  — no callout is sent — if the principal's kind is unset or unrecognized, so
+  a bogus or absent `authtype` never reaches a compute node.
 - `authid` — the user ID of the originating request
 - `authclaims` — comma-separated roles of the originating user
 

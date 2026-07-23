@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -247,6 +248,160 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 		if ev.EventType == spi.SMEventScheduledTransitionCancelled {
 			t.Errorf("unexpected SCHEDULED_TRANSITION_CANCEL event on same-state loopback: %+v", ev)
 		}
+	}
+}
+
+// armOriginUserCtx builds a user ctx with Kind explicitly set to
+// spi.PrincipalUser, for the "user arms in their own tx" ArmedBy scenario.
+// Mirrors attributionUserCtx in service_attribution_test.go — ctxWithTenant
+// (used elsewhere in this package) predates the attribution work and leaves
+// Kind unset, which would leave these assertions checking the legacy
+// fallback rather than the documented user-kind behavior.
+func armOriginUserCtx(userID string) context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID:   userID,
+		UserName: userID,
+		Kind:     spi.PrincipalUser,
+		Tenant:   spi.Tenant{ID: testTenant, Name: string(testTenant)},
+		Roles:    []string{"USER"},
+	})
+}
+
+// armServiceCtx builds a service-kind ctx (no tx of its own — always joined
+// onto an existing one), for the "service executor stages inside a
+// user-origin tx" ArmedBy scenario.
+func armServiceCtx(serviceID string) context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID:   serviceID,
+		UserName: serviceID,
+		Kind:     spi.PrincipalService,
+		Tenant:   spi.Tenant{ID: testTenant, Name: string(testTenant)},
+	})
+}
+
+// TestReconcile_ArmedByCapturesUserOrigin covers §5.2 case (a): a user ctx
+// arming inside that same user's own transaction stamps ArmedBy with that
+// user.
+func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ctx := armOriginUserCtx("arm-user")
+	modelRef := spi.ModelRef{EntityName: "armedby-user-order", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "ArmedByUserWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"CLOSED": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := makeEntity("armedby-user-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = txID
+	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if err := txMgr.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	sts, err := factory.ScheduledTaskStore(ctx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	wantID := taskID(testTenant, "armedby-user-e1", "OPEN", "AutoClose")
+	task, found, err := sts.Get(ctx, wantID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected task %q armed", wantID)
+	}
+	want := spi.Principal{ID: "arm-user", Kind: spi.PrincipalUser}
+	if task.ArmedBy != want {
+		t.Errorf("ArmedBy = %+v, want %+v", task.ArmedBy, want)
+	}
+}
+
+// TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor covers §5.2
+// case (b): a service-kind executor staging inside another principal's
+// (user's) transaction arms with the TX ORIGIN, not the service executor —
+// this deliberately differs from the write-stamp rule (spi.AttributionFor),
+// which records the service as ChangeExecutor while inheriting the origin
+// only for ChangeUser. Arming has no executor/attributed split: ArmedBy is
+// always the chain origin.
+func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ownerCtx := armOriginUserCtx("origin-user")
+	modelRef := spi.ModelRef{EntityName: "armedby-chain-order", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "ArmedByChainWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+			}},
+			"CLOSED": {},
+		},
+	}
+	saveWorkflow(t, factory, ownerCtx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txMgr, err := factory.TransactionManager(ownerCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	ownerTxID, ownerTxCtx, err := txMgr.Begin(ownerCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	serviceCtx := armServiceCtx("arm-service")
+	joinedCtx, err := txMgr.Join(serviceCtx, ownerTxID)
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+
+	entity := makeEntity("armedby-chain-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = ownerTxID
+	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if err := txMgr.Commit(ownerTxCtx, ownerTxID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	sts, err := factory.ScheduledTaskStore(ownerCtx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	wantID := taskID(testTenant, "armedby-chain-e1", "OPEN", "AutoClose")
+	task, found, err := sts.Get(ownerCtx, wantID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected task %q armed", wantID)
+	}
+	wantOrigin := spi.Principal{ID: "origin-user", Kind: spi.PrincipalUser}
+	if task.ArmedBy != wantOrigin {
+		t.Errorf("ArmedBy = %+v, want tx origin %+v (not the service executor)", task.ArmedBy, wantOrigin)
+	}
+	notWant := spi.Principal{ID: "arm-service", Kind: spi.PrincipalService}
+	if task.ArmedBy == notWant {
+		t.Error("ArmedBy must not be the service executor — arming always uses the chain origin")
 	}
 }
 

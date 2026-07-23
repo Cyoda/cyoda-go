@@ -208,7 +208,8 @@ func TestRestoreSavepoint_RestoresSets(t *testing.T) {
 	s.RecordRead("e2", 20)
 	s.RecordWrite("e3", 30)
 
-	if err := s.RestoreSavepoint("sp1"); err != nil {
+	err := s.RestoreSavepoint("sp1")
+	if err != nil {
 		t.Fatalf("RestoreSavepoint: %v", err)
 	}
 
@@ -233,7 +234,8 @@ func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
 	s.RecordRead("e1", 1)
 	s.PushSavepoint("sp2")
 
-	if err := s.RestoreSavepoint("sp1"); err != nil {
+	err := s.RestoreSavepoint("sp1")
+	if err != nil {
 		t.Fatalf("RestoreSavepoint: %v", err)
 	}
 

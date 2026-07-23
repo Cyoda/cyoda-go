@@ -26,6 +26,26 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Service container for the plugins/postgres step below. The plugin's
+    # tests skip themselves when CYODA_TEST_DB_URL is unset (they have no
+    # testcontainers bootstrap of their own — that lives in the root
+    # module's e2e/parity fixtures), so without this service the postgres
+    # plugin step was silently green while exercising none of its
+    # DB-backed tests.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cyoda
+          POSTGRES_PASSWORD: cyoda
+          POSTGRES_DB: cyoda_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cyoda -d cyoda_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -44,8 +64,9 @@ jobs:
 
       # Plugin submodules each have their own go.mod, so `./...` from the root
       # does not recurse into them. Run tests inside each module so CI does
-      # not miss regressions (issue #46). Postgres plugin uses testcontainers-go;
-      # ubuntu-latest provides the Docker socket.
+      # not miss regressions (issue #46). The postgres plugin's DB-backed
+      # tests connect via CYODA_TEST_DB_URL (job-level postgres service
+      # above) and skip when it is unset.
       - name: Run plugins/memory tests
         working-directory: plugins/memory
         run: go test -v ./...
@@ -56,6 +77,8 @@ jobs:
 
       - name: Run plugins/postgres tests
         working-directory: plugins/postgres
+        env:
+          CYODA_TEST_DB_URL: postgres://cyoda:cyoda@localhost:5432/cyoda_test?sslmode=disable
         run: go test -v ./...
 
       - name: Build

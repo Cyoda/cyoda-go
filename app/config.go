@@ -115,11 +115,16 @@ type IAMConfig struct {
 	MockTenantID   string
 	MockTenantName string
 	MockRoles      []string
-	JWTSigningKey  string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
-	JWTIssuer      string // JWT issuer claim (CYODA_JWT_ISSUER)
-	JWTAudience    string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
-	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
-	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
+	// MockKind is the spi.PrincipalKind (as a string — "user", "service", or
+	// "system") assigned to the mock-mode default UserContext. CYODA_IAM_MOCK_KIND,
+	// default "user". Lets local/CI setups exercise service/system-attributed
+	// code paths without standing up real JWT auth.
+	MockKind      string
+	JWTSigningKey string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
+	JWTIssuer     string // JWT issuer claim (CYODA_JWT_ISSUER)
+	JWTAudience   string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
+	JWTExpiry     int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
+	RequireJWT    bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 
 	// IAM feature-flag fields — passed through to auth.IAMFeatures via AuthIAMFeatures().
 	// Individual fields document their own purpose; this block covers both
@@ -256,6 +261,7 @@ func DefaultConfig() Config {
 			MockTenantID:                  "mock-tenant",
 			MockTenantName:                "Mock Tenant",
 			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "user"),
 			JWTSigningKey:                 jwtSigningKey,
 			JWTIssuer:                     envString("CYODA_JWT_ISSUER", "cyoda"),
 			JWTAudience:                   envString("CYODA_JWT_AUDIENCE", ""),

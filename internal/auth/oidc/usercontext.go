@@ -60,6 +60,7 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 	return &spi.UserContext{
 		UserID:   "oidc:" + p.ID.String() + ":" + sub,
 		UserName: sub,
+		Kind:     spi.PrincipalUser,
 		Tenant: spi.Tenant{
 			ID:   spi.TenantID(p.OwnerLegalEntityID.String()),
 			Name: p.OwnerLegalEntityID.String(),

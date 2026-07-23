@@ -1,11 +1,168 @@
 package grpc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
+
+// TestAttachAuthContext_KindDriven guards that authtype is emitted verbatim
+// from the explicit principal Kind, not sniffed from roles. The ROLE_M2M
+// case is a regression guard: a user-kind principal carrying ROLE_M2M (e.g.
+// an OBO-style delegated call) must still emit authtype=user — role-sniffing
+// is dead.
+func TestAttachAuthContext_KindDriven(t *testing.T) {
+	tests := []struct {
+		name         string
+		kind         spi.PrincipalKind
+		roles        []string
+		wantAuthType string
+	}{
+		{"user kind", spi.PrincipalUser, nil, "user"},
+		{"service kind", spi.PrincipalService, nil, "service"},
+		{"system kind", spi.PrincipalSystem, nil, "system"},
+		{"user kind with ROLE_M2M regression", spi.PrincipalUser, []string{"ROLE_M2M"}, "user"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "principal-1",
+				Kind:   tt.kind,
+				Roles:  tt.roles,
+			})
+			ce := &cepb.CloudEvent{}
+
+			if err := AttachAuthContext(ctx, ce); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			authType, ok := ce.Attributes["authtype"]
+			if !ok {
+				t.Fatal("expected authtype attribute")
+			}
+			if got := authType.GetCeString(); got != tt.wantAuthType {
+				t.Errorf("expected authtype=%s, got %s", tt.wantAuthType, got)
+			}
+
+			authID, ok := ce.Attributes["authid"]
+			if !ok {
+				t.Fatal("expected authid attribute")
+			}
+			if got := authID.GetCeString(); got != "principal-1" {
+				t.Errorf("expected authid=principal-1, got %s", got)
+			}
+		})
+	}
+}
+
+// TestAttachAuthContext_NilUserContext guards the fail-loud rule: a dispatch
+// path with no UserContext on ctx must fail rather than emit a bogus or
+// absent authtype.
+func TestAttachAuthContext_NilUserContext(t *testing.T) {
+	ce := &cepb.CloudEvent{}
+	err := AttachAuthContext(context.Background(), ce)
+	if err == nil {
+		t.Fatal("expected error for nil user context")
+	}
+	if ce.Attributes != nil {
+		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
+	}
+	// A missing UserContext on a dispatch path is a server-side condition
+	// (missed context propagation), never a client fault — classifyWorkflowError
+	// keys off this sentinel to map the failure to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	}
+}
+
+// TestAttachAuthContext_UnsetKind guards that an unset Kind (legacy/unmigrated
+// auth constructor) fails loud rather than emitting an empty authtype.
+func TestAttachAuthContext_UnsetKind(t *testing.T) {
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{UserID: "principal-1"})
+	ce := &cepb.CloudEvent{}
+	err := AttachAuthContext(ctx, ce)
+	if err == nil {
+		t.Fatal("expected error for unset principal kind")
+	}
+	if ce.Attributes != nil {
+		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
+	}
+	// An unset Kind is a server-side condition (missed constructor / missed
+	// cross-node forwarding), never client-supplied — classifyWorkflowError
+	// keys off this sentinel to map the failure to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	}
+}
+
+// TestAttachAuthContext_InvalidKind guards the pinned wire contract:
+// authtype must always be one of {user,service,system}. A misconfigured
+// mock/test double (e.g. CYODA_IAM_MOCK_KIND=bogus) producing an out-of-set
+// Kind must fail the dispatch, not emit the bogus value onto the wire.
+func TestAttachAuthContext_InvalidKind(t *testing.T) {
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "principal-1",
+		Kind:   spi.PrincipalKind("bogus"),
+	})
+	ce := &cepb.CloudEvent{}
+	err := AttachAuthContext(ctx, ce)
+	if err == nil {
+		t.Fatal("expected error for invalid principal kind")
+	}
+	if ce.Attributes != nil {
+		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
+	}
+	// An unrecognized Kind is a server-side misconfiguration, never
+	// client-supplied — must map to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	}
+}
+
+// TestAttachAuthContext_NilCloudEvent guards against a nil CloudEvent even
+// when the UserContext is well-formed.
+func TestAttachAuthContext_NilCloudEvent(t *testing.T) {
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "principal-1",
+		Kind:   spi.PrincipalUser,
+	})
+	err := AttachAuthContext(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error for nil cloud event")
+	}
+	// A nil CloudEvent is a caller (dispatch-path) programming error, never
+	// client-supplied — must map to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	}
+}
+
+// TestAttachAuthContext_AuthClaimsFromRoles guards that authclaims is
+// populated from roles when present, and omitted when absent.
+func TestAttachAuthContext_AuthClaimsFromRoles(t *testing.T) {
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "principal-1",
+		Kind:   spi.PrincipalUser,
+		Roles:  []string{"ROLE_USER", "ROLE_ADMIN"},
+	})
+	ce := &cepb.CloudEvent{}
+	if err := AttachAuthContext(ctx, ce); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	claims, ok := ce.Attributes["authclaims"]
+	if !ok {
+		t.Fatal("expected authclaims attribute")
+	}
+	if got := claims.GetCeString(); got != "ROLE_USER,ROLE_ADMIN" {
+		t.Errorf("expected authclaims=ROLE_USER,ROLE_ADMIN, got %s", got)
+	}
+}
 
 func TestNewCloudEvent_ParseCloudEvent_RoundTrip(t *testing.T) {
 	type testPayload struct {

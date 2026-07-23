@@ -327,6 +327,7 @@ func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor 
 		TenantID:       string(uc.Tenant.ID),
 		Tags:           tags,
 		UserID:         uc.UserID,
+		PrincipalKind:  uc.Kind,
 		Roles:          uc.Roles,
 		TxToken:        tok,
 	}
@@ -347,6 +348,7 @@ func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion j
 		TenantID:       string(uc.Tenant.ID),
 		Tags:           tags,
 		UserID:         uc.UserID,
+		PrincipalKind:  uc.Kind,
 		Roles:          uc.Roles,
 		TxToken:        tok,
 	}
@@ -365,6 +367,7 @@ func (d *ClusterDispatcher) buildFunctionRequest(entity *spi.Entity, fn spi.Sche
 		TenantID:       string(uc.Tenant.ID),
 		Tags:           tags,
 		UserID:         uc.UserID,
+		PrincipalKind:  uc.Kind,
 		Roles:          uc.Roles,
 		TxToken:        tok,
 	}

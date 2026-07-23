@@ -110,7 +110,9 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	if err != nil {
 		return nil, fmt.Errorf("failed to build %s cloud event: %w", label, err)
 	}
-	AttachAuthContext(ctx, ce)
+	if err := AttachAuthContext(ctx, ce); err != nil {
+		return nil, fmt.Errorf("failed to attach auth context to %s cloud event: %w", label, err)
+	}
 	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
 
 	ceData := ce.GetTextData()

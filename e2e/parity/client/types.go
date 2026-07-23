@@ -67,13 +67,30 @@ type EntityTransactionInfo struct {
 // Returned as a JSON array by HTTP GET /entity/{entityId}/changes.
 //
 // Required: timeOfChange, user, changeType. Optional: transactionId,
-// fieldsChangedCount. changeType enum: CREATE | UPDATE | DELETE.
+// fieldsChangedCount, attributedKind, executedBy. changeType enum:
+// CREATE | UPDATE | DELETE.
+//
+// AttributedKind and ExecutedBy are the follow-on-action attribution
+// surface: User is the attributed (causal-origin) principal, AttributedKind
+// its kind (user | service | system), and ExecutedBy the principal that
+// actually staged the change. The handler emits attributedKind/executedBy
+// only when non-empty (legacy rows without stored attribution omit both),
+// so both are decoded as omitempty/pointer.
 type EntityChangeMeta struct {
-	TransactionID      string    `json:"transactionId,omitempty"`
-	TimeOfChange       time.Time `json:"timeOfChange"`
-	User               string    `json:"user"`
-	ChangeType         string    `json:"changeType"`
-	FieldsChangedCount int       `json:"fieldsChangedCount,omitempty"`
+	TransactionID      string           `json:"transactionId,omitempty"`
+	TimeOfChange       time.Time        `json:"timeOfChange"`
+	User               string           `json:"user"`
+	ChangeType         string           `json:"changeType"`
+	FieldsChangedCount int              `json:"fieldsChangedCount,omitempty"`
+	AttributedKind     string           `json:"attributedKind,omitempty"`
+	ExecutedBy         *ChangePrincipal `json:"executedBy,omitempty"`
+}
+
+// ChangePrincipal is the {id, kind} executor object on a change-history
+// entry (the executedBy field). Kind is one of user | service | system.
+type ChangePrincipal struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
 }
 
 // EntityModelDto mirrors the EntityModelDto component schema in
