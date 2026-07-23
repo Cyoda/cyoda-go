@@ -1451,7 +1451,8 @@ paths:
 
         - Timestamp when the change occurred
 
-        - User who made the change
+        - User the change is attributed to (and, when present, that
+        principal's kind and the executor that performed it on their behalf)
 
         - Type of change (CREATE, UPDATE, DELETE)
 
