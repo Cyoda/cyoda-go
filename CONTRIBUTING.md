@@ -128,6 +128,19 @@ The `cyoda help` topic tree is a stable interface. Topic paths (e.g. `config.dat
 
 New topics may be added freely at any point under existing parent paths. Adding a top-level topic is also permitted but update the hardcoded list in `cmd/cyoda/help/help_test.go` (`topLevelTopicsV061`) at the same time.
 
+### Plugin-contributed topics (overlays)
+
+External storage plugins can add their own help topics without editing the OSS content tree. A plugin embeds a `content/` directory (same layout and front-matter contract as the OSS base) and registers it from `init()`:
+
+```go
+//go:embed content
+var helpContent embed.FS
+
+func init() { help.RegisterOverlay(helpContent) }
+```
+
+The runtime tree (`help.BuildTree()`, used by both `cyoda help` and the HTTP help routes) merges the OSS base with every registered overlay: topics at fresh paths are added; a topic whose path collides with an OSS topic overrides it ("later wins", `see_also` unions unless `see_also_replace: true`). Overlay content is held to the same front-matter validation as the base — a malformed overlay fails binary startup. Prefer a dedicated path namespace for plugin topics to avoid unintended overrides. `help.DefaultTree` remains the OSS-only base (used by tests and OSS-only consumers).
+
 ### Renames / removals
 
 A rename or removal requires:
