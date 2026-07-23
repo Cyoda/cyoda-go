@@ -253,6 +253,44 @@ func MintComputeTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	}
 }
 
+// MintComputeUserJWT creates a USER-kind (OBO-shaped) JWT scoped to the
+// compute-test-client's tenant. It carries the user_roles claim key so the
+// validator assigns Kind=user (even with an empty role set), and caas_user_id
+// == userID so attribution records that principal. Tenant is ComputeTenantID so
+// processor/criteria dispatch still finds the registered gRPC member — the
+// combination used by cross-node attribution scenarios where a HUMAN origin
+// (user) drives a cascade whose joined writes execute as the member's service
+// identity.
+func MintComputeUserJWT(t *testing.T, ks *JWTKeySet, userID string, roles ...string) parity.Tenant {
+	t.Helper()
+	if roles == nil {
+		roles = []string{}
+	}
+
+	now := time.Now()
+	claims := map[string]any{
+		"sub":          userID,
+		"iss":          ks.Issuer,
+		"caas_user_id": userID,
+		"caas_org_id":  ComputeTenantID,
+		"user_roles":   roles, // KEY present → Kind=user (even when empty)
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}
+
+	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	if err != nil {
+		t.Fatalf("failed to mint compute user JWT: %v", err)
+	}
+
+	return parity.Tenant{
+		ID:    ComputeTenantID,
+		Token: token,
+	}
+}
+
 // --- Port picking ---
 
 // FreePort returns an available ephemeral TCP port on 127.0.0.1.

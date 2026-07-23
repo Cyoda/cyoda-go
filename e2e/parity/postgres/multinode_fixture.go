@@ -51,6 +51,17 @@ func (f *pgMultiNode) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// ComputeUser mints a USER-kind JWT (caas_user_id == userID) scoped to the
+// compute-test-client's tenant — a human origin whose cascades still dispatch
+// to the registered gRPC member. Used by cross-node attribution scenarios that
+// need a user-kind causal origin distinct from the member's service identity.
+// Not part of the MultiNodeFixture interface (attribution is postgres-first);
+// the postgres multinode attribution tests type-assert for it.
+func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintComputeUserJWT(t, f.keySet, userID, roles...)
+}
+
 // MustSetupMultiNode boots a Postgres testcontainer plus n cyoda-go
 // subprocesses sharing it (with cluster bootstrap) and returns a
 // MultiNodeFixture plus a cleanup function. Caller MUST defer cleanup

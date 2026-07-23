@@ -27,6 +27,13 @@ type Entity struct {
 	ID    string          `json:"id"`
 	State string          `json:"state"`
 	Data  json.RawMessage `json:"data"`
+
+	// AuthType is the executor's principal kind (user|service|system) carried
+	// by the dispatch's CloudEvents authtype attribute. Set by the dispatcher
+	// from the calc-request CloudEvent, not decoded from entity JSON — hence
+	// json:"-". Lets a processor observe the faithful executor kind, including
+	// the kind a cross-node forwarded dispatch reconstructs (Task 7).
+	AuthType string `json:"-"`
 }
 
 // processorFunc is the signature of a registered processor.
@@ -130,6 +137,27 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 					}
 					data["_context"] = ctxStr
 				}
+				out, err := json.Marshal(data)
+				if err != nil {
+					return nil, err
+				}
+				return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
+			},
+			// record-authtype — records the executor principal kind observed on
+			// the dispatch (Entity.AuthType, from the CloudEvents authtype
+			// attribute) into entity data at `observedAuthType`. Used by the
+			// cross-node attribution parity scenario to assert a forwarded
+			// processor dispatch (A→B) reconstructs the originating executor's
+			// true kind on the member-hosting node (Task 7). attachEntity:true
+			// is required so entity.Data is present to merge into.
+			"record-authtype": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				data := map[string]any{}
+				if len(entity.Data) > 0 {
+					if err := json.Unmarshal(entity.Data, &data); err != nil {
+						return nil, err
+					}
+				}
+				data["observedAuthType"] = entity.AuthType
 				out, err := json.Marshal(data)
 				if err != nil {
 					return nil, err

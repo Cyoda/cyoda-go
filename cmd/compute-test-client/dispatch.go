@@ -140,9 +140,15 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 		// carries no transaction context. Never logged (Gate 3).
 		txToken := txTokenFromCloudEvent(msg)
 
+		// authtype (CloudEvents Auth Context extension) carries the executor's
+		// principal kind. Surfaced to processors via Entity.AuthType so an
+		// attribution scenario can observe the faithful kind a cross-node
+		// forwarded dispatch reconstructs (Task 7).
+		authType := authTypeFromCloudEvent(msg)
+
 		switch msg.Type {
 		case ceTypeProcessorRequest:
-			resp, err := d.handleProcessorRequest(ctx, payload, txToken)
+			resp, err := d.handleProcessorRequest(ctx, payload, txToken, authType)
 			if err != nil {
 				slog.Error("processor dispatch failed", "pkg", "compute-test-client", "error", err)
 				continue
@@ -218,7 +224,7 @@ func (d *dispatcher) keepAliveLoop(ctx context.Context, stream grpc.BidiStreamin
 
 // handleProcessorRequest dispatches a processor request to the catalog and
 // returns the response CloudEvent.
-func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken, authType string) (*cepb.CloudEvent, error) {
 	var req struct {
 		RequestID     string          `json:"requestId"`
 		ProcessorID   string          `json:"processorId"`
@@ -242,7 +248,8 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 
 	// Build entity from payload data.
 	entity := &Entity{
-		ID: req.EntityID,
+		ID:       req.EntityID,
+		AuthType: authType,
 	}
 	if req.Payload != nil && req.Payload.Data != nil {
 		entity.Data = req.Payload.Data
