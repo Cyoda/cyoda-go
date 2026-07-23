@@ -43,12 +43,23 @@ func HasTxState(tm *TransactionManager, txID string) bool {
 	return ok
 }
 
+// OriginMapLenForTest returns the number of entries currently tracked in
+// tm.origins. Used by leak-detection tests to verify that Commit/Rollback's
+// cleanupTx removes the per-tx origin entry — see TransactionManager.origins
+// godoc for why this bookkeeping map exists (postgres rebuilds
+// TransactionState at Join and cannot rely on a shared pointer).
+func OriginMapLenForTest(tm *TransactionManager) int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return len(tm.origins)
+}
+
 // TxStateForTest exposes the recording/savepoint methods needed by tests.
 type TxStateForTest interface {
 	RecordRead(id string, version int64)
 	RecordWrite(id string, preWriteVersion int64)
-	PushSavepoint(id string)
-	RestoreSavepoint(id string) error
+	PushSavepoint(id string, deletes map[string]bool, deleteAttribution map[string]spi.WriteAttribution)
+	RestoreSavepoint(id string) (map[string]bool, map[string]spi.WriteAttribution, error)
 	ReleaseSavepoint(id string) error
 }
 

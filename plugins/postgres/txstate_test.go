@@ -171,7 +171,7 @@ func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
 	s := newTxState("t1")
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e2", 10)
-	s.PushSavepoint("sp1")
+	s.PushSavepoint("sp1", nil, nil)
 
 	// Mutate state after the push.
 	s.RecordRead("e3", 99)
@@ -202,13 +202,14 @@ func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
 func TestRestoreSavepoint_RestoresSets(t *testing.T) {
 	s := newTxState("t1")
 	s.RecordRead("e1", 5)
-	s.PushSavepoint("sp1")
+	s.PushSavepoint("sp1", nil, nil)
 
 	// Do more work after the savepoint.
 	s.RecordRead("e2", 20)
 	s.RecordWrite("e3", 30)
 
-	if err := s.RestoreSavepoint("sp1"); err != nil {
+	_, _, err := s.RestoreSavepoint("sp1")
+	if err != nil {
 		t.Fatalf("RestoreSavepoint: %v", err)
 	}
 
@@ -229,11 +230,12 @@ func TestRestoreSavepoint_RestoresSets(t *testing.T) {
 // trims sp2 (which was pushed after sp1) but keeps sp1.
 func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
 	s := newTxState("t1")
-	s.PushSavepoint("sp1")
+	s.PushSavepoint("sp1", nil, nil)
 	s.RecordRead("e1", 1)
-	s.PushSavepoint("sp2")
+	s.PushSavepoint("sp2", nil, nil)
 
-	if err := s.RestoreSavepoint("sp1"); err != nil {
+	_, _, err := s.RestoreSavepoint("sp1")
+	if err != nil {
 		t.Fatalf("RestoreSavepoint: %v", err)
 	}
 
@@ -249,7 +251,7 @@ func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
 // removes the savepoint entry but leaves the current readSet/writeSet intact.
 func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
 	s := newTxState("t1")
-	s.PushSavepoint("sp1")
+	s.PushSavepoint("sp1", nil, nil)
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e2", 10)
 
@@ -273,7 +275,7 @@ func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
 // returns spi.ErrSavepointNotFound.
 func TestRestoreSavepoint_Unknown(t *testing.T) {
 	s := newTxState("t1")
-	err := s.RestoreSavepoint("nonexistent")
+	_, _, err := s.RestoreSavepoint("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
 	}

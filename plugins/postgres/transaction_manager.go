@@ -34,7 +34,17 @@ type TransactionManager struct {
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
-	tenants    map[string]spi.TenantID
+	tenants map[string]spi.TenantID
+	// origins records the attribution root (spi.TransactionState.Origin)
+	// captured at Begin for each active transaction. Unlike memory/sqlite,
+	// which share a single *spi.TransactionState pointer across Join calls,
+	// postgres rebuilds a brand-new TransactionState{ID,TenantID} on every
+	// Join (see Join below) — without this map, that rebuild would silently
+	// drop Origin, breaking cross-node/cross-goroutine cascade attribution
+	// (the primary acceptance criterion of the follow-on-action attribution
+	// feature). Populated at Begin, read at Join, deleted at Commit/
+	// Rollback — same lifecycle and mutex (tm.mu) as tenants.
+	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
 }
@@ -47,6 +57,7 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *Transac
 		uuids:       uuids,
 		submitTimes: make(map[string]time.Time),
 		tenants:     make(map[string]spi.TenantID),
+		origins:     make(map[string]spi.Principal),
 		txStates:    make(map[string]*txState),
 	}
 }
@@ -80,10 +91,17 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	tm.registry.Register(txID, pgxTx)
 
+	// Origin: the attribution root for the whole tx, per ResolveOrigin's
+	// documented precedence (parent-tx > ambient > UserContext). Resolved
+	// from the Begin caller's ctx and stored in tm.origins so Join can
+	// repopulate it later (see the origins field godoc above).
+	origin := spi.ResolveOrigin(ctx)
+
 	func() {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
 		tm.tenants[txID] = tenantID
+		tm.origins[txID] = origin
 	}()
 
 	func() {
@@ -95,6 +113,13 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
+		Origin:   origin,
+		// Deletes/DeleteAttribution are bookkeeping-only for postgres (its
+		// own persistence never reads them back — see EntityStore.Delete),
+		// but must be non-nil and populated per the SPI TransactionState
+		// contract, which conformance tests inspect directly.
+		Deletes:           make(map[string]bool),
+		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
 
 	return txID, spi.WithTransaction(ctx, txSpiState), nil
@@ -252,9 +277,23 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 		return nil, err
 	}
 
+	// Join rebuilds TransactionState from scratch (postgres does not share
+	// a single *spi.TransactionState pointer across Join calls the way
+	// memory/sqlite do) — Origin MUST be repopulated from tm.origins here,
+	// or a joined caller's writes silently lose attribution to the tx's
+	// causal root. This is the load-bearing case for cross-node/cross-
+	// goroutine cascade attribution; see the origins field godoc.
+	origin, ok := tm.lookupOrigin(txID)
+	if !ok {
+		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+
 	txState := &spi.TransactionState{
-		ID:       txID,
-		TenantID: tenantID,
+		ID:                txID,
+		TenantID:          tenantID,
+		Origin:            origin,
+		Deletes:           make(map[string]bool),
+		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
 	return spi.WithTransaction(ctx, txState), nil
 }
@@ -283,6 +322,7 @@ func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 func (tm *TransactionManager) cleanupTx(txID string) {
 	tm.registry.Remove(txID)
 	tm.removeTenant(txID)
+	tm.removeOrigin(txID)
 	tm.removeTxState(txID)
 }
 
@@ -291,6 +331,25 @@ func (tm *TransactionManager) removeTenant(txID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	delete(tm.tenants, txID)
+}
+
+// removeOrigin cleans up the origin mapping for a completed transaction.
+// Called by cleanupTx on every Commit/Rollback exit path so no per-tx origin
+// entry ever leaks past the transaction's lifetime.
+func (tm *TransactionManager) removeOrigin(txID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	delete(tm.origins, txID)
+}
+
+// lookupOrigin returns the origin recorded for a transaction at Begin, or
+// false if the txID is not active. Used by Join to repopulate Origin on the
+// freshly rebuilt TransactionState.
+func (tm *TransactionManager) lookupOrigin(txID string) (spi.Principal, bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	origin, ok := tm.origins[txID]
+	return origin, ok
 }
 
 // removeTxState removes the txState entry for a completed transaction.
@@ -329,7 +388,18 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return "", fmt.Errorf("Savepoint: %w", err)
 	}
-	state.PushSavepoint(spID)
+
+	// Snapshot tx.Deletes/tx.DeleteAttribution from the SPI-level
+	// TransactionState carried in ctx — bookkeeping only (see
+	// savepointEntry godoc); postgres's own persistence doesn't need this
+	// (the SQL SAVEPOINT above already governs actual visibility).
+	var deletes map[string]bool
+	var deleteAttribution map[string]spi.WriteAttribution
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		deletes = tx.Deletes
+		deleteAttribution = tx.DeleteAttribution
+	}
+	state.PushSavepoint(spID, deletes, deleteAttribution)
 	return spID, nil
 }
 
@@ -363,8 +433,18 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
 	}
-	if err := state.RestoreSavepoint(savepointID); err != nil {
+	deletes, deleteAttribution, err := state.RestoreSavepoint(savepointID)
+	if err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
+	}
+	// Restore tx.Deletes/tx.DeleteAttribution on the SPI-level
+	// TransactionState in lockstep with the SQL rollback above —
+	// bookkeeping only (see savepointEntry godoc); the SQL ROLLBACK TO
+	// SAVEPOINT already reverted the actual DELETE(s) issued after this
+	// savepoint.
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		tx.Deletes = deletes
+		tx.DeleteAttribution = deleteAttribution
 	}
 	return nil
 }
