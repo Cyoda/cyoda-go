@@ -135,6 +135,13 @@ type callbackHarness struct {
 	baseURL string // e.g. http://127.0.0.1:PORT
 	member  *computeMember
 
+	// signKey is this stack's JWT signing key (same key app.New parsed from
+	// cfg.IAM.JWTSigningKey). Exposed so attribution tests can mint tokens for
+	// DISTINCT principals — a user token (user_roles claim → Kind=user) vs the
+	// M2M client-credentials token (scopes claim → Kind=service). Both validate
+	// against the same local key source (deterministic KID). Never logged.
+	signKey *rsa.PrivateKey
+
 	mu    sync.Mutex
 	procs map[string]callbackProc
 	crits map[string]callbackCrit
@@ -199,7 +206,7 @@ func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *ca
 	// is built from cfg.HTTPPort and must match the live server).
 	srv := httptest.NewUnstartedServer(nil)
 	srv.Start()
-	h := &callbackHarness{baseURL: srv.URL, procs: map[string]callbackProc{}, crits: map[string]callbackCrit{}, funcs: map[string]callbackFunc{}}
+	h := &callbackHarness{baseURL: srv.URL, signKey: rsaKey, procs: map[string]callbackProc{}, crits: map[string]callbackCrit{}, funcs: map[string]callbackFunc{}}
 	t.Cleanup(srv.Close)
 
 	srvPort := srv.Listener.Addr().(*net.TCPAddr).Port
