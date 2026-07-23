@@ -11,6 +11,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // NewCloudEvent creates a CloudEvent with JSON-marshalled payload as text data.
@@ -39,23 +40,34 @@ func NewCloudEvent(eventType string, payload any) (*cepb.CloudEvent, error) {
 // all return an error. Callers must fail the dispatch on error — the callout must
 // never be sent without a faithful AuthContext.
 //
+// Every failure returned here wraps contract.ErrAuthContextUnavailable: none of
+// these conditions can originate from client-supplied input (the client does not
+// control dispatch-path UserContext construction), so classifyWorkflowError
+// (internal/domain/entity) matches the sentinel via errors.Is and maps it to a
+// sanitized 5xx with a ticket UUID, never a 400 that would echo the raw message
+// (including the principal id) to the client.
+//
 // See: https://github.com/cloudevents/spec/blob/main/cloudevents/extensions/authcontext.md
 func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) error {
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
-		return errors.New("attach auth context: no user context on dispatch path")
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			errors.New("attach auth context: no user context on dispatch path"))
 	}
 	if uc.Kind == "" {
-		return fmt.Errorf("attach auth context: principal kind unset for principal %q", uc.UserID)
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			fmt.Errorf("attach auth context: principal kind unset for principal %q", uc.UserID))
 	}
 	switch uc.Kind {
 	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
 		// pinned wire contract: authtype ∈ {user,service,system}
 	default:
-		return fmt.Errorf("attach auth context: unrecognized principal kind %q for principal %q", uc.Kind, uc.UserID)
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			fmt.Errorf("attach auth context: unrecognized principal kind %q for principal %q", uc.Kind, uc.UserID))
 	}
 	if ce == nil {
-		return errors.New("attach auth context: nil cloud event")
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			errors.New("attach auth context: nil cloud event"))
 	}
 
 	if ce.Attributes == nil {

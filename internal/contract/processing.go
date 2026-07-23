@@ -21,6 +21,28 @@ import (
 // dependencies, safe for both sides to import.
 var ErrNoMatchingMember = errors.New("no matching calculation member")
 
+// ErrAuthContextUnavailable is joined into the error AttachAuthContext
+// (internal/grpc) returns when it cannot faithfully populate a dispatch
+// CloudEvent's Auth Context extension: no UserContext on ctx, an unset or
+// unrecognized principal Kind, or a nil CloudEvent. None of these can ever
+// originate from client-supplied input — the client does not control
+// dispatch-path UserContext construction — so they are server-side
+// conditions (missed constructor / missed cross-node context forwarding /
+// misconfiguration), not a bad request.
+//
+// error-classification code in internal/domain/entity matches this sentinel
+// via errors.Is to map the failure to a sanitized 5xx (ticket UUID, no
+// principal id or internal detail in the client response) instead of the
+// classifyWorkflowError GENERIC fallback, which would otherwise surface it
+// as 400 WORKFLOW_FAILED echoing the raw message.
+//
+// Defined here (rather than in internal/grpc, where AttachAuthContext lives)
+// for the same import-cycle reason as ErrNoMatchingMember above:
+// internal/grpc already imports internal/domain/entity, so
+// internal/domain/entity cannot import internal/grpc back. internal/contract
+// is a leaf package safe for both sides to import.
+var ErrAuthContextUnavailable = errors.New("auth context unavailable for dispatch")
+
 // FunctionResult holds the outcome of a generic Function callout dispatch —
 // used, e.g., by scheduled-transition timing where a compute node computes a
 // fire time (kind "Schedule") rather than mutating entity data or evaluating

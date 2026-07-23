@@ -3,10 +3,12 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // TestAttachAuthContext_KindDriven guards that authtype is emitted verbatim
@@ -71,6 +73,12 @@ func TestAttachAuthContext_NilUserContext(t *testing.T) {
 	if ce.Attributes != nil {
 		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
 	}
+	// A missing UserContext on a dispatch path is a server-side condition
+	// (missed context propagation), never a client fault — classifyWorkflowError
+	// keys off this sentinel to map the failure to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	}
 }
 
 // TestAttachAuthContext_UnsetKind guards that an unset Kind (legacy/unmigrated
@@ -84,6 +92,12 @@ func TestAttachAuthContext_UnsetKind(t *testing.T) {
 	}
 	if ce.Attributes != nil {
 		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
+	}
+	// An unset Kind is a server-side condition (missed constructor / missed
+	// cross-node forwarding), never client-supplied — classifyWorkflowError
+	// keys off this sentinel to map the failure to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
 	}
 }
 
@@ -104,6 +118,11 @@ func TestAttachAuthContext_InvalidKind(t *testing.T) {
 	if ce.Attributes != nil {
 		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
 	}
+	// An unrecognized Kind is a server-side misconfiguration, never
+	// client-supplied — must map to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	}
 }
 
 // TestAttachAuthContext_NilCloudEvent guards against a nil CloudEvent even
@@ -113,8 +132,14 @@ func TestAttachAuthContext_NilCloudEvent(t *testing.T) {
 		UserID: "principal-1",
 		Kind:   spi.PrincipalUser,
 	})
-	if err := AttachAuthContext(ctx, nil); err == nil {
+	err := AttachAuthContext(ctx, nil)
+	if err == nil {
 		t.Fatal("expected error for nil cloud event")
+	}
+	// A nil CloudEvent is a caller (dispatch-path) programming error, never
+	// client-supplied — must map to 5xx, not 400.
+	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
 	}
 }
 

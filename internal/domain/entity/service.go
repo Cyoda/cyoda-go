@@ -1963,6 +1963,12 @@ func classifyError(err error) *common.AppError {
 //   - ErrCommitBeforeDispatchInfra (Begin/Commit/Save plugin failure inside
 //     the engine's segment-boundary code) → sanitized 5xx via common.Internal,
 //     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
+//   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
+//     dispatch CloudEvent's Auth Context — no UserContext, unset/unrecognized
+//     principal Kind, or nil CloudEvent) → sanitized 5xx via common.Internal.
+//     These are server-side conditions never attributable to client input, so
+//     the raw message (which may include the principal id) never reaches the
+//     client via 4xx WORKFLOW_FAILED.
 //   - ErrTransitionNotFound → 400 TRANSITION_NOT_FOUND (client-attributable).
 //   - Everything else (processor-domain failures, criterion mismatches, CAS
 //     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
@@ -1976,6 +1982,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)
+	}
+	if errors.Is(err, contract.ErrAuthContextUnavailable) {
+		return common.Internal("auth context unavailable for dispatch", err)
 	}
 	if errors.Is(err, spi.ErrUniqueViolation) {
 		return common.Operational(http.StatusConflict, common.ErrCodeUniqueViolation, "a composite unique key constraint was violated")
