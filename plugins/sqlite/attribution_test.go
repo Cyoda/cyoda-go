@@ -326,6 +326,49 @@ func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 	}
 }
 
+// TestSave_NonTx_StampsUserIDColumn verifies that a non-transactional Save
+// writes Entity.Meta.ChangeUser into the version row's user_id COLUMN — the
+// path GetVersionHistory reads EntityVersion.User from — distinct from
+// AttributedKind/Executor, which are sourced from the meta BLOB and already
+// covered by TestSaveAndDelete_ExecutorRoundTrip. Regression test for
+// saveDirectly having hardcoded user_id to '' instead of cp.Meta.ChangeUser.
+func TestSave_NonTx_StampsUserIDColumn(t *testing.T) {
+	factory, _ := newAttrFactory(t)
+	ctx := attrCtx("tenant-A", "caller", spi.PrincipalUser)
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	wantUser := "origin-user"
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:             "e-userid-col",
+			TenantID:       "tenant-A",
+			ModelRef:       spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ChangeType:     "CREATED",
+			ChangeUser:     wantUser,
+			ChangeUserKind: spi.PrincipalUser,
+			ChangeExecutor: spi.Principal{ID: "svc-1", Kind: spi.PrincipalService},
+		},
+		Data: []byte(`{}`),
+	}
+	if _, err := store.Save(ctx, entity); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	history, err := store.GetVersionHistory(ctx, "e-userid-col")
+	if err != nil {
+		t.Fatalf("GetVersionHistory failed: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 version, got %d", len(history))
+	}
+	if got := history[0].User; got != wantUser {
+		t.Errorf("version.User = %q, want ChangeUser %q (user_id column not stamped)", got, wantUser)
+	}
+}
+
 // TestDeleteAll_Tx_AttributionStaged verifies that a transactional DeleteAll
 // stages DeleteAttribution for every affected entity ID, paired with
 // Deletes, under the caller's context at stage time.
