@@ -726,7 +726,8 @@ func New(cfg Config) *App {
 		// Discovery routes at root (no auth, no context path)
 		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
 		// Help routes — unauthenticated, public content embedded in the binary
-		internalapi.RegisterHelpRoutes(outerMux, help.DefaultTree, contextPath, cfg.Version)
+		// (OSS base merged with any plugin-registered overlays).
+		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
 		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
@@ -738,7 +739,8 @@ func New(cfg Config) *App {
 		// No context path — discovery routes on the main mux
 		internalapi.RegisterDiscoveryRoutes(mux, "")
 		// Help routes — unauthenticated, public content embedded in the binary
-		internalapi.RegisterHelpRoutes(mux, help.DefaultTree, "", cfg.Version)
+		// (OSS base merged with any plugin-registered overlays).
+		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
 		// Internal dispatch routes (AEAD-authenticated)
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
