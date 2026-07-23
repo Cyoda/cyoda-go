@@ -278,6 +278,41 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		}
 	}
 
+	// --- Anchor stamp: attribute the fire's write to the arming principal
+	// (design §5.3) ---
+	//
+	// Stamped here — after every guard above has confirmed the fire will
+	// actually proceed, but BEFORE fireTransition/cascadeAutomated run —
+	// mirroring every other engine caller (internal/domain/entity/
+	// service.go's CreateEntity/UpdateEntity/BatchCreate): Meta is stamped
+	// on ctx's tx-carrying context before the engine is invoked, never
+	// after. This entity is the only write in the fire's cascade that
+	// bypasses internal/domain/entity/service.go's spi.AttributionFor call
+	// sites (it goes straight to the EntityStore below), so it must be
+	// stamped explicitly rather than inheriting attribution automatically.
+	//
+	// Stamping this early matters because a COMMIT_BEFORE_DISPATCH
+	// processor inside fireTransition or cascadeAutomated can flush the
+	// entity mid-cascade (flushAndCommitSegment) — that intermediate,
+	// durable EntityVersion must already carry the correct attribution, not
+	// whatever stale Meta a previous committer left. Stamping only at the
+	// terminal persist (the old location) left that intermediate row
+	// mis-attributed.
+	//
+	// Values: attributed to the arming principal (cur.ArmedBy, re-verified
+	// unchanged by the guard above), falling back to the system principal
+	// for legacy rows that never recorded one — never the literal string
+	// "scheduler". Executed by is always the system principal: the
+	// scheduler, not the arming principal, is what actually performs the
+	// fire.
+	armed := cur.ArmedBy
+	if armed == (spi.Principal{}) {
+		armed = systemPrincipal
+	}
+	entity.Meta.ChangeUser = armed.ID
+	entity.Meta.ChangeUserKind = armed.Kind
+	entity.Meta.ChangeExecutor = systemPrincipal
+
 	// --- Fire (design §5.2/§5.3) ---
 	// expectedTxID is "the txID read in this fire transaction" (design
 	// §5.3): the entity's last-committed TransactionID as of the Get above.
@@ -356,25 +391,10 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		return OutcomeDropped, fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 
-	// Anchor stamp: this Save/CompareAndSave is the fire's anchor write —
-	// unlike every other write in the fire's cascade (which flows through
-	// internal/domain/entity/service.go's spi.AttributionFor call sites and
-	// so inherits the ambient origin seeded above automatically), this call
-	// goes straight to the EntityStore and bypasses those stamp sites. Stamp
-	// it explicitly here: attributed to the arming principal (cur.ArmedBy,
-	// re-verified unchanged by the guard above), falling back to the system
-	// principal for legacy rows that never recorded one — never the literal
-	// string "scheduler". Executed by is always the system principal: the
-	// scheduler, not the arming principal, is what actually performs the
-	// fire.
-	armed := cur.ArmedBy
-	if armed == (spi.Principal{}) {
-		armed = systemPrincipal
-	}
-	entity.Meta.ChangeUser = armed.ID
-	entity.Meta.ChangeUserKind = armed.Kind
-	entity.Meta.ChangeExecutor = systemPrincipal
-
+	// Anchor stamp already applied above (before fireTransition), so it is
+	// durable on every EntityVersion the cascade writes — including any
+	// intermediate COMMIT_BEFORE_DISPATCH flush — not just this terminal
+	// persist.
 	finalEntityStore, err := e.factory.EntityStore(finalCtx)
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to get entity store for persist: %w", err)
