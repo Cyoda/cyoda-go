@@ -136,6 +136,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				Transition:    tr.Name,
 				SourceState:   state,
 				ArmedAt:       armMs,
+				ArmedBy:       spi.ResolveOrigin(ctx),
 			})
 		}
 	}
@@ -244,5 +245,10 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		Transition:    tr.Name,
 		SourceState:   state,
 		ArmedAt:       armMs,
+		// ArmedBy is resolved from ctx (the chain origin), NOT from the
+		// Function's dispatch result — res carries only timing (fireAt /
+		// fireAfterMs / expireAfterMs), never a principal. The callout
+		// affects WHEN this task fires, never WHO it is attributed to.
+		ArmedBy: spi.ResolveOrigin(ctx),
 	}, nil, nil
 }

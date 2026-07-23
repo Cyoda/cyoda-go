@@ -273,6 +273,81 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	}
 }
 
+// TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult covers §5.2
+// case (c): armViaFunction's Function callout resolves TIMING ONLY
+// (fireAt/fireAfterMs/expireAfterMs) — the result carries no principal, and
+// ArmedBy must come from ctx's resolved chain origin exactly as the static
+// arm path does, not from the service-kind executor that staged the write
+// nor from anything the Function returns.
+func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	const fireAfterMs = int64(4_000)
+
+	lp := localproc.New()
+	lp.RegisterFunction("calcFire", func(_ context.Context, _ *spi.Entity, _ spi.ScheduleFunction) (contract.FunctionResult, error) {
+		return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(fmt.Sprintf(`{"fireAfterMs":%d}`, fireAfterMs))}, nil
+	})
+
+	engine, factory := setupEngineWithClockAndExtProc(t, nowMs, lp)
+	ownerCtx := armOriginUserCtx("origin-user")
+	modelRef := spi.ModelRef{EntityName: "armedby-fn-order", ModelVersion: "1.0"}
+	wf := scheduleFunctionWorkflow("ArmedByFnWF", "calcFire")
+	saveWorkflow(t, factory, ownerCtx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txMgr, err := factory.TransactionManager(ownerCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	ownerTxID, ownerTxCtx, err := txMgr.Begin(ownerCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	serviceCtx := armServiceCtx("arm-fn-service")
+	joinedCtx, err := txMgr.Join(serviceCtx, ownerTxID)
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+
+	entity := makeEntity("armedby-fn-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = ownerTxID
+	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if err := txMgr.Commit(ownerTxCtx, ownerTxID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	sts, err := factory.ScheduledTaskStore(ownerCtx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	wantID := taskID(testTenant, "armedby-fn-e1", "OPEN", "AutoClose")
+	task, found, err := sts.Get(ownerCtx, wantID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected task %q armed", wantID)
+	}
+	// Timing came from the Function's result, as the pre-existing
+	// TestReconcile_FunctionRelativeFireArms already covers.
+	if task.ScheduledTime != nowMs+fireAfterMs {
+		t.Errorf("ScheduledTime = %d, want %d", task.ScheduledTime, nowMs+fireAfterMs)
+	}
+	// Attribution did NOT come from the Function result (which carries none)
+	// nor from the service executor that staged the write — only from the
+	// chain origin.
+	wantOrigin := spi.Principal{ID: "origin-user", Kind: spi.PrincipalUser}
+	if task.ArmedBy != wantOrigin {
+		t.Errorf("ArmedBy = %+v, want tx origin %+v", task.ArmedBy, wantOrigin)
+	}
+	notWant := spi.Principal{ID: "arm-fn-service", Kind: spi.PrincipalService}
+	if task.ArmedBy == notWant {
+		t.Error("ArmedBy must not be the service executor — the Function result affects timing only, never attribution")
+	}
+}
+
 func TestReconcile_FunctionDispatchFailureFailsWrite(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
 
