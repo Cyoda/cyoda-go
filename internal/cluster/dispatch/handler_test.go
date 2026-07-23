@@ -294,6 +294,57 @@ func TestHandler_PopulatesPeerIdentityInContext(t *testing.T) {
 	}
 }
 
+// TestHandler_ReconstructsPrincipalKindInContext guards that the peer
+// reconstructs a UserContext carrying the SAME principal Kind the
+// originating node had. Without this, the peer's local dispatch (which
+// calls AttachAuthContext just like single-node dispatch) would fail the
+// forwarded callout closed on an unset Kind, regardless of what the
+// originating principal's real kind was.
+func TestHandler_ReconstructsPrincipalKindInContext(t *testing.T) {
+	auth := newAEAD(t)
+
+	tests := []spi.PrincipalKind{spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem}
+
+	for _, kind := range tests {
+		t.Run(string(kind), func(t *testing.T) {
+			fake := &fakeLocalDispatcher{
+				processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "e"}, Data: []byte(`{}`)},
+			}
+			handler := NewDispatchHandler(fake, auth)
+			mux := http.NewServeMux()
+			handler.Register(mux)
+
+			processor := spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"}
+			plain, _ := json.Marshal(DispatchCalloutRequest{
+				Kind:          "processor",
+				TenantID:      "t",
+				UserID:        "u",
+				PrincipalKind: kind,
+				TxID:          "tx",
+				Processor:     &processor,
+				WorkflowName:  "w", TransitionName: "t",
+				EntityMeta: spi.EntityMeta{ID: "e"},
+				Entity:     json.RawMessage(`{}`),
+			})
+			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httpReq)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+
+			uc := spi.GetUserContext(fake.capturedCtx)
+			if uc == nil {
+				t.Fatal("expected UserContext in dispatcher ctx")
+			}
+			if uc.Kind != kind {
+				t.Errorf("Kind = %q, want %q", uc.Kind, kind)
+			}
+		})
+	}
+}
+
 func TestNewAEADPeerAuth_SecretTooShort(t *testing.T) {
 	_, err := NewAEADPeerAuth([]byte("short"), 30*time.Second)
 	if err == nil {

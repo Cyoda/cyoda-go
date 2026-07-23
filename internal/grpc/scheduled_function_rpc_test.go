@@ -60,6 +60,7 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	uc := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "Test User",
+		Kind:     spi.PrincipalUser,
 		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test Tenant"},
 		Roles:    []string{"ADMIN"},
 	}

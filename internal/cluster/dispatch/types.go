@@ -25,8 +25,14 @@ type DispatchCalloutRequest struct {
 	TenantID       string          `json:"tenantID"`
 	Tags           string          `json:"tags"`
 	UserID         string          `json:"userID"`
-	Roles          []string        `json:"roles"`
-	TxToken        string          `json:"txToken,omitempty"`
+	// PrincipalKind is the originating principal's explicit kind
+	// (spi.PrincipalUser/Service/System). The peer reconstructs a
+	// UserContext from this request (handler.go buildContext) and
+	// AttachAuthContext fails the dispatch closed if Kind is unset or
+	// outside {user,service,system} — see internal/grpc/cloudevent.go.
+	PrincipalKind spi.PrincipalKind `json:"principalKind"`
+	Roles         []string          `json:"roles"`
+	TxToken       string            `json:"txToken,omitempty"`
 
 	// Processor is set when Kind == "processor".
 	Processor *spi.ProcessorDefinition `json:"processor,omitempty"`

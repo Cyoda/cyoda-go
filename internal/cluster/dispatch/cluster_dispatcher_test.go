@@ -21,12 +21,17 @@ import (
 // response/error without going over the wire — it isolates
 // ClusterDispatcher's peer-response remint logic (B1) from the HTTP/AEAD
 // plumbing already covered by the httptest-server-based forward tests.
+// capturedReq records the request from the most recent ForwardCallout call
+// so tests can assert what gets forwarded to a peer (e.g. principal kind
+// propagation).
 type fakeForwarder struct {
-	resp *DispatchCalloutResponse
-	err  error
+	resp        *DispatchCalloutResponse
+	err         error
+	capturedReq DispatchCalloutRequest
 }
 
-func (f *fakeForwarder) ForwardCallout(_ context.Context, _ string, _ DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
+func (f *fakeForwarder) ForwardCallout(_ context.Context, _ string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
+	f.capturedReq = req
 	return f.resp, f.err
 }
 
@@ -91,6 +96,7 @@ func (r *stubNodeRegistry) Deregister(_ context.Context, _ string) error { retur
 func testContext() context.Context {
 	uc := &spi.UserContext{
 		UserID: "user-1",
+		Kind:   spi.PrincipalUser,
 		Tenant: spi.Tenant{ID: "tenant-1", Name: "Test Tenant"},
 		Roles:  []string{"ROLE_USER"},
 	}
@@ -327,6 +333,75 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			t.Fatalf("expected peer result value propagated, got %s", string(result.Value))
 		}
 	})
+}
+
+// TestClusterDispatcher_ForwardsPrincipalKind guards that the originating
+// principal's explicit Kind is carried across the cross-node dispatch wire —
+// the peer reconstructs a UserContext from this request (handler.go
+// buildContext), and AttachAuthContext fails the dispatch closed if Kind is
+// unset. Without this field on the wire, every forwarded callout would fail
+// auth-context attachment on the peer regardless of the originating
+// principal's real kind.
+func TestClusterDispatcher_ForwardsPrincipalKind(t *testing.T) {
+	registry := &stubNodeRegistry{
+		nodes: []contract.NodeInfo{
+			{NodeID: "peer-1", Addr: "http://peer", Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
+		},
+	}
+	selector := NewRandomSelector()
+	local := &stubDispatcher{noMember: true}
+
+	tests := []struct {
+		name string
+		kind spi.PrincipalKind
+	}{
+		{"user", spi.PrincipalUser},
+		{"service", spi.PrincipalService},
+		{"system", spi.PrincipalSystem},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "principal-1",
+				Kind:   tt.kind,
+				Tenant: spi.Tenant{ID: "tenant-1", Name: "Test Tenant"},
+			})
+
+			t.Run("processor", func(t *testing.T) {
+				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Success: true}}
+				d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+				if _, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1"); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if fwd.capturedReq.PrincipalKind != tt.kind {
+					t.Errorf("PrincipalKind = %q, want %q", fwd.capturedReq.PrincipalKind, tt.kind)
+				}
+			})
+
+			t.Run("criteria", func(t *testing.T) {
+				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Success: true}}
+				d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+				if _, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1"); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if fwd.capturedReq.PrincipalKind != tt.kind {
+					t.Errorf("PrincipalKind = %q, want %q", fwd.capturedReq.PrincipalKind, tt.kind)
+				}
+			})
+
+			t.Run("function", func(t *testing.T) {
+				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Success: true}}
+				d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+				if _, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1"); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if fwd.capturedReq.PrincipalKind != tt.kind {
+					t.Errorf("PrincipalKind = %q, want %q", fwd.capturedReq.PrincipalKind, tt.kind)
+				}
+			})
+		})
+	}
 }
 
 func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {

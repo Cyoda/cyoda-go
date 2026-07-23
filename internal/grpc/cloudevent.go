@@ -30,29 +30,40 @@ func NewCloudEvent(eventType string, payload any) (*cepb.CloudEvent, error) {
 }
 
 // AttachAuthContext adds CloudEvents Auth Context extension attributes to a CloudEvent
-// based on the UserContext in the request context.
+// based on the UserContext in the request context. authtype is emitted verbatim from
+// the principal's explicit Kind — never sniffed from roles — and is always one of the
+// pinned wire values {user,service,system}.
+//
+// Fails loud rather than emitting a bogus or absent authtype: no UserContext on ctx,
+// an unset Kind, or a Kind outside {user,service,system} (e.g. a misconfigured mock)
+// all return an error. Callers must fail the dispatch on error — the callout must
+// never be sent without a faithful AuthContext.
+//
 // See: https://github.com/cloudevents/spec/blob/main/cloudevents/extensions/authcontext.md
-func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) {
+func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) error {
 	uc := spi.GetUserContext(ctx)
-	if uc == nil || ce == nil {
-		return
+	if uc == nil {
+		return errors.New("attach auth context: no user context on dispatch path")
+	}
+	if uc.Kind == "" {
+		return fmt.Errorf("attach auth context: principal kind unset for principal %q", uc.UserID)
+	}
+	switch uc.Kind {
+	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
+		// pinned wire contract: authtype ∈ {user,service,system}
+	default:
+		return fmt.Errorf("attach auth context: unrecognized principal kind %q for principal %q", uc.Kind, uc.UserID)
+	}
+	if ce == nil {
+		return errors.New("attach auth context: nil cloud event")
 	}
 
 	if ce.Attributes == nil {
 		ce.Attributes = make(map[string]*cepb.CloudEvent_CloudEventAttributeValue)
 	}
 
-	// Determine auth type based on roles.
-	authType := "user"
-	for _, role := range uc.Roles {
-		if role == "ROLE_M2M" {
-			authType = "service_account"
-			break
-		}
-	}
-
 	ce.Attributes["authtype"] = &cepb.CloudEvent_CloudEventAttributeValue{
-		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: authType},
+		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: string(uc.Kind)},
 	}
 	ce.Attributes["authid"] = &cepb.CloudEvent_CloudEventAttributeValue{
 		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: uc.UserID},
@@ -64,6 +75,7 @@ func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) {
 			Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: strings.Join(uc.Roles, ",")},
 		}
 	}
+	return nil
 }
 
 // ParseCloudEvent extracts the event type and raw JSON payload from a CloudEvent.

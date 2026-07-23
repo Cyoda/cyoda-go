@@ -52,7 +52,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
+	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.PrincipalKind, req.Roles)
 	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
 
 	entity := &spi.Entity{
@@ -131,9 +131,17 @@ func (h *DispatchHandler) verifyRequest(w http.ResponseWriter, r *http.Request) 
 // the shared-key regime where PeerIdentity is degenerate, propagating it
 // through context means downstream audit / tracing can read origin without
 // being rewritten when transport evolves.
-func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, tenantID, userID string, roles []string) context.Context {
+//
+// principalKind is forwarded verbatim from the originating node's
+// DispatchCalloutRequest.PrincipalKind so the peer's local dispatch — which
+// calls AttachAuthContext just like single-node dispatch — reconstructs the
+// SAME faithful auth context the originating node had, rather than an
+// unset Kind that would fail the dispatch closed (see
+// internal/grpc/cloudevent.go).
+func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, tenantID, userID string, principalKind spi.PrincipalKind, roles []string) context.Context {
 	uc := &spi.UserContext{
 		UserID: userID,
+		Kind:   principalKind,
 		Tenant: spi.Tenant{
 			ID: spi.TenantID(tenantID),
 		},
