@@ -24,7 +24,12 @@ authenticates the cyoda server endpoint (TLS server verification); over an
 unauthenticated channel the attributes are forgeable. Application
 authorization built on `authclaims` must fail **closed** when claims are
 absent or empty — including the `system` case, which never carries
-meaningful claims.
+meaningful claims. In cluster mode the executor kind driving `authtype` is
+forwarded between nodes inside the mutually-authenticated peer channel, so the
+`authtype` a compute node sees is only as trustworthy as the cluster's own
+peer trust — the same boundary that already governs cross-node dispatch;
+attribution (origin) is unaffected, as it lives on the owner node's
+transaction and never crosses on the wire.
 
 **SDK helper.** `api/grpc/authctx` gives compute-node authors `Type`/`ID`/
 `Roles` readers plus `Require(ce, role)`, a fail-closed role gate: it

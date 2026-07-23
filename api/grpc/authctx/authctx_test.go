@@ -106,6 +106,18 @@ func TestRequire(t *testing.T) {
 			role: "admin",
 			want: true,
 		},
+		{
+			name: "unset authtype fails closed even with claims (allowlist, not denylist)",
+			ce:   ceWith(map[string]string{"authid": "x", "authclaims": "admin,editor"}),
+			role: "admin",
+			want: false,
+		},
+		{
+			name: "unrecognized authtype fails closed even with claims",
+			ce:   ceWith(map[string]string{"authtype": "superuser", "authid": "x", "authclaims": "admin,editor"}),
+			role: "admin",
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

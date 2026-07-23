@@ -42,12 +42,21 @@ func Roles(ce *cepb.CloudEvent) []string {
 }
 
 // Require reports whether the AuthContext on ce authorizes role. It is
-// fail-closed: it returns false for a nil event, absent or empty claims, and
-// for the system principal even if the role is listed (the system principal
-// carries no meaningful claims to authorize against). It returns true only
-// when authtype is user or service and role is present in authclaims.
+// fail-closed: it returns true ONLY when authtype is explicitly user or
+// service AND role is present in authclaims. Every other case returns false —
+// a nil event, absent/empty claims, the system principal, and any unset or
+// unrecognized authtype (even if claims happen to be present). The authtype
+// allowlist is deliberate: it does not rely on the server invariant that
+// authclaims is only ever set alongside a valid authtype, so a compute node
+// stays fail-closed against any producer that violates it.
 func Require(ce *cepb.CloudEvent, role string) bool {
-	if ce == nil || Type(ce) == string(spi.PrincipalSystem) {
+	if ce == nil {
+		return false
+	}
+	switch Type(ce) {
+	case string(spi.PrincipalUser), string(spi.PrincipalService):
+		// allowed principal kinds
+	default:
 		return false
 	}
 	rs := Roles(ce)
