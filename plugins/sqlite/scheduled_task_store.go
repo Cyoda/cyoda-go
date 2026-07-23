@@ -39,15 +39,16 @@ type scheduledTaskOp struct {
 // notably model_version is NOT part of the deterministic ID hash and can
 // legitimately change between two arms, so it must be included here.
 const upsertScheduledTaskSQL = `INSERT INTO scheduled_tasks
-	 (id,tenant_id,type,scheduled_time,timeout_ms,redispatch_after,entity_id,model_name,model_version,transition,source_state,armed_at,attempt_count)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+	 (id,tenant_id,type,scheduled_time,timeout_ms,redispatch_after,entity_id,model_name,model_version,transition,source_state,armed_at,attempt_count,armed_by_id,armed_by_kind)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	 ON CONFLICT(id) DO UPDATE SET tenant_id=excluded.tenant_id,
 	   type=excluded.type, scheduled_time=excluded.scheduled_time,
 	   timeout_ms=excluded.timeout_ms, redispatch_after=excluded.redispatch_after,
 	   entity_id=excluded.entity_id, model_name=excluded.model_name,
 	   model_version=excluded.model_version, transition=excluded.transition,
 	   source_state=excluded.source_state, armed_at=excluded.armed_at,
-	   attempt_count=excluded.attempt_count`
+	   attempt_count=excluded.attempt_count, armed_by_id=excluded.armed_by_id,
+	   armed_by_kind=excluded.armed_by_kind`
 
 const deleteScheduledTaskSQL = `DELETE FROM scheduled_tasks WHERE id=?`
 
@@ -78,6 +79,7 @@ func upsertScheduledTaskArgs(t spi.ScheduledTask) []any {
 		t.ID, string(t.TenantID), string(t.Type), t.ScheduledTime,
 		t.TimeoutMs, t.RedispatchAfter, t.EntityID, t.ModelName,
 		t.ModelVersion, t.Transition, t.SourceState, t.ArmedAt, t.AttemptCount,
+		t.ArmedBy.ID, string(t.ArmedBy.Kind),
 	}
 }
 
@@ -154,9 +156,10 @@ func scanScheduledTaskRow(scan func(dest ...any) error) (spi.ScheduledTask, erro
 	var t spi.ScheduledTask
 	var tenantID, taskType string
 	var timeoutMs, redispatchAfter sql.NullInt64
+	var armedByID, armedByKind string
 	err := scan(&t.ID, &tenantID, &taskType, &t.ScheduledTime, &timeoutMs, &redispatchAfter,
 		&t.EntityID, &t.ModelName, &t.ModelVersion, &t.Transition, &t.SourceState,
-		&t.ArmedAt, &t.AttemptCount)
+		&t.ArmedAt, &t.AttemptCount, &armedByID, &armedByKind)
 	if err != nil {
 		return spi.ScheduledTask{}, err
 	}
@@ -170,10 +173,14 @@ func scanScheduledTaskRow(scan func(dest ...any) error) (spi.ScheduledTask, erro
 		v := redispatchAfter.Int64
 		t.RedispatchAfter = &v
 	}
+	// A legacy row (pre-dating these columns) backfills both to '' via the
+	// migration's DEFAULT '', which yields the zero Principal here — never a
+	// synthesized one.
+	t.ArmedBy = spi.Principal{ID: armedByID, Kind: spi.PrincipalKind(armedByKind)}
 	return t, nil
 }
 
-const selectScheduledTaskColumns = `id,tenant_id,type,scheduled_time,timeout_ms,redispatch_after,entity_id,model_name,model_version,transition,source_state,armed_at,attempt_count`
+const selectScheduledTaskColumns = `id,tenant_id,type,scheduled_time,timeout_ms,redispatch_after,entity_id,model_name,model_version,transition,source_state,armed_at,attempt_count,armed_by_id,armed_by_kind`
 
 func (s *scheduledTaskStore) Get(ctx context.Context, id string) (*spi.ScheduledTask, bool, error) {
 	row := s.db.QueryRowContext(ctx,
