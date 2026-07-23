@@ -24,10 +24,11 @@ type committedTx struct {
 // savepointSnapshot captures the state of a transaction's buffer maps at the
 // time a savepoint is created. Used by RollbackToSavepoint to restore state.
 type savepointSnapshot struct {
-	buffer   map[string]*spi.Entity
-	readSet  map[string]bool
-	writeSet map[string]bool
-	deletes  map[string]bool
+	buffer            map[string]*spi.Entity
+	readSet           map[string]bool
+	writeSet          map[string]bool
+	deletes           map[string]bool
+	deleteAttribution map[string]spi.WriteAttribution // paired 1:1 with deletes — see TransactionState godoc
 
 	// scheduledTaskOpsLen is len(TransactionManager.scheduledTaskOps[txID])
 	// at the moment this savepoint was taken. scheduledTaskOps is append-only
@@ -140,13 +141,15 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	now := m.factory.clock.Now()
 
 	tx := &spi.TransactionState{
-		ID:           txID,
-		TenantID:     uc.Tenant.ID,
-		SnapshotTime: now,
-		ReadSet:      make(map[string]bool),
-		WriteSet:     make(map[string]bool),
-		Buffer:       make(map[string]*spi.Entity),
-		Deletes:      make(map[string]bool),
+		ID:                txID,
+		TenantID:          uc.Tenant.ID,
+		SnapshotTime:      now,
+		Origin:            spi.ResolveOrigin(ctx),
+		ReadSet:           make(map[string]bool),
+		WriteSet:          make(map[string]bool),
+		Buffer:            make(map[string]*spi.Entity),
+		Deletes:           make(map[string]bool),
+		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
 
 	m.mu.Lock()
@@ -375,11 +378,13 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 
 			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
-				entity:        saved,
-				transactionID: txID,
-				submitTime:    submitTime,
-				changeType:    entity.Meta.ChangeType,
-				user:          entity.Meta.ChangeUser,
+				entity:         saved,
+				transactionID:  txID,
+				submitTime:     submitTime,
+				changeType:     entity.Meta.ChangeType,
+				user:           entity.Meta.ChangeUser,
+				changeUserKind: entity.Meta.ChangeUserKind,
+				executor:       entity.Meta.ChangeExecutor,
 			})
 
 			// Apply unique-key claims: release any prior claims for this entity
@@ -394,22 +399,35 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 		// 5. Apply deletes (tombstones). Claims were already released in the
 		// pre-release pass above — do not call releaseClaims again here.
-		userName := ""
-		if uc != nil {
-			userName = uc.UserID
-		}
+		//
+		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
+		// stage time (the STAGER's context, under the same OpMu section
+		// that set tx.Deletes[entityID] — see EntityStore.Delete/DeleteAll).
+		// Fall back to spi.AttributionFor(ctx) — this Commit call's own
+		// ctx, i.e. the committer — only when no staged entry exists (a
+		// caller that mutated tx.Deletes directly, bypassing EntityStore).
+		// This is what fixes the prior bug: the committer's identity was
+		// always used, even for deletes staged by a different (possibly
+		// joined) caller earlier in the transaction.
 		for entityID := range tx.Deletes {
+			attribution, staged := tx.DeleteAttribution[entityID]
+			if !staged {
+				a, e := spi.AttributionFor(ctx)
+				attribution = spi.WriteAttribution{Attributed: a, Executor: e}
+			}
 			if m.factory.entityData[tid] == nil {
 				m.factory.entityData[tid] = make(map[string][]entityVersion)
 			}
 			versions := m.factory.entityData[tid][entityID]
 			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
-				entity:        nil,
-				transactionID: txID,
-				submitTime:    submitTime,
-				deleted:       true,
-				changeType:    "DELETED",
-				user:          userName,
+				entity:         nil,
+				transactionID:  txID,
+				submitTime:     submitTime,
+				deleted:        true,
+				changeType:     "DELETED",
+				user:           attribution.Attributed.ID,
+				changeUserKind: attribution.Attributed.Kind,
+				executor:       attribution.Executor,
 			})
 		}
 
@@ -531,8 +549,9 @@ func (m *TransactionManager) CommittedLogLen() int {
 }
 
 // Savepoint creates a named savepoint within the given transaction by
-// deep-copying the transaction's buffer maps and recording the current
-// length of the transaction's staged scheduledTaskOps.
+// deep-copying the transaction's buffer maps (including DeleteAttribution,
+// paired 1:1 with Deletes) and recording the current length of the
+// transaction's staged scheduledTaskOps.
 //
 // Locking discipline (issue #199): Savepoint reads tx.Buffer / tx.ReadSet /
 // tx.WriteSet / tx.Deletes — the same fields Commit's flush phase iterates
@@ -597,6 +616,10 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 	for k, v := range tx.Deletes {
 		delCopy[k] = v
 	}
+	delAttrCopy := make(map[string]spi.WriteAttribution, len(tx.DeleteAttribution))
+	for k, v := range tx.DeleteAttribution {
+		delAttrCopy[k] = v
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -608,6 +631,7 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 		readSet:             readCopy,
 		writeSet:            writeCopy,
 		deletes:             delCopy,
+		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
 	}
 	return spID, nil
@@ -666,6 +690,7 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	tx.ReadSet = snap.readSet
 	tx.WriteSet = snap.writeSet
 	tx.Deletes = snap.deletes
+	tx.DeleteAttribution = snap.deleteAttribution
 
 	// Truncate staged scheduled-task ops back to the length recorded at the
 	// savepoint — append-only, so truncation (not replacement) is how it is

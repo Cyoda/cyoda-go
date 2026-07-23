@@ -19,6 +19,19 @@ func ctxWithTenant(tid spi.TenantID) context.Context {
 	return spi.WithUserContext(context.Background(), uc)
 }
 
+// ctxWithUserKind returns a context carrying a UserContext with an explicit
+// PrincipalKind, for attribution tests that need deterministic control over
+// Kind (ctxWithTenant's fixed "test-user" leaves Kind at its zero value).
+func ctxWithUserKind(tid spi.TenantID, userID string, kind spi.PrincipalKind) context.Context {
+	uc := &spi.UserContext{
+		UserID: userID,
+		Kind:   kind,
+		Tenant: spi.Tenant{ID: tid, Name: string(tid)},
+		Roles:  []string{"USER"},
+	}
+	return spi.WithUserContext(context.Background(), uc)
+}
+
 func TestFactoryReturnsStoreForTenant(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
@@ -1061,5 +1074,231 @@ func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("GetAllAsAt on empty model must return empty slice, got %d elements", len(got))
+	}
+}
+
+// --- Follow-on-action attribution (#430) ---
+
+// TestSaveAndDelete_ExecutorRoundTrip verifies that Meta.ChangeUser/
+// ChangeUserKind/ChangeExecutor stamped by the caller before Save round-trip
+// through GetVersionHistory as EntityVersion.AttributedKind/Executor, and
+// that a DELETED version's Executor is populated even though Entity is nil.
+func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	wantExecutor := spi.Principal{ID: "svc-1", Kind: spi.PrincipalService}
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:             "e-exec-1",
+			TenantID:       "tenant-A",
+			ModelRef:       spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ChangeType:     "CREATED",
+			ChangeUser:     "origin-user",
+			ChangeUserKind: spi.PrincipalUser,
+			ChangeExecutor: wantExecutor,
+		},
+		Data: []byte(`{}`),
+	}
+	if _, err := store.Save(ctx, entity); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	delCtx := ctxWithUserKind("tenant-A", "del-user", spi.PrincipalUser)
+	if err := store.Delete(delCtx, "e-exec-1"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	history, err := store.GetVersionHistory(ctx, "e-exec-1")
+	if err != nil {
+		t.Fatalf("GetVersionHistory failed: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(history))
+	}
+
+	created := history[0]
+	if created.AttributedKind != spi.PrincipalUser {
+		t.Errorf("CREATE version AttributedKind = %v, want %v", created.AttributedKind, spi.PrincipalUser)
+	}
+	if created.Executor != wantExecutor {
+		t.Errorf("CREATE version Executor = %+v, want %+v", created.Executor, wantExecutor)
+	}
+
+	tomb := history[len(history)-1]
+	if !tomb.Deleted {
+		t.Fatal("expected last version to be the DELETE tombstone")
+	}
+	if tomb.Entity != nil {
+		t.Errorf("expected nil Entity on a DELETED version, got %+v", tomb.Entity)
+	}
+	wantDel := spi.Principal{ID: "del-user", Kind: spi.PrincipalUser}
+	if tomb.Executor != wantDel {
+		t.Errorf("DELETE version Executor = %+v, want %+v (readable without Entity)", tomb.Executor, wantDel)
+	}
+	if tomb.AttributedKind != spi.PrincipalUser {
+		t.Errorf("DELETE version AttributedKind = %v, want %v", tomb.AttributedKind, spi.PrincipalUser)
+	}
+}
+
+// TestDelete_NonTx_AttributionIsCaller verifies that a non-transactional
+// Delete stamps the tombstone's attribution from the caller's own context
+// (attributed == executor == caller) via spi.AttributionFor.
+func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithUserKind("tenant-A", "alice", spi.PrincipalUser)
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:       "e-del-nontx",
+			TenantID: "tenant-A",
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+		},
+		Data: []byte(`{}`),
+	}
+	if _, err := store.Save(ctx, entity); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := store.Delete(ctx, "e-del-nontx"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	history, err := store.GetVersionHistory(ctx, "e-del-nontx")
+	if err != nil {
+		t.Fatalf("GetVersionHistory failed: %v", err)
+	}
+	tomb := history[len(history)-1]
+	if !tomb.Deleted {
+		t.Fatal("expected last version to be the DELETE tombstone")
+	}
+	want := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	if tomb.User != want.ID {
+		t.Errorf("tombstone User = %q, want %q", tomb.User, want.ID)
+	}
+	if tomb.AttributedKind != want.Kind {
+		t.Errorf("tombstone AttributedKind = %v, want %v", tomb.AttributedKind, want.Kind)
+	}
+	if tomb.Executor != want {
+		t.Errorf("tombstone Executor = %+v, want %+v (non-tx: attributed == executor == caller)", tomb.Executor, want)
+	}
+}
+
+// TestDeleteAll_NonTx_Attribution verifies that non-transactional DeleteAll
+// stamps every tombstone's attribution from the caller's context, same as
+// single-entity Delete.
+func TestDeleteAll_NonTx_Attribution(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithUserKind("tenant-A", "bob", spi.PrincipalUser)
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	modelRef := spi.ModelRef{EntityName: "m-delall", ModelVersion: "1"}
+	for _, id := range []string{"e-da-1", "e-da-2"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ModelRef: modelRef},
+			Data: []byte(`{}`),
+		}); err != nil {
+			t.Fatalf("Save(%s) failed: %v", id, err)
+		}
+	}
+
+	if err := store.DeleteAll(ctx, modelRef); err != nil {
+		t.Fatalf("DeleteAll failed: %v", err)
+	}
+
+	want := spi.Principal{ID: "bob", Kind: spi.PrincipalUser}
+	for _, id := range []string{"e-da-1", "e-da-2"} {
+		history, err := store.GetVersionHistory(ctx, id)
+		if err != nil {
+			t.Fatalf("GetVersionHistory(%s) failed: %v", id, err)
+		}
+		tomb := history[len(history)-1]
+		if !tomb.Deleted {
+			t.Fatalf("expected %s's last version to be the DELETE tombstone", id)
+		}
+		if tomb.Executor != want {
+			t.Errorf("%s tombstone Executor = %+v, want %+v", id, tomb.Executor, want)
+		}
+		if tomb.AttributedKind != want.Kind {
+			t.Errorf("%s tombstone AttributedKind = %v, want %v", id, tomb.AttributedKind, want.Kind)
+		}
+	}
+}
+
+// TestDeleteAll_Tx_AttributionStaged verifies that a transactional DeleteAll
+// stages DeleteAttribution for every affected entity ID, paired with Deletes,
+// under the caller's context at stage time.
+func TestDeleteAll_Tx_AttributionStaged(t *testing.T) {
+	factory, tm := newTxManager(t)
+	ctx := ctxWithUserKind("tenant-A", "carol", spi.PrincipalUser)
+
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	modelRef := spi.ModelRef{EntityName: "m-delall-tx", ModelVersion: "1"}
+	for _, id := range []string{"e-dat-1", "e-dat-2"} {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ModelRef: modelRef},
+			Data: []byte(`{}`),
+		}); err != nil {
+			t.Fatalf("Save(%s) failed: %v", id, err)
+		}
+	}
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	txStore, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore(txCtx) failed: %v", err)
+	}
+	if err := txStore.DeleteAll(txCtx, modelRef); err != nil {
+		t.Fatalf("DeleteAll failed: %v", err)
+	}
+
+	tx := spi.GetTransaction(txCtx)
+	want := spi.Principal{ID: "carol", Kind: spi.PrincipalUser}
+	for _, id := range []string{"e-dat-1", "e-dat-2"} {
+		if !tx.Deletes[id] {
+			t.Fatalf("expected tx.Deletes[%s] to be staged", id)
+		}
+		attr, ok := tx.DeleteAttribution[id]
+		if !ok {
+			t.Fatalf("expected tx.DeleteAttribution[%s] to be staged alongside tx.Deletes", id)
+		}
+		if attr.Attributed != want || attr.Executor != want {
+			t.Errorf("DeleteAttribution[%s] = %+v, want Attributed==Executor==%+v", id, attr, want)
+		}
+	}
+
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	for _, id := range []string{"e-dat-1", "e-dat-2"} {
+		history, err := store.GetVersionHistory(ctx, id)
+		if err != nil {
+			t.Fatalf("GetVersionHistory(%s) failed: %v", id, err)
+		}
+		tomb := history[len(history)-1]
+		if !tomb.Deleted {
+			t.Fatalf("expected %s's last version to be the DELETE tombstone", id)
+		}
+		if tomb.Executor != want {
+			t.Errorf("%s tombstone Executor = %+v, want %+v", id, tomb.Executor, want)
+		}
 	}
 }

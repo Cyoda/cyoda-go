@@ -27,6 +27,12 @@ type entityVersion struct {
 	deleted       bool
 	changeType    string
 	user          string
+	// changeUserKind and executor carry the follow-on-action attribution
+	// (see docs/superpowers/plans/2026-07-23-attribute-followon-actions.md).
+	// Populated independently of entity — entity is nil for DELETED
+	// versions, but attribution must not be (see GetVersionHistory).
+	changeUserKind spi.PrincipalKind
+	executor       spi.Principal
 }
 
 type EntityStore struct {
@@ -265,6 +271,8 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 			TransactionID:           entity.Meta.TransactionID,
 			ChangeType:              entity.Meta.ChangeType,
 			ChangeUser:              entity.Meta.ChangeUser,
+			ChangeUserKind:          entity.Meta.ChangeUserKind,
+			ChangeExecutor:          entity.Meta.ChangeExecutor,
 			TransitionForLatestSave: entity.Meta.TransitionForLatestSave,
 		},
 		Data: make([]byte, len(entity.Data)),
@@ -273,11 +281,13 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 
 	// invariant: appended versions are immutable post-publish; see entityVersion godoc.
 	s.factory.entityData[tid][eid] = append(versions, entityVersion{
-		entity:        saved,
-		transactionID: entity.Meta.TransactionID,
-		submitTime:    now,
-		changeType:    entity.Meta.ChangeType,
-		user:          entity.Meta.ChangeUser,
+		entity:         saved,
+		transactionID:  entity.Meta.TransactionID,
+		submitTime:     now,
+		changeType:     entity.Meta.ChangeType,
+		user:           entity.Meta.ChangeUser,
+		changeUserKind: entity.Meta.ChangeUserKind,
+		executor:       entity.Meta.ChangeExecutor,
 	})
 
 	// Apply unique-key claims: release old (handles update-moves-key) then insert new.
@@ -508,6 +518,12 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		tx.Deletes[entityID] = true
 		delete(tx.Buffer, entityID) // remove from buffer if present
 		tx.WriteSet[entityID] = true
+		// Capture attribution at STAGE time (this caller), not at commit
+		// time (the eventual committer, possibly a different actor) — see
+		// txmanager.Commit's flush, which prefers this entry over
+		// re-deriving attribution from the commit ctx.
+		a, e := spi.AttributionFor(ctx)
+		tx.DeleteAttribution[entityID] = spi.WriteAttribution{Attributed: a, Executor: e}
 		return nil
 	}
 
@@ -523,18 +539,16 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	if latest.deleted {
 		return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
-	uc := spi.GetUserContext(ctx)
-	userName := ""
-	if uc != nil {
-		userName = uc.UserID
-	}
+	attributed, executor := spi.AttributionFor(ctx)
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
-		entity:        nil,
-		transactionID: "",
-		submitTime:    s.factory.clock.Now(),
-		deleted:       true,
-		changeType:    "DELETED",
-		user:          userName,
+		entity:         nil,
+		transactionID:  "",
+		submitTime:     s.factory.clock.Now(),
+		deleted:        true,
+		changeType:     "DELETED",
+		user:           attributed.ID,
+		changeUserKind: attributed.Kind,
+		executor:       executor,
 	})
 	// Release unique-key claims so the freed values can be claimed immediately.
 	s.factory.releaseClaims(string(s.tenant), entityID)
@@ -563,16 +577,23 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
 		}()
 
-		for _, e := range mainEntities {
-			tx.Deletes[e.Meta.ID] = true
-			delete(tx.Buffer, e.Meta.ID)
-			tx.WriteSet[e.Meta.ID] = true
+		// Attribution captured once for this call (this caller, this ctx)
+		// and applied to every entity ID this DeleteAll stages — same
+		// stage-time-not-commit-time posture as single-entity Delete.
+		a, e := spi.AttributionFor(ctx)
+		attribution := spi.WriteAttribution{Attributed: a, Executor: e}
+
+		for _, ent := range mainEntities {
+			tx.Deletes[ent.Meta.ID] = true
+			delete(tx.Buffer, ent.Meta.ID)
+			tx.WriteSet[ent.Meta.ID] = true
+			tx.DeleteAttribution[ent.Meta.ID] = attribution
 		}
 		// Also delete any buffered entities for this model.
 		// First pass: collect IDs to delete (avoid iterate-during-mutation).
 		toDelete := make([]string, 0)
-		for id, e := range tx.Buffer {
-			if e.Meta.ModelRef == modelRef {
+		for id, ent := range tx.Buffer {
+			if ent.Meta.ModelRef == modelRef {
 				toDelete = append(toDelete, id)
 			}
 		}
@@ -581,6 +602,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			delete(tx.Buffer, id)
 			tx.Deletes[id] = true
 			tx.WriteSet[id] = true
+			tx.DeleteAttribution[id] = attribution
 		}
 		return nil
 	}
@@ -590,11 +612,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	defer s.factory.entityMu.Unlock()
 
 	now := s.factory.clock.Now()
-	uc := spi.GetUserContext(ctx)
-	userName := ""
-	if uc != nil {
-		userName = uc.UserID
-	}
+	attributed, executor := spi.AttributionFor(ctx)
 	for eid, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
@@ -605,12 +623,14 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		}
 		if latest.entity.Meta.ModelRef == modelRef {
 			s.factory.entityData[s.tenant][eid] = append(versions, entityVersion{
-				entity:        nil,
-				transactionID: "",
-				submitTime:    now,
-				deleted:       true,
-				changeType:    "DELETED",
-				user:          userName,
+				entity:         nil,
+				transactionID:  "",
+				submitTime:     now,
+				deleted:        true,
+				changeType:     "DELETED",
+				user:           attributed.ID,
+				changeUserKind: attributed.Kind,
+				executor:       executor,
 			})
 			// Release unique-key claims so freed values can be claimed immediately.
 			s.factory.releaseClaims(string(s.tenant), eid)
@@ -768,6 +788,11 @@ func (s *EntityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 			User:       v.user,
 			Timestamp:  v.submitTime,
 			Deleted:    v.deleted,
+			// AttributedKind/Executor are populated independently of Entity
+			// below — Entity is nil for DELETED versions, but attribution
+			// must not be (see entityVersion godoc).
+			AttributedKind: v.changeUserKind,
+			Executor:       v.executor,
 		}
 		if v.entity != nil {
 			ev.Entity = copyEntity(v.entity)
