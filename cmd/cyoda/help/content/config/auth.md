@@ -34,6 +34,10 @@ startup unless JWT mode is properly configured.
 
 - `CYODA_IAM_MOCK_ROLES` — comma-separated default user roles assigned to all requests
   in mock mode (default: `ROLE_ADMIN,ROLE_M2M`)
+- `CYODA_IAM_MOCK_KIND` — principal kind assigned to the default UserContext in
+  mock mode: `user`, `service`, or `system`. Lets local/CI setups exercise
+  service- or system-attributed code paths without standing up real JWT auth.
+  (default: `user`)
 
 When running in mock mode, the binary emits a prominent `MOCK AUTH IS ACTIVE`
 warning banner at startup so operators see the security posture of the running

@@ -121,6 +121,7 @@ func defaultFor(c app.Config) map[string]string {
 		// --- auth ---
 		"CYODA_IAM_MODE":                             c.IAM.Mode,
 		"CYODA_IAM_MOCK_ROLES":                       strings.Join(c.IAM.MockRoles, ","),
+		"CYODA_IAM_MOCK_KIND":                        c.IAM.MockKind,
 		"CYODA_JWT_SIGNING_KEY":                      "", // secret
 		"CYODA_JWT_ISSUER":                           c.IAM.JWTIssuer,
 		"CYODA_JWT_AUDIENCE":                         c.IAM.JWTAudience,
