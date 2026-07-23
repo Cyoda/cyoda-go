@@ -42,12 +42,6 @@ func TestTxManager_Begin_CapturesOrigin(t *testing.T) {
 	if tx.Origin != want {
 		t.Errorf("tx.Origin = %+v, want %+v", tx.Origin, want)
 	}
-	if tx.Deletes == nil {
-		t.Error("expected Begin to initialise tx.Deletes")
-	}
-	if tx.DeleteAttribution == nil {
-		t.Error("expected Begin to initialise tx.DeleteAttribution")
-	}
 }
 
 // TestTxManager_Join_RepopulatesOrigin is THE load-bearing postgres case:
@@ -91,12 +85,6 @@ func TestTxManager_Join_RepopulatesOrigin(t *testing.T) {
 	if tx2.Origin != wantOrigin {
 		t.Errorf("tx2.Origin = %+v, want %+v (Join must repopulate Origin from the per-tx map, not the joiner's own Principal)",
 			tx2.Origin, wantOrigin)
-	}
-	if tx2.Deletes == nil {
-		t.Error("expected Join to initialise tx.Deletes on the rebuilt TransactionState")
-	}
-	if tx2.DeleteAttribution == nil {
-		t.Error("expected Join to initialise tx.DeleteAttribution on the rebuilt TransactionState")
 	}
 }
 
@@ -206,20 +194,7 @@ func TestEntityStore_Delete_Tx_StampsDeleterNotPriorWriter(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	// tx.DeleteAttribution must record the deleter immediately at stage
-	// time, not the creator.
-	tx := spi.GetTransaction(txCtx)
 	wantDeleter := spi.Principal{ID: "deleter-user", Kind: spi.PrincipalUser}
-	attr, ok := tx.DeleteAttribution["e-tomb-tx"]
-	if !ok {
-		t.Fatal("expected tx.DeleteAttribution to record the staged delete")
-	}
-	if attr.Attributed != wantDeleter {
-		t.Errorf("staged Attributed = %+v, want %+v", attr.Attributed, wantDeleter)
-	}
-	if attr.Executor != wantDeleter {
-		t.Errorf("staged Executor = %+v, want %+v", attr.Executor, wantDeleter)
-	}
 
 	if err := tm.Commit(txCtx, txID); err != nil {
 		t.Fatalf("Commit: %v", err)

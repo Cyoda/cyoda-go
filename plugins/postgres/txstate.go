@@ -38,15 +38,6 @@ type savepointEntry struct {
 	id       string
 	readSet  map[string]int64
 	writeSet map[string]int64
-	// deletes/deleteAttribution are a bookkeeping-only snapshot of the SPI
-	// TransactionState's Deletes/DeleteAttribution maps at Savepoint time
-	// (see TransactionManager.Savepoint/RollbackToSavepoint). Postgres's own
-	// persistence never restores from these — PostgreSQL's own SAVEPOINT/
-	// ROLLBACK TO SAVEPOINT already governs actual visibility — they exist
-	// solely to satisfy the SPI's Deletes/DeleteAttribution contract for
-	// callers that inspect TransactionState directly.
-	deletes           map[string]bool
-	deleteAttribution map[string]spi.WriteAttribution
 }
 
 func newTxState(tenantID spi.TenantID) *txState {
@@ -137,34 +128,22 @@ func (s *txState) ValidateReadSet(current map[string]int64) error {
 	return nil
 }
 
-// PushSavepoint stores a deep copy of the current readSet/writeSet (and the
-// caller-supplied deletes/deleteAttribution snapshot — see
-// TransactionManager.Savepoint) under the given savepoint ID. Subsequent
-// RestoreSavepoint(id) restores all of them to this snapshot and trims later
-// savepoints (postgres nested savepoint semantics). deletes/deleteAttribution
-// may be nil (e.g. no tx was in scope when the snapshot was taken); the
-// stored copies are always non-nil, matching readSet/writeSet's behaviour.
-func (s *txState) PushSavepoint(id string, deletes map[string]bool, deleteAttribution map[string]spi.WriteAttribution) {
+// PushSavepoint stores a deep copy of the current readSet/writeSet under the
+// given savepoint ID. Subsequent RestoreSavepoint(id) restores them to this
+// snapshot and trims later savepoints (postgres nested savepoint semantics).
+func (s *txState) PushSavepoint(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := savepointEntry{
-		id:                id,
-		readSet:           make(map[string]int64, len(s.readSet)),
-		writeSet:          make(map[string]int64, len(s.writeSet)),
-		deletes:           make(map[string]bool, len(deletes)),
-		deleteAttribution: make(map[string]spi.WriteAttribution, len(deleteAttribution)),
+		id:       id,
+		readSet:  make(map[string]int64, len(s.readSet)),
+		writeSet: make(map[string]int64, len(s.writeSet)),
 	}
 	for k, v := range s.readSet {
 		snap.readSet[k] = v
 	}
 	for k, v := range s.writeSet {
 		snap.writeSet[k] = v
-	}
-	for k, v := range deletes {
-		snap.deletes[k] = v
-	}
-	for k, v := range deleteAttribution {
-		snap.deleteAttribution[k] = v
 	}
 	s.savepoints = append(s.savepoints, snap)
 }
@@ -187,12 +166,8 @@ func (s *txState) HasSavepoint(id string) bool {
 
 // RestoreSavepoint restores readSet/writeSet to the snapshot captured at
 // PushSavepoint(id) and trims any savepoints pushed after id. The named
-// savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT). The
-// snapshotted deletes/deleteAttribution are returned (not applied here —
-// they belong to the *spi.TransactionState obtained via ctx, not this
-// package-internal struct) so the caller (TransactionManager.
-// RollbackToSavepoint) can restore them.
-func (s *txState) RestoreSavepoint(id string) (deletes map[string]bool, deleteAttribution map[string]spi.WriteAttribution, err error) {
+// savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT).
+func (s *txState) RestoreSavepoint(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := -1
@@ -203,7 +178,7 @@ func (s *txState) RestoreSavepoint(id string) (deletes map[string]bool, deleteAt
 		}
 	}
 	if idx < 0 {
-		return nil, nil, fmt.Errorf("%w (savepointID=%q)", spi.ErrSavepointNotFound, id)
+		return fmt.Errorf("%w (savepointID=%q)", spi.ErrSavepointNotFound, id)
 	}
 	snap := s.savepoints[idx]
 	s.readSet = make(map[string]int64, len(snap.readSet))
@@ -215,16 +190,7 @@ func (s *txState) RestoreSavepoint(id string) (deletes map[string]bool, deleteAt
 		s.writeSet[k] = v
 	}
 	s.savepoints = s.savepoints[:idx+1]
-
-	deletes = make(map[string]bool, len(snap.deletes))
-	for k, v := range snap.deletes {
-		deletes[k] = v
-	}
-	deleteAttribution = make(map[string]spi.WriteAttribution, len(snap.deleteAttribution))
-	for k, v := range snap.deleteAttribution {
-		deleteAttribution[k] = v
-	}
-	return deletes, deleteAttribution, nil
+	return nil
 }
 
 // recordReadIfInTx records a read into the tx's state, if the context

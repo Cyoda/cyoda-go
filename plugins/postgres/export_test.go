@@ -58,8 +58,8 @@ func OriginMapLenForTest(tm *TransactionManager) int {
 type TxStateForTest interface {
 	RecordRead(id string, version int64)
 	RecordWrite(id string, preWriteVersion int64)
-	PushSavepoint(id string, deletes map[string]bool, deleteAttribution map[string]spi.WriteAttribution)
-	RestoreSavepoint(id string) (map[string]bool, map[string]spi.WriteAttribution, error)
+	PushSavepoint(id string)
+	RestoreSavepoint(id string) error
 	ReleaseSavepoint(id string) error
 }
 

@@ -110,16 +110,17 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		tm.txStates[txID] = newTxState(tenantID)
 	}()
 
+	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil:
+	// postgres's own persistence never reads them back (see
+	// EntityStore.Delete and Search's documented assumption in searcher.go)
+	// — real row visibility is governed by PostgreSQL's own transaction/
+	// SAVEPOINT machinery, not an in-process buffer. The SPI conformance
+	// contract is the committed outcome (GetVersionHistory), never these
+	// maps' contents.
 	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
 		Origin:   origin,
-		// Deletes/DeleteAttribution are bookkeeping-only for postgres (its
-		// own persistence never reads them back — see EntityStore.Delete),
-		// but must be non-nil and populated per the SPI TransactionState
-		// contract, which conformance tests inspect directly.
-		Deletes:           make(map[string]bool),
-		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
 
 	return txID, spi.WithTransaction(ctx, txSpiState), nil
@@ -288,12 +289,12 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
 
+	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil on the
+	// rebuilt TransactionState too — same rationale as Begin above.
 	txState := &spi.TransactionState{
-		ID:                txID,
-		TenantID:          tenantID,
-		Origin:            origin,
-		Deletes:           make(map[string]bool),
-		DeleteAttribution: make(map[string]spi.WriteAttribution),
+		ID:       txID,
+		TenantID: tenantID,
+		Origin:   origin,
 	}
 	return spi.WithTransaction(ctx, txState), nil
 }
@@ -389,17 +390,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 		return "", fmt.Errorf("Savepoint: %w", err)
 	}
 
-	// Snapshot tx.Deletes/tx.DeleteAttribution from the SPI-level
-	// TransactionState carried in ctx — bookkeeping only (see
-	// savepointEntry godoc); postgres's own persistence doesn't need this
-	// (the SQL SAVEPOINT above already governs actual visibility).
-	var deletes map[string]bool
-	var deleteAttribution map[string]spi.WriteAttribution
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		deletes = tx.Deletes
-		deleteAttribution = tx.DeleteAttribution
-	}
-	state.PushSavepoint(spID, deletes, deleteAttribution)
+	state.PushSavepoint(spID)
 	return spID, nil
 }
 
@@ -433,18 +424,8 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
 	}
-	deletes, deleteAttribution, err := state.RestoreSavepoint(savepointID)
-	if err != nil {
+	if err := state.RestoreSavepoint(savepointID); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
-	}
-	// Restore tx.Deletes/tx.DeleteAttribution on the SPI-level
-	// TransactionState in lockstep with the SQL rollback above —
-	// bookkeeping only (see savepointEntry godoc); the SQL ROLLBACK TO
-	// SAVEPOINT already reverted the actual DELETE(s) issued after this
-	// savepoint.
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		tx.Deletes = deletes
-		tx.DeleteAttribution = deleteAttribution
 	}
 	return nil
 }

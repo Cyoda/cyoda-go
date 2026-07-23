@@ -315,20 +315,6 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	current.Meta.ChangeExecutor = executor
 	current.Meta.LastModifiedDate = dbNow
 
-	// Bookkeeping: record into tx.Deletes/tx.DeleteAttribution when running
-	// inside a transaction. Postgres's own persistence never reads these
-	// maps back (the DELETE above already executed, and PostgreSQL's own
-	// SAVEPOINT/ROLLBACK TO SAVEPOINT/COMMIT/ROLLBACK govern its visibility)
-	// — they exist solely so the SPI's TransactionState.Deletes/
-	// DeleteAttribution contract is honoured for callers that inspect it
-	// directly via spi.GetTransaction (see the Attribution/
-	// DeleteAttributionSavepoint conformance test). Begin/Join always
-	// initialise both maps, so they are never nil here.
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		tx.Deletes[entityID] = true
-		tx.DeleteAttribution[entityID] = spi.WriteAttribution{Attributed: attributed, Executor: executor}
-	}
-
 	deleteDoc, err := marshalEntityDoc(current, dbNow, dbNow, wallClockTime, true)
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete doc: %w", err)
