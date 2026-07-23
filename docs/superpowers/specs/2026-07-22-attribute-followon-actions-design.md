@@ -108,7 +108,10 @@ constructor or missed cross-node forwarding — an internal bug — and emitting
 for what may be a service would be a wrong-but-available substitute, which the
 correctness-over-availability rule prohibits. `AttachAuthContext` (via its dispatch call site)
 **fails the callout dispatch** on unset Kind; the callout is not sent with an unfaithful
-AuthContext. The cross-node G-layer test asserts the correct kind arrives on a peer-dispatched
+AuthContext. The same rule subsumes a **nil UserContext** at emission — today `AttachAuthContext`
+silently early-returns and sends the callout with *no* auth attributes (`cloudevent.go:36-39`),
+which equally violates "always present"; both cases fail the dispatch. The cross-node G-layer test
+asserts the correct kind arrives on a peer-dispatched
 callout, so this failure mode cannot ship silently. (§3.1's zero-value tolerance is for *reading*
 legacy data, never for emitting the pinned wire contract.)
 
@@ -301,7 +304,7 @@ executor = system. Added to the stamp-site inventory (§7).
 
 ```json
 {
-  "changeType": "UPDATED",
+  "changeType": "UPDATE",
   "timeOfChange": "2026-07-22T10:00:00Z",
   "user": "userY",
   "attributedKind": "user",
@@ -527,10 +530,11 @@ Layers: **U**=unit, **E**=running-backend e2e (per backend), **P**=cross-backend
 |---|---|---|---|---|
 | principal-kind: user/service/system for human, service acct, human+ROLE_M2M, scheduler | ✅ | | | ✅ (authtype) |
 | `authtype` emits `service`/`system` (regression for the wire change) | ✅ | | | ✅ |
+| Fail-loud: dispatch with unset Kind (or nil UserContext) fails — no callout with missing/unfaithful `authtype` | ✅ | | | ✅ |
 | Cascade: service processor writes 2nd entity in user tx → attributed=user, executor=service; node presents **no** user token | | ✅ | ✅ | ✅ |
 | Two-hop cascade X→Y→Z (segmented) → attributed=user | | ✅ | ✅ | |
 | CBD (`startNewTx=false`) detached callback → ordinary direct request: service creds → attributed=executor=service; OBO user identity → that user (handover, §4.3) | | ✅ | ✅ | |
-| D3: OBO user-token callback joined into another user's tx keeps recording **its own** user | | ✅ | ✅ | |
+| D3: OBO user-token callback joined into another user's tx keeps recording **its own** user on writes — while a timer it arms carries the **chain origin** (§5.2 divergence) | | ✅ | ✅ | |
 | Cross-node (proxied-join) cascade → same attribution as same-node | | ✅ (multinode) | | ✅ |
 | Delete cascade: processor deletes 2nd entity → attributed=user, executor=**service (stager, not committer)** | | ✅ | ✅ | |
 | Delete tombstone attribution uniform across memory/sqlite/postgres (fixes 3-way divergence, Gate-6) | ✅ | | ✅ | |
