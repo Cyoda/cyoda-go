@@ -46,6 +46,32 @@ func copyEntity(e *spi.Entity) *spi.Entity {
 	return cp
 }
 
+// deriveChangeType computes the ChangeType to record for a save the same way
+// plugins/sqlite and plugins/postgres do: DERIVED from whether the entity ID
+// already has a prior version in the store (row-existence), never trusted
+// verbatim from the caller. hasPriorVersion mirrors sqlite/postgres's isNew
+// check exactly — it is true whenever entityID has ANY prior version, live
+// or soft-deleted (a fresh save's tombstone-recreate case is "UPDATED", not
+// "CREATED" — an already-existing entities row, same as sqlite/postgres,
+// which never delete the row, only flag it deleted).
+//
+// A caller-supplied ChangeType is trusted only when hasPriorVersion is true
+// and the value is neither "" nor "CREATED" — e.g. an explicit "DELETED"
+// stamped by the delete path. This is the one case where the caller, not
+// row-existence, is authoritative. Any other case (including a save that
+// fetched a stale "CREATED" from an entity read earlier, e.g. a
+// scheduled-transition fire re-saving an already-existing entity) is
+// overridden — that staleness is exactly the bug this derivation fixes.
+func deriveChangeType(callerChangeType string, hasPriorVersion bool) string {
+	if !hasPriorVersion {
+		return "CREATED"
+	}
+	if callerChangeType == "" || callerChangeType == "CREATED" {
+		return "UPDATED"
+	}
+	return callerChangeType
+}
+
 // getSnapshotVersion walks the version history for entityID and returns the
 // latest version whose submitTime <= snapshotTime. Caller must hold at least
 // s.factory.entityMu.RLock().
@@ -251,6 +277,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	}
 
 	now := s.factory.clock.Now()
+	changeType := deriveChangeType(entity.Meta.ChangeType, len(versions) > 0)
 
 	creationDate := entity.Meta.CreationDate
 	if len(versions) > 0 {
@@ -269,7 +296,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 			CreationDate:            creationDate,
 			LastModifiedDate:        now,
 			TransactionID:           entity.Meta.TransactionID,
-			ChangeType:              entity.Meta.ChangeType,
+			ChangeType:              changeType,
 			ChangeUser:              entity.Meta.ChangeUser,
 			ChangeUserKind:          entity.Meta.ChangeUserKind,
 			ChangeExecutor:          entity.Meta.ChangeExecutor,
@@ -284,7 +311,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 		entity:         saved,
 		transactionID:  entity.Meta.TransactionID,
 		submitTime:     now,
-		changeType:     entity.Meta.ChangeType,
+		changeType:     changeType,
 		user:           entity.Meta.ChangeUser,
 		changeUserKind: entity.Meta.ChangeUserKind,
 		executor:       entity.Meta.ChangeExecutor,

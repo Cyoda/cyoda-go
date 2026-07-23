@@ -268,6 +268,18 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 		t.Errorf("fired anchor executor = %+v; want {id:system, kind:system} (the platform fired it, not a user/service)",
 			fired.ExecutedBy)
 	}
+	// The fired anchor is a re-save of an already-existing entity (the entity
+	// was CREATEd at c.CreateEntity above), so its changeType must be UPDATE
+	// on every backend — derived from row-existence, never trusted verbatim
+	// from a stale caller-supplied value. This is the cross-backend parity
+	// point: sqlite/postgres already derive changeType this way; a backend
+	// that instead trusts the caller's ChangeType records CREATE here (a real
+	// divergence, not an "accepted" one — see .claude/rules/backend
+	// divergence-is-a-bug convention).
+	if fired.ChangeType != "UPDATE" {
+		t.Errorf("fired anchor changeType = %q; want UPDATE (derived from row-existence, matching sqlite/postgres)",
+			fired.ChangeType)
+	}
 }
 
 // changePrincipalOf returns the attributed User of the newest change entry

@@ -364,11 +364,20 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				}
 			}
 
+			// DERIVE ChangeType from row-existence, like the non-tx save path
+			// (see deriveChangeType) — never trust it verbatim from the
+			// buffered entity, which may carry a stale value fetched before
+			// this transaction began (e.g. a scheduled-transition fire
+			// re-saving an already-existing entity read with its original
+			// "CREATED" Meta still attached).
+			changeType := deriveChangeType(entity.Meta.ChangeType, len(versions) > 0)
+
 			saved := copyEntity(entity)
 			saved.Meta.Version = nextVersion
 			saved.Meta.LastModifiedDate = submitTime
 			saved.Meta.TransactionID = txID
 			saved.Meta.TenantID = tid
+			saved.Meta.ChangeType = changeType
 
 			// Preserve CreationDate from existing versions.
 			if len(versions) > 0 && versions[0].entity != nil {
@@ -381,7 +390,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				entity:         saved,
 				transactionID:  txID,
 				submitTime:     submitTime,
-				changeType:     entity.Meta.ChangeType,
+				changeType:     changeType,
 				user:           entity.Meta.ChangeUser,
 				changeUserKind: entity.Meta.ChangeUserKind,
 				executor:       entity.Meta.ChangeExecutor,
