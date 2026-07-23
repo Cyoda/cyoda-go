@@ -257,6 +257,22 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	return s.saveDirectly(ctx, entity)
 }
 
+// deriveChangeType computes the persisted change type from row existence,
+// used by both the non-tx (saveDirectly) and tx-commit write paths so they
+// agree with each other and with the memory/postgres backends. A new entity is
+// always "CREATED" (an incoming value is ignored). For an existing entity a
+// stale "CREATED" (or empty) becomes "UPDATED", while an explicit override set
+// by a caller (e.g. the workflow engine) is preserved.
+func deriveChangeType(caller string, isNew bool) string {
+	if isNew {
+		return "CREATED"
+	}
+	if caller != "" && caller != "CREATED" {
+		return caller
+	}
+	return "UPDATED"
+}
+
 func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int64, error) {
 	cp := copyEntity(entity)
 	cp.Meta.TenantID = s.tenantID
@@ -274,17 +290,15 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 	}
 
 	var nextVersion int64
-	changeType := "CREATED"
 	createdAtMicro := timeToMicro(now)
 	if !isNew {
 		nextVersion = existingVersion.Int64 + 1
-		changeType = "UPDATED"
 		createdAtMicro = existingCreatedAt.Int64
 	}
 
 	cp.Meta.Version = nextVersion
 	cp.Meta.LastModifiedDate = now
-	cp.Meta.ChangeType = changeType
+	cp.Meta.ChangeType = deriveChangeType(cp.Meta.ChangeType, isNew)
 	if isNew {
 		cp.Meta.CreationDate = now
 	} else {
@@ -318,7 +332,7 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 		 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
 		 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, '', ?, ?)`,
 		tid, cp.Meta.ID, cp.Meta.ModelRef.EntityName, cp.Meta.ModelRef.ModelVersion,
-		nextVersion, string(cp.Data), string(metaJSON), changeType, timeToMicro(now),
+		nextVersion, string(cp.Data), string(metaJSON), cp.Meta.ChangeType, timeToMicro(now),
 		cp.Meta.ChangeUser)
 	if err != nil {
 		return 0, fmt.Errorf("insert version: %w", classifyError(err))

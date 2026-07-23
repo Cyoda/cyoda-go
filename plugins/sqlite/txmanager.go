@@ -418,23 +418,16 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		}
 
 		var nextVersion int64
-		changeType := "CREATED"
 		createdAtMicro := submitMicro
 		if !isNew {
 			nextVersion = existingVersion.Int64 + 1
-			changeType = "UPDATED"
 			createdAtMicro = existingCreatedAt.Int64
-		}
-
-		// Preserve the entity's change type if explicitly set (e.g. by workflow).
-		if entity.Meta.ChangeType != "" && entity.Meta.ChangeType != "CREATED" && !isNew {
-			changeType = entity.Meta.ChangeType
 		}
 
 		entity.Meta.Version = nextVersion
 		entity.Meta.LastModifiedDate = submitTime
 		entity.Meta.TransactionID = tx.ID
-		entity.Meta.ChangeType = changeType
+		entity.Meta.ChangeType = deriveChangeType(entity.Meta.ChangeType, isNew)
 		entity.Meta.TenantID = tx.TenantID
 		if isNew {
 			entity.Meta.CreationDate = submitTime
@@ -466,7 +459,7 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			tid, entityID,
 			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
 			nextVersion, string(entity.Data), string(metaJSON),
-			changeType, tx.ID, submitMicro,
+			entity.Meta.ChangeType, tx.ID, submitMicro,
 			entity.Meta.ChangeUser)
 		if err != nil {
 			return fmt.Errorf("insert version %s: %w", entityID, err)
