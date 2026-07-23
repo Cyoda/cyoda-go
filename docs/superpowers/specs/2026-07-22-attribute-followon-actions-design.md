@@ -88,8 +88,14 @@ Kind is **not** equivalent to today's `ROLE_M2M` sniff: a client-credentials tok
 ### 3.3 AuthContext `authtype` — driven by Kind
 
 `AttachAuthContext` (`internal/grpc/cloudevent.go:35-67`) stops sniffing `ROLE_M2M` and emits
-`authtype = string(uc.Kind)`. **This changes the CloudEvents Auth-Context wire value
+`authtype` from `uc.Kind`. **This changes the CloudEvents Auth-Context wire value
 `service_account` → `service` and introduces `system`.** Deliberate contract change; see §10.
+
+**Zero-Kind emission rule:** the pinned contract requires `authtype ∈ {user, service, system}`,
+always present — so `AttachAuthContext` normalizes an unset Kind to `user` (the §3.1 tolerance
+rule). Because that normalization could mask a missing-forwarding bug as a silent service→user
+mislabel, the cross-node G-layer test below asserts the *correct* kind arrives on a peer-dispatched
+callout — the normalization is a wire-contract guarantee, not a substitute for forwarding.
 
 The `ROLE_M2M` **stream-join gate** (`internal/grpc/streaming.go:53-60`) stays role-based — it is
 authorization, out of scope, unchanged. `CheckAccess` (`internal/contract/iam.go:16`) stays dead
@@ -117,28 +123,34 @@ cascade write itself; it must already live on the joined `TransactionState`.
 **Origin is set once, at the root `Begin`, and read by every joined write.**
 
 ```go
-// At Begin (root of a causal chain):
-origin := ambientOrigin(ctx)            // explicit ctx value; set by scheduled fire & detached dispatch
-if origin == nil {
-    if parent := spi.GetTransaction(ctx); parent != nil && parent.Origin != (spi.Principal{}) {
-        origin = &parent.Origin           // CBD segment-continuation: inherit prior segment's origin
+// At Begin — precedence: parent-tx > ambient > UserContext.
+// Exported as spi.ResolveOrigin(ctx) so all backends (incl. the
+// out-of-tree commercial one) share ONE implementation; backend
+// divergence here would be an attribution bug.
+func ResolveOrigin(ctx context.Context) Principal {
+    if parent := GetTransaction(ctx); parent != nil && parent.Origin != (Principal{}) {
+        return parent.Origin // segment continuation: a live tx is authoritative for its chain
     }
+    if amb := GetAmbientOrigin(ctx); amb != (Principal{}) {
+        return amb           // root seed with no tx yet: scheduled fire (§5.3)
+    }
+    return principalOf(GetUserContext(ctx)) // direct caller (root)
 }
-if origin == nil {
-    origin = principalOf(spi.GetUserContext(ctx))  // direct caller (root)
-}
-txState.Origin = *origin
 ```
+
+A **zero `Principal` is "absent"** at every branch (a zero ambient value never stamps a zero
+`Origin`). The precedence is parent-tx first: ambient is strictly a *root* seed for a chain that has
+no transaction yet; once a transaction exists, its `Origin` is authoritative.
 
 Add `Origin Principal` to `spi.TransactionState` (`cyoda-go-spi/txcontext.go:85-96`), in the
 **immutable-after-Begin** set alongside `ID`, `TenantID`, `SnapshotTime` — set once, read lock-free,
 no `OpMu` participation. **Update the immutable-set godoc at `cyoda-go-spi/txcontext.go:53`** (and
 the concurrency contract) to list `Origin`, or reviewers will flag the new field.
 
-`ambientOrigin(ctx)` reads a **new SPI-exported** ctx value (§11 item 6): the plugin `Begin`
-implementations are separate Go modules importing only `cyoda-go-spi`, so the ambient-origin
-key/getter/setter must live in the SPI (`WithAmbientOrigin` / `GetAmbientOrigin`), set by the seed
-sites (§4.3, §5.3) and read inside each plugin `Begin`.
+The ambient origin is a **new SPI-exported** ctx value (§11 item 7): the plugin `Begin`
+implementations are separate Go modules importing only `cyoda-go-spi`, so
+`WithAmbientOrigin` / `GetAmbientOrigin` / `ResolveOrigin` live in the SPI. The **only** seed site is
+the scheduled fire (§5.3); each plugin `Begin` calls `spi.ResolveOrigin(ctx)`.
 
 ### 4.2 Per-plugin capture & Join re-population
 
@@ -150,21 +162,30 @@ sites (§4.3, §5.3) and read inside each plugin `Begin`.
 
 Postgres is the critical case: it rebuilds state at every `Join`, so without explicit storage +
 repopulation, origin is silently lost on the routed-callback path — the primary acceptance criterion.
+The per-tx origin map follows the `tm.tenants` lifecycle exactly: populate at `Begin`, delete at
+`Commit`/`Rollback`.
 
-### 4.3 Detached dispatch (COMMIT_BEFORE_DISPATCH `startNewTx=false`)
+### 4.3 Detached dispatch (COMMIT_BEFORE_DISPATCH `startNewTx=false`) — documented boundary
 
 `engine_processors.go:~311` dispatches the processor with the tx **detached**
-(`spi.WithTransaction(ctx, nil)`, empty txID `:315`). A callback write then has `GetTransaction ==
-nil` → `beginOrJoin` Begins a **fresh independent tx** with no parent → would fall through to the
-service account. **Fix:** seed an explicit **ambient-origin** ctx value into the detached
-`dispatchCtx` (from the just-committed segment's origin) so the follow-on root `Begin` re-derives the
-same origin. Covers the CBD acceptance case.
+(`spi.WithTransaction(ctx, nil)`, empty txID `:315`): no tx token is minted, and a callback write
+arrives as a **separate network request** that Begins a fresh independent tx. No server-side carrier
+can bring the origin to that `Begin` — context values do not cross a network boundary, and a
+worker-transited attribution token is ruled out by D1 ("the origin never rides an M2M relay hop —
+server-only").
+
+**Resolution: a CBD-detached callback write attributes to its executor** — it is, by design, an
+independent post-commit action, exactly the §9 non-joined case (`attributed == executor`). This is
+consistent with the issue's acceptance criterion, which covers writes "within a user-triggered
+transaction"; `startNewTx=false` deliberately places the follow-on **outside** any transaction. The
+boundary is documented (help topic / processor-execution-modes doc) and pinned by a test asserting
+executor attribution — never a silently-wrong user attribution.
 
 ### 4.4 Two-hop / segmented cascade (X→Y→Z)
 
 CBD segment-continuation (`engine_processors.go:~325/394`) opens the next segment with the prior
-(just-committed) segment's `TransactionState` on ctx. The `Begin` rule (§4.1) inherits its `Origin`,
-so Z still attributes to the original user. Combined with §4.3 this closes both segmented paths.
+(just-committed) segment's `TransactionState` still on ctx. The `Begin` rule (§4.1, parent-tx
+branch) inherits its `Origin`, so Z still attributes to the original user.
 
 ## 5. Scheduled attribution — durable arming principal
 
@@ -193,13 +214,24 @@ Two changes:
 - **executor** = a real `kind=system` platform principal (stable id, e.g. the app system principal
   id — configurable, defaulting to the platform system account; never the string `"scheduler"`).
   Replace the synthetic `UserID="scheduler"` `SystemUserContext` (`internal/scheduler/executor.go`).
-- **ambient origin** = `task.ArmedBy`, seeded via `spi.WithAmbientOrigin` **inside
+- **ambient origin** = the arming principal, seeded via `spi.WithAmbientOrigin` **inside
   `FireScheduledTransition`** (`internal/domain/workflow/fire_scheduled.go:53,75`) — its documented
   single engine door — **not** in `executor.go`. There are two doors into the engine and only one
   goes through `Execute`: the **cross-node peer fire** calls `FireScheduledTransition` directly
   (`internal/cluster/scheduler_rpc.go:271-273`), bypassing `Execute`. Seeding at the engine door
-  covers both local and peer fire in one place, and it already holds `task.ArmedBy` before its own
-  `Begin` (`fire_scheduled.go:75`).
+  covers both local and peer fire in one place.
+
+**The seed source is the durable row, never the argument.** `FireScheduledTransition`'s own trust
+contract (`fire_scheduled.go:61-71`) treats only `task.ID` as trusted — and on the peer path the
+argument is deserialized from an RPC body, so seeding from `task.ArmedBy` would let a forged or
+stale peer dispatch set the attributed principal (violating §9). Instead:
+
+1. **Pre-`Begin` point-read** of the task row by `task.ID` → seed ambient origin from the durable
+   `ArmedBy` (zero ⇒ no seed ⇒ system, §5.1).
+2. The existing **in-tx re-read guard** additionally verifies the re-read `ArmedBy` equals the
+   seeded value; on mismatch (a concurrent re-arm between point-read and fire tx) the fire
+   **aborts and rolls back** — fail-closed; the scan loop's redispatch retries it. Origin stays
+   immutable-after-`Begin`; a fire never commits with an origin that doesn't match the durable row.
 
 The fire's root `Begin` then stamps `Origin = ArmedBy` (§4.1 ambient branch), so the anchor write and
 any cascade off it attribute to the arming principal, executed by system.
@@ -218,7 +250,10 @@ executor = system. Added to the stamp-site inventory (§7).
 - `EntityVersion` (`cyoda-go-spi/types.go:37-45`) gains `Executor Principal` **and**
   `AttributedKind PrincipalKind` (the `User` field stays = attributed id). Executor lives on
   `EntityVersion`, **not** `Entity.Meta`, because `EntityVersion.Entity` is **nil for DELETED
-  versions** — sourcing executor from `Entity.Meta` would nil-panic the read.
+  versions** on memory/sqlite — sourcing executor from `Entity.Meta` would nil-panic the read.
+  (Postgres tombstones carry a non-nil Entity rebuilt from the *prior* doc — which is why row 9 of
+  §7 must stamp the tombstone at delete time, or a DELETED row would surface the previous writer's
+  executor.)
 - `EntityMeta` (`cyoda-go-spi/types.go:18-30`) gains the executor id+kind and the attributed kind so
   saves can persist them; the read path lifts them onto `EntityVersion`. Executor rides **inside the
   existing serialized meta blob** in every plugin (postgres `_meta` in `doc` JSONB, sqlite `meta`
@@ -259,27 +294,55 @@ executor = system. Added to the stamp-site inventory (§7).
 - `StateMachineEvent` (`cyoda-go-spi/types.go:351-360`) has **no** actor field — no executor leak
   there, and no attribution added (out of scope).
 
-## 7. Complete stamp-site inventory
+## 7. Attribution rule + complete stamp-site inventory
 
-Every durable write that records a principal must set attributed = origin, executor = the immediate
-principal. **Nil origin ⇒ use executor** (never panic, never elevate to a claimed user).
+**The stamp rule (implements D3 exactly):**
+
+```
+executor   = the immediate authenticated principal (UserContext) at the write
+attributed = executor,                        if executor.Kind ∈ {user, ""}   // D3: a presented user
+                                              // identity is used as-is; "" (legacy) is conservative
+           = GetTransaction(ctx).Origin,      if executor.Kind ∈ {service, system} and a joined tx
+                                              // with non-zero Origin is present
+           = executor,                        otherwise (non-joined / zero origin — never panic,
+                                              // never elevate to a claimed user)
+```
+
+Origin inheritance engages **only for service/system executors** within a platform transaction. An
+app still doing OBO itself (presenting a user token on its callback) keeps today's behavior — its
+writes record that user even inside another user's transaction. This supersedes nothing: it is the
+issue's D3, applied per-write.
 
 | # | Path | Site | Today | Change |
 |---|---|---|---|---|
-| 1 | Create | `service.go:289` | `ChangeUser=uc.UserID` | attributed=`GetTransaction(ctx).Origin`; executor=uc |
+| 1 | Create | `service.go:289` | `ChangeUser=uc.UserID` | stamp rule above |
 | 2 | Create collection | `service.go:1190` | `ChangeUser=uc.UserID` | same |
-| 3 | Update | `service.go:1421` (read `:1404`) | guarded `uc.UserID` | attributed=tx.Origin; executor=uc |
+| 3 | Update | `service.go:1421` (read `:1404`) | guarded `uc.UserID` | same |
 | 4 | Update collection | `service.go:1755` (read `:1690`) | guarded `uc.UserID` | same |
-| 5 | Scheduled-fire anchor | `fire_scheduled.go:321/325` | no user set | attributed=`ArmedBy`; executor=system |
-| 6 | Delete flush (tx-commit) | `plugins/memory/txmanager.go:397-412` | executor `uc.UserID` | buffer attributed=tx.Origin at delete time; executor=committer |
-| 7 | Delete flush (tx-commit) | `plugins/sqlite/txmanager.go:509` | hardcoded `''` | same (fixes memory/sqlite inconsistency — Gate-6) |
-| 8 | Delete (non-tx) | `plugins/memory/entity_store.go:526-537, 593-613` | `uc.UserID` | attributed=origin/uc; executor=uc |
-| 9 | Delete (non-tx) | `plugins/sqlite/entity_store.go:642-653` | `uc.UserID` | same |
+| 5 | Scheduled-fire anchor | `fire_scheduled.go:321/325` | no user set | attributed=`ArmedBy` (§5.3); executor=system |
+| 6 | Delete stage (tx) | `plugins/memory/entity_store.go:479+`, `plugins/sqlite/entity_store.go:587+` | buffers only `Deletes[id]=true` — **no principal** | capture `{attributed, executor}` per delete at **stage time** via new SPI `TransactionState.DeleteAttribution` (§11) |
+| 7 | Delete flush (tx-commit) | `plugins/memory/txmanager.go:397-412`, `plugins/sqlite/txmanager.go:509` | memory=committer's `uc.UserID`; sqlite=hardcoded `''` | stamp from `DeleteAttribution` (fallback: stamp rule at commit ctx) |
+| 8 | Delete (non-tx) | `plugins/memory/entity_store.go:526-537, 593-613`; `plugins/sqlite/entity_store.go:642-653` | `uc.UserID` | stamp rule above |
+| 9 | Delete (postgres, tx + non-tx) | `plugins/postgres/entity_store.go:266-337` | tombstone re-marshals the **prior** doc → records the **previous writer** | stamp rule at delete time into the tombstone doc |
+| 10 | DeleteAll | all three backends' `DeleteAll` paths | as rows 6-9 per backend | same treatment as the corresponding delete path |
+
+Today's tombstone user is a **three-way backend divergence** (memory=committer, sqlite=`''`,
+postgres=previous writer) — a live bug this change fixes with one uniform rule (Gate-6). Two
+delete-specific notes:
+
+- **Executor = the stager, not the committer.** Saves persist the meta stamped at stage time; a
+  joined service-account delete committed later by the user-owned request must likewise record
+  executor=service. That is why row 6 captures principals at stage time — `Deletes` is
+  `map[string]bool` and cannot carry them. `DeleteAttribution` is **additive** to
+  `TransactionState` (the `Deletes` shape is untouched — no break for the out-of-tree backend);
+  absent entries fall back to the commit-ctx stamp rule.
+- **sqlite tombstones are inserted with `meta = NULL`** (`entity_store.go:649-653`) — there is no
+  blob for the executor to ride in. New tombstones write a meta blob (the column exists; legacy
+  NULL rows read as legacy). Still no schema migration.
 
 The stamp must read origin from the **tx-carrying** ctx (joined/txCtx), not the pre-`Begin` outer
 ctx (`service.go:1404` reads the outer ctx today — a naive swap to `GetTransaction(ctx).Origin`
-there yields nil → executor fallback). Delete buffering mirrors how saves buffer
-`entity.Meta.ChangeUser` at `memory/txmanager.go:382` / `sqlite/txmanager.go:467`.
+there yields nil → executor fallback).
 
 ## 8. Cross-node
 
@@ -300,14 +363,18 @@ Cross-node scheduled fire reads `ArmedBy` from the durable task and seeds the am
 
 - **Origin is trustworthy only on the joined platform-tx path** — it comes from server-side
   `TransactionState`, not worker input. This is the anti-forgery property.
-- **Non-joined writes** (a callback that carries no `transactionId`) set origin = **executor** — the
-  ordinary direct-write case (`attributed == executor`). They are **not** elevated to a claimed
-  user. All cascade callbacks must carry the txID so they take the joined path.
+- **Non-joined writes** (a callback that carries no `transactionId` — including CBD-detached
+  callbacks, §4.3) set origin = **executor** — the ordinary direct-write case (`attributed ==
+  executor`). They are **not** elevated to a claimed user. Joined-mode cascade callbacks carry the
+  txID and take the joined path.
 - **No request field / callout payload can set the attributed principal** (negative test). Verified:
-  no code path reads origin from a request body or callout result.
-- **D3 (precedence):** a caller presenting its own user identity (an app still doing OBO) is used
-  as-is for the executor; origin inheritance engages for the service-account-caller case within a
-  user-originated tx. Additive / backward compatible.
+  no code path reads origin from a request body or callout result; the peer scheduled-fire RPC's
+  task body is likewise never trusted for origin — the seed comes from the durable row with an
+  in-tx verify-or-abort (§5.3).
+- **D3 (precedence):** attributed = executor whenever the executor is a **user** (an app doing OBO
+  keeps recording its presented user, even inside another principal's tx); origin inheritance
+  engages only for **service/system** executors within a platform tx (§7 stamp rule). Additive /
+  backward compatible.
 - **AuthContext trust basis (pinned):** a compute node may rely on `authclaims` **only if it
   authenticates the cyoda server endpoint** (TLS server verification); otherwise forged claims are
   possible. Application authorization built on `authclaims` must fail **closed** when claims are
@@ -356,13 +423,21 @@ Additive SPI changes (all in `cyoda-go-spi`):
 1. `Principal` + `PrincipalKind` (new).
 2. `UserContext.Kind`.
 3. `TransactionState.Origin` (immutable-after-Begin; update the immutable-set godoc `txcontext.go:53`).
-4. `ScheduledTask.ArmedBy` (durable JSON).
-5. `EntityMeta` executor id+kind + attributed kind; `EntityVersion.Executor` + `AttributedKind`.
-6. `WithAmbientOrigin` / `GetAmbientOrigin` ctx helpers (new export) — consumed by plugin `Begin`,
-   set by the seed sites (§4.3 detached dispatch, §5.3 scheduled fire).
+4. `TransactionState.DeleteAttribution` (per-delete `{attributed, executor}` captured at stage time,
+   §7 row 6 — additive; `Deletes` shape untouched).
+5. `ScheduledTask.ArmedBy` (durable JSON).
+6. `EntityMeta` executor id+kind + attributed kind; `EntityVersion.Executor` + `AttributedKind`.
+7. `WithAmbientOrigin` / `GetAmbientOrigin` ctx helpers + **`ResolveOrigin(ctx)`** (single shared
+   precedence implementation, §4.1) — consumed by plugin `Begin`; seeded only by the scheduled fire
+   (§5.3).
 
-Conformance: extend `spitest` suites (transaction origin capture/join propagation; scheduled-task
-`ArmedBy` round-trip; entity/audit executor round-trip). CHANGELOG `[Unreleased]` entry. Single
+Conformance: extend `spitest` suites — transaction origin capture/join propagation covering **all
+three `ResolveOrigin` precedence branches** (parent-tx, ambient, UserContext); delete-attribution
+stage/flush round-trip; scheduled-task `ArmedBy` round-trip; entity/audit executor round-trip. New
+suites construct `UserContext` with `Kind` set **explicitly** (the existing `spitest` harness builds
+it without Kind — fine under the tolerance rule, but kind round-trip assertions must not rely on
+zero values). These suites are what carry the contract to the out-of-tree commercial backend.
+CHANGELOG `[Unreleased]` entry. Single
 version tag cut at milestone end (coordinated-release: SPI tag first, then cyoda-go pin bump in one
 commit, per `MAINTAINING.md`). Pseudo-version pin across all four `go.mod` files until then.
 
@@ -409,18 +484,20 @@ Layers: **U**=unit, **E**=running-backend e2e (per backend), **P**=cross-backend
 | `authtype` emits `service`/`system` (regression for the wire change) | ✅ | | | ✅ |
 | Cascade: service processor writes 2nd entity in user tx → attributed=user, executor=service; node presents **no** user token | | ✅ | ✅ | ✅ |
 | Two-hop cascade X→Y→Z (segmented) → attributed=user | | ✅ | ✅ | |
-| CBD (`startNewTx=false`) cascade → attributed=user (detached-dispatch origin seed) | | ✅ | ✅ | |
+| CBD (`startNewTx=false`) detached callback → attributed=**executor** (documented boundary, §4.3) | | ✅ | ✅ | |
+| D3: OBO user-token callback joined into another user's tx keeps recording **its own** user | | ✅ | ✅ | |
 | Cross-node (proxied-join) cascade → same attribution as same-node | | ✅ (multinode) | | ✅ |
-| Delete cascade: processor deletes 2nd entity → attributed=user, executor=service | | ✅ | ✅ | |
-| Delete tombstone attribution consistent memory vs sqlite (Gate-6 fix) | ✅ | | ✅ | |
+| Delete cascade: processor deletes 2nd entity → attributed=user, executor=**service (stager, not committer)** | | ✅ | ✅ | |
+| Delete tombstone attribution uniform across memory/sqlite/postgres (fixes 3-way divergence, Gate-6) | ✅ | | ✅ | |
 | Scheduled: armed by user → fires as that user; executor=system; never `"scheduler"` | ✅ | ✅ | ✅ | |
 | Scheduled: armed by system/service action → fires as that account | ✅ | ✅ | | |
 | Scheduled anchor write stamped (not carrying prior version's user) | | ✅ | ✅ | |
-| Scheduled cross-node fire reads durable `ArmedBy` | | ✅ (multinode) | | |
+| Scheduled cross-node fire reads durable `ArmedBy` (never the RPC body) | | ✅ (multinode) | | |
+| Scheduled fire aborts on `ArmedBy` mismatch (concurrent re-arm between point-read and fire tx) | ✅ | ✅ | | |
 | Criteria/function callout write inherits attribution identically | | ✅ | ✅ | ✅ |
 | Negative: no request field / callout payload can set attributed principal | ✅ | ✅ | | ✅ |
 | Read API: both `user` and `executedBy` visible; legacy rows omit new fields | ✅ | ✅ | | |
-| SPI conformance: tx origin, ScheduledTask.ArmedBy, EntityVersion.Executor round-trip | ✅ (spitest) | | | |
+| SPI conformance: ResolveOrigin precedence branches, DeleteAttribution, ScheduledTask.ArmedBy, EntityVersion.Executor round-trips | ✅ (spitest) | | | |
 | `authctx` SDK helper: fail-closed on empty claims & system origin | ✅ | | | |
 
 Concurrency race tests (goroutine-storm) — if any — are isolated single-backend e2e, not in the
