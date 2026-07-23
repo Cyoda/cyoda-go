@@ -672,6 +672,40 @@ type ClusterLaunchResult struct {
 	CyodaCmds []*exec.Cmd
 	// ComputeCmd is the single compute-test-client subprocess.
 	ComputeCmd *exec.Cmd
+	// NodeLogs holds one live capture of each node's combined stdout+stderr,
+	// in the same order as BaseURLs. Each node's output is tee'd to os.Stderr
+	// (unchanged diagnostics) AND into its SyncBuffer here, so a test can read
+	// a node's logs as data — e.g. to positively assert that a scheduled task
+	// fired on a specific peer (the peer-RPC fire path emits a distinctive
+	// log line), which is otherwise invisible at the data plane. Never assert
+	// on token/secret material read from here (Gate 3).
+	NodeLogs []*SyncBuffer
+}
+
+// SyncBuffer is a goroutine-safe in-memory log sink. os/exec copies a
+// subprocess's stdout and stderr on separate goroutines, so the sink both
+// receive concurrently; every access takes the mutex. It is unbounded — the
+// cluster fixture is short-lived (one test binary) so the accumulated volume
+// is bounded by the run itself.
+type SyncBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+// Write appends p to the buffer. Always returns len(p), nil (io.Writer never
+// short-writes to memory), so a tee'd os.Stderr write is never starved.
+func (b *SyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+// String returns a snapshot copy of everything captured so far.
+func (b *SyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
 }
 
 // defaultCyodaReadinessTimeout is the default time to wait for each
@@ -791,6 +825,9 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	// retry loop below succeeds. It stays populated for the returned cleanup.
 	var nodes []*clusterNode
 	var httpPorts, grpcPorts []int
+	// nodeLogBufs holds the per-node combined-output captures (index i ==
+	// node-i), published alongside nodes on the successful launch attempt.
+	var nodeLogBufs []*SyncBuffer
 
 	// Retry the whole node-launch phase (fresh ports each time) to self-heal
 	// a transient FreePort() TOCTOU port collision — see clusterLaunchAttempts.
@@ -833,6 +870,7 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		hmacSecret := hex.EncodeToString(hmacBytes)
 
 		attemptNodes := make([]*clusterNode, n)
+		attemptLogBufs := make([]*SyncBuffer, n)
 
 		// Concurrent start, then concurrent health-wait. Cluster registration
 		// blocks until at least one seed is reachable; if we started node 0 in
@@ -864,8 +902,14 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			)
 			cmd.Env = env
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			cmd.Stdout = os.Stderr
-			cmd.Stderr = os.Stderr
+			// Tee each node's output to os.Stderr (unchanged diagnostics) AND
+			// into a per-node capture buffer so tests can read node logs as
+			// data — the only harness-honest way to positively assert that a
+			// scheduled task fired on a specific peer node (see ClusterLaunchResult.NodeLogs).
+			logBuf := &SyncBuffer{}
+			attemptLogBufs[i] = logBuf
+			cmd.Stdout = io.MultiWriter(os.Stderr, logBuf)
+			cmd.Stderr = io.MultiWriter(os.Stderr, logBuf)
 			if e := cmd.Start(); e != nil {
 				killNodes(attemptNodes)
 				return fmt.Errorf("failed to start cyoda-go node %d: %w", i, e)
@@ -918,6 +962,7 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		nodes = attemptNodes
 		httpPorts = hPorts
 		grpcPorts = gPorts
+		nodeLogBufs = attemptLogBufs
 		return nil
 	})
 	if launchErr != nil {
@@ -1005,5 +1050,6 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		GRPCEndpoint: grpcEndpoint,
 		CyodaCmds:    cyodaCmds,
 		ComputeCmd:   computeCmd,
+		NodeLogs:     nodeLogBufs,
 	}, cleanup, nil
 }

@@ -1307,6 +1307,16 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 	return resp, nil
 }
 
+// SetLogLevel issues POST /api/admin/log-level to change the target node's
+// runtime log level (e.g. "debug", "info"). Requires a ROLE_ADMIN token.
+// Used by cross-node scenarios that need a peer node to emit its (Debug-level)
+// scheduled-fire log lines so a test can positively assert peer execution.
+func (c *Client) SetLogLevel(t *testing.T, level string) error {
+	t.Helper()
+	_, err := c.doJSON(t, http.MethodPost, "/api/admin/log-level", map[string]string{"level": level}, nil)
+	return err
+}
+
 // DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version},
 // removing all entities in that (name, version) namespace for the
 // calling tenant. Returns nil on 2xx; the response body's delete-stats
