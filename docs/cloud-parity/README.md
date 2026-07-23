@@ -28,3 +28,4 @@ Cloud needs to adopt.
 | `criterion-stoppage-reason.md` | Criteria `reason` field: 400-response delivery + durable audit `data.reason` on automated/skip paths |
 | `scheduled-transitions.md` | Scheduled-transition runtime: arm/cancel atomicity, one-shot criterion, grace-band expiry, explicit-fire reject, audit events, settled-interval reset |
 | `tx-aware-search.md` | In-transaction `Search` is RYW-correct pushdown (no full-model fallback); `trackingRead` opt-in read-set recording; tx-owner co-location requirement |
+| `authcontext-attribution.md` | AuthContext `authtype`/`authid`/`authclaims` contract (`service_account` retired → `service`); attributed/executor pair on change history; attribution semantics for cascade/scheduled/CBD-detached follow-on actions |
