@@ -30,8 +30,11 @@ func TestSystemUserContext_HasTenant(t *testing.T) {
 	if uc == nil {
 		t.Fatal("SystemUserContext must attach a UserContext")
 	}
-	if uc.UserID != "scheduler" {
-		t.Errorf("UserID = %q, want %q", uc.UserID, "scheduler")
+	if uc.UserID != "system" {
+		t.Errorf("UserID = %q, want %q", uc.UserID, "system")
+	}
+	if uc.Kind != spi.PrincipalSystem {
+		t.Errorf("Kind = %q, want %q", uc.Kind, spi.PrincipalSystem)
 	}
 	if uc.Tenant.ID != "tenant-x" {
 		t.Errorf("Tenant.ID = %q, want %q", uc.Tenant.ID, "tenant-x")
