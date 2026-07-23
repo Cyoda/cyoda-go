@@ -331,7 +331,8 @@ func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 // path GetVersionHistory reads EntityVersion.User from — distinct from
 // AttributedKind/Executor, which are sourced from the meta BLOB and already
 // covered by TestSaveAndDelete_ExecutorRoundTrip. Regression test for
-// saveDirectly having hardcoded user_id to '' instead of cp.Meta.ChangeUser.
+// saveDirectly having hardcoded user_id to the empty string instead of
+// cp.Meta.ChangeUser.
 func TestSave_NonTx_StampsUserIDColumn(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "caller", spi.PrincipalUser)
