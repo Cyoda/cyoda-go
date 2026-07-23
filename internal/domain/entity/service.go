@@ -110,11 +110,13 @@ type DeleteAllResult struct {
 
 // EntityChangeEntry holds a single entry in version history.
 type EntityChangeEntry struct {
-	ChangeType    string
-	TimeOfChange  string
-	User          string
-	TransactionID string
-	HasEntity     bool
+	ChangeType     string
+	TimeOfChange   string
+	User           string
+	TransactionID  string
+	HasEntity      bool
+	AttributedKind string
+	Executor       spi.Principal
 }
 
 // PaginationParams holds pagination parameters.
@@ -761,10 +763,12 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	result := make([]EntityChangeEntry, 0, len(versions))
 	for _, v := range versions {
 		entry := EntityChangeEntry{
-			ChangeType:   v.ChangeType,
-			TimeOfChange: v.Timestamp.UTC().Format(time.RFC3339Nano),
-			User:         v.User,
-			HasEntity:    v.Entity != nil,
+			ChangeType:     v.ChangeType,
+			TimeOfChange:   v.Timestamp.UTC().Format(time.RFC3339Nano),
+			User:           v.User,
+			HasEntity:      v.Entity != nil,
+			AttributedKind: string(v.AttributedKind),
+			Executor:       v.Executor,
 		}
 		if v.Entity != nil {
 			entry.TransactionID = v.Entity.Meta.TransactionID

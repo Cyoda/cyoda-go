@@ -604,6 +604,12 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 		if e.HasEntity {
 			entry["transactionId"] = e.TransactionID
 		}
+		if e.AttributedKind != "" {
+			entry["attributedKind"] = e.AttributedKind
+		}
+		if e.Executor.ID != "" {
+			entry["executedBy"] = map[string]any{"id": e.Executor.ID, "kind": string(e.Executor.Kind)}
+		}
 		result = append(result, entry)
 	}
 

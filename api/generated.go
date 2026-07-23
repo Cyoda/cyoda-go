@@ -1874,13 +1874,25 @@ type EntityChangeAuditEventDtoChangeType string
 // EntityChangeAuditEventDtoSeverity Severity level of the event
 type EntityChangeAuditEventDtoSeverity string
 
-// EntityChangeMeta defines model for EntityChangeMeta.
+// EntityChangeMeta One entry in an entity's change history. `user` is the attributed
+// actor and is always present. `attributedKind` and `executedBy` are
+// present only when attribution was recorded for the change; absent on
+// legacy rows. Typed-but-open: known fields are enumerated, the object
+// is not sealed.
 type EntityChangeMeta struct {
-	ChangeType         EntityChangeMetaChangeType `json:"changeType"`
-	FieldsChangedCount *int32                     `json:"fieldsChangedCount,omitempty"`
-	TimeOfChange       time.Time                  `json:"timeOfChange"`
-	TransactionId      *openapi_types.UUID        `json:"transactionId,omitempty"`
-	User               string                     `json:"user"`
+	// AttributedKind Kind of the attributed `user` above (e.g. "user", "service", "system"). Absent on legacy rows.
+	AttributedKind *string                    `json:"attributedKind,omitempty"`
+	ChangeType     EntityChangeMetaChangeType `json:"changeType"`
+
+	// ExecutedBy The actual caller that performed the change, independent of attribution. Absent on legacy rows.
+	ExecutedBy *struct {
+		Id   *string `json:"id,omitempty"`
+		Kind *string `json:"kind,omitempty"`
+	} `json:"executedBy,omitempty"`
+	FieldsChangedCount *int32              `json:"fieldsChangedCount,omitempty"`
+	TimeOfChange       time.Time           `json:"timeOfChange"`
+	TransactionId      *openapi_types.UUID `json:"transactionId,omitempty"`
+	User               string              `json:"user"`
 }
 
 // EntityChangeMetaChangeType defines model for EntityChangeMeta.ChangeType.

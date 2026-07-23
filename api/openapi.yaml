@@ -10512,6 +10512,12 @@ components:
         - success
     EntityChangeMeta:
       type: object
+      description: |
+        One entry in an entity's change history. `user` is the attributed
+        actor and is always present. `attributedKind` and `executedBy` are
+        present only when attribution was recorded for the change; absent on
+        legacy rows. Typed-but-open: known fields are enumerated, the object
+        is not sealed.
       properties:
         transactionId:
           type: string
@@ -10521,6 +10527,17 @@ components:
           format: date-time
         user:
           type: string
+        attributedKind:
+          type: string
+          description: Kind of the attributed `user` above (e.g. "user", "service", "system"). Absent on legacy rows.
+        executedBy:
+          type: object
+          description: The actual caller that performed the change, independent of attribution. Absent on legacy rows.
+          properties:
+            id:
+              type: string
+            kind:
+              type: string
         changeType:
           type: string
           enum:
