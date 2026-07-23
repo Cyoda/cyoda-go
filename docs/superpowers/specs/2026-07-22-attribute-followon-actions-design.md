@@ -77,8 +77,9 @@ constructor sets it explicitly).
 | Scheduler system principal | `internal/scheduler/executor.go` `SystemUserContext` (~29-36) | `system` |
 
 **Kind must be branched BEFORE `buildUserContext` collapses `user_roles`/`scopes` into one `Roles`
-slice** (`validator.go:118-123`). The presence of the `user_roles` vs `scopes` claim is the signal;
-after collapse it is lost.
+slice** (`validator.go:118-123`). The signal is **claim-key presence** — `_, ok :=
+claims["user_roles"]` — **not** the len-based collapse (`if len(roles)==0 { roles = scopes }`): an
+OBO user token with an *empty* `user_roles` array must classify as `user`, not `service`.
 
 Kind is **not** equivalent to today's `ROLE_M2M` sniff: a client-credentials token *without*
 `ROLE_M2M` was `user`, now `service`; a user token *with* `ROLE_M2M` was `service_account`, now
@@ -93,6 +94,16 @@ Kind is **not** equivalent to today's `ROLE_M2M` sniff: a client-credentials tok
 The `ROLE_M2M` **stream-join gate** (`internal/grpc/streaming.go:53-60`) stays role-based — it is
 authorization, out of scope, unchanged. `CheckAccess` (`internal/contract/iam.go:16`) stays dead
 (no production callers); not touched.
+
+**Cross-node `Kind` forwarding (required).** `AttachAuthContext` runs on the node that performs the
+callout (`dispatch.go:113`), which for a peer-dispatched processor/criteria/function is the **target
+node** (`internal/cluster/dispatch/handler.go:69`). The dispatch wire request
+(`internal/cluster/dispatch/cluster_dispatcher.go:318-371`) forwards only `UserID` + `Roles`, and
+`buildContext` (`internal/cluster/dispatch/handler.go:134-145`) rebuilds `UserContext` without
+`Kind`. Without change, every **cross-node** callout would emit `authtype = ""` — corrupting the
+contract this issue pins, on the primary (multi-node) deployment. **Add `Kind` to
+`DispatchCalloutRequest` and to `buildContext`**, forwarded and reconstructed. G-layer test asserts
+correct `authtype` on a cross-node callout.
 
 ## 4. Cascade attribution — origin on the transaction (Join-based)
 
@@ -121,7 +132,13 @@ txState.Origin = *origin
 
 Add `Origin Principal` to `spi.TransactionState` (`cyoda-go-spi/txcontext.go:85-96`), in the
 **immutable-after-Begin** set alongside `ID`, `TenantID`, `SnapshotTime` — set once, read lock-free,
-no `OpMu` participation.
+no `OpMu` participation. **Update the immutable-set godoc at `cyoda-go-spi/txcontext.go:53`** (and
+the concurrency contract) to list `Origin`, or reviewers will flag the new field.
+
+`ambientOrigin(ctx)` reads a **new SPI-exported** ctx value (§11 item 6): the plugin `Begin`
+implementations are separate Go modules importing only `cyoda-go-spi`, so the ambient-origin
+key/getter/setter must live in the SPI (`WithAmbientOrigin` / `GetAmbientOrigin`), set by the seed
+sites (§4.3, §5.3) and read inside each plugin `Begin`.
 
 ### 4.2 Per-plugin capture & Join re-population
 
@@ -156,7 +173,10 @@ so Z still attributes to the original user. Combined with §4.3 this closes both
 Add `ArmedBy Principal` to `spi.ScheduledTask` (`cyoda-go-spi/types.go:293-322`), **JSON-serialized
 and durable** — cross-node fire reads the task from the store on a peer node that has no
 request context. Legacy tasks armed pre-upgrade deserialize with zero-value `ArmedBy`; the fire path
-treats a zero `ArmedBy` as the system principal (never the fake `"scheduler"`).
+treats a zero `ArmedBy` as the system principal (never the fake `"scheduler"`). Legacy-vs-new
+detection relies on this **zero-value check on read**, never on field absence: `omitempty` does not
+omit a zero struct, so `ArmedBy` may serialize as `{"id":"","kind":""}` — which round-trips to zero
+and is handled identically.
 
 ### 5.2 Capture at arm time
 
@@ -168,15 +188,21 @@ origin the triggering write attributes to (from `GetTransaction(ctx).Origin`, fa
 
 ### 5.3 Fire
 
-`internal/scheduler/executor.go` `Execute`: replace the synthetic `UserID="scheduler"`
-`SystemUserContext` with:
+Two changes:
 
 - **executor** = a real `kind=system` platform principal (stable id, e.g. the app system principal
   id — configurable, defaulting to the platform system account; never the string `"scheduler"`).
-- **ambient origin** = `task.ArmedBy`, seeded into `sysCtx` before `FireScheduledTransition`.
+  Replace the synthetic `UserID="scheduler"` `SystemUserContext` (`internal/scheduler/executor.go`).
+- **ambient origin** = `task.ArmedBy`, seeded via `spi.WithAmbientOrigin` **inside
+  `FireScheduledTransition`** (`internal/domain/workflow/fire_scheduled.go:53,75`) — its documented
+  single engine door — **not** in `executor.go`. There are two doors into the engine and only one
+  goes through `Execute`: the **cross-node peer fire** calls `FireScheduledTransition` directly
+  (`internal/cluster/scheduler_rpc.go:271-273`), bypassing `Execute`. Seeding at the engine door
+  covers both local and peer fire in one place, and it already holds `task.ArmedBy` before its own
+  `Begin` (`fire_scheduled.go:75`).
 
-The fired transition's root `Begin` then stamps `Origin = ArmedBy` (§4.1 ambient branch), so the
-anchor write and any cascade off it attribute to the arming principal, executed by system.
+The fire's root `Begin` then stamps `Origin = ArmedBy` (§4.1 ambient branch), so the anchor write and
+any cascade off it attribute to the arming principal, executed by system.
 
 ### 5.4 The scheduled-fire anchor write is a separate stamp site
 
@@ -198,6 +224,14 @@ executor = system. Added to the stamp-site inventory (§7).
   existing serialized meta blob** in every plugin (postgres `_meta` in `doc` JSONB, sqlite `meta`
   BLOB, memory in-struct) → **no schema migration**. (sqlite reads `User` from the `user_id` column;
   executor stays in the blob and is read from there.)
+- **Per-plugin serialization is not automatic** — no plugin does `json.Marshal(spi.EntityMeta)`; each
+  owns a private meta DTO with hand-written marshal/unmarshal in **both** directions. Postgres alone
+  (`plugins/postgres/entity_doc.go`): `entityMeta` struct (13-30), `marshalEntityDoc` (35-52),
+  `unmarshalEntityDoc` (116-131), **and** `unmarshalEntityVersion` (154-161). sqlite (`entityMetaDB`
+  + read-supplement `entity_store.go:39-53,1002-1012`) and memory (`entityVersion` + every copy site)
+  are analogous. `unmarshalEntityVersion` must populate `EntityVersion.Executor` **independently of
+  `Entity`** (nil for DELETED versions). This is a 3-backend × (DTO + marshal + unmarshal) change;
+  the plan must enumerate every site so no backend is silently missed.
 
 ### 6.2 Read API
 
@@ -255,10 +289,12 @@ proxied join reaches the owner's per-tx origin via the existing proxy
 (`internal/grpc/txroute_interceptor.go:132-151` → `txjoin.JoinFromToken` → `txMgr.Join`), so the
 stamp executes on the owner node with origin in hand.
 
-`internal/cluster/dispatch/cluster_dispatcher.go` (~329, 349, 367) currently forwards `uc.UserID`
-to the remote node; reconcile so the forwarded identity is the **executor**, and origin travels on
-the owner's transaction (not via the forwarded identity). Cross-node scheduled fire reads `ArmedBy`
-from the durable task (§5.1).
+`internal/cluster/dispatch/cluster_dispatcher.go` (~329, 349, 367) currently forwards `uc.UserID` +
+`Roles` to the remote node; reconcile so the forwarded identity is the **executor**, and origin
+travels on the owner's transaction (not via the forwarded identity). The forwarded request must also
+carry the executor **`Kind`** (§3.3) — otherwise the target node's callout emits `authtype = ""`.
+Cross-node scheduled fire reads `ArmedBy` from the durable task and seeds the ambient origin inside
+`FireScheduledTransition` (§5.3), which the peer path (`scheduler_rpc.go:271`) reaches directly.
 
 ## 9. Security & trust
 
@@ -295,6 +331,8 @@ covers `user`), so CI stays green while consumers break. Mitigations:
 - Update `cmd/cyoda/help/content/grpc.md:359` (names `service_account`).
 - Add test coverage for the `service` and `system` branches (the M2M/service branch is currently
   untested).
+- `internal/scheduler/executor_test.go:33-34` (`TestSystemUserContext_HasTenant`) asserts
+  `UserID == "scheduler"` — update it for the new system-principal identity (§5.3).
 - Document in release notes as a compute-node-facing contract change.
 
 ### 10.2 SDK helper (`authctx`)
@@ -317,9 +355,11 @@ Additive SPI changes (all in `cyoda-go-spi`):
 
 1. `Principal` + `PrincipalKind` (new).
 2. `UserContext.Kind`.
-3. `TransactionState.Origin` (immutable-after-Begin).
+3. `TransactionState.Origin` (immutable-after-Begin; update the immutable-set godoc `txcontext.go:53`).
 4. `ScheduledTask.ArmedBy` (durable JSON).
 5. `EntityMeta` executor id+kind + attributed kind; `EntityVersion.Executor` + `AttributedKind`.
+6. `WithAmbientOrigin` / `GetAmbientOrigin` ctx helpers (new export) — consumed by plugin `Begin`,
+   set by the seed sites (§4.3 detached dispatch, §5.3 scheduled fire).
 
 Conformance: extend `spitest` suites (transaction origin capture/join propagation; scheduled-task
 `ArmedBy` round-trip; entity/audit executor round-trip). CHANGELOG `[Unreleased]` entry. Single
