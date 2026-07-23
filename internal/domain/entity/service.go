@@ -275,6 +275,12 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
 	now := time.Now()
 
+	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
+	// the pre-Begin outer ctx — origin inheritance for a service/system
+	// executor is only visible once the joined/owned TransactionState is on
+	// ctx (see spi.AttributionFor).
+	attributed, executor := spi.AttributionFor(txCtx)
+
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:                      entityID.String(),
@@ -286,7 +292,9 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 			TransactionID:           txID,
 			TransitionForLatestSave: "",
 			ChangeType:              "CREATED",
-			ChangeUser:              uc.UserID,
+			ChangeUser:              attributed.ID,
+			ChangeUserKind:          attributed.Kind,
+			ChangeExecutor:          executor,
 		},
 		Data: bodyBytes,
 	}
@@ -1176,6 +1184,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	currentCtx, currentTxID := txCtx, txID
 
 	for i, item := range parsed {
+		// Computed on currentCtx (the current segment's tx-carrying
+		// context) rather than the pre-Begin outer ctx — for a segmenting
+		// cascade currentCtx advances to FinalCtx between items, and only
+		// the tx actually backing this item's save can carry the Origin an
+		// inherited service/system executor needs (see spi.AttributionFor).
+		attributed, executor := spi.AttributionFor(currentCtx)
+
 		entity := &spi.Entity{
 			Meta: spi.EntityMeta{
 				ID:                      entityIDs[i],
@@ -1187,7 +1202,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 				TransactionID:           currentTxID,
 				TransitionForLatestSave: "",
 				ChangeType:              "CREATED",
-				ChangeUser:              uc.UserID,
+				ChangeUser:              attributed.ID,
+				ChangeUserKind:          attributed.Kind,
+				ChangeExecutor:          executor,
 			},
 			Data: item.payloadBytes,
 		}
@@ -1401,11 +1418,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 
 	now := time.Now()
 
-	uc := spi.GetUserContext(ctx)
-	changeUser := ""
-	if uc != nil {
-		changeUser = uc.UserID
-	}
+	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
+	// the pre-Begin outer ctx — see the CreateEntity site above for why.
+	attributed, executor := spi.AttributionFor(txCtx)
 
 	updated := &spi.Entity{
 		Meta: spi.EntityMeta{
@@ -1418,7 +1433,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			LastModifiedDate:        now,
 			TransactionID:           txID,
 			ChangeType:              "UPDATED",
-			ChangeUser:              changeUser,
+			ChangeUser:              attributed.ID,
+			ChangeUserKind:          attributed.Kind,
+			ChangeExecutor:          executor,
 			TransitionForLatestSave: input.Transition,
 		},
 		Data: bodyBytes,
@@ -1687,11 +1704,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	}
 
 	now := time.Now()
-	uc := spi.GetUserContext(ctx)
-	changeUser := ""
-	if uc != nil {
-		changeUser = uc.UserID
-	}
 
 	entityIDs := make([]string, 0, len(parsed))
 	failed := make([]UpdateCollectionItemFailure, 0)
@@ -1741,6 +1753,10 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
+		// Computed on currentCtx (the current segment's tx-carrying
+		// context) — see CreateEntityCollection's identical reasoning above.
+		attributed, executor := spi.AttributionFor(currentCtx)
+
 		updated := &spi.Entity{
 			Meta: spi.EntityMeta{
 				ID:               existing.Meta.ID,
@@ -1752,7 +1768,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				LastModifiedDate: now,
 				TransactionID:    currentTxID,
 				ChangeType:       "UPDATED",
-				ChangeUser:       changeUser,
+				ChangeUser:       attributed.ID,
+				ChangeUserKind:   attributed.Kind,
+				ChangeExecutor:   executor,
 			},
 			Data: item.bodyBytes,
 		}
