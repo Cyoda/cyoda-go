@@ -25,7 +25,7 @@ The two *representations* (`predicate.Condition` richer than `spi.Filter`) are j
 
 ## 2. Goals / non-goals
 
-**Goals.** One Go leaf-comparison kernel in the SPI, called by both Go evaluators; the two SQL planners mirror it, guarded by a new cross-backend leaf-op × stored-type parity matrix; one canonical, logical, backend-consistent query semantics; operator-class-vs-field-type validation folded in (best-effort where schema is known); SPI coordinated release; Cloud-parity reconciliation.
+**Goals.** One Go leaf-comparison kernel in the SPI, called by both Go evaluators; the two SQL planners mirror it, guarded by a new cross-backend leaf-op × stored-type parity matrix; one canonical, logical, backend-consistent query semantics; operator-class-vs-field-type validation folded in (strict against the authoritative model, fail-closed); SPI coordinated release; Cloud-parity reconciliation.
 
 **Non-goals (kept out, with rationale).**
 - **Big-number exactness.** All paths canonicalize numerics through IEEE-754 `float64` (`NumericFloat`, `cyoda_try_float8`, SQLite `REAL`). Values beyond 2⁵³ in `BigInteger`/`BigDecimal`/`Unbounded*` compare imprecisely — but **identically on all four paths**, so it is a consistent, documented limitation, not a convergence bug. Exactness (`json.Number`/`big`) is a separate concern.
@@ -46,14 +46,14 @@ A stored JSON leaf has exactly one of: **number** (gjson `.Value()` → `float64
 Any comparison whose stored value and operand are of **different** JSON types is a **non-match**, uniformly:
 - `eq` → false; `ne` → true (negative-op vacuous truth); `gt/lt/gte/lte/between` → false (excluded); string ops → false; `ieq` → false, `ine` → true.
 
-Rationale: it is the only rule that is both logically defensible ("no coercion") and faithfully mirrorable in SQL (`jsonb_typeof(x)='number' AND …` numeric branch; else string branch; type mismatch → the branch simply doesn't fire). This **replaces** today's lexical cross-type coincidence — an observable behavior change on memory/criteria too (see §12).
+Rationale: it is the only rule that is both logically defensible ("no coercion") and faithfully mirrorable in SQL (`jsonb_typeof(x)='number' AND …` numeric branch; else string branch; type mismatch → the branch simply doesn't fire). This **replaces** today's lexical cross-type coincidence — an observable behavior change on memory/criteria too (see §13). Strict validation (§5) rejects a type-mismatched operand at the boundary, so at evaluation this rule is **defense-in-depth** (paths that skip validation) and the guarantee that all four backends agree.
 
 ### 3.3 Per-op canonical semantics
 
 | Op(s) | Canonical meaning |
 |---|---|
 | `eq` / `ne` | same-type only. number↔number numeric equality; string↔string byte-equal; bool↔bool equal. Cross-type per §3.2. |
-| `gt/lt/gte/lte` | same-type only. number↔number numeric order; string↔string lexical (`strings.Compare` on the raw string values); bool → ordering is not defined (validation rejects on known bool fields; on permissive fields cross-type/eq-type ordering of bools → non-match). Cross-type per §3.2. |
+| `gt/lt/gte/lte` | same-type only. number↔number numeric order; string↔string lexical (`strings.Compare` on the raw string values); bool → ordering undefined (validation rejects it on bool fields; defense-in-depth eval → non-match). Cross-type per §3.2. |
 | `between` | numeric iff stored **and both bounds** are numbers; else string iff stored **and both bounds** are strings (lexical); else non-match. Malformed arity (<2 bounds) → validation 400 (already enforced) / fail-closed in eval. |
 | `contains/starts_with/ends_with` | substring on the string value (`strings.Contains/HasPrefix/HasSuffix`; byte/rune agree on valid UTF-8). Non-string stored value → non-match (cross-type). |
 | `like` | **rune-based glob, case-sensitive**: `%`=any run of characters, `_`=one character, `\` escapes. Escape grammar: `\` MUST be followed by `%`, `_`, or `\`; any other `\x` or a trailing `\` is a **malformed pattern → 400 `INVALID_CONDITION`** at validation. Non-string stored value → non-match. |
@@ -97,35 +97,37 @@ Operator-class-vs-field-type validation extends `validateSimpleConditionType` (`
 - **ordering:** `GREATER_THAN/LESS_THAN/GREATER_OR_EQUAL/LESS_OR_EQUAL/BETWEEN`.
 - **string:** `CONTAINS/STARTS_WITH/ENDS_WITH/LIKE/MATCHES_PATTERN` + negatives + case-insensitive `ICONTAINS/ISTARTS_WITH/IENDS_WITH` + their negatives.
 
-### 5.2 Matrix (field inferred type → allowed op classes)
+### 5.2 Matrix (field model type → allowed op classes)
 | Field type | equality | ordering | string |
 |---|---|---|---|
 | string | ✓ | ✓ (lexical) | ✓ |
 | number | ✓ | ✓ (numeric) | ✗ → 400 |
 | boolean | ✓ | ✗ → 400 | ✗ → 400 |
 | temporal (meta only) | ✓ | ✓ | ✗ (already #423) |
-| unknown-path / no-type / polymorphic (>1 type) / nil-model | permissive (accept) | permissive | permissive |
 
-### 5.3 Why this validation is best-effort, and where it runs
+Beyond operator class, the **operand value type** must be assignable to the field's model type (numeric widening honored via `IsAssignableTo`); a non-assignable operand → `400 CONDITION_TYPE_MISMATCH`. This now includes e.g. a **numeric operand on a string field** — under §3.2 it can never match, so it is rejected, not silently empty. Unknown data-field paths → `400 INVALID_FIELD_PATH`. `IS_NULL`/`NOT_NULL` are valid on every field. There is no permissive row: see §5.3.
 
-To reject `CONTAINS 5` on a numeric field, the validator must know the field's type. cyoda-go has **no user-declared schema**: it *infers* each field's type by observing entities as they are written — `model.FieldsMap()` records, per JSON path, the set of `DataType`s seen so far (`FieldDescriptor.Types`). Two facts follow from inference:
+### 5.3 Validation is strict, authoritative, and fail-closed
 
-- A field's type is known only **after** entities carrying it have been ingested. Before that (an "untrained" model) the type is unknown → the query is **accepted**.
-- A field seen as **more than one** type (sometimes number, sometimes string — "polymorphic") cannot be called definitively numeric → **accepted**. So the matrix fires only on **monomorphic** number/boolean fields; no valid query is ever falsely rejected.
+The entity model is the **authoritative** definition of every leaf field and its type. Data cannot diverge from it: a write that would make a field a second type is rejected at ingest (`schema.ErrPolymorphicSlot`), as are unknown paths and shape violations. So at query time a field's type is **definite** — there is no "maybe it's also a string" and no "not seen yet, so accept". *How* the schema is populated (by discovery today) is irrelevant; what the model **currently defines** is the contract, and any predicate that does not conform to it is rejected. There is **no best-effort/permissive mode**.
 
-Conditions enter through three surfaces, which differ in whether the trained model is on hand:
+Concretely, every data-field predicate is validated against the model, and rejected 4xx when:
+- the path is absent from the model → `400 INVALID_FIELD_PATH`;
+- the operator's class is invalid for the field's type (§5.2) → `400 CONDITION_TYPE_MISMATCH`;
+- the operand's type is not assignable to the field's type → `400 CONDITION_TYPE_MISMATCH`;
+- a LIKE pattern has a malformed escape (§3.3) → `400 INVALID_CONDITION`.
 
-| Surface | Data-field operator-class matrix | Lifecycle/temporal (meta) |
+**Fail closed, not open.** If the model/schema cannot be loaded (model-store unavailable, schema decode failure), the operation **fails** (5xx + ticket) rather than proceeding unvalidated. This is the correctness-over-availability rule (`.claude/rules/correctness-over-availability.md`) and it **replaces** the current fail-open "log and proceed so the matcher surfaces an error" branches in `validateConditionPaths` and `validateConditionTypes`/`loadModelNode`. The legitimate multi-node schema-propagation refresh (one bounded `RefreshAndGet` when a path looks absent, for a peer's freshly-extended schema) is **kept** — that is eventual-consistency handling, not permissiveness; after the refresh a still-unknown path is rejected.
+
+Enforced **uniformly** at every surface that admits a predicate — each reaches the model via its `ModelStore`:
+
+| Surface | Data-field matrix + value-type | Lifecycle/temporal (meta) |
 |---|---|---|
-| `/search` (HTTP + gRPC) | **full** — model loaded via `loadModelNode`; both transports funnel through `SearchService.validateConditionTypes` | full (already #423) |
-| grouped-statistics | **newly enabled** — today passes `ValidateConditionValueTypes(nil, …)`; change to thread the model in (it is available here) | full (already, model-independent) |
-| workflow-criterion import | **best-effort** — runs only if the model is already trained at import time; permissive on an untrained model | full (already, model-independent) |
+| `/search` (HTTP + gRPC) | full — single `SearchService.validateConditionTypes` boundary | full (already #423) |
+| grouped-statistics | **newly enabled** — thread the model in (today passes `ValidateConditionValueTypes(nil, …)`) | full (already) |
+| workflow-criterion import | **newly enabled** — load the model (the workflow handler already holds a `ModelStore`) and validate data-field predicates, not only lifecycle | full (already) |
 
-**"Best-effort" is a property of inferred schema, not a gap to fix.** When the validator cannot tell a field's type, the query proceeds — and that is harmless, because *evaluation* is still consistent: a string op against a number simply returns no matches, identically on every backend (§3.2). Validation is an early, clearer error when the type is known; the canonical semantics is what guarantees consistency.
-
-Two Gate-6 clean-ups ride along:
-- **`ArrayCondition`** currently bypasses value-type validation (`walkConditionTypes` returns nil for it) — add element value-type checking.
-- **LIKE escape-grammar** validation (§3.3) → `INVALID_CONDITION`, at every boundary a LIKE operand can arrive (search + criteria import).
+Gate-6 clean-ups riding along: `ArrayCondition` value-type validation (currently skipped — `walkConditionTypes` returns nil for it); and the fail-open branches above (a correctness-over-availability fix in its own right).
 
 ### 5.4 Help-topic hygiene (Gate 4)
 Broaden `errors/CONDITION_TYPE_MISMATCH.md` DESCRIPTION to cover operator-class mismatch (not only value-type), and correct the over-promising "both /search and grouped-statistics enforce" line to reflect §5.3.
@@ -159,8 +161,10 @@ All 4xx carry full domain detail + error code; no new codes.
 | `POST /search` (+ gRPC) | operand value-type mismatch (existing #423) | 400 | `CONDITION_TYPE_MISMATCH` |
 | `POST /search` (+ gRPC) | unknown meta field / bad path (existing) | 400 | `INVALID_FIELD_PATH` |
 | `POST /search` (+ gRPC) | malformed BETWEEN arity (existing) | 400 | `INVALID_CONDITION` |
-| grouped-statistics endpoints | same matrix as /search (newly model-aware) | 400 | `CONDITION_TYPE_MISMATCH` / `INVALID_CONDITION` |
-| workflow import | lifecycle/temporal invalid (existing) + LIKE grammar | 400 (import reject) | `INVALID_CONDITION` / `CONDITION_TYPE_MISMATCH` |
+| `POST /search` (+ gRPC) | numeric operand on string field (now rejected, was accepted) | 400 | `CONDITION_TYPE_MISMATCH` |
+| grouped-statistics endpoints | same matrix as /search (newly model-aware) | 400 | `CONDITION_TYPE_MISMATCH` / `INVALID_CONDITION` / `INVALID_FIELD_PATH` |
+| workflow import | lifecycle/temporal (existing) + **data-field** operator-class/value-type + LIKE grammar (newly model-aware) | 400 (import reject) | `INVALID_CONDITION` / `CONDITION_TYPE_MISMATCH` / `INVALID_FIELD_PATH` |
+| `POST /search` / grouped-stats | model/schema unavailable or undecodable (now **fails closed**, was proceed) | 5xx + ticket | generic (5xx) |
 | all above | valid condition, no matches (incl. cross-type non-match) | 200 | — (empty result) |
 
 ## 8. Coverage matrix (scenario × layer)
@@ -187,16 +191,18 @@ Layers: **U** = SPI `EvalLeaf` unit test; **E** = running-backend e2e (`internal
 | array-wildcard `[*]` with NOT_CONTAINS over mixed array (ANY vs ALL) | ✓ | ✓ | — | — |
 | validation: string-op on numeric field → 400 | — | ✓ | ✓ | ✓ |
 | validation: any/ordering op on boolean field → 400 | — | ✓ | ✓ | ✓ |
+| validation: numeric operand on string field → 400 (now rejected) | — | ✓ | ✓ | ✓ |
+| validation: unknown data-field path → 400 INVALID_FIELD_PATH | — | ✓ | ✓ | — |
 | validation: grouped-stats now model-aware → 400 | — | ✓ | ✓ | — |
-| validation: permissive (polymorphic/unknown) accepts | ✓ | ✓ | ✓ | — |
-| workflow-import: string-op on trained numeric field rejected; lifecycle rejects | — | ✓ | — | — |
+| validation: model/schema unavailable → fails closed (5xx), not proceed | — | ✓ | — | — |
+| workflow-import: data-field op-class/value-type + lifecycle rejected | — | ✓ | — | — |
 
 Concurrency: none in parity (per rule) — leaf semantics are deterministic.
 
 ## 9. Test harness
 
 - **SPI `EvalLeaf` unit table** (`cyoda-go-spi/filter_match_test.go` + `_internal_test.go`): the kernel contract — every op × stored-type × operand-type, incl. cross-type, null/present-null, null-operand, negatives, LIKE grammar.
-- **`e2e/parity` leaf-op × stored-type matrix** (new scenario file, registered in `registry.go`): every op against number/string/bool/null/absent stored values × matching/mismatching operand types, asserted identical across memory+sqlite+postgres (and thereby the commercial backend). Seed corpora deliberately monomorphic where a validation reject is asserted. This matrix is the refactor's safety net: RED on each §1 divergence, GREEN as each §6/§4 change lands.
+- **`e2e/parity` leaf-op × stored-type matrix** (new scenario file, registered in `registry.go`): every op against number/string/bool/null/absent stored values × matching/mismatching operand types, asserted identical across memory+sqlite+postgres (and thereby the commercial backend). Seed each field with a definite model type so validation-reject scenarios trigger. This matrix is the refactor's safety net: RED on each §1 divergence, GREEN as each §6/§4 change lands.
 - **Reject parity** reuses the existing 400-asserting harness (`SearchBetweenArity400` pattern).
 - Migrate the string-operator scenarios that are currently **postgres-only** in `internal/e2e/search_test.go` into the cross-backend matrix.
 
@@ -218,10 +224,10 @@ The predicate/operator semantics are shared by **search** and **workflow criteri
   - **Type model** (§3.1) and the **cross-type = non-match** rule (§3.2), with a worked example (`number 30` vs string `"30"` → no match).
   - **LIKE grammar**: rune-based glob, case-sensitive, `%`/`_` wildcards, `\` escape (`\%`,`\_`,`\\` only; malformed → `INVALID_CONDITION`).
   - **Null / presence** handling (`is_null`/`not_null`, absent vs present-JSON-null, null-operand normalization, negative-op vacuous truth).
-  - **Operator-vs-field-type validity matrix** (§5.2) and its best-effort/inferred-schema nature (§5.3), with the `400` codes.
+  - **Operator-vs-field-type validity matrix** (§5.2) and its strict, fail-closed enforcement against the authoritative model (§5.3), with the `400` codes.
   - Register in the help topic tree/index; satisfy the help-completeness test.
 - **Update `cmd/cyoda/help/content/search.md`** — keep the CONDITION DSL *structure*; replace the now-incorrect per-operator descriptions (lines ~69–94: "numeric-aware EQUALS", bare "LIKE = % / _") with a pointer to `predicates`; add `predicates` to `see_also`.
-- **Update `cmd/cyoda/help/content/workflows.md`** — where criteria/conditions are described, cross-reference `predicates` (criteria use the same operators + validity rules; import-time validation is best-effort per §5.3).
+- **Update `cmd/cyoda/help/content/workflows.md`** — where criteria/conditions are described, cross-reference `predicates` (criteria use the same operators + validity rules; import-time validation is strict against the model per §5.3).
 - **`errors/CONDITION_TYPE_MISMATCH.md`** — broaden DESCRIPTION to include operator-class mismatch; correct the "both /search and grouped-statistics enforce" line per §5.3 (§5.4).
 - **README / OpenAPI**: verify the search request schema description doesn't restate stale operator semantics; point to the topic. Keep prose compact (state the rule, not every nuance — detail lives in this spec).
 
@@ -235,7 +241,8 @@ Help topics are consumed downstream by cyoda-docs (`cyoda help` topic actions), 
 4. **Cross-type comparisons stop coinciding** (memory/criteria too): number vs string operand → non-match, not lexical.
 5. **BETWEEN on strings stops erroring in workflow criteria** (was a float-parse error) → lexical.
 6. **`EQUALS null` / present JSON null** normalized (eq-null ≡ is_null; present JSON null is null).
-7. **New 400s:** string-op on numeric field, any-op on boolean field (best-effort where schema known), malformed LIKE escape.
+7. **New 400s (strict validation, §5):** string-op on numeric field; any/ordering op on boolean field; **numeric operand on a string field** (was accepted); malformed LIKE escape; unknown data-field path (now uniform across surfaces).
+8. **Validation is now strict + fail-closed** — data-field type validation runs at grouped-statistics and workflow-criterion import too (not just `/search`), and a **model/schema load failure now fails the request** (5xx) instead of proceeding unvalidated. Correctly rejects predicates that never matched anyway, but is an observable tightening for callers who relied on the old permissive/fail-open behavior.
 
 ## 14. Risks & mitigations
 
@@ -245,7 +252,8 @@ Help topics are consumed downstream by cyoda-docs (`cyoda help` topic actions), 
 | Type-aware SQL non-sargable → scans | Accepted per design philosophy; documented; expression-index a later optimisation. |
 | Commercial (Cassandra) backend red on the new matrix | File a tracking issue in `cyoda-go-cassandra` referencing §3/§5; it reconciles on its next dependency bump (Paul's call). |
 | SQLite bool `1/0` coercion vs kernel `bool` | `json_type`-gated bool branch; parity bool cells verify. |
-| Enforcement asymmetry misread as a gap | Documented as inferred-schema best-effort (§5.3); evaluation stays consistent regardless. |
+| Strict validation rejects queries that used to be accepted (e.g. numeric operand on string field; unknown path at a surface that used to skip) | These predicates never matched under the canonical semantics anyway (§3.2). Called out in §13; a `400` is clearer than a silent empty result. |
+| Fail-closed on schema-load failure reduces availability | Mandated by correctness-over-availability; the multi-node refresh handles legitimate schema-propagation lag, so only genuine store/decode failures fail — which should fail. |
 | Big-number float64 imprecision | Consistent on all paths; documented non-goal. |
 
 ## 15. Out of scope / follow-ups
