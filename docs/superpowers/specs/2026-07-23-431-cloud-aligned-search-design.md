@@ -144,8 +144,9 @@ Support the Cloud search-reachable set (`docs/cyoda/entity-search.md` §5):
 - **range**: `BETWEEN` (exclusive), `BETWEEN_INCLUSIVE` (inclusive).
 - **binary**: `EQUALS/NOT_EQUAL/GREATER_THAN/GREATER_OR_EQUAL/LESS_THAN/LESS_OR_EQUAL`,
   `CONTAINS/STARTS_WITH/ENDS_WITH` + `NOT_*` + case-insensitive `I*`/`INOT_*`,
-  `IEQUALS/INOT_EQUAL`, `MATCHES_PATTERN`, `LIKE`. (`IS_CHANGED/IS_UNCHANGED` are
-  change-generation ops — out of scope here unless already supported; note status.)
+  `IEQUALS/INOT_EQUAL`, `MATCHES_PATTERN`, `LIKE`. **`IS_CHANGED/IS_UNCHANGED` are
+  dropped** — change-generation ops, not relevant to search here; cyoda-go does not
+  implement them and won't.
 
 Per-operator semantics (authoritative in the kernel), matching Cloud:
 - **equality/ordering**: same-type `compareTo`; **null never matches**; numbers
@@ -157,8 +158,9 @@ Per-operator semantics (authoritative in the kernel), matching Cloud:
   **whole-string anchored, case-sensitive** (Cloud `Like`). This *changes* cyoda-go's
   current LIKE (rune-regex, no escape) and SQL LIKE (wildcard-neutered) — align both
   to Cloud's grammar; malformed escape handling per Cloud.
-- **MATCHES_PATTERN**: Go RE2, whole-string anchored (Cloud uses `Pattern.matches`);
-  note RE2-vs-Java regex dialect differences as a documented, bounded divergence.
+- **MATCHES_PATTERN**: Go RE2, whole-string anchored (Cloud uses `Pattern.matches`).
+  RE2-vs-Java regex dialect differences are an **accepted bounded divergence**,
+  documented in `cyoda help` (the `predicates` topic) — not reconciled.
 - **BETWEEN** exclusive / **BETWEEN_INCLUSIVE** inclusive; precise numeric bounds
   (avoid Cloud's double-based BETWEEN quirk — do the principled precise thing).
 
@@ -270,7 +272,7 @@ Cloud-parity guard.
    result.
 5. Validation is parse-based: new 400 only when operand parses into no declared type
    (and arity); **no** operator-class rejections.
-6. `IS_CHANGED/IS_UNCHANGED` status clarified.
+6. `IS_CHANGED/IS_UNCHANGED` remain unimplemented (explicitly dropped).
 
 ## 14. Staging (delivery phases, each its own PR under redefined #431)
 1. **Kernel + type porting (SPI):** `parseStringOrNull` per type, numeric buckets,
@@ -286,8 +288,12 @@ Cloud-parity guard.
    property; optimize false positives.
 6. **Docs + cloud-parity + Cassandra issue + SPI tag.**
 
-## 15. Open items
-- Exact `IS_CHANGED/IS_UNCHANGED` disposition (support vs defer) — confirm.
-- Importer handling of Cloud models declaring `BYTE`/`SHORT`/`FLOAT` (widen-on-import
-  mapping) — confirm the mapping is lossless for search.
-- RE2 vs Java-regex dialect for `MATCHES_PATTERN` — accept bounded divergence + doc.
+## 15. Resolved decisions
+- **`IS_CHANGED/IS_UNCHANGED`: dropped** — not relevant to search; not implemented.
+- **`BYTE`/`SHORT`/`FLOAT`: moot.** cyoda-go builds schemas by **data discovery**
+  (the `importer` package imports *data*, not a foreign declared-type schema) and
+  its inference never produces these types; there is no path by which a Cloud model
+  declaring them enters cyoda-go. If a foreign-schema import is ever added, map them
+  to `INTEGER`/`DOUBLE` (search-lossless) at that point — not now.
+- **`MATCHES_PATTERN` regex dialect:** accept the bounded RE2-vs-Java divergence;
+  document it in the `predicates` help topic. Not reconciled.
