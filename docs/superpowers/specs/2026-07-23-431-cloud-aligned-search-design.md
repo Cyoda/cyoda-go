@@ -31,8 +31,17 @@ drifts from Cloud. **This effort aligns the semantics.** Storage is **not** chan
 - The shared temporal instant kernel (`spi.ParseTemporalMillis`/`CompareTemporal`, #423).
 - The `spi.FilterCoercion` seam (currently 1 bit) — the natural insertion point.
 
-The gap is purely that **none of this reaches the evaluator**. This effort carries
-declared types into evaluation.
+The gap is that **none of this reaches the evaluator**, and — critically — the
+precise type machinery lives in `internal/domain/model/schema`, which the **SPI
+module cannot import** (Go internal rule + separate module; the SPI only has
+`float64` numerics today for exactly this reason). So the kernel cannot "reuse" it
+in place: the **type-comparison core must first be relocated into the SPI**
+(**Phase 0**, §14) — `DataType` (catalog + parse-per-type), `Decimal`
+(+`Cmp`/`ParseDecimal`), the numeric classifiers, and `IsAssignableTo` — with
+`internal/domain/model/schema` keeping its model-tree/discovery/diff/apply logic and
+importing the moved core back from the SPI (the main module already depends on the
+SPI). This continues #423's trajectory (which moved `ParseTemporalMillis`/`NumericFloat`
+into the SPI). This effort then carries declared types into evaluation.
 
 ## 2. Governing principle
 
@@ -357,6 +366,14 @@ for evaluation must land **together with** the pushdown EXACT/SOUND-SUPERSET con
 while a residual query runs new kernel semantics, so the same query differs by
 pushability. So Phase 3 bundles the wire-up **and** the pushdown contract.
 
+0. **Relocate the type-comparison core to the SPI (foundational prerequisite):**
+   move `DataType` (catalog + parse-per-type), `Decimal` (+`Cmp`/`ParseDecimal`), the
+   numeric classifiers, and `IsAssignableTo` from `internal/domain/model/schema` into
+   `cyoda-go-spi`; leave the model-tree/discovery/diff/apply/walker in
+   `internal/domain/model/schema`, re-importing the moved core from the SPI (a thin
+   re-export alias keeps existing `schema.X` references compiling). Coordinated SPI
+   release (pseudo-pin). All existing tests green — pure relocation, no behaviour
+   change. Without this the kernel (SPI) cannot do precise, type-directed comparison.
 1. **Precision capture (prerequisite):** operand losslessly via `UseNumber`/raw token
    in `predicate/parse.go`; stored-value classification/compare from `gjson.Raw`.
    No behaviour change; unblocks precise compare.
