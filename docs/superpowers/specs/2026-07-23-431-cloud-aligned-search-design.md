@@ -56,59 +56,91 @@ Conceptually:
 EvalLeaf(op, operandString, declaredTypes []DataType, stored gjson.Result) -> (bool, error)
 ```
 
+The kernel is a **leaf comparator only.** Each caller keeps its own tree-walk and
+representation-specific logic — `internal/match`'s array-wildcard **ANY-match**
+(`matchArrayWildcard`), lifecycle routing, and `FunctionCondition`; `spi.MatchFilter`'s
+flat `spi.Filter` walk. Only the per-op leaf comparison is shared and deleted from
+both. (This convergence also fixes a **live bug**: `filter_translate.go`'s
+`mapOperator` has no `BETWEEN_INCLUSIVE` case and currently falls through to regex.)
+
 Algorithm (mirrors Cloud, collapsed for single-value storage):
-1. **Classify** the stored value into a `DataType` using the existing schema
-   classifier (`InferDataType`/`ClassifyInteger`/`ClassifyDecimal`), intersected
-   with `declaredTypes`. (A stored value whose type isn't in the declared set can
-   never match a declared-type branch → non-match, like Cloud's absent slot.)
-2. **Expand** the operand: for each declared type, `parseStringOrNull` (port of
-   Cloud's per-type parse) + numeric-bucket range/rounding + temporal-resolution
-   conversions → the set of `(type, typedValue, op')` sub-conditions. Reject 400 if
-   none parse; a numeric-but-unsatisfiable expansion is **void** (§3.4).
-3. **Select + compare**: evaluate the sub-condition(s) whose type equals the stored
-   value's classified type, **same-type**, with precise comparison (§3.3). The
-   Cloud "OR over slots" collapses to "the branch matching the stored value's type."
+1. **Expand** the operand once per query (at the point the model is available, §7):
+   for each declared type, `parseStringOrNull` (port of Cloud's per-type parse) +
+   numeric-bucket range/rounding + temporal-resolution conversions → the set of
+   `(type, typedValue, op')` sub-conditions. Reject 400 iff **none** parse. The
+   operand string must be captured **losslessly** (§3.5).
+2. **Classify** the stored leaf into a `DataType` from its **`gjson.Raw`** (not
+   `.Value()` — see §3.5), via the schema classifier.
+3. **Select by assignability + compare**: pick the sub-condition(s) whose type `U`
+   the stored value's classified type `T` is **assignable to** (`schema.IsAssignableTo`,
+   coercing `T`→`U` for the compare) — *not* exact `T==U`. This mirrors Cloud
+   coercing a value into its declared slot at ingest (`5` in a `[LONG]` field
+   matches). Compare **same-type**, precisely (§3.4). The Cloud "OR over slots"
+   collapses to "the assignable branch." If no sub-condition's type is assignable
+   from the stored type → **non-match** (Cloud's absent-slot).
 
-Both Go evaluators delegate to it — this is the original #431 convergence, now
-type-directed:
-- `internal/match` (workflow criteria, search `GetAll` fallback, grouped-stats
-  residual) keeps only its tree-walk over `predicate.Condition`.
-- `spi.MatchFilter` (memory search, residual post-filter, iterate, streaming-tally)
-  keeps only its tree-walk over `spi.Filter`.
-Delete the duplicated per-op comparison code in both.
+**Null / absent uniformity.** A missing or JSON-null leaf **never matches any
+binary op, including negatives** — `NOT_EQUAL`/`NOT_CONTAINS`/`INOT_*` are **not**
+`!positive`; they null-guard to non-match, exactly like their positive twins. (Cloud:
+"null never matches"; also CouchDB Mango, SQL, Postgres JSONB. Only MongoDB differs,
+and it is a documented footgun.) `IS_NULL` = leaf absent or JSON-null; `NOT_NULL` =
+present and non-null — handled directly, not via classify-then-branch.
 
-### 3.2 SQL pushdown = best-effort **sound** narrowing (not the authority)
-This mirrors Cloud (its Cassandra index narrows; `evaluateSimple` is authoritative).
+### 3.2 SQL pushdown = EXACT vs SOUND-SUPERSET (per-leaf contract)
+The kernel is authoritative; pushdown narrows. But "the kernel re-checks every
+candidate" is **not** true on today's fast path: when a filter is fully pushable,
+sqlite/postgres return SQL rows **verbatim** and apply `LIMIT/OFFSET` (and grouped-
+stats `GROUP BY`) in SQL, with no Go re-check. An over-selecting pushdown would then
+leak false positives *and* truncate pages wrong. So soundness is **correctness**-
+critical, not a free perf lever, and needs an explicit contract:
 
-- The **kernel re-checks every candidate** a backend returns; correctness lives
-  solely in the kernel, so **results never diverge across backends.**
-- Each backend's planner narrows **as tightly as it can efficiently express**
-  (best-effort, per-backend — type-directed WHERE via `jsonb_typeof`/`typeof`,
-  numeric/temporal helpers, prefix-LIKE ranges, etc.), subject to **one invariant:
-  soundness — the pushed predicate must be a *superset* of true matches** (may
-  over-select, must never drop a real match). A backend that cannot express a
-  branch tightly (e.g. sqlite has no bignum) simply narrows less; the kernel still
-  decides. No divergence, no sqlite-precision blocker.
-- Backends may be optimized independently over time to reduce false positives; that
-  is a pure performance lever with zero semantic risk.
+- Each pushed leaf is classified **EXACT** (the SQL predicate matches the kernel
+  bit-for-bit) or **SOUND-SUPERSET** (may over-select; kernel must re-check).
+- The **fast path** — skip the Go re-check, push `LIMIT/OFFSET`, push `GROUP BY`
+  aggregation — is permitted **only when every pushed leaf is EXACT.**
+- If **any** leaf is SOUND-SUPERSET (or non-pushable), the planner retains the
+  **full filter as residual**, the Go kernel re-checks every candidate, and
+  `LIMIT/OFFSET`/paging happens **in Go** (as the residual path already does). For
+  grouped-stats, a non-EXACT leaf **disqualifies GROUP-BY pushdown** → route to
+  `Iterate`+Welford where the kernel runs per row.
+- Within that contract each backend narrows **as tightly as it can** (best-effort:
+  `jsonb_typeof`/`typeof` gating, numeric/temporal helpers, prefix-LIKE ranges) —
+  reducing false positives is a pure perf lever. sqlite's lack of bignums just means
+  fewer EXACT leaves there; results never diverge because the kernel decides.
 
-This resolves the two problems that would otherwise sink a faithful port
-(cross-backend result divergence; sqlite precision).
+The memory backend already re-checks every candidate (`spi.MatchFilter` per row), so
+it is soundness-safe by construction — **but that means memory-only tests mask
+pushdown-soundness bugs; parity + a per-backend soundness property are required (§11).**
 
-### 3.3 Precise numerics
+### 3.3 (reserved — merged into 3.1/3.2)
+
+### 3.4 Precise numerics
 The kernel compares numbers with the schema layer's existing precise types
-(`big.Int` / `Decimal`), not `float64` — matching Cloud (lossless `BigDecimal`) and
-correct beyond 2⁵³. Enabled by 3.2 (kernel is Go-only; it can afford precision even
-where a backend's SQL cannot). `spi.NumericFloat`-based comparison is retired from
-the leaf path.
+(`big.Int` / `schema.Decimal`, which has exact cross-scale `Cmp` and `ParseDecimal`),
+not `float64` — matching Cloud and correct beyond 2⁵³. `spi.NumericFloat`-based
+comparison is retired from the leaf path. A **fast path** for the common
+monomorphic-numeric / monomorphic-string leaf avoids bignum work per row.
 
-### 3.4 Void vs reject (Cloud's trichotomy)
-- **Success** → the matching same-type branch decides.
-- **Void** (operand is a number but no declared numeric type can hold a matching
-  value — e.g. `EQUALS 12.5` against an `INTEGER`-only field) → the leaf is a void
-  predicate: in a tree-walk, **OR drops it, AND is annihilated** (Cloud's null-leaf
-  composition).
-- **Reject 400** → operand parses into no declared type.
+### 3.5 Precision capture (both ends — an asymmetry to respect)
+- **Operand (currently lossy — must fix):** `predicate/parse.go` decodes with plain
+  `json.Unmarshal`, so a JSON number operand becomes `float64` **before** the kernel
+  runs — a 20-digit int or `1e20` is already rounded. Fix at the source: decode the
+  operand with `UseNumber` (→ `json.Number`) or retain the raw token, and carry the
+  lossless string to the expansion. Do **not** re-stringify a `float64`.
+- **Stored value (recoverable):** classify/compare from `gjson.Result.Raw`
+  (the original JSON text) via `schema.ParseDecimal`, **not** `.Value()` (which is
+  `float64`, and which `InferDataType` would misclassify as `String`).
+
+### 3.6 Void
+"Void" (operand is a number but no declared numeric type can hold a matching value —
+e.g. `EQUALS 12.5` against an `INTEGER`-only field) is decided at **leaf
+construction** over the **full** declared-type expansion (Cloud's `EmptyResult`), and
+is observable **only under `NOT`**. cyoda-go's group walk supports **AND/OR only**
+(`matchGroup` errors on `NOT`; `NOT` is not in the wire contract). Under monotone
+AND/OR, void is observationally identical to **false**, so cyoda-go implements void as
+plain **non-match** now — no three-valued machinery. **If `NOT` is ever added**, void
+must become Cloud's construction-time whole-leaf form (OR drops it, AND annihilates);
+noted for that future. **Reject 400** remains: operand parses into no declared type.
 
 ## 4. Type system porting
 
@@ -134,8 +166,17 @@ the leaf path.
   `classifyType` never returns `OrderTemporal` for data fields). Reconcile with the
   existing meta-field instant path (`creationDate`/`lastUpdateTime`) so meta and
   data temporal share the subtype machinery. Retire the single-bit temporal
-  coercion in favour of the declared-type-driven path (keep the meta instant
-  behaviour as the `ZONED_DATE_TIME`/instant case).
+  coercion in favour of the declared-type-driven path.
+  - **Meta-temporal must accept coarse operands.** Cloud runs meta fields
+    (monomorphic `ZONED_DATE_TIME`) through the same expansion, so a coarse operand
+    **upscales** to the instant: `creationDate >= "2024-09-09"` (or `"2024"`) is
+    accepted and compared as an instant. Do the same — parse the meta-temporal
+    operand as **any** temporal subtype and upscale via the resolution graph;
+    do **not** restrict to strict offset-RFC3339 (that would 400 queries Cloud
+    accepts). This subsumes/relaxes the #423 offset-mandatory rule for meta fields.
+- **Numeric-bucket + temporal-resolution engine is its own phase** (§14) with the
+  §6/`entity-search.md` worked examples wired as the executable oracle — it is the
+  most substantial port, not a "same logic, adapt" footnote.
 
 ## 5. Operators
 
@@ -149,11 +190,15 @@ Support the Cloud search-reachable set (`docs/cyoda/entity-search.md` §5):
   implement them and won't.
 
 Per-operator semantics (authoritative in the kernel), matching Cloud:
-- **equality/ordering**: same-type `compareTo`; **null never matches**; numbers
-  compared precisely; UUID time-comparator for v1.
+- **equality/ordering**: same-type `compareTo`; **null/absent never matches**
+  (including negatives — §3.1); numbers compared precisely; UUID time-comparator for v1.
+- **negatives** (`NOT_EQUAL/NOT_CONTAINS/INOT_*`): null-guard to **non-match**, not
+  `!positive` (§3.1). Verify against the core-libs `NotEquals`/`NotContains` matcher
+  during implementation; note the behavior change in migration + cloud-parity.
 - **string ops** case-sensitive substring/prefix/suffix; `I*` case-fold both sides;
-  operate on the stored value's string form only when the stored value is textual
-  (same-type gate).
+  apply only when the stored value is textual (same-type gate) — a string op against
+  a non-textual stored value is a **non-match** (see §6 for the `CONTAINS`-on-numeric
+  caveat).
 - **LIKE**: `%`→`.*?`, `_`→`.`, all other regex metachars escaped, `\` escape,
   **whole-string anchored, case-sensitive** (Cloud `Like`). This *changes* cyoda-go's
   current LIKE (rune-regex, no escape) and SQL LIKE (wildcard-neutered) — align both
@@ -180,16 +225,32 @@ Align to Cloud: reject a leaf iff
 
 **No operator-vs-field-type validation** (Cloud has none; the earlier operator-class
 matrix is dropped). `CONTAINS 5` on a numeric field is accepted (parses as a number;
-simply won't match a numeric stored value under same-type string-op rules → empty,
-not an error). Reuse existing error codes; no new codes. Enforce at the search
-boundary (HTTP+gRPC) and workflow-criterion import, using the model (available at
-both). Keep the multi-node schema-refresh; unknown path after refresh → reject.
+under the same-type string-op gate it returns empty, not an error). *Caveat:* whether
+Cloud's core-libs `Contains` stringifies a numeric slot (making it match) is not
+determinable from OSS source — **verify against the `com.cyoda.core.conditions.Contains`
+matcher**; cyoda-go's principled choice is non-match, recorded in the cloud-parity doc.
+Reuse existing error codes; **no new codes.** Enforce at the search boundary
+(HTTP+gRPC) and workflow-criterion import, using the model (available at both). Keep
+the multi-node schema-refresh; unknown path after refresh → reject.
+
+**Note — this replaces the existing validation.** Today's `validateSimpleConditionType`
+(`IsAssignableTo`-based *value-type* checking) is removed in favour of the parse-based
+rule; some existing E2E error-table tests will change which requests return 400 (a
+migration cost — §13, and re-baseline the error-table coverage).
+
+**`searchInStrings` dual-slot is out of scope.** Cloud can optionally store a textual
+value in both its typed slot and the `strings` slot (`alsoSaveInStrings`/`searchInStrings`,
+both default **off**, and off on production paths). The single-classification collapse
+(§3.1) structurally cannot express matching a value under two type-branches, so this
+capability is **not** ported; record the scope-out in the cloud-parity doc.
 
 ## 7. Where expansion happens
 
 - **Search** has the model at the `SearchService` boundary → expand there
   (analogue of Cloud's `coerceConditionValueForReport`) so the pushed/residual
-  condition already carries typed sub-conditions; the kernel re-checks.
+  condition already carries typed sub-conditions; the kernel re-checks every
+  candidate unless all pushed leaves are EXACT (§3.2). Operand parsing happens
+  once here, not per row.
 - **Single-entity evaluation** (workflow criteria; residual per-entity) has the
   actual entity + model → the kernel classifies the stored value and evaluates the
   matching branch directly (the OR collapses to one branch); no pre-expansion
@@ -229,15 +290,18 @@ Layers: **U** = SPI kernel unit test; **E** = running-backend e2e (`internal/e2e
 | precise big-int/decimal compare beyond 2^53 | ✓ | ✓ | ✓ | — |
 | temporal subtype + resolution (`>=2024-09-09` on YEAR → `>2024`) | ✓ | ✓ | ✓ | — |
 | temporal imprecise EQUALS dropped | ✓ | ✓ | ✓ | — |
-| void leaf (`eq 12.5` on int field): OR drops, AND annihilates | ✓ | ✓ | — | — |
+| void leaf (`eq 12.5` on int field) → non-match under AND/OR | ✓ | ✓ | — | — |
+| **negative op on absent field → non-match** (`NOT_EQUAL`/`NOT_CONTAINS`/`INOT_*`) | ✓ | ✓ | ✓ | — |
+| stored-type reconciled by assignability (`5` matches `[LONG]` field) | ✓ | ✓ | ✓ | — |
+| precision at both ends: 20-digit operand + stored value, no float rounding | ✓ | ✓ | ✓ | — |
 | LIKE anchored escaped glob, case-sensitive | ✓ | ✓ | ✓ | — |
-| string ops case sensitivity + I-variants | ✓ | ✓ | ✓ | — |
-| BETWEEN exclusive / inclusive, precise bounds | ✓ | ✓ | ✓ | ✓ |
+| string ops case sensitivity + I-variants; string op on non-textual → non-match | ✓ | ✓ | ✓ | — |
+| BETWEEN exclusive / inclusive, precise bounds; `BETWEEN_INCLUSIVE` no longer regex | ✓ | ✓ | ✓ | ✓ |
 | IS_NULL/NOT_NULL absent vs present-null | ✓ | ✓ | ✓ | — |
-| pushdown soundness: SQL over-selects, kernel re-checks (per backend) | — | ✓ | ✓ | — |
-| validation: operand parses no type → 400 | — | ✓ | ✓ | ✓ |
+| **pushdown soundness**: EXACT fast-path vs SOUND-SUPERSET residual; over-select + kernel re-check; LIMIT/pagination correct under residual; grouped-stats GROUP-BY disqualified by non-EXACT leaf (per backend) | — | ✓ | ✓ | — |
+| validation: operand parses no type → 400; **error-table re-baselined** vs old value-type validation | — | ✓ | ✓ | ✓ |
 | validation: null operand / bad arity → 400 | — | ✓ | ✓ | ✓ |
-| meta temporal (`creationDate`) still chronological | ✓ | ✓ | ✓ | — |
+| meta temporal (`creationDate`) chronological **incl. coarse operand** (`>= "2024"`) | ✓ | ✓ | ✓ | — |
 
 Concurrency tests isolated (not parity). The parity matrix doubles as the
 Cloud-parity guard.
@@ -271,22 +335,42 @@ Cloud-parity guard.
 4. Data-field temporal lights up (subtypes + resolution); meta temporal unchanged in
    result.
 5. Validation is parse-based: new 400 only when operand parses into no declared type
-   (and arity); **no** operator-class rejections.
-6. `IS_CHANGED/IS_UNCHANGED` remain unimplemented (explicitly dropped).
+   (and arity); **no** operator-class rejections. This **replaces** the current
+   `IsAssignableTo` value-type validation, so some existing error-table tests change
+   which requests 400 (re-baseline them).
+6. **Negative operators on an absent/null field now return non-match** (were matched
+   via `!positive`) — aligns Cloud/CouchDB/SQL; MongoDB differs. Verify vs core-libs.
+7. `BETWEEN_INCLUSIVE` is fixed (was silently evaluated as a regex on `Searcher`
+   backends via the `mapOperator` fall-through).
+8. `IS_CHANGED/IS_UNCHANGED` remain unimplemented (explicitly dropped).
 
 ## 14. Staging (delivery phases, each its own PR under redefined #431)
-1. **Kernel + type porting (SPI):** `parseStringOrNull` per type, numeric buckets,
-   precise compare, void/reject, operator semantics; kernel unit tests. No behaviour
-   change until wired.
-2. **Wire `internal/match` + `spi.MatchFilter` to the kernel;** delete duplicated
-   comparison code; single-entity + residual paths aligned; e2e + parity.
-3. **Temporal subtypes (subsumes #137):** per-subtype parse + resolution graph; data
-   temporal lit up; meta reconciled.
-4. **Validation** alignment (parse-based; drop operator-class matrix); error table;
-   boundary + import.
-5. **Pushdown best-effort narrowing** per backend (sqlite/postgres), soundness
-   property; optimize false positives.
-6. **Docs + cloud-parity + Cassandra issue + SPI tag.**
+
+Ordering constraint from review: the phase that makes the kernel **authoritative**
+for evaluation must land **together with** the pushdown EXACT/SOUND-SUPERSET contract
+— otherwise, mid-release, a fully-pushable query runs old SQL semantics (no re-check)
+while a residual query runs new kernel semantics, so the same query differs by
+pushability. So Phase 3 bundles the wire-up **and** the pushdown contract.
+
+1. **Precision capture (prerequisite):** operand losslessly via `UseNumber`/raw token
+   in `predicate/parse.go`; stored-value classification/compare from `gjson.Raw`.
+   No behaviour change; unblocks precise compare.
+2. **Kernel + type porting (SPI):** `parseStringOrNull` per type, precise compare,
+   assignability reconciliation, null/negative uniformity, void, operator semantics;
+   kernel unit table (seeded from `entity-search.md` examples). Not yet wired.
+3. **Numeric-bucket + temporal-resolution engine (SPI):** the substantial port
+   (range/rounding/NOT_NULL/drop; six temporal subtypes + resolution graph; data
+   temporal lit up; meta coarse-operand upscale). Subsumes #137. Executable-oracle tests.
+4. **Wire both evaluators to the kernel + pushdown contract (together):** delete
+   duplicated comparison code; fix `BETWEEN_INCLUSIVE`; classify each pushed leaf
+   EXACT/SOUND-SUPERSET; fast-path (skip re-check / SQL LIMIT / GROUP-BY) only when
+   all-EXACT, else full residual + Go paging + GROUP-BY disqualification; per-backend
+   soundness property; e2e + parity. **This is the kernel-authoritative switch.**
+5. **Validation** alignment (parse-based; drop operator-class matrix); error table;
+   re-baseline error-table tests; boundary + import.
+6. **Pushdown tightening** per backend (reduce false positives: `jsonb_typeof`/`typeof`,
+   more EXACT leaves) — pure perf, guarded by the soundness property.
+7. **Docs + cloud-parity + Cassandra issue + SPI tag.**
 
 ## 15. Resolved decisions
 - **`IS_CHANGED/IS_UNCHANGED`: dropped** — not relevant to search; not implemented.
@@ -297,3 +381,14 @@ Cloud-parity guard.
   to `INTEGER`/`DOUBLE` (search-lossless) at that point — not now.
 - **`MATCHES_PATTERN` regex dialect:** accept the bounded RE2-vs-Java divergence;
   document it in the `predicates` help topic. Not reconciled.
+
+Review-driven (independent design review, 2 fresh-context lenses):
+- **Negative op on absent field → non-match** (aligns Cloud/CouchDB/SQL/Postgres;
+  MongoDB is the outlier). §3.1/§5/§13.
+- **Void → non-match now** (three-valued void deferred until `NOT` is supported). §3.6.
+- **Stored-type reconciliation by assignability**, not exact membership. §3.1.
+- **Pushdown EXACT vs SOUND-SUPERSET contract** — fast path only when all-EXACT; else
+  residual + Go paging; grouped-stats GROUP-BY disqualified by any non-EXACT leaf. §3.2.
+- **Lossless precision capture** at both ends (`UseNumber` operand, `gjson.Raw` stored). §3.5.
+- **`searchInStrings` dual-slot: out of scope** (default-off; collapse can't express it). §6.
+- **Meta-temporal accepts coarse operands** (upscale), not strict offset-RFC3339 only. §4.
