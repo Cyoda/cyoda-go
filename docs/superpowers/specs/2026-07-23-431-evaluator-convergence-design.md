@@ -1,6 +1,14 @@
 # #431 — Converge the predicate evaluators onto one leaf-comparison kernel + one query semantics
 
-**Status:** design agreed (Paul), independently reviewed (two fresh-context lenses), folded validation in.
+> **⚠️ SUPERSEDED (2026-07-23).** This spec assumed a *runtime cross-type-comparison*
+> model (cross-type = non-match, operator-class validation, strict fail-closed). That
+> paradigm is wrong: Cyoda Cloud — the reference cyoda-go must align to — uses
+> **type-directed, same-type-only** evaluation driven by the model's declared per-leaf
+> types, with **no** operator-class validation. #431 is redefined as *aligning cyoda-go
+> search with the Cloud model*. See `docs/cyoda/entity-search.md` (the Cloud reference)
+> and `2026-07-23-431-cloud-aligned-search-design.md` (the current design). Kept for history.
+
+**Status:** SUPERSEDED. (Originally: design agreed, independently reviewed, folded validation in.)
 **Milestone:** v0.8.3. **Base branch:** `release/v0.8.3`. **Worktree/branch:** `feat/431-evaluator-convergence`.
 **Seeded by:** #423 (temporal + numeric shared primitives) — this spec *extends* those, deletes nothing #423 built.
 
