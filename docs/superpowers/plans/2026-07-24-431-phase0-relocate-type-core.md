@@ -11,7 +11,8 @@
 ## Global Constraints
 
 - Go 1.26+. Use `log/slog` only; wrap errors with `fmt.Errorf("...: %w", err)`; `uuid.UUID` not `string`.
-- **Coordinated SPI release** (`MAINTAINING.md` §3): SPI commits FIRST, then one pin bump across all four `go.mod` manifests + `make repin-plugins`. Compose locally via `go.work` — the local SPI `use` line stays **uncommitted** (go.work is tracked in CI-safe form); **never `git add -A`** (it would commit the absolute-path `use` line and break CI). Real `cyoda-go-spi` tag is deferred to milestone-end; use a pseudo-version pin now.
+- **Coordinated SPI release** (`MAINTAINING.md`): SPI commits FIRST, then one pin bump across all four `go.mod` manifests + `make repin-plugins`. Compose locally via `go.work` — the local SPI `use` line stays **uncommitted** (go.work is tracked in CI-safe form); **never `git add -A`** (it would commit the absolute-path `use` line and break CI). Real `cyoda-go-spi` tag is deferred to milestone-end; use a pseudo-version pin now.
+- **SPI work lands on a feature branch, not `main`** (per Paul): SPI commits go on `feat/431-cloud-aligned-search` (branched from `main`); cyoda-go pseudo-pins to that branch's commit SHA (a pseudo-version resolves to a commit regardless of branch). **Do not push the SPI branch or merge it to `main`** without explicit sign-off — local `go.work` composition keeps tests green meanwhile.
 - No issue IDs (`#NNN`) in shipped artefacts (code, comments). Issue refs only in commits/PR bodies/spec docs.
 - Pure relocation — **no behaviour change**. Success = the full existing suite (root + every plugin submodule) stays green.
 - Local SPI checkout is at `/Users/paul/go-projects/cyoda-light/cyoda-go-spi`. cyoda-go worktree is the current directory.
@@ -40,10 +41,11 @@
 **Interfaces:**
 - Produces (now under package `spi`): `spi.DataType` (+ all const members `Integer`…`Null`), `spi.ParseDataType(string) (DataType, bool)`, `spi.Decimal` (+ `ParseDecimal(string) (Decimal, error)`, `(Decimal).Cmp`, `.Scale`, `.Precision`, `.SetScale`, `.Canonical`, `.IsInt128`, `.StripTrailingZeros`, …), `spi.IsNumeric(DataType) bool`, `spi.ClassifyInteger(*big.Int) DataType`, `spi.ClassifyDecimal(Decimal) DataType`, `spi.IsAssignableTo(dataT, schemaT DataType) bool`, `spi.CollapseNumeric(...)`.
 
-- [ ] **Step 1: Copy the three core files into the SPI repo, rewriting the package clause**
+- [ ] **Step 1: Branch the SPI off main, then copy the three core files in, rewriting the package clause**
 
 ```bash
 cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi
+git checkout main && git checkout -b feat/431-cloud-aligned-search   # SPI feature branch (do not push without sign-off)
 SRC=/Users/paul/go-projects/cyoda-light/cyoda-go/.claude/worktrees/feat+431-evaluator-convergence/internal/domain/model/schema
 for f in types decimal numeric; do
   # datatype.go is the new name for types.go; decimal/numeric keep their names
