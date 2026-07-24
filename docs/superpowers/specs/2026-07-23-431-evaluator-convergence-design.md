@@ -106,14 +106,26 @@ Operator-class-vs-field-type validation extends `validateSimpleConditionType` (`
 | temporal (meta only) | ✓ | ✓ | ✗ (already #423) |
 | unknown-path / no-type / polymorphic (>1 type) / nil-model | permissive (accept) | permissive | permissive |
 
-### 5.3 Enforcement surfaces & the best-effort nature
-`FieldDescriptor.Types` is **inferred from ingested data**, not declared. Consequences, stated honestly:
-- **`/search` (HTTP + gRPC):** full matrix (model loaded via `loadModelNode`). The single boundary `SearchService.validateConditionTypes` already funnels both transports.
-- **grouped-statistics:** today passes `ValidateConditionValueTypes(nil, …)`. **Change:** thread the model in (available at these endpoints) so the data-field matrix enforces there too. Lifecycle/temporal already enforced model-independently.
-- **workflow-criterion import:** lifecycle/temporal validation runs (model-independent, unchanged). Data-field operator-class runs **only if the model is trained** at import time; on an untrained model it is permissive. Documented as best-effort — not a gap to "fix", a property of inferred schema.
-- The matrix fires only on **monomorphic** number/boolean fields; a field ever seen as string is polymorphic → permissive (no false rejects). Parity reject tests must seed a single-type corpus (§9).
-- **Also close (Gate 6):** `ArrayCondition` currently bypasses value-type validation (`walkConditionTypes` returns nil) — add element value-type checking.
-- **LIKE escape-grammar** validation (§3.3) → `INVALID_CONDITION`, enforced at the same boundaries a LIKE operand can arrive (search + criteria import).
+### 5.3 Why this validation is best-effort, and where it runs
+
+To reject `CONTAINS 5` on a numeric field, the validator must know the field's type. cyoda-go has **no user-declared schema**: it *infers* each field's type by observing entities as they are written — `model.FieldsMap()` records, per JSON path, the set of `DataType`s seen so far (`FieldDescriptor.Types`). Two facts follow from inference:
+
+- A field's type is known only **after** entities carrying it have been ingested. Before that (an "untrained" model) the type is unknown → the query is **accepted**.
+- A field seen as **more than one** type (sometimes number, sometimes string — "polymorphic") cannot be called definitively numeric → **accepted**. So the matrix fires only on **monomorphic** number/boolean fields; no valid query is ever falsely rejected.
+
+Conditions enter through three surfaces, which differ in whether the trained model is on hand:
+
+| Surface | Data-field operator-class matrix | Lifecycle/temporal (meta) |
+|---|---|---|
+| `/search` (HTTP + gRPC) | **full** — model loaded via `loadModelNode`; both transports funnel through `SearchService.validateConditionTypes` | full (already #423) |
+| grouped-statistics | **newly enabled** — today passes `ValidateConditionValueTypes(nil, …)`; change to thread the model in (it is available here) | full (already, model-independent) |
+| workflow-criterion import | **best-effort** — runs only if the model is already trained at import time; permissive on an untrained model | full (already, model-independent) |
+
+**"Best-effort" is a property of inferred schema, not a gap to fix.** When the validator cannot tell a field's type, the query proceeds — and that is harmless, because *evaluation* is still consistent: a string op against a number simply returns no matches, identically on every backend (§3.2). Validation is an early, clearer error when the type is known; the canonical semantics is what guarantees consistency.
+
+Two Gate-6 clean-ups ride along:
+- **`ArrayCondition`** currently bypasses value-type validation (`walkConditionTypes` returns nil for it) — add element value-type checking.
+- **LIKE escape-grammar** validation (§3.3) → `INVALID_CONDITION`, at every boundary a LIKE operand can arrive (search + criteria import).
 
 ### 5.4 Help-topic hygiene (Gate 4)
 Broaden `errors/CONDITION_TYPE_MISMATCH.md` DESCRIPTION to cover operator-class mismatch (not only value-type), and correct the over-promising "both /search and grouped-statistics enforce" line to reflect §5.3.
@@ -196,7 +208,26 @@ Kernel + rune-based `matchFilterLike` land in `cyoda-go-spi` on the **v0.8.3 acc
 
 Operator-class validation and the cross-type-non-match semantics change the integration contract Cloud mirrors. Per Gate 7 (cyoda-go leads): add `docs/cloud-parity/431-leaf-comparison-semantics.md` recording the canonical §3 semantics + the §5 validity matrix, reconciled with Cloud's `InvalidTypesInClientConditionException` (which today targets value-type, not operator-class). Note the observable result change for tenants storing numbers-as-strings (Postgres stops coercing).
 
-## 12. Migration / behavior changes (observable)
+## 12. Documentation (Gate 4)
+
+The predicate/operator semantics are shared by **search** and **workflow criteria** (both evaluate `predicate.Condition`), so they are documented **once** in a new dedicated help topic and referenced from both.
+
+- **New topic `cmd/cyoda/help/content/predicates.md`** — the canonical reference:
+  - The five condition types (simple / lifecycle / group / array / function) at a glance (structure lives in `search`; this topic owns *semantics*).
+  - **Operator catalog** with the §3.3 canonical meaning of each op (not the current stale "numeric-aware EQUALS" wording).
+  - **Type model** (§3.1) and the **cross-type = non-match** rule (§3.2), with a worked example (`number 30` vs string `"30"` → no match).
+  - **LIKE grammar**: rune-based glob, case-sensitive, `%`/`_` wildcards, `\` escape (`\%`,`\_`,`\\` only; malformed → `INVALID_CONDITION`).
+  - **Null / presence** handling (`is_null`/`not_null`, absent vs present-JSON-null, null-operand normalization, negative-op vacuous truth).
+  - **Operator-vs-field-type validity matrix** (§5.2) and its best-effort/inferred-schema nature (§5.3), with the `400` codes.
+  - Register in the help topic tree/index; satisfy the help-completeness test.
+- **Update `cmd/cyoda/help/content/search.md`** — keep the CONDITION DSL *structure*; replace the now-incorrect per-operator descriptions (lines ~69–94: "numeric-aware EQUALS", bare "LIKE = % / _") with a pointer to `predicates`; add `predicates` to `see_also`.
+- **Update `cmd/cyoda/help/content/workflows.md`** — where criteria/conditions are described, cross-reference `predicates` (criteria use the same operators + validity rules; import-time validation is best-effort per §5.3).
+- **`errors/CONDITION_TYPE_MISMATCH.md`** — broaden DESCRIPTION to include operator-class mismatch; correct the "both /search and grouped-statistics enforce" line per §5.3 (§5.4).
+- **README / OpenAPI**: verify the search request schema description doesn't restate stale operator semantics; point to the topic. Keep prose compact (state the rule, not every nuance — detail lives in this spec).
+
+Help topics are consumed downstream by cyoda-docs (`cyoda help` topic actions), so `predicates` becomes the single upstream source for predicate semantics.
+
+## 13. Migration / behavior changes (observable)
 
 1. **LIKE now globs on SQL backends** (was literal). `%`/`_` in a LIKE operand become wildcards on sqlite/postgres.
 2. **SQLite LIKE becomes case-sensitive** (was ASCII-case-insensitive).
@@ -206,7 +237,7 @@ Operator-class validation and the cross-type-non-match semantics change the inte
 6. **`EQUALS null` / present JSON null** normalized (eq-null ≡ is_null; present JSON null is null).
 7. **New 400s:** string-op on numeric field, any-op on boolean field (best-effort where schema known), malformed LIKE escape.
 
-## 13. Risks & mitigations
+## 14. Risks & mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -217,7 +248,7 @@ Operator-class validation and the cross-type-non-match semantics change the inte
 | Enforcement asymmetry misread as a gap | Documented as inferred-schema best-effort (§5.3); evaluation stays consistent regardless. |
 | Big-number float64 imprecision | Consistent on all paths; documented non-goal. |
 
-## 14. Out of scope / follow-ups
+## 15. Out of scope / follow-ups
 - Big-number exact comparison (`json.Number`/`big`).
 - Expression indexes for type-aware predicates.
 - Data-field temporal typing (#137).
