@@ -101,8 +101,13 @@ critical, not a free perf lever, and needs an explicit contract:
 - If **any** leaf is SOUND-SUPERSET (or non-pushable), the planner retains the
   **full filter as residual**, the Go kernel re-checks every candidate, and
   `LIMIT/OFFSET`/paging happens **in Go** (as the residual path already does). For
-  grouped-stats, a non-EXACT leaf **disqualifies GROUP-BY pushdown** → route to
-  `Iterate`+Welford where the kernel runs per row.
+  grouped-stats, a non-EXACT leaf makes the planner **opt out of native SQL GROUP-BY
+  aggregation** (`ErrAggregationNotPushdownable`) and **fall back to the existing
+  `Iterate`+Welford streaming tally**, where the kernel filters per row before
+  tallying. **No query is rejected** — this is an execution-strategy switch to a
+  path that already exists (and already fires today for regex/PIT/non-pushable
+  filters); the only effect is per-row tally vs native aggregation. (Residual scans
+  remain subject to the pre-existing `SCAN_BUDGET_EXHAUSTED` guard — unchanged.)
 - Within that contract each backend narrows **as tightly as it can** (best-effort:
   `jsonb_typeof`/`typeof` gating, numeric/temporal helpers, prefix-LIKE ranges) —
   reducing false positives is a pure perf lever. sqlite's lack of bignums just means
