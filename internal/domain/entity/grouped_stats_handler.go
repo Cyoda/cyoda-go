@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // maxGroupedStatsBodySize bounds the request body for the grouped-stats
@@ -18,17 +19,21 @@ import (
 const maxGroupedStatsBodySize = 10 * 1024 * 1024
 
 // StoreResolver returns the EntityStore (as any, since capability
-// detection happens via type assertion inside the service) and the
-// resolved ModelRef for the given entity name and model version. The ok
-// return is false when the model is not found for the calling tenant —
-// the handler maps that to 404 MODEL_NOT_FOUND.
+// detection happens via type assertion inside the service), the resolved
+// ModelRef, and the model's declared field-type map for the given entity
+// name and model version. `fields` is used by the service to stamp declared
+// types onto the pushdown filter and the streaming residual evaluator, so
+// grouped-stats comparison is type-directed exactly like the search path; it
+// may be nil when the model has no schema bound. The ok return is false when
+// the model is not found for the calling tenant — the handler maps that to
+// 404 MODEL_NOT_FOUND.
 //
 // The handler holds a StoreResolver rather than (factory, modelStore)
 // directly so it can be unit-tested in isolation: tests inject a
 // closure that returns the desired fake store + model. Production
 // wiring at app construction supplies a closure that uses the existing
 // StoreFactory + ModelStore plumbing (see app/app.go).
-type StoreResolver func(r *http.Request, entityName, modelVersion string) (store any, model spi.ModelRef, ok bool, err error)
+type StoreResolver func(r *http.Request, entityName, modelVersion string) (store any, model spi.ModelRef, fields map[string]schema.FieldDescriptor, ok bool, err error)
 
 // GroupedStatsHandler is the HTTP handler for
 // POST /api/entity/stats/{entityName}/{modelVersion}/query.
@@ -128,7 +133,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 	entityName := r.PathValue("entityName")
 	modelVersion := r.PathValue("modelVersion")
-	store, model, ok, err := h.resolve(r, entityName, modelVersion)
+	store, model, fields, ok, err := h.resolve(r, entityName, modelVersion)
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to resolve store", err))
 		return
@@ -145,7 +150,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// the known domain/SPI sentinels into *common.AppError (transport-
 	// symmetric translation site) — forward it as-is; anything else is an
 	// unclassified storage/driver failure.
-	buckets, err := h.svc.QueryGroupedStats(r.Context(), store, model, validated)
+	buckets, err := h.svc.QueryGroupedStats(r.Context(), store, model, fields, validated)
 	if err != nil {
 		var appErr *common.AppError
 		if errors.As(err, &appErr) {

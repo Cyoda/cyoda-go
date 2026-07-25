@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
@@ -55,9 +56,10 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	ctx context.Context,
 	store any,
 	model spi.ModelRef,
+	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 ) ([]GroupedStatsBucket, error) {
-	buckets, err := s.queryGroupedStatsInner(ctx, store, model, req)
+	buckets, err := s.queryGroupedStatsInner(ctx, store, model, fields, req)
 	if err != nil {
 		return nil, classifyGroupedStatsError(err)
 	}
@@ -107,6 +109,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
 	store any,
 	model spi.ModelRef,
+	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 ) ([]GroupedStatsBucket, error) {
 	// Parse Condition once. A nil/empty Condition is the "match all" case
@@ -187,7 +190,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
-		f, terr := search.ConditionToFilter(parsedCond, nil)
+		f, terr := search.ConditionToFilter(parsedCond, fields)
 		if terr != nil {
 			pushable = false
 		} else {
@@ -217,7 +220,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 
 	// 2. Streaming fallback.
 	if it, ok := store.(spi.Iterable); ok {
-		return s.tallyStreaming(ctx, it, model, req, pushFilter, pushable, parsedCond)
+		return s.tallyStreaming(ctx, it, model, fields, req, pushFilter, pushable, parsedCond)
 	}
 
 	// 3. Neither capability.
@@ -230,11 +233,22 @@ func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
 	it spi.Iterable,
 	model spi.ModelRef,
+	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 	pushFilter spi.Filter,
 	pushable bool,
 	parsedCond predicate.Condition,
 ) ([]GroupedStatsBucket, error) {
+	// Declared-type resolver for the residual predicate evaluation below, so the
+	// streaming path types data leaves consistently with the pushdown filter
+	// (both stamped from `fields`). A nil `fields` yields a nil-returning
+	// resolver, which the evaluator tolerates.
+	fieldTypes := func(p string) []spi.DataType {
+		if fd, ok := fields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
 	// D15: if the filter wasn't pushable, pass zero-value to the iterator
 	// (match-all) and re-apply match.Match inside the loop. Otherwise
 	// trust the plugin to apply pushFilter itself.
@@ -256,7 +270,7 @@ func (s *GroupedStatsService) tallyStreaming(
 		// Residual predicate evaluation: only when the original condition
 		// was not pushable and we therefore need to filter per entity.
 		if !pushable && parsedCond != nil {
-			ok, mErr := match.Match(parsedCond, e.Data, e.Meta)
+			ok, mErr := match.Match(parsedCond, e.Data, e.Meta, fieldTypes)
 			if mErr != nil {
 				return nil, mErr
 			}

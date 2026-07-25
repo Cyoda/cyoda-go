@@ -21,10 +21,11 @@ func mustJSON(t *testing.T, v any) []byte {
 func TestMatchFilter_EqString(t *testing.T) {
 	data := mustJSON(t, map[string]any{"variantId": "v1"})
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "variantId",
-		Source: spi.SourceData,
-		Value:  "v1",
+		Op:       spi.FilterEq,
+		Path:     "variantId",
+		Source:   spi.SourceData,
+		Value:    "v1",
+		Declared: []spi.DataType{spi.String},
 	}
 	if !match.MatchFilter(f, data, spi.EntityMeta{}) {
 		t.Fatalf("expected MatchFilter to be true for matching data")
@@ -44,10 +45,11 @@ func TestMatchFilter_EmptyFilterMatchesAll(t *testing.T) {
 
 func TestMatchFilter_StateEq(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "state",
-		Source: spi.SourceMeta,
-		Value:  "available",
+		Op:       spi.FilterEq,
+		Path:     "state",
+		Source:   spi.SourceMeta,
+		Value:    "available",
+		Declared: []spi.DataType{spi.String},
 	}
 	if !match.MatchFilter(f, nil, spi.EntityMeta{State: "available"}) {
 		t.Fatalf("expected state match")
@@ -60,10 +62,11 @@ func TestMatchFilter_StateEq(t *testing.T) {
 func TestMatchFilter_Ne(t *testing.T) {
 	data := mustJSON(t, map[string]any{"variantId": "v1"})
 	f := spi.Filter{
-		Op:     spi.FilterNe,
-		Path:   "variantId",
-		Source: spi.SourceData,
-		Value:  "v2",
+		Op:       spi.FilterNe,
+		Path:     "variantId",
+		Source:   spi.SourceData,
+		Value:    "v2",
+		Declared: []spi.DataType{spi.String},
 	}
 	if !match.MatchFilter(f, data, spi.EntityMeta{}) {
 		t.Fatalf("expected Ne to be true for different value")
@@ -91,7 +94,7 @@ func TestMatchFilter_NumericOrdering(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := spi.Filter{Op: tc.op, Path: "qty", Source: spi.SourceData, Value: tc.val}
+			f := spi.Filter{Op: tc.op, Path: "qty", Source: spi.SourceData, Value: tc.val, Declared: []spi.DataType{spi.Integer}}
 			if got := match.MatchFilter(f, data, spi.EntityMeta{}); got != tc.want {
 				t.Fatalf("op=%s val=%v: got %v want %v", tc.op, tc.val, got, tc.want)
 			}
@@ -127,8 +130,8 @@ func TestMatchFilter_AndGroup(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
-			{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 1},
+			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 1, Declared: []spi.DataType{spi.Integer}},
 		},
 	}
 	if !match.MatchFilter(f, data, spi.EntityMeta{}) {
@@ -146,8 +149,8 @@ func TestMatchFilter_OrGroup(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterOr,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "vX"},
-			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
+			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "vX", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
 		},
 	}
 	if !match.MatchFilter(f, data, spi.EntityMeta{}) {
@@ -194,12 +197,12 @@ func TestMatchFilter_NestedAndOr(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
+			{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
 			{
 				Op: spi.FilterOr,
 				Children: []spi.Filter{
-					{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 100},
-					{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "red"},
+					{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 100, Declared: []spi.DataType{spi.Integer}},
+					{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "red", Declared: []spi.DataType{spi.String}},
 				},
 			},
 		},
@@ -231,7 +234,7 @@ func TestMatchFilter_MetaOtherFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := spi.Filter{Op: spi.FilterEq, Path: tc.path, Source: spi.SourceMeta, Value: tc.val}
+			f := spi.Filter{Op: spi.FilterEq, Path: tc.path, Source: spi.SourceMeta, Value: tc.val, Declared: []spi.DataType{spi.String}}
 			if got := match.MatchFilter(f, nil, meta); got != tc.want {
 				t.Fatalf("path=%s: got %v want %v", tc.path, got, tc.want)
 			}

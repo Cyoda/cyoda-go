@@ -122,6 +122,17 @@ func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 	return false
 }
 
+// LoadFieldsMap is the exported entry point that resolves a model's declared
+// field-type map (path → FieldDescriptor). In-process predicate evaluators
+// (the workflow engine's criterion matcher, the grouped-stats streaming
+// residual) use it to type their leaves consistently with the search path, so
+// the type-directed kernel compares temporal data fields temporally rather than
+// lexically. Returns (nil, nil) when the model has no schema bound; genuine
+// store errors propagate for the caller to surface (fail closed).
+func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+	return loadFieldsMap(ctx, store, ref)
+}
+
 // loadFieldsMap fetches and parses the cached schema for ref, returning
 // the path → FieldDescriptor view used by pre-execution validation.
 //

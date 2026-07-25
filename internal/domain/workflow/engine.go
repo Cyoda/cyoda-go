@@ -19,6 +19,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
@@ -823,8 +825,47 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		return matches, capReason(reason), err
 	}
 
-	matched, err := match.Match(cond, entity.Data, entity.Meta)
-	return matched, "", err
+	// Type-directed evaluation: the predicate kernel compares data leaves by
+	// their declared model types (a temporal data field compares temporally,
+	// consistent with the search path). The FieldsMap is loaded lazily — only
+	// when the criterion actually evaluates a data leaf — so pure
+	// lifecycle/state criteria never touch the model store. A load failure on a
+	// criterion that DOES reference data leaves is surfaced (fail closed): the
+	// model schema is a required input for correct typing, so we reject rather
+	// than silently mis-evaluate.
+	var loadErr error
+	var fields map[string]schema.FieldDescriptor
+	loaded := false
+	fieldTypes := func(p string) []spi.DataType {
+		if !loaded {
+			loaded = true
+			modelStore, err := e.factory.ModelStore(cc.ctx)
+			if err != nil {
+				loadErr = fmt.Errorf("criterion typing: model store unavailable: %w", err)
+				return nil
+			}
+			f, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef)
+			if err != nil {
+				loadErr = fmt.Errorf("criterion typing: failed to load model %s/%s: %w",
+					entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
+				return nil
+			}
+			fields = f
+		}
+		if fd, ok := fields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
+
+	matched, err := match.Match(cond, entity.Data, entity.Meta, fieldTypes)
+	if err != nil {
+		return false, "", err
+	}
+	if loadErr != nil {
+		return false, "", loadErr
+	}
+	return matched, "", nil
 }
 
 // resolveAuditTxID returns the transaction ID to use for state-machine audit

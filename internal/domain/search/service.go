@@ -243,9 +243,24 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to retrieve entities: %w", err)
 	}
 
+	// Declared-type resolver for the predicate evaluator: the type-directed
+	// kernel compares temporal data fields temporally (not lexically) only when
+	// the model supplies their declared subtype. Load the model's FieldsMap
+	// (best-effort, nil-tolerant) so this in-memory fallback path matches the
+	// pushdown's typing. A nil map yields a nil-returning resolver, which the
+	// evaluator tolerates (comparison leaves then non-match, as they cannot be
+	// typed).
+	fallbackFields, _ := loadFieldsMap(ctx, modelStore, modelRef)
+	fieldTypes := func(p string) []spi.DataType {
+		if fd, ok := fallbackFields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
+
 	var matches []*spi.Entity
 	for _, e := range entities {
-		ok, matchErr := match.Match(cond, e.Data, e.Meta)
+		ok, matchErr := match.Match(cond, e.Data, e.Meta, fieldTypes)
 		if matchErr != nil {
 			return nil, fmt.Errorf("predicate match failed: %w", matchErr)
 		}
