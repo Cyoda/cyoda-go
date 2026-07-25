@@ -117,6 +117,19 @@ func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 	return s
 }
 
+// structuralConditionErrCode classifies a ValidateCondition error for the
+// Search/SubmitAsync boundary: an object-operand shape violation
+// (ErrInvalidCondition, spec §6/§8) maps to INVALID_CONDITION; every other
+// structural failure (unknown operatorType, malformed BETWEEN arity) keeps
+// the existing BAD_REQUEST classification these two entry points have
+// always used.
+func structuralConditionErrCode(cErr error) string {
+	if errors.Is(cErr, ErrInvalidCondition) {
+		return common.ErrCodeInvalidCondition
+	}
+	return common.ErrCodeBadRequest
+}
+
 // Search performs a synchronous entity search, returning matching entities.
 //
 // When the plugin's EntityStore implements spi.Searcher, Search delegates to
@@ -151,7 +164,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// This is the single boundary every transport (HTTP, gRPC) funnels
 	// through; the HTTP handler no longer duplicates this check.
 	if cErr := ValidateCondition(cond); cErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+		return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
 	}
 
 	modelStore, err := s.factory.ModelStore(ctx)
@@ -313,7 +326,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// arity) — same single boundary as Search, so an async job is never
 	// created for a structurally-malformed condition regardless of transport.
 	if cErr := ValidateCondition(cond); cErr != nil {
-		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+		return "", common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
 	}
 
 	uc := spi.GetUserContext(ctx)

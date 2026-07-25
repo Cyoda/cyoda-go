@@ -28,11 +28,13 @@ import (
 // unknown paths are accepted (the condition may traverse a path not yet seen
 // in training data); a field with no declared types carries no constraint.
 //
-// Returns a non-nil error only when an operand parses into NONE of the field's
-// declared types (errConditionTypeMismatch), an operand is an object
-// (never a valid operand), or a lifecycle field is unknown (errInvalidFieldPath).
-// Operand arity (null on a binary op, a range op's 2-element bounds shape) is
-// enforced separately by ValidateCondition/validateBetweenArity.
+// Returns a non-nil error only when an operand parses into NONE of the
+// field's declared types (errConditionTypeMismatch), or a lifecycle field is
+// unknown (errInvalidFieldPath). Operand shape/arity — an object operand
+// (never valid for any operator), null on a binary op, a range op's
+// 2-element bounds shape — is enforced separately by
+// ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
+// this type check.
 func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Condition) error {
 	if cond == nil {
 		return nil
@@ -90,13 +92,11 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		return nil
 	}
 
-	// An object operand is never a valid operand for any operator — it denotes
-	// no scalar value the kernel could parse. Reject it explicitly (a bare
-	// parse would wrongly accept it against a STRING field).
-	if _, isObj := c.Value.(map[string]any); isObj {
-		return fmt.Errorf("condition value for field %q is an object, which is not a valid operand: %w",
-			c.JsonPath, errConditionTypeMismatch)
-	}
+	// An object operand is rejected upstream, at the model-independent shape
+	// layer (validateOperandShape in operators.go, wired into ValidateCondition
+	// — the single boundary every transport funnels through before this
+	// type check runs) as INVALID_CONDITION, not here: it is a shape/arity
+	// error (spec §6/§8), not a field-type mismatch.
 
 	// Only the comparison/range family constrains the operand's type. String
 	// operators and the null-presence tests parse any operand — they evaluate

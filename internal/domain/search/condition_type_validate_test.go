@@ -111,27 +111,35 @@ func TestValidateConditionTypes_EmptyArray_Accepted(t *testing.T) {
 // Object values — never valid for any operator
 // ---------------------------------------------------------------------------
 
+// An object operand is a shape/arity error (spec §6/§8), not a field-type
+// mismatch — it is rejected upstream at the model-independent ValidateCondition
+// boundary (validateOperandShape, operators.go) as INVALID_CONDITION, before
+// ValidateConditionValueTypes's parse-based type check ever runs. These tests
+// exercise that combined pipeline (ValidateCondition then
+// ValidateConditionValueTypes), matching the order every real entry point
+// (SearchService.Search/SubmitAsync, grouped-stats) enforces.
+
 // TestValidateConditionTypes_ObjectValue_Rejects verifies that an object value
-// (map[string]any) is rejected for any operator type against any field.
+// (map[string]any) is rejected as INVALID_CONDITION for any operator type
+// against any field.
 func TestValidateConditionTypes_ObjectValue_Rejects(t *testing.T) {
-	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.price",
 		OperatorType: "EQUALS",
 		Value:        map[string]any{"foo": float64(1)},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateCondition(cond)
 	if err == nil {
 		t.Fatal("expected error for object value against any operator, got nil")
 	}
-	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("expected ErrInvalidCondition sentinel, got: %v", err)
 	}
 }
 
 // TestValidateConditionTypes_ObjectValue_StringField_Rejects verifies that
-// object values are rejected even for string fields (object is never valid
-// for any search operator).
+// object values are rejected as INVALID_CONDITION even for string fields
+// (object is never valid for any search operator).
 func TestValidateConditionTypes_ObjectValue_StringField_Rejects(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
@@ -140,12 +148,35 @@ func TestValidateConditionTypes_ObjectValue_StringField_Rejects(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        map[string]any{"nested": "value"},
 	}
-	err := ValidateConditionValueTypes(node, cond)
+	err := ValidateCondition(cond)
 	if err == nil {
 		t.Fatal("expected error for object value against string field, got nil")
 	}
-	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("expected ErrInvalidCondition sentinel, got: %v", err)
+	}
+}
+
+// TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects verifies the
+// review finding directly: an object operand on a non-BETWEEN operator
+// (EQUALS) against a typed field is rejected as INVALID_CONDITION, not
+// CONDITION_TYPE_MISMATCH — the object-shape rejection applies to every
+// operator, not just BETWEEN's arity check.
+func TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects(t *testing.T) {
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.price",
+		OperatorType: "EQUALS",
+		Value:        map[string]any{"foo": float64(1)},
+	}
+	err := ValidateCondition(cond)
+	if err == nil {
+		t.Fatal("expected error for object operand on EQUALS, got nil")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("expected ErrInvalidCondition sentinel for object operand on EQUALS, got: %v", err)
+	}
+	if errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("object operand on EQUALS must not be classified as errConditionTypeMismatch, got: %v", err)
 	}
 }
 
