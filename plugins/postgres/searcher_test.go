@@ -138,14 +138,17 @@ func TestPGSearcher_Or(t *testing.T) {
 // postgresIter/evalPostFilter. Proves the residual path runs under Search.
 func TestPGSearcher_ResidualRegex(t *testing.T) {
 	store, ctx := setupSearcher(t)
+	// MATCHES_PATTERN is anchored to a whole-string match by the kernel (Cloud
+	// Pattern.matcher(x).matches() semantics), so "A.*" (not the prefix "^A")
+	// expresses "name starts with A".
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^A"},
+		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "A.*"},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(got) != 1 { // Alice
-		t.Fatalf("name ~ ^A: want 1, got %d", len(got))
+		t.Fatalf("name ~ A.*: want 1, got %d", len(got))
 	}
 }
 
@@ -156,14 +159,15 @@ func TestPGSearcher_MixedPushAndResidual(t *testing.T) {
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
 			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
-			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^C"},
+			// Anchored whole-string match: "C.*" expresses "name starts with C".
+			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "C.*"},
 		},
 	}, baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(got) != 1 { // Charlie
-		t.Fatalf("Berlin AND name~^C: want 1, got %d", len(got))
+		t.Fatalf("Berlin AND name~C.*: want 1, got %d", len(got))
 	}
 }
 
@@ -194,10 +198,11 @@ func TestPGSearcher_PaginationWithResidual(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	opts := baseOpts()
 	opts.Limit = 1
-	// Residual regex matching all five names (contains any letter), so the
-	// residual path is active and pagination is applied in Go.
+	// Residual regex matching all five names. MATCHES_PATTERN is anchored to a
+	// whole-string match by the kernel, so ".+" (not ".") matches any non-empty
+	// value; the residual path stays active and pagination is applied in Go.
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "."},
+		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".+"},
 		opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -214,8 +219,9 @@ func TestPGSearcher_UnboundedOffsetWithResidual(t *testing.T) {
 	opts := baseOpts()
 	opts.Limit = 0 // unbounded
 	opts.Offset = 2
+	// Anchored whole-string match: ".+" matches any non-empty name (all five).
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "."},
+		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".+"},
 		opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)

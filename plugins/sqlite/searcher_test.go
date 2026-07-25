@@ -208,12 +208,15 @@ func TestSearcher_PostFilterRegex(t *testing.T) {
 	store, _ := factory.EntityStore(ctx)
 	searcher := store.(spi.Searcher)
 
-	// Regex is not pushable, should post-filter.
+	// Regex is not pushable, should post-filter. MATCHES_PATTERN is anchored to
+	// a whole-string match by the kernel (Cloud Pattern.matcher(x).matches()
+	// semantics), so the pattern must describe the entire value, not a prefix:
+	// "[A-C].*" = first char in A-C, rest anything → names starting with A/B/C.
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterMatchesRegex,
 		Path:   "name",
 		Source: spi.SourceData,
-		Value:  "^[A-C]",
+		Value:  "[A-C].*",
 	}, spi.SearchOptions{
 		ModelName:    "person",
 		ModelVersion: "1",
@@ -233,12 +236,14 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 	store, _ := factory.EntityStore(ctx)
 	searcher := store.(spi.Searcher)
 
-	// AND with pushable eq(city) and non-pushable regex(name).
+	// AND with pushable eq(city) and non-pushable regex(name). MATCHES_PATTERN is
+	// anchored to a whole-string match (Cloud Pattern.matcher(x).matches()), so
+	// "A.*" (not the prefix "^A") expresses "name starts with A".
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
 			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
-			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^A"},
+			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "A.*"},
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",

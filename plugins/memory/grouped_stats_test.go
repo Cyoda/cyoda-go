@@ -92,10 +92,11 @@ func TestMemoryIterate_FilterAppliedInNext(t *testing.T) {
 
 	it := store.(spi.Iterable)
 	filter := spi.Filter{
-		Op:     spi.FilterEq,
-		Source: spi.SourceMeta,
-		Path:   "state",
-		Value:  "available",
+		Op:       spi.FilterEq,
+		Source:   spi.SourceMeta,
+		Path:     "state",
+		Value:    "available",
+		Declared: []spi.DataType{spi.String},
 	}
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
@@ -440,6 +441,7 @@ func TestMemoryGroupedAggregate_TemporalFilterOnCreationDate(t *testing.T) {
 			Path:     "creationDate",
 			Coercion: spi.CoerceTemporal,
 			Value:    threshold,
+			Declared: []spi.DataType{spi.ZonedDateTime},
 		},
 		spi.GroupedAggregationsOptions{MaxBuckets: 100},
 	)
