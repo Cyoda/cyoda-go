@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 215 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 216 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -380,15 +380,14 @@ var allTests = []NamedTest{
 	// The data-field temporal-resolution row is deliberately NOT here — see
 	// the file header comment (feature gap, not a missing test).
 	//
-	// RunSearchPolymorphicIntStringExpansion is deliberately NOT registered
-	// here: writing it surfaced a genuine sqlite-only pushdown soundness bug
-	// (SQLite's json_extract preserves the stored JSON scalar's native type,
-	// so a text-bound operand fails to match an int-stored branch that
-	// postgres's stringifying ->> extraction and the memory kernel both
-	// match) — see the function's doc comment for the full root cause. Fixing
-	// it is a production change outside this test-only task's scope; the
-	// function is left in place, fully written, ready to register once
-	// plugins/sqlite/query_planner.go restores soundness for this case.
+	// SearchPolymorphicIntStringExpansion guards the polymorphic [INTEGER,
+	// STRING] pushdown soundness fix: an operand matching stored values of
+	// different SQLite storage classes (int-30 and string-"30") must return
+	// both on every backend. sqlite achieves this by routing polymorphic
+	// comparison leaves to the residual (kernel-evaluated) rather than pushing
+	// a single-storage-class-bound WHERE that under-selects — see
+	// plugins/sqlite/query_planner.go isLeafPushable.
+	{"SearchPolymorphicIntStringExpansion", RunSearchPolymorphicIntStringExpansion},
 	{"SearchNumericBucketRounding", RunSearchNumericBucketRounding},
 	{"SearchLikeAnchoredEscapedGlob", RunSearchLikeAnchoredEscapedGlob},
 	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},

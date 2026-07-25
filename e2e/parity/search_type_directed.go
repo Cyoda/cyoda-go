@@ -43,39 +43,17 @@ import (
 // branch — with no 400 (CONDITION_TYPE_MISMATCH requires the operand to
 // parse into NONE of the declared types, and STRING alone is enough).
 //
-// NOT REGISTERED (see registry.go) — confirmed sqlite-only bug, found while
-// building this scenario:
-//
-//	memory: PASS (2 results)   postgres: PASS (2 results)   sqlite: FAIL (1 result)
-//
-// Root cause: EQUALS "30" against $.code arrives at plugins/sqlite's
-// leafToSQL with a plain Go string operand (not json.Number, since the JSON
-// condition value is textual). bindArg passes a non-json.Number operand
-// through unchanged, so it binds as SQLite TEXT. fieldExpr extracts the
-// stored value via `json_extract(data, '$.code')`, which — unlike postgres's
-// `doc->>'path'` (always stringifies) — PRESERVES the stored JSON scalar's
-// native SQLite storage class: the int-30 row extracts as SQLite INTEGER 30.
-// SQLite's raw expression comparison (no column affinity on either side)
-// never equates different storage classes, so `30 = '30'` is false and the
-// int-30 row is excluded from the SQL WHERE candidate set entirely — before
-// the kernel residual re-check (spi.MatchFilter, installed as postFilter
-// whenever a leaf isn't leafExact, which EQUALS never is) ever sees the row.
-// The pushed SQL is therefore NOT a sound superset of the kernel's true
-// match set for this case — the documented pushdown invariant
-// (query_planner.go's sqlPlan doc comment) is violated specifically when an
-// operand's own JSON kind differs from a same-branch stored value's kind on
-// a polymorphic-declared field.
-//
-// This is a genuine, previously-undiscovered correctness bug, not a
-// proportionality-based gap: the fix requires a design decision (stringify
-// the sqlite extraction to mirror postgres's `->>` semantics without
-// regressing the existing numeric-precision int64/float64 bindArg path added
-// for large-integer fidelity; or fall back to residual-only whenever
-// Declared spans multiple type families) and touches the pushdown mirror
-// contract shared with plugins/postgres/query_planner.go — out of scope for
-// this test-only closing task (no production logic changes). Left
-// unregistered rather than silently fixed or silently dropped; register it
-// in registry.go's allTests once plugins/sqlite/query_planner.go is fixed.
+// This scenario originally surfaced a genuine sqlite-only pushdown
+// under-selection bug and is now the cross-backend guard for its fix. On
+// sqlite, EQUALS "30" against a polymorphic $.code (declared [INTEGER,
+// STRING]) once bound the operand as a single SQLite storage class, so
+// json_extract's storage-class-preserving extraction (unlike postgres's
+// stringifying `doc->>'path'`) made `30 = '30'` false and dropped the int-30
+// row from the WHERE candidate set before the kernel re-check could see it —
+// an under-select the residual cannot recover. The fix
+// (plugins/sqlite/query_planner.go isLeafPushable) routes polymorphic
+// comparison leaves to the residual on sqlite, so the kernel evaluates all
+// branches and every backend returns the same set.
 func RunSearchPolymorphicIntStringExpansion(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

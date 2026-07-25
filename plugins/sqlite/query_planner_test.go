@@ -878,6 +878,105 @@ func TestSqlitePlan_TemporalNotNull(t *testing.T) {
 	}
 }
 
+// --- Type-directed operand bind + polymorphic residual ---
+//
+// SQLite's json_extract PRESERVES the stored JSON scalar's native storage
+// class (an int stays INTEGER), and SQLite never equates different storage
+// classes (30 = '30' is false). So a comparison operand must be bound
+// according to the leaf's DECLARED type family, not the operand's own JSON
+// kind, or the pushed SQL under-selects. Polymorphic-declared comparison
+// leaves cannot be bound to a single storage class that supersets every
+// branch, so they are residual-only on sqlite.
+
+// TestPlanQuery_MonomorphicStringField_NumberOperand_TextBind pins the
+// monomorphic non-numeric case: a STRING-declared field with a json.Number
+// operand must TEXT-bind (so it compares against the text-stored scalar),
+// NOT numeric-bind (which would miss the text-stored value).
+func TestPlanQuery_MonomorphicStringField_NumberOperand_TextBind(t *testing.T) {
+	f := spi.Filter{
+		Op:       spi.FilterEq,
+		Path:     "code",
+		Source:   spi.SourceData,
+		Value:    json.Number("30"),
+		Declared: []spi.DataType{spi.String},
+	}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.code') IS NOT NULL AND json_extract(data, '$.code') = ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != "30" {
+		t.Errorf("args = %v (%T), want [\"30\"] — a json.Number operand on a STRING field must bind as TEXT, not int64", plan.args, plan.args[0])
+	}
+}
+
+// TestPlanQuery_MonomorphicNumericField_NumberOperand_NumericBind confirms the
+// monomorphic-numeric path is unchanged (json.Number -> int64), so the
+// large-int / precision behaviour does not regress.
+func TestPlanQuery_MonomorphicNumericField_NumberOperand_NumericBind(t *testing.T) {
+	f := spi.Filter{
+		Op:       spi.FilterEq,
+		Path:     "age",
+		Source:   spi.SourceData,
+		Value:    json.Number("30"),
+		Declared: []spi.DataType{spi.Integer},
+	}
+	plan := planQuery(f)
+	if len(plan.args) != 1 || plan.args[0] != int64(30) {
+		t.Errorf("args = %v (%T), want [int64(30)] — a numeric field keeps the numeric bind", plan.args, plan.args[0])
+	}
+}
+
+// TestPlanQuery_PolymorphicComparison_Residual pins that a comparison leaf
+// with polymorphic declared types is NON-pushable on sqlite (residual-only):
+// no single-storage-class SQL bind can superset both branches.
+func TestPlanQuery_PolymorphicComparison_Residual(t *testing.T) {
+	for _, op := range []spi.FilterOp{
+		spi.FilterEq, spi.FilterGt, spi.FilterLt, spi.FilterGte,
+		spi.FilterLte, spi.FilterBetween, spi.FilterBetweenInclusive,
+	} {
+		t.Run(string(op), func(t *testing.T) {
+			f := spi.Filter{
+				Op:       op,
+				Path:     "code",
+				Source:   spi.SourceData,
+				Value:    "30",
+				Values:   []any{"10", "30"},
+				Declared: []spi.DataType{spi.Integer, spi.String},
+			}
+			plan := planQuery(f)
+			if plan.where != "" {
+				t.Errorf("where should be empty for a polymorphic comparison leaf, got %s", plan.where)
+			}
+			if len(plan.args) != 0 {
+				t.Errorf("args = %v, want [] (polymorphic comparison is residual-only)", plan.args)
+			}
+			if plan.postFilter == nil || plan.postFilter.Op != op {
+				t.Fatalf("postFilter should be the residual leaf (op %s), got %+v", op, plan.postFilter)
+			}
+		})
+	}
+}
+
+// TestPlanQuery_PolymorphicPresenceCheck_StillPushable confirms the
+// polymorphic-residual rule does NOT touch presence checks (type-family
+// independent): IS_NULL/NOT_NULL stay pushable even with polymorphic Declared.
+func TestPlanQuery_PolymorphicPresenceCheck_StillPushable(t *testing.T) {
+	f := spi.Filter{
+		Op:       spi.FilterIsNull,
+		Path:     "code",
+		Source:   spi.SourceData,
+		Declared: []spi.DataType{spi.Integer, spi.String},
+	}
+	plan := planQuery(f)
+	if plan.where == "" {
+		t.Error("IS_NULL must still push even on a polymorphic field")
+	}
+	if plan.postFilter != nil {
+		t.Errorf("IS_NULL is EXACT — postFilter should stay nil, got %+v", plan.postFilter)
+	}
+}
+
 // --- SQL-pushdown soundness contract (Task 11) ---
 
 // TestSoundness_ExactFastPath asserts that a plan whose pushed leaves are ALL

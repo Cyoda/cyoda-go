@@ -346,6 +346,67 @@ func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 	}
 }
 
+// TestSqlitePushdownSoundness_PolymorphicIntStringUnderSelects pins the
+// polymorphic-field under-select: a field declared [INTEGER, STRING] holding
+// both an int-30 row and a string-"30" row. EQUALS "30" expands (kernel) into
+// an int branch (matches int-30) and a string branch (matches string-"30") —
+// both rows are true matches. Pre-fix, sqlite bound "30" as TEXT and
+// json_extract returned INTEGER 30 for the int row, so `30 = '30'` excluded it
+// from the SQL candidate set entirely (before the kernel re-check could see
+// it). The fix makes polymorphic comparison leaves residual-only on sqlite, so
+// the kernel evaluates all branches and both rows match on every backend.
+func TestSqlitePushdownSoundness_PolymorphicIntStringUnderSelects(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "int30", "available", map[string]any{"code": 30})
+	gsSave(t, ctx, store, "str30", "available", map[string]any{"code": "30"})
+	gsSave(t, ctx, store, "int99", "available", map[string]any{"code": 99})
+
+	filter := fPoly(spi.FilterEq, "code", "30")
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	got := idSetFromEntities(results)
+	want := map[string]bool{"int30": true, "str30": true}
+	if len(got) != len(want) || !got["int30"] || !got["str30"] {
+		t.Errorf("polymorphic EQUALS \"30\": got %v, want both int-30 and string-\"30\" (under-select if int-30 missing)", sortedKeys(got))
+	}
+}
+
+// TestSqlitePushdownSoundness_MonomorphicStringNumericOperand pins the
+// monomorphic-STRING under-select: a STRING-declared field holding the string
+// "30", queried with a numeric-looking operand that arrives as a json.Number.
+// Pre-fix, the json.Number bound numerically (30), so `json_extract = 30`
+// (numeric) missed the text-stored "30". The fix TEXT-binds on a non-numeric
+// declared field, so it matches on every backend.
+func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "s30", "available", map[string]any{"code": "30"})
+	gsSave(t, ctx, store, "s99", "available", map[string]any{"code": "99"})
+
+	// Declared STRING, operand a json.Number (as the predicate parser produces
+	// for a numeric JSON condition value).
+	filter := spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "code", Value: json.Number("30"), Declared: []spi.DataType{spi.String}}
+
+	// Kernel oracle: the string field holds "30", the operand normalizes to the
+	// text "30" -> a match.
+	if !spi.MatchFilter(filter, []byte(`{"code":"30"}`), spi.EntityMeta{}) {
+		t.Fatalf("test setup invalid: kernel must match STRING \"30\" against numeric-looking operand 30")
+	}
+
+	searcher := store.(spi.Searcher)
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	got := idSetFromEntities(results)
+	if len(got) != 1 || !got["s30"] {
+		t.Errorf("monomorphic STRING EQUALS json.Number(30): got %v, want exactly [s30] (under-select if the numeric bind missed the text-stored \"30\")", sortedKeys(got))
+	}
+}
+
 // TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG pinned a REAL
 // soundness violation discovered while building the property test above:
 // plugins/sqlite/query_planner.go's leafToSQL, case spi.FilterLike, escaped
