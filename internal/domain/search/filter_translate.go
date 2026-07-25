@@ -155,7 +155,8 @@ func groupToFilter(c *predicate.GroupCondition, fields map[string]schema.FieldDe
 // FieldsMap entry — recorded under the base path with a trailing "[*]" (see
 // arrayElementPath) — when resolvable. An unresolvable element path (no
 // schema, or the array isn't in the FieldsMap) leaves Declared nil on those
-// leaves; the kernel falls back to non-type-directed comparison for them.
+// leaves; the kernel treats an empty declared set as a non-match for
+// comparison operators on those leaves.
 func arrayToFilter(c *predicate.ArrayCondition, fields map[string]schema.FieldDescriptor) (spi.Filter, error) {
 	basePath, err := stripDollarDot(c.JsonPath)
 	if err != nil {

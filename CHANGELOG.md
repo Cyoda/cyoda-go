@@ -231,6 +231,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     path now rejects `400 INVALID_FIELD_PATH` instead of silently returning
     an empty result.
   - `IS_CHANGED`/`IS_UNCHANGED` remain unimplemented — not search predicates.
+  ([#431](https://github.com/Cyoda-platform/cyoda-go/issues/431))
 
 - **Processor `config.attachEntity` now defaults to `true`.** A processor whose
   `config` omits `attachEntity` is imported with `attachEntity: true`, so the
