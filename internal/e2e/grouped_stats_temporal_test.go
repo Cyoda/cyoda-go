@@ -18,16 +18,17 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
-// TestGroupedStats_TemporalTypeMismatch_Returns400 verifies that CONTAINS —
-// a string-shaped operator with no temporal semantics — against the
-// temporal creationDate meta field is rejected with 400
-// CONDITION_TYPE_MISMATCH, matching the equivalent /search request.
-func TestGroupedStats_TemporalTypeMismatch_Returns400(t *testing.T) {
+// TestGroupedStats_TemporalStringOp_Returns200 verifies that CONTAINS — a
+// string operator on the temporal creationDate meta field — is now ACCEPTED
+// (parse-based, spec §6): it carries no operand-type constraint and evaluates
+// to a non-match, so the grouped-stats query succeeds, matching the equivalent
+// /search request.
+func TestGroupedStats_TemporalStringOp_Returns200(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	const model = "e2e-grouped-stats-temporal-mismatch"
+	const model = "e2e-grouped-stats-temporal-stringop"
 	setupStatsModel(t, model)
 	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
 
@@ -38,11 +39,10 @@ func TestGroupedStats_TemporalTypeMismatch_Returns400(t *testing.T) {
 	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
 	resp := doAuth(t, http.MethodPost, path, reqBody)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
+	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)
-		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
-	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
 }
 
 // TestGroupedStats_TemporalBadOperand_Returns400 verifies that a

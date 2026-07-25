@@ -59,7 +59,8 @@ func TestValidateConditionTypes_Between_ValidIntegers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestValidateConditionTypes_In_TypeMismatch verifies that an array containing
-// a string element against a DOUBLE field is rejected.
+// a non-numeric string element against a DOUBLE field is rejected: parse-based,
+// "abc" parses into no declared type (DOUBLE), so the leaf is a type mismatch.
 func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
@@ -76,9 +77,9 @@ func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
 	}
 }
 
-// TestValidateConditionTypes_In_AllInts verifies that an array of all-numeric
-// values against a DOUBLE field is accepted.
-func TestValidateConditionTypes_In_AllInts(t *testing.T) {
+// TestValidateConditionTypes_In_AllNumeric verifies that an array of all-numeric
+// values against a DOUBLE field is accepted (every element parses as DOUBLE).
+func TestValidateConditionTypes_In_AllNumeric(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.price",
@@ -172,23 +173,33 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 // unknown-meta-field rejection (Task 7).
 // ---------------------------------------------------------------------------
 
-// TestValidate_TemporalRejectsStringOp verifies that a string-comparison
-// operator (CONTAINS) against a temporal meta field (creationDate) is
-// rejected as a type mismatch — temporal fields only support the ordering/
-// equality/null comparison family.
-func TestValidate_TemporalRejectsStringOp(t *testing.T) {
+// TestValidate_TemporalAcceptsStringOp verifies that a string-comparison
+// operator (CONTAINS) against a temporal meta field (creationDate) is now
+// ACCEPTED (parse-based, spec §6): string operators parse any operand and the
+// kernel evaluates them to a non-match — there is no operator-class rejection.
+func TestValidate_TemporalAcceptsStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
-	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("CONTAINS on creationDate should be CONDITION_TYPE_MISMATCH, got %v", err)
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("CONTAINS on creationDate should be accepted (parse-based), got %v", err)
 	}
 }
 
-// TestValidate_TemporalRejectsBadOperand verifies that a non-RFC3339,
-// non-offset-bearing operand against a temporal meta field is rejected.
+// TestValidate_TemporalAcceptsCoarseOperand verifies that a coarse operand
+// (a bare year) on a temporal meta field is ACCEPTED: it parses as Year and
+// upscales to ZonedDateTime (spec §4), so it is not a type mismatch.
+func TestValidate_TemporalAcceptsCoarseOperand(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_OR_EQUAL", Value: "2024"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("coarse operand \"2024\" on creationDate should upscale and be accepted, got %v", err)
+	}
+}
+
+// TestValidate_TemporalRejectsBadOperand verifies that a comparison operand
+// that parses into no temporal type against a temporal meta field is rejected.
 func TestValidate_TemporalRejectsBadOperand(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
 	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("non-RFC3339 operand on creationDate should be CONDITION_TYPE_MISMATCH, got %v", err)
+		t.Errorf("non-temporal operand on creationDate should be CONDITION_TYPE_MISMATCH, got %v", err)
 	}
 }
 
@@ -270,12 +281,12 @@ func TestValidate_UnknownMetaField(t *testing.T) {
 }
 
 // TestValidate_WalkConditionTypes_LifecycleNoLongerExempt verifies that
-// walkConditionTypes (invoked via ValidateConditionValueTypes) now routes
-// LifecycleCondition through validateLifecycleType instead of the old
-// blanket exemption.
+// walkConditionTypes (invoked via ValidateConditionValueTypes) still routes
+// LifecycleCondition through validateLifecycleType — a comparison operand that
+// parses into no temporal type is rejected end-to-end.
 func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
 	model := buildDoubleModel()
-	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
 	err := ValidateConditionValueTypes(model, cond)
 	if !errors.Is(err, errConditionTypeMismatch) {
 		t.Errorf("expected errConditionTypeMismatch through ValidateConditionValueTypes, got %v", err)
@@ -292,10 +303,10 @@ func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
 
 // TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound verifies that
 // a nil model no longer causes ValidateConditionValueTypes to no-op: a
-// type-unsound lifecycle/temporal condition (CONTAINS against creationDate)
-// is still rejected even without a model schema.
+// type-unsound lifecycle/temporal condition (a comparison operand that parses
+// into no temporal type) is still rejected even without a model schema.
 func TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound(t *testing.T) {
-	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
 	err := ValidateConditionValueTypes(nil, cond)
 	if !errors.Is(err, errConditionTypeMismatch) {
 		t.Errorf("expected errConditionTypeMismatch even with nil model, got: %v", err)

@@ -18,15 +18,28 @@ import (
 // {"type":"lifecycle","field":...,"operatorType":...,"value":...} shape
 // used below.
 
-// (a) a non-comparison operator (CONTAINS) on a temporal field is rejected.
-func TestValidateWorkflowStructure_RejectsNonComparisonOperatorOnTemporalField(t *testing.T) {
-	wf := wfWithTransitionCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2021"))
+// (a) a comparison operand that parses into no temporal type on a temporal
+// field is rejected, and the error names the offending workflow/transition.
+// (Parse-based, spec §6: a string operator such as CONTAINS is now accepted, so
+// a genuinely-unparseable operand drives this rejection.)
+func TestValidateWorkflowStructure_RejectsBadTemporalOperandOnTemporalField(t *testing.T) {
+	wf := wfWithTransitionCriterion(lifecycleCriterion("creationDate", "GREATER_THAN", "not-a-date"))
 	err := validateWorkflowStructure(wf)
 	if err == nil {
-		t.Fatalf("expected error for CONTAINS operator on temporal field creationDate, got nil")
+		t.Fatalf("expected error for non-temporal operand on temporal field creationDate, got nil")
 	}
 	if !strings.Contains(err.Error(), "wf-regex") || !strings.Contains(err.Error(), "go") {
 		t.Errorf("error must name the offending workflow/transition, got: %v", err)
+	}
+}
+
+// (a2) a string operator (CONTAINS) on a temporal field is now ACCEPTED
+// (parse-based): it carries no temporal-parse constraint and the engine
+// evaluates it to a non-match — there is no operator-class rejection.
+func TestValidateWorkflowStructure_AcceptsStringOperatorOnTemporalField(t *testing.T) {
+	wf := wfWithTransitionCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2021"))
+	if err := validateWorkflowStructure(wf); err != nil {
+		t.Errorf("CONTAINS on temporal field should be accepted (parse-based), got %v", err)
 	}
 }
 
@@ -67,9 +80,9 @@ func TestValidateWorkflowStructure_ValidStringMetaCriterionAccepted(t *testing.T
 }
 
 // (f) workflow-level lifecycle criterion is also validated, not just
-// transition-level.
+// transition-level (a comparison operand that parses into no temporal type).
 func TestValidateWorkflowStructure_RejectsTypeUnsoundWorkflowLevelLifecycleCriterion(t *testing.T) {
-	wf := wfWithWorkflowCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2021"))
+	wf := wfWithWorkflowCriterion(lifecycleCriterion("creationDate", "GREATER_THAN", "not-a-date"))
 	err := validateWorkflowStructure(wf)
 	if err == nil {
 		t.Fatalf("expected error for type-unsound workflow-level lifecycle criterion, got nil")

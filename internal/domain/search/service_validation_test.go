@@ -63,11 +63,14 @@ func assertAppErrorCode(t *testing.T, err error, wantCode string) {
 	}
 }
 
-// TestDirectSearch_LifecycleContainsOnTemporalField_RejectsAtServiceBoundary
+// TestDirectSearch_LifecycleBadTemporalOperand_RejectsAtServiceBoundary
 // verifies that DirectSearch (the gRPC-facing alias for Search) rejects a
-// CONTAINS operator against the temporal meta field creationDate with
-// CONDITION_TYPE_MISMATCH — CONTAINS has no meaningful temporal semantics.
-func TestDirectSearch_LifecycleContainsOnTemporalField_RejectsAtServiceBoundary(t *testing.T) {
+// comparison operand that parses into no temporal type ("not-a-date") against
+// the temporal meta field creationDate with CONDITION_TYPE_MISMATCH — proving
+// condition-type validation runs at the transport-agnostic service boundary.
+// (Parse-based, spec §6: a string operator like CONTAINS is now accepted, so
+// the boundary is exercised here with a genuinely-unparseable operand.)
+func TestDirectSearch_LifecycleBadTemporalOperand_RejectsAtServiceBoundary(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ref := registerModelWithSchema(t, factory, "grpc-validate-a", "name")
@@ -78,8 +81,8 @@ func TestDirectSearch_LifecycleContainsOnTemporalField_RejectsAtServiceBoundary(
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "creationDate",
-		OperatorType: "CONTAINS",
-		Value:        "2021",
+		OperatorType: "GREATER_THAN",
+		Value:        "not-a-date",
 	}
 
 	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
@@ -108,12 +111,13 @@ func TestDirectSearch_UnknownMetaField_RejectsAtServiceBoundary(t *testing.T) {
 	assertAppErrorCode(t, err, common.ErrCodeInvalidFieldPath)
 }
 
-// TestSubmitAsyncSearch_NonOffsetTemporalOperand_RejectsAtServiceBoundary
+// TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary
 // verifies that SubmitAsyncSearch (the gRPC-facing alias for SubmitAsync)
-// rejects a creationDate comparison whose operand is not an offset-bearing
-// RFC3339 timestamp with CONDITION_TYPE_MISMATCH, and that no job is
-// created before the rejection.
-func TestSubmitAsyncSearch_NonOffsetTemporalOperand_RejectsAtServiceBoundary(t *testing.T) {
+// rejects a creationDate comparison whose operand parses into no temporal type
+// with CONDITION_TYPE_MISMATCH, and that no job is created before the
+// rejection. (Parse-based, spec §4/§6: a coarse or offset-less operand now
+// upscales and is accepted, so a genuinely-unparseable operand is used here.)
+func TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ref := registerModelWithSchema(t, factory, "grpc-validate-c", "name")
@@ -125,9 +129,7 @@ func TestSubmitAsyncSearch_NonOffsetTemporalOperand_RejectsAtServiceBoundary(t *
 	cond := &predicate.LifecycleCondition{
 		Field:        "creationDate",
 		OperatorType: "GREATER_THAN",
-		// No UTC offset — spi.ParseTemporalMillis requires an offset-bearing
-		// RFC3339 timestamp, so this must be rejected as a type mismatch.
-		Value: "2021-01-01T00:00:00",
+		Value:        "not-a-date",
 	}
 
 	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})

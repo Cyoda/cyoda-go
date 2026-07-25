@@ -190,9 +190,10 @@ func TestGroupedStatsHandler_LifecycleTemporalTypeMismatchReturns400(t *testing.
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
-	// CONTAINS is not a valid comparison operator against the temporal
-	// creationDate meta field — parity with /search's CONDITION_TYPE_MISMATCH.
-	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"lifecycle","field":"creationDate","operatorType":"CONTAINS","value":"2021"}}`)
+	// Parse-based (spec §6): a comparison operand that parses into no temporal
+	// type against the temporal creationDate meta field is a
+	// CONDITION_TYPE_MISMATCH — parity with /search.
+	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"lifecycle","field":"creationDate","operatorType":"GREATER_THAN","value":"not-a-date"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
 	req.SetPathValue("entityName", "X")
 	req.SetPathValue("modelVersion", "1")

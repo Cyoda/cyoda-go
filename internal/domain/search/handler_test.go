@@ -35,6 +35,15 @@ func newTestServerWithConfig(t *testing.T, cfg app.Config) *httptest.Server {
 
 func importAndLockModel(t *testing.T, base, entityName string, version int, sampleData string) {
 	t.Helper()
+	importSample(t, base, entityName, version, sampleData)
+	lockModel(t, base, entityName, version)
+}
+
+// importSample imports one SAMPLE_DATA payload into a model without locking it.
+// Repeated calls before lockModel accumulate observed types, so importing two
+// samples of different JSON kinds at the same path yields a polymorphic field.
+func importSample(t *testing.T, base, entityName string, version int, sampleData string) {
+	t.Helper()
 	url := base + "/model/import/JSON/SAMPLE_DATA/" + entityName + "/" + strconv.Itoa(version)
 	resp, err := http.Post(url, "application/json", strings.NewReader(sampleData))
 	if err != nil {
@@ -42,10 +51,14 @@ func importAndLockModel(t *testing.T, base, entityName string, version int, samp
 	}
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
+}
 
+// lockModel locks a previously-imported model version.
+func lockModel(t *testing.T, base, entityName string, version int) {
+	t.Helper()
 	lockURL := base + "/model/" + entityName + "/" + strconv.Itoa(version) + "/lock"
 	req, _ := http.NewRequest(http.MethodPut, lockURL, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("lock request failed: %v", err)
 	}

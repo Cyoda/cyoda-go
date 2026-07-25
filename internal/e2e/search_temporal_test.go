@@ -259,20 +259,24 @@ func TestSearchTemporal_Accepted200(t *testing.T) {
 
 // --- 400 error table ---
 
-func TestSearchTemporal_400_StringOpOnTemporalField(t *testing.T) {
-	const model = "e2e-search-temporal-400-string-op"
+// TestSearchTemporal_200_StringOpOnTemporalField verifies that a string
+// operator (CONTAINS) on a temporal meta field is now ACCEPTED (parse-based,
+// spec §6): it carries no operand-type constraint and the kernel evaluates it
+// to a non-match, so the request succeeds with no matching results — it is not
+// an operator-class rejection.
+func TestSearchTemporal_200_StringOpOnTemporalField(t *testing.T) {
+	const model = "e2e-search-temporal-200-string-op"
 	setupSearchModel(t, model)
 	createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 
 	cond := lifecycleCond(t, "creationDate", "CONTAINS", "2021")
-	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/%d", model, 1), cond)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		body := readBody(t, resp)
-		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+	status, results := directSearch(t, model, 1, cond)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
 	}
-	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (string op non-match on temporal field), got %d", len(results))
+	}
 }
 
 func TestSearchTemporal_400_BadOperand(t *testing.T) {
@@ -291,23 +295,22 @@ func TestSearchTemporal_400_BadOperand(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
 }
 
-// TestSearchTemporal_400_OffsetLessOperand verifies an RFC3339 timestamp
-// missing its mandatory UTC offset is rejected — spi.ParseTemporalMillis
-// requires a full offset-bearing instant (see temporal.go doc comment).
-func TestSearchTemporal_400_OffsetLessOperand(t *testing.T) {
-	const model = "e2e-search-temporal-400-no-offset"
+// TestSearchTemporal_200_OffsetLessOperand verifies an offset-less RFC3339
+// date-time operand is now ACCEPTED (parse-based, spec §4): it parses as a
+// LocalDateTime and upscales to ZonedDateTime at UTC rather than being
+// rejected. The single entity (created well after 2021) matches GREATER_THAN
+// the upscaled instant, so the request succeeds with one result.
+func TestSearchTemporal_200_OffsetLessOperand(t *testing.T) {
+	const model = "e2e-search-temporal-200-no-offset"
 	setupSearchModel(t, model)
-	createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
+	id := createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 
 	cond := lifecycleCond(t, "creationDate", "GREATER_THAN", "2021-01-01T00:00:00")
-	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/%d", model, 1), cond)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		body := readBody(t, resp)
-		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+	status, results := directSearch(t, model, 1, cond)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
 	}
-	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
+	assertIDSet(t, results, []string{id})
 }
 
 // TestSearchTemporal_400_BetweenScalarOperand verifies a BETWEEN condition

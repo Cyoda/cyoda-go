@@ -503,14 +503,17 @@ func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
 // previously accepted the same malformed condition and silently degraded to
 // an empty result (the condition doesn't translate to a pushdown filter and
 // never matches anything via match.Match either). QueryGroupedStats must
-// reject a CONTAINS operator against the temporal creationDate meta field,
+// reject a temporal comparison operand that parses into no temporal type,
 // the same way search.ValidateConditionValueTypes does.
 func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
+	// Parse-based (spec §6): a comparison operand that parses into no temporal
+	// type is rejected; a string operator like CONTAINS is now accepted, so a
+	// genuinely-unparseable operand drives this rejection.
 	cond := json.RawMessage(`{
 		"type": "lifecycle",
 		"field": "creationDate",
-		"operatorType": "CONTAINS",
-		"value": "2021"
+		"operatorType": "GREATER_THAN",
+		"value": "not-a-date"
 	}`)
 	rows := []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
@@ -523,7 +526,7 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 	}
 	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	if err == nil {
-		t.Fatal("expected error for CONTAINS against temporal field creationDate, got nil (previously silently degraded to empty result)")
+		t.Fatal("expected error for non-temporal operand against temporal field creationDate, got nil (previously silently degraded to empty result)")
 	}
 	if !errors.Is(err, search.ErrConditionTypeMismatch) {
 		t.Fatalf("want search.ErrConditionTypeMismatch (parity with /search's CONDITION_TYPE_MISMATCH), got %v", err)
