@@ -1,10 +1,12 @@
 package search
 
 import (
+	"reflect"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 func TestConditionToFilter_SimpleEquals(t *testing.T) {
@@ -469,5 +471,117 @@ func TestConditionToFilter_SimpleBetween_MalformedValue_LeavesValuesNil(t *testi
 	}
 	if f.Values != nil {
 		t.Errorf("Values = %v, want nil for malformed BETWEEN value", f.Values)
+	}
+}
+
+// TestConditionToFilter_DataLeaf_StampsDeclaredFromFieldsMap verifies that a
+// data-field leaf stamps Filter.Declared from the model's FieldsMap, keyed by
+// the SAME (unstripped) JsonPath that dataCoercion uses — not the "$."-
+// stripped Path stored on the Filter itself.
+func TestConditionToFilter_DataLeaf_StampsDeclaredFromFieldsMap(t *testing.T) {
+	fields := map[string]schema.FieldDescriptor{
+		"$.age": {Path: "$.age", Types: []schema.DataType{schema.Integer, schema.String}},
+	}
+	c := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(1)}
+	f, err := ConditionToFilter(c, fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.Integer, spi.String}
+	if !reflect.DeepEqual(f.Declared, want) {
+		t.Errorf("Declared = %v, want %v", f.Declared, want)
+	}
+}
+
+// TestConditionToFilter_DataLeaf_DeclaredNilWhenUnresolvable verifies that a
+// data-field leaf whose path isn't present in the FieldsMap (or with a nil
+// FieldsMap) leaves Filter.Declared nil rather than panicking.
+func TestConditionToFilter_DataLeaf_DeclaredNilWhenUnresolvable(t *testing.T) {
+	c := &predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "EQUALS", Value: "x"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Declared != nil {
+		t.Errorf("Declared = %v, want nil for unresolvable field", f.Declared)
+	}
+}
+
+// TestConditionToFilter_LifecycleTemporalMeta_StampsDeclaredZonedDateTime
+// verifies that a lifecycle condition on a temporal meta field (creationDate)
+// stamps Filter.Declared = [ZonedDateTime] — the fixed declared type for
+// temporal meta leaves, mirroring the isTemporalMetaField routing that also
+// drives Coercion.
+func TestConditionToFilter_LifecycleTemporalMeta_StampsDeclaredZonedDateTime(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2021-01-01T00:00:00Z"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.ZonedDateTime}
+	if !reflect.DeepEqual(f.Declared, want) {
+		t.Errorf("Declared = %v, want %v", f.Declared, want)
+	}
+}
+
+// TestConditionToFilter_LifecycleStringMeta_StampsDeclaredString verifies
+// that a lifecycle condition on a non-temporal meta field (state) stamps
+// Filter.Declared = [String].
+func TestConditionToFilter_LifecycleStringMeta_StampsDeclaredString(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "ACTIVE"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.String}
+	if !reflect.DeepEqual(f.Declared, want) {
+		t.Errorf("Declared = %v, want %v", f.Declared, want)
+	}
+}
+
+// TestConditionToFilter_Array_StampsDeclaredFromFieldsMap verifies that
+// arrayToFilter's positional-equality leaves stamp Filter.Declared from the
+// array element's FieldsMap entry (recorded under the base path with a
+// trailing "[*]", per schema.ModelNode.FieldsMap's convention).
+func TestConditionToFilter_Array_StampsDeclaredFromFieldsMap(t *testing.T) {
+	fields := map[string]schema.FieldDescriptor{
+		"$.tags[*]": {Path: "$.tags[*]", Types: []schema.DataType{schema.String}, IsArray: true},
+	}
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.tags",
+		Values:   []any{"go", nil, "test"},
+	}
+	f, err := ConditionToFilter(cond, fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.String}
+	if len(f.Children) != 2 {
+		t.Fatalf("Children count = %d, want 2", len(f.Children))
+	}
+	for i, child := range f.Children {
+		if !reflect.DeepEqual(child.Declared, want) {
+			t.Errorf("Children[%d].Declared = %v, want %v", i, child.Declared, want)
+		}
+	}
+}
+
+// TestConditionToFilter_Array_DeclaredNilWhenUnresolvable verifies that
+// arrayToFilter's positional leaves leave Declared nil when the array's
+// element path is not present in the FieldsMap (e.g. a nil FieldsMap) — the
+// kernel falls back to non-type-directed comparison for such leaves.
+func TestConditionToFilter_Array_DeclaredNilWhenUnresolvable(t *testing.T) {
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.tags",
+		Values:   []any{"go", nil, "test"},
+	}
+	f, err := ConditionToFilter(cond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, child := range f.Children {
+		if child.Declared != nil {
+			t.Errorf("Children[%d].Declared = %v, want nil", i, child.Declared)
+		}
 	}
 }
