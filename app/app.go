@@ -702,10 +702,16 @@ func New(cfg Config) *App {
 		}
 		// Load the model's declared field types so grouped-stats comparison is
 		// type-directed (temporal data fields compare temporally), consistent
-		// with the search path. Best-effort, nil-tolerant: a nil map yields
-		// non-type-directed comparison for data leaves, same as the search
-		// fallback.
-		fields, _ := search.LoadFieldsMap(ctx, modelStore, ref)
+		// with the search path. A genuine store/schema-load error fails closed
+		// (correctness-over-availability): the schema is a required input for
+		// correct typing, so surface it to the 500-with-ticket path rather than
+		// silently under-match with untyped leaves. The no-schema-registered
+		// case is (nil, nil) — fields stays nil and data leaves degrade to
+		// non-type-directed comparison, same as the search fallback.
+		fields, err := search.LoadFieldsMap(ctx, modelStore, ref)
+		if err != nil {
+			return nil, ref, nil, false, err
+		}
 		return entityStore, ref, fields, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)

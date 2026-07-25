@@ -126,15 +126,35 @@ func TestApplyOperator_StringOpsAreDeclarationIndependent(t *testing.T) {
 // a non-match (not a spurious vacuous match, unlike the pre-kernel behaviour).
 func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 	present := gjson.Parse(`"Alice"`)
-	if got, err := applyOperator("NOT_CONTAINS", present, "xyz", nil); err != nil || !got {
-		t.Errorf("NOT_CONTAINS on present non-containing value must match; got=%v err=%v", got, err)
+	// Positive-satisfying operand per op (so !positive would spuriously match on
+	// null if the null-guard were absent — the RED behaviour this pins against).
+	cases := []struct {
+		op          string
+		nonMatchArg string // present value does contain/start/end with this → non-match
+		matchArg    string // present value does NOT contain/start/end with this → match
+	}{
+		{"NOT_CONTAINS", "lic", "xyz"},
+		{"NOT_STARTS_WITH", "Al", "xy"},
+		{"NOT_ENDS_WITH", "ce", "xy"},
 	}
-	if got, err := applyOperator("NOT_CONTAINS", present, "lic", nil); err != nil || got {
-		t.Errorf("NOT_CONTAINS on present containing value must non-match; got=%v err=%v", got, err)
-	}
+	jsonNull := gjson.Parse(`null`)
+	nonTextual := gjson.Parse(`42`)
 	absent := gjson.Result{}
-	if got, err := applyOperator("NOT_CONTAINS", absent, "xyz", nil); err != nil || got {
-		t.Errorf("NOT_CONTAINS on absent must non-match (null uniformity); got=%v err=%v", got, err)
+	for _, c := range cases {
+		if got, err := applyOperator(c.op, present, c.matchArg, nil); err != nil || !got {
+			t.Errorf("%s on present non-matching value must match; got=%v err=%v", c.op, got, err)
+		}
+		if got, err := applyOperator(c.op, present, c.nonMatchArg, nil); err != nil || got {
+			t.Errorf("%s on present matching value must non-match; got=%v err=%v", c.op, got, err)
+		}
+		// Null-uniform: absent / JSON-null / non-textual leaves must all
+		// non-match, NEVER !positive (which would spuriously match here since
+		// nonMatchArg makes the positive twin true on a present value).
+		for name, leaf := range map[string]gjson.Result{"absent": absent, "json-null": jsonNull, "non-textual": nonTextual} {
+			if got, err := applyOperator(c.op, leaf, c.nonMatchArg, nil); err != nil || got {
+				t.Errorf("%s on %s leaf must non-match (null uniformity); got=%v err=%v", c.op, name, got, err)
+			}
+		}
 	}
 }
 

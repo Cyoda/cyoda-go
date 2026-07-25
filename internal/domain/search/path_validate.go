@@ -170,10 +170,14 @@ func refreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRe
 }
 
 // fieldsFromDescriptor unmarshals desc.Schema and returns its FieldsMap.
-// A nil descriptor is treated as "no model registered" and yields a nil
-// map without error.
+// A nil descriptor OR a descriptor with no schema bound (empty Schema bytes)
+// is treated as "no schema to type against" and yields a nil map without error
+// — the (nil,nil) case callers degrade on. This mirrors loadModelNode's
+// `len(desc.Schema) == 0` guard, so the two schema-load entry points agree on
+// what counts as "no schema" versus a genuine parse error (non-empty but
+// unparseable bytes), which still surfaces so callers can fail closed.
 func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDescriptor, error) {
-	if desc == nil {
+	if desc == nil || len(desc.Schema) == 0 {
 		return nil, nil
 	}
 	node, err := schema.Unmarshal(desc.Schema)

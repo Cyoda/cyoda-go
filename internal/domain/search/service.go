@@ -245,12 +245,17 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 
 	// Declared-type resolver for the predicate evaluator: the type-directed
 	// kernel compares temporal data fields temporally (not lexically) only when
-	// the model supplies their declared subtype. Load the model's FieldsMap
-	// (best-effort, nil-tolerant) so this in-memory fallback path matches the
-	// pushdown's typing. A nil map yields a nil-returning resolver, which the
-	// evaluator tolerates (comparison leaves then non-match, as they cannot be
-	// typed).
-	fallbackFields, _ := loadFieldsMap(ctx, modelStore, modelRef)
+	// the model supplies their declared subtype. Load the model's FieldsMap so
+	// this in-memory fallback path matches the pushdown's typing. A genuine
+	// store/schema-load error fails closed (correctness-over-availability): the
+	// model schema is a required input for correct typing, so we surface the
+	// error rather than silently under-match with untyped leaves. The
+	// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
+	// returns nil types, and comparison leaves degrade to non-match as intended.
+	fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
+	if ffErr != nil {
+		return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
+	}
 	fieldTypes := func(p string) []spi.DataType {
 		if fd, ok := fallbackFields[p]; ok {
 			return fd.Types
