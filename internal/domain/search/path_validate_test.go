@@ -127,8 +127,17 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 	stale := buildSearchDescriptor(t, ref, "a")
 	fresh := buildSearchDescriptor(t, ref, "a", "z")
 	ms := &refreshingModelStore{
-		// EnsureModelRegistered consumes the first Get; loadFieldsMap gets the second.
-		getQueue:     []*spi.ModelDescriptor{stale, stale},
+		// Get sequence within one Search under type-directed evaluation:
+		//  1) EnsureModelRegistered            → stale
+		//  2) validateConditionPaths           → stale (misses $.z, triggers the
+		//     single RefreshAndGet → fresh, which validates the path)
+		//  3) validateConditionTypes           → fresh (must carry $.z, else it
+		//     would 400 on an unknown field path)
+		//  4) the plugin Searcher's FieldsMap  → fresh (so the type-directed
+		//     searcher resolves $.z as String and matches the entity)
+		// Steps 3-4 return fresh because in production a refresh updates the
+		// cached schema, so every subsequent Get sees the authoritative shape.
+		getQueue:     []*spi.ModelDescriptor{stale, stale, fresh, fresh},
 		refreshQueue: []*spi.ModelDescriptor{fresh},
 	}
 	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}

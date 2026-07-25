@@ -33,6 +33,32 @@ func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFact
 	}
 }
 
+// registerModelFields saves a model descriptor whose schema declares the given
+// top-level leaf fields with their declared types. Data-field criteria in the
+// workflow engine are type-directed: the evaluator lazily loads the model's
+// FieldsMap so a comparison/equality leaf resolves against the declared type.
+// Tests that exercise data-field criteria must register the model the same way
+// production does — otherwise a referenced leaf either fails closed (model-load
+// error) or degrades to non-match (declared type absent).
+func registerModelFields(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef, fields map[string]schema.DataType) {
+	t.Helper()
+	node := schema.NewObjectNode()
+	for name, dt := range fields {
+		node.SetChild(name, schema.NewLeafNode(dt))
+	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
 // errModelStoreFactory wraps a StoreFactory but makes ModelStore fail, modelling
 // a genuine model-store outage. Every other capability delegates to the inner
 // factory so the rest of the engine still works.

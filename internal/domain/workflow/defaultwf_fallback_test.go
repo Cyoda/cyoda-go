@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *testing.T) {
@@ -38,6 +39,15 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 	if err := wfStore.Save(ctx, modelRef, importedWF); err != nil {
 		t.Fatalf("failed to save workflow: %v", err)
 	}
+
+	// Register the model declaring the entity's real leaves. The criterion
+	// references $.nonExistentField, which carries no declared type, so the
+	// data-field equality leaf degrades to non-match — driving the intended
+	// fallback to the default workflow (not a fail-closed load error).
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"keyId":     schema.String,
+		"algorithm": schema.String,
+	})
 
 	// Create an entity that does NOT match the workflow criterion.
 	entity := makeEntity("obo-1", modelRef, map[string]any{"keyId": "test", "algorithm": "RS256"})

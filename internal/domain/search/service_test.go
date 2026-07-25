@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -38,6 +39,54 @@ func saveMinimalModel(t *testing.T, ctx context.Context, factory *memory.StoreFa
 		t.Fatalf("ModelStore: %v", err)
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// helper: register a model whose schema declares the given top-level leaf
+// fields with their declared types. Search evaluation is type-directed: both
+// the plugin Searcher and the in-memory fallback resolve a data leaf's declared
+// subtype from the model's FieldsMap. A comparison/equality leaf over a path
+// with no declared type degrades to non-match — so a search test that expects
+// matches must register the schema the same way production does.
+func saveModelWithFields(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, fields map[string]schema.DataType) {
+	t.Helper()
+	node := schema.NewObjectNode()
+	for name, dt := range fields {
+		node.SetChild(name, schema.NewLeafNode(dt))
+	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// helper: register a model whose schema declares `arrayField` as an array of
+// objects each carrying a single String leaf `leafField`. The resulting
+// FieldsMap key is "$.<arrayField>[*].<leafField>", which is what a wildcard
+// array condition ("$.items[*].name") resolves its element type against.
+func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, arrayField, leafField string) {
+	t.Helper()
+	elem := schema.NewObjectNode()
+	elem.SetChild(leafField, schema.NewLeafNode(schema.String))
+	node := schema.NewObjectNode()
+	node.SetChild(arrayField, schema.NewArrayNode(elem))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
 }
@@ -72,7 +121,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String, "age": schema.Integer})
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice","age":30}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob","age":25}`))
 	saveEntity(t, ctx, factory, ref, "e3", []byte(`{"name":"Alice","age":40}`))
@@ -136,7 +185,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
 	// Save original
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -198,7 +247,7 @@ func TestDirectSearchPagination(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"val": schema.Integer})
 	for i := 0; i < 5; i++ {
 		saveEntity(t, ctx, factory, ref,
 			fmt.Sprintf("e%d", i),
@@ -251,7 +300,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
@@ -798,7 +847,7 @@ func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, base, ref)
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
@@ -911,7 +960,10 @@ func TestSearch_TranslateFailure_FallsBackEvenInTransaction(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, base, ref)
+	// Register a schema declaring items[*].name as String so the type-directed
+	// in-memory fallback resolves the array-element leaf and matches the
+	// wildcard equality (FieldsMap key "$.items[*].name").
+	saveModelWithArrayOfStringField(t, ctx, base, ref, "items", "name")
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"items":[{"name":"gadget"},{"name":"widget"}]}`))
 	saveEntity(t, ctx, base, ref, "e2", []byte(`{"items":[{"name":"gadget"},{"name":"other"}]}`))
 

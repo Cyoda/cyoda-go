@@ -10,6 +10,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -100,6 +101,7 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"status": schema.String})
 
 	// Entity with status=done → auto-completes to COMPLETED.
 	entity1 := makeEntity("lb1", modelRef, map[string]any{"status": "done"})
@@ -201,6 +203,7 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"priority": schema.String})
 
 	// High priority: INITIAL -> FAST_TRACK -> DONE
 	entityHigh := makeEntity("prio-h", modelRef, map[string]any{"priority": "high"})
@@ -466,6 +469,7 @@ func TestScenarioLoopbackReEvaluates(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"ready": schema.Boolean})
 
 	// Create with ready=false → stays at WAITING.
 	entity := makeEntity("lbr1", modelRef, map[string]any{"ready": false})
