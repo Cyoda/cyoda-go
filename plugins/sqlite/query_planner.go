@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -195,6 +196,36 @@ func fieldExpr(f spi.Filter) string {
 	return fmt.Sprintf("json_extract(data, '$.%s')", f.Path)
 }
 
+// bindArg normalizes an operand for binding as a `?` placeholder. The SPI's
+// predicate parser decodes numeric search operands as json.Number (a
+// string-kind type, via json.Decoder.UseNumber) to preserve precision
+// losslessly. database/sql has no driver.Valuer for json.Number, so it
+// binds one raw as TEXT — flipping SQLite's storage-class comparison from
+// numeric to lexicographic and diverging from the memory/SPI kernel, which
+// compares the underlying numeric value regardless of Go kind. Converting
+// to a native numeric Go value here restores INTEGER/REAL affinity. Integral
+// values convert to int64 (matching how the engine stores whole-number JSON
+// fields); fractional values convert to float64. Non-json.Number operands
+// pass through unchanged — this only ever changes json.Number binding.
+func bindArg(v any) any {
+	n, ok := v.(json.Number)
+	if !ok {
+		return v
+	}
+	if i, err := n.Int64(); err == nil {
+		return i
+	}
+	f, err := n.Float64()
+	if err != nil {
+		// Unreachable in practice: the SPI parser only ever produces a
+		// json.Number from a syntactically valid JSON number literal, so
+		// neither Int64() nor Float64() can fail on it. Fail closed rather
+		// than bind a malformed value: this leaf never matches.
+		return nil
+	}
+	return f
+}
+
 // leafToSQL translates a single leaf filter node to SQL with NULL/3VL handling.
 //
 // NULL/3VL rules:
@@ -226,17 +257,17 @@ func leafToSQL(f spi.Filter) (string, []any) {
 	col := fieldExpr(f)
 	switch f.Op {
 	case spi.FilterEq:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s = ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s = ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterNe:
-		return fmt.Sprintf("(%s IS NULL OR %s != ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NULL OR %s != ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterGt:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s > ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s > ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterLt:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s < ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s < ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterGte:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterLte:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s <= ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s <= ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterContains:
 		return fmt.Sprintf("instr(%s, ?) > 0", col), []any{f.Value}
 	case spi.FilterStartsWith:
@@ -248,7 +279,7 @@ func leafToSQL(f spi.Filter) (string, []any) {
 	case spi.FilterBetween:
 		if len(f.Values) >= 2 {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
-				[]any{f.Values[0], f.Values[1]}
+				[]any{bindArg(f.Values[0]), bindArg(f.Values[1])}
 		}
 		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
 		// every row, matching memory's spi.MatchFilter semantics. Validation

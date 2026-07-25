@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -874,5 +875,94 @@ func TestPlan_TemporalNotNull(t *testing.T) {
 	}
 	if !isPushable(spi.FilterNotNull) {
 		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+// --- json.Number operand handling (Task 6c) ---
+//
+// The SPI's predicate parser now decodes numeric search operands as
+// json.Number (a string-kind type) instead of float64, to preserve
+// precision losslessly. json.Number must still be treated as numeric by
+// the query planner's pushdown routing — otherwise it misroutes to the
+// lexical text-comparison branch, diverging from the memory/SPI kernel
+// (which type-switches on the underlying numeric value, not the Go kind).
+
+func TestIsNumericValue_JSONNumber(t *testing.T) {
+	if !isNumericValue(json.Number("5")) {
+		t.Errorf("isNumericValue(json.Number(\"5\")) = false, want true")
+	}
+	if !isNumericValue(json.Number("3.14")) {
+		t.Errorf("isNumericValue(json.Number(\"3.14\")) = false, want true")
+	}
+}
+
+func TestPlanQuery_Eq_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterEq,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') = $1::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if strings.Contains(plan.where, "doc->>'age' = $1)") {
+		t.Errorf("json.Number operand must not fall through to the lexical text-comparison branch: %s", plan.where)
+	}
+	if len(plan.args) != 1 || plan.args[0] != float64(25) {
+		t.Errorf("args = %v, want [25.0] (bound as a float64, not the raw json.Number string)", plan.args)
+	}
+}
+
+func TestPlanQuery_Ne_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterNe,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'age') IS NULL OR cyoda_try_float8(doc->>'age') != $1::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != float64(25) {
+		t.Errorf("args = %v, want [25.0] (bound as a float64, not the raw json.Number string)", plan.args)
+	}
+}
+
+func TestPlanQuery_Gt_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterGt,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') > $1::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != float64(25) {
+		t.Errorf("args = %v, want [25.0] (bound as a float64, not the raw json.Number string)", plan.args)
+	}
+}
+
+func TestPlanQuery_Between_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterBetween,
+		Path:   "score",
+		Source: spi.SourceData,
+		Values: []any{json.Number("10"), json.Number("20")},
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 2 || plan.args[0] != float64(10) || plan.args[1] != float64(20) {
+		t.Errorf("args = %v, want [10.0 20.0] (bound as float64, not raw json.Number strings)", plan.args)
 	}
 }

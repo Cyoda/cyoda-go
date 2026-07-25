@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -252,17 +253,45 @@ func jsonbExtractJSONB(root, path string) string {
 	return b.String()
 }
 
-// isNumericValue reports whether v is a Go numeric type (int*/uint*/float*).
+// isNumericValue reports whether v is a Go numeric type (int*/uint*/float*)
+// or a json.Number — the SPI's predicate parser decodes numeric search
+// operands as json.Number (a string-kind type, via json.Decoder.UseNumber)
+// to preserve precision losslessly, so it must route through the numeric
+// branch exactly like a native Go numeric would, not the lexical branch a
+// string-kind type would otherwise fall to.
 // Numeric values use cyoda_try_float8 + ::float8 for safe overflow-free
 // comparisons; non-numeric values use lexicographic text comparison.
 func isNumericValue(v any) bool {
 	switch v.(type) {
 	case int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
-		float32, float64:
+		float32, float64,
+		json.Number:
 		return true
 	}
 	return false
+}
+
+// numericArg converts an operand already routed through the numeric branch
+// (isNumericValue(v) == true) into a value pgx can encode against a
+// ::float8 cast. A json.Number is a string-kind type with no bool/float8
+// encode plan of its own — pgx needs an actual Go numeric — so it is
+// parsed to float64 here (cyoda_try_float8's own arithmetic is float8, so
+// no precision is lost by this conversion beyond what float8 already
+// bounds). Native Go numeric types pass through unchanged.
+func numericArg(v any) any {
+	if n, ok := v.(json.Number); ok {
+		f, err := n.Float64()
+		if err != nil {
+			// Unreachable in practice: the SPI parser only ever produces a
+			// json.Number from a syntactically valid JSON number literal,
+			// so Float64() cannot fail. Fail closed rather than bind a
+			// malformed value: this leaf never matches.
+			return nil
+		}
+		return f
+	}
+	return v
 }
 
 // textArg normalizes an operand for binding against a text-typed doc->>'path'
@@ -348,7 +377,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)
-			return fmt.Sprintf("(%s IS NOT NULL AND %s = %s::float8)", col, col, p), []any{f.Value}
+			return fmt.Sprintf("(%s IS NOT NULL AND %s = %s::float8)", col, col, p), []any{numericArg(f.Value)}
 		}
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
@@ -357,7 +386,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)
-			return fmt.Sprintf("(%s IS NULL OR %s != %s::float8)", col, col, p), []any{f.Value}
+			return fmt.Sprintf("(%s IS NULL OR %s != %s::float8)", col, col, p), []any{numericArg(f.Value)}
 		}
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)
@@ -398,7 +427,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 			p2 := nextPlaceholder(counter)
 			if numeric {
 				return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s::float8 AND %s::float8)",
-					col, col, p1, p2), []any{f.Values[0], f.Values[1]}
+					col, col, p1, p2), []any{numericArg(f.Values[0]), numericArg(f.Values[1])}
 			}
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)",
 				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
@@ -488,7 +517,7 @@ func orderingOp(f spi.Filter, sqlOp string, counter *int) (string, []any) {
 	col := orderExpr(f, numeric)
 	p := nextPlaceholder(counter)
 	if numeric {
-		return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s::float8)", col, col, sqlOp, p), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s::float8)", col, col, sqlOp, p), []any{numericArg(f.Value)}
 	}
 	return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s)", col, col, sqlOp, p), []any{textArg(f.Value)}
 }

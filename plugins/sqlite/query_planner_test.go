@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -197,6 +198,105 @@ func TestPlanQuery_Between(t *testing.T) {
 	}
 	if len(plan.args) != 2 || plan.args[0] != float64(10) || plan.args[1] != float64(20) {
 		t.Errorf("args = %v, want [10 20]", plan.args)
+	}
+}
+
+// --- json.Number operand handling (Task 6c) ---
+//
+// The SPI's predicate parser now decodes numeric search operands as
+// json.Number (a string-kind type) instead of float64, to preserve
+// precision losslessly. database/sql binds a json.Number raw as TEXT
+// (it implements no driver.Valuer), which flips SQLite's storage-class
+// comparison from numeric to lexicographic — diverging from the
+// memory/SPI kernel. A json.Number operand must be converted to a
+// numeric Go value (int64 when integral, else float64) before binding
+// so REAL/INTEGER affinity — and therefore numeric ordering — holds.
+// The SQL text itself is unaffected (sqlite's WHERE clause shape does
+// not depend on operand type); only the bound arg's Go type matters.
+
+func TestPlanQuery_Eq_JSONNumberOperand_BindsInt64(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterEq,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.age') IS NOT NULL AND json_extract(data, '$.age') = ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != int64(25) {
+		t.Errorf("args = %v (%T), want [int64(25)] — an integral json.Number must bind as int64, not the raw string", plan.args, plan.args[0])
+	}
+}
+
+func TestPlanQuery_Eq_JSONNumberOperand_BindsFloat64(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterEq,
+		Path:   "score",
+		Source: spi.SourceData,
+		Value:  json.Number("3.14"),
+	}
+	plan := planQuery(f)
+	if len(plan.args) != 1 || plan.args[0] != float64(3.14) {
+		t.Errorf("args = %v (%T), want [float64(3.14)] — a fractional json.Number must bind as float64, not the raw string", plan.args, plan.args[0])
+	}
+}
+
+func TestPlanQuery_Ne_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterNe,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	if len(plan.args) != 1 || plan.args[0] != int64(25) {
+		t.Errorf("args = %v (%T), want [int64(25)]", plan.args, plan.args[0])
+	}
+}
+
+func TestPlanQuery_Ordering_JSONNumberOperand(t *testing.T) {
+	tests := []struct {
+		name string
+		op   spi.FilterOp
+	}{
+		{"gt", spi.FilterGt},
+		{"lt", spi.FilterLt},
+		{"gte", spi.FilterGte},
+		{"lte", spi.FilterLte},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := spi.Filter{
+				Op:     tt.op,
+				Path:   "age",
+				Source: spi.SourceData,
+				Value:  json.Number("25"),
+			}
+			plan := planQuery(f)
+			if len(plan.args) != 1 || plan.args[0] != int64(25) {
+				t.Errorf("args = %v (%T), want [int64(25)]", plan.args, plan.args[0])
+			}
+		})
+	}
+}
+
+func TestPlanQuery_Between_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterBetween,
+		Path:   "score",
+		Source: spi.SourceData,
+		Values: []any{json.Number("10"), json.Number("20.5")},
+	}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.score') IS NOT NULL AND json_extract(data, '$.score') BETWEEN ? AND ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 2 || plan.args[0] != int64(10) || plan.args[1] != float64(20.5) {
+		t.Errorf("args = %v (%T, %T), want [int64(10) float64(20.5)]", plan.args, plan.args[0], plan.args[1])
 	}
 }
 
