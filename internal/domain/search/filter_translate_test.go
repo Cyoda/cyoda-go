@@ -84,11 +84,15 @@ func TestConditionToFilter_AllSimpleOperators(t *testing.T) {
 		{"IS_NULL", spi.FilterIsNull},
 		{"NOT_NULL", spi.FilterNotNull},
 		{"BETWEEN", spi.FilterBetween},
+		{"BETWEEN_INCLUSIVE", spi.FilterBetweenInclusive},
 		{"MATCHES_PATTERN", spi.FilterMatchesRegex},
 		{"IEQUALS", spi.FilterIEq},
 		{"ICONTAINS", spi.FilterIContains},
 		{"ISTARTS_WITH", spi.FilterIStartsWith},
 		{"IENDS_WITH", spi.FilterIEndsWith},
+		{"NOT_CONTAINS", spi.FilterNotContains},
+		{"NOT_STARTS_WITH", spi.FilterNotStartsWith},
+		{"NOT_ENDS_WITH", spi.FilterNotEndsWith},
 	}
 
 	for _, tt := range tests {
@@ -452,6 +456,52 @@ func TestConditionToFilter_LifecycleBetween_PopulatesValues(t *testing.T) {
 	}
 	if f.Values[0] != "2021-01-01T00:00:00Z" || f.Values[1] != "2021-12-31T00:00:00Z" {
 		t.Errorf("Values = %v, want [2021-01-01T00:00:00Z 2021-12-31T00:00:00Z]", f.Values)
+	}
+}
+
+// TestConditionToFilter_SimpleBetweenInclusive_PopulatesValues verifies that
+// a BETWEEN_INCLUSIVE SimpleCondition (data leaf) populates Filter.Values
+// with the two bounds, exactly like BETWEEN — both range ops share the same
+// downstream Values contract (spi.evalLeafFilter, postgres/sqlite planners).
+func TestConditionToFilter_SimpleBetweenInclusive_PopulatesValues(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN_INCLUSIVE",
+		Value:        []any{float64(18), float64(65)},
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterBetweenInclusive {
+		t.Fatalf("Op = %s, want between_inclusive", f.Op)
+	}
+	if len(f.Values) != 2 {
+		t.Fatalf("Values = %v, want 2-element slice [18, 65]", f.Values)
+	}
+	if f.Values[0] != float64(18) || f.Values[1] != float64(65) {
+		t.Errorf("Values = %v, want [18 65]", f.Values)
+	}
+}
+
+// TestConditionToFilter_NotContains_RoutesToKernelOp verifies that a
+// NOT_CONTAINS SimpleCondition translates to a spi.Filter with
+// Op: spi.FilterNotContains — NOT a matches_regex leaf. Prior to this fix,
+// NOT_CONTAINS (and the other case-sensitive negatives) fell through
+// mapOperator's default case to FilterMatchesRegex, silently mistranslating
+// the condition into a regex match on Searcher (sqlite/postgres) backends.
+func TestConditionToFilter_NotContains_RoutesToKernelOp(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "NOT_CONTAINS",
+		Value:        "foo",
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterNotContains {
+		t.Fatalf("Op = %s, want not_contains (must not fall through to matches_regex)", f.Op)
 	}
 }
 

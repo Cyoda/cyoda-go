@@ -29,23 +29,6 @@ import (
 // match", not "fail the request". A genuinely unsupported operator name
 // (IS_CHANGED / IS_UNCHANGED / unknown) is still a hard error.
 func applyOperator(operatorType string, actual gjson.Result, expected any, declared []spi.DataType) (bool, error) {
-	// Case-sensitive negative string operators (NOT_CONTAINS / NOT_STARTS_WITH
-	// / NOT_ENDS_WITH) have no direct kernel FilterOp — the kernel exposes only
-	// the positive case-sensitive ops and the negative case-INSENSITIVE ops.
-	// Evaluate the positive twin and negate, reproducing the kernel's
-	// null/non-textual uniformity exactly (absent, JSON-null, or non-textual
-	// stored value → non-match, never a spurious vacuous match).
-	if pos, ok := negatedStringOp(operatorType); ok {
-		if !actual.Exists() || actual.Type != gjson.String {
-			return false, nil
-		}
-		matched, err := spi.EvalLeafString(pos, operandToString(expected), nil, nil, actual)
-		if err != nil {
-			return false, nil
-		}
-		return !matched, nil
-	}
-
 	op, ok := opNameToFilterOp(operatorType)
 	if !ok {
 		return false, fmt.Errorf("unsupported operator: %s", operatorType)
@@ -65,8 +48,8 @@ func applyOperator(operatorType string, actual gjson.Result, expected any, decla
 
 // opNameToFilterOp maps a predicate operator NAME to the corresponding kernel
 // spi.FilterOp. The boolean is false for operator names with no kernel op:
-// IS_CHANGED / IS_UNCHANGED (deliberately unimplemented), the case-sensitive
-// negative string ops (handled by negatedStringOp), and any unknown name.
+// IS_CHANGED / IS_UNCHANGED (deliberately unimplemented) and any unknown
+// name.
 func opNameToFilterOp(op string) (spi.FilterOp, bool) {
 	switch op {
 	case "EQUALS":
@@ -107,29 +90,20 @@ func opNameToFilterOp(op string) (spi.FilterOp, bool) {
 		return spi.FilterIContains, true
 	case "INOT_CONTAINS":
 		return spi.FilterINotContains, true
+	case "NOT_CONTAINS":
+		return spi.FilterNotContains, true
 	case "ISTARTS_WITH":
 		return spi.FilterIStartsWith, true
 	case "INOT_STARTS_WITH":
 		return spi.FilterINotStartsWith, true
+	case "NOT_STARTS_WITH":
+		return spi.FilterNotStartsWith, true
 	case "IENDS_WITH":
 		return spi.FilterIEndsWith, true
 	case "INOT_ENDS_WITH":
 		return spi.FilterINotEndsWith, true
-	default:
-		return "", false
-	}
-}
-
-// negatedStringOp reports whether op is a case-sensitive negative string
-// operator and, if so, returns its positive kernel twin.
-func negatedStringOp(op string) (spi.FilterOp, bool) {
-	switch op {
-	case "NOT_CONTAINS":
-		return spi.FilterContains, true
-	case "NOT_STARTS_WITH":
-		return spi.FilterStartsWith, true
 	case "NOT_ENDS_WITH":
-		return spi.FilterEndsWith, true
+		return spi.FilterNotEndsWith, true
 	default:
 		return "", false
 	}

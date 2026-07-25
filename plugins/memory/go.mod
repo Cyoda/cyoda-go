@@ -3,7 +3,7 @@ module github.com/cyoda-platform/cyoda-go/plugins/memory
 go 1.26.5
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260725034221-48a55d849d19
+	github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260725045352-61d665caf0c6
 	github.com/google/uuid v1.6.0
 	github.com/tidwall/gjson v1.19.0
 )

@@ -53,7 +53,7 @@ func TestBetweenBounds(t *testing.T) {
 	}
 }
 
-// --- opNameToFilterOp / negatedStringOp ---
+// --- opNameToFilterOp ---
 
 func TestOpNameToFilterOp(t *testing.T) {
 	if op, ok := opNameToFilterOp("EQUALS"); !ok || op != spi.FilterEq {
@@ -71,13 +71,19 @@ func TestOpNameToFilterOp(t *testing.T) {
 			t.Errorf("%s must not map to a FilterOp", name)
 		}
 	}
-	// Case-sensitive negatives are handled by negatedStringOp, not opNameToFilterOp.
-	for _, name := range []string{"NOT_CONTAINS", "NOT_STARTS_WITH", "NOT_ENDS_WITH"} {
-		if _, ok := opNameToFilterOp(name); ok {
-			t.Errorf("%s must be routed via negatedStringOp, not opNameToFilterOp", name)
-		}
-		if _, ok := negatedStringOp(name); !ok {
-			t.Errorf("negatedStringOp(%s) must be recognised", name)
+	// Case-sensitive negatives route directly to their kernel FilterOp — the
+	// kernel handles null-uniform negation itself, no local special-casing.
+	negatives := []struct {
+		name string
+		want spi.FilterOp
+	}{
+		{"NOT_CONTAINS", spi.FilterNotContains},
+		{"NOT_STARTS_WITH", spi.FilterNotStartsWith},
+		{"NOT_ENDS_WITH", spi.FilterNotEndsWith},
+	}
+	for _, tc := range negatives {
+		if op, ok := opNameToFilterOp(tc.name); !ok || op != tc.want {
+			t.Errorf("%s → %v,%v, want %v,true", tc.name, op, ok, tc.want)
 		}
 	}
 }
@@ -120,10 +126,12 @@ func TestApplyOperator_StringOpsAreDeclarationIndependent(t *testing.T) {
 	}
 }
 
-// TestApplyOperator_NegatedStringOpNullUniformity pins the kernel-aligned
-// null/non-textual uniformity for the case-sensitive negatives: a present
-// textual value that does not contain the operand matches; an absent value is
-// a non-match (not a spurious vacuous match, unlike the pre-kernel behaviour).
+// TestApplyOperator_NegatedStringOpNullUniformity pins the kernel's
+// null/non-textual uniformity for the case-sensitive negatives (now routed
+// directly through spi.FilterNotContains/NotStartsWith/NotEndsWith, not a
+// local "!positive" negation): a present textual value that does not
+// contain the operand matches; an absent, JSON-null, or non-textual value is
+// always a non-match, never a spurious vacuous match.
 func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 	present := gjson.Parse(`"Alice"`)
 	// Positive-satisfying operand per op (so !positive would spuriously match on

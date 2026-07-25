@@ -58,15 +58,16 @@ func simpleToFilter(c *predicate.SimpleCondition, fields map[string]schema.Field
 	}, nil
 }
 
-// betweenValues returns the two BETWEEN bounds as a []any for downstream
-// consumers that read Filter.Values (spi.evalLeafFilter/evalTemporalLeaf,
-// the postgres/sqlite query planners). Every BETWEEN consumer reads Values,
-// not Value — leaving Values unset makes BETWEEN silently never match.
-// Returns nil for non-BETWEEN ops or a malformed (non 2-element []any)
-// BETWEEN value; validation elsewhere rejects malformed BETWEEN conditions,
-// and a nil Values correctly no-matches downstream rather than panicking.
+// betweenValues returns the two BETWEEN / BETWEEN_INCLUSIVE bounds as a
+// []any for downstream consumers that read Filter.Values
+// (spi.evalLeafFilter/evalTemporalLeaf, the postgres/sqlite query planners).
+// Every range consumer reads Values, not Value — leaving Values unset makes
+// the range op silently never match. Returns nil for non-range ops or a
+// malformed (non 2-element []any) value; validation elsewhere rejects
+// malformed range conditions, and a nil Values correctly no-matches
+// downstream rather than panicking.
 func betweenValues(op spi.FilterOp, value any) []any {
-	if op != spi.FilterBetween {
+	if op != spi.FilterBetween && op != spi.FilterBetweenInclusive {
 		return nil
 	}
 	vals, ok := value.([]any)
@@ -257,6 +258,8 @@ func mapOperator(op string) spi.FilterOp {
 		return spi.FilterNotNull
 	case "BETWEEN":
 		return spi.FilterBetween
+	case "BETWEEN_INCLUSIVE":
+		return spi.FilterBetweenInclusive
 	case "MATCHES_PATTERN":
 		return spi.FilterMatchesRegex
 	case "IEQUALS":
@@ -267,14 +270,20 @@ func mapOperator(op string) spi.FilterOp {
 		return spi.FilterIContains
 	case "INOT_CONTAINS":
 		return spi.FilterINotContains
+	case "NOT_CONTAINS":
+		return spi.FilterNotContains
 	case "ISTARTS_WITH":
 		return spi.FilterIStartsWith
 	case "INOT_STARTS_WITH":
 		return spi.FilterINotStartsWith
+	case "NOT_STARTS_WITH":
+		return spi.FilterNotStartsWith
 	case "IENDS_WITH":
 		return spi.FilterIEndsWith
 	case "INOT_ENDS_WITH":
 		return spi.FilterINotEndsWith
+	case "NOT_ENDS_WITH":
+		return spi.FilterNotEndsWith
 	default:
 		return spi.FilterMatchesRegex // forces post-filter for unknown ops
 	}
