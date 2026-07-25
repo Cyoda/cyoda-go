@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 209 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 210 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -120,6 +120,10 @@ var allTests = []NamedTest{
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
+	// Type-directed convergence: a comparison on a field with NO declared
+	// scalar type degrades to non-match (empty) uniformly across backends —
+	// pins "empty declared → non-match" against silent regression.
+	{"SearchUntypedComparisonEmpty", RunSearchUntypedComparisonEmpty},
 
 	// Phase 4b — workflow selection (Task 4b.7)
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},

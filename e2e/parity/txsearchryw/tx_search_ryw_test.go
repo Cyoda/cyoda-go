@@ -22,7 +22,7 @@ import (
 var personRef = spi.ModelRef{EntityName: "txperson", ModelVersion: "1"}
 
 // cityBerlin is the canonical pushable predicate reused across scenarios.
-var cityBerlin = spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"}
+var cityBerlin = spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
 
 // backend is one storage plugin under test. open() returns a FRESH, isolated
 // factory plus a committed (non-tx) tenant context and a cleanup func. Each

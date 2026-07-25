@@ -2,6 +2,7 @@ package parity
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"testing"
@@ -132,7 +133,13 @@ func RunSearchTemporalCreationDate(t *testing.T, fixture BackendFixture) {
 		{"creationDate LE tB", "LESS_OR_EQUAL", op(times[1]), []string{ids[0], ids[1]}},
 		{"creationDate EQ tB", "EQUALS", op(times[1]), []string{ids[1]}},
 		{"creationDate NE tB", "NOT_EQUAL", op(times[1]), []string{ids[0], ids[2]}},
-		{"creationDate BETWEEN tA-tB", "BETWEEN", []string{op(times[0]), op(times[1])}, []string{ids[0], ids[1]}},
+		// BETWEEN is kernel-authoritative EXCLUSIVE: with the operands pinned to
+		// A's and C's exact instants, both on-boundary rows (A == lo, C == hi)
+		// are dropped and only B survives strictly inside the open interval.
+		{"creationDate BETWEEN tA-tC (exclusive)", "BETWEEN", []string{op(times[0]), op(times[2])}, []string{ids[1]}},
+		// BETWEEN_INCLUSIVE is the inclusive twin: the same window keeps both
+		// on-boundary rows plus B.
+		{"creationDate BETWEEN_INCLUSIVE tA-tC", "BETWEEN_INCLUSIVE", []string{op(times[0]), op(times[2])}, []string{ids[0], ids[1], ids[2]}},
 		// Mixed-precision EQ: ms-truncated form of tB must still match B —
 		// the cross-backend flooring-consistency guard.
 		{"creationDate EQ tB (ms-truncated)", "EQUALS", opMillis(times[1]), []string{ids[1]}},
@@ -249,6 +256,70 @@ func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
 	}
 	if !containsErrorCode(body, "BAD_REQUEST") {
 		t.Errorf("expected errorCode BAD_REQUEST, body=%s", body)
+	}
+}
+
+// RunSearchUntypedComparisonEmpty pins the kernel-authoritative convergence
+// that a comparison on a field with NO declared scalar type degrades to
+// non-match (empty result set) — identically on every backend.
+//
+// Vehicle: $.obj is a known structural interior (it has a typed leaf
+// $.obj.inner, so pre-execution field-path validation accepts it) but is not
+// itself a leaf in the model's FieldsMap, so its declared type set is empty.
+// The type-directed kernel (spi.ExpandLeaf) reports "operand parses into no
+// declared type" for an empty declared set, which every evaluator turns into a
+// per-entity non-match rather than an error. The result must be an empty 200 —
+// never a 500, never an accidental cross-type lexical match (the pre-
+// convergence behaviour). A leaf control search proves the corpus is present and
+// searchable, so the empty untyped result is the contract, not a setup gap.
+func RunSearchUntypedComparisonEmpty(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-untyped-compare"
+	const modelVersion = 1
+	// $.obj is an object interior (typed leaf $.obj.inner); $.obj itself carries
+	// no declared scalar type.
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"obj":{"inner":"x"}}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","amount":10,"obj":{"inner":"x"}}`); err != nil {
+		t.Fatalf("CreateEntity A: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"B","amount":20,"obj":{"inner":"y"}}`); err != nil {
+		t.Fatalf("CreateEntity B: %v", err)
+	}
+
+	// Control: a comparison on a TYPED leaf ($.name, String) matches — evidence
+	// the corpus is present and searchable, so the empty untyped results below
+	// are the kernel contract, not an empty-corpus artefact.
+	ctrl, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"A"}`)
+	if err != nil {
+		t.Fatalf("SyncSearch control: %v", err)
+	}
+	if len(ctrl) != 1 {
+		t.Fatalf("control $.name EQUALS A: want 1 result, got %d", len(ctrl))
+	}
+
+	// The convergence: an untyped-field comparison degrades to non-match (empty)
+	// on every backend, for both an equality and an ordering operator.
+	for _, tc := range []struct {
+		label, op, value string
+	}{
+		{"EQUALS", "EQUALS", "x"},
+		{"GREATER_THAN", "GREATER_THAN", "a"},
+	} {
+		cond := fmt.Sprintf(`{"type":"simple","jsonPath":"$.obj","operatorType":%q,"value":%q}`, tc.op, tc.value)
+		res, err := c.SyncSearch(t, modelName, modelVersion, cond)
+		if err != nil {
+			t.Fatalf("[%s] SyncSearch: %v", tc.label, err)
+		}
+		if len(res) != 0 {
+			t.Errorf("[%s] untyped $.obj comparison: want 0 results (empty declared → non-match), got %d", tc.label, len(res))
+		}
 	}
 }
 

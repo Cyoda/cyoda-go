@@ -212,16 +212,33 @@ func TestSearchTemporal_CreationDate_NotEqual(t *testing.T) {
 	assertIDSet(t, results, []string{ids[0], ids[2]})
 }
 
+// TestSearchTemporal_CreationDate_Between exercises the kernel-authoritative
+// EXCLUSIVE BETWEEN alongside its inclusive twin BETWEEN_INCLUSIVE. With the
+// operands pinned to A's and C's exact instants, EXCLUSIVE BETWEEN drops both
+// on-boundary rows (A == lo, C == hi) and keeps only B, which lies strictly
+// inside; BETWEEN_INCLUSIVE keeps all three. Mirrors the numeric convention in
+// plugins/*/searcher_test.go (FilterBetween is exclusive, the boundary rows are
+// re-checked away by the kernel).
 func TestSearchTemporal_CreationDate_Between(t *testing.T) {
 	const model = "e2e-search-temporal-cd-between"
 	ids, times := setupTemporalEntities(t, model)
 
-	cond := lifecycleCond(t, "creationDate", "BETWEEN", []string{times[0], times[1]})
+	// EXCLUSIVE: A (== times[0]) and C (== times[2]) sit on the boundary and are
+	// dropped; only B (times[1]) lies strictly inside the open interval.
+	cond := lifecycleCond(t, "creationDate", "BETWEEN", []string{times[0], times[2]})
 	status, results := directSearch(t, model, 1, cond)
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	assertIDSet(t, results, []string{ids[0], ids[1]})
+	assertIDSet(t, results, []string{ids[1]})
+
+	// INCLUSIVE twin: the same window keeps both on-boundary rows plus B.
+	condInc := lifecycleCond(t, "creationDate", "BETWEEN_INCLUSIVE", []string{times[0], times[2]})
+	statusInc, resultsInc := directSearch(t, model, 1, condInc)
+	if statusInc != http.StatusOK {
+		t.Fatalf("expected 200, got %d", statusInc)
+	}
+	assertIDSet(t, resultsInc, []string{ids[0], ids[1], ids[2]})
 }
 
 // --- lastUpdateTime ---
