@@ -201,6 +201,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **Search/criteria predicate evaluation is now type-directed and same-type
+  only**, aligning cyoda-go with Cyoda Cloud's evaluation model (see
+  `cyoda help predicates`, `docs/cloud-parity/431-search-semantics.md`).
+  Observable changes:
+  - Comparison is same-type: an operand is parsed against the field's
+    declared type(s), so a numeric-looking string and a JSON number are
+    treated identically; there is no cross-type coincidental match.
+  - Numbers compare via precise arbitrary-precision types, replacing the
+    prior `float64`-based coercion (correct beyond 2^53).
+  - `LIKE` is now an anchored, escaped glob (`%`/`_`/`\`-escape, whole-string,
+    case-sensitive) on every backend — SQL `LIKE` is no longer wildcard-neutered.
+  - Data-field temporal comparison is lit up (six subtypes with resolution
+    upscale/downscale), subsuming the earlier temporal-search work; meta-field
+    temporal (`creationDate`/`lastUpdateTime`) now also accepts a coarser
+    operand (e.g. a bare year) and upscales it, relaxing the prior
+    offset-mandatory rule.
+  - Validation is parse-based: a `400` is returned only when the operand
+    parses into none of the field's declared types. This replaces the
+    previous value-type-assignability check, so some requests that used to
+    400 now succeed (and vice versa) — see `errors.CONDITION_TYPE_MISMATCH`.
+  - Negative operators (`NOT_EQUAL`, `NOT_CONTAINS`, `INOT_*`, ...) on an
+    absent or `null` field now evaluate to **non-match** (previously matched
+    via `!positive`).
+  - `BETWEEN_INCLUSIVE` is fixed: it previously fell through to a regex
+    evaluation on `Searcher`-backed stores instead of an inclusive range check.
+  - A field observed as both an object and a bare scalar is now searchable
+    via its scalar type; a scalar operator against a pure-container (object)
+    path now rejects `400 INVALID_FIELD_PATH` instead of silently returning
+    an empty result.
+  - `IS_CHANGED`/`IS_UNCHANGED` remain unimplemented — not search predicates.
+
 - **Processor `config.attachEntity` now defaults to `true`.** A processor whose
   `config` omits `attachEntity` is imported with `attachEntity: true`, so the
   full entity payload is attached to its calculation request — matching

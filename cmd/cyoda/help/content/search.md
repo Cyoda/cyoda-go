@@ -14,6 +14,9 @@ see_also:
   - errors.SEARCH_SHARD_TIMEOUT
   - errors.INVALID_FIELD_PATH
   - errors.CONDITION_TYPE_MISMATCH
+  - errors.INVALID_CONDITION
+  - predicates
+  - workflows
   - openapi
 ---
 
@@ -43,7 +46,9 @@ Search operates against a specific entity model `(entityName, modelVersion)`. Tw
 
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
-Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend — including inside an active transaction, where the pushdown is read-your-own-writes correct against the transaction's own uncommitted writes (see `trackingRead` below and `docs/CONSISTENCY.md` §3c). Only when translation fails (unsupported condition type) does the service fall back to in-memory filtering after a full `GetAll` scan.
+Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend — including inside an active transaction, where the pushdown is read-your-own-writes correct against the transaction's own uncommitted writes (see `trackingRead` below and `docs/CONSISTENCY.md` §3c). Only when translation fails (unsupported condition type) does the service fall back to in-memory filtering after a full `GetAll` scan. The pushdown is a narrowing optimization only — the in-process kernel is authoritative for every match decision, so results never diverge by backend.
+
+Operator semantics (type-directed comparison, null handling, LIKE/regex grammar, validation) are documented in the `predicates` topic; workflow and transition criteria use the identical predicate semantics (see `workflows`).
 
 ## CONDITION DSL
 
@@ -65,33 +70,9 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
 - `value`: any JSON scalar
 
-**Valid `operatorType` values** (exhaustive):
-- `EQUALS` — exact equality; numeric-aware (JSON number vs string representation)
-- `NOT_EQUAL` — inequality; inverse of EQUALS
-- `GREATER_THAN` — numeric or lexicographic greater-than
-- `LESS_THAN` — numeric or lexicographic less-than
-- `GREATER_OR_EQUAL` — greater-than or equal
-- `LESS_OR_EQUAL` — less-than or equal
-- `CONTAINS` — substring or array-element containment
-- `NOT_CONTAINS` — inverse of CONTAINS
-- `STARTS_WITH` — string prefix match
-- `NOT_STARTS_WITH` — inverse of STARTS_WITH
-- `ENDS_WITH` — string suffix match
-- `NOT_ENDS_WITH` — inverse of ENDS_WITH
-- `LIKE` — SQL-style LIKE pattern (`%` = any sequence, `_` = any single char)
-- `IS_NULL` — field is absent or JSON null
-- `NOT_NULL` — field is present and not JSON null
-- `BETWEEN` — range check (exclusive bounds); `value` must be a two-element array `[low, high]`
-- `BETWEEN_INCLUSIVE` — range check (inclusive bounds); same `value` shape as BETWEEN
-- `MATCHES_PATTERN` — regular expression match
-- `IEQUALS` — case-insensitive EQUALS
-- `INOT_EQUAL` — case-insensitive NOT_EQUAL
-- `ICONTAINS` — case-insensitive CONTAINS
-- `INOT_CONTAINS` — case-insensitive NOT CONTAINS
-- `ISTARTS_WITH` — case-insensitive STARTS_WITH
-- `INOT_STARTS_WITH` — case-insensitive NOT STARTS_WITH
-- `IENDS_WITH` — case-insensitive ENDS_WITH
-- `INOT_ENDS_WITH` — case-insensitive NOT ENDS_WITH
+**Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]`. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
+
+`IS_CHANGED`/`IS_UNCHANGED` are not supported.
 
 Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
 
@@ -111,7 +92,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 - `operatorType` (also accepted as `operator` or `operation`): operator string — same valid values as for `SimpleCondition`
 - `value`: any JSON scalar
 
-`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution, and accept only comparison operators (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `IS_NULL`, `NOT_NULL`) with offset-bearing RFC3339 values. A string/pattern operator or a non-timestamp value on either field is rejected `400 CONDITION_TYPE_MISMATCH`; an unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
+`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String operators and `IS_NULL`/`NOT_NULL` carry no type constraint on these fields (they parse any operand and evaluate to a non-match, per `predicates`). An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
 
 **GroupCondition** — combine conditions with a logical operator:
 
@@ -430,9 +411,14 @@ curl -s -X PUT \
 - crud
 - models
 - analytics
+- predicates
+- workflows
 - errors.MODEL_NOT_FOUND
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
 - errors.SEARCH_SHARD_TIMEOUT
+- errors.INVALID_FIELD_PATH
+- errors.CONDITION_TYPE_MISMATCH
+- errors.INVALID_CONDITION
 - openapi
