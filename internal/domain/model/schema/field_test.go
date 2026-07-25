@@ -117,6 +117,84 @@ func TestFieldsPolymorphic(t *testing.T) {
 	}
 }
 
+// TestFieldsMixedObjectOrScalar covers a node observed as BOTH an object
+// (with substructure) and a bare scalar at the same path — the polymorphic
+// object-or-string shape that schema.Merge unions into a KindObject node
+// carrying a non-empty scalar TypeSet. collectFields must emit a leaf
+// descriptor for the object node's OWN path (carrying the scalar types) in
+// ADDITION to recursing into its children, so the mixed field is searchable
+// via a scalar operand while its child leaves remain independently searchable.
+func TestFieldsMixedObjectOrScalar(t *testing.T) {
+	root := NewObjectNode()
+	// some-object: observed as an object {some-key: string} AND as the bare
+	// string "abc" — Merge yields a KindObject node whose own TypeSet holds
+	// STRING.
+	mixed := NewObjectNode()
+	mixed.SetChild("some-key", NewLeafNode(String))
+	mixed.Types().Add(String)
+	root.SetChild("some-object", mixed)
+
+	m := root.FieldsMap()
+
+	// The object node's own path is a searchable leaf carrying [STRING].
+	own, ok := m["$.some-object"]
+	if !ok {
+		t.Fatal("expected leaf descriptor for the mixed object path $.some-object")
+	}
+	if len(own.Types) != 1 || own.Types[0] != String {
+		t.Errorf("$.some-object: expected [STRING], got %v", own.Types)
+	}
+
+	// The child leaf remains independently searchable.
+	child, ok := m["$.some-object.some-key"]
+	if !ok {
+		t.Fatal("expected child leaf descriptor $.some-object.some-key")
+	}
+	if len(child.Types) != 1 || child.Types[0] != String {
+		t.Errorf("$.some-object.some-key: expected [STRING], got %v", child.Types)
+	}
+}
+
+// TestFieldsPureObjectNoLeaf confirms a PURE object node (substructure only,
+// no scalar observation) emits NO descriptor for its own path — only its
+// children. This is the negative counterpart to the mixed case above and the
+// precondition that lets search reject a scalar compare on such a container.
+func TestFieldsPureObjectNoLeaf(t *testing.T) {
+	root := NewObjectNode()
+	pure := NewObjectNode()
+	pure.SetChild("some-key", NewLeafNode(String))
+	root.SetChild("some-object", pure)
+
+	m := root.FieldsMap()
+	if _, ok := m["$.some-object"]; ok {
+		t.Error("pure object path $.some-object must NOT be a leaf descriptor")
+	}
+	if _, ok := m["$.some-object.some-key"]; !ok {
+		t.Error("expected child leaf $.some-object.some-key")
+	}
+}
+
+// TestFieldsNullOnlyObjectNoLeaf confirms an object node whose only TypeSet
+// member is NULL (the nullable marker, e.g. a null-only leaf widened to an
+// object) does NOT emit a self leaf descriptor — NULL is not a concrete scalar
+// observation, so the path stays a pure container. This keeps a unique key over
+// such a widened path correctly classified as a non-scalar-leaf.
+func TestFieldsNullOnlyObjectNoLeaf(t *testing.T) {
+	root := NewObjectNode()
+	obj := NewObjectNode()
+	obj.SetChild("sub", NewLeafNode(String))
+	obj.Types().Add(Null) // observed as null too, but no concrete scalar
+	root.SetChild("score", obj)
+
+	m := root.FieldsMap()
+	if _, ok := m["$.score"]; ok {
+		t.Error("null-only object path $.score must NOT emit a scalar leaf descriptor")
+	}
+	if _, ok := m["$.score.sub"]; !ok {
+		t.Error("expected child leaf $.score.sub")
+	}
+}
+
 func TestFieldsMap(t *testing.T) {
 	root := NewObjectNode()
 	root.SetChild("a", NewLeafNode(Boolean))

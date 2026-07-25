@@ -108,6 +108,110 @@ func TestValidateConditionTypes_EmptyArray_Accepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Container (pure-object) paths — a scalar compare must reject INVALID_FIELD_PATH
+// ---------------------------------------------------------------------------
+
+// buildPureContainerModel returns a model where $.some-object is a PURE object
+// (substructure only, no scalar observation): its only leaf is
+// $.some-object.some-key (STRING). $.some-object is therefore a KNOWN CONTAINER
+// but NOT a leaf.
+func buildPureContainerModel() *schema.ModelNode {
+	root := schema.NewObjectNode()
+	obj := schema.NewObjectNode()
+	obj.SetChild("some-key", schema.NewLeafNode(schema.String))
+	root.SetChild("some-object", obj)
+	return root
+}
+
+// TestValidateConditionTypes_ScalarOnPureContainer_Rejects verifies that a
+// scalar comparison whose jsonPath resolves to a KNOWN CONTAINER path (a strict
+// prefix of leaf paths, itself not a leaf) in a schema'd model is rejected as
+// INVALID_FIELD_PATH — you cannot compare a container to a scalar; navigate to
+// a leaf.
+func TestValidateConditionTypes_ScalarOnPureContainer_Rejects(t *testing.T) {
+	model := buildPureContainerModel()
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-object",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	err := ValidateConditionValueTypes(model, cond)
+	if err == nil {
+		t.Fatal("expected error for scalar EQUALS on a pure-container path, got nil")
+	}
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath sentinel, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_LeafUnderContainer_Accepts confirms navigating to
+// the leaf under the container is accepted (the escape hatch the rejection
+// points at).
+func TestValidateConditionTypes_LeafUnderContainer_Accepts(t *testing.T) {
+	model := buildPureContainerModel()
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-object.some-key",
+		OperatorType: "EQUALS",
+		Value:        "some-key",
+	}
+	if err := ValidateConditionValueTypes(model, cond); err != nil {
+		t.Fatalf("expected no error for scalar EQUALS on the leaf path, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_NullPresenceOnContainer_Accepts confirms IS_NULL /
+// NOT_NULL (unary presence tests, no scalar operand) on a container path are
+// NOT rejected by the container rule — they test presence, not a scalar value.
+func TestValidateConditionTypes_NullPresenceOnContainer_Accepts(t *testing.T) {
+	model := buildPureContainerModel()
+	for _, op := range []string{"IS_NULL", "NOT_NULL"} {
+		cond := &predicate.SimpleCondition{
+			JsonPath:     "$.some-object",
+			OperatorType: op,
+		}
+		if err := ValidateConditionValueTypes(model, cond); err != nil {
+			t.Errorf("%s on container path should be accepted, got: %v", op, err)
+		}
+	}
+}
+
+// TestValidateConditionTypes_MixedObjectOrScalar_Accepts confirms that after
+// Fix 1 a MIXED object-or-scalar node IS a leaf (carries scalar types), so a
+// scalar compare on it is accepted, NOT caught by the pure-container rule.
+func TestValidateConditionTypes_MixedObjectOrScalar_Accepts(t *testing.T) {
+	root := schema.NewObjectNode()
+	mixed := schema.NewObjectNode()
+	mixed.SetChild("some-key", schema.NewLeafNode(schema.String))
+	mixed.Types().Add(schema.String) // observed as a bare string too
+	root.SetChild("some-object", mixed)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-object",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	if err := ValidateConditionValueTypes(root, cond); err != nil {
+		t.Fatalf("mixed object-or-string leaf should accept a string operand, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule confirms a
+// genuinely-unknown (non-container) path is NOT rejected by
+// ValidateConditionValueTypes (it is left for the separate field-path pass);
+// only KNOWN CONTAINER paths trip the new rule.
+func TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule(t *testing.T) {
+	model := buildPureContainerModel()
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.does-not-exist",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	if err := ValidateConditionValueTypes(model, cond); err != nil {
+		t.Fatalf("unknown non-container path should not be rejected here, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Object values — never valid for any operator
 // ---------------------------------------------------------------------------
 

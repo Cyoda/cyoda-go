@@ -259,27 +259,27 @@ func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
 	}
 }
 
-// RunSearchUntypedComparisonEmpty pins the kernel-authoritative convergence
-// that a comparison on a field with NO declared scalar type degrades to
-// non-match (empty result set) — identically on every backend.
+// RunSearchScalarOnContainerPath400 pins the type-directed contract that a
+// scalar comparison on a PURE-container path is rejected with HTTP 400
+// INVALID_FIELD_PATH — identically on every backend.
 //
 // Vehicle: $.obj is a known structural interior (it has a typed leaf
-// $.obj.inner, so pre-execution field-path validation accepts it) but is not
-// itself a leaf in the model's FieldsMap, so its declared type set is empty.
-// The type-directed kernel (spi.ExpandLeaf) reports "operand parses into no
-// declared type" for an empty declared set, which every evaluator turns into a
-// per-entity non-match rather than an error. The result must be an empty 200 —
-// never a 500, never an accidental cross-type lexical match (the pre-
-// convergence behaviour). A leaf control search proves the corpus is present and
-// searchable, so the empty untyped result is the contract, not a setup gap.
-func RunSearchUntypedComparisonEmpty(t *testing.T, fixture BackendFixture) {
+// $.obj.inner, so pre-execution field-path validation recognises the prefix)
+// but is not itself a leaf in the model's FieldsMap, and — unlike a mixed
+// object-or-scalar node — carries NO scalar observation of its own. A container
+// with substructure cannot be compared to a scalar: the caller must navigate to
+// a leaf sub-path (e.g. $.obj.inner). Comparing it to a scalar is a malformed
+// request, rejected before any store work (fail-closed), never the pre-fix
+// silent empty-result degradation. A leaf control search proves the corpus is
+// present and searchable, so the rejection is the contract, not a setup gap.
+func RunSearchScalarOnContainerPath400(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
-	const modelName = "parity-search-untyped-compare"
+	const modelName = "parity-search-container-path-400"
 	const modelVersion = 1
 	// $.obj is an object interior (typed leaf $.obj.inner); $.obj itself carries
-	// no declared scalar type.
+	// no declared scalar type — a pure container.
 	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"obj":{"inner":"x"}}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
@@ -294,8 +294,8 @@ func RunSearchUntypedComparisonEmpty(t *testing.T, fixture BackendFixture) {
 	}
 
 	// Control: a comparison on a TYPED leaf ($.name, String) matches — evidence
-	// the corpus is present and searchable, so the empty untyped results below
-	// are the kernel contract, not an empty-corpus artefact.
+	// the corpus is present and searchable, so the rejections below are the
+	// validation contract, not an empty-corpus artefact.
 	ctrl, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"A"}`)
 	if err != nil {
 		t.Fatalf("SyncSearch control: %v", err)
@@ -304,8 +304,19 @@ func RunSearchUntypedComparisonEmpty(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("control $.name EQUALS A: want 1 result, got %d", len(ctrl))
 	}
 
-	// The convergence: an untyped-field comparison degrades to non-match (empty)
-	// on every backend, for both an equality and an ordering operator.
+	// Navigating to the leaf sub-path works — the escape hatch the rejection
+	// points at.
+	leaf, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.obj.inner","operatorType":"EQUALS","value":"x"}`)
+	if err != nil {
+		t.Fatalf("SyncSearch $.obj.inner: %v", err)
+	}
+	if len(leaf) != 1 {
+		t.Fatalf("leaf $.obj.inner EQUALS x: want 1 result, got %d", len(leaf))
+	}
+
+	// The contract: a scalar comparison on the pure-container path $.obj is
+	// rejected 400 INVALID_FIELD_PATH on every backend, for both an equality
+	// and an ordering operator.
 	for _, tc := range []struct {
 		label, op, value string
 	}{
@@ -313,12 +324,16 @@ func RunSearchUntypedComparisonEmpty(t *testing.T, fixture BackendFixture) {
 		{"GREATER_THAN", "GREATER_THAN", "a"},
 	} {
 		cond := fmt.Sprintf(`{"type":"simple","jsonPath":"$.obj","operatorType":%q,"value":%q}`, tc.op, tc.value)
-		res, err := c.SyncSearch(t, modelName, modelVersion, cond)
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
 		if err != nil {
-			t.Fatalf("[%s] SyncSearch: %v", tc.label, err)
+			t.Fatalf("[%s] SyncSearchRaw: %v", tc.label, err)
 		}
-		if len(res) != 0 {
-			t.Errorf("[%s] untyped $.obj comparison: want 0 results (empty declared → non-match), got %d", tc.label, len(res))
+		if status != http.StatusBadRequest {
+			t.Errorf("[%s] scalar compare on container $.obj: want 400, got %d; body=%s", tc.label, status, body)
+			continue
+		}
+		if !containsErrorCode(body, "INVALID_FIELD_PATH") {
+			t.Errorf("[%s] expected errorCode INVALID_FIELD_PATH, body=%s", tc.label, body)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -83,6 +84,21 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
 	fd, ok := fm[c.JsonPath]
 	if !ok {
+		// Not a leaf. In a schema'd model (non-empty FieldsMap), a path that is
+		// a KNOWN CONTAINER — a strict prefix of one or more leaf paths, but not
+		// itself a leaf — has substructure and cannot be compared to a scalar:
+		// you must navigate to a leaf sub-path. Reject a scalar-operand
+		// comparison on such a path as INVALID_FIELD_PATH. Unary presence tests
+		// (IS_NULL/NOT_NULL) carry no scalar operand — they test presence, not a
+		// value — so they are NOT rejected. A mixed object-or-scalar node is a
+		// leaf after schema field-collection (it carries its scalar types), so it
+		// never reaches this branch. A genuinely-unknown (non-container) path
+		// carries no type constraint here; the separate field-path validation
+		// pass classifies it.
+		if len(fm) > 0 && carriesScalarOperand(mapOperator(c.OperatorType)) && isKnownContainerPath(c.JsonPath, fm) {
+			return fmt.Errorf("field %q is a container with substructure and cannot be compared to a scalar; navigate to a leaf sub-path: %w",
+				c.JsonPath, errInvalidFieldPath)
+		}
 		// Unknown path — no type constraint here (INVALID_FIELD_PATH for data
 		// leaves is raised by the separate field-path validation pass).
 		return nil
@@ -146,6 +162,35 @@ func isParseConstrainedOp(op spi.FilterOp) bool {
 	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterGte, spi.FilterLt, spi.FilterLte,
 		spi.FilterBetween, spi.FilterBetweenInclusive:
 		return true
+	}
+	return false
+}
+
+// carriesScalarOperand reports whether op compares the field against a scalar
+// operand (and therefore cannot address a container path). Every operator does
+// EXCEPT the unary null-presence tests (IS_NULL, NOT_NULL), which test presence
+// rather than a value and so remain valid on a container path.
+func carriesScalarOperand(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterIsNull, spi.FilterNotNull:
+		return false
+	}
+	return true
+}
+
+// isKnownContainerPath reports whether p names a KNOWN CONTAINER in fm — a
+// strict prefix of one or more leaf paths, without being a leaf itself. It
+// mirrors the prefix probe in path_validate.go's isPathKnown, but is used to
+// REJECT a scalar comparison on the interior node rather than to accept the
+// path. p is assumed absent from fm as a direct leaf (the caller checks that
+// first). Both dot- and wildcard-delimited descents count as substructure.
+func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
+	dotPrefix := p + "."
+	arrPrefix := p + "["
+	for known := range fm {
+		if strings.HasPrefix(known, dotPrefix) || strings.HasPrefix(known, arrPrefix) {
+			return true
+		}
 	}
 	return false
 }

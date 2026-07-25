@@ -120,10 +120,11 @@ var allTests = []NamedTest{
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
-	// Type-directed convergence: a comparison on a field with NO declared
-	// scalar type degrades to non-match (empty) uniformly across backends —
-	// pins "empty declared → non-match" against silent regression.
-	{"SearchUntypedComparisonEmpty", RunSearchUntypedComparisonEmpty},
+	// Type-directed contract: a scalar comparison on a PURE-container path (a
+	// known structural interior with substructure but no scalar observation)
+	// is rejected with HTTP 400 INVALID_FIELD_PATH uniformly across backends —
+	// fail-closed rather than the pre-fix silent empty-result degradation.
+	{"SearchScalarOnContainerPath400", RunSearchScalarOnContainerPath400},
 
 	// Phase 4b — workflow selection (Task 4b.7)
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},
