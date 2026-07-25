@@ -154,7 +154,7 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 		t.Fatalf("tx delete e3: %v", err)
 	}
 
-	berlin := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"}
+	berlin := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
 	got := assertSearchMatchesGetAll(t, store, txCtx, berlin, searchTxOpts())
 	if !reflect.DeepEqual(got, []string{"e1", "e2", "e4"}) {
 		t.Fatalf("city=Berlin in tx: got %v, want [e1 e2 e4]", got)
@@ -197,7 +197,7 @@ func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 	}
 	// The resurrected row must carry the new data.
 	res, err := store.(spi.Searcher).Search(txCtx,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg"}, searchTxOpts())
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg", Declared: []spi.DataType{spi.String}}, searchTxOpts())
 	if err != nil {
 		t.Fatalf("Search Hamburg: %v", err)
 	}
@@ -231,8 +231,8 @@ func TestSearchTx_PositiveSupersession(t *testing.T) {
 		t.Fatalf("tx update e2: %v", err)
 	}
 
-	munich := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich"}
-	berlin := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"}
+	munich := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich", Declared: []spi.DataType{spi.String}}
+	berlin := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
 	if got := assertSearchMatchesGetAll(t, store, txCtx, munich, searchTxOpts()); len(got) != 0 {
 		t.Fatalf("supersession: city=Munich should be empty, got %v", got)
 	}

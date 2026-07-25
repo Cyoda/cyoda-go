@@ -91,10 +91,11 @@ func TestPostgresIterate_FilterPushdown(t *testing.T) {
 
 	it := store.(spi.Iterable)
 	filter := spi.Filter{
-		Op:     spi.FilterEq,
-		Source: spi.SourceData,
-		Path:   "city",
-		Value:  "Berlin",
+		Op:       spi.FilterEq,
+		Source:   spi.SourceData,
+		Path:     "city",
+		Value:    "Berlin",
+		Declared: []spi.DataType{spi.String},
 	}
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
@@ -124,7 +125,7 @@ func TestPostgresIterate_ResidualApplied(t *testing.T) {
 	filter := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Source: spi.SourceData, Path: "city", Value: "Berlin"},
+			{Op: spi.FilterEq, Source: spi.SourceData, Path: "city", Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{Op: spi.FilterMatchesRegex, Source: spi.SourceData, Path: "tag", Value: "^x$"},
 		},
 	}

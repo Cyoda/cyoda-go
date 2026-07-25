@@ -21,7 +21,7 @@ func idSetTx(entities []*spi.Entity) map[string]bool {
 }
 
 // cityBerlin matches entities whose data.city == "Berlin" (a pushable predicate).
-var cityBerlin = spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"}
+var cityBerlin = spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
 
 // beginTxSearcher sets up a factory seeded with the standard person set, begins a
 // transaction, and returns the store, the transaction context, and the searcher.

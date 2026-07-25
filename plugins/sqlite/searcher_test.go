@@ -83,10 +83,11 @@ func TestSearcher_EqFilter(t *testing.T) {
 	}
 
 	results, err := searcher.Search(ctx, spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "city",
-		Source: spi.SourceData,
-		Value:  "Berlin",
+		Op:       spi.FilterEq,
+		Path:     "city",
+		Source:   spi.SourceData,
+		Value:    "Berlin",
+		Declared: []spi.DataType{spi.String},
 	}, spi.SearchOptions{
 		ModelName:    "person",
 		ModelVersion: "1",
@@ -106,10 +107,11 @@ func TestSearcher_GtFilter(t *testing.T) {
 	searcher := store.(spi.Searcher)
 
 	results, err := searcher.Search(ctx, spi.Filter{
-		Op:     spi.FilterGt,
-		Path:   "age",
-		Source: spi.SourceData,
-		Value:  float64(30),
+		Op:       spi.FilterGt,
+		Path:     "age",
+		Source:   spi.SourceData,
+		Value:    float64(30),
+		Declared: []spi.DataType{spi.Integer},
 	}, spi.SearchOptions{
 		ModelName:    "person",
 		ModelVersion: "1",
@@ -156,8 +158,8 @@ func TestSearcher_ANDFilter(t *testing.T) {
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
-			{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(31)},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(31), Declared: []spi.DataType{spi.Integer}},
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
@@ -184,8 +186,8 @@ func TestSearcher_ORFilter(t *testing.T) {
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterOr,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg"},
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich", Declared: []spi.DataType{spi.String}},
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
@@ -235,7 +237,7 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^A"},
 		},
 	}, spi.SearchOptions{
@@ -613,7 +615,7 @@ func TestSearcher_OrderByStateMeta(t *testing.T) {
 
 	searcher := store.(spi.Searcher)
 	results, err := searcher.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -660,7 +662,7 @@ func TestSearcher_OrderByNullsLast(t *testing.T) {
 	searcher := store.(spi.Searcher)
 	// Filter by "present" so all 3 entities are returned; sort by "score" ASC.
 	results, err := searcher.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "present", Source: spi.SourceData, Value: true},
+		spi.Filter{Op: spi.FilterEq, Path: "present", Source: spi.SourceData, Value: true, Declared: []spi.DataType{spi.Boolean}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -703,7 +705,7 @@ func TestSearcher_OrderByTiebreaker(t *testing.T) {
 
 	searcher := store.(spi.Searcher)
 	results, err := searcher.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -876,7 +878,7 @@ func TestSearcher_OrderByBool(t *testing.T) {
 
 	// ASC: false < true → f, t.
 	asc, err := searcher.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -889,7 +891,7 @@ func TestSearcher_OrderByBool(t *testing.T) {
 
 	// DESC: true > false → t, f.
 	desc, err := searcher.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",

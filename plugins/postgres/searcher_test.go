@@ -59,7 +59,7 @@ func baseOpts() spi.SearchOptions {
 func TestPGSearcher_Eq(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -72,7 +72,7 @@ func TestPGSearcher_Eq(t *testing.T) {
 func TestPGSearcher_GtNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -86,13 +86,17 @@ func TestPGSearcher_BetweenNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
 		spi.Filter{Op: spi.FilterBetween, Path: "age", Source: spi.SourceData,
-			Values: []any{float64(28), float64(35)}},
+			Values: []any{float64(28), float64(35)}, Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(got) != 3 { // 30, 35, 28
-		t.Fatalf("age in [28,35]: want 3, got %d", len(got))
+	// Kernel-authoritative: FilterBetween is EXCLUSIVE (28 < age < 35). The
+	// inclusive SQL BETWEEN pushed as a sound superset is re-checked by the
+	// kernel, which drops the boundary rows (28, 35). Only age 30 (Alice)
+	// remains. (An inclusive range would use FilterBetweenInclusive.)
+	if len(got) != 1 {
+		t.Fatalf("age in (28,35) exclusive: want 1, got %d", len(got))
 	}
 }
 
@@ -101,8 +105,8 @@ func TestPGSearcher_And(t *testing.T) {
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
-			{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(31)},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(31), Declared: []spi.DataType{spi.Integer}},
 		},
 	}, baseOpts())
 	if err != nil {
@@ -118,8 +122,8 @@ func TestPGSearcher_Or(t *testing.T) {
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{
 		Op: spi.FilterOr,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg"},
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich", Declared: []spi.DataType{spi.String}},
 		},
 	}, baseOpts())
 	if err != nil {
@@ -151,7 +155,7 @@ func TestPGSearcher_MixedPushAndResidual(t *testing.T) {
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^C"},
 		},
 	}, baseOpts())
@@ -449,7 +453,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 	}
 	sr := store.(spi.Searcher)
 	results, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -507,7 +511,7 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 
 	sr := store.(spi.Searcher)
 	results, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -583,7 +587,7 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 	}
 	sr := store.(spi.Searcher)
 	results, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -697,7 +701,7 @@ func TestPGSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 func TestPGSearcher_InjectionFilterPath(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	_, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city'); DROP TABLE entities;--", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "city'); DROP TABLE entities;--", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		baseOpts())
 	if !errors.Is(err, postgres.ErrInvalidFilterPath) {
 		t.Fatalf("want ErrInvalidFilterPath, got %v", err)
@@ -738,7 +742,7 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 		t.Fatalf("EntityStore B: %v", err)
 	}
 	got, err := searcherOf(t, storeB).Search(ctxB,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search B: %v", err)
@@ -751,7 +755,7 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 func TestPGSearcher_EqNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterEq, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -764,7 +768,7 @@ func TestPGSearcher_EqNumeric(t *testing.T) {
 func TestPGSearcher_NeNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -776,22 +780,28 @@ func TestPGSearcher_NeNumeric(t *testing.T) {
 
 func TestPGSearcher_ContainsNumericValue(t *testing.T) {
 	store, ctx := setupSearcher(t)
-	// value is float64(3); string-op treats it as "3"; ages 30 and 35 contain "3"
+	// Kernel-authoritative: a string op (Contains) acts only on a TEXTUAL stored
+	// value; against a numeric stored slot (age) it is a non-match and never
+	// stringifies. The SQL doc->>'age' extraction stringifies (over-selects), so
+	// it is a sound superset re-checked by the kernel, which drops all numeric
+	// rows. Result: 0 matches (not the old SQL-stringify behaviour).
 	got, err := searcherOf(t, store).Search(ctx,
 		spi.Filter{Op: spi.FilterContains, Path: "age", Source: spi.SourceData, Value: float64(3)},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(got) != 2 { // Alice 30, Charlie 35
-		t.Fatalf("age contains '3': want 2, got %d", len(got))
+	if len(got) != 0 {
+		t.Fatalf("age contains '3' (string op on numeric = non-match): want 0, got %d", len(got))
 	}
 }
 
-// TestPGSearcher_NeNumeric_MissingFieldMatches verifies 3VL: a row that has no
-// "age" field at all must be included in age!=30 results (missing != value is
-// true under three-valued logic).
-func TestPGSearcher_NeNumeric_MissingFieldMatches(t *testing.T) {
+// TestPGSearcher_NeNumeric_MissingField verifies the kernel's null-uniformity
+// divergence: an absent stored value is a NON-match for every binary op,
+// INCLUDING the negatives (NE). A row with no "age" field is therefore EXCLUDED
+// from age!=30 results (not included as classic 3VL would). Ne is residual-only
+// (non-pushable), so the kernel is authoritative here.
+func TestPGSearcher_NeNumeric_MissingField(t *testing.T) {
 	store, ctx := setupSearcher(t) // seeds e1..e5
 	// Save an extra entity with no "age" field.
 	if _, err := store.Save(ctx, &spi.Entity{
@@ -801,24 +811,20 @@ func TestPGSearcher_NeNumeric_MissingFieldMatches(t *testing.T) {
 		t.Fatalf("Save e6: %v", err)
 	}
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// Alice (age=30) is excluded; Bob/Charlie/Diana/Eve (age≠30) + Frank (no age) = 5.
-	if len(got) != 5 {
-		t.Fatalf("age!=30 with missing-field row: want 5, got %d", len(got))
+	// Alice (age=30) excluded by NE; Frank (no age) also excluded by null-
+	// uniformity; Bob/Charlie/Diana/Eve (age≠30) = 4.
+	if len(got) != 4 {
+		t.Fatalf("age!=30 (missing field excluded by null-uniformity): want 4, got %d", len(got))
 	}
-	found := false
 	for _, e := range got {
 		if e.Meta.ID == "e6" {
-			found = true
-			break
+			t.Error("age!=30: e6 (no age field) must be EXCLUDED under kernel null-uniformity")
 		}
-	}
-	if !found {
-		t.Error("age!=30: e6 (no age field) must be included but was absent")
 	}
 }
 
@@ -886,7 +892,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base}
 
 	active, err := store.(spi.Searcher).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active"}, opts)
+		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search active@base: %v", err)
 	}
@@ -895,7 +901,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	}
 
 	inactive, err := store.(spi.Searcher).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive"}, opts)
+		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search inactive@base: %v", err)
 	}
@@ -972,7 +978,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 
 	// ASC: false < true → f, t.
 	asc, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -985,7 +991,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 
 	// DESC: true > false → t, f.
 	desc, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",

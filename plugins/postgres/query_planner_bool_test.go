@@ -10,6 +10,9 @@ import (
 // failure: a boolean operand must be bound as its text form ("true"/"false")
 // so it encodes against the text-typed doc->>'path' extraction, matching the
 // lexicographic text comparison used for strings and the memory/sqlite backends.
+//
+// Only Eq is covered: Ne is no longer pushable (residual-only under the
+// pushdown soundness contract), so no boolean operand is bound for it.
 func TestPlanQuery_BoolEqNe(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -20,8 +23,6 @@ func TestPlanQuery_BoolEqNe(t *testing.T) {
 	}{
 		{"eq_true", spi.FilterEq, true, "(doc->>'active' IS NOT NULL AND doc->>'active' = $1)", "true"},
 		{"eq_false", spi.FilterEq, false, "(doc->>'active' IS NOT NULL AND doc->>'active' = $1)", "false"},
-		{"ne_true", spi.FilterNe, true, "(doc->>'active' IS NULL OR doc->>'active' != $1)", "true"},
-		{"ne_false", spi.FilterNe, false, "(doc->>'active' IS NULL OR doc->>'active' != $1)", "false"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

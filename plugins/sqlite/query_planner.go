@@ -11,10 +11,47 @@ import (
 // sqlPlan holds the result of translating a spi.Filter into SQL.
 // where + args represent the pushable portion as a SQL WHERE fragment.
 // postFilter is the residual filter that must be evaluated in Go.
+//
+// SQL-pushdown soundness contract: the pushed SQL WHERE is a best-effort
+// NARROWING — the kernel (spi.MatchFilter, re-run over the candidates the SQL
+// returns) is authoritative. The invariant is that the pushed SQL returns a
+// SUPERSET of the kernel's matches (it never misses one). A leaf is EXACT when
+// its SQL matches the kernel bit-for-bit (only IsNull/NotNull — see leafExact);
+// every other pushed leaf is at best a SOUND SUPERSET (SQLite storage-class /
+// text comparison can over-select relative to the precise bignum/temporal
+// kernel, so the kernel must re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path
+// (gated on postFilter == nil) is allowed ONLY when the whole plan is exact.
 type sqlPlan struct {
 	where      string
 	args       []any
 	postFilter *spi.Filter
+}
+
+// leafExact reports whether a pushed leaf's SQL matches the kernel bit-for-bit.
+// Only presence checks (IsNull/NotNull) are exact: SQL IS NULL / IS NOT NULL is
+// identical to the kernel's absent/null semantics. Every other pushable op is at
+// best a SOUND SUPERSET (see leafToSQL), so its candidates must be re-checked by
+// the kernel. Mirrors postgres's leafExact exactly.
+func leafExact(op spi.FilterOp) bool {
+	return op == spi.FilterIsNull || op == spi.FilterNotNull
+}
+
+// allPushedExact walks a pushed filter subtree (as produced by dissect) and
+// reports whether every leaf in it is leafExact. AND/OR branches recurse.
+// Used by planQuery to decide whether the SQL is provably exact (fast path) or
+// must trigger a full kernel re-check.
+func allPushedExact(f spi.Filter) bool {
+	switch f.Op {
+	case spi.FilterAnd, spi.FilterOr:
+		for _, c := range f.Children {
+			if !allPushedExact(c) {
+				return false
+			}
+		}
+		return true
+	default:
+		return leafExact(f.Op)
+	}
 }
 
 // planQuery translates a spi.Filter tree into a SQL WHERE clause and an
@@ -24,11 +61,23 @@ type sqlPlan struct {
 //   - Greedy AND: extract pushable children into SQL, collect non-pushable as residual
 //   - Conservative OR: only push down if ALL children are pushable, otherwise entire OR is residual
 //   - Leaf nodes: pushable ops produce SQL fragments; non-pushable become residual
+//
+// Soundness gate: unless the plan is fully EXACT — no residual AND every pushed
+// leaf satisfies leafExact — the FULL original filter is installed as postFilter
+// so the kernel re-checks every candidate the narrowing SQL returns. This also
+// disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
 func planQuery(filter spi.Filter) sqlPlan {
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
 		plan.where, plan.args = toSQL(*pushed)
+	}
+	// If the plan is not provably exact (there is a residual, or any pushed leaf
+	// is only a SOUND SUPERSET), the narrowing SQL may over-select, so the kernel
+	// must re-check every candidate against the FULL original filter.
+	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
+		full := filter
+		plan.postFilter = &full
 	}
 	return plan
 }
@@ -111,13 +160,25 @@ func isFullyPushable(f spi.Filter) bool {
 	}
 }
 
-// isPushable returns true if a leaf operation can be translated to SQL.
+// isPushable returns true if a leaf operation can be translated to SQL as a
+// sound superset of the kernel (see the sqlPlan soundness contract).
+//
+// Ne is deliberately NOT pushable: SQL "!=" UNDER-selects under storage-class /
+// text collision (a value != operand precisely but SQLite-equal is a kernel
+// match the SQL "!=" wrongly excludes), and "!=" rarely narrows anyway — so Ne
+// is residual-only (kernel-evaluated). BetweenInclusive IS pushable: SQL BETWEEN
+// is inclusive [lo,hi], a sound superset of the inclusive kernel between.
+//
+// IMPORTANT: this set MUST match postgres's isPushable exactly. Adding or
+// removing an op here without doing the same in postgres breaks the parity
+// invariant relied on by the cross-backend tests in e2e/parity/.
 func isPushable(op spi.FilterOp) bool {
 	switch op {
-	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterLt,
+	case spi.FilterEq, spi.FilterGt, spi.FilterLt,
 		spi.FilterGte, spi.FilterLte, spi.FilterContains,
 		spi.FilterStartsWith, spi.FilterEndsWith, spi.FilterLike,
-		spi.FilterIsNull, spi.FilterNotNull, spi.FilterBetween:
+		spi.FilterIsNull, spi.FilterNotNull,
+		spi.FilterBetween, spi.FilterBetweenInclusive:
 		return true
 	}
 	return false
@@ -261,9 +322,14 @@ func leafToSQL(f spi.Filter) (string, []any) {
 	case spi.FilterNe:
 		return fmt.Sprintf("(%s IS NULL OR %s != ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterGt:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s > ?)", col, col), []any{bindArg(f.Value)}
+		// SOUND SUPERSET: strict ">" would UNDER-select — a stored value a
+		// sub-ULP beyond the operand collides to the same REAL, so ">" wrongly
+		// excludes a kernel match. Relax to ">=" (float rounding is monotonic);
+		// the kernel re-check removes the boundary false-positives.
+		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterLt:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s < ?)", col, col), []any{bindArg(f.Value)}
+		// SOUND SUPERSET: strict "<" relaxed to "<=" for the same reason.
+		return fmt.Sprintf("(%s IS NOT NULL AND %s <= ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterGte:
 		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{bindArg(f.Value)}
 	case spi.FilterLte:
@@ -276,7 +342,11 @@ func leafToSQL(f spi.Filter) (string, []any) {
 		return fmt.Sprintf("substr(%s, -length(?)) = ?", col), []any{f.Value, f.Value}
 	case spi.FilterLike:
 		return fmt.Sprintf("%s LIKE ? ESCAPE '\\'", col), []any{escapeLike(fmt.Sprint(f.Value))}
-	case spi.FilterBetween:
+	case spi.FilterBetween, spi.FilterBetweenInclusive:
+		// SOUND SUPERSET: SQL BETWEEN is inclusive [lo,hi]. For the inclusive
+		// kernel between that is exact-on-value; for the exclusive kernel between
+		// (FilterBetween) the inclusive SQL is a strict superset (kernel re-check
+		// enforces the open bounds).
 		if len(f.Values) >= 2 {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
 				[]any{bindArg(f.Values[0]), bindArg(f.Values[1])}
@@ -317,7 +387,7 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	// practice despite the differing primitive semantics.
 	col := "(" + fieldExpr(f) + " / 1000)"
 	switch f.Op {
-	case spi.FilterBetween:
+	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
 			// Malformed BETWEEN (not exactly 2 operands) fails closed —
 			// exclude every row, matching memory's spi.MatchFilter semantics.
@@ -352,9 +422,12 @@ func sqlOpForTemporal(op spi.FilterOp) string {
 	case spi.FilterEq:
 		return "="
 	case spi.FilterGt:
-		return ">"
+		// SOUND SUPERSET: relaxed from strict ">" to ">=" (the kernel does
+		// temporal-subtype resolution the SQL doesn't, so the strict form can
+		// UNDER-select; the full-filter kernel re-check enforces strictness).
+		return ">="
 	case spi.FilterLt:
-		return "<"
+		return "<="
 	case spi.FilterGte:
 		return ">="
 	case spi.FilterLte:
