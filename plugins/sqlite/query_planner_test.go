@@ -145,6 +145,10 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 }
 
 func TestPlanQuery_Like(t *testing.T) {
+	// Like is NOT pushable (see isPushable's doc comment): SQL LIKE's
+	// wildcards don't line up with Cloud's LIKE grammar, so pushing it
+	// under-selects real wildcard patterns. It is residual-only — no WHERE
+	// fragment, kernel-evaluated.
 	f := spi.Filter{
 		Op:     spi.FilterLike,
 		Path:   "desc",
@@ -152,14 +156,14 @@ func TestPlanQuery_Like(t *testing.T) {
 		Value:  "foo%bar_baz\\qux",
 	}
 	plan := planQuery(f)
-	wantWhere := "json_extract(data, '$.desc') LIKE ? ESCAPE '\\'"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("where should be empty for non-pushable Like, got %s", plan.where)
 	}
-	// The value should have %, _, and \ escaped.
-	wantVal := "foo\\%bar\\_baz\\\\qux"
-	if len(plan.args) != 1 || plan.args[0] != wantVal {
-		t.Errorf("args = %v, want [%s]", plan.args, wantVal)
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Like is not pushed)", plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterLike {
+		t.Fatalf("postFilter should be the Like residual, got %+v", plan.postFilter)
 	}
 }
 

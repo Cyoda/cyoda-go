@@ -156,6 +156,11 @@ func TestPlanQuery_StartsWith(t *testing.T) {
 }
 
 func TestPlanQuery_EndsWith(t *testing.T) {
+	// postgres uses right(col, char_length($N)) = $N, NOT sqlite's
+	// substr(col, -length($N)) idiom — postgres substr's negative-start
+	// semantics don't mean "last N characters" (see the fix's doc comment
+	// on leafToSQL, case spi.FilterEndsWith, and the now-passing
+	// TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG).
 	f := spi.Filter{
 		Op:     spi.FilterEndsWith,
 		Path:   "email",
@@ -163,7 +168,7 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 		Value:  ".com",
 	}
 	plan := planQuery(f)
-	wantWhere := "substr(doc->>'email', -length($1)) = $2"
+	wantWhere := "right(doc->>'email', char_length($1)) = $2"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -173,6 +178,10 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 }
 
 func TestPlanQuery_Like(t *testing.T) {
+	// Like is NOT pushable (see isPushable's doc comment): SQL LIKE's
+	// wildcards don't line up with Cloud's LIKE grammar, so pushing it
+	// under-selects real wildcard patterns. It is residual-only — no WHERE
+	// fragment, kernel-evaluated. Mirrors sqlite's TestPlanQuery_Like.
 	f := spi.Filter{
 		Op:     spi.FilterLike,
 		Path:   "desc",
@@ -180,13 +189,14 @@ func TestPlanQuery_Like(t *testing.T) {
 		Value:  "foo%bar_baz\\qux",
 	}
 	plan := planQuery(f)
-	wantWhere := "doc->>'desc' LIKE $1 ESCAPE '\\'"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("where should be empty for non-pushable Like, got %s", plan.where)
 	}
-	wantVal := "foo\\%bar\\_baz\\\\qux"
-	if len(plan.args) != 1 || plan.args[0] != wantVal {
-		t.Errorf("args = %v, want [%s]", plan.args, wantVal)
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Like is not pushed)", plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterLike {
+		t.Fatalf("postFilter should be the Like residual, got %+v", plan.postFilter)
 	}
 }
 
@@ -719,13 +729,12 @@ func TestPlanQuery_SourceMeta_StateIsNull(t *testing.T) {
 // TestPlanQuery_IsPushableParityWithSqlite asserts the set of ops we mark
 // pushable is the same as sqlite's. This protects Task 16's parity tests.
 func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
-	// These must all be pushable (mirror sqlite's isPushable). Ne is deliberately
-	// excluded (residual-only); BetweenInclusive is included.
+	// These must all be pushable (mirror sqlite's isPushable). Ne and Like are
+	// deliberately excluded (residual-only); BetweenInclusive is included.
 	pushable := []spi.FilterOp{
 		spi.FilterEq,
 		spi.FilterGt, spi.FilterLt, spi.FilterGte, spi.FilterLte,
 		spi.FilterContains, spi.FilterStartsWith, spi.FilterEndsWith,
-		spi.FilterLike,
 		spi.FilterIsNull, spi.FilterNotNull,
 		spi.FilterBetween, spi.FilterBetweenInclusive,
 	}
@@ -735,9 +744,12 @@ func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
 		}
 	}
 	// These must NOT be pushable. Ne under-selects in SQL (float8/text collision),
-	// so it is residual-only.
+	// so it is residual-only. Like's SQL-wildcard grammar doesn't line up with
+	// Cloud's LIKE grammar, so it is residual-only too (see isPushable's doc
+	// comment).
 	notPushable := []spi.FilterOp{
 		spi.FilterNe,
+		spi.FilterLike,
 		spi.FilterMatchesRegex,
 		spi.FilterIEq, spi.FilterINe,
 		spi.FilterIContains, spi.FilterINotContains,

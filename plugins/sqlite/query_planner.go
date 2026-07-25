@@ -169,6 +169,17 @@ func isFullyPushable(f spi.Filter) bool {
 // is residual-only (kernel-evaluated). BetweenInclusive IS pushable: SQL BETWEEN
 // is inclusive [lo,hi], a sound superset of the inclusive kernel between.
 //
+// Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
+// wildcards do not line up with Cloud's LIKE grammar (spi.MatchFilter's
+// likeToRegex), so a naive pushdown either escapes the wildcards into a
+// literal match (under-selecting real wildcard patterns) or pushes them
+// through unescaped (over-selecting/misinterpreting SQL-LIKE-specific
+// escaping). A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's
+// grammar is deferred to a dedicated follow-up; until then Like is
+// residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
+// branch is kept below (unreachable via isPushable, like Ne) for mirror
+// totality with postgres.
+//
 // IMPORTANT: this set MUST match postgres's isPushable exactly. Adding or
 // removing an op here without doing the same in postgres breaks the parity
 // invariant relied on by the cross-backend tests in e2e/parity/.
@@ -176,7 +187,7 @@ func isPushable(op spi.FilterOp) bool {
 	switch op {
 	case spi.FilterEq, spi.FilterGt, spi.FilterLt,
 		spi.FilterGte, spi.FilterLte, spi.FilterContains,
-		spi.FilterStartsWith, spi.FilterEndsWith, spi.FilterLike,
+		spi.FilterStartsWith, spi.FilterEndsWith,
 		spi.FilterIsNull, spi.FilterNotNull,
 		spi.FilterBetween, spi.FilterBetweenInclusive:
 		return true

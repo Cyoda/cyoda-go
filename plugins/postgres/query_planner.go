@@ -176,6 +176,17 @@ func isFullyPushable(f spi.Filter) bool {
 // is inclusive [lo,hi], a sound superset of the inclusive kernel between (and,
 // by float8 monotonicity, of any value the kernel matches).
 //
+// Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
+// wildcards do not line up with Cloud's LIKE grammar (spi.MatchFilter's
+// likeToRegex), so a naive pushdown either escapes the wildcards into a
+// literal match (under-selecting real wildcard patterns) or pushes them
+// through unescaped (over-selecting/misinterpreting SQL-LIKE-specific
+// escaping). A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's
+// grammar is deferred to a dedicated follow-up; until then Like is
+// residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
+// branch is kept below (unreachable via isPushable, like Ne) for mirror
+// totality with sqlite.
+//
 // IMPORTANT: this set MUST match sqlite's isPushable exactly. Adding or
 // removing an op here without doing the same in sqlite breaks the parity
 // invariant relied on by the cross-backend tests in e2e/parity/.
@@ -183,7 +194,7 @@ func isPushable(op spi.FilterOp) bool {
 	switch op {
 	case spi.FilterEq, spi.FilterGt, spi.FilterLt,
 		spi.FilterGte, spi.FilterLte, spi.FilterContains,
-		spi.FilterStartsWith, spi.FilterEndsWith, spi.FilterLike,
+		spi.FilterStartsWith, spi.FilterEndsWith,
 		spi.FilterIsNull, spi.FilterNotNull,
 		spi.FilterBetween, spi.FilterBetweenInclusive:
 		return true
@@ -396,7 +407,7 @@ func nextPlaceholder(counter *int) string {
 //     don't silently evaluate to NULL (which WHERE would filter out, diverging
 //     from Go semantics where missing != value is true)
 //   - ne: wrap with IS NULL OR so missing fields match (Go treats missing != value as true)
-//   - String ops (contains, starts_with, ends_with): use strpos/substr, not LIKE
+//   - String ops (contains, starts_with, ends_with): use strpos/substr/right, not LIKE
 //   - like: uses LIKE with ESCAPE '\' and value preprocessing
 //
 // Numeric eq/ne and ordering ops route the field expression through
@@ -474,11 +485,18 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		sv := fmt.Sprint(f.Value)
 		return fmt.Sprintf("substr(%s, 1, length(%s)) = %s", col, p1, p2), []any{sv, sv}
 	case spi.FilterEndsWith:
+		// postgres substr(col, -N) does NOT mean "last N characters" the way
+		// sqlite's does — postgres substr's start position is 1-indexed and a
+		// non-positive start just shifts the (clamped) window forward from
+		// position 1, returning the whole remaining string. right(col, N) is
+		// postgres's actual "last N characters" primitive, so use that
+		// instead (sqlite keeps its substr(col, -N) form — see this file's
+		// sibling in plugins/sqlite, which is correct there).
 		col := fieldExpr(f)
 		p1 := nextPlaceholder(counter)
 		p2 := nextPlaceholder(counter)
 		sv := fmt.Sprint(f.Value)
-		return fmt.Sprintf("substr(%s, -length(%s)) = %s", col, p1, p2), []any{sv, sv}
+		return fmt.Sprintf("right(%s, char_length(%s)) = %s", col, p1, p2), []any{sv, sv}
 	case spi.FilterLike:
 		col := fieldExpr(f)
 		p := nextPlaceholder(counter)

@@ -56,9 +56,8 @@ import (
 // marshalEntityMeta), matching temporalLeafToSQL's `col / 1000` assumption.
 //
 // A genuine soundness bug turned up while building this property test (see
-// TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG below) — per
-// this task's instructions that failure is pinned, not hidden and not
-// silently patched.
+// TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG below) — now
+// fixed (FilterLike is residual-only; see that test's doc comment).
 
 // soundnessCorpusRow is one corpus entity. creationDateAdvance is the
 // duration to advance the shared TestClock by immediately BEFORE this row is
@@ -347,39 +346,24 @@ func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 	}
 }
 
-// TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG pins a REAL
+// TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG pinned a REAL
 // soundness violation discovered while building the property test above:
-// plugins/sqlite/query_planner.go's leafToSQL, case spi.FilterLike, escapes
+// plugins/sqlite/query_planner.go's leafToSQL, case spi.FilterLike, escaped
 // EVERY '%'/'_' in the operand via escapeLike before binding it to SQL
 // `LIKE ? ESCAPE '\'` — turning a genuine wildcard pattern into a literal
 // string match at the SQL layer. The kernel (spi.MatchFilter -> eval_leaf.go
 // likeToRegex) does the opposite: it treats an unescaped '%' as "match any
 // run of characters" and '_' as "match any one character" — the standard
-// LIKE-wildcard reading, and the one TestPlanQuery_Like in
-// query_planner_test.go already pins as the SQL-generation behaviour.
+// LIKE-wildcard reading.
 //
-// FilterLike IS pushable (isPushable includes it) and is only ever
-// SOUND-SUPERSET (leafExact excludes it, forcing a postFilter re-check), so
-// the pushdown contract requires the SQL WHERE to return a SUPERSET of the
-// kernel's true matches — the re-check can only narrow a candidate set, it
-// can never recover a row the SQL never returned. Escaping the wildcards
-// breaks that: the SQL WHERE returns FEWER rows than the kernel matches, a
-// genuine UNDER-SELECT. A LIKE condition with real wildcards
-// (Search/Iterate/grouped-stats) silently drops entities it should match.
-//
-// This is a real bug, not a test gap — reported per this task's
-// instructions (see the task-12-13 report) rather than silently patched or
-// hidden by narrowing the property test's LIKE coverage to only
-// wildcard-free patterns (which soundnessConditions above deliberately
-// does, so the property suite itself stays green and honestly scoped).
-// Filed for a dedicated red/green TDD bugfix (Gate 1) — not fixed here
-// because this deliverable is test-coverage-only. Skipped so the suite
-// stays green; remove the Skip once FilterLike's SQL translation is fixed
-// (either pass '%'/'_' through as real SQL wildcards, or decline pushdown
-// for FilterLike entirely and fall back to residual-only evaluation).
+// Fixed by removing FilterLike from isPushable: Like is now residual-only,
+// so the kernel (spi.MatchFilter) evaluates it directly with the correct
+// wildcard semantics — no SQL WHERE narrowing, no under-select risk. A sound
+// SQL-LIKE translation that aligns SQL LIKE to Cloud's LIKE grammar (so Like
+// can be pushed again) is deferred to a dedicated follow-up; leafToSQL's
+// FilterLike branch is kept in query_planner.go, unreachable via isPushable
+// like Ne, for mirror totality with postgres.
 func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T) {
-	t.Skip("KNOWN BUG: sqlite FilterLike pushdown escapes wildcards (query_planner.go leafToSQL, case spi.FilterLike -> escapeLike), causing under-select vs the kernel's wildcard LIKE semantics — see the task-12-13 report; needs a dedicated TDD bugfix, not fixed in this test-only deliverable")
-
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "e1", "available", map[string]any{"desc": "foobarbaz"})
 

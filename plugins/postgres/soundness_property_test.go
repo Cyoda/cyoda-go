@@ -198,10 +198,7 @@ func TestPostgresPushdownSoundnessProperty(t *testing.T) {
 		{"between_inclusive_boundary", fNumBetween(spi.FilterBetweenInclusive, "amount", 0.0, 100.0)},
 		{"contains_substring", fStringOp(spi.FilterContains, "name", "idget")},
 		{"starts_with", fStringOp(spi.FilterStartsWith, "name", "Wi")},
-		// ends_with is DELIBERATELY excluded here — it is a second real
-		// soundness bug on postgres, pinned separately below in
-		// TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG rather
-		// than included (and silently tolerated) in this assertion loop.
+		{"ends_with", fStringOp(spi.FilterEndsWith, "name", "get")},
 		{"like_literal_no_wildcard", fStringOp(spi.FilterLike, "name", "Widget")},
 		{"isnull_amount", fUnary(spi.FilterIsNull, "amount")},
 		{"notnull_amount", fUnary(spi.FilterNotNull, "amount")},
@@ -272,10 +269,10 @@ func TestPostgresPushdownSoundnessProperty(t *testing.T) {
 	}
 }
 
-// TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG pins a SECOND,
+// TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG pinned a SECOND,
 // independent, and more severe real soundness violation discovered while
 // building the property test above: plugins/postgres/query_planner.go's
-// leafToSQL, case spi.FilterEndsWith, pushes
+// leafToSQL, case spi.FilterEndsWith, pushed
 // `substr(col, -length(value)) = value` — copying sqlite's negative-substr
 // idiom verbatim. In SQLite, substr(X, -N) means "the last N characters",
 // so this works there. In PostgreSQL, substr's semantics with a negative (or
@@ -283,29 +280,19 @@ func TestPostgresPushdownSoundnessProperty(t *testing.T) {
 // from the end at all — a non-positive start simply shifts the (1-indexed)
 // window to include characters before position 1, which for a call with no
 // length argument returns the ENTIRE remaining string starting at position 1
-// (clamped). Concretely: substr('Widget', -3) returns 'Widget' in postgres,
-// not 'get'. So the pushed condition degenerates to (roughly) `col = value`,
+// (clamped). Concretely: substr('Widget', -3) returned 'Widget' in postgres,
+// not 'get'. So the pushed condition degenerated to (roughly) `col = value`,
 // which is false for any stored value longer than the ENDS_WITH suffix —
-// i.e. FilterEndsWith on postgres returns essentially ZERO rows for any
+// i.e. FilterEndsWith on postgres returned essentially ZERO rows for any
 // real-world use, a total failure of the operator, not a boundary-only
 // under-select.
 //
-// FilterEndsWith IS pushable (isPushable includes it) and is only ever
-// SOUND-SUPERSET (leafExact excludes it), so the SQL WHERE is required to
-// return a superset of the kernel's true matches; the postFilter re-check
-// can only narrow, never recover a row the SQL never returned. This bug
-// silently drops entities Search/Iterate/grouped-stats should have matched.
-//
-// This is a real bug, not a test gap — reported per this task's
-// instructions (see the task-12-13 report) rather than silently patched.
-// Filed for a dedicated red/green TDD bugfix (Gate 1) — not fixed here
-// because this deliverable is test-coverage-only. Skipped so the suite
-// stays green; remove the Skip once query_planner.go's FilterEndsWith case
-// is fixed (e.g. `right(col, length($N)) = $N`, or `substr(col,
-// length(col) - length($N) + 1) = $N`, both correct in postgres).
+// Fixed by switching the pushed SQL to `right(col, char_length($N)) = $N`
+// — postgres's actual "last N characters" primitive — mirroring how
+// StartsWith binds its length argument once and its comparison value once.
+// FilterEndsWith stays pushable and SOUND-SUPERSET (still re-checked by the
+// kernel for non-text stringification), now correctly.
 func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
-	t.Skip("KNOWN BUG: postgres FilterEndsWith pushdown uses SQLite's negative-substr idiom (query_planner.go leafToSQL, case spi.FilterEndsWith), which does not mean \"last N characters\" in postgres — the operator returns essentially zero rows for any real suffix match; see the task-12-13 report; needs a dedicated TDD bugfix, not fixed in this test-only deliverable")
-
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "e1", "available", map[string]any{"name": "Widget"})
 
@@ -327,21 +314,19 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 }
 
 // TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG mirrors
-// plugins/sqlite/soundness_property_test.go's KNOWNBUG test: pins the same
+// plugins/sqlite/soundness_property_test.go's KNOWNBUG test: pinned the same
 // REAL soundness violation for postgres. plugins/postgres/query_planner.go's
-// leafToSQL, case spi.FilterLike, has the byte-for-byte identical
+// leafToSQL, case spi.FilterLike, had the byte-for-byte identical
 // escapeLike() call escaping every '%'/'_' before binding to
 // `LIKE $N ESCAPE '\'` — turning a genuine wildcard pattern into a literal
 // string match at the SQL layer, while the kernel (spi.MatchFilter ->
-// eval_leaf.go likeToRegex) treats those characters as real wildcards. See
-// the sqlite KNOWNBUG test's doc comment for the full soundness argument
-// (identical for both backends); see the task-12-13 report for the sqlite
-// repro. Skipped so the suite stays green — this is a real bug filed for a
-// dedicated red/green TDD fix, not patched here (test-coverage-only
-// deliverable). Remove the Skip once FilterLike's SQL translation is fixed.
+// eval_leaf.go likeToRegex) treats those characters as real wildcards.
+//
+// Fixed identically to sqlite: FilterLike removed from isPushable, so Like
+// is now residual-only and the kernel evaluates it directly with the
+// correct wildcard semantics. See the sqlite KNOWNBUG test's doc comment
+// for the full argument.
 func TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T) {
-	t.Skip("KNOWN BUG: postgres FilterLike pushdown escapes wildcards (query_planner.go leafToSQL, case spi.FilterLike -> escapeLike), causing under-select vs the kernel's wildcard LIKE semantics — identical to the sqlite bug pinned in plugins/sqlite/soundness_property_test.go; see the task-12-13 report; needs a dedicated TDD bugfix, not fixed in this test-only deliverable")
-
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "e1", "available", map[string]any{"desc": "foobarbaz"})
 
