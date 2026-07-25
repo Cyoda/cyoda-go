@@ -44,8 +44,8 @@ import (
 // internal/domain/search/filter_translate.go's dataCoercion doc comment
 // states plainly that a SourceData leaf is NEVER stamped CoerceTemporal in
 // production today ("Today classifyType never returns spi.OrderTemporal for
-// data fields... polymorphic-temporal typing (#137) lights this up with no
-// change here") — so a SourceData+CoerceTemporal Filter is not a shape
+// data fields... polymorphic-temporal typing lights this up with no change
+// here") — so a SourceData+CoerceTemporal Filter is not a shape
 // production code can construct yet, and its storage convention (does the
 // data blob hold an epoch-micros integer or an ISO string at that path?) is
 // undefined pending that future work. Testing it here would invent a

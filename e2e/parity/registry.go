@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 210 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 215 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -374,6 +374,26 @@ var allTests = []NamedTest{
 	{"AttributionExecutorRoundTrip", RunAttributionExecutorRoundTrip},
 	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
 	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
+
+	// #431 final-review I-1 — spec §10 backend-agnostic scenarios that
+	// lacked a dedicated named parity scenario (search_type_directed.go).
+	// The data-field temporal-resolution row is deliberately NOT here — see
+	// the file header comment (feature gap, not a missing test).
+	//
+	// RunSearchPolymorphicIntStringExpansion is deliberately NOT registered
+	// here: writing it surfaced a genuine sqlite-only pushdown soundness bug
+	// (SQLite's json_extract preserves the stored JSON scalar's native type,
+	// so a text-bound operand fails to match an int-stored branch that
+	// postgres's stringifying ->> extraction and the memory kernel both
+	// match) — see the function's doc comment for the full root cause. Fixing
+	// it is a production change outside this test-only task's scope; the
+	// function is left in place, fully written, ready to register once
+	// plugins/sqlite/query_planner.go restores soundness for this case.
+	{"SearchNumericBucketRounding", RunSearchNumericBucketRounding},
+	{"SearchLikeAnchoredEscapedGlob", RunSearchLikeAnchoredEscapedGlob},
+	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},
+	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
+	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.
