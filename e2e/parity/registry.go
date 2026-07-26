@@ -376,10 +376,9 @@ var allTests = []NamedTest{
 	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
 	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
 
-	// #431 final-review I-1 — spec §10 backend-agnostic scenarios that
-	// lacked a dedicated named parity scenario (search_type_directed.go).
-	// The data-field temporal-resolution row is deliberately NOT here — see
-	// the file header comment (feature gap, not a missing test).
+	// Spec §10 backend-agnostic scenarios that lacked a dedicated named
+	// parity scenario (search_type_directed.go). Data-field temporal
+	// resolution is registered separately below.
 	//
 	// SearchPolymorphicIntStringExpansion guards the polymorphic [INTEGER,
 	// STRING] pushdown soundness fix: an operand matching stored values of
@@ -395,7 +394,7 @@ var allTests = []NamedTest{
 	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
 	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
 
-	// #431 spec §4 — data-field temporal (subsumes the earlier standalone
+	// Spec §4 — data-field temporal (subsumes the earlier standalone
 	// temporal-search-on-data-fields work). Model discovery content-sniffs
 	// ISO-8601 sample strings into a temporal subtype, so a data field
 	// compares chronologically with cross-subtype resolution: a LocalDate

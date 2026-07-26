@@ -333,8 +333,14 @@ func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
 // with a known field/operator).
 //
-// A schema-load hiccup (see loadModelNode) returns nil — the search
-// proceeds without type constraints rather than failing on infra flakiness.
+// A schema-load hiccup (see loadModelNode) returns nil — the search proceeds
+// without pre-rejecting type-unsound conditions rather than 5xx-ing on an infra
+// flake. This is safe, not a wrong-but-available result: with no model the eval
+// path stamps empty Declared too, so comparison leaves degrade to non-match
+// (empty results, never a wrong match), and existence is already gated upstream
+// by EnsureModelRegistered. It is deliberately more lenient here than the
+// workflow engine (which fails closed on the same load error) — a search
+// prefers empty-on-flake to a 5xx.
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
 	node := loadModelNode(ctx, modelStore, modelRef)
 	if node == nil {

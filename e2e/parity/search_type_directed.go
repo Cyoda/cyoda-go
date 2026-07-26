@@ -7,8 +7,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// search_type_directed.go closes final-review finding I-1 for #431: the spec
-// §10 coverage matrix (docs/superpowers/specs/2026-07-23-431-cloud-aligned-search-design.md)
+// search_type_directed.go covers the spec §10 coverage matrix
+// (docs/superpowers/specs/2026-07-23-431-cloud-aligned-search-design.md)
 // marks these behaviors as needing a cross-backend parity (P) scenario, but
 // none had a dedicated named one — each was only exercised at the SPI kernel
 // unit level and/or a running-backend e2e test. These scenarios are thin: the
