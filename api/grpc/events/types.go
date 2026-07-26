@@ -2991,7 +2991,9 @@ type EntitySearchRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// The maximum number of rows to return.
+	// Caps the matched result set; not a page size. A matched set larger than `limit`
+	// is rejected rather than returned as a truncated prefix. Values below 1 are
+	// rejected.
 	Limit *int `json:"limit,omitempty" yaml:"limit,omitempty" mapstructure:"limit,omitempty"`
 
 	// Entity model to use for building this snapshot.
