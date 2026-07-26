@@ -84,8 +84,10 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 }
 
 // searchCommitted runs the committed pushdown: plan the filter, push the
-// pushable portion (and, when there is no residual, LIMIT/OFFSET) to SQL, then
-// post-filter the residual and page in Go. Executed through the context-
+// pushable portion to SQL, and — when there is no residual — push the
+// limit+1 probe described on Search above. When there is a residual, rows
+// are streamed and post-filtered in Go with no paging: Search raises the
+// moment the running count exceeds the bound. Executed through the context-
 // resolving Querier, so inside a transaction it observes the tx's own writes
 // (read-your-own-writes) natively; outside a transaction it reads committed data.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
