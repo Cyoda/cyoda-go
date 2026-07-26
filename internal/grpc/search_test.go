@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
@@ -801,10 +802,12 @@ func withLimit(n int) directSearchOpt {
 }
 
 // directSearch issues an EntitySearchRequest against a fresh in-memory
-// model/store (a Searcher stub that would return an empty match set if
-// reached) and returns the decoded EntityResponseJson from the stream.
-// Mirrors the setup shared by TestDirectSearch_OmittedLimitDefaultsTo1000
-// and TestDirectSearch_ResultLimitSentinel_ClientError above.
+// model/store (a Searcher stub that, if reached, returns a single matching
+// entity — so a request that's accepted produces a real envelope on the
+// stream, not a silently-empty one) and returns the decoded
+// EntityResponseJson from the stream. Mirrors the setup shared by
+// TestDirectSearch_OmittedLimitDefaultsTo1000 and
+// TestDirectSearch_ResultLimitSentinel_ClientError above.
 func directSearch(t *testing.T, opts ...directSearchOpt) *events.EntityResponseJson {
 	t.Helper()
 	base := memory.NewStoreFactory()
@@ -814,7 +817,19 @@ func directSearch(t *testing.T, opts ...directSearchOpt) *events.EntityResponseJ
 	saveMinimalModelGRPC(t, ctx, base, ref)
 	realStore, _ := base.EntityStore(ctx)
 	ses := &searcherEntityStoreG{EntityStore: realStore,
-		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			now := time.Now()
+			return []*spi.Entity{{
+				Meta: spi.EntityMeta{
+					ID:               "alice-1",
+					ModelRef:         ref,
+					State:            "NEW",
+					CreationDate:     now,
+					LastModifiedDate: now,
+				},
+				Data: []byte(`{"name":"Alice"}`),
+			}}, nil
+		}}
 	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
@@ -853,5 +868,18 @@ func TestDirectSearch_NonPositiveLimit_ClientError(t *testing.T) {
 		if resp.Error.Code != "CLIENT_ERROR" {
 			t.Fatalf("limit=%d: got Error.Code %q, want CLIENT_ERROR", limit, resp.Error.Code)
 		}
+	}
+}
+
+// limit=1 is the smallest legal value and must succeed, not be rejected —
+// pins the accepted side of the boundary TestDirectSearch_NonPositiveLimit_ClientError
+// exercises from the other side. Without this, a future limit<1 -> limit<=1
+// typo would silently reject every single-result gRPC search while every
+// existing test (including Task 10's e2e at-limit case, which uses limit=2)
+// stayed green.
+func TestDirectSearch_LimitOneAccepted(t *testing.T) {
+	resp := directSearch(t, withLimit(1))
+	if !resp.Success {
+		t.Fatalf("limit=1: got Success=false (Error=%+v), want a successful search", resp.Error)
 	}
 }
