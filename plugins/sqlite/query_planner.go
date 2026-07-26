@@ -236,6 +236,19 @@ func isLeafPushable(f spi.Filter) bool {
 		return false
 	}
 	if f.Coercion == spi.CoerceTemporal {
+		// Meta temporal fields store a single full instant (a µs-integer here /
+		// an offset-bearing RFC3339 string on postgres) that the epoch-ms push
+		// (temporalLeafToSQL) compares soundly. DATA temporal fields store bare
+		// ISO-subtype strings whose comparison needs the kernel's temporal-
+		// subtype resolution — an imprecise-floor op mutation (e.g. `>=
+		// 2024-09-09` on a Year field becomes `> 2024`) that a flat epoch-ms
+		// compare cannot reproduce as a sound superset. Route data temporal
+		// COMPARISONS to the residual, where the kernel (spi.MatchFilter) is
+		// authoritative; presence checks (IsNull/NotNull) are coercion-
+		// independent and stay pushable.
+		if f.Source == spi.SourceData && isComparisonOp(f.Op) {
+			return false
+		}
 		return true
 	}
 	if isComparisonOp(f.Op) && len(f.Declared) > 1 {

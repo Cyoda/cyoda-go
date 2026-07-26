@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 216 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 217 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -393,6 +393,15 @@ var allTests = []NamedTest{
 	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},
 	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
 	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
+
+	// #431 spec §4 — data-field temporal (subsumes the earlier standalone
+	// temporal-search-on-data-fields work). Model discovery content-sniffs
+	// ISO-8601 sample strings into a temporal subtype, so a data field
+	// compares chronologically with cross-subtype resolution: a LocalDate
+	// field's `>= 2024-09-09` is a chronological compare, and a Year field
+	// resolves that same operand to `> 2024` (imprecise-floor op mutation) —
+	// matching 2025, not 2024. See search_type_directed.go.
+	{"SearchDataFieldTemporalResolution", RunSearchDataFieldTemporalResolution},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

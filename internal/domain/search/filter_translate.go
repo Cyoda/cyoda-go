@@ -78,11 +78,11 @@ func betweenValues(op spi.FilterOp, value any) []any {
 }
 
 // dataCoercion returns CoerceTemporal only if the schema classifies the
-// field's declared type(s) as temporal. Today classifyType never returns
-// spi.OrderTemporal for data fields, so this always yields CoerceNone;
-// polymorphic-temporal typing (subsumes the earlier temporal-search work)
-// lights this up with no change here.
-// A nil fields map (no schema available) also yields CoerceNone.
+// field's declared type(s) as temporal. A data field discovered as a temporal
+// subtype (content-sniffed ISO-8601 sample values — see schema.InferDataType)
+// classifies as spi.OrderTemporal via classifyType, so this stamps
+// CoerceTemporal and routes the pushdown temporal path for it.
+// A nil fields map (no schema available) yields CoerceNone.
 func dataCoercion(jsonPath string, fields map[string]schema.FieldDescriptor) spi.FilterCoercion {
 	if fields == nil {
 		return spi.CoerceNone

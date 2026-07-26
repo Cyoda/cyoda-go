@@ -96,7 +96,7 @@ func dissect(f spi.Filter) (pushed *spi.Filter, residual *spi.Filter) {
 	case spi.FilterOr:
 		return dissectOr(f)
 	default:
-		if isPushable(f.Op) {
+		if isLeafPushable(f) {
 			return &f, nil
 		}
 		return nil, &f
@@ -162,8 +162,46 @@ func isFullyPushable(f spi.Filter) bool {
 		}
 		return true
 	default:
-		return isPushable(f.Op)
+		return isLeafPushable(f)
 	}
+}
+
+// isLeafPushable is the LEAF-LEVEL pushability decision, layered on top of the
+// op-level isPushable. The op-level set MUST stay identical across postgres and
+// sqlite (see isPushable); the leaf-level layer MAY diverge per backend, since
+// the mirror contract requires identical RESULTS (the kernel is authoritative
+// on both), not identical pushed WHERE clauses.
+//
+// DATA temporal comparison leaves route to the residual: meta temporal fields
+// store a single full instant that the epoch-ms push (temporalLeafToSQL /
+// cyoda_epoch_millis) compares soundly, but data temporal fields store bare
+// ISO-subtype strings whose comparison needs the kernel's temporal-subtype
+// resolution — an imprecise-floor op mutation (e.g. `>= 2024-09-09` on a Year
+// field becomes `> 2024`) that a flat epoch-ms compare cannot reproduce as a
+// sound superset (and cyoda_epoch_millis returns NULL for a bare subtype,
+// under-selecting to zero rows). Presence checks (IsNull/NotNull) are
+// coercion-independent and stay pushable. Mirrors sqlite's isLeafPushable.
+func isLeafPushable(f spi.Filter) bool {
+	if !isPushable(f.Op) {
+		return false
+	}
+	if f.Coercion == spi.CoerceTemporal && f.Source == spi.SourceData && isComparisonOp(f.Op) {
+		return false
+	}
+	return true
+}
+
+// isComparisonOp reports whether op is a scalar comparison (Eq/Ne/Gt/Lt/Gte/
+// Lte/Between). String ops (Contains/StartsWith/EndsWith) and presence checks
+// (IsNull/NotNull) are not comparisons in this sense. Mirrors sqlite's
+// isComparisonOp.
+func isComparisonOp(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterLt,
+		spi.FilterGte, spi.FilterLte, spi.FilterBetween, spi.FilterBetweenInclusive:
+		return true
+	}
+	return false
 }
 
 // isPushable returns true if a leaf operation can be translated to SQL as a

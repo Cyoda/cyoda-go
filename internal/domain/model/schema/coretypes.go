@@ -62,3 +62,10 @@ var (
 	IsAssignableTo  = spi.IsAssignableTo
 	CollapseNumeric = spi.CollapseNumeric
 )
+
+// ClassifyTemporalString reports the most specific temporal DataType an
+// ISO-8601 string parses as (or false if it is not temporal). Model discovery
+// and leaf-value validation use it so a data field whose sample values are
+// date-shaped strings is classified as a temporal subtype — the same
+// classification the search leaf kernel applies to stored temporal values.
+var ClassifyTemporalString = spi.ClassifyTemporalString

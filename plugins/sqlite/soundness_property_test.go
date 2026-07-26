@@ -39,21 +39,19 @@ import (
 //     here it is accessible too (assertion 1), so this is additional,
 //     stronger evidence, not a substitute.
 //
-// Temporal coverage uses spi.SourceMeta "creationDate" (Coercion:
-// CoerceTemporal), NOT an arbitrary SourceData path. As of this commit,
-// internal/domain/search/filter_translate.go's dataCoercion doc comment
-// states plainly that a SourceData leaf is NEVER stamped CoerceTemporal in
-// production today ("Today classifyType never returns spi.OrderTemporal for
-// data fields... polymorphic-temporal typing lights this up with no change
-// here") — so a SourceData+CoerceTemporal Filter is not a shape
-// production code can construct yet, and its storage convention (does the
-// data blob hold an epoch-micros integer or an ISO string at that path?) is
-// undefined pending that future work. Testing it here would invent a
-// contract, not verify one. spi.SourceMeta "creationDate" IS reachable today
-// (search.lifecycleToFilter stamps it on every LifecycleCondition against a
-// temporal meta field) and its storage convention is fixed: the meta JSON
-// blob's creation_date key is a microsecond epoch integer (entity_store.go
-// marshalEntityMeta), matching temporalLeafToSQL's `col / 1000` assumption.
+// Temporal PUSH-soundness coverage uses spi.SourceMeta "creationDate"
+// (Coercion: CoerceTemporal), NOT a SourceData path. A SourceData temporal
+// field IS stamped CoerceTemporal today (model discovery content-sniffs
+// ISO-8601 sample strings into a temporal subtype — see schema.InferDataType),
+// but a data temporal COMPARISON leaf is deliberately NOT pushed: isLeafPushable
+// routes it to the residual so the kernel (which performs temporal-subtype
+// resolution the flat epoch-ms push cannot reproduce) is authoritative. It
+// therefore never exercises the pushed-WHERE soundness property probed here.
+// spi.SourceMeta "creationDate" IS pushed (search.lifecycleToFilter stamps it
+// on every LifecycleCondition against a temporal meta field) and its storage
+// convention is fixed: the meta JSON blob's creation_date key is a microsecond
+// epoch integer (entity_store.go marshalEntityMeta), matching temporalLeafToSQL's
+// `col / 1000` assumption — the reachable, pushable temporal shape.
 //
 // A genuine soundness bug turned up while building this property test (see
 // TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG below) — now

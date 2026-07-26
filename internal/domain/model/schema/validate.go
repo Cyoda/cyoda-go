@@ -240,6 +240,15 @@ func inferDataType(v any) DataType {
 		}
 		return ClassifyDecimal(stripped)
 	case string:
+		// Content-sniff ISO-8601 strings into their most specific temporal
+		// subtype so a date-shaped value is classified (and later compared)
+		// chronologically rather than lexically. Matches the search leaf
+		// kernel's classification of stored temporal values exactly, so
+		// discovery, validation, and evaluation all agree on the subtype.
+		// A non-temporal string stays String (unchanged).
+		if dt, ok := ClassifyTemporalString(n); ok {
+			return dt
+		}
 		return String
 	case nil:
 		return Null

@@ -846,14 +846,27 @@ func TestPlan_TemporalMetaBetween(t *testing.T) {
 	}
 }
 
-// TestPlan_TemporalData covers a SourceData temporal leaf (non-meta path)
-// to confirm CoerceTemporal routing is independent of Source.
+// TestPlan_TemporalData asserts that a SourceData temporal COMPARISON leaf is
+// NOT pushed — it is routed to the residual so the kernel (spi.MatchFilter),
+// which performs temporal-subtype resolution, is authoritative. The flat
+// epoch-ms push (cyoda_epoch_millis) cannot reproduce the kernel's imprecise-
+// floor op mutation as a sound superset, and cyoda_epoch_millis returns NULL
+// for a bare ISO subtype (e.g. "2024" / "2024-09-09"), so pushing would
+// under-select. Meta temporal leaves (full offset-bearing instants) remain
+// pushable — see TestPlan_Temporal*. This is a deliberate leaf-level mirror
+// divergence from the op-level isPushable set (identical results, not
+// identical WHERE clauses).
 func TestPlan_TemporalData(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
 	plan := planQuery(f)
-	wantWhere := "(cyoda_epoch_millis(doc->>'occurredAt') IS NOT NULL AND cyoda_epoch_millis(doc->>'occurredAt') <= $1)"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("data temporal comparison must not be pushed; got where=%q", plan.where)
+	}
+	if plan.postFilter == nil {
+		t.Errorf("data temporal comparison must be routed to the residual (kernel-authoritative); postFilter is nil")
+	}
+	if isLeafPushable(f) {
+		t.Errorf("isLeafPushable must be false for a SourceData CoerceTemporal comparison leaf")
 	}
 }
 

@@ -19,9 +19,10 @@ import (
 // spi.MatchFilter's true matches (never under-select); the postFilter kernel
 // re-check then narrows that candidate set back down to the exact result.
 // See that file's doc comment for the full rationale (superset assertion +
-// "backend result == memory backend result" equality proxy, and why
-// temporal coverage uses SourceMeta "creationDate" rather than an arbitrary
-// SourceData path).
+// "backend result == memory backend result" equality proxy, and why temporal
+// PUSH-soundness coverage uses SourceMeta "creationDate" rather than a
+// SourceData path — a data temporal comparison is routed to the residual by
+// isLeafPushable, so it never exercises a pushed WHERE fragment).
 //
 // Determinism note: unlike sqlite (which has an injectable Clock —
 // sqlite.TestClock — for exact-instant control), postgres stamps
@@ -91,9 +92,10 @@ func fNumBetween(op spi.FilterOp, path string, lo, hi any) spi.Filter {
 	return spi.Filter{Op: op, Source: spi.SourceData, Path: path, Values: []any{lo, hi}, Declared: []spi.DataType{spi.Double}}
 }
 
-// fMetaTemporal builds a SourceMeta creationDate leaf — the reachable-today
-// temporal shape. See the file doc comment for why SourceData+CoerceTemporal
-// is excluded (unreachable in production; storage convention undefined).
+// fMetaTemporal builds a SourceMeta creationDate leaf — the pushable temporal
+// shape. See the file doc comment for why a SourceData temporal comparison is
+// excluded from push-soundness coverage (isLeafPushable routes it to the
+// residual, so it never produces a pushed WHERE fragment to probe).
 func fMetaTemporal(op spi.FilterOp, value any) spi.Filter {
 	return spi.Filter{Op: op, Source: spi.SourceMeta, Path: "creationDate", Value: value, Coercion: spi.CoerceTemporal, Declared: []spi.DataType{spi.ZonedDateTime}}
 }

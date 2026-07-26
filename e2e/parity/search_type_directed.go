@@ -16,23 +16,14 @@ import (
 // authority, so agreement across memory/sqlite/postgres is the guard, not the
 // interesting logic itself.
 //
-// Note: the matrix's "temporal subtype + resolution" row is deliberately NOT
-// added here for the DATA-field case. cyoda-go has no mechanism to ever
-// classify a data leaf's declared type as a temporal subtype (LocalDate/
-// Year/YearMonth/…) — schema.InferDataType classifies every JSON string as
-// spi.String unconditionally (internal/domain/model/schema/validate.go
-// inferDataType), and no importer/walker path assigns a temporal DataType to
-// a data field either. The resolution graph is fully implemented and unit-
-// tested in cyoda-go-spi (temporal_subtype.go) and is live for META fields
-// (creationDate/lastUpdateTime — see search_temporal.go), but is unreachable
-// for DATA fields today: classifyType/scalarClass (orderclass.go) buckets
-// LocalDate/YearMonth/Year under OrderText (plain string compare), not
-// OrderTemporal. Writing a parity scenario asserting "a YEAR data field
-// resolves >=2024-09-09 to >2024" would describe behavior that cannot
-// currently be triggered through any real request — it is a feature gap, not
-// a missing test, and is out of scope for a test-only change (no production
-// logic changes permitted here). Flagged for a follow-up design decision
-// rather than silently added or silently dropped.
+// The matrix's "temporal subtype + resolution" row for the DATA-field case is
+// pinned by RunSearchDataFieldTemporalResolution below. Model discovery now
+// content-sniffs ISO-8601 sample strings into their most specific temporal
+// subtype (schema.InferDataType via spi.ClassifyTemporalString), and
+// classifyType/scalarClass (orderclass.go) buckets those subtypes under
+// spi.OrderTemporal — so a data field whose samples are date-shaped compares
+// chronologically (with cross-subtype resolution), exactly as META temporal
+// fields (creationDate/lastUpdateTime) already do.
 
 // RunSearchPolymorphicIntStringExpansion pins spec §10's polymorphic
 // `[INTEGER,STRING]` row: a field observed as an INTEGER in one sample and a
@@ -392,4 +383,92 @@ func RunSearchIsNullAbsentVsPresentNull(t *testing.T, fixture BackendFixture) {
 	if len(notNullResults) != 1 || notNullResults[0].Meta.ID == nullID.String() || notNullResults[0].Meta.ID == absentID.String() {
 		t.Errorf("note NOT_NULL: want exactly the present-non-null entity, got %d results: %v", len(notNullResults), notNullResults)
 	}
+}
+
+// RunSearchDataFieldTemporalResolution pins spec §4's data-field temporal row
+// (subsumes the earlier standalone temporal-search-on-data-fields work): model
+// discovery content-sniffs ISO-8601 sample strings into a temporal subtype, so
+// a data field compares chronologically (with cross-subtype resolution) rather
+// than lexically. Two independent models exercise the two halves:
+//
+//  1. A LocalDate field ($.when, discovered from an ISO date sample):
+//     GREATER_OR_EQUAL "2024-09-09" is a chronological compare — it matches
+//     2024-09-09 and 2024-09-10 but not 2024-09-08. Lexical string order would
+//     agree here, so this half is the "temporal, not string-broken" guard.
+//
+//  2. A Year field ($.yr, discovered from a bare-year sample "2020"): the
+//     resolution graph downscales the LocalDate operand "2024-09-09" to Year
+//     and, because the floor loses precision, mutates GREATER_OR_EQUAL into a
+//     strict GREATER_THAN 2024 — so it matches 2025 but NOT 2024. This is the
+//     behavior only chronological subtype resolution can produce; a lexical
+//     compare of "2024" >= "2024-09-09" would (wrongly) exclude 2024 by string
+//     order but would also mis-handle the boundary, and could never yield the
+//     ">2024 matches 2025" mutation. This half is the resolution-graph guard.
+func RunSearchDataFieldTemporalResolution(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	// --- Half 1: LocalDate field, chronological >= compare ---------------
+	const dateModel = "parity-search-data-localdate"
+	const modelVersion = 1
+	// Sample "2020-01-01" content-sniffs to LocalDate -> $.when declared
+	// [LocalDate]. "seed" stays String (non-temporal).
+	if err := c.ImportModel(t, dateModel, modelVersion, `{"name":"seed","when":"2020-01-01"}`); err != nil {
+		t.Fatalf("ImportModel (localdate sample): %v", err)
+	}
+	if err := c.LockModel(t, dateModel, modelVersion); err != nil {
+		t.Fatalf("LockModel (localdate): %v", err)
+	}
+	if err := c.ImportWorkflow(t, dateModel, modelVersion, searchWorkflowJSON); err != nil {
+		t.Fatalf("ImportWorkflow (localdate): %v", err)
+	}
+
+	// Eighth (2024-09-08) is the control excluded by the >= boundary.
+	if _, err := c.CreateEntity(t, dateModel, modelVersion, `{"name":"Eighth","when":"2024-09-08"}`); err != nil {
+		t.Fatalf("CreateEntity Eighth: %v", err)
+	}
+	ninthID, err := c.CreateEntity(t, dateModel, modelVersion, `{"name":"Ninth","when":"2024-09-09"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity Ninth: %v", err)
+	}
+	tenthID, err := c.CreateEntity(t, dateModel, modelVersion, `{"name":"Tenth","when":"2024-09-10"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity Tenth: %v", err)
+	}
+
+	geResults, err := c.SyncSearch(t, dateModel, modelVersion, `{"type":"simple","jsonPath":"$.when","operatorType":"GREATER_OR_EQUAL","value":"2024-09-09"}`)
+	if err != nil {
+		t.Fatalf("SyncSearch when >= 2024-09-09: %v", err)
+	}
+	// Chronological: 09-09 (inclusive) and 09-10 match; 09-08 does not.
+	assertResultIDSet(t, "when >= 2024-09-09 (chronological)", geResults, []string{ninthID.String(), tenthID.String()})
+
+	// --- Half 2: Year field, resolution-graph op mutation ----------------
+	const yearModel = "parity-search-data-year"
+	// Sample "2020" content-sniffs to Year -> $.yr declared [Year].
+	if err := c.ImportModel(t, yearModel, modelVersion, `{"name":"seed","yr":"2020"}`); err != nil {
+		t.Fatalf("ImportModel (year sample): %v", err)
+	}
+	if err := c.LockModel(t, yearModel, modelVersion); err != nil {
+		t.Fatalf("LockModel (year): %v", err)
+	}
+	if err := c.ImportWorkflow(t, yearModel, modelVersion, searchWorkflowJSON); err != nil {
+		t.Fatalf("ImportWorkflow (year): %v", err)
+	}
+
+	if _, err := c.CreateEntity(t, yearModel, modelVersion, `{"name":"Y2024","yr":"2024"}`); err != nil {
+		t.Fatalf("CreateEntity Y2024: %v", err)
+	}
+	y2025ID, err := c.CreateEntity(t, yearModel, modelVersion, `{"name":"Y2025","yr":"2025"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity Y2025: %v", err)
+	}
+
+	// The LocalDate operand "2024-09-09" downscales to Year; the imprecise
+	// floor mutates >= into > 2024, so only 2025 matches (2024 is excluded).
+	yrResults, err := c.SyncSearch(t, yearModel, modelVersion, `{"type":"simple","jsonPath":"$.yr","operatorType":"GREATER_OR_EQUAL","value":"2024-09-09"}`)
+	if err != nil {
+		t.Fatalf("SyncSearch yr >= 2024-09-09: %v", err)
+	}
+	assertResultIDSet(t, "yr >= 2024-09-09 resolves to > 2024", yrResults, []string{y2025ID.String()})
 }

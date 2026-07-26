@@ -819,17 +819,27 @@ func TestSqlitePlan_TemporalMetaBetween(t *testing.T) {
 	}
 }
 
-// TestSqlitePlan_TemporalData covers a SourceData temporal leaf (non-meta
-// path) to confirm CoerceTemporal routing is independent of Source.
+// TestSqlitePlan_TemporalData asserts that a SourceData temporal COMPARISON
+// leaf is NOT pushed — it is routed to the residual so the kernel
+// (spi.MatchFilter), which performs temporal-subtype resolution, is
+// authoritative. The flat epoch-ms push ("/1000") assumes a µs-integer stored
+// value and cannot reproduce the kernel's imprecise-floor op mutation (e.g.
+// `>= 2024-09-09` on a Year field becomes `> 2024`) as a sound superset over a
+// bare ISO-string data value. Meta temporal leaves (µs-integer instants) remain
+// pushable. Mirrors postgres's TestPlan_TemporalData; a deliberate leaf-level
+// divergence from the op-level isPushable set (identical results guaranteed by
+// the kernel re-check, not identical WHERE clauses).
 func TestSqlitePlan_TemporalData(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
-	sql, args := leafToSQL(f)
-	wantSQL := "((json_extract(data, '$.occurredAt') / 1000) IS NOT NULL AND (json_extract(data, '$.occurredAt') / 1000) <= ?)"
-	if sql != wantSQL {
-		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	plan := planQuery(f)
+	if plan.where != "" {
+		t.Errorf("data temporal comparison must not be pushed; got where=%q", plan.where)
 	}
-	if len(args) != 1 || args[0] != int64(1609459200000) {
-		t.Errorf("args = %v, want [1609459200000]", args)
+	if plan.postFilter == nil {
+		t.Errorf("data temporal comparison must be routed to the residual (kernel-authoritative); postFilter is nil")
+	}
+	if isLeafPushable(f) {
+		t.Errorf("isLeafPushable must be false for a SourceData CoerceTemporal comparison leaf")
 	}
 }
 

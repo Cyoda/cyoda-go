@@ -45,11 +45,18 @@ func scalarClass(t schema.DataType) (spi.OrderKind, error) {
 	case t == schema.Boolean:
 		return spi.OrderBool, nil
 	case t == schema.String, t == schema.Character, t == schema.UUIDType,
-		t == schema.TimeUUIDType, t == schema.LocalDate, t == schema.LocalDateTime,
+		t == schema.TimeUUIDType:
+		// Compared as their stored ISO/string form (Text/byte order).
+		return spi.OrderText, nil
+	case t == schema.LocalDate, t == schema.LocalDateTime,
 		t == schema.LocalTime, t == schema.ZonedDateTime, t == schema.Year,
 		t == schema.YearMonth:
-		// All compared as their stored ISO/string form (Text/byte order).
-		return spi.OrderText, nil
+		// Temporal subtypes compare chronologically (with cross-subtype
+		// resolution), not lexically. Routing them to OrderTemporal makes
+		// dataCoercion stamp CoerceTemporal for a temporal data field —
+		// lighting up the pushdown temporal path and temporal-aware sort —
+		// and matches how temporal meta fields (creationDate/…) are ordered.
+		return spi.OrderTemporal, nil
 	default: // ByteArray and anything non-scalar
 		return 0, fmt.Errorf("type %s is not sortable", t)
 	}
