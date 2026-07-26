@@ -13,6 +13,8 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260725045352-61d665caf0c6 h1:S
 github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260725045352-61d665caf0c6/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
 github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260726001017-574a9e448271 h1:dG+5+lFgQSj9TI139bEYgT95PkCEcE4QevjVTf77Zu8=
 github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260726001017-574a9e448271/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260726022641-678c953d361f h1:W60R2c9Pygo+PqkyKLQ+rheGUZ7syhmcxSCi9INJ3jQ=
+github.com/cyoda-platform/cyoda-go-spi v0.8.3-0.20260726022641-678c953d361f/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

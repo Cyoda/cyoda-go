@@ -1,7 +1,6 @@
 package match
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -39,7 +38,7 @@ func applyOperator(operatorType string, actual gjson.Result, expected any, decla
 		values = betweenBounds(expected)
 	}
 
-	matched, err := spi.EvalLeafString(op, operandToString(expected), values, declared, actual)
+	matched, err := spi.EvalLeafString(op, spi.OperandString(expected), values, declared, actual)
 	if err != nil {
 		return false, nil
 	}
@@ -109,33 +108,12 @@ func opNameToFilterOp(op string) (spi.FilterOp, bool) {
 	}
 }
 
-// operandToString renders a predicate operand as the string form the kernel
-// parses per declared type. json.Number keeps its exact textual form (no
-// float round-trip), booleans render "true"/"false", and other numerics use
-// fmt.Sprint. A nil operand renders as the empty string.
-func operandToString(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return x
-	case bool:
-		if x {
-			return "true"
-		}
-		return "false"
-	case json.Number:
-		return x.String()
-	default:
-		return fmt.Sprint(x)
-	}
-}
-
-// operandsToStrings renders each element of a BETWEEN operand slice.
+// operandsToStrings renders each element of a BETWEEN operand slice through
+// spi.OperandString (the single shared operand→string normalization).
 func operandsToStrings(vs []any) []string {
 	out := make([]string, len(vs))
 	for i, v := range vs {
-		out[i] = operandToString(v)
+		out[i] = spi.OperandString(v)
 	}
 	return out
 }

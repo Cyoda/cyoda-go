@@ -12,7 +12,7 @@ import (
 
 // --- operandToString ---
 
-func TestOperandToString(t *testing.T) {
+func TestOperandString(t *testing.T) {
 	cases := []struct {
 		in   any
 		want string
@@ -27,8 +27,8 @@ func TestOperandToString(t *testing.T) {
 		{int(7), "7"},
 	}
 	for _, tc := range cases {
-		if got := operandToString(tc.in); got != tc.want {
-			t.Errorf("operandToString(%v) = %q, want %q", tc.in, got, tc.want)
+		if got := spi.OperandString(tc.in); got != tc.want {
+			t.Errorf("spi.OperandString(%v) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

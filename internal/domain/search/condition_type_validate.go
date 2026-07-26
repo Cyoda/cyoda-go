@@ -2,7 +2,6 @@ package search
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -202,37 +201,14 @@ func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 // comparison family (expandCompare's engaged check depends only on the operand
 // and declared set, not the operator), so FilterEq is a faithful oracle that
 // also applies per array element, where a range operator cannot be expanded in
-// isolation. The operand is normalised with operandString, the exact form the
-// evaluators (internal/match, spi.MatchFilter) feed the kernel, so validation
-// and evaluation agree. A Void expansion (parses but every bucket dropped, e.g.
-// EQUALS 12.5 on [INTEGER]) is NOT a mismatch — it is accepted and evaluates to
-// non-match.
+// isolation. The operand is normalised with spi.OperandString — the single
+// shared operand→string form the evaluators (internal/match, spi.MatchFilter)
+// feed the kernel — so validation and evaluation agree. A Void expansion
+// (parses but every bucket dropped, e.g. EQUALS 12.5 on [INTEGER]) is NOT a
+// mismatch — it is accepted and evaluates to non-match.
 func operandParsesDeclared(declared []schema.DataType, v any) bool {
-	_, err := spi.ExpandLeaf(spi.FilterEq, operandString(v), nil, declared)
+	_, err := spi.ExpandLeaf(spi.FilterEq, spi.OperandString(v), nil, declared)
 	return err == nil
-}
-
-// operandString renders a predicate operand as the string form the kernel
-// parses per declared type — the same normalisation the evaluators use
-// (internal/match.operandToString and spi.MatchFilter's operandString): a
-// json.Number keeps its exact lexical form, booleans render "true"/"false", a
-// nil operand becomes the empty string, everything else via fmt.Sprint.
-func operandString(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return x
-	case bool:
-		if x {
-			return "true"
-		}
-		return "false"
-	case json.Number:
-		return x.String()
-	default:
-		return fmt.Sprint(x)
-	}
 }
 
 // errConditionTypeMismatch is the sentinel error for condition type mismatch.
