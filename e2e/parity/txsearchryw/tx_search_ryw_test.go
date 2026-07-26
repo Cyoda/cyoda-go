@@ -2,6 +2,7 @@ package txsearchryw
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -199,7 +200,7 @@ func TestTxSearchRYW(t *testing.T) {
 		t.Run(b.name, func(t *testing.T) {
 			t.Run("CoreMatrix", func(t *testing.T) { runCoreMatrix(t, b) })
 			t.Run("TiebreakOrder", func(t *testing.T) { runTiebreakOrder(t, b) })
-			t.Run("PageNullsLast", func(t *testing.T) { runPageNullsLast(t, b) })
+			t.Run("NullsLastOrder", func(t *testing.T) { runNullsLastOrder(t, b) })
 			t.Run("InTxPITCommittedOnly", func(t *testing.T) { runInTxPIT(t, b) })
 		})
 	}
@@ -279,18 +280,11 @@ func runCoreMatrix(t *testing.T, b backend) {
 
 // runTiebreakOrder covers invariant 7 (tiebreak arm): a buffered add ties
 // three committed rows on the only explicit sort key (rank) and interleaves
-// at the entity_id tiebreak boundary. The full ordered result must place the
-// buffered row at its deterministic entity_id-tiebreak position, identically
-// across backends.
-//
-// This used to also assert an offset/limit page straddling the buffered add
-// ([p2, p3] at offset=1,limit=2). Direct search has since become
-// bounded-or-fail — spi.SearchOptions no longer has an Offset field, and
-// Limit is a cap on the matched set rather than a page size (see the
-// Searcher doc comment in cyoda-go-spi). Offset-based paging over a direct
-// search is gone, not merely renamed, so that dimension of this test is
-// removed rather than reworked; the deterministic-tiebreak invariant itself
-// is unaffected and still verified via the full ordered set below.
+// at the entity_id tiebreak boundary, identically across backends. Direct
+// search is now bounded-or-fail (no Offset in spi.SearchOptions; Limit caps
+// the matched set rather than paging it), so the old offset/limit page
+// assertion is gone; Limit is instead exercised as a cap over these same
+// four tied rows.
 func runTiebreakOrder(t *testing.T, b backend) {
 	f, baseCtx, cleanup := b.open(t)
 	defer cleanup()
@@ -319,12 +313,37 @@ func runTiebreakOrder(t *testing.T, b backend) {
 	if got := idsInOrder(full); !reflect.DeepEqual(got, []string{"p1", "p2", "p3", "p5"}) {
 		t.Fatalf("tiebreak full order = %v, want [p1 p2 p3 p5]", got)
 	}
+
+	// Limit below the merged (committed + buffered) count → bounded-or-fail,
+	// not a truncated page. This is the only cross-backend assertion that an
+	// in-tx buffered add pushing the merged count over the cap fails
+	// identically everywhere; per-plugin tests cover the same case but not
+	// from this shared table.
+	_, err = sr.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion,
+		OrderBy: order, Limit: 3,
+	})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("Search(limit=3) over 4 matches: err = %v, want ErrSearchResultLimitExceeded", err)
+	}
+
+	// Limit exactly at the merged count → succeeds, same order as unbounded.
+	atLimit, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion,
+		OrderBy: order, Limit: 4,
+	})
+	if err != nil {
+		t.Fatalf("Search(limit=4): %v", err)
+	}
+	if got := idsInOrder(atLimit); !reflect.DeepEqual(got, []string{"p1", "p2", "p3", "p5"}) {
+		t.Fatalf("tiebreak limit=4 order = %v, want [p1 p2 p3 p5]", got)
+	}
 }
 
-// runPageNullsLast covers invariant 7 (NULLS-LAST arm): a committed row with no
-// sort-key value sorts last in both directions, and a buffered add lands
+// runNullsLastOrder covers invariant 7 (NULLS-LAST arm): a committed row with
+// no sort-key value sorts last in both directions, and a buffered add lands
 // adjacent to it under an explicit OrderBy. Identical across backends.
-func runPageNullsLast(t *testing.T, b backend) {
+func runNullsLastOrder(t *testing.T, b backend) {
 	f, baseCtx, cleanup := b.open(t)
 	defer cleanup()
 

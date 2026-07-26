@@ -263,8 +263,10 @@ func RunSearchAfterUpdate(t *testing.T, fixture BackendFixture) {
 // RunSearchDirectBoundedOrFail asserts the bounded-or-fail contract on every
 // backend's direct-search path: the limit is a cap on the matched set, not a
 // page size. A matched set larger than the limit is a 400, never a truncated
-// prefix. The omitted-limit case doubles as proof that the documented default
-// is still 1000.
+// prefix. The omitted-limit case is pinned from both sides: 1001 matches
+// (amount==1 or amount==2) exceed the default and 400, while the 1000-strong
+// amount==1 subset alone is under it and succeeds — so this scenario proves
+// the default is exactly 1000, not merely "1000 or smaller".
 func RunSearchDirectBoundedOrFail(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -273,9 +275,15 @@ func RunSearchDirectBoundedOrFail(t *testing.T, fixture BackendFixture) {
 	setupSearchModel(t, c, modelName, modelVersion)
 
 	// 1001 matching entities: one more than the documented default of 1000.
+	// The last one carries amount:2 so a narrower condition (amount==1) can
+	// isolate exactly 1000 of them without a second seeding pass.
 	for i := 0; i < 1001; i++ {
+		amount := 1
+		if i == 1000 {
+			amount = 2
+		}
 		if _, err := c.CreateEntity(t, modelName, modelVersion,
-			fmt.Sprintf(`{"name":"n%d","amount":1,"status":"new"}`, i)); err != nil {
+			fmt.Sprintf(`{"name":"n%d","amount":%d,"status":"new"}`, i, amount)); err != nil {
 			t.Fatalf("CreateEntity %d: %v", i, err)
 		}
 	}
@@ -292,6 +300,21 @@ func RunSearchDirectBoundedOrFail(t *testing.T, fixture BackendFixture) {
 	}
 	if !containsErrorCode(body, "SEARCH_RESULT_LIMIT") {
 		t.Errorf("omitted limit: expected errorCode SEARCH_RESULT_LIMIT, body=%s", body)
+	}
+
+	// Omitted limit, narrowed to the 1000-strong amount==1 subset → under the
+	// default, so it succeeds and returns all 1000. Without this the previous
+	// 400 would equally pass under any default <= 1000 (e.g. 500); this pins
+	// the default from below and makes it exactly 1000.
+	amountOneCond := `{"type":"group","operator":"AND","conditions":[` +
+		`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"new"},` +
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":1}]}`
+	amountOneResults, err := c.SyncSearch(t, modelName, modelVersion, amountOneCond) // no limit param, 200 required
+	if err != nil {
+		t.Fatalf("SyncSearch (omitted limit, amount==1 subset): %v", err)
+	}
+	if len(amountOneResults) != 1000 {
+		t.Errorf("omitted limit, amount==1 subset: got %d results, want 1000", len(amountOneResults))
 	}
 
 	// Explicit limit one short of the match count → same outcome.
