@@ -77,7 +77,7 @@ the `go.mod` pin bump follows in one commit.
 | `SearchOptions.Limit` doc | States the contract: `Limit > 0` is a bounded-or-fail cap — a `Searcher` MUST return `ErrSearchResultLimitExceeded` rather than truncate; `Limit <= 0` is unbounded and a plugin MUST NOT substitute a default. |
 | `Searcher` interface doc | Same contract stated at the interface, not only on the error var. |
 | `MergePage` → `MergeBounded` | Signature drops `offset`: `MergeBounded(next, adds, deleted, specs, limit)`. Returns `ErrSearchResultLimitExceeded` once total survivors exceed `limit` (internal `need` becomes `limit+1`). `limit <= 0` keeps the unbounded drain — stated explicitly in the doc so the name is not read as "always bounded". The `adds`-alone-exceeds-limit case raises, because the bound gates on total survivors, not on the committed stream. |
-| `spitest` Searcher conformance | New, the first `Searcher` suite in `spitest`. Seeds a small fixed N (N = 5, not 1000 — every plugin including the commercial backend runs this). Asserts `Limit = N-1` → sentinel, `Limit = N` → N rows, `Limit = 0` → all rows. Auto-skips via a `store.(spi.Searcher)` type assertion when the harness `EntityStore` does not implement the optional interface — not via the `Harness.Skip` map, whose keys must all match or `StoreFactoryConformance` fails. `Skip` stays available for a backend that implements `Searcher` but has a tracked gap. |
+| `spitest` Searcher conformance | New, the first `Searcher` suite in `spitest`. Seeds a small fixed N (N = 5, not 1000 — every plugin including the commercial backend runs this). Asserts, both outside and inside a transaction, `Limit = N-1` → sentinel, `Limit = N` → N rows, `Limit = 0` → all rows. The in-tx case is what gives every backend's read-your-own-writes overlay cross-backend coverage of the bound. Auto-skips via a `store.(spi.Searcher)` type assertion when the harness `EntityStore` does not implement the optional interface — not via the `Harness.Skip` map, whose keys must all match or `StoreFactoryConformance` fails. `Skip` stays available for a backend that implements `Searcher` but has a tracked gap. |
 
 ### 3.1 The `Limit == 0` ambiguity (must be fixed here)
 
@@ -211,13 +211,23 @@ transports.
 | over limit → sentinel / `400` | all 3 plugins, pushdown + residual/overlay branches; `MergeBounded`; spitest conformance | ✓ (real postgres) | ✓ | ✓ (existing stub test covers the envelope; add a real-backend variant) |
 | exactly at limit → success | all 3 plugins + spitest | ✓ | ✓ | — |
 | `Limit <= 0` unbounded | all 3 plugins + spitest | existing `TestDeleteEntities_Conditional_OverThousandMatches` (1050 matches) stays green | — | — |
-| in-transaction over limit | sqlite + memory overlay, postgres tx | ✓ | ✓ | — |
+| in-transaction over limit | sqlite + memory overlay, postgres tx; spitest conformance covers every backend | ✓ | waived — see below | — |
 | sqlite residual branch over limit | ✓ | ✓ (existing `handler_scan_budget_sqlite_test.go` harness) | — | — |
 | service in-memory fallback bounded | ✓ | — | — | — |
-| `limit=0` → `400 BAD_REQUEST` | handler unit | ✓ | — | — |
+| `limit=0` → `400 BAD_REQUEST` | handler unit | ✓ | ✓ | — |
 | gRPC `limit < 1` → `CLIENT_ERROR` | — | — | — | ✓ |
 | conditional delete forwards search 4xx | service unit | ✓ | — | — |
 | scan budget still wins when it trips first | sqlite | existing | — | — |
+
+**Parity waiver — in-transaction over limit.** Parity's only in-tx entry point
+is a compute-node callback that joins the transaction
+(`internal/e2e/search_intx_test.go` documents why: there is no client-facing
+"begin transaction" API), so an in-tx parity scenario would have to seed 1001
+entities behind a processor callback in the shared suite. The cross-backend
+guarantee is obtained more cheaply and more broadly by the `spitest` Searcher
+conformance suite, which exercises the in-tx bound at N = 5 on every backend
+including the commercial one; `internal/e2e` covers the same path full-stack on
+real postgres.
 
 ### 7.1 Parity scenario
 
@@ -230,8 +240,7 @@ four assertions:
    the bound)
 2. `limit=1000` → `400 SEARCH_RESULT_LIMIT`
 3. `limit=1001` → 1001 rows
-4. in-transaction, `limit=1000` → `400 SEARCH_RESULT_LIMIT` (exercises the
-   memory/sqlite overlay and the postgres tx path)
+4. `limit=0` → `400 BAD_REQUEST` (§5)
 
 `e2e/parity/client` needs a limit-bearing raw variant — `SyncSearchRaw`
 (`client/http.go:1162`) returns status and body but takes no limit.
