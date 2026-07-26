@@ -87,9 +87,8 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	}
 }
 
-// TestMemorySearch_NonTx_OrderAndPage checks ordering + offset/limit paging on
-// the non-tx path.
-func TestMemorySearch_NonTx_OrderAndPage(t *testing.T) {
+// TestMemorySearch_NonTx_Order checks ordering on the non-tx path.
+func TestMemorySearch_NonTx_Order(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
