@@ -1851,6 +1851,12 @@ func TestSearch_FallbackBranchIsBounded(t *testing.T) {
 	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
 		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
 	}
+	// Same sentinel identity as the Searcher-pushdown branch
+	// (TestSearch_SearcherResultLimitSentinel_MapsTo400): the two
+	// bounded-or-fail paths must be indistinguishable to errors.Is callers.
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Errorf("errors.Is(err, ErrSearchResultLimitExceeded) = false; WithCause must preserve the sentinel")
+	}
 }
 
 // TestSearch_FallbackBranchUnboundedReturnsAll is table-driven over both

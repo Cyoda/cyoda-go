@@ -309,7 +309,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	if opts.Limit > 0 && len(matches) > opts.Limit {
 		return nil, common.Operational(http.StatusBadRequest,
 			common.ErrCodeSearchResultLimit,
-			"matched result count exceeds the configured limit")
+			"matched result count exceeds the configured limit").WithCause(spi.ErrSearchResultLimitExceeded)
 	}
 
 	return matches, nil
