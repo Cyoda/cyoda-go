@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -168,76 +169,6 @@ func TestPGSearcher_MixedPushAndResidual(t *testing.T) {
 	}
 	if len(got) != 1 { // Charlie
 		t.Fatalf("Berlin AND name~C.*: want 1, got %d", len(got))
-	}
-}
-
-// Pagination with NO residual → LIMIT/OFFSET pushed into SQL.
-func TestPGSearcher_PaginationNoResidual(t *testing.T) {
-	store, ctx := setupSearcher(t)
-	opts := baseOpts()
-	opts.Limit = 2
-	opts.Offset = 1
-	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts) // match-all, default order entity_id
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("limit 2 offset 1: want 2, got %d", len(got))
-	}
-	// Offset 1 over e1..e5 → page is e2 then e3.
-	if got[0].Meta.ID != "e2" {
-		t.Errorf("limit 2 offset 1: want got[0]=e2, got %s", got[0].Meta.ID)
-	}
-	if got[1].Meta.ID != "e3" {
-		t.Errorf("limit 2 offset 1: want got[1]=e3, got %s", got[1].Meta.ID)
-	}
-}
-
-// Pagination WITH residual → LIMIT/OFFSET applied in Go after post-filter.
-func TestPGSearcher_PaginationWithResidual(t *testing.T) {
-	store, ctx := setupSearcher(t)
-	opts := baseOpts()
-	opts.Limit = 1
-	// Residual regex matching all five names. MATCHES_PATTERN is anchored to a
-	// whole-string match by the kernel, so ".+" (not ".") matches any non-empty
-	// value; the residual path stays active and pagination is applied in Go.
-	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".+"},
-		opts)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("residual + limit 1: want 1, got %d", len(got))
-	}
-}
-
-// S1 guard: unbounded (Limit==0) + residual + non-zero offset must return the
-// correct page, not empty. A naive early-stop at offset+limit==offset breaks this.
-func TestPGSearcher_UnboundedOffsetWithResidual(t *testing.T) {
-	store, ctx := setupSearcher(t)
-	opts := baseOpts()
-	opts.Limit = 0 // unbounded
-	opts.Offset = 2
-	// Anchored whole-string match: ".+" matches any non-empty name (all five).
-	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".+"},
-		opts)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 3 { // 5 total, drop first 2
-		t.Fatalf("unbounded offset 2 + residual: want 3, got %d", len(got))
-	}
-	// Offset 2 over e1..e5 → page is e3, e4, e5.
-	if got[0].Meta.ID != "e3" {
-		t.Errorf("unbounded offset 2: want got[0]=e3, got %s", got[0].Meta.ID)
-	}
-	if got[1].Meta.ID != "e4" {
-		t.Errorf("unbounded offset 2: want got[1]=e4, got %s", got[1].Meta.ID)
-	}
-	if got[2].Meta.ID != "e5" {
-		t.Errorf("unbounded offset 2: want got[2]=e5, got %s", got[2].Meta.ID)
 	}
 }
 
@@ -1007,4 +938,153 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		t.Fatalf("Search desc: %v", err)
 	}
 	assertIDOrder(t, desc, []string{"t", "f"})
+}
+
+// ---------------------------------------------------------------------------
+// Bounded-or-fail direct search.
+//
+// boundedSearchModel is a dedicated model (distinct from searchModel/"item")
+// so seedBoundedMatching's count is exact and unaffected by other subtests'
+// seed data.
+var boundedSearchModel = spi.ModelRef{EntityName: "bounded-item", ModelVersion: "1"}
+
+// newBoundedSearchStore returns a fresh store + ctx on its own tenant.
+func newBoundedSearchStore(t *testing.T) (spi.EntityStore, context.Context) {
+	t.Helper()
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("bounded-search-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	return store, ctx
+}
+
+// seedBoundedMatching saves n entities of boundedSearchModel, each carrying a
+// non-null "tag" field so both boundedPushdownFilter (IS NOT NULL, no
+// residual) and boundedResidualFilter (regex, always residual) match every
+// seeded row.
+func seedBoundedMatching(t *testing.T, store spi.EntityStore, ctx context.Context, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("bnd-%d", i)
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: boundedSearchModel, State: "NEW"},
+			Data: []byte(`{"tag":"present"}`),
+		}); err != nil {
+			t.Fatalf("seedBoundedMatching Save %s: %v", id, err)
+		}
+	}
+}
+
+func boundedOpts(limit int) spi.SearchOptions {
+	return spi.SearchOptions{
+		ModelName:    boundedSearchModel.EntityName,
+		ModelVersion: boundedSearchModel.ModelVersion,
+		Limit:        limit,
+	}
+}
+
+// boundedPushdownFilter is IS_NOT_NULL on "tag" — a presence check, which is
+// the ONLY leaf shape query_planner.go's planQuery treats as provably EXACT
+// (see leafExact): no residual, and the pushed leaf itself needs no kernel
+// re-check, so postFilter stays nil and Search takes the SQL "LIMIT
+// limit+1" probe branch.
+//
+// A FilterEq leaf does NOT reach that branch despite being in isPushable's
+// set: leafExact(Eq) is false (its SQL is only a SOUND SUPERSET, e.g. the
+// float8/text coercion in leafToSQL), so planQuery's soundness gate installs
+// the full original filter as postFilter and Search takes the residual path
+// instead. Confirmed by tracing planQuery → allPushedExact → leafExact
+// directly (see query_planner.go), and independently by the shared spitest
+// conformance suite (spitest/searcher.go), which drives its bounded-or-fail
+// assertions through a FilterEq predicate — if that predicate reached
+// postFilter == nil here, this plugin-local pushdown test would be
+// redundant; instead it is the ONLY coverage of the SQL "LIMIT limit+1"
+// probe path in this package. Do not swap this for an Eq filter without
+// re-verifying postFilter == nil.
+var boundedPushdownFilter = spi.Filter{Op: spi.FilterNotNull, Path: "tag", Source: spi.SourceData}
+
+// boundedResidualFilter is a regex — never pushable (query_planner.go's
+// isPushable has no FilterMatchesRegex case) — so it always drives the
+// residual/postgresIter early-raise branch. ".+" matches every seeded row's
+// non-empty "tag" value.
+var boundedResidualFilter = spi.Filter{Op: spi.FilterMatchesRegex, Path: "tag", Source: spi.SourceData, Value: ".+"}
+
+// TestPGSearcher_PushdownOverLimitFails exercises the no-residual branch: SQL
+// is asked for limit+1 rows, and the extra row proves the matched set (3)
+// does not fit in Limit (2).
+func TestPGSearcher_PushdownOverLimitFails(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	_, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(2))
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("pushdown branch, 3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// TestPGSearcher_ResidualOverLimitFails exercises the residual branch:
+// postgresIter streams post-filter matches and Search raises the moment the
+// count exceeds Limit, without draining the rest of the result set.
+func TestPGSearcher_ResidualOverLimitFails(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	_, err := searcherOf(t, store).Search(ctx, boundedResidualFilter, boundedOpts(2))
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("residual branch, 3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// TestPGSearcher_AtLimitSucceeds: exactly-at-limit is not an overflow.
+func TestPGSearcher_AtLimitSucceeds(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 2)
+	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(2))
+	if err != nil {
+		t.Fatalf("2 matches at limit 2: unexpected err %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2", len(got))
+	}
+}
+
+// TestPGSearcher_UnboundedReturnsAll: Limit<=0 must never raise, and must
+// never substitute a default cap.
+func TestPGSearcher_UnboundedReturnsAll(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(0))
+	if err != nil {
+		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d, want 3", len(got))
+	}
+}
+
+// TestPGSearcher_InTxOverLimitFails proves the bound applies through a live
+// pgx.Tx: postgres has no buffer overlay and never calls spi.MergeBounded —
+// Search's committed pushdown IS the in-tx result (the Querier resolves the
+// active pgx.Tx from ctx, so REPEATABLE READ gives RYW natively), so the same
+// searchCommitted code path and the same single bound check apply whether or
+// not a transaction is active. Here the 3 matches are staged but never
+// committed, so this exercises the bound over uncommitted rows visible only
+// inside the searching transaction itself.
+func TestPGSearcher_InTxOverLimitFails(t *testing.T) {
+	factory, tm := setupFCWTest(t)
+	ctx := ctxWithTenant("bounded-search-tx-tenant")
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	store, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore (tx): %v", err)
+	}
+	seedBoundedMatching(t, store, txCtx, 3)
+	_, err = searcherOf(t, store).Search(txCtx, boundedPushdownFilter, boundedOpts(2))
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("in-tx, 3 uncommitted matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
 }
