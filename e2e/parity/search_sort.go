@@ -122,9 +122,11 @@ func RunSearchSortDataText(t *testing.T, fixture BackendFixture) {
 // OrderText (lexical), which every backend renders identically
 // (bytes.Compare / COLLATE "C" / COLLATE BINARY).
 //
-// The LIMIT assertion is the page-correctness half: with LIMIT 2 on the ASC
-// order, every backend must return the two chronologically-earliest rows — not
-// a wrong page produced by a divergent underlying order.
+// The at-limit assertion is the pushed-LIMIT half: LIMIT set to the exact
+// matched count must still drive the same per-backend ORDER BY / OrderText
+// path and succeed with the identical chronological ordering. (A LIMIT below
+// the matched count is bounded-or-fail territory, not a truncated page —
+// ordered top-N lives in async search, not here.)
 func RunSearchSortDataTemporalLexical(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -170,13 +172,13 @@ func RunSearchSortDataTemporalLexical(t *testing.T, fixture BackendFixture) {
 	}
 	assertSortedIDs(t, "when:desc", desc, descWant)
 
-	// Pushed-page correctness: LIMIT 2 on the ASC order must return exactly the
-	// two chronologically-earliest rows on every backend.
-	page, err := c.SyncSearchSortedLimit(t, modelName, modelVersion, sortMatchAll, []string{"when:asc"}, 2)
+	// LIMIT equal to the matched count (4) → the pushed LIMIT still succeeds
+	// and returns the full chronological order, on every backend.
+	atLimit, err := c.SyncSearchSortedLimit(t, modelName, modelVersion, sortMatchAll, []string{"when:asc"}, 4)
 	if err != nil {
-		t.Fatalf("SyncSearchSortedLimit when:asc LIMIT 2: %v", err)
+		t.Fatalf("SyncSearchSortedLimit when:asc LIMIT 4: %v", err)
 	}
-	assertSortedIDs(t, "when:asc LIMIT 2", page, ascWant[:2])
+	assertSortedIDs(t, "when:asc LIMIT 4", atLimit, ascWant)
 }
 
 // RunSearchSortDataNumeric seeds entities with amounts 9, 100, 10 and asserts
