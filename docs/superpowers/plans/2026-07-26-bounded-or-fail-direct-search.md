@@ -777,7 +777,8 @@ Expected: FAIL — over-limit cases return 2 entities and a nil error.
 	}
 
 	// The pushdown branch asked SQL for limit+1; getting it means the matched
-	// set does not fit. (The residual branch already returned above.)
+	// set does not fit. The residual branch reaches here only when it stayed
+	// within the bound, so this is a no-op for it.
 	if opts.Limit > 0 && len(results) > opts.Limit {
 		return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 	}
