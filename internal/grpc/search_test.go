@@ -787,3 +787,71 @@ func TestDirectSearch_ScanBudgetExhausted_ClientError(t *testing.T) {
 		t.Errorf("got code=%q msg=%q, want CLIENT_ERROR / contains %s", typed.Error.Code, typed.Error.Message, common.ErrCodeScanBudgetExhausted)
 	}
 }
+
+// --- Direct-search non-positive limit ---
+
+// directSearchOpt mutates the raw EntitySearchRequest field map built by
+// directSearch before it is sent, letting individual tests override the
+// default request (e.g. to set a specific limit).
+type directSearchOpt func(fields map[string]any)
+
+// withLimit sets the request's "limit" field to n.
+func withLimit(n int) directSearchOpt {
+	return func(fields map[string]any) { fields["limit"] = n }
+}
+
+// directSearch issues an EntitySearchRequest against a fresh in-memory
+// model/store (a Searcher stub that would return an empty match set if
+// reached) and returns the decoded EntityResponseJson from the stream.
+// Mirrors the setup shared by TestDirectSearch_OmittedLimitDefaultsTo1000
+// and TestDirectSearch_ResultLimitSentinel_ClientError above.
+func directSearch(t *testing.T, opts ...directSearchOpt) *events.EntityResponseJson {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "capnonpos", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
+	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	fields := map[string]any{
+		"id":        "s-capnonpos-1",
+		"model":     map[string]any{"name": "capnonpos", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Alice"},
+	}
+	for _, o := range opts {
+		o(fields)
+	}
+
+	ce := makeCE(EntitySearchRequest, fields)
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected a response on the stream, got none")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	return &typed
+}
+
+// gRPC validated neither bound on limit, so limit:-1 reached the SPI as
+// Limit 0 — an unbounded search. HTTP has always rejected negatives; gRPC
+// must too, or the compute-node transport is a cap bypass.
+func TestDirectSearch_NonPositiveLimit_ClientError(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		resp := directSearch(t, withLimit(limit))
+		if resp.Success {
+			t.Fatalf("limit=%d: got Success=true, want a client error", limit)
+		}
+		if resp.Error.Code != "CLIENT_ERROR" {
+			t.Fatalf("limit=%d: got Error.Code %q, want CLIENT_ERROR", limit, resp.Error.Code)
+		}
+	}
+}
