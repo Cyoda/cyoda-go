@@ -290,9 +290,9 @@ Gate 4:
 No new error codes, so no new `errors/<CODE>.md` topic and no
 `TestErrCode_Parity` impact.
 
-Cross-repo issues to file:
+Cross-repo issues filed:
 
-- **cyoda-go-cassandra** — remove the `Offset` mapping at
+- **cyoda-go-cassandra [#79](https://github.com/Cyoda/cyoda-go-cassandra/issues/79)** — remove the `Offset` mapping at
   `internal/store/entity_store.go:1390` and the `directRequest.offset` field
   (won't compile after the SPI field is removed); drop the
   `effectiveLimit <= 0 → 1000` substitution at `entity_store.go:1367` per §3.1;
@@ -300,11 +300,12 @@ Cross-repo issues to file:
   `e2e/cassandra_test.go` and adopt the renamed scenario. The rename makes that
   quarantine key inert on their next dependency bump — their skip map does not
   fail on unmatched keys, so the renamed scenario will simply run.
-- **cyoda-go** — postgres has no residual scan budget while sqlite does, so the
-  same request can yield a different `400` code per backend (§4.1).
+- **cyoda-go [#444](https://github.com/Cyoda/cyoda-go/issues/444)** — postgres
+  has no residual scan budget while sqlite does, so the same request can yield
+  a different `400` code per backend (§4.1).
 
 ## 9. Out of scope
 
-- Giving postgres a scan budget (own issue, §8).
+- Giving postgres a scan budget ([#444](https://github.com/Cyoda/cyoda-go/issues/444)).
 - Any change to async submit, status, cancel or result pagination.
 - Reinstating ordered top-N on direct search in any form (§2.1).
