@@ -21,9 +21,11 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The server imposes an upper bound on the number of results returned per page and per job to protect cluster resources. Returned when the request exceeds this limit — either by requesting too large a page size or by the matched result count exceeding the cap.
+Direct (synchronous) search is bounded-or-fail: `limit` caps the matched result set rather than paging it. When more entities match than the limit allows, the request is rejected — it never returns a truncated prefix, because a partial result would be indistinguishable from a complete one.
 
-Not retryable with the same parameters. A smaller `pageSize` or more selective filter conditions reduce the result set below the cap.
+Also returned when the requested `limit` itself exceeds the server maximum.
+
+Not retryable with the same parameters. Narrow the condition, raise `limit` (up to the documented maximum), or use async search, which snapshots the full result set and pages over it.
 
 ## SEE ALSO
 

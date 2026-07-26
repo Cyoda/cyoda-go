@@ -4,6 +4,22 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- **Direct search is bounded-or-fail on every backend (breaking).** A synchronous
+  search whose matched set exceeds the effective `limit` now returns
+  `400 SEARCH_RESULT_LIMIT` instead of silently truncating to the first `limit`
+  results. The default when `limit` is omitted is unchanged at 1000, so a query
+  matching more than 1000 entities that previously returned a truncated page now
+  fails. Narrow the condition, raise `limit` (maximum 10000), or use async
+  search, which snapshots and pages the full result set. Ordered top-N
+  (`sort` + a small `limit`) is no longer available on the synchronous path —
+  async search covers it. `limit=0`, which previously yielded an *unbounded*
+  synchronous search, is now rejected with `400 BAD_REQUEST`; gRPC rejects
+  `limit < 1` for the same reason. A conditional delete that hits a classified
+  4xx while selecting its victim set now surfaces that error instead of an
+  opaque `500`.
+
 ### Added
 
 - **Bounded-search failures now surface as `400`, not `500`** — a storage backend
