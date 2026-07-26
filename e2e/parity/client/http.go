@@ -1179,6 +1179,33 @@ func (c *Client) SyncSearchRaw(t *testing.T, modelName string, modelVersion int,
 	return resp.StatusCode, raw, nil
 }
 
+// SyncSearchRawLimit is SyncSearchRaw with the `limit` query param set, so a
+// negative-path assertion can see the status and problem body a bounded
+// search produces. limit < 0 omits the param entirely (the "client omitted
+// it" case).
+func (c *Client) SyncSearchRawLimit(t *testing.T, modelName string, modelVersion int, condition string, limit int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	if limit >= 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // SubmitAsyncSearchRaw issues POST /api/search/async/{name}/{version}
 // and returns the raw HTTP status code and body without erroring on
 // non-2xx. Used for negative-path discover-and-compare.

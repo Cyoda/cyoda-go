@@ -111,7 +111,7 @@ var allTests = []NamedTest{
 	{"SearchNoMatches", RunSearchNoMatches},
 	{"SearchAfterUpdate", RunSearchAfterUpdate},
 	{"SearchPointInTime", RunSearchPointInTime},
-	{"SearchOmittedLimitDefaults1000", RunSearchOmittedLimitDefaults1000},
+	{"SearchDirectBoundedOrFail", RunSearchDirectBoundedOrFail},
 
 	// Temporal search filters (#423) — chronological date-typed meta
 	// compare + meta-vocabulary reconciliation, cross-backend.
