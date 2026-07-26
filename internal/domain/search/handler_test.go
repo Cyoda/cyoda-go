@@ -320,6 +320,10 @@ func TestHandlerDirectSearchEmpty(t *testing.T) {
 	}
 }
 
+// TestHandlerDirectSearchPagination verifies the HTTP direct-search endpoint
+// is bounded-or-fail: a limit smaller than the match count no longer returns
+// a silently truncated page, it 400s (SEARCH_RESULT_LIMIT); a limit at or
+// above the match count returns the full match set.
 func TestHandlerDirectSearchPagination(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
@@ -328,15 +332,19 @@ func TestHandlerDirectSearchPagination(t *testing.T) {
 		createEntity(t, srv.URL, "Person", 1, fmt.Sprintf(`{"name":"Person%d","age":%d}`, i, 20+i))
 	}
 
-	// Search all with lifecycle match, limit=2
 	cond := `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"CREATED"}`
-	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=2")
-	expectStatus(t, resp, http.StatusOK)
-	body := readBody(t, resp)
-	results := parseNDJSON(t, body)
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results with limit=2, got %d", len(results))
+	// limit=2 against 5 matches: bounded-or-fail rejects rather than truncates.
+	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=2")
+	expectStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
+
+	// limit=5 against 5 matches: within bound, returns the full set.
+	resp = doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=5")
+	expectStatus(t, resp, http.StatusOK)
+	results := parseNDJSON(t, readBody(t, resp))
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results with limit=5, got %d", len(results))
 	}
 }
 

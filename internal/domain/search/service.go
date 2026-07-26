@@ -30,7 +30,6 @@ var ErrSearchJobNotFound = errors.New("search job not found")
 type SearchOptions struct {
 	PointInTime     *time.Time
 	Limit           int
-	Offset          int
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
 	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
@@ -217,7 +216,6 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
 				Limit:        spiLimit,
-				Offset:       opts.Offset,
 				OrderBy:      orderBy,
 				TrackingRead: opts.TrackingRead,
 			})
@@ -246,6 +244,17 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// widens the read-set to the whole model regardless of opts.TrackingRead.
 	// The GetAllAsAt (point-in-time) branch of this same fallback records no
 	// read-set at all, matching GetAsAt/GetAllAsAt's historical-read semantics.
+	//
+	// Two consequences of GetAll running before any bound can be evaluated,
+	// worth keeping in mind reading the bounded-or-fail check below: (1) it is
+	// a correctness fix, not a resource-protection one — GetAll has already
+	// materialised the entire model into memory by the time the oversized
+	// match set is detected, so the fix stops a truncated answer from being
+	// returned, it does not avoid the memory cost of computing it; and (2)
+	// in-transaction, GetAll has also already recorded every entity into the
+	// transaction's read-set before the bound can raise, so a request that
+	// ends in a 400 here still leaves the transaction holding a model-wide
+	// read-set, same as a request that succeeds.
 	var entities []*spi.Entity
 	if opts.PointInTime != nil {
 		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)
@@ -289,20 +298,18 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 
 	sortEntities(matches, orderBy)
 
-	// Apply offset.
-	if opts.Offset > 0 {
-		if opts.Offset >= len(matches) {
-			return nil, nil
-		}
-		matches = matches[opts.Offset:]
-	}
-
-	// Apply limit. 0 or negative means unbounded (no cap); the direct entry
-	// points resolve an omitted client limit to DefaultDirectSearchLimit before
-	// reaching the service, so 0 here means an explicit store-all (async submit
-	// or an internal caller), never "client omitted".
-	if opts.Limit > 0 && opts.Limit < len(matches) {
-		matches = matches[:opts.Limit]
+	// Bounded-or-fail, same contract as the Searcher path above. A truncated
+	// prefix here would be indistinguishable from a complete result, so an
+	// oversized match set is an error rather than a silently shortened one.
+	// Limit <= 0 is unbounded (async submit, scoped delete) and never raises;
+	// the direct entry points resolve an omitted client limit to
+	// DefaultDirectSearchLimit before reaching the service, so 0 here means an
+	// explicit store-all (async submit or an internal caller), never "client
+	// omitted".
+	if opts.Limit > 0 && len(matches) > opts.Limit {
+		return nil, common.Operational(http.StatusBadRequest,
+			common.ErrCodeSearchResultLimit,
+			"matched result count exceeds the configured limit")
 	}
 
 	return matches, nil
@@ -385,12 +392,10 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// implementations that decode this blob must expect that casing.
 	optsJSON, err := json.Marshal(struct {
 		Limit       int             `json:"limit"`
-		Offset      int             `json:"offset"`
 		PointInTime *time.Time      `json:"pointInTime,omitempty"`
 		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
 	}{
 		Limit:       opts.Limit,
-		Offset:      opts.Offset,
 		PointInTime: opts.PointInTime,
 		OrderBy:     orderBy,
 	})
