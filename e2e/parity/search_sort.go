@@ -108,6 +108,77 @@ func RunSearchSortDataText(t *testing.T, fixture BackendFixture) {
 	})
 }
 
+// RunSearchSortDataTemporalLexical is the cross-backend guard for sorting a
+// DATA temporal (LocalDate) field. Such a field is stored as its bare ISO-8601
+// string, so its lexical byte order IS its chronological order — and that order
+// must be byte-identical on memory, sqlite, and postgres (+ commercial).
+//
+// Regression it pins: classifying data-temporal fields as OrderTemporal pushed
+// an epoch-ms ORDER BY that each backend degraded differently — memory tied all
+// rows on Num=0 (→ entity_id order), postgres yielded NULL for the offset-less
+// bare subtype (→ entity_id order), sqlite coerced leading digits (→ year/1000
+// order). Three divergent orderings, and — since a pure sort has no residual —
+// a wrong pushed LIMIT/OFFSET page. The fix sorts data-temporal fields as
+// OrderText (lexical), which every backend renders identically
+// (bytes.Compare / COLLATE "C" / COLLATE BINARY).
+//
+// The LIMIT assertion is the page-correctness half: with LIMIT 2 on the ASC
+// order, every backend must return the two chronologically-earliest rows — not
+// a wrong page produced by a divergent underlying order.
+func RunSearchSortDataTemporalLexical(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-sort-data-temporal"
+	const modelVersion = 1
+	// Sample "2020-01-01" content-sniffs to LocalDate, so $.when is declared
+	// [LocalDate] — a data temporal field.
+	setupSortModelWithSample(t, c, modelName, modelVersion,
+		`{"name":"seed","amount":0,"status":"new","when":"2020-01-01"}`)
+
+	// Inserted out of chronological order to prove the sort is applied.
+	janID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"jan","amount":1,"status":"new","when":"2024-01-15"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity 2024-01-15: %v", err)
+	}
+	sepID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"sep","amount":2,"status":"new","when":"2024-09-09"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity 2024-09-09: %v", err)
+	}
+	decID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"dec","amount":3,"status":"new","when":"2023-12-31"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity 2023-12-31: %v", err)
+	}
+	junID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"jun","amount":4,"status":"new","when":"2025-06-01"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity 2025-06-01: %v", err)
+	}
+
+	// Chronological == lexical ASC: 2023-12-31, 2024-01-15, 2024-09-09, 2025-06-01.
+	ascWant := []string{decID.String(), janID.String(), sepID.String(), junID.String()}
+	asc, err := c.SyncSearchSorted(t, modelName, modelVersion, sortMatchAll, []string{"when:asc"})
+	if err != nil {
+		t.Fatalf("SyncSearchSorted when:asc: %v", err)
+	}
+	assertSortedIDs(t, "when:asc", asc, ascWant)
+
+	// DESC is the exact reverse.
+	descWant := []string{junID.String(), sepID.String(), janID.String(), decID.String()}
+	desc, err := c.SyncSearchSorted(t, modelName, modelVersion, sortMatchAll, []string{"when:desc"})
+	if err != nil {
+		t.Fatalf("SyncSearchSorted when:desc: %v", err)
+	}
+	assertSortedIDs(t, "when:desc", desc, descWant)
+
+	// Pushed-page correctness: LIMIT 2 on the ASC order must return exactly the
+	// two chronologically-earliest rows on every backend.
+	page, err := c.SyncSearchSortedLimit(t, modelName, modelVersion, sortMatchAll, []string{"when:asc"}, 2)
+	if err != nil {
+		t.Fatalf("SyncSearchSortedLimit when:asc LIMIT 2: %v", err)
+	}
+	assertSortedIDs(t, "when:asc LIMIT 2", page, ascWant[:2])
+}
+
 // RunSearchSortDataNumeric seeds entities with amounts 9, 100, 10 and asserts
 // that sort=amount:asc returns them in numeric order (9→10→100), not in the
 // lexicographic order that string comparison would produce (10→100→9).

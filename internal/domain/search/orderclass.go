@@ -8,10 +8,50 @@ import (
 )
 
 // classifyType returns the single canonical ordering class for a leaf's
-// declared types. Null members are ignored (nullable fields are fine). The
-// remaining members must all map to the same class, else there is no
-// deterministic order and the field is unsortable.
+// declared types, used by the FILTER path (filter_translate.go) to route
+// coercion. Null members are ignored (nullable fields are fine). The remaining
+// members must all map to the same class, else there is no deterministic order
+// and the field is unsortable. Temporal data subtypes classify as
+// OrderTemporal here so data-temporal comparisons route to the residual /
+// temporal-aware pushdown — see sortKindForData for why the SORT path differs.
 func classifyType(types []schema.DataType) (spi.OrderKind, error) {
+	return classifyTypesFold(types, nil)
+}
+
+// sortKindForData returns the ORDER-BY sort class for a SourceData leaf. It
+// mirrors classifyType but folds temporal subtypes onto OrderText, decoupling
+// the SORT path from the FILTER path (which keeps OrderTemporal — do not change
+// classifyType). A data-temporal field is stored as its bare ISO-8601 string,
+// and ISO-8601 lexical order IS chronological order and is byte-identical across
+// every backend: memory bytes.Compare (LessByOrder OrderText), postgres
+// COLLATE "C", sqlite COLLATE BINARY. Sorting it as OrderTemporal would instead
+// demand an epoch-ms normalization the bare stored subtype cannot supply
+// (offset-less "2024-09-09"/"2024"), which each backend degrades differently —
+// memory ties on Num=0, postgres yields NULL, sqlite coerces leading digits —
+// producing three divergent orderings (and, with no residual, a wrong pushed
+// LIMIT/OFFSET page). Folding to OrderText restores a single lexical order.
+//
+// Because temporal folds to OrderText, a polymorphic [String, LocalDate] field
+// unifies to OrderText and sorts lexically rather than erroring on mixed class.
+func sortKindForData(types []schema.DataType) (spi.OrderKind, error) {
+	return classifyTypesFold(types, foldTemporalToText)
+}
+
+// foldTemporalToText maps OrderTemporal onto OrderText, leaving every other
+// class untouched. It is the per-type fold that makes the SORT path treat data
+// temporal fields lexically.
+func foldTemporalToText(k spi.OrderKind) spi.OrderKind {
+	if k == spi.OrderTemporal {
+		return spi.OrderText
+	}
+	return k
+}
+
+// classifyTypesFold is the shared unification core for classifyType and
+// sortKindForData. Each non-null member is classified via scalarClass, then
+// (optionally) folded; all folded classes must agree, else the field has no
+// deterministic order and is unsortable.
+func classifyTypesFold(types []schema.DataType, fold func(spi.OrderKind) spi.OrderKind) (spi.OrderKind, error) {
 	var (
 		have bool
 		kind spi.OrderKind
@@ -23,6 +63,9 @@ func classifyType(types []schema.DataType) (spi.OrderKind, error) {
 		k, err := scalarClass(t)
 		if err != nil {
 			return 0, err
+		}
+		if fold != nil {
+			k = fold(k)
 		}
 		if !have {
 			kind, have = k, true

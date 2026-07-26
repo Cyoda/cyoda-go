@@ -51,6 +51,53 @@ func TestClassifyType(t *testing.T) {
 	}
 }
 
+func TestSortKindForData(t *testing.T) {
+	// The SORT path folds temporal onto OrderText (lexical ISO-8601 =
+	// chronological, byte-identical across backends) while non-temporal classes
+	// stay as classifyType assigns them. A [String, temporal] mix unifies to
+	// OrderText rather than erroring, while a genuinely inconsistent mix
+	// (numeric vs temporal/text) still errors.
+	cases := []struct {
+		name  string
+		in    []schema.DataType
+		want  spi.OrderKind
+		isErr bool
+	}{
+		{"localdate sorts as text", []schema.DataType{schema.LocalDate}, spi.OrderText, false},
+		{"localdatetime sorts as text", []schema.DataType{schema.LocalDateTime}, spi.OrderText, false},
+		{"year sorts as text", []schema.DataType{schema.Year}, spi.OrderText, false},
+		{"zoneddatetime sorts as text", []schema.DataType{schema.ZonedDateTime}, spi.OrderText, false},
+		{"string stays text", []schema.DataType{schema.String}, spi.OrderText, false},
+		{"integer stays numeric", []schema.DataType{schema.Integer}, spi.OrderNumeric, false},
+		{"bool stays bool", []schema.DataType{schema.Boolean}, spi.OrderBool, false},
+		{"nullable localdate sorts as text", []schema.DataType{schema.LocalDate, schema.Null}, spi.OrderText, false},
+		{"mixed string+localdate unifies to text", []schema.DataType{schema.String, schema.LocalDate}, spi.OrderText, false},
+		{"mixed localdate+string unifies to text", []schema.DataType{schema.LocalDate, schema.String}, spi.OrderText, false},
+		{"mixed numeric+temporal still errors", []schema.DataType{schema.Integer, schema.LocalDate}, 0, true},
+		{"mixed numeric+string still errors", []schema.DataType{schema.Integer, schema.String}, 0, true},
+		{"bytearray rejected", []schema.DataType{schema.ByteArray}, 0, true},
+		{"null only rejected", []schema.DataType{schema.Null}, 0, true},
+		{"empty rejected", nil, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := sortKindForData(c.in)
+			if c.isErr {
+				if err == nil {
+					t.Fatalf("want error, got Kind=%v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != c.want {
+				t.Fatalf("Kind = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestResolveMetaField(t *testing.T) {
 	// All six canonical meta sort fields must resolve with exact Source, Path, and Kind.
 	// A copy-paste error on Kind (e.g. Text vs Temporal) will fail this table.

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 217 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 218 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -329,6 +329,7 @@ var allTests = []NamedTest{
 	// the exact entity-id sequence.  Divergence here is a real bug in the
 	// backend comparator or default-order path, not a test weakness.
 	{"SearchSortDataText", RunSearchSortDataText},
+	{"SearchSortDataTemporalLexical", RunSearchSortDataTemporalLexical},
 	{"SearchSortDataNumeric", RunSearchSortDataNumeric},
 	{"SearchSortDataBool", RunSearchSortDataBool},
 	{"SearchSortMetaCreationDate", RunSearchSortMetaCreationDate},
