@@ -262,186 +262,97 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 }
 
 // TestSearcher_Bounded_NoResidual: a pushable, leaf-exact filter (NotNull)
-// installs no residual, so the query planner takes the LIMIT-in-SQL pushdown
-// path. Under bounded-or-fail, unbounded still returns everything, and a
-// matched set larger than Limit fails rather than truncating.
+// installs no residual, so the query planner takes the LIMIT-in-SQL (LIMIT
+// limit+1) pushdown path — mutation-verified to actually reach that branch,
+// not merely share its name. Covers the full bounded-or-fail contract for it:
+// unbounded returns everything, exactly-at-limit succeeds, and a matched set
+// over the limit fails rather than truncating.
 func TestSearcher_Bounded_NoResidual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
-
 	store, _ := factory.EntityStore(ctx)
 	searcher := store.(spi.Searcher)
 
-	// Use a pushable, leaf-exact filter that matches all 5.
-	filter := spi.Filter{
-		Op:     spi.FilterNotNull,
-		Path:   "name",
-		Source: spi.SourceData,
-	}
+	// Pushable, leaf-exact filter matching all 5 seeded persons.
+	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
 
-	// Unbounded: all 5.
-	all, err := searcher.Search(ctx, filter, spi.SearchOptions{
-		ModelName:    "person",
-		ModelVersion: "1",
+	t.Run("Unbounded", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1",
+		})
+		if err != nil {
+			t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+		}
+		if len(got) != 5 {
+			t.Fatalf("got %d, want 5", len(got))
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 5 {
-		t.Fatalf("expected 5 results, got %d", len(all))
-	}
 
-	// 5 matches over a limit of 2 must fail rather than truncate.
-	_, err = searcher.Search(ctx, filter, spi.SearchOptions{
-		ModelName:    "person",
-		ModelVersion: "1",
-		Limit:        2,
+	t.Run("AtLimitSucceeds", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: 5,
+		})
+		if err != nil {
+			t.Fatalf("5 matches at limit 5: unexpected err %v", err)
+		}
+		if len(got) != 5 {
+			t.Fatalf("got %d, want 5", len(got))
+		}
 	})
-	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
-		t.Fatalf("5 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
-	}
+
+	t.Run("OverLimitFails", func(t *testing.T) {
+		_, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: 2,
+		})
+		if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+			t.Fatalf("5 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+		}
+	})
 }
 
 // TestSearcher_Bounded_Residual: a non-pushable regex filter forces the Go
-// post-filter. Under bounded-or-fail, unbounded still returns everything, and
-// a matched set larger than Limit fails rather than truncating.
+// post-filter path — the branch that streams and counts matches in Go rather
+// than asking SQL for LIMIT+1. Covers the same bounded-or-fail contract as
+// TestSearcher_Bounded_NoResidual, for this branch.
 func TestSearcher_Bounded_Residual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
-
 	store, _ := factory.EntityStore(ctx)
 	searcher := store.(spi.Searcher)
 
-	// Non-pushable filter matching all 5, forcing the Go post-filter.
-	filter := spi.Filter{
-		Op:     spi.FilterMatchesRegex,
-		Path:   "name",
-		Source: spi.SourceData,
-		Value:  ".*",
-	}
+	// Non-pushable filter matching all 5 seeded persons.
+	filter := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
 
-	// Unbounded: all 5.
-	all, err := searcher.Search(ctx, filter, spi.SearchOptions{
-		ModelName:    "person",
-		ModelVersion: "1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 5 {
-		t.Fatalf("expected 5 results, got %d", len(all))
-	}
-
-	// 5 matches over a limit of 2 must fail rather than truncate.
-	_, err = searcher.Search(ctx, filter, spi.SearchOptions{
-		ModelName:    "person",
-		ModelVersion: "1",
-		Limit:        2,
-	})
-	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
-		t.Fatalf("5 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
-	}
-}
-
-// newBoundedTestStore seeds a fresh factory with n entities of model
-// "widget", each carrying {"tag":"present"}. boundedNotNullFilter (NotNull on
-// "tag") is pushable and leaf-exact, so it hits the no-residual LIMIT+1 SQL
-// path; boundedRegexFilter (a regex on "tag") is not pushable, so it hits the
-// Go post-filter path. Both match all n seeded entities.
-func newBoundedTestStore(t *testing.T, n int) (*sqlite.StoreFactory, context.Context) {
-	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "bounded_test.db")
-	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
-	if err != nil {
-		t.Fatalf("create factory: %v", err)
-	}
-	t.Cleanup(func() { factory.Close() })
-
-	ctx := testCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "widget", ModelVersion: "1"}
-	store, err := factory.EntityStore(ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-	for i := 0; i < n; i++ {
-		if _, err := store.Save(ctx, &spi.Entity{
-			Meta: spi.EntityMeta{ID: fmt.Sprintf("w%d", i), ModelRef: ref, State: "NEW"},
-			Data: []byte(`{"tag":"present"}`),
-		}); err != nil {
-			t.Fatalf("Save w%d: %v", i, err)
+	t.Run("Unbounded", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1",
+		})
+		if err != nil {
+			t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
 		}
-	}
-	return factory, ctx
-}
-
-var boundedNotNullFilter = spi.Filter{Op: spi.FilterNotNull, Path: "tag", Source: spi.SourceData}
-var boundedRegexFilter = spi.Filter{Op: spi.FilterMatchesRegex, Path: "tag", Source: spi.SourceData, Value: ".*"}
-
-// TestSQLiteSearcher_PushdownOverLimitFails: the no-residual LIMIT+1 pushdown
-// path must fail with spi.ErrSearchResultLimitExceeded when the matched set
-// (3) exceeds Limit (2), never returning a truncated prefix.
-func TestSQLiteSearcher_PushdownOverLimitFails(t *testing.T) {
-	factory, ctx := newBoundedTestStore(t, 3)
-	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
-
-	_, err := searcher.Search(ctx, boundedNotNullFilter, spi.SearchOptions{
-		ModelName: "widget", ModelVersion: "1", Limit: 2,
+		if len(got) != 5 {
+			t.Fatalf("got %d, want 5", len(got))
+		}
 	})
-	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
-		t.Fatalf("pushdown branch, 3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
-	}
-}
 
-// TestSQLiteSearcher_ResidualOverLimitFails: the Go post-filter path must
-// enforce the same bound as the pushdown path.
-func TestSQLiteSearcher_ResidualOverLimitFails(t *testing.T) {
-	factory, ctx := newBoundedTestStore(t, 3)
-	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
-
-	// A regex predicate is not pushable, so this exercises the Go post-filter.
-	_, err := searcher.Search(ctx, boundedRegexFilter, spi.SearchOptions{
-		ModelName: "widget", ModelVersion: "1", Limit: 2,
+	t.Run("AtLimitSucceeds", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: 5,
+		})
+		if err != nil {
+			t.Fatalf("5 matches at limit 5: unexpected err %v", err)
+		}
+		if len(got) != 5 {
+			t.Fatalf("got %d, want 5", len(got))
+		}
 	})
-	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
-		t.Fatalf("residual branch, 3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
-	}
-}
 
-// TestSQLiteSearcher_AtLimitSucceeds: a matched set exactly equal to Limit
-// succeeds and returns the whole set.
-func TestSQLiteSearcher_AtLimitSucceeds(t *testing.T) {
-	factory, ctx := newBoundedTestStore(t, 2)
-	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
-
-	got, err := searcher.Search(ctx, boundedNotNullFilter, spi.SearchOptions{
-		ModelName: "widget", ModelVersion: "1", Limit: 2,
+	t.Run("OverLimitFails", func(t *testing.T) {
+		_, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: 2,
+		})
+		if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+			t.Fatalf("5 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+		}
 	})
-	if err != nil {
-		t.Fatalf("2 matches at limit 2: unexpected err %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d, want 2", len(got))
-	}
-}
-
-// TestSQLiteSearcher_UnboundedReturnsAll: Limit <= 0 means unbounded and must
-// never raise, even with a match count that would exceed a positive limit.
-func TestSQLiteSearcher_UnboundedReturnsAll(t *testing.T) {
-	factory, ctx := newBoundedTestStore(t, 3)
-	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
-
-	got, err := searcher.Search(ctx, boundedNotNullFilter, spi.SearchOptions{
-		ModelName: "widget", ModelVersion: "1", Limit: 0,
-	})
-	if err != nil {
-		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("got %d, want 3", len(got))
-	}
 }
 
 func TestSearcher_ScanBudgetExhausted(t *testing.T) {
@@ -492,6 +403,107 @@ func TestSearcher_ScanBudgetExhausted(t *testing.T) {
 	}
 	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
 		t.Fatalf("expected spi.ErrScanBudgetExhausted, got: %v", err)
+	}
+}
+
+// TestSearcher_ResultBoundTripsBeforeScanBudget_DenseMatches: the scan budget
+// and the result bound are independent checks over the residual path's
+// streamed rows, and whichever trips first wins. With matches dense enough to
+// exceed Limit long before SearchScanLimit rows have been examined, the
+// result bound must win: spi.ErrSearchResultLimitExceeded, not
+// spi.ErrScanBudgetExhausted, even though the scan budget is active.
+func TestSearcher_ResultBoundTripsBeforeScanBudget_DenseMatches(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "dense_bound_test.db")
+
+	// Scan budget of 5, comfortably above the 3 rows needed to exceed Limit=2.
+	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	// 5 matching rows, no decoys: the 3rd match already exceeds Limit=2,
+	// well before the scan budget (5) could be threatened.
+	for i := 0; i < 5; i++ {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: fmt.Sprintf("d%d", i), ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"val":"match"}`),
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	// Non-pushable filter forces the residual path, where the scan budget is
+	// metered alongside the result bound.
+	_, err = searcher.Search(ctx, spi.Filter{
+		Op:     spi.FilterMatchesRegex,
+		Path:   "val",
+		Source: spi.SourceData,
+		Value:  ".*",
+	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 2})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("dense matches must trip the result bound first: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches: the converse
+// ordering — matches sparse enough (interleaved with decoys) that
+// SearchScanLimit rows are examined before enough matches accumulate to
+// threaten Limit. The scan budget must win: spi.ErrScanBudgetExhausted, not
+// spi.ErrSearchResultLimitExceeded, even though Limit has slack remaining.
+func TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sparse_bound_test.db")
+
+	// Scan budget of 3: exhausted scanning the 3 decoys, before the scan ever
+	// reaches a match.
+	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 3)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	// 3 decoys, scanned (in entity_id order) before 2 matches. "decoyN" sorts
+	// before "matchN" lexically, so the decoys are examined first.
+	for i := 0; i < 3; i++ {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: fmt.Sprintf("decoy%d", i), ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"val":"no-match"}`),
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: fmt.Sprintf("match%d", i), ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"val":"match"}`),
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	// "match" is a whole-string regex (MATCHES_PATTERN semantics), so it
+	// selects the 2 match rows and excludes the "no-match" decoys. Limit=5
+	// has ample slack over the 2 real matches.
+	_, err = searcher.Search(ctx, spi.Filter{
+		Op:     spi.FilterMatchesRegex,
+		Path:   "val",
+		Source: spi.SourceData,
+		Value:  "match",
+	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 5})
+	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
+		t.Fatalf("sparse matches must trip the scan budget first: got err %v, want ErrScanBudgetExhausted", err)
 	}
 }
 

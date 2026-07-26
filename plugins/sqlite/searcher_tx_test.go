@@ -337,27 +337,30 @@ func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 		t.Fatal("entityStore does not implement spi.Searcher")
 	}
 
-	// A buffered own-write that does NOT match cityBerlin — present in the
-	// transaction's buffer, but must never leak into the read-set regardless.
-	if _, err := store.Save(txCtx, mkPerson("e9", "Munich", "NEW")); err != nil {
+	// A buffered own-write that DOES match cityBerlin — it is part of the
+	// returned matched set (RYW), so it must actually reach tx.ReadSet's
+	// exclusion check, not merely be absent because it never matched.
+	if _, err := store.Save(txCtx, mkPerson("e9", "Berlin", "NEW")); err != nil {
 		t.Fatalf("Save e9: %v", err)
 	}
 
-	// Limit exactly at the matched-set size (3) succeeds and returns all of it.
+	// Limit exactly at the total matched-set size (3 committed + 1 buffered =
+	// 4) succeeds and returns all of it.
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", Limit: 3, TrackingRead: true,
+		ModelName: "person", ModelVersion: "1", Limit: 4, TrackingRead: true,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	gotIDs := idSetTx(got)
+	wantReturned := map[string]bool{"e1": true, "e3": true, "e6": true, "e9": true}
 	wantMatched := map[string]bool{"e1": true, "e3": true, "e6": true}
-	if len(gotIDs) != len(wantMatched) {
-		t.Fatalf("matched-set mismatch: got %v, want %v", gotIDs, wantMatched)
+	if len(gotIDs) != len(wantReturned) {
+		t.Fatalf("returned-set mismatch: got %v, want %v", gotIDs, wantReturned)
 	}
-	for id := range wantMatched {
+	for id := range wantReturned {
 		if !gotIDs[id] {
-			t.Errorf("expected %s in matched set, got %v", id, gotIDs)
+			t.Errorf("expected %s in returned set, got %v", id, gotIDs)
 		}
 	}
 
@@ -368,7 +371,7 @@ func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 		}
 	}
 	if tx.ReadSet["e9"] {
-		t.Errorf("buffered own-write e9 must NOT be in read-set, got %v", tx.ReadSet)
+		t.Errorf("buffered own-write e9 must NOT be in read-set even though it matched and was returned, got %v", tx.ReadSet)
 	}
 	if len(tx.ReadSet) != len(wantMatched) {
 		t.Errorf("read-set must contain exactly the matched committed set, got %v", tx.ReadSet)

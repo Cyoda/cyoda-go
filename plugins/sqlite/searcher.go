@@ -140,15 +140,6 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 		return nil, fmt.Errorf("row iteration: %w", err)
 	}
 
-	// The pushdown branch asked SQL for limit+1; getting it back means the
-	// matched set does not fit. The in-loop check above already returns as
-	// soon as any branch exceeds the bound, so this is unreachable in
-	// practice — kept as defense-in-depth documenting the invariant against a
-	// future refactor of the loop.
-	if opts.Limit > 0 && len(results) > opts.Limit {
-		return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
-	}
-
 	return results, nil
 }
 
