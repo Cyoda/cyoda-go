@@ -2,11 +2,10 @@ package search
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
+	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -14,26 +13,28 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// skipTypeCheckOperators lists operators whose condition value is not compared
-// against the field's DataType. IS_NULL and NOT_NULL don't use the value
-// semantically; the value is always null and any type is acceptable.
-var skipTypeCheckOperators = map[string]struct{}{
-	"IS_NULL":  {},
-	"NOT_NULL": {},
-}
-
 // ValidateConditionValueTypes walks a condition tree and checks that each
-// simple clause's value is type-compatible with the field's DataType as
-// declared in the model schema.
+// simple clause's operand PARSES into at least one of the field's declared
+// types — the same type-directed parse the leaf-comparison kernel
+// (spi.ExpandLeaf) performs at evaluation time. This replaces the older
+// JSON-kind-vs-DataType assignability check and its operator-class matrix:
+// there is no operator-vs-field-type rejection anymore. CONTAINS on a numeric
+// field, GREATER_THAN "true" on a boolean, a numeric-looking string on a
+// [INTEGER, STRING] field — all parse and are ACCEPTED; the kernel evaluates
+// them to a (non-)match, never a type error (spec §6).
 //
 // The model's FieldsMap provides a lookup from JSONPath (e.g. "$.price") to
 // a FieldDescriptor carrying the observed DataType(s). Conditions referencing
 // unknown paths are accepted (the condition may traverse a path not yet seen
-// in training data).
+// in training data); a field with no declared types carries no constraint.
 //
-// Returns a non-nil error if any simple clause has a type-mismatched value.
-// Polymorphic fields (>1 type) accept values matching any participating type.
-// Null values are accepted for any field type.
+// Returns a non-nil error only when an operand parses into NONE of the
+// field's declared types (errConditionTypeMismatch), or a lifecycle field is
+// unknown (errInvalidFieldPath). Operand shape/arity — an object operand
+// (never valid for any operator), null on a binary op, a range op's
+// 2-element bounds shape — is enforced separately by
+// ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
+// this type check.
 func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Condition) error {
 	if cond == nil {
 		return nil
@@ -80,47 +81,134 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 }
 
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
-	// Operators that don't perform value comparison bypass type checking.
-	if _, skip := skipTypeCheckOperators[c.OperatorType]; skip {
-		return nil
-	}
-
-	// Null values are compatible with any field type.
-	if c.Value == nil {
-		return nil
-	}
-
 	fd, ok := fm[c.JsonPath]
 	if !ok {
-		// Unknown path — no type constraint; accept.
+		// Not a leaf. In a schema'd model (non-empty FieldsMap), a path that is
+		// a KNOWN CONTAINER — a strict prefix of one or more leaf paths, but not
+		// itself a leaf — has substructure and cannot be compared to a scalar:
+		// you must navigate to a leaf sub-path. Reject a scalar-operand
+		// comparison on such a path as INVALID_FIELD_PATH. Unary presence tests
+		// (IS_NULL/NOT_NULL) carry no scalar operand — they test presence, not a
+		// value — so they are NOT rejected. A mixed object-or-scalar node is a
+		// leaf after schema field-collection (it carries its scalar types), so it
+		// never reaches this branch. A genuinely-unknown (non-container) path
+		// carries no type constraint here; the separate field-path validation
+		// pass classifies it.
+		if len(fm) > 0 && carriesScalarOperand(mapOperator(c.OperatorType)) && isKnownContainerPath(c.JsonPath, fm) {
+			return fmt.Errorf("field %q is a container with substructure and cannot be compared to a scalar; navigate to a leaf sub-path: %w",
+				c.JsonPath, errInvalidFieldPath)
+		}
+		// Unknown path — no type constraint here (INVALID_FIELD_PATH for data
+		// leaves is raised by the separate field-path validation pass).
 		return nil
 	}
-
 	if len(fd.Types) == 0 {
-		// No type information recorded — accept.
+		// No declared types recorded — no constraint; accept.
 		return nil
 	}
 
-	// Branch on composite vs scalar values before calling inferValueDataType.
+	// An object operand is rejected upstream, at the model-independent shape
+	// layer (validateOperandShape in operators.go, wired into ValidateCondition
+	// — the single boundary every transport funnels through before this
+	// type check runs) as INVALID_CONDITION, not here: it is a shape/arity
+	// error (spec §6/§8), not a field-type mismatch.
+
+	// Only the comparison/range family constrains the operand's type. String
+	// operators and the null-presence tests parse any operand — they evaluate
+	// to a (non-)match, never a type error (spec §6, parse-based).
+	if !isParseConstrainedOp(mapOperator(c.OperatorType)) {
+		return nil
+	}
+
 	switch v := c.Value.(type) {
+	case nil:
+		// Null operand carries no type to mismatch; arity is enforced elsewhere.
+		return nil
 	case []any:
-		// Array values (e.g. BETWEEN [lo, hi], IN [a, b, c]): every element
-		// must type-check against the field. An empty array is accepted (no
-		// elements means nothing to mismatch).
+		// Array operand — BETWEEN's [lo, hi] bounds or a legacy positional
+		// (IN-style) set. Every non-null element must parse into a declared
+		// type; a null element is compatible with any type; an empty array has
+		// nothing to mismatch. Range-op arity (exactly two bounds) is enforced
+		// by validateBetweenArity, not here.
 		for i, elem := range v {
-			if err := checkSingleValueType(fd, c.JsonPath, elem); err != nil {
-				return fmt.Errorf("value[%d]: %w", i, err)
+			if elem == nil {
+				continue
+			}
+			if !operandParsesDeclared(fd.Types, elem) {
+				return fmt.Errorf("value[%d] %v parses into none of field %q's declared types %v: %w",
+					i, elem, c.JsonPath, fd.Types, errConditionTypeMismatch)
 			}
 		}
 		return nil
-	case map[string]any:
-		// No search operator accepts an object value.
-		_ = v
-		return fmt.Errorf("condition value for field %q is an object, which is not valid for any operator type: %w",
-			c.JsonPath, errConditionTypeMismatch)
 	default:
-		return checkSingleValueType(fd, c.JsonPath, c.Value)
+		if !operandParsesDeclared(fd.Types, v) {
+			return fmt.Errorf("operand %v parses into none of field %q's declared types %v: %w",
+				v, c.JsonPath, fd.Types, errConditionTypeMismatch)
+		}
+		return nil
 	}
+}
+
+// isParseConstrainedOp reports whether op's operand must parse into a declared
+// type for the condition to be valid. Only the six comparison operators and the
+// two range operators are constrained; string operators (CONTAINS, LIKE, the
+// case-insensitive/negated variants, ...) and the null-presence tests (IS_NULL,
+// NOT_NULL) parse any operand and are always accepted — mirroring the kernel,
+// where ExpandLeaf only reports a "parses into no declared type" error for the
+// compare (expandCompare) and range (expandBetween) families.
+func isParseConstrainedOp(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterGte, spi.FilterLt, spi.FilterLte,
+		spi.FilterBetween, spi.FilterBetweenInclusive:
+		return true
+	}
+	return false
+}
+
+// carriesScalarOperand reports whether op compares the field against a scalar
+// operand (and therefore cannot address a container path). Every operator does
+// EXCEPT the unary null-presence tests (IS_NULL, NOT_NULL), which test presence
+// rather than a value and so remain valid on a container path.
+func carriesScalarOperand(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterIsNull, spi.FilterNotNull:
+		return false
+	}
+	return true
+}
+
+// isKnownContainerPath reports whether p names a KNOWN CONTAINER in fm — a
+// strict prefix of one or more leaf paths, without being a leaf itself. It
+// mirrors the prefix probe in path_validate.go's isPathKnown, but is used to
+// REJECT a scalar comparison on the interior node rather than to accept the
+// path. p is assumed absent from fm as a direct leaf (the caller checks that
+// first). Both dot- and wildcard-delimited descents count as substructure.
+func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
+	dotPrefix := p + "."
+	arrPrefix := p + "["
+	for known := range fm {
+		if strings.HasPrefix(known, dotPrefix) || strings.HasPrefix(known, arrPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// operandParsesDeclared reports whether a single scalar operand parses into at
+// least one of the declared types. It calls the kernel's own comparison-parse
+// (spi.ExpandLeaf with FilterEq): the parse decision — "does this operand
+// denote a value of a declared type" — is operator-independent across the
+// comparison family (expandCompare's engaged check depends only on the operand
+// and declared set, not the operator), so FilterEq is a faithful oracle that
+// also applies per array element, where a range operator cannot be expanded in
+// isolation. The operand is normalised with spi.OperandString — the single
+// shared operand→string form the evaluators (internal/match, spi.MatchFilter)
+// feed the kernel — so validation and evaluation agree. A Void expansion
+// (parses but every bucket dropped, e.g. EQUALS 12.5 on [INTEGER]) is NOT a
+// mismatch — it is accepted and evaluates to non-match.
+func operandParsesDeclared(declared []schema.DataType, v any) bool {
+	_, err := spi.ExpandLeaf(spi.FilterEq, spi.OperandString(v), nil, declared)
+	return err == nil
 }
 
 // errConditionTypeMismatch is the sentinel error for condition type mismatch.
@@ -147,32 +235,32 @@ var (
 	ErrInvalidFieldPath      = errInvalidFieldPath
 )
 
-// comparisonOps is the operator family valid against temporal meta fields:
-// ordering, equality, BETWEEN, and the null-presence checks. String-shaped
-// operators (CONTAINS, STARTS_WITH, LIKE, regex, case-insensitive variants,
-// ...) have no meaningful temporal semantics and are rejected.
-var comparisonOps = map[string]bool{
-	"EQUALS": true, "NOT_EQUAL": true, "GREATER_THAN": true, "LESS_THAN": true,
-	"GREATER_OR_EQUAL": true, "LESS_OR_EQUAL": true, "BETWEEN": true,
-	"IS_NULL": true, "NOT_NULL": true,
-}
+// metaTemporalDeclared is the declared type set for temporal meta fields
+// (creationDate, lastUpdateTime): a single ZonedDateTime, matching
+// lifecycleToFilter's stamping. A coarser operand (e.g. "2024", or an
+// offset-less "2021-01-01T00:00:00") parses as its own natural subtype and
+// upscales to ZonedDateTime (spec §4), so it parses into this set and is
+// accepted.
+var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 
 // validateLifecycleType enforces type-soundness for LifecycleCondition
-// (meta) clauses:
+// (meta) clauses, parse-based (spec §6):
 //   - the field must be a known meta filter field (sortableMetaFields key,
 //     or the previousTransition alias) — otherwise errInvalidFieldPath.
 //   - for fields the meta vocabulary classifies as temporal (creationDate,
-//     lastUpdateTime), the operator must be one of comparisonOps and every
-//     operand (skipped for IS_NULL/NOT_NULL) must be an offset-bearing
-//     RFC3339 timestamp per spi.ParseTemporalMillis — otherwise
-//     errConditionTypeMismatch.
+//     lastUpdateTime), a comparison/range operand must parse into a temporal
+//     type — otherwise errConditionTypeMismatch. There is NO operator-class
+//     rejection: a string operator (CONTAINS, ...) on a temporal field parses
+//     and is accepted (the kernel evaluates it to a non-match), and a coarse
+//     operand upscales rather than being rejected.
 //
 // Non-temporal meta fields (state, transitionForLatestSave, transactionId,
 // id) carry no further constraint here: they compare as their stored
 // text/string form regardless of operator.
+
 // ValidateLifecycleCondition checks a lifecycle/meta condition for type
-// soundness (known meta field; valid operator + offset-bearing RFC3339
-// operand on temporal fields). Shared by the search API boundary and
+// soundness (known meta field; a comparison/range operand that parses into a
+// temporal type on temporal fields). Shared by the search API boundary and
 // workflow-criterion import so both reject the same malformed conditions.
 // Returns a descriptive error; callers map it to their own 4xx code.
 func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error {
@@ -190,92 +278,31 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isTemporalMetaField(field) {
 		return nil
 	}
-	if !comparisonOps[c.OperatorType] {
-		return fmt.Errorf("operator %q is not valid on temporal field %q: %w", c.OperatorType, c.Field, errConditionTypeMismatch)
-	}
-	if c.OperatorType == "IS_NULL" || c.OperatorType == "NOT_NULL" {
+	// String operators and null-presence tests on a temporal meta field parse
+	// any operand and are accepted (eval decides a non-match) — spec §6.
+	if !isParseConstrainedOp(mapOperator(c.OperatorType)) {
 		return nil
 	}
-	for _, v := range operandStrings(c.Value) {
-		if _, ok := spi.ParseTemporalMillis(v); !ok {
-			return fmt.Errorf("operand %q is not a valid timestamp for temporal field %q: %w", v, c.Field, errConditionTypeMismatch)
+	for i, elem := range operandElements(c.Value) {
+		if elem == nil {
+			continue
+		}
+		if !operandParsesDeclared(metaTemporalDeclared, elem) {
+			return fmt.Errorf("operand[%d] %v parses into no temporal type for field %q: %w",
+				i, elem, c.Field, errConditionTypeMismatch)
 		}
 	}
 	return nil
 }
 
-// operandStrings normalizes a condition value into its comparable operand
-// strings: a scalar becomes a single-element slice; a []any (BETWEEN's
-// [lo, hi] pair) becomes one element per member, each stringified via
-// fmt.Sprint to match the formatting evalTemporalLeaf/spi.ParseTemporalMillis
-// callers use elsewhere in the temporal pipeline.
-func operandStrings(v any) []string {
+// operandElements normalises a condition value into its operand elements: a
+// scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, or a
+// positional set) becomes one element per member. Callers skip nil elements.
+func operandElements(v any) []any {
 	if arr, ok := v.([]any); ok {
-		out := make([]string, 0, len(arr))
-		for _, elem := range arr {
-			out = append(out, fmt.Sprint(elem))
-		}
-		return out
+		return arr
 	}
-	return []string{fmt.Sprint(v)}
-}
-
-// checkSingleValueType checks whether a single scalar value is compatible with
-// the field's TypeSet. Null values are accepted for any field type. String-only
-// fields accept any value type (lexicographic comparison semantics).
-func checkSingleValueType(fd schema.FieldDescriptor, jsonPath string, v any) error {
-	if v == nil {
-		return nil // null compatible with any type
-	}
-
-	valueType := inferValueDataType(v)
-	if valueType == schema.Null {
-		return nil // null compatible with any type
-	}
-
-	// Only enforce type compatibility when the field carries at least one
-	// numeric or boolean type. String fields accept any comparison value
-	// (numeric or string) to support lexicographic and coerced comparisons.
-	// This matches the Cloud's InvalidTypesInClientConditionException semantics,
-	// which targets "non-string value against a non-string field" mismatches.
-	hasConstrainedType := false
-	for _, ft := range fd.Types {
-		if schema.IsNumeric(ft) || ft == schema.Boolean {
-			hasConstrainedType = true
-			break
-		}
-	}
-	if !hasConstrainedType {
-		return nil
-	}
-
-	for _, fieldType := range fd.Types {
-		if schema.IsAssignableTo(valueType, fieldType) {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("condition value type %s is not compatible with field %q (expected %v): %w",
-		valueType, jsonPath, fd.Types, errConditionTypeMismatch)
-}
-
-// inferValueDataType infers the DataType of a condition value.
-//
-// Condition values come from predicate.ParseCondition which uses standard
-// json.Unmarshal — numbers arrive as float64, not json.Number. We convert
-// float64 to json.Number so the schema classifier can apply its full
-// precision-based widening lattice, rather than defaulting to String.
-func inferValueDataType(v any) schema.DataType {
-	switch val := v.(type) {
-	case []any, map[string]any:
-		// Composite values (e.g. BETWEEN [lo, hi]) — skip type check.
-		return schema.Null
-	case float64:
-		// Standard json.Unmarshal produces float64. Convert to json.Number
-		// so InferDataType can classify it correctly.
-		return schema.InferDataType(json.Number(strconv.FormatFloat(val, 'f', -1, 64)))
-	}
-	return schema.InferDataType(v)
+	return []any{v}
 }
 
 // loadModelNode fetches and parses the model schema for ref, returning the
@@ -306,8 +333,14 @@ func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
 // with a known field/operator).
 //
-// A schema-load hiccup (see loadModelNode) returns nil — the search
-// proceeds without type constraints rather than failing on infra flakiness.
+// A schema-load hiccup (see loadModelNode) returns nil — the search proceeds
+// without pre-rejecting type-unsound conditions rather than 5xx-ing on an infra
+// flake. This is safe, not a wrong-but-available result: with no model the eval
+// path stamps empty Declared too, so comparison leaves degrade to non-match
+// (empty results, never a wrong match), and existence is already gated upstream
+// by EnsureModelRegistered. It is deliberately more lenient here than the
+// workflow engine (which fails closed on the same load error) — a search
+// prefers empty-on-flake to a 5xx.
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
 	node := loadModelNode(ctx, modelStore, modelRef)
 	if node == nil {

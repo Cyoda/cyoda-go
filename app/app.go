@@ -681,26 +681,38 @@ func New(cfg Config) *App {
 	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
 	// and are propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
-	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, bool, error) {
+	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
 		ctx := r.Context()
 		modelStore, err := storeFactory.ModelStore(ctx)
 		if err != nil {
-			return nil, spi.ModelRef{}, false, err
+			return nil, spi.ModelRef{}, nil, false, err
 		}
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 			if appErr.Status == http.StatusNotFound {
 				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
-				return nil, ref, false, nil
+				return nil, ref, nil, false, nil
 			}
 			// Genuine store error → propagate to 500-with-ticket path.
-			return nil, ref, false, appErr
+			return nil, ref, nil, false, appErr
 		}
 		entityStore, err := storeFactory.EntityStore(ctx)
 		if err != nil {
-			return nil, ref, false, err
+			return nil, ref, nil, false, err
 		}
-		return entityStore, ref, true, nil
+		// Load the model's declared field types so grouped-stats comparison is
+		// type-directed (temporal data fields compare temporally), consistent
+		// with the search path. A genuine store/schema-load error fails closed
+		// (correctness-over-availability): the schema is a required input for
+		// correct typing, so surface it to the 500-with-ticket path rather than
+		// silently under-match with untyped leaves. The no-schema-registered
+		// case is (nil, nil) — fields stays nil and data leaves degrade to
+		// non-type-directed comparison, same as the search fallback.
+		fields, err := search.LoadFieldsMap(ctx, modelStore, ref)
+		if err != nil {
+			return nil, ref, nil, false, err
+		}
+		return entityStore, ref, fields, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
 	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))

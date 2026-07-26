@@ -19,11 +19,17 @@ package externalapi
 //
 // Discovered divergences and resolutions:
 //
-//   14/01: FIXED in tranche 4. The entity validator now accepts polymorphic
-//   array elements — a string element in an array whose model was trained on
-//   objects is correctly accepted once both types are recorded in the TypeSet.
-//   Also fixed: SQLite path validator now allows hyphens in field names;
-//   ConditionToFilter now falls back to in-memory for JSONPath wildcard paths.
+//   14/01: FIXED. The entity validator accepts polymorphic array elements — a
+//   string element in an array whose model was trained on objects is accepted
+//   once both types are recorded in the TypeSet. A node observed as BOTH an
+//   object and a bare scalar at the same path is now searchable via a scalar
+//   operand: schema field-collection emits a leaf descriptor for the object
+//   node's own path carrying its scalar types (in addition to its child
+//   leaves), so a string-equals on $.some-array[*].some-object matches the
+//   string-valued element while the object-valued element is found via the
+//   $.some-array[*].some-object.some-key leaf. Also fixed: SQLite path
+//   validator allows hyphens in field names; ConditionToFilter falls back to
+//   in-memory for JSONPath wildcard paths.
 //
 //   14/03 (SIMPLE_VIEW UUID check): cyoda-go does not distinguish UUID
 //   values from STRING. Observed SIMPLE_VIEW descriptor: "[DOUBLE, STRING,
@@ -69,10 +75,11 @@ func init() {
 // element 1. Both an object-key condition and a string-equals condition
 // must return non-empty results via async + direct.
 //
-// Discover-and-compare result (worse-class, pending controller decision):
-// cyoda-go enforces strict structural type from the first-observed element.
-// POST with an element where some-object is a string returns HTTP 400
-// "expected object, got string". Cloud stores both branches.
+// The entity creates with both branches (the sample below is ingested as one
+// entity). The mixed object-or-string node is searchable at its own path with
+// a scalar operand: EQUALS "abc" matches the string-valued element, and the
+// object-valued element is reached via the .some-key leaf sub-path. Both
+// branches therefore return non-empty on every backend.
 func RunExternalAPI_14_01_MixedObjectOrStringAtSamePath(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)

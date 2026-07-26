@@ -91,10 +91,11 @@ func TestPostgresIterate_FilterPushdown(t *testing.T) {
 
 	it := store.(spi.Iterable)
 	filter := spi.Filter{
-		Op:     spi.FilterEq,
-		Source: spi.SourceData,
-		Path:   "city",
-		Value:  "Berlin",
+		Op:       spi.FilterEq,
+		Source:   spi.SourceData,
+		Path:     "city",
+		Value:    "Berlin",
+		Declared: []spi.DataType{spi.String},
 	}
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
@@ -124,7 +125,7 @@ func TestPostgresIterate_ResidualApplied(t *testing.T) {
 	filter := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Source: spi.SourceData, Path: "city", Value: "Berlin"},
+			{Op: spi.FilterEq, Source: spi.SourceData, Path: "city", Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{Op: spi.FilterMatchesRegex, Source: spi.SourceData, Path: "tag", Value: "^x$"},
 		},
 	}
@@ -378,6 +379,114 @@ func TestPostgresGroupedAggregate_DeclinesOnResidualFilter(t *testing.T) {
 	)
 	if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
 		t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+	}
+}
+
+// TestPostgresGroupedAggregate_DeclinesOnSoundSupersetComparisonFilter pins
+// the SQL-pushdown soundness contract (query_planner.go leafExact) at the
+// grouped-stats boundary: Gt IS pushable (it translates to SQL) but is only
+// ever a SOUND SUPERSET — leafToSQL relaxes strict ">" to ">=" because a
+// stored value a sub-ULP beyond the operand can collide to the same float8,
+// so leafExact(Gt) is false and planQuery installs the FULL filter as
+// postFilter even though the leaf itself pushed cleanly. A native SQL GROUP
+// BY cannot safely apply that residual after aggregating (it would corrupt
+// per-bucket counts), so GroupedAggregate MUST decline with
+// ErrAggregationNotPushdownable — exactly like the already-pinned fully
+// non-pushable regex case (TestPostgresGroupedAggregate_DeclinesOnResidualFilter)
+// — even though Gt DOES translate to SQL, unlike regex which never does.
+// Contrast with TestPostgresGroupedAggregate_UsesNativeGroupByOnIsNullOnlyFilter
+// below (an EXACT leaf, which DOES use the native fast path) and with
+// TestPostgresGroupedAggregate_PushesCountByState above (no condition at all).
+func TestPostgresGroupedAggregate_DeclinesOnSoundSupersetComparisonFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 100.0})
+	gsSave(t, ctx, store, "b", "available", map[string]any{"price": 150.0})
+	gsSave(t, ctx, store, "c", "allocated", map[string]any{"price": 50.0})
+
+	ga := store.(spi.GroupedAggregator)
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
+		t.Fatalf("got %v, want ErrAggregationNotPushdownable (Gt is pushable but SOUND-SUPERSET, not EXACT)", err)
+	}
+}
+
+// TestPostgresGroupedAggregate_UsesNativeGroupByOnIsNullOnlyFilter
+// contrasts the test above: IsNull IS leafExact (the only exact ops are
+// IsNull/NotNull — see leafExact), so a plan carrying only an IsNull leaf is
+// fully EXACT and the native SQL GROUP BY fast path IS used (no decline, no
+// residual re-check needed).
+func TestPostgresGroupedAggregate_UsesNativeGroupByOnIsNullOnlyFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 100.0})
+	gsSave(t, ctx, store, "b", "available", map[string]any{})
+	gsSave(t, ctx, store, "c", "allocated", map[string]any{})
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceData, Path: "price"},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v (want native pushdown to succeed — IsNull is EXACT)", err)
+	}
+	counts := map[string]int64{}
+	for _, b := range res {
+		k, _ := b.GroupKey[0].Value.(string)
+		counts[k] = b.Count
+	}
+	if counts["available"] != 1 || counts["allocated"] != 1 {
+		t.Errorf("counts = %+v, want available=1 allocated=1 (only the price-missing rows)", counts)
+	}
+}
+
+// TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary
+// proves the decline above is not merely a signal but a CORRECTNESS
+// requirement. price==100 sits exactly on the Gt operand: the kernel's
+// strict ">" excludes it, but the relaxed SQL ">= 100" pushdown over-selects
+// it as a pre-recheck candidate. GroupedAggregate declines (proven above);
+// this test exercises the SAME primitive the streaming-tally fallback
+// consumes — Iterate, which applies the identical postFilter kernel
+// re-check — and hand-tallies by state, pinning that the boundary rows are
+// correctly excluded from the final count. This is the count a memory
+// backend would also produce for the identical corpus+filter: memory's
+// Iterate has no SQL layer at all, it evaluates spi.MatchFilter directly per
+// entity (plugins/memory/grouped_stats.go msMatchFilter) — so "correct here"
+// and "identical to memory" are the same claim.
+func TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "boundary-1", "available", map[string]any{"price": 100.0})
+	gsSave(t, ctx, store, "boundary-2", "available", map[string]any{"price": 100.0})
+	gsSave(t, ctx, store, "above", "available", map[string]any{"price": 150.0})
+	gsSave(t, ctx, store, "below", "allocated", map[string]any{"price": 50.0})
+
+	filter := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
+
+	it := store.(spi.Iterable)
+	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	defer iter.Close()
+	counts := map[string]int{}
+	for iter.Next() {
+		counts[iter.Entity().Meta.State]++
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iter err: %v", err)
+	}
+	// Only "above" (price=150) satisfies the STRICT kernel Gt. Both price==100
+	// boundary rows must be excluded by the postFilter re-check despite the
+	// relaxed SQL WHERE (">= 100") returning them as pre-recheck candidates.
+	if counts["available"] != 1 {
+		t.Errorf("available count = %d, want 1 (only price=150; the two price=100 boundary rows must be excluded by the kernel re-check)", counts["available"])
+	}
+	if counts["allocated"] != 0 {
+		t.Errorf("allocated count = %d, want 0", counts["allocated"])
 	}
 }
 

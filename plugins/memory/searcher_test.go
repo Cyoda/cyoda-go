@@ -27,8 +27,11 @@ func idSet(entities []*spi.Entity) map[string]bool {
 	return ids
 }
 
-// activeFilter matches entities whose meta state == ACTIVE.
-var activeFilter = spi.Filter{Op: spi.FilterEq, Source: spi.SourceMeta, Path: "state", Value: "ACTIVE"}
+// activeFilter matches entities whose meta state == ACTIVE. The Declared type
+// set is stamped (STRING) as the domain layer does from the model schema, so the
+// type-directed kernel evaluates the comparison rather than degrading to
+// non-match on an unstamped leaf.
+var activeFilter = spi.Filter{Op: spi.FilterEq, Source: spi.SourceMeta, Path: "state", Value: "ACTIVE", Declared: []spi.DataType{spi.String}}
 
 func mkEntity(id, state, data string, modelRef spi.ModelRef) *spi.Entity {
 	return &spi.Entity{

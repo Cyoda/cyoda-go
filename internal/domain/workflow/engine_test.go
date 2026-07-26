@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -86,6 +87,7 @@ func TestSelectWorkflow(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf1, wf2})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"amount": schema.Integer})
 
 	entity := makeEntity("e1", modelRef, map[string]any{"amount": 200})
 	result, err := engine.Execute(ctx, entity, "")
@@ -114,6 +116,7 @@ func TestNoMatchingWorkflow_FallsBackToDefault(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"amount": schema.Integer})
 
 	// Entity with amount=5 won't match the HighValueWF criterion.
 	// Engine should fall back to the default workflow.
@@ -197,6 +200,7 @@ func TestCriterionBlocksTransition(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"approved": schema.Boolean})
 
 	entity := makeEntity("e5", modelRef, map[string]any{"approved": false})
 	result, err := engine.Execute(ctx, entity, "")
@@ -232,6 +236,7 @@ func TestMultipleTransitionsFirstEligible(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"route": schema.String})
 
 	entity := makeEntity("e6", modelRef, map[string]any{"route": "B"})
 	result, err := engine.Execute(ctx, entity, "")
@@ -689,6 +694,7 @@ func TestLoopback(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"loop": schema.Boolean})
 
 	// Entity with loop=true: should take LOOP (back to INITIAL), then re-evaluate.
 	// On second pass, LOOP matches again → infinite loop risk.
@@ -3337,6 +3343,7 @@ func TestEngine_InlineCriterionNoMatch_DefaultsReason(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"amount": schema.Integer})
 
 	txMgr, err := factory.TransactionManager(ctx)
 	if err != nil {
@@ -3465,6 +3472,7 @@ func TestEngine_ManualInlineCriterionNoMatch_NoRedundantSuffix(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"amount": schema.Integer})
 
 	entity := makeEntity("manual-inline-crit-reason-e1", modelRef, map[string]any{"amount": 5})
 	entity.Meta.State = "PENDING"

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 209 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 218 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -120,6 +120,11 @@ var allTests = []NamedTest{
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
+	// Type-directed contract: a scalar comparison on a PURE-container path (a
+	// known structural interior with substructure but no scalar observation)
+	// is rejected with HTTP 400 INVALID_FIELD_PATH uniformly across backends —
+	// fail-closed rather than the pre-fix silent empty-result degradation.
+	{"SearchScalarOnContainerPath400", RunSearchScalarOnContainerPath400},
 
 	// Phase 4b — workflow selection (Task 4b.7)
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},
@@ -324,6 +329,7 @@ var allTests = []NamedTest{
 	// the exact entity-id sequence.  Divergence here is a real bug in the
 	// backend comparator or default-order path, not a test weakness.
 	{"SearchSortDataText", RunSearchSortDataText},
+	{"SearchSortDataTemporalLexical", RunSearchSortDataTemporalLexical},
 	{"SearchSortDataNumeric", RunSearchSortDataNumeric},
 	{"SearchSortDataBool", RunSearchSortDataBool},
 	{"SearchSortMetaCreationDate", RunSearchSortMetaCreationDate},
@@ -369,6 +375,33 @@ var allTests = []NamedTest{
 	{"AttributionExecutorRoundTrip", RunAttributionExecutorRoundTrip},
 	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
 	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
+
+	// Spec §10 backend-agnostic scenarios that lacked a dedicated named
+	// parity scenario (search_type_directed.go). Data-field temporal
+	// resolution is registered separately below.
+	//
+	// SearchPolymorphicIntStringExpansion guards the polymorphic [INTEGER,
+	// STRING] pushdown soundness fix: an operand matching stored values of
+	// different SQLite storage classes (int-30 and string-"30") must return
+	// both on every backend. sqlite achieves this by routing polymorphic
+	// comparison leaves to the residual (kernel-evaluated) rather than pushing
+	// a single-storage-class-bound WHERE that under-selects — see
+	// plugins/sqlite/query_planner.go isLeafPushable.
+	{"SearchPolymorphicIntStringExpansion", RunSearchPolymorphicIntStringExpansion},
+	{"SearchNumericBucketRounding", RunSearchNumericBucketRounding},
+	{"SearchLikeAnchoredEscapedGlob", RunSearchLikeAnchoredEscapedGlob},
+	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},
+	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
+	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
+
+	// Spec §4 — data-field temporal (subsumes the earlier standalone
+	// temporal-search-on-data-fields work). Model discovery content-sniffs
+	// ISO-8601 sample strings into a temporal subtype, so a data field
+	// compares chronologically with cross-subtype resolution: a LocalDate
+	// field's `>= 2024-09-09` is a chronological compare, and a Year field
+	// resolves that same operand to `> 2024` (imprecise-floor op mutation) —
+	// matching 2025, not 2024. See search_type_directed.go.
+	{"SearchDataFieldTemporalResolution", RunSearchDataFieldTemporalResolution},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

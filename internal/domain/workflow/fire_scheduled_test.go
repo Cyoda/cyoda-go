@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -180,6 +181,7 @@ func TestFireScheduled_DeclineOnCriterionFalse(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"flag": schema.Boolean})
 	seedFireEntity(t, factory, ctx, "decline-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{"flag": false})
 
 	id := taskID(testTenant, "decline-e1", "OPEN", "AutoClose")

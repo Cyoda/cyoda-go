@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-CONDITION_TYPE_MISMATCH — a search condition value's JSON type is incompatible with the field's locked DataType in the model schema.
+CONDITION_TYPE_MISMATCH — a search condition's operand parses into none of the field's declared DataTypes.
 
 ## SYNOPSIS
 
@@ -21,17 +21,15 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Each field in a locked model has an inferred DataType (e.g. INTEGER, DOUBLE, BOOLEAN). When a search condition references a numeric or boolean field, the condition's value must be type-compatible with that field. For example, submitting a string value `"abc"` against a DOUBLE field is rejected.
+Validation is parse-based: a comparison or range operand is rejected only when it parses into none of the field's declared DataTypes. For example `"abc"` against a DOUBLE field is rejected — it is not a number. A numeric-looking string against a polymorphic `[INTEGER, STRING]` field is accepted (it parses as STRING).
 
-String fields are not strictly enforced — any comparison value (numeric or string) is accepted to support lexicographic and coerced comparisons. Conditions that reference field paths not present in the model schema are rejected by a separate pre-execution validation pass with `INVALID_FIELD_PATH`; the type-checker itself has no opinion on unknown paths.
+There is no operator-versus-field-type rejection. `CONTAINS` on a numeric field, `GREATER_THAN "true"` on a boolean, and similar are accepted — they parse and simply evaluate to a (non-)match rather than an error. String operators and the `IS_NULL`/`NOT_NULL` presence tests carry no operand-type constraint. A field with no declared types, and paths not present in the schema, carry no constraint here; an unknown field path is instead rejected by a separate validation pass with `INVALID_FIELD_PATH`.
 
-Lifecycle/meta conditions (e.g. `state`, `creationDate`, `lastUpdateTime`) are also type-checked: temporal fields (`creationDate`, `lastUpdateTime`) only accept ordering/equality/BETWEEN/null-presence operators with an offset-bearing RFC3339 operand — a string-shaped operator such as `CONTAINS` or a non-date operand against a temporal field is this same error.
-
-IS_NULL and NOT_NULL operators bypass type checking entirely. Null values are compatible with any field type.
+Temporal meta fields (`creationDate`, `lastUpdateTime`) follow the same rule: a comparison/range operand must parse into a temporal type. A coarse operand (e.g. a bare year, or an offset-less date-time) upscales and is accepted; only an operand that parses into no temporal type is this error.
 
 Both `/search` and the grouped-statistics endpoint (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) enforce this check.
 
-Correct the condition value so that its type matches the target field's declared DataType.
+Correct the operand so it denotes a value of one of the target field's declared DataTypes.
 
 ## SEE ALSO
 

@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,10 +11,47 @@ import (
 // sqlPlan holds the result of translating a spi.Filter into SQL.
 // where + args represent the pushable portion as a SQL WHERE fragment.
 // postFilter is the residual filter that must be evaluated in Go.
+//
+// SQL-pushdown soundness contract: the pushed SQL WHERE is a best-effort
+// NARROWING — the kernel (spi.MatchFilter, re-run over the candidates the SQL
+// returns) is authoritative. The invariant is that the pushed SQL returns a
+// SUPERSET of the kernel's matches (it never misses one). A leaf is EXACT when
+// its SQL matches the kernel bit-for-bit (only IsNull/NotNull — see leafExact);
+// every other pushed leaf is at best a SOUND SUPERSET (SQLite storage-class /
+// text comparison can over-select relative to the precise bignum/temporal
+// kernel, so the kernel must re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path
+// (gated on postFilter == nil) is allowed ONLY when the whole plan is exact.
 type sqlPlan struct {
 	where      string
 	args       []any
 	postFilter *spi.Filter
+}
+
+// leafExact reports whether a pushed leaf's SQL matches the kernel bit-for-bit.
+// Only presence checks (IsNull/NotNull) are exact: SQL IS NULL / IS NOT NULL is
+// identical to the kernel's absent/null semantics. Every other pushable op is at
+// best a SOUND SUPERSET (see leafToSQL), so its candidates must be re-checked by
+// the kernel. Mirrors postgres's leafExact exactly.
+func leafExact(op spi.FilterOp) bool {
+	return op == spi.FilterIsNull || op == spi.FilterNotNull
+}
+
+// allPushedExact walks a pushed filter subtree (as produced by dissect) and
+// reports whether every leaf in it is leafExact. AND/OR branches recurse.
+// Used by planQuery to decide whether the SQL is provably exact (fast path) or
+// must trigger a full kernel re-check.
+func allPushedExact(f spi.Filter) bool {
+	switch f.Op {
+	case spi.FilterAnd, spi.FilterOr:
+		for _, c := range f.Children {
+			if !allPushedExact(c) {
+				return false
+			}
+		}
+		return true
+	default:
+		return leafExact(f.Op)
+	}
 }
 
 // planQuery translates a spi.Filter tree into a SQL WHERE clause and an
@@ -23,11 +61,23 @@ type sqlPlan struct {
 //   - Greedy AND: extract pushable children into SQL, collect non-pushable as residual
 //   - Conservative OR: only push down if ALL children are pushable, otherwise entire OR is residual
 //   - Leaf nodes: pushable ops produce SQL fragments; non-pushable become residual
+//
+// Soundness gate: unless the plan is fully EXACT — no residual AND every pushed
+// leaf satisfies leafExact — the FULL original filter is installed as postFilter
+// so the kernel re-checks every candidate the narrowing SQL returns. This also
+// disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
 func planQuery(filter spi.Filter) sqlPlan {
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
 		plan.where, plan.args = toSQL(*pushed)
+	}
+	// If the plan is not provably exact (there is a residual, or any pushed leaf
+	// is only a SOUND SUPERSET), the narrowing SQL may over-select, so the kernel
+	// must re-check every candidate against the FULL original filter.
+	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
+		full := filter
+		plan.postFilter = &full
 	}
 	return plan
 }
@@ -40,7 +90,7 @@ func dissect(f spi.Filter) (pushed *spi.Filter, residual *spi.Filter) {
 	case spi.FilterOr:
 		return dissectOr(f)
 	default:
-		if isPushable(f.Op) {
+		if isLeafPushable(f) {
 			return &f, nil
 		}
 		return nil, &f
@@ -106,20 +156,164 @@ func isFullyPushable(f spi.Filter) bool {
 		}
 		return true
 	default:
-		return isPushable(f.Op)
+		return isLeafPushable(f)
 	}
 }
 
-// isPushable returns true if a leaf operation can be translated to SQL.
+// isPushable returns true if a leaf operation can be translated to SQL as a
+// sound superset of the kernel (see the sqlPlan soundness contract).
+//
+// Ne is deliberately NOT pushable: SQL "!=" UNDER-selects under storage-class /
+// text collision (a value != operand precisely but SQLite-equal is a kernel
+// match the SQL "!=" wrongly excludes), and "!=" rarely narrows anyway — so Ne
+// is residual-only (kernel-evaluated). BetweenInclusive IS pushable: SQL BETWEEN
+// is inclusive [lo,hi], a sound superset of the inclusive kernel between.
+//
+// Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
+// wildcards do not line up with Cloud's LIKE grammar (spi.MatchFilter's
+// likeToRegex), so a naive pushdown either escapes the wildcards into a
+// literal match (under-selecting real wildcard patterns) or pushes them
+// through unescaped (over-selecting/misinterpreting SQL-LIKE-specific
+// escaping). A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's
+// grammar is deferred to a dedicated follow-up; until then Like is
+// residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
+// branch is kept below (unreachable via isPushable, like Ne) for mirror
+// totality with postgres.
+//
+// IMPORTANT: this OP-LEVEL set MUST match postgres's isPushable exactly.
+// Adding or removing an op here without doing the same in postgres breaks the
+// op-level parity invariant relied on by the cross-backend tests in
+// e2e/parity/. The LEAF-LEVEL pushability decision (isLeafPushable) may
+// diverge from postgres deliberately — see its doc comment.
 func isPushable(op spi.FilterOp) bool {
 	switch op {
-	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterLt,
+	case spi.FilterEq, spi.FilterGt, spi.FilterLt,
 		spi.FilterGte, spi.FilterLte, spi.FilterContains,
-		spi.FilterStartsWith, spi.FilterEndsWith, spi.FilterLike,
-		spi.FilterIsNull, spi.FilterNotNull, spi.FilterBetween:
+		spi.FilterStartsWith, spi.FilterEndsWith,
+		spi.FilterIsNull, spi.FilterNotNull,
+		spi.FilterBetween, spi.FilterBetweenInclusive:
 		return true
 	}
 	return false
+}
+
+// isComparisonOp reports whether op is a scalar comparison whose SQL bind is
+// sensitive to the stored value's storage class (Eq/Ne/Gt/Lt/Gte/Lte/Between).
+// String ops (Contains/StartsWith/EndsWith) and presence checks
+// (IsNull/NotNull) are NOT comparisons in this sense and are unaffected by the
+// type-family routing.
+func isComparisonOp(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterEq, spi.FilterNe, spi.FilterGt, spi.FilterLt,
+		spi.FilterGte, spi.FilterLte, spi.FilterBetween, spi.FilterBetweenInclusive:
+		return true
+	}
+	return false
+}
+
+// isLeafPushable is the LEAF-LEVEL pushability decision: it layers a
+// type-family check on top of the op-level isPushable. A comparison leaf
+// (isComparisonOp) whose DECLARED type set is polymorphic (len > 1, i.e. its
+// stored values may span different type families / SQLite storage classes) is
+// NOT pushable on sqlite: json_extract preserves each stored scalar's native
+// storage class and SQLite never equates different classes (30 = '30' is
+// false), so no single-storage-class-bound SQL predicate can be a SUPERSET of
+// every kernel branch. Such leaves are routed to the residual, where the
+// kernel (spi.MatchFilter) evaluates all branches correctly.
+//
+// DELIBERATE MIRROR DIVERGENCE from postgres: postgres's `->>` extraction
+// stringifies every stored scalar to text, so a single text bind IS already a
+// sound superset across storage classes there — postgres keeps pushing these
+// leaves. The mirror contract requires identical RESULTS (the kernel is
+// authoritative on both backends), NOT identical pushed WHERE clauses; the
+// spec explicitly permits sqlite to push FEWER leaves. Presence checks
+// (IsNull/NotNull) are type-family-independent and stay pushable. Temporal
+// leaves (Coercion == CoerceTemporal) compare as a single normalized epoch-ms
+// integer regardless of declared subtype, so the polymorphic rule does not
+// apply to them either.
+func isLeafPushable(f spi.Filter) bool {
+	if !isPushable(f.Op) {
+		return false
+	}
+	if f.Coercion == spi.CoerceTemporal {
+		// Meta temporal fields store a single full instant (a µs-integer here /
+		// an offset-bearing RFC3339 string on postgres) that the epoch-ms push
+		// (temporalLeafToSQL) compares soundly. DATA temporal fields store bare
+		// ISO-subtype strings whose comparison needs the kernel's temporal-
+		// subtype resolution — an imprecise-floor op mutation (e.g. `>=
+		// 2024-09-09` on a Year field becomes `> 2024`) that a flat epoch-ms
+		// compare cannot reproduce as a sound superset. Route data temporal
+		// COMPARISONS to the residual, where the kernel (spi.MatchFilter) is
+		// authoritative; presence checks (IsNull/NotNull) are coercion-
+		// independent and stay pushable.
+		if f.Source == spi.SourceData && isComparisonOp(f.Op) {
+			return false
+		}
+		return true
+	}
+	if isComparisonOp(f.Op) && len(f.Declared) > 1 {
+		return false
+	}
+	return true
+}
+
+// comparisonBind returns the operand-binding form for a NON-temporal
+// comparison leaf, directed by the STORAGE CLASS json_extract yields for the
+// leaf's DECLARED type family rather than by the operand's own Go/JSON kind,
+// so the pushed SQL is a sound superset of the kernel on SQLite (where
+// json_extract preserves each stored scalar's native storage class):
+//   - monomorphic TEXT-storage-class declared (String/Character/UUID/…, see
+//     isTextStorageClass) -> TEXT bind (the normalized text form of the
+//     operand), so a json.Number operand text-compares against the text-stored
+//     scalar a text field yields (json_extract('"30"') is TEXT '30').
+//   - everything else (numeric, Boolean, empty/unstamped) -> bindArg (native):
+//     an integral json.Number becomes int64 / a fractional one float64,
+//     matching the INTEGER/REAL json_extract yields for a numeric field; a Go
+//     bool binds to the INTEGER 1/0 that json_extract yields for a JSON
+//     boolean (json_extract('true') is 1, NOT the text 'true' — so a Boolean
+//     field must NOT text-bind). This is the existing large-int/float-precision
+//     path, unchanged.
+//
+// Polymorphic leaves (len(Declared) > 1) never reach here — isLeafPushable
+// routes them to the residual.
+func comparisonBind(f spi.Filter, v any) any {
+	if len(f.Declared) == 1 && isTextStorageClass(f.Declared[0]) {
+		return operandText(v)
+	}
+	return bindArg(v)
+}
+
+// isTextStorageClass reports whether json_extract yields a SQLite TEXT storage
+// class for a stored value of declared type dt. These are the JSON-string-
+// serialized families: a text bind is needed so a numeric-looking operand
+// (json.Number) does not miss the text-stored scalar. Numeric types yield
+// INTEGER/REAL and Boolean yields INTEGER 1/0 — neither is text, so both keep
+// the native bindArg path.
+func isTextStorageClass(dt spi.DataType) bool {
+	switch dt {
+	case spi.String, spi.Character, spi.UUIDType, spi.TimeUUIDType, spi.ByteArray:
+		return true
+	}
+	return false
+}
+
+// operandText normalizes an operand to its text form for a TEXT bind, mirroring
+// the SPI's operandString for the kinds a search operand can take (json.Number
+// keeps its exact lexical form; a bool becomes "true"/"false"; nil becomes the
+// empty string). A json.Number is a string-kind type, so fmt.Sprint yields its
+// literal digits.
+func operandText(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprint(x)
+	}
 }
 
 // toSQL recursively converts a (fully pushable) filter tree to a SQL WHERE
@@ -195,6 +389,36 @@ func fieldExpr(f spi.Filter) string {
 	return fmt.Sprintf("json_extract(data, '$.%s')", f.Path)
 }
 
+// bindArg normalizes an operand for binding as a `?` placeholder. The SPI's
+// predicate parser decodes numeric search operands as json.Number (a
+// string-kind type, via json.Decoder.UseNumber) to preserve precision
+// losslessly. database/sql has no driver.Valuer for json.Number, so it
+// binds one raw as TEXT — flipping SQLite's storage-class comparison from
+// numeric to lexicographic and diverging from the memory/SPI kernel, which
+// compares the underlying numeric value regardless of Go kind. Converting
+// to a native numeric Go value here restores INTEGER/REAL affinity. Integral
+// values convert to int64 (matching how the engine stores whole-number JSON
+// fields); fractional values convert to float64. Non-json.Number operands
+// pass through unchanged — this only ever changes json.Number binding.
+func bindArg(v any) any {
+	n, ok := v.(json.Number)
+	if !ok {
+		return v
+	}
+	if i, err := n.Int64(); err == nil {
+		return i
+	}
+	f, err := n.Float64()
+	if err != nil {
+		// Unreachable in practice: the SPI parser only ever produces a
+		// json.Number from a syntactically valid JSON number literal, so
+		// neither Int64() nor Float64() can fail on it. Fail closed rather
+		// than bind a malformed value: this leaf never matches.
+		return nil
+	}
+	return f
+}
+
 // leafToSQL translates a single leaf filter node to SQL with NULL/3VL handling.
 //
 // NULL/3VL rules:
@@ -226,17 +450,22 @@ func leafToSQL(f spi.Filter) (string, []any) {
 	col := fieldExpr(f)
 	switch f.Op {
 	case spi.FilterEq:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s = ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s = ?)", col, col), []any{comparisonBind(f, f.Value)}
 	case spi.FilterNe:
-		return fmt.Sprintf("(%s IS NULL OR %s != ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NULL OR %s != ?)", col, col), []any{comparisonBind(f, f.Value)}
 	case spi.FilterGt:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s > ?)", col, col), []any{f.Value}
+		// SOUND SUPERSET: strict ">" would UNDER-select — a stored value a
+		// sub-ULP beyond the operand collides to the same REAL, so ">" wrongly
+		// excludes a kernel match. Relax to ">=" (float rounding is monotonic);
+		// the kernel re-check removes the boundary false-positives.
+		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{comparisonBind(f, f.Value)}
 	case spi.FilterLt:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s < ?)", col, col), []any{f.Value}
+		// SOUND SUPERSET: strict "<" relaxed to "<=" for the same reason.
+		return fmt.Sprintf("(%s IS NOT NULL AND %s <= ?)", col, col), []any{comparisonBind(f, f.Value)}
 	case spi.FilterGte:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s >= ?)", col, col), []any{comparisonBind(f, f.Value)}
 	case spi.FilterLte:
-		return fmt.Sprintf("(%s IS NOT NULL AND %s <= ?)", col, col), []any{f.Value}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s <= ?)", col, col), []any{comparisonBind(f, f.Value)}
 	case spi.FilterContains:
 		return fmt.Sprintf("instr(%s, ?) > 0", col), []any{f.Value}
 	case spi.FilterStartsWith:
@@ -245,10 +474,14 @@ func leafToSQL(f spi.Filter) (string, []any) {
 		return fmt.Sprintf("substr(%s, -length(?)) = ?", col), []any{f.Value, f.Value}
 	case spi.FilterLike:
 		return fmt.Sprintf("%s LIKE ? ESCAPE '\\'", col), []any{escapeLike(fmt.Sprint(f.Value))}
-	case spi.FilterBetween:
+	case spi.FilterBetween, spi.FilterBetweenInclusive:
+		// SOUND SUPERSET: SQL BETWEEN is inclusive [lo,hi]. For the inclusive
+		// kernel between that is exact-on-value; for the exclusive kernel between
+		// (FilterBetween) the inclusive SQL is a strict superset (kernel re-check
+		// enforces the open bounds).
 		if len(f.Values) >= 2 {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
-				[]any{f.Values[0], f.Values[1]}
+				[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
 		}
 		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
 		// every row, matching memory's spi.MatchFilter semantics. Validation
@@ -286,7 +519,7 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	// practice despite the differing primitive semantics.
 	col := "(" + fieldExpr(f) + " / 1000)"
 	switch f.Op {
-	case spi.FilterBetween:
+	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
 			// Malformed BETWEEN (not exactly 2 operands) fails closed —
 			// exclude every row, matching memory's spi.MatchFilter semantics.
@@ -321,9 +554,12 @@ func sqlOpForTemporal(op spi.FilterOp) string {
 	case spi.FilterEq:
 		return "="
 	case spi.FilterGt:
-		return ">"
+		// SOUND SUPERSET: relaxed from strict ">" to ">=" (the kernel does
+		// temporal-subtype resolution the SQL doesn't, so the strict form can
+		// UNDER-select; the full-filter kernel re-check enforces strictness).
+		return ">="
 	case spi.FilterLt:
-		return "<"
+		return "<="
 	case spi.FilterGte:
 		return ">="
 	case spi.FilterLte:

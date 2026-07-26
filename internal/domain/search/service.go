@@ -117,6 +117,19 @@ func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 	return s
 }
 
+// structuralConditionErrCode classifies a ValidateCondition error for the
+// Search/SubmitAsync boundary: an object-operand shape violation
+// (ErrInvalidCondition, spec §6/§8) maps to INVALID_CONDITION; every other
+// structural failure (unknown operatorType, malformed BETWEEN arity) keeps
+// the existing BAD_REQUEST classification these two entry points have
+// always used.
+func structuralConditionErrCode(cErr error) string {
+	if errors.Is(cErr, ErrInvalidCondition) {
+		return common.ErrCodeInvalidCondition
+	}
+	return common.ErrCodeBadRequest
+}
+
 // Search performs a synchronous entity search, returning matching entities.
 //
 // When the plugin's EntityStore implements spi.Searcher, Search delegates to
@@ -151,7 +164,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// This is the single boundary every transport (HTTP, gRPC) funnels
 	// through; the HTTP handler no longer duplicates this check.
 	if cErr := ValidateCondition(cond); cErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+		return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
 	}
 
 	modelStore, err := s.factory.ModelStore(ctx)
@@ -243,9 +256,29 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to retrieve entities: %w", err)
 	}
 
+	// Declared-type resolver for the predicate evaluator: the type-directed
+	// kernel compares temporal data fields temporally (not lexically) only when
+	// the model supplies their declared subtype. Load the model's FieldsMap so
+	// this in-memory fallback path matches the pushdown's typing. A genuine
+	// store/schema-load error fails closed (correctness-over-availability): the
+	// model schema is a required input for correct typing, so we surface the
+	// error rather than silently under-match with untyped leaves. The
+	// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
+	// returns nil types, and comparison leaves degrade to non-match as intended.
+	fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
+	if ffErr != nil {
+		return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
+	}
+	fieldTypes := func(p string) []spi.DataType {
+		if fd, ok := fallbackFields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
+
 	var matches []*spi.Entity
 	for _, e := range entities {
-		ok, matchErr := match.Match(cond, e.Data, e.Meta)
+		ok, matchErr := match.Match(cond, e.Data, e.Meta, fieldTypes)
 		if matchErr != nil {
 			return nil, fmt.Errorf("predicate match failed: %w", matchErr)
 		}
@@ -293,7 +326,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// arity) — same single boundary as Search, so an async job is never
 	// created for a structurally-malformed condition regardless of transport.
 	if cErr := ValidateCondition(cond); cErr != nil {
-		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, cErr.Error())
+		return "", common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
 	}
 
 	uc := spi.GetUserContext(ctx)

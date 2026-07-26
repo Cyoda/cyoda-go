@@ -31,7 +31,7 @@ func ConditionToFilter(cond predicate.Condition, fields map[string]schema.FieldD
 	case *predicate.GroupCondition:
 		return groupToFilter(c, fields)
 	case *predicate.ArrayCondition:
-		return arrayToFilter(c)
+		return arrayToFilter(c, fields)
 	case *predicate.FunctionCondition:
 		return spi.Filter{}, fmt.Errorf("function conditions are not translatable to filters")
 	default:
@@ -54,18 +54,20 @@ func simpleToFilter(c *predicate.SimpleCondition, fields map[string]schema.Field
 		Value:    c.Value,
 		Values:   betweenValues(op, c.Value),
 		Coercion: dataCoercion(c.JsonPath, fields),
+		Declared: fields[c.JsonPath].Types,
 	}, nil
 }
 
-// betweenValues returns the two BETWEEN bounds as a []any for downstream
-// consumers that read Filter.Values (spi.evalLeafFilter/evalTemporalLeaf,
-// the postgres/sqlite query planners). Every BETWEEN consumer reads Values,
-// not Value — leaving Values unset makes BETWEEN silently never match.
-// Returns nil for non-BETWEEN ops or a malformed (non 2-element []any)
-// BETWEEN value; validation elsewhere rejects malformed BETWEEN conditions,
-// and a nil Values correctly no-matches downstream rather than panicking.
+// betweenValues returns the two BETWEEN / BETWEEN_INCLUSIVE bounds as a
+// []any for downstream consumers that read Filter.Values
+// (spi.evalLeafFilter/evalTemporalLeaf, the postgres/sqlite query planners).
+// Every range consumer reads Values, not Value — leaving Values unset makes
+// the range op silently never match. Returns nil for non-range ops or a
+// malformed (non 2-element []any) value; validation elsewhere rejects
+// malformed range conditions, and a nil Values correctly no-matches
+// downstream rather than panicking.
 func betweenValues(op spi.FilterOp, value any) []any {
-	if op != spi.FilterBetween {
+	if op != spi.FilterBetween && op != spi.FilterBetweenInclusive {
 		return nil
 	}
 	vals, ok := value.([]any)
@@ -76,10 +78,11 @@ func betweenValues(op spi.FilterOp, value any) []any {
 }
 
 // dataCoercion returns CoerceTemporal only if the schema classifies the
-// field's declared type(s) as temporal. Today classifyType never returns
-// spi.OrderTemporal for data fields, so this always yields CoerceNone;
-// polymorphic-temporal typing (#137) lights this up with no change here.
-// A nil fields map (no schema available) also yields CoerceNone.
+// field's declared type(s) as temporal. A data field discovered as a temporal
+// subtype (content-sniffed ISO-8601 sample values — see schema.InferDataType)
+// classifies as spi.OrderTemporal via classifyType, so this stamps
+// CoerceTemporal and routes the pushdown temporal path for it.
+// A nil fields map (no schema available) yields CoerceNone.
 func dataCoercion(jsonPath string, fields map[string]schema.FieldDescriptor) spi.FilterCoercion {
 	if fields == nil {
 		return spi.CoerceNone
@@ -99,15 +102,20 @@ func dataCoercion(jsonPath string, fields map[string]schema.FieldDescriptor) spi
 // storage-vocabulary name "transitionForLatestSave" (see sortableMetaFields
 // in orderclass.go — the single source of truth for the meta vocabulary).
 // Coercion is stamped CoerceTemporal for meta fields the vocabulary marks
-// spi.OrderTemporal (currently creationDate, lastUpdateTime).
+// spi.OrderTemporal (currently creationDate, lastUpdateTime). Declared is
+// stamped from the same routing since meta fields have fixed types (not
+// drawn from the model FieldsMap): temporal meta leaves declare
+// [ZonedDateTime], every other meta leaf declares [String].
 func lifecycleToFilter(c *predicate.LifecycleCondition) spi.Filter {
 	field := c.Field
 	if field == "previousTransition" {
 		field = "transitionForLatestSave"
 	}
 	co := spi.CoerceNone
+	declared := []spi.DataType{spi.String}
 	if isTemporalMetaField(field) {
 		co = spi.CoerceTemporal
+		declared = []spi.DataType{spi.ZonedDateTime}
 	}
 	op := mapOperator(c.OperatorType)
 	return spi.Filter{
@@ -117,6 +125,7 @@ func lifecycleToFilter(c *predicate.LifecycleCondition) spi.Filter {
 		Value:    c.Value,
 		Values:   betweenValues(op, c.Value),
 		Coercion: co,
+		Declared: declared,
 	}
 }
 
@@ -142,21 +151,30 @@ func groupToFilter(c *predicate.GroupCondition, fields map[string]schema.FieldDe
 // on the corresponding array index (e.g., "tags.0", "tags.2"). Nil entries
 // mean "skip this position". This makes individual checks pushable to SQL
 // via json_extract and correctly evaluable in post-filtering.
-func arrayToFilter(c *predicate.ArrayCondition) (spi.Filter, error) {
+//
+// Declared is stamped on every positional leaf from the array element's
+// FieldsMap entry — recorded under the base path with a trailing "[*]" (see
+// arrayElementPath) — when resolvable. An unresolvable element path (no
+// schema, or the array isn't in the FieldsMap) leaves Declared nil on those
+// leaves; the kernel treats an empty declared set as a non-match for
+// comparison operators on those leaves.
+func arrayToFilter(c *predicate.ArrayCondition, fields map[string]schema.FieldDescriptor) (spi.Filter, error) {
 	basePath, err := stripDollarDot(c.JsonPath)
 	if err != nil {
 		return spi.Filter{}, err
 	}
+	declared := fields[arrayElementPath(c.JsonPath)].Types
 	var children []spi.Filter
 	for i, val := range c.Values {
 		if val == nil {
 			continue
 		}
 		children = append(children, spi.Filter{
-			Op:     spi.FilterEq,
-			Path:   fmt.Sprintf("%s.%d", basePath, i),
-			Source: spi.SourceData,
-			Value:  val,
+			Op:       spi.FilterEq,
+			Path:     fmt.Sprintf("%s.%d", basePath, i),
+			Source:   spi.SourceData,
+			Value:    val,
+			Declared: declared,
 		})
 	}
 	if len(children) == 0 {
@@ -168,6 +186,21 @@ func arrayToFilter(c *predicate.ArrayCondition) (spi.Filter, error) {
 		return children[0], nil
 	}
 	return spi.Filter{Op: spi.FilterAnd, Children: children}, nil
+}
+
+// arrayElementPath returns the FieldsMap key that addresses an
+// ArrayCondition's element type. schema.ModelNode.FieldsMap records an array
+// leaf under its container path with a trailing "[*]" (e.g. an ArrayCondition
+// naming "$.tags" addresses the element type recorded at "$.tags[*]"). This
+// mirrors normalisePath's "$."-prefix convention (path_validate.go) and
+// additionally ensures the "[*]" suffix, tolerating callers that already
+// include it.
+func arrayElementPath(rawPath string) string {
+	p := normalisePath(rawPath)
+	if strings.HasSuffix(p, "[*]") {
+		return p
+	}
+	return p + "[*]"
 }
 
 // stripDollarDot removes the leading "$." from a JSONPath expression and
@@ -227,6 +260,8 @@ func mapOperator(op string) spi.FilterOp {
 		return spi.FilterNotNull
 	case "BETWEEN":
 		return spi.FilterBetween
+	case "BETWEEN_INCLUSIVE":
+		return spi.FilterBetweenInclusive
 	case "MATCHES_PATTERN":
 		return spi.FilterMatchesRegex
 	case "IEQUALS":
@@ -237,14 +272,20 @@ func mapOperator(op string) spi.FilterOp {
 		return spi.FilterIContains
 	case "INOT_CONTAINS":
 		return spi.FilterINotContains
+	case "NOT_CONTAINS":
+		return spi.FilterNotContains
 	case "ISTARTS_WITH":
 		return spi.FilterIStartsWith
 	case "INOT_STARTS_WITH":
 		return spi.FilterINotStartsWith
+	case "NOT_STARTS_WITH":
+		return spi.FilterNotStartsWith
 	case "IENDS_WITH":
 		return spi.FilterIEndsWith
 	case "INOT_ENDS_WITH":
 		return spi.FilterINotEndsWith
+	case "NOT_ENDS_WITH":
+		return spi.FilterNotEndsWith
 	default:
 		return spi.FilterMatchesRegex // forces post-filter for unknown ops
 	}

@@ -2,6 +2,7 @@ package parity
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"testing"
@@ -132,7 +133,13 @@ func RunSearchTemporalCreationDate(t *testing.T, fixture BackendFixture) {
 		{"creationDate LE tB", "LESS_OR_EQUAL", op(times[1]), []string{ids[0], ids[1]}},
 		{"creationDate EQ tB", "EQUALS", op(times[1]), []string{ids[1]}},
 		{"creationDate NE tB", "NOT_EQUAL", op(times[1]), []string{ids[0], ids[2]}},
-		{"creationDate BETWEEN tA-tB", "BETWEEN", []string{op(times[0]), op(times[1])}, []string{ids[0], ids[1]}},
+		// BETWEEN is kernel-authoritative EXCLUSIVE: with the operands pinned to
+		// A's and C's exact instants, both on-boundary rows (A == lo, C == hi)
+		// are dropped and only B survives strictly inside the open interval.
+		{"creationDate BETWEEN tA-tC (exclusive)", "BETWEEN", []string{op(times[0]), op(times[2])}, []string{ids[1]}},
+		// BETWEEN_INCLUSIVE is the inclusive twin: the same window keeps both
+		// on-boundary rows plus B.
+		{"creationDate BETWEEN_INCLUSIVE tA-tC", "BETWEEN_INCLUSIVE", []string{op(times[0]), op(times[2])}, []string{ids[0], ids[1], ids[2]}},
 		// Mixed-precision EQ: ms-truncated form of tB must still match B —
 		// the cross-backend flooring-consistency guard.
 		{"creationDate EQ tB (ms-truncated)", "EQUALS", opMillis(times[1]), []string{ids[1]}},
@@ -249,6 +256,85 @@ func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
 	}
 	if !containsErrorCode(body, "BAD_REQUEST") {
 		t.Errorf("expected errorCode BAD_REQUEST, body=%s", body)
+	}
+}
+
+// RunSearchScalarOnContainerPath400 pins the type-directed contract that a
+// scalar comparison on a PURE-container path is rejected with HTTP 400
+// INVALID_FIELD_PATH — identically on every backend.
+//
+// Vehicle: $.obj is a known structural interior (it has a typed leaf
+// $.obj.inner, so pre-execution field-path validation recognises the prefix)
+// but is not itself a leaf in the model's FieldsMap, and — unlike a mixed
+// object-or-scalar node — carries NO scalar observation of its own. A container
+// with substructure cannot be compared to a scalar: the caller must navigate to
+// a leaf sub-path (e.g. $.obj.inner). Comparing it to a scalar is a malformed
+// request, rejected before any store work (fail-closed), never the pre-fix
+// silent empty-result degradation. A leaf control search proves the corpus is
+// present and searchable, so the rejection is the contract, not a setup gap.
+func RunSearchScalarOnContainerPath400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-container-path-400"
+	const modelVersion = 1
+	// $.obj is an object interior (typed leaf $.obj.inner); $.obj itself carries
+	// no declared scalar type — a pure container.
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"obj":{"inner":"x"}}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","amount":10,"obj":{"inner":"x"}}`); err != nil {
+		t.Fatalf("CreateEntity A: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"B","amount":20,"obj":{"inner":"y"}}`); err != nil {
+		t.Fatalf("CreateEntity B: %v", err)
+	}
+
+	// Control: a comparison on a TYPED leaf ($.name, String) matches — evidence
+	// the corpus is present and searchable, so the rejections below are the
+	// validation contract, not an empty-corpus artefact.
+	ctrl, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"A"}`)
+	if err != nil {
+		t.Fatalf("SyncSearch control: %v", err)
+	}
+	if len(ctrl) != 1 {
+		t.Fatalf("control $.name EQUALS A: want 1 result, got %d", len(ctrl))
+	}
+
+	// Navigating to the leaf sub-path works — the escape hatch the rejection
+	// points at.
+	leaf, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.obj.inner","operatorType":"EQUALS","value":"x"}`)
+	if err != nil {
+		t.Fatalf("SyncSearch $.obj.inner: %v", err)
+	}
+	if len(leaf) != 1 {
+		t.Fatalf("leaf $.obj.inner EQUALS x: want 1 result, got %d", len(leaf))
+	}
+
+	// The contract: a scalar comparison on the pure-container path $.obj is
+	// rejected 400 INVALID_FIELD_PATH on every backend, for both an equality
+	// and an ordering operator.
+	for _, tc := range []struct {
+		label, op, value string
+	}{
+		{"EQUALS", "EQUALS", "x"},
+		{"GREATER_THAN", "GREATER_THAN", "a"},
+	} {
+		cond := fmt.Sprintf(`{"type":"simple","jsonPath":"$.obj","operatorType":%q,"value":%q}`, tc.op, tc.value)
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+		if err != nil {
+			t.Fatalf("[%s] SyncSearchRaw: %v", tc.label, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Errorf("[%s] scalar compare on container $.obj: want 400, got %d; body=%s", tc.label, status, body)
+			continue
+		}
+		if !containsErrorCode(body, "INVALID_FIELD_PATH") {
+			t.Errorf("[%s] expected errorCode INVALID_FIELD_PATH, body=%s", tc.label, body)
+		}
 	}
 }
 

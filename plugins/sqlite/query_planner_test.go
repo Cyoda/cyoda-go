@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -22,12 +23,19 @@ func TestPlanQuery_EqSourceData(t *testing.T) {
 	if len(plan.args) != 1 || plan.args[0] != "Berlin" {
 		t.Errorf("args = %v, want [Berlin]", plan.args)
 	}
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil for pushable op, got %+v", plan.postFilter)
+	// SOUND SUPERSET: Eq is not EXACT (only IsNull/NotNull are), so the kernel
+	// must re-check — the FULL filter is installed as postFilter.
+	if plan.postFilter == nil {
+		t.Fatal("postFilter should be the full filter for a SOUND-SUPERSET Eq leaf")
+	}
+	if plan.postFilter.Op != spi.FilterEq {
+		t.Errorf("postFilter.Op = %s, want eq (full filter)", plan.postFilter.Op)
 	}
 }
 
 func TestPlanQuery_NeSourceData(t *testing.T) {
+	// Ne is NON-pushable (SQL "!=" under-selects under storage-class collision).
+	// It becomes residual-only: no WHERE fragment, kernel-evaluated.
 	f := spi.Filter{
 		Op:     spi.FilterNe,
 		Path:   "status",
@@ -35,26 +43,28 @@ func TestPlanQuery_NeSourceData(t *testing.T) {
 		Value:  "CLOSED",
 	}
 	plan := planQuery(f)
-	wantWhere := "(json_extract(data, '$.status') IS NULL OR json_extract(data, '$.status') != ?)"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("where should be empty for non-pushable Ne, got %s", plan.where)
 	}
-	if len(plan.args) != 1 || plan.args[0] != "CLOSED" {
-		t.Errorf("args = %v, want [CLOSED]", plan.args)
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Ne is not pushed)", plan.args)
 	}
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil")
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
 	}
 }
 
 func TestPlanQuery_ComparisonOps(t *testing.T) {
+	// Ordering leaves are SOUND SUPERSETS: Gt/Lt are RELAXED to >=/<= (strict
+	// operators under-select under float collision); Gte/Lte already use >=/<=.
+	// All of them force a full-filter kernel re-check (postFilter != nil).
 	tests := []struct {
 		name  string
 		op    spi.FilterOp
 		sqlOp string
 	}{
-		{"gt", spi.FilterGt, ">"},
-		{"lt", spi.FilterLt, "<"},
+		{"gt", spi.FilterGt, ">="},
+		{"lt", spi.FilterLt, "<="},
 		{"gte", spi.FilterGte, ">="},
 		{"lte", spi.FilterLte, "<="},
 	}
@@ -74,8 +84,10 @@ func TestPlanQuery_ComparisonOps(t *testing.T) {
 			if len(plan.args) != 1 || plan.args[0] != float64(25) {
 				t.Errorf("args = %v, want [25]", plan.args)
 			}
-			if plan.postFilter != nil {
-				t.Errorf("postFilter should be nil")
+			// The narrowing WHERE is still emitted (SOUND-SUPERSET leaves ARE in
+			// the WHERE), but the plan is not exact → kernel re-checks the full filter.
+			if plan.postFilter == nil || plan.postFilter.Op != tt.op {
+				t.Errorf("postFilter should be the full filter (op %s), got %+v", tt.op, plan.postFilter)
 			}
 		})
 	}
@@ -133,6 +145,10 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 }
 
 func TestPlanQuery_Like(t *testing.T) {
+	// Like is NOT pushable (see isPushable's doc comment): SQL LIKE's
+	// wildcards don't line up with Cloud's LIKE grammar, so pushing it
+	// under-selects real wildcard patterns. It is residual-only — no WHERE
+	// fragment, kernel-evaluated.
 	f := spi.Filter{
 		Op:     spi.FilterLike,
 		Path:   "desc",
@@ -140,14 +156,14 @@ func TestPlanQuery_Like(t *testing.T) {
 		Value:  "foo%bar_baz\\qux",
 	}
 	plan := planQuery(f)
-	wantWhere := "json_extract(data, '$.desc') LIKE ? ESCAPE '\\'"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("where should be empty for non-pushable Like, got %s", plan.where)
 	}
-	// The value should have %, _, and \ escaped.
-	wantVal := "foo\\%bar\\_baz\\\\qux"
-	if len(plan.args) != 1 || plan.args[0] != wantVal {
-		t.Errorf("args = %v, want [%s]", plan.args, wantVal)
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Like is not pushed)", plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterLike {
+		t.Fatalf("postFilter should be the Like residual, got %+v", plan.postFilter)
 	}
 }
 
@@ -200,6 +216,110 @@ func TestPlanQuery_Between(t *testing.T) {
 	}
 }
 
+// --- json.Number operand handling (Task 6c) ---
+//
+// The SPI's predicate parser now decodes numeric search operands as
+// json.Number (a string-kind type) instead of float64, to preserve
+// precision losslessly. database/sql binds a json.Number raw as TEXT
+// (it implements no driver.Valuer), which flips SQLite's storage-class
+// comparison from numeric to lexicographic — diverging from the
+// memory/SPI kernel. A json.Number operand must be converted to a
+// numeric Go value (int64 when integral, else float64) before binding
+// so REAL/INTEGER affinity — and therefore numeric ordering — holds.
+// The SQL text itself is unaffected (sqlite's WHERE clause shape does
+// not depend on operand type); only the bound arg's Go type matters.
+
+func TestPlanQuery_Eq_JSONNumberOperand_BindsInt64(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterEq,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.age') IS NOT NULL AND json_extract(data, '$.age') = ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != int64(25) {
+		t.Errorf("args = %v (%T), want [int64(25)] — an integral json.Number must bind as int64, not the raw string", plan.args, plan.args[0])
+	}
+}
+
+func TestPlanQuery_Eq_JSONNumberOperand_BindsFloat64(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterEq,
+		Path:   "score",
+		Source: spi.SourceData,
+		Value:  json.Number("3.14"),
+	}
+	plan := planQuery(f)
+	if len(plan.args) != 1 || plan.args[0] != float64(3.14) {
+		t.Errorf("args = %v (%T), want [float64(3.14)] — a fractional json.Number must bind as float64, not the raw string", plan.args, plan.args[0])
+	}
+}
+
+func TestPlanQuery_Ne_JSONNumberOperand(t *testing.T) {
+	// Ne is non-pushable regardless of operand kind — it is never translated to
+	// SQL, so no arg is bound; the leaf is kernel-evaluated as residual.
+	f := spi.Filter{
+		Op:     spi.FilterNe,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	if plan.where != "" || len(plan.args) != 0 {
+		t.Errorf("Ne must not be pushed: where=%q args=%v", plan.where, plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
+	}
+}
+
+func TestPlanQuery_Ordering_JSONNumberOperand(t *testing.T) {
+	tests := []struct {
+		name string
+		op   spi.FilterOp
+	}{
+		{"gt", spi.FilterGt},
+		{"lt", spi.FilterLt},
+		{"gte", spi.FilterGte},
+		{"lte", spi.FilterLte},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := spi.Filter{
+				Op:     tt.op,
+				Path:   "age",
+				Source: spi.SourceData,
+				Value:  json.Number("25"),
+			}
+			plan := planQuery(f)
+			if len(plan.args) != 1 || plan.args[0] != int64(25) {
+				t.Errorf("args = %v (%T), want [int64(25)]", plan.args, plan.args[0])
+			}
+		})
+	}
+}
+
+func TestPlanQuery_Between_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterBetween,
+		Path:   "score",
+		Source: spi.SourceData,
+		Values: []any{json.Number("10"), json.Number("20.5")},
+	}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.score') IS NOT NULL AND json_extract(data, '$.score') BETWEEN ? AND ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 2 || plan.args[0] != int64(10) || plan.args[1] != float64(20.5) {
+		t.Errorf("args = %v (%T, %T), want [int64(10) float64(20.5)]", plan.args, plan.args[0], plan.args[1])
+	}
+}
+
 func TestPlanQuery_SourceMeta(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterEq,
@@ -226,7 +346,8 @@ func TestPlanQuery_SourceMetaGt(t *testing.T) {
 		Value:  int64(1000000),
 	}
 	plan := planQuery(f)
-	wantWhere := "(created_at IS NOT NULL AND created_at > ?)"
+	// SOUND SUPERSET: Gt is relaxed to >=.
+	wantWhere := "(created_at IS NOT NULL AND created_at >= ?)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -289,8 +410,9 @@ func TestPlanQuery_GreedyAND_MixedPushable(t *testing.T) {
 	plan := planQuery(f)
 
 	// Pushed: eq(city) AND gt(age). joinChildren wraps each child in ().
+	// gt is relaxed to >= (SOUND SUPERSET).
 	wantWhere := "((json_extract(data, '$.city') IS NOT NULL AND json_extract(data, '$.city') = ?)) AND " +
-		"((json_extract(data, '$.age') IS NOT NULL AND json_extract(data, '$.age') > ?))"
+		"((json_extract(data, '$.age') IS NOT NULL AND json_extract(data, '$.age') >= ?))"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -298,12 +420,12 @@ func TestPlanQuery_GreedyAND_MixedPushable(t *testing.T) {
 		t.Errorf("args count = %d, want 2", len(plan.args))
 	}
 
-	// Residual: regex(code)
+	// Not exact (has a residual) → the FULL filter is re-checked by the kernel.
 	if plan.postFilter == nil {
 		t.Fatal("postFilter should be non-nil")
 	}
-	if plan.postFilter.Op != spi.FilterMatchesRegex {
-		t.Errorf("postFilter.Op = %s, want matches_regex", plan.postFilter.Op)
+	if plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter.Op = %s, want and (full filter re-check)", plan.postFilter.Op)
 	}
 }
 
@@ -316,8 +438,10 @@ func TestPlanQuery_GreedyAND_AllPushable(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil when all children pushable")
+	// All children pushable but NONE is EXACT (Eq/Gt are sound supersets), so
+	// the full filter is re-checked by the kernel.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 	if plan.where == "" {
 		t.Error("where should not be empty")
@@ -356,8 +480,9 @@ func TestPlanQuery_ConservativeOR_AllPushable(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil when all OR children pushable")
+	// All OR children pushable but not EXACT → full filter re-checked.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterOr {
+		t.Errorf("postFilter should be the full OR filter, got %+v", plan.postFilter)
 	}
 
 	wantWhere := "((json_extract(data, '$.city') IS NOT NULL AND json_extract(data, '$.city') = ?)) OR " +
@@ -404,9 +529,9 @@ func TestPlanQuery_NestedANDWithOR(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	// Both eq(city) and the OR are fully pushable.
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil, got %+v", plan.postFilter)
+	// Both eq(city) and the OR are fully pushable but not EXACT → full re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 	if plan.where == "" {
 		t.Error("where should not be empty")
@@ -436,11 +561,12 @@ func TestPlanQuery_NestedANDWithPartialOR(t *testing.T) {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
 
+	// Residual present (the partial OR) → full filter re-checked by the kernel.
 	if plan.postFilter == nil {
 		t.Fatal("postFilter should be non-nil")
 	}
-	if plan.postFilter.Op != spi.FilterOr {
-		t.Errorf("postFilter.Op = %s, want or", plan.postFilter.Op)
+	if plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter.Op = %s, want and (full filter re-check)", plan.postFilter.Op)
 	}
 }
 
@@ -470,8 +596,9 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil")
+	// Single pushable Eq child, not EXACT → the FULL filter (the AND wrapper) is re-checked.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 }
 
@@ -571,8 +698,9 @@ func TestPlanQuery_DeeplyNested(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil for fully pushable tree")
+	// Fully pushable tree, but none of its leaves is EXACT → full re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 	if plan.where == "" {
 		t.Error("where should not be empty")
@@ -650,7 +778,8 @@ func TestSqlitePlan_TemporalMetaDividesMicros(t *testing.T) {
 	if !strings.Contains(sql, "/ 1000") || !strings.Contains(sql, "creation_date") {
 		t.Errorf("sql = %q", sql)
 	}
-	wantSQL := "((json_extract(json(meta), '$.creation_date') / 1000) IS NOT NULL AND (json_extract(json(meta), '$.creation_date') / 1000) > ?)"
+	// SOUND SUPERSET: temporal Gt is relaxed to >=.
+	wantSQL := "((json_extract(json(meta), '$.creation_date') / 1000) IS NOT NULL AND (json_extract(json(meta), '$.creation_date') / 1000) >= ?)"
 	if sql != wantSQL {
 		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
 	}
@@ -690,17 +819,27 @@ func TestSqlitePlan_TemporalMetaBetween(t *testing.T) {
 	}
 }
 
-// TestSqlitePlan_TemporalData covers a SourceData temporal leaf (non-meta
-// path) to confirm CoerceTemporal routing is independent of Source.
+// TestSqlitePlan_TemporalData asserts that a SourceData temporal COMPARISON
+// leaf is NOT pushed — it is routed to the residual so the kernel
+// (spi.MatchFilter), which performs temporal-subtype resolution, is
+// authoritative. The flat epoch-ms push ("/1000") assumes a µs-integer stored
+// value and cannot reproduce the kernel's imprecise-floor op mutation (e.g.
+// `>= 2024-09-09` on a Year field becomes `> 2024`) as a sound superset over a
+// bare ISO-string data value. Meta temporal leaves (µs-integer instants) remain
+// pushable. Mirrors postgres's TestPlan_TemporalData; a deliberate leaf-level
+// divergence from the op-level isPushable set (identical results guaranteed by
+// the kernel re-check, not identical WHERE clauses).
 func TestSqlitePlan_TemporalData(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
-	sql, args := leafToSQL(f)
-	wantSQL := "((json_extract(data, '$.occurredAt') / 1000) IS NOT NULL AND (json_extract(data, '$.occurredAt') / 1000) <= ?)"
-	if sql != wantSQL {
-		t.Errorf("sql:\n  got  %s\n  want %s", sql, wantSQL)
+	plan := planQuery(f)
+	if plan.where != "" {
+		t.Errorf("data temporal comparison must not be pushed; got where=%q", plan.where)
 	}
-	if len(args) != 1 || args[0] != int64(1609459200000) {
-		t.Errorf("args = %v, want [1609459200000]", args)
+	if plan.postFilter == nil {
+		t.Errorf("data temporal comparison must be routed to the residual (kernel-authoritative); postFilter is nil")
+	}
+	if isLeafPushable(f) {
+		t.Errorf("isLeafPushable must be false for a SourceData CoerceTemporal comparison leaf")
 	}
 }
 
@@ -746,6 +885,203 @@ func TestSqlitePlan_TemporalNotNull(t *testing.T) {
 	}
 	if !isPushable(spi.FilterNotNull) {
 		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+// --- Type-directed operand bind + polymorphic residual ---
+//
+// SQLite's json_extract PRESERVES the stored JSON scalar's native storage
+// class (an int stays INTEGER), and SQLite never equates different storage
+// classes (30 = '30' is false). So a comparison operand must be bound
+// according to the leaf's DECLARED type family, not the operand's own JSON
+// kind, or the pushed SQL under-selects. Polymorphic-declared comparison
+// leaves cannot be bound to a single storage class that supersets every
+// branch, so they are residual-only on sqlite.
+
+// TestPlanQuery_MonomorphicStringField_NumberOperand_TextBind pins the
+// monomorphic non-numeric case: a STRING-declared field with a json.Number
+// operand must TEXT-bind (so it compares against the text-stored scalar),
+// NOT numeric-bind (which would miss the text-stored value).
+func TestPlanQuery_MonomorphicStringField_NumberOperand_TextBind(t *testing.T) {
+	f := spi.Filter{
+		Op:       spi.FilterEq,
+		Path:     "code",
+		Source:   spi.SourceData,
+		Value:    json.Number("30"),
+		Declared: []spi.DataType{spi.String},
+	}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.code') IS NOT NULL AND json_extract(data, '$.code') = ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != "30" {
+		t.Errorf("args = %v (%T), want [\"30\"] — a json.Number operand on a STRING field must bind as TEXT, not int64", plan.args, plan.args[0])
+	}
+}
+
+// TestPlanQuery_MonomorphicNumericField_NumberOperand_NumericBind confirms the
+// monomorphic-numeric path is unchanged (json.Number -> int64), so the
+// large-int / precision behaviour does not regress.
+func TestPlanQuery_MonomorphicNumericField_NumberOperand_NumericBind(t *testing.T) {
+	f := spi.Filter{
+		Op:       spi.FilterEq,
+		Path:     "age",
+		Source:   spi.SourceData,
+		Value:    json.Number("30"),
+		Declared: []spi.DataType{spi.Integer},
+	}
+	plan := planQuery(f)
+	if len(plan.args) != 1 || plan.args[0] != int64(30) {
+		t.Errorf("args = %v (%T), want [int64(30)] — a numeric field keeps the numeric bind", plan.args, plan.args[0])
+	}
+}
+
+// TestPlanQuery_PolymorphicComparison_Residual pins that a comparison leaf
+// with polymorphic declared types is NON-pushable on sqlite (residual-only):
+// no single-storage-class SQL bind can superset both branches.
+func TestPlanQuery_PolymorphicComparison_Residual(t *testing.T) {
+	for _, op := range []spi.FilterOp{
+		spi.FilterEq, spi.FilterGt, spi.FilterLt, spi.FilterGte,
+		spi.FilterLte, spi.FilterBetween, spi.FilterBetweenInclusive,
+	} {
+		t.Run(string(op), func(t *testing.T) {
+			f := spi.Filter{
+				Op:       op,
+				Path:     "code",
+				Source:   spi.SourceData,
+				Value:    "30",
+				Values:   []any{"10", "30"},
+				Declared: []spi.DataType{spi.Integer, spi.String},
+			}
+			plan := planQuery(f)
+			if plan.where != "" {
+				t.Errorf("where should be empty for a polymorphic comparison leaf, got %s", plan.where)
+			}
+			if len(plan.args) != 0 {
+				t.Errorf("args = %v, want [] (polymorphic comparison is residual-only)", plan.args)
+			}
+			if plan.postFilter == nil || plan.postFilter.Op != op {
+				t.Fatalf("postFilter should be the residual leaf (op %s), got %+v", op, plan.postFilter)
+			}
+		})
+	}
+}
+
+// TestPlanQuery_PolymorphicPresenceCheck_StillPushable confirms the
+// polymorphic-residual rule does NOT touch presence checks (type-family
+// independent): IS_NULL/NOT_NULL stay pushable even with polymorphic Declared.
+func TestPlanQuery_PolymorphicPresenceCheck_StillPushable(t *testing.T) {
+	f := spi.Filter{
+		Op:       spi.FilterIsNull,
+		Path:     "code",
+		Source:   spi.SourceData,
+		Declared: []spi.DataType{spi.Integer, spi.String},
+	}
+	plan := planQuery(f)
+	if plan.where == "" {
+		t.Error("IS_NULL must still push even on a polymorphic field")
+	}
+	if plan.postFilter != nil {
+		t.Errorf("IS_NULL is EXACT — postFilter should stay nil, got %+v", plan.postFilter)
+	}
+}
+
+// --- SQL-pushdown soundness contract (Task 11) ---
+
+// TestSoundness_ExactFastPath asserts that a plan whose pushed leaves are ALL
+// EXACT (IsNull/NotNull only) keeps postFilter == nil — the SQL LIMIT/OFFSET
+// fast path stays enabled because the SQL matches the kernel bit-for-bit.
+func TestSoundness_ExactFastPath(t *testing.T) {
+	cases := []struct {
+		name string
+		f    spi.Filter
+	}{
+		{"is_null", spi.Filter{Op: spi.FilterIsNull, Path: "a", Source: spi.SourceData}},
+		{"not_null", spi.Filter{Op: spi.FilterNotNull, Path: "a", Source: spi.SourceData}},
+		{"and of presence checks", spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+			{Op: spi.FilterIsNull, Path: "a", Source: spi.SourceData},
+			{Op: spi.FilterNotNull, Path: "b", Source: spi.SourceData},
+		}}},
+		{"or of presence checks", spi.Filter{Op: spi.FilterOr, Children: []spi.Filter{
+			{Op: spi.FilterIsNull, Path: "a", Source: spi.SourceData},
+			{Op: spi.FilterNotNull, Path: "b", Source: spi.SourceData},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planQuery(tc.f)
+			if plan.postFilter != nil {
+				t.Errorf("postFilter should be nil (fast path) for an all-EXACT plan, got %+v", plan.postFilter)
+			}
+			if plan.where == "" {
+				t.Error("where should narrow even on the fast path")
+			}
+		})
+	}
+}
+
+// TestSoundness_MixedPresenceAndValue asserts that adding a single non-EXACT
+// leaf (Eq) to a presence check disables the fast path: the whole plan is
+// re-checked against the FULL filter.
+func TestSoundness_MixedPresenceAndValue(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+		{Op: spi.FilterNotNull, Path: "a", Source: spi.SourceData},
+		{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "x"},
+	}}
+	plan := planQuery(f)
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Fatalf("a non-EXACT leaf must force a full-filter re-check, got %+v", plan.postFilter)
+	}
+	if plan.where == "" {
+		t.Error("the EXACT + SOUND-SUPERSET leaves must still narrow the WHERE")
+	}
+}
+
+// TestSoundness_BetweenInclusivePushable asserts BETWEEN_INCLUSIVE is pushable
+// as a SOUND SUPERSET (inclusive SQL BETWEEN) and forces a full-filter re-check.
+func TestSoundness_BetweenInclusivePushable(t *testing.T) {
+	if !isPushable(spi.FilterBetweenInclusive) {
+		t.Fatal("FilterBetweenInclusive must be pushable")
+	}
+	f := spi.Filter{Op: spi.FilterBetweenInclusive, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.score') IS NOT NULL AND json_extract(data, '$.score') BETWEEN ? AND ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterBetweenInclusive {
+		t.Errorf("postFilter should be the full BetweenInclusive filter, got %+v", plan.postFilter)
+	}
+}
+
+// TestSoundness_ExclusiveBetweenIsInclusiveSuperset asserts the exclusive kernel
+// FilterBetween pushes an inclusive SQL BETWEEN (a sound superset) and re-checks.
+func TestSoundness_ExclusiveBetweenIsInclusiveSuperset(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterBetween, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}}
+	plan := planQuery(f)
+	wantWhere := "(json_extract(data, '$.score') IS NOT NULL AND json_extract(data, '$.score') BETWEEN ? AND ?)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s (inclusive SQL BETWEEN is a superset of the exclusive kernel)", plan.where, wantWhere)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterBetween {
+		t.Errorf("postFilter should be the full Between filter so the kernel enforces the open bounds, got %+v", plan.postFilter)
+	}
+}
+
+// TestSoundness_NeNonPushable asserts Ne (temporal or plain) is residual-only.
+func TestSoundness_NeNonPushable(t *testing.T) {
+	if isPushable(spi.FilterNe) {
+		t.Fatal("FilterNe must NOT be pushable")
+	}
+	// A temporal Ne must also be residual-only (isPushable is coercion-blind).
+	f := spi.Filter{Op: spi.FilterNe, Path: "creationDate", Source: spi.SourceMeta, Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	if plan.where != "" {
+		t.Errorf("temporal Ne must not be pushed, got where %q", plan.where)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
 	}
 }
 

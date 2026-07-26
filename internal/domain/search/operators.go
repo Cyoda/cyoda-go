@@ -1,12 +1,25 @@
 package search
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
+
+// ErrInvalidCondition is the sentinel for a condition that fails structural
+// (shape) validation — currently, an operand that is an object/map rather
+// than a scalar or array. An object denotes no scalar value any operator
+// (comparison, string, range, or null-presence) could evaluate, so it is
+// rejected as INVALID_CONDITION (spec §6/§8: a shape/arity error, not a
+// type mismatch) regardless of the operator or the field's declared types —
+// unlike CONDITION_TYPE_MISMATCH, which requires a known field with declared
+// types to compare against. Handlers check errors.Is(err, ErrInvalidCondition)
+// to emit HTTP 400 with the INVALID_CONDITION code, mirroring
+// validateBetweenArity's arity rejection.
+var ErrInvalidCondition = errors.New("invalid condition")
 
 // MaxConditionDepth caps recursion in the condition validators
 // (ValidateCondition, ValidateConditionValueTypes) to defend against stack
@@ -78,9 +91,15 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
+		if err := validateOperandShape(c.Value); err != nil {
+			return err
+		}
 		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.LifecycleCondition:
 		if err := validateOperator(c.OperatorType); err != nil {
+			return err
+		}
+		if err := validateOperandShape(c.Value); err != nil {
 			return err
 		}
 		return validateBetweenArity(c.OperatorType, c.Value)
@@ -110,6 +129,23 @@ func validateOperator(op string) error {
 	}
 	if _, ok := canonicalOperators[op]; !ok {
 		return fmt.Errorf("unknown operatorType %q; valid: %s", op, canonicalOperatorList())
+	}
+	return nil
+}
+
+// validateOperandShape rejects an operand that is an object (map[string]any)
+// for any operator — a SimpleCondition or LifecycleCondition leaf's value is
+// always a scalar, a null, or an array (BETWEEN's [lo, hi] pair, or a
+// legacy/IN-style positional set); an object denotes no such value and would
+// otherwise slip past a bare parse-based type check (a map stringifies via
+// fmt.Sprint into something that wrongly "parses" as a STRING field's
+// operand). This is a shape/arity error — spec §6/§8 classify it as
+// INVALID_CONDITION, not CONDITION_TYPE_MISMATCH, and unlike the type check
+// it applies uniformly to every operator, not just the comparison/range
+// family, and regardless of whether the field/model is known.
+func validateOperandShape(value any) error {
+	if _, isObj := value.(map[string]any); isObj {
+		return fmt.Errorf("condition value is an object, which is not a valid operand: %w", ErrInvalidCondition)
 	}
 	return nil
 }

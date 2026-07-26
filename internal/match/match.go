@@ -1,6 +1,7 @@
 package match
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,18 +12,32 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
-// Match evaluates a predicate.Condition against entity data and metadata, returning
-// true if the entity satisfies the condition.
-func Match(condition predicate.Condition, entityData []byte, entityMeta spi.EntityMeta) (bool, error) {
+// FieldTypes resolves a condition's JSONPath (in "$."-prefixed FieldsMap key
+// form, with "[*]" marking array-wildcard hops) to the field's declared model
+// DataTypes. It is the plumbing that makes the predicate-tree evaluator
+// type-directed, exactly like the search pushdown: a temporal data field whose
+// stored JSON is an ISO string is only known to compare temporally (not
+// lexically) because the model declares its type here.
+//
+// A nil FieldTypes, or a lookup that returns nil for an unknown/untyped path,
+// is tolerated: comparison/range leaves on that path degrade to non-match
+// (they cannot be typed), while string and null-test leaves are unaffected.
+type FieldTypes func(jsonPath string) []spi.DataType
+
+// Match evaluates a predicate.Condition against entity data and metadata,
+// returning true if the entity satisfies the condition. fieldTypes supplies
+// the declared model types for data leaves; pass nil when no model is
+// available (comparison leaves then non-match, string/null leaves still work).
+func Match(condition predicate.Condition, entityData []byte, entityMeta spi.EntityMeta, fieldTypes FieldTypes) (bool, error) {
 	switch c := condition.(type) {
 	case *predicate.SimpleCondition:
-		return matchSimple(c, entityData)
+		return matchSimple(c, entityData, fieldTypes)
 	case *predicate.LifecycleCondition:
 		return matchLifecycle(c, entityMeta)
 	case *predicate.GroupCondition:
-		return matchGroup(c, entityData, entityMeta)
+		return matchGroup(c, entityData, entityMeta, fieldTypes)
 	case *predicate.ArrayCondition:
-		return matchArray(c, entityData)
+		return matchArray(c, entityData, fieldTypes)
 	case *predicate.FunctionCondition:
 		return false, fmt.Errorf("function conditions not implemented")
 	default:
@@ -58,26 +73,53 @@ func convertJSONPath(jsonPath string) string {
 	return path
 }
 
-func matchSimple(c *predicate.SimpleCondition, data []byte) (bool, error) {
+// arrayElementFieldPath returns the FieldsMap key that addresses an
+// ArrayCondition's element type. ArrayCondition names a container path
+// ("$.tags"); the model records the element type under the same path with a
+// trailing "[*]" ("$.tags[*]"), mirroring search.arrayElementPath so the
+// predicate evaluator and the search pushdown stamp the same declared types on
+// positional array leaves.
+func arrayElementFieldPath(raw string) string {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "$") {
+		p = "$." + p
+	}
+	if strings.HasSuffix(p, "[*]") {
+		return p
+	}
+	return p + "[*]"
+}
+
+func matchSimple(c *predicate.SimpleCondition, data []byte, fieldTypes FieldTypes) (bool, error) {
 	path := convertJSONPath(c.JsonPath)
 	result := gjson.GetBytes(data, path)
+
+	var declared []spi.DataType
+	if fieldTypes != nil {
+		declared = fieldTypes(c.JsonPath)
+	}
 
 	// If the path produced an array result (from # wildcard), check if ANY
 	// element matches for applicable operators.
 	if result.IsArray() {
-		return matchArrayWildcard(c.OperatorType, result, c.Value)
+		return matchArrayWildcard(c.OperatorType, result, c.Value, declared)
 	}
 
-	return applyOperator(c.OperatorType, result, c.Value)
+	return applyOperator(c.OperatorType, result, c.Value, declared)
 }
 
-// matchArrayWildcard checks if any element in an array result matches the operator.
-func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected any) (bool, error) {
+// matchArrayWildcard checks if any element in an array result matches the
+// operator. declared is the array element's declared type set (the wildcard
+// path is itself the FieldsMap key, e.g. "$.laureates[*].motivation").
+func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected any, declared []spi.DataType) (bool, error) {
 	var lastErr error
 	matched := false
 
 	arrayResult.ForEach(func(_, value gjson.Result) bool {
-		ok, err := applyOperator(operatorType, value, expected)
+		ok, err := applyOperator(operatorType, value, expected, declared)
 		if err != nil {
 			lastErr = err
 			return false // stop iteration
@@ -97,11 +139,11 @@ func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected 
 
 // matchLifecycle evaluates a lifecycle (meta) condition. Field routing is
 // identity-driven, never operand-driven: creationDate/lastUpdateTime always
-// compare chronologically (epoch-ms) regardless of operator, and the
-// remaining canonical meta fields compare lexically via the existing
-// string-operator mechanism. See spec §6.3-§6.5 (temporal-search-filters
-// design) for the canonical vocabulary and the rationale for unconditional
-// field-identity routing.
+// compare chronologically via the temporal kernel branch (declared
+// ZonedDateTime) regardless of operator, and the remaining canonical meta
+// fields compare as declared strings via the same kernel. See spec §6.3-§6.5
+// (temporal-search-filters design) for the canonical vocabulary and the
+// rationale for unconditional field-identity routing.
 func matchLifecycle(c *predicate.LifecycleCondition, meta spi.EntityMeta) (bool, error) {
 	field := c.Field
 	if field == "previousTransition" {
@@ -126,77 +168,64 @@ func matchLifecycle(c *predicate.LifecycleCondition, meta spi.EntityMeta) (bool,
 	}
 }
 
-// applyStringLifecycle preserves the pre-existing lexical lifecycle-field
-// evaluation: wrap the field value in a fake gjson document and dispatch
-// through the same applyOperator used by simple/array conditions.
+// applyStringLifecycle evaluates a string-valued meta field: wrap the value in
+// a gjson document and route it through the kernel with a declared String
+// type, so meta string comparison shares the one comparison core with data
+// leaves and the search pushdown.
 func applyStringLifecycle(c *predicate.LifecycleCondition, value string) (bool, error) {
 	fakeJSON := fmt.Sprintf(`{"v":%q}`, value)
 	result := gjson.Get(fakeJSON, "v")
-	return applyOperator(c.OperatorType, result, c.Value)
+	return applyOperator(c.OperatorType, result, c.Value, []spi.DataType{spi.String})
 }
 
-// matchTemporalMeta compares a stored meta time.Time chronologically
-// (epoch-ms) against the condition operand(s), via the shared
-// spi.CompareTemporal dispatcher. Field routing already established that
-// this is a temporal field (matchLifecycle); this function does not sniff
-// the operand.
+// matchTemporalMeta compares a stored meta time.Time chronologically against
+// the condition operand(s) via the kernel. The stored instant is bridged to a
+// gjson.Result (an RFC3339 string from json.Marshal) and evaluated with a
+// declared ZonedDateTime type, so meta temporal comparison shares the single
+// EvalLeaf kernel with data-field temporal comparison. A zero-value time
+// (unset) bridges to an absent Result: IS_NULL matches, every binary op
+// (including NOT_EQUAL) non-matches under the kernel's null uniformity.
 func matchTemporalMeta(op string, stored time.Time, value any) (bool, error) {
-	storedMs, storedOK := stored.UnixMilli(), !stored.IsZero()
-
-	if op == "BETWEEN" || op == "BETWEEN_INCLUSIVE" {
-		lo, hi, ok := twoTemporalBounds(value)
-		return spi.CompareTemporal(spi.FilterBetween, storedMs, storedOK, lo, hi, ok), nil
+	// A temporal field admits only comparison / range / null operators. A
+	// non-comparison operator (e.g. CONTAINS) is invalid on a temporal field
+	// and degrades to non-match here — it must NOT lexically substring-match the
+	// formatted RFC3339 string. Validated entry points reject these operators up
+	// front; this guard keeps the unvalidated in-process path safe.
+	if !isTemporalOperator(op) {
+		return false, nil
 	}
-
-	ms, ok := spi.ParseTemporalMillis(fmt.Sprint(value))
-	return spi.CompareTemporal(mapOpToFilterOp(op), storedMs, storedOK, ms, 0, ok), nil
+	var result gjson.Result
+	if !stored.IsZero() {
+		b, err := json.Marshal(stored)
+		if err != nil {
+			return false, nil
+		}
+		result = gjson.ParseBytes(b)
+	}
+	return applyOperator(op, result, value, []spi.DataType{spi.ZonedDateTime})
 }
 
-// mapOpToFilterOp maps the predicate comparison operator names to spi.FilterOp
-// for the temporal dispatcher. BETWEEN is handled separately by the caller.
-// An operator with no temporal meaning (e.g. CONTAINS reaching this function
-// unvalidated) maps to the zero value, which spi.CompareTemporal treats as
-// "no match" — matchLifecycle degrades safely rather than erroring; the
-// search boundary is what rejects invalid operator/temporal-field
-// combinations (spec §6.4).
-func mapOpToFilterOp(op string) spi.FilterOp {
+// isTemporalOperator reports whether op is a valid operator on a temporal
+// field: the six comparisons, the two range ops, and the two null tests.
+// String operators are excluded so a temporal field never substring-matches
+// its formatted representation.
+func isTemporalOperator(op string) bool {
 	switch op {
-	case "EQUALS":
-		return spi.FilterEq
-	case "NOT_EQUAL":
-		return spi.FilterNe
-	case "GREATER_THAN":
-		return spi.FilterGt
-	case "LESS_THAN":
-		return spi.FilterLt
-	case "GREATER_OR_EQUAL":
-		return spi.FilterGte
-	case "LESS_OR_EQUAL":
-		return spi.FilterLte
+	case "EQUALS", "NOT_EQUAL",
+		"GREATER_THAN", "LESS_THAN", "GREATER_OR_EQUAL", "LESS_OR_EQUAL",
+		"BETWEEN", "BETWEEN_INCLUSIVE",
+		"IS_NULL", "NOT_NULL":
+		return true
 	default:
-		return ""
+		return false
 	}
 }
 
-// twoTemporalBounds parses a BETWEEN operand ([]any of exactly two values)
-// into (lo, hi) epoch-ms. ok is false if the shape is wrong or either bound
-// fails to parse — matchTemporalMeta then excludes/vacuous-matches per the
-// shared CompareTemporal rule rather than erroring.
-func twoTemporalBounds(value any) (lo, hi int64, ok bool) {
-	values, isSlice := value.([]any)
-	if !isSlice || len(values) != 2 {
-		return 0, 0, false
-	}
-	lo, lok := spi.ParseTemporalMillis(fmt.Sprint(values[0]))
-	hi, hok := spi.ParseTemporalMillis(fmt.Sprint(values[1]))
-	return lo, hi, lok && hok
-}
-
-func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (bool, error) {
+func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta, fieldTypes FieldTypes) (bool, error) {
 	switch c.Operator {
 	case "AND":
 		for _, child := range c.Conditions {
-			ok, err := Match(child, data, meta)
+			ok, err := Match(child, data, meta, fieldTypes)
 			if err != nil {
 				return false, err
 			}
@@ -208,7 +237,7 @@ func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (
 
 	case "OR":
 		for _, child := range c.Conditions {
-			ok, err := Match(child, data, meta)
+			ok, err := Match(child, data, meta, fieldTypes)
 			if err != nil {
 				return false, err
 			}
@@ -223,8 +252,13 @@ func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (
 	}
 }
 
-func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
+func matchArray(c *predicate.ArrayCondition, data []byte, fieldTypes FieldTypes) (bool, error) {
 	basePath := convertJSONPath(c.JsonPath)
+
+	var declared []spi.DataType
+	if fieldTypes != nil {
+		declared = fieldTypes(arrayElementFieldPath(c.JsonPath))
+	}
 
 	for i, expected := range c.Values {
 		if expected == nil {
@@ -234,11 +268,12 @@ func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 		elemPath := fmt.Sprintf("%s.%d", basePath, i)
 		result := gjson.GetBytes(data, elemPath)
 
-		// Delegate to opEquals: it handles numeric-aware comparison
-		// (gjson.Number actual + numeric expected) consistently with
-		// scalar EQUALS, so per-element semantics don't diverge from
-		// scalar EQUALS.
-		if !result.Exists() || !opEquals(result, expected) {
+		// Each positional value is an equality check on the array element,
+		// routed through the kernel so numeric/type-directed semantics match
+		// scalar EQUALS and the search pushdown's arrayToFilter. A missing
+		// element (absent Result) non-matches under the kernel's null rule.
+		ok, err := applyOperator("EQUALS", result, expected, declared)
+		if err != nil || !ok {
 			return false, nil
 		}
 	}

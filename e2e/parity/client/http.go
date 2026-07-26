@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1237,6 +1238,25 @@ func (c *Client) SyncSearchSorted(t *testing.T, modelName string, modelVersion i
 		}
 		path += "?" + vals.Encode()
 	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
+// SyncSearchSortedLimit is like SyncSearchSorted but also sets the `limit`
+// query param, so the server applies the LIMIT to the sorted result set. Used
+// to prove that a pushed page (LIMIT on a sorted query) is byte-identical
+// across backends.
+func (c *Client) SyncSearchSortedLimit(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string, limit int) ([]EntityResult, error) {
+	t.Helper()
+	vals := url.Values{}
+	vals.Set("limit", strconv.Itoa(limit))
+	for _, k := range sortKeys {
+		vals.Add("sort", k)
+	}
+	path := fmt.Sprintf("/api/search/direct/%s/%d?%s", modelName, modelVersion, vals.Encode())
 	raw, err := c.doRaw(t, http.MethodPost, path, condition)
 	if err != nil {
 		return nil, err
