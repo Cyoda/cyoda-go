@@ -39,7 +39,7 @@ var _ spi.Searcher = (*entityStore)(nil)
 // context-resolving Querier (s.q), which resolves the active pgx.Tx from ctx, so
 // it already observes the transaction's own uncommitted creates/updates/deletes:
 // RYW is provided by the database, and the committed pushdown IS the RYW result.
-// No buffer overlay, no spi.MergePage, and no tx.OpMu are involved (postgres
+// No buffer overlay, no spi.MergeBounded, and no tx.OpMu are involved (postgres
 // never populates Buffer/Deletes/DeleteAttribution or any other
 // TransactionState bookkeeping field; Get/GetAll don't take tx.OpMu either).
 // The one tx-specific behaviour Search adds over the committed pushdown

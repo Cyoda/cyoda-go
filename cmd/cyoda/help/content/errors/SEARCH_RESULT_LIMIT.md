@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-SEARCH_RESULT_LIMIT — the search query matched more results than the server-enforced maximum page or result set size.
+SEARCH_RESULT_LIMIT — the search query's matched entity count exceeded the requested `limit`, a cap on the matched set, not a page size.
 
 ## SYNOPSIS
 
@@ -22,8 +22,6 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 ## DESCRIPTION
 
 Direct (synchronous) search is bounded-or-fail: `limit` caps the matched result set rather than paging it. When more entities match than the limit allows, the request is rejected — it never returns a truncated prefix, because a partial result would be indistinguishable from a complete one.
-
-Also returned when the requested `limit` itself exceeds the server maximum.
 
 Not retryable with the same parameters. Narrow the condition, raise `limit` (up to the documented maximum), or use async search, which snapshots the full result set and pages over it.
 

@@ -54,7 +54,7 @@ Two repo-internal rules still hold and must not be confused with a binary↔SPI 
 
 A plugin pinned to **`cyoda-go-spi v<X.Y.Z>`** is compatible with any **`cyoda-go v<A.B.C>`** whose root `go.mod` pins the same `v<X.Y>.*` series or any *later* `v<X+1.0.0>` series that hasn't broken the interfaces the plugin uses.
 
-In practice, today: **all SPI versions `v0.5.0` … `v0.8.1` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.x` and `v0.8.1`. `cyoda-go-spi v0.9.0` breaks this: its bounded-or-fail `Searcher` contract removes `SearchOptions.Offset` and renames `MergePage` to `MergeBounded`, so a plugin pinned to `v0.5.0` … `v0.8.1` must be migrated (see the matrix row above) before it builds against `v0.9.0` or later.
+In practice, today: **all SPI versions `v0.5.0` … `v0.8.1` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.x` and `v0.8.1`. `cyoda-go-spi v0.9.0` breaks this: its bounded-or-fail `Searcher` contract removes `SearchOptions.Offset` and renames `MergePage` to `MergeBounded`, so a plugin pinned to any version below `v0.9.0` — including the additive `v0.8.2` — must be migrated (see the matrix row above) before it builds against `v0.9.0` or later.
 
 ### Migration window
 

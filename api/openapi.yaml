@@ -7096,6 +7096,10 @@ paths:
           required: false
           schema:
             type: string
+            # Intentionally stricter than the server: the handler parses this
+            # with strconv.Atoi, which also accepts a leading '+' and leading
+            # zeros ("+5", "007"). The spec pins the canonical 1-10000 shape;
+            # do not loosen the pattern to chase runtime leniency.
             pattern: "^([1-9][0-9]{0,3}|10000)$"
         - name: sort
           in: query
