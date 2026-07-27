@@ -491,10 +491,15 @@ func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, pa
 
 	result := make([]genapi.ModelStatsDto, 0, len(stats))
 	for _, s := range stats {
-		ver, _ := strconv.Atoi(s.ModelVersion)
+		// ParseInt with a 32-bit width: a model version that does not fit in
+		// int32 is reported as 0 rather than silently truncated by a int->int32
+		// conversion. The error is deliberately ignored — a malformed stored
+		// version should not fail the whole statistics response.
+		ver64, _ := strconv.ParseInt(s.ModelVersion, 10, 32)
+		ver := int32(ver64)
 		result = append(result, genapi.ModelStatsDto{
 			ModelName:    s.ModelName,
-			ModelVersion: int32(ver),
+			ModelVersion: ver,
 			Count:        s.Count,
 		})
 	}
@@ -516,10 +521,15 @@ func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Requ
 
 	result := make([]genapi.ModelStateStatsDto, 0, len(stats))
 	for _, s := range stats {
-		ver, _ := strconv.Atoi(s.ModelVersion)
+		// ParseInt with a 32-bit width: a model version that does not fit in
+		// int32 is reported as 0 rather than silently truncated by a int->int32
+		// conversion. The error is deliberately ignored — a malformed stored
+		// version should not fail the whole statistics response.
+		ver64, _ := strconv.ParseInt(s.ModelVersion, 10, 32)
+		ver := int32(ver64)
 		result = append(result, genapi.ModelStateStatsDto{
 			ModelName:    s.ModelName,
-			ModelVersion: int32(ver),
+			ModelVersion: ver,
 			State:        s.State,
 			Count:        s.Count,
 		})

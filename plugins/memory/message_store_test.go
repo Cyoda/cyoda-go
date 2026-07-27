@@ -260,3 +260,53 @@ func TestMessageSave_FailureDoesNotLeaveMetadata(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
+
+// TestMessageStoreRejectsPathTraversal pins the blob-path confinement.
+//
+// The message id is caller-supplied through the SPI and reaches the filesystem
+// as a path segment. filepath.Join cleans a path but does not confine it, so a
+// ".." id previously escaped the blob directory — and Delete removes whatever
+// the path resolves to. Save and Get are covered too: a traversing id must not
+// be able to write outside the tenant directory or read a file back from it.
+func TestMessageStoreRejectsPathTraversal(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ctx := ctxWithTenant("tenant-A")
+	store, err := factory.MessageStore(ctx)
+	if err != nil {
+		t.Fatalf("MessageStore: %v", err)
+	}
+
+	evil := []string{
+		"../escape",
+		"../../escape",
+		"a/../../escape",
+		"sub/dir",
+		"..",
+		".",
+		"",
+	}
+	for _, id := range evil {
+		t.Run("save/"+id, func(t *testing.T) {
+			err := store.Save(ctx, id, spi.MessageHeader{}, spi.MessageMetaData{},
+				bytes.NewReader([]byte("payload")))
+			if err == nil {
+				t.Fatalf("Save(%q) succeeded; want rejection", id)
+			}
+		})
+		t.Run("get/"+id, func(t *testing.T) {
+			if _, _, _, err := store.Get(ctx, id); err == nil {
+				t.Fatalf("Get(%q) succeeded; want rejection", id)
+			}
+		})
+		t.Run("delete/"+id, func(t *testing.T) {
+			// Delete is best-effort by contract and returns nil, but it must
+			// not remove anything outside the tenant directory. The assertion
+			// that matters is that it does not panic or escape; blobPath
+			// returning an error makes the os.Remove unreachable.
+			if err := store.Delete(ctx, id); err != nil {
+				t.Fatalf("Delete(%q) = %v; want nil (best-effort)", id, err)
+			}
+		})
+	}
+}
