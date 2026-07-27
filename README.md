@@ -9,6 +9,8 @@
 
 cyoda-go is an EDBMS (Entity Database Management System) — state machine, processors, and full revision history live inside the record, committed atomically. Minimizes the need for sagas, CDC pipelines, and external orchestration.
 
+**Correctness over availability.** When the two conflict, cyoda-go fails closed: an operation that cannot be completed correctly is rejected, never committed partially or with a substituted value. A required dependency being unavailable fails the operation rather than degrading it.
+
 ## Four storage engines, one application contract
 
 Same application code, four operational shapes:
@@ -117,6 +119,10 @@ The `/api/account` response confirms the bootstrap client's tenant and roles. Fr
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 
+In mock mode, `CYODA_IAM_MOCK_KIND` (default `user`) sets the principal kind
+(`user`/`service`/`system`) on the mock default UserContext, so local/CI setups
+can exercise service- or system-attributed code paths without real JWT auth.
+
 ### Federated OIDC providers
 
 cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, Keycloak, or any spec-compliant issuer — alongside its own first-party tokens. Each tenant registers its own providers; tokens are validated against the provider's JWKS endpoint.
@@ -202,9 +208,25 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 **Key cap:** `CYODA_SEARCH_MAX_SORT_KEYS` (default `16`) — see `cyoda help config` (Search and transaction internals).
 
+## Scheduled transitions
+
+A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config.scheduler` for the full topic.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch for the scan loop. |
+| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | Coordinator scan cadence. |
+| `CYODA_SCHEDULER_BATCH_SIZE` | `100` | Max due tasks pulled per scan. |
+| `CYODA_SCHEDULER_DISTRIBUTION` | `round-robin` | Dispatch-target strategy: `round-robin` or `self`. Forced to `self` when `CYODA_CLUSTER_ENABLED=false`. |
+| `CYODA_SCHEDULER_COORDINATOR` | `lowest-node-id` | Coordinator-election strategy. |
+| `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Best-effort re-dispatch throttle window after a due task is picked up. |
+| `CYODA_SCHEDULER_EXPIRY_GRACE` | `100ms` | Grace band above a transition's `timeoutMs` before it expires instead of firing late; size to at least the max inter-node clock skew. |
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.
+
+Run `cyoda help config all` for the complete env-var reference (add `--format=json` for machine-readable output); `cyoda help config cluster` covers multi-node/dispatch vars.
 
 | Goal                          | Link                                              |
 |-------------------------------|---------------------------------------------------|
@@ -237,12 +259,14 @@ Sibling repositories under [github.com/cyoda](https://github.com/cyoda) that com
 
 The Cyoda-Go ecosystem follows Semantic Versioning with a leading `v`, under the pre-1.0 convention where **the minor component is the breaking-change signal**:
 
-- **`0.MINOR.0`** — a backward-*incompatible* change to that module's public contract (the HTTP/wire API for the `cyoda-go` binary; the Go interface surface for `cyoda-go-spi`).
+- **`0.MINOR.0`** — a backward-*incompatible* change to the `cyoda-go` binary's public contract: the HTTP/wire API.
 - **`0.x.PATCH`** — any backward-*compatible* change, **including new features**: additive API parameters, new endpoints, new optional SPI fields, and bug fixes all ship as patches.
 
 This is the "leftmost non-zero component is the de-facto major" convention (as used by Cargo and npm's `^0.x` ranges). It keeps the minor counter meaningful — a minor bump means "something under you may have broken" — rather than a feature odometer. The discipline it rests on: **a breaking change never ships in a patch.**
 
-**Each module versions on its own axis.** `cyoda-go-spi`, the `cyoda-go` binary, the in-tree plugins, and the Helm chart are **not** required to share a version number. Because the SPI surface is strictly additive today, its minor stays put while the binary iterates — a new SPI release is a *patch* unless it breaks an interface. The compatible combinations are recorded in [`COMPATIBILITY.md`](COMPATIBILITY.md); that matrix, not a shared digit, is the source of truth for what works with what.
+**Each module versions on its own axis.** `cyoda-go-spi`, the `cyoda-go` binary, the in-tree plugins, and the Helm chart are **not** required to share a version number. The compatible combinations are recorded in [`COMPATIBILITY.md`](COMPATIBILITY.md); that matrix, not a shared digit, is the source of truth for what works with what.
+
+**`cyoda-go-spi` is the exception**, because it is effectively an internal library: its only consumers are the in-tree plugins and the commercial Cassandra backend, all released in lock-step with the binary. It therefore ships breaking interface changes in patch releases rather than burning a minor for an audience of two. Consumers must read the SPI's own `### Breaking` changelog section on every bump — for that module the version component is not the breakage signal.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for breaking changes and [`MAINTAINING.md`](MAINTAINING.md#maintenance-of-older-release-lines) for the policy on older release lines.
 

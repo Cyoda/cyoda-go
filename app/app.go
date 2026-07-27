@@ -44,6 +44,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -67,6 +68,7 @@ type App struct {
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	txLifecycle        *lifecycle.Manager
+	scheduler          *scheduler.Service
 	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
 	grpcStopOnce       sync.Once
@@ -241,6 +243,7 @@ func New(cfg Config) *App {
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
+			Kind:     spi.PrincipalSystem,
 			Tenant:   spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
 		})
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
@@ -374,6 +377,7 @@ func New(cfg Config) *App {
 		defaultUser := &spi.UserContext{
 			UserID:   cfg.IAM.MockUserID,
 			UserName: cfg.IAM.MockUserName,
+			Kind:     spi.PrincipalKind(cfg.IAM.MockKind),
 			Tenant: spi.Tenant{
 				ID:   spi.TenantID(cfg.IAM.MockTenantID),
 				Name: cfg.IAM.MockTenantName,
@@ -514,9 +518,15 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
+	// schedClock is shared by the engine's scheduled-transition arm/fire math
+	// (reconcileScheduledTasks, FireScheduledTransition) and the scheduler
+	// scan loop below, so both sides of the runtime agree on "now".
+	schedClock := scheduler.NewRealClock()
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),
-		workflow.WithMaxStateVisits(cfg.MaxStateVisits))
+		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
+		workflow.WithScheduledClock(schedClock.Now),
+		workflow.WithExpiryGrace(cfg.Scheduler.ExpiryGrace))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -529,6 +539,62 @@ func New(cfg Config) *App {
 		})
 	}
 
+	// Scheduled-transition scan loop (Task D4). Constructed and started
+	// unconditionally — cfg.Scheduler.Enabled gates the tick body itself, so
+	// the Service always exists and Shutdown always has something to Stop.
+	schedEngine := cluster.NewSchedulerEngine(a.workflowEngine)
+	var schedulerRPCClient *cluster.SchedulerRPCClient
+	if cfg.Cluster.Enabled {
+		schedulerRPCClient = cluster.NewSchedulerRPCClient(peerAuth, cfg.Cluster.DispatchForwardTimeout)
+		if cfg.Cluster.DispatchAllowLoopback {
+			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
+			// Never set in production (SSRF guard stays active by default).
+			schedulerRPCClient = schedulerRPCClient.AllowLoopbackForTesting()
+		}
+	}
+	clusterExecutor := cluster.NewClusterExecutor(schedEngine, a.selfNodeID, a.nodeRegistry, schedulerRPCClient)
+
+	// Self is forced when cluster mode is off (there are no peers to
+	// distribute to — a.nodeRegistry is a single-member registry.NewLocal
+	// in that case) or when the operator explicitly opted out of
+	// round-robin distribution.
+	var distStrategy scheduler.DistributionStrategy
+	switch {
+	case !cfg.Cluster.Enabled || cfg.Scheduler.Distribution == "self":
+		distStrategy = scheduler.Self{}
+	default:
+		if cfg.Scheduler.Distribution != "round-robin" {
+			slog.Warn("unknown CYODA_SCHEDULER_DISTRIBUTION, defaulting to round-robin",
+				"pkg", "app", "value", cfg.Scheduler.Distribution)
+		}
+		distStrategy = scheduler.NewRoundRobin()
+	}
+
+	var coordStrategy scheduler.CoordinatorStrategy = scheduler.LowestLiveNodeID{}
+	if cfg.Scheduler.Coordinator != "lowest-node-id" {
+		slog.Warn("unknown CYODA_SCHEDULER_COORDINATOR, defaulting to lowest-node-id",
+			"pkg", "app", "value", cfg.Scheduler.Coordinator)
+	}
+
+	a.scheduler = scheduler.NewService(
+		scheduler.Config{
+			Enabled:           cfg.Scheduler.Enabled,
+			ScanInterval:      cfg.Scheduler.ScanInterval,
+			RedispatchBackoff: cfg.Scheduler.RedispatchBackoff,
+			BatchSize:         cfg.Scheduler.BatchSize,
+		},
+		scheduler.Deps{
+			Store:        a.storeFactory,
+			Registry:     a.nodeRegistry,
+			Coordinator:  coordStrategy,
+			Distribution: distStrategy,
+			Clock:        schedClock,
+			Executor:     clusterExecutor,
+			SelfID:       a.selfNodeID,
+		},
+	)
+	a.scheduler.Start()
+
 	// Domain handlers
 	a.txGate = txgate.New()
 	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.searchService)
@@ -537,7 +603,7 @@ func New(cfg Config) *App {
 	server.Entity = entityHandler
 	server.Model = modelHandler
 	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine)
-	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory, a.config.SearchMaxSortKeys)
+	server.Search = search.NewHandler(a.searchService).WithMaxSortKeys(a.config.SearchMaxSortKeys)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore
@@ -615,26 +681,38 @@ func New(cfg Config) *App {
 	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
 	// and are propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
-	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, bool, error) {
+	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
 		ctx := r.Context()
 		modelStore, err := storeFactory.ModelStore(ctx)
 		if err != nil {
-			return nil, spi.ModelRef{}, false, err
+			return nil, spi.ModelRef{}, nil, false, err
 		}
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 			if appErr.Status == http.StatusNotFound {
 				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
-				return nil, ref, false, nil
+				return nil, ref, nil, false, nil
 			}
 			// Genuine store error → propagate to 500-with-ticket path.
-			return nil, ref, false, appErr
+			return nil, ref, nil, false, appErr
 		}
 		entityStore, err := storeFactory.EntityStore(ctx)
 		if err != nil {
-			return nil, ref, false, err
+			return nil, ref, nil, false, err
 		}
-		return entityStore, ref, true, nil
+		// Load the model's declared field types so grouped-stats comparison is
+		// type-directed (temporal data fields compare temporally), consistent
+		// with the search path. A genuine store/schema-load error fails closed
+		// (correctness-over-availability): the schema is a required input for
+		// correct typing, so surface it to the 500-with-ticket path rather than
+		// silently under-match with untyped leaves. The no-schema-registered
+		// case is (nil, nil) — fields stays nil and data leaves degrade to
+		// non-type-directed comparison, same as the search fallback.
+		fields, err := search.LoadFieldsMap(ctx, modelStore, ref)
+		if err != nil {
+			return nil, ref, nil, false, err
+		}
+		return entityStore, ref, fields, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
 	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
@@ -660,22 +738,26 @@ func New(cfg Config) *App {
 		// Discovery routes at root (no auth, no context path)
 		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
 		// Help routes — unauthenticated, public content embedded in the binary
-		internalapi.RegisterHelpRoutes(outerMux, help.DefaultTree, contextPath, cfg.Version)
+		// (OSS base merged with any plugin-registered overlays).
+		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
 		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(outerMux)
+			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
 		}
 		a.handler = outerMux
 	} else {
 		// No context path — discovery routes on the main mux
 		internalapi.RegisterDiscoveryRoutes(mux, "")
 		// Help routes — unauthenticated, public content embedded in the binary
-		internalapi.RegisterHelpRoutes(mux, help.DefaultTree, "", cfg.Version)
+		// (OSS base merged with any plugin-registered overlays).
+		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
 		// Internal dispatch routes (AEAD-authenticated)
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(mux)
+			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
 		}
 		a.handler = mux
 	}
@@ -804,6 +886,9 @@ func (a *App) Shutdown() {
 	}
 	if a.stopReaper != nil {
 		close(a.stopReaper)
+	}
+	if a.scheduler != nil {
+		a.scheduler.Stop()
 	}
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {

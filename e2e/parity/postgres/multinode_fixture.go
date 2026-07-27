@@ -23,6 +23,7 @@ import (
 type pgMultiNode struct {
 	baseURLs []string
 	keySet   *fixtureutil.JWTKeySet
+	nodeLogs []*fixtureutil.SyncBuffer
 }
 
 // BaseURLs implements multinode.MultiNodeFixture.
@@ -49,6 +50,33 @@ func (f *pgMultiNode) NewTenant(t *testing.T) parity.Tenant {
 func (f *pgMultiNode) ComputeTenant(t *testing.T) parity.Tenant {
 	t.Helper()
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
+}
+
+// ComputeUser mints a USER-kind JWT (caas_user_id == userID) scoped to the
+// compute-test-client's tenant — a human origin whose cascades still dispatch
+// to the registered gRPC member. Used by cross-node attribution scenarios that
+// need a user-kind causal origin distinct from the member's service identity.
+// Not part of the MultiNodeFixture interface (attribution is postgres-first);
+// the postgres multinode attribution tests type-assert for it.
+func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintComputeUserJWT(t, f.keySet, userID, roles...)
+}
+
+// NodeLogs returns node idx's captured combined stdout+stderr as a string
+// snapshot. Part of the optional cross-node attribution capability (alongside
+// ComputeUser) the shared multinode attribution scenarios type-assert: it lets
+// the scheduled-fire scenario positively prove a task fired on a PEER node
+// (the peer-RPC fire path emits a distinctive log line) rather than passing
+// vacuously if scheduler distribution ever collapsed to self. Returns "" for
+// an out-of-range index. Not part of the MultiNodeFixture interface — a backend
+// that has not wired attribution simply does not implement it and the scenarios
+// skip (pending).
+func (f *pgMultiNode) NodeLogs(idx int) string {
+	if idx < 0 || idx >= len(f.nodeLogs) || f.nodeLogs[idx] == nil {
+		return ""
+	}
+	return f.nodeLogs[idx].String()
 }
 
 // MustSetupMultiNode boots a Postgres testcontainer plus n cyoda-go
@@ -108,5 +136,6 @@ func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()
 	return &pgMultiNode{
 		baseURLs: result.BaseURLs,
 		keySet:   ks,
+		nodeLogs: result.NodeLogs,
 	}, cleanup
 }

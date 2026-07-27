@@ -115,6 +115,19 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 		return nil, fmt.Errorf("missing caas_org_id claim")
 	}
 
+	// Kind branches on claim-KEY presence, not on how many roles it carries:
+	// an OBO token's user_roles key marks a human principal even when the
+	// array is empty (an unprivileged user is still a user). Only a token
+	// that carries scopes but no user_roles key at all is a service
+	// (client_credentials) principal. Absent both, default to user — the
+	// attribution-safe choice when no signal says otherwise.
+	kind := spi.PrincipalUser
+	if _, hasUserRoles := claims["user_roles"]; !hasUserRoles {
+		if _, hasScopes := claims["scopes"]; hasScopes {
+			kind = spi.PrincipalService
+		}
+	}
+
 	// OBO tokens carry user_roles, client_credentials tokens carry scopes.
 	// Try user_roles first (OBO), fall back to scopes (client_credentials).
 	roles := extractStringSlice(claims["user_roles"])
@@ -125,6 +138,7 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	return &spi.UserContext{
 		UserID:   userID,
 		UserName: userID,
+		Kind:     kind,
 		Tenant: spi.Tenant{
 			ID:   spi.TenantID(orgID),
 			Name: orgID,

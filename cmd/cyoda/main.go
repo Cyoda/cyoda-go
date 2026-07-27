@@ -52,7 +52,8 @@ func runHelpCmd(args []string) int {
 	// takes version as a parameter for the topic-JSON flow; the setter
 	// feeds the action dispatch path.
 	help.SetBinaryVersion(func() string { return version })
-	return help.RunHelp(help.DefaultTree, args, os.Stdout, version, isTTY, style)
+	// BuildTree merges the OSS base with any plugin-registered help overlays.
+	return help.RunHelp(help.BuildTree(), args, os.Stdout, version, isTTY, style)
 }
 
 func main() {

@@ -299,6 +299,61 @@ func TestWorkflow_Import_ValidationFailed(t *testing.T) {
 	}
 }
 
+// TestWorkflow_Import_MalformedCriterionRegex_ValidationFailed verifies that
+// a transition criterion whose MATCHES_PATTERN regex fails to compile is
+// rejected at import with 400 VALIDATION_FAILED, instead of importing
+// successfully and only surfacing the error the first time the transition is
+// evaluated.
+func TestWorkflow_Import_MalformedCriterionRegex_ValidationFailed(t *testing.T) {
+	const entityName = "e2e-wf-badregex"
+	importModelE2E(t, entityName, 1)
+
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1",
+			"name": "wf-badregex",
+			"initialState": "S1",
+			"active": true,
+			"states": {
+				"S1": {
+					"transitions": [{
+						"name": "go",
+						"next": "S2",
+						"manual": false,
+						"criterion": {
+							"type": "simple",
+							"jsonPath": "$.orderId",
+							"operatorType": "MATCHES_PATTERN",
+							"value": "["
+						}
+					}]
+				},
+				"S2": {}
+			}
+		}]
+	}`
+	status, respBody := importWorkflowE2E(t, entityName, 1, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400 VALIDATION_FAILED; got %d: %s", status, respBody)
+	}
+	var errBody struct {
+		Detail     string `json:"detail"`
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(respBody), &errBody); err != nil {
+		t.Fatalf("decode error body: %v; raw: %s", err, respBody)
+	}
+	if errBody.Properties.ErrorCode != "VALIDATION_FAILED" {
+		t.Fatalf("errorCode = %q; want VALIDATION_FAILED; body: %s", errBody.Properties.ErrorCode, respBody)
+	}
+	if !strings.Contains(errBody.Detail, "go") {
+		t.Errorf("detail %q does not name the offending transition", errBody.Detail)
+	}
+}
+
 // TestWorkflow_ExportEmpty verifies that exporting a workflow for a model
 // that has no imported workflows returns 404 WORKFLOW_NOT_FOUND. A properly
 // structured GET on a non-existent resource should return NOT FOUND, not

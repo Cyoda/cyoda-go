@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"sort"
 
 	"github.com/tidwall/gjson"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
@@ -43,9 +46,54 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 	return &GroupedStatsService{maxBuckets: maxBuckets}
 }
 
-// QueryGroupedStats dispatches a validated grouped-stats request against
-// any storage backend. The store parameter is intentionally `any` —
-// capabilities are detected via type assertion so a backend can satisfy
+// QueryGroupedStats runs the grouped-stats query and translates the known
+// domain/SPI sentinels into client-facing *common.AppError before
+// returning, so every transport (HTTP now, gRPC later) surfaces the
+// documented status without a per-handler switch. Unknown storage/driver
+// errors are returned unchanged and surface as 500 via the transport's
+// Internal fallback.
+func (s *GroupedStatsService) QueryGroupedStats(
+	ctx context.Context,
+	store any,
+	model spi.ModelRef,
+	fields map[string]schema.FieldDescriptor,
+	req *ValidatedGroupedStatsRequest,
+) ([]GroupedStatsBucket, error) {
+	buckets, err := s.queryGroupedStatsInner(ctx, store, model, fields, req)
+	if err != nil {
+		return nil, classifyGroupedStatsError(err)
+	}
+	return buckets, nil
+}
+
+// classifyGroupedStatsError maps the six known sentinels to operational
+// AppErrors (each wrapping the sentinel via WithCause so errors.Is still
+// holds); any other error is returned unchanged (surfaces as 500 at the
+// transport).
+func classifyGroupedStatsError(err error) error {
+	switch {
+	case errors.Is(err, ErrBackendNotSupported):
+		return common.Operational(http.StatusNotImplemented, "NOT_IMPLEMENTED_BY_BACKEND",
+			"backend does not support grouped stats").WithCause(err)
+	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
+		return common.Operational(http.StatusUnprocessableEntity, "GROUP_CARDINALITY_EXCEEDED",
+			"group cardinality exceeds the configured maximum").WithCause(err)
+	case errors.Is(err, spi.ErrScanBudgetExhausted):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
+			"scan budget exhausted; narrow the query or add an indexable predicate").WithCause(err)
+	case errors.Is(err, ErrInvalidCondition):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrInvalidFieldPath):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrConditionTypeMismatch):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
+	}
+	return err
+}
+
+// queryGroupedStatsInner dispatches a validated grouped-stats request
+// against any storage backend. The store parameter is intentionally `any`
+// — capabilities are detected via type assertion so a backend can satisfy
 // one or both of spi.Iterable / spi.GroupedAggregator.
 //
 // Decision tree (spec §4, decisions D11/D14/D15):
@@ -57,10 +105,11 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 //     translates, push it; otherwise pass zero-value and re-apply
 //     match.Match per yielded entity (D15).
 //  3. Neither — return ErrBackendNotSupported (handler maps to 501).
-func (s *GroupedStatsService) QueryGroupedStats(
+func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
 	store any,
 	model spi.ModelRef,
+	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 ) ([]GroupedStatsBucket, error) {
 	// Parse Condition once. A nil/empty Condition is the "match all" case
@@ -80,6 +129,59 @@ func (s *GroupedStatsService) QueryGroupedStats(
 		parsedCond = c
 	}
 
+	// Reject a malformed MATCHES_PATTERN regex before any backend runs.
+	// Every plugin's residual filter evaluator (sqlite's evaluateFilter,
+	// postgres's evalPostFilter) delegates to the error-free spi.MatchFilter,
+	// which returns false (non-match) rather than erroring on a bad pattern
+	// — so an unvalidated malformed regex would silently under-include
+	// buckets instead of failing the request. Validating here, in the
+	// backend-independent domain layer, makes every backend reject
+	// identically, matching the search path's ValidateRegexPatterns call.
+	if parsedCond != nil {
+		if rErr := search.ValidateRegexPatterns(parsedCond); rErr != nil {
+			return nil, fmt.Errorf("%w: invalid regex pattern in condition: %v", ErrInvalidCondition, rErr)
+		}
+	}
+
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — model-independent, mirrors the single boundary the search
+	// path enforces in SearchService.Search/SubmitAsync via the same
+	// search.ValidateCondition call. Without this, a malformed-arity
+	// BETWEEN (or an unknown operatorType) slips past every downstream
+	// layer here exactly as the regex case above did: ConditionToFilter and
+	// match.Match both fail closed (never matching) rather than erroring,
+	// so the request would silently degrade to an empty/wrong result
+	// instead of failing with 400.
+	if parsedCond != nil {
+		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
+		}
+	}
+
+	// Condition type-soundness (correctness-over-availability): mirrors the
+	// search path's validateConditionTypes boundary for its model-independent
+	// parts. A nil model is passed deliberately — grouped-stats has no
+	// model-schema plumbing (a separate, unflagged concern), but the
+	// lifecycle/temporal/meta-field rules validateLifecycleType enforces
+	// (known meta field; valid operator + RFC3339 operand on temporal
+	// fields) don't need the schema at all, and ValidateConditionValueTypes
+	// gracefully skips the schema-dependent data-field check when model is
+	// nil. Without this, e.g. a CONTAINS operator against the temporal
+	// creationDate meta field would silently produce an empty result here
+	// (never matching in ConditionToFilter/match.Match) instead of the 400
+	// CONDITION_TYPE_MISMATCH the equivalent /search request returns.
+	if parsedCond != nil {
+		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
+			// Propagate tErr directly (not re-wrapped): it already wraps
+			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
+			// so the handler classifies it via errors.Is against those same
+			// exported sentinels — the identical classification the search
+			// path's validateConditionTypes performs — and maps to the
+			// matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
+			return nil, tErr
+		}
+	}
+
 	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
 	// yields the zero-value Filter ("match all"); a parsedCond that the
 	// translator can't handle (e.g. function conditions, wildcard paths)
@@ -88,7 +190,7 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
-		f, terr := search.ConditionToFilter(parsedCond)
+		f, terr := search.ConditionToFilter(parsedCond, fields)
 		if terr != nil {
 			pushable = false
 		} else {
@@ -118,7 +220,7 @@ func (s *GroupedStatsService) QueryGroupedStats(
 
 	// 2. Streaming fallback.
 	if it, ok := store.(spi.Iterable); ok {
-		return s.tallyStreaming(ctx, it, model, req, pushFilter, pushable, parsedCond)
+		return s.tallyStreaming(ctx, it, model, fields, req, pushFilter, pushable, parsedCond)
 	}
 
 	// 3. Neither capability.
@@ -131,11 +233,22 @@ func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
 	it spi.Iterable,
 	model spi.ModelRef,
+	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 	pushFilter spi.Filter,
 	pushable bool,
 	parsedCond predicate.Condition,
 ) ([]GroupedStatsBucket, error) {
+	// Declared-type resolver for the residual predicate evaluation below, so the
+	// streaming path types data leaves consistently with the pushdown filter
+	// (both stamped from `fields`). A nil `fields` yields a nil-returning
+	// resolver, which the evaluator tolerates.
+	fieldTypes := func(p string) []spi.DataType {
+		if fd, ok := fields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
 	// D15: if the filter wasn't pushable, pass zero-value to the iterator
 	// (match-all) and re-apply match.Match inside the loop. Otherwise
 	// trust the plugin to apply pushFilter itself.
@@ -157,7 +270,7 @@ func (s *GroupedStatsService) tallyStreaming(
 		// Residual predicate evaluation: only when the original condition
 		// was not pushable and we therefore need to filter per entity.
 		if !pushable && parsedCond != nil {
-			ok, mErr := match.Match(parsedCond, e.Data, e.Meta)
+			ok, mErr := match.Match(parsedCond, e.Data, e.Meta, fieldTypes)
 			if mErr != nil {
 				return nil, mErr
 			}

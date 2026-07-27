@@ -453,6 +453,9 @@ func (f *spyStoreFactory) StateMachineAuditStore(ctx context.Context) (spi.State
 func (f *spyStoreFactory) AsyncSearchStore(ctx context.Context) (spi.AsyncSearchStore, error) {
 	return f.delegate.AsyncSearchStore(ctx)
 }
+func (f *spyStoreFactory) ScheduledTaskStore(ctx context.Context) (spi.ScheduledTaskStore, error) {
+	return f.delegate.ScheduledTaskStore(ctx)
+}
 func (f *spyStoreFactory) TransactionManager(ctx context.Context) (spi.TransactionManager, error) {
 	return f.delegate.TransactionManager(ctx)
 }

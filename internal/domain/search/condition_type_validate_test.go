@@ -59,7 +59,8 @@ func TestValidateConditionTypes_Between_ValidIntegers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestValidateConditionTypes_In_TypeMismatch verifies that an array containing
-// a string element against a DOUBLE field is rejected.
+// a non-numeric string element against a DOUBLE field is rejected: parse-based,
+// "abc" parses into no declared type (DOUBLE), so the leaf is a type mismatch.
 func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
@@ -76,9 +77,9 @@ func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
 	}
 }
 
-// TestValidateConditionTypes_In_AllInts verifies that an array of all-numeric
-// values against a DOUBLE field is accepted.
-func TestValidateConditionTypes_In_AllInts(t *testing.T) {
+// TestValidateConditionTypes_In_AllNumeric verifies that an array of all-numeric
+// values against a DOUBLE field is accepted (every element parses as DOUBLE).
+func TestValidateConditionTypes_In_AllNumeric(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.price",
@@ -107,30 +108,142 @@ func TestValidateConditionTypes_EmptyArray_Accepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Container (pure-object) paths — a scalar compare must reject INVALID_FIELD_PATH
+// ---------------------------------------------------------------------------
+
+// buildPureContainerModel returns a model where $.some-object is a PURE object
+// (substructure only, no scalar observation): its only leaf is
+// $.some-object.some-key (STRING). $.some-object is therefore a KNOWN CONTAINER
+// but NOT a leaf.
+func buildPureContainerModel() *schema.ModelNode {
+	root := schema.NewObjectNode()
+	obj := schema.NewObjectNode()
+	obj.SetChild("some-key", schema.NewLeafNode(schema.String))
+	root.SetChild("some-object", obj)
+	return root
+}
+
+// TestValidateConditionTypes_ScalarOnPureContainer_Rejects verifies that a
+// scalar comparison whose jsonPath resolves to a KNOWN CONTAINER path (a strict
+// prefix of leaf paths, itself not a leaf) in a schema'd model is rejected as
+// INVALID_FIELD_PATH — you cannot compare a container to a scalar; navigate to
+// a leaf.
+func TestValidateConditionTypes_ScalarOnPureContainer_Rejects(t *testing.T) {
+	model := buildPureContainerModel()
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-object",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	err := ValidateConditionValueTypes(model, cond)
+	if err == nil {
+		t.Fatal("expected error for scalar EQUALS on a pure-container path, got nil")
+	}
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath sentinel, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_LeafUnderContainer_Accepts confirms navigating to
+// the leaf under the container is accepted (the escape hatch the rejection
+// points at).
+func TestValidateConditionTypes_LeafUnderContainer_Accepts(t *testing.T) {
+	model := buildPureContainerModel()
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-object.some-key",
+		OperatorType: "EQUALS",
+		Value:        "some-key",
+	}
+	if err := ValidateConditionValueTypes(model, cond); err != nil {
+		t.Fatalf("expected no error for scalar EQUALS on the leaf path, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_NullPresenceOnContainer_Accepts confirms IS_NULL /
+// NOT_NULL (unary presence tests, no scalar operand) on a container path are
+// NOT rejected by the container rule — they test presence, not a scalar value.
+func TestValidateConditionTypes_NullPresenceOnContainer_Accepts(t *testing.T) {
+	model := buildPureContainerModel()
+	for _, op := range []string{"IS_NULL", "NOT_NULL"} {
+		cond := &predicate.SimpleCondition{
+			JsonPath:     "$.some-object",
+			OperatorType: op,
+		}
+		if err := ValidateConditionValueTypes(model, cond); err != nil {
+			t.Errorf("%s on container path should be accepted, got: %v", op, err)
+		}
+	}
+}
+
+// TestValidateConditionTypes_MixedObjectOrScalar_Accepts confirms that after
+// Fix 1 a MIXED object-or-scalar node IS a leaf (carries scalar types), so a
+// scalar compare on it is accepted, NOT caught by the pure-container rule.
+func TestValidateConditionTypes_MixedObjectOrScalar_Accepts(t *testing.T) {
+	root := schema.NewObjectNode()
+	mixed := schema.NewObjectNode()
+	mixed.SetChild("some-key", schema.NewLeafNode(schema.String))
+	mixed.Types().Add(schema.String) // observed as a bare string too
+	root.SetChild("some-object", mixed)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-object",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	if err := ValidateConditionValueTypes(root, cond); err != nil {
+		t.Fatalf("mixed object-or-string leaf should accept a string operand, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule confirms a
+// genuinely-unknown (non-container) path is NOT rejected by
+// ValidateConditionValueTypes (it is left for the separate field-path pass);
+// only KNOWN CONTAINER paths trip the new rule.
+func TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule(t *testing.T) {
+	model := buildPureContainerModel()
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.does-not-exist",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	if err := ValidateConditionValueTypes(model, cond); err != nil {
+		t.Fatalf("unknown non-container path should not be rejected here, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Object values — never valid for any operator
 // ---------------------------------------------------------------------------
 
+// An object operand is a shape/arity error (spec §6/§8), not a field-type
+// mismatch — it is rejected upstream at the model-independent ValidateCondition
+// boundary (validateOperandShape, operators.go) as INVALID_CONDITION, before
+// ValidateConditionValueTypes's parse-based type check ever runs. These tests
+// exercise that combined pipeline (ValidateCondition then
+// ValidateConditionValueTypes), matching the order every real entry point
+// (SearchService.Search/SubmitAsync, grouped-stats) enforces.
+
 // TestValidateConditionTypes_ObjectValue_Rejects verifies that an object value
-// (map[string]any) is rejected for any operator type against any field.
+// (map[string]any) is rejected as INVALID_CONDITION for any operator type
+// against any field.
 func TestValidateConditionTypes_ObjectValue_Rejects(t *testing.T) {
-	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.price",
 		OperatorType: "EQUALS",
 		Value:        map[string]any{"foo": float64(1)},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateCondition(cond)
 	if err == nil {
 		t.Fatal("expected error for object value against any operator, got nil")
 	}
-	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("expected ErrInvalidCondition sentinel, got: %v", err)
 	}
 }
 
 // TestValidateConditionTypes_ObjectValue_StringField_Rejects verifies that
-// object values are rejected even for string fields (object is never valid
-// for any search operator).
+// object values are rejected as INVALID_CONDITION even for string fields
+// (object is never valid for any search operator).
 func TestValidateConditionTypes_ObjectValue_StringField_Rejects(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
@@ -139,12 +252,35 @@ func TestValidateConditionTypes_ObjectValue_StringField_Rejects(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        map[string]any{"nested": "value"},
 	}
-	err := ValidateConditionValueTypes(node, cond)
+	err := ValidateCondition(cond)
 	if err == nil {
 		t.Fatal("expected error for object value against string field, got nil")
 	}
-	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("expected ErrInvalidCondition sentinel, got: %v", err)
+	}
+}
+
+// TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects verifies the
+// review finding directly: an object operand on a non-BETWEEN operator
+// (EQUALS) against a typed field is rejected as INVALID_CONDITION, not
+// CONDITION_TYPE_MISMATCH — the object-shape rejection applies to every
+// operator, not just BETWEEN's arity check.
+func TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects(t *testing.T) {
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.price",
+		OperatorType: "EQUALS",
+		Value:        map[string]any{"foo": float64(1)},
+	}
+	err := ValidateCondition(cond)
+	if err == nil {
+		t.Fatal("expected error for object operand on EQUALS, got nil")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("expected ErrInvalidCondition sentinel for object operand on EQUALS, got: %v", err)
+	}
+	if errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("object operand on EQUALS must not be classified as errConditionTypeMismatch, got: %v", err)
 	}
 }
 
@@ -164,5 +300,182 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 	err := ValidateConditionValueTypes(model, cond)
 	if err != nil {
 		t.Fatalf("expected no error for array with null element, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle (meta) conditions — temporal operator/operand validation and
+// unknown-meta-field rejection (Task 7).
+// ---------------------------------------------------------------------------
+
+// TestValidate_TemporalAcceptsStringOp verifies that a string-comparison
+// operator (CONTAINS) against a temporal meta field (creationDate) is now
+// ACCEPTED (parse-based, spec §6): string operators parse any operand and the
+// kernel evaluates them to a non-match — there is no operator-class rejection.
+func TestValidate_TemporalAcceptsStringOp(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("CONTAINS on creationDate should be accepted (parse-based), got %v", err)
+	}
+}
+
+// TestValidate_TemporalAcceptsCoarseOperand verifies that a coarse operand
+// (a bare year) on a temporal meta field is ACCEPTED: it parses as Year and
+// upscales to ZonedDateTime (spec §4), so it is not a type mismatch.
+func TestValidate_TemporalAcceptsCoarseOperand(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_OR_EQUAL", Value: "2024"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("coarse operand \"2024\" on creationDate should upscale and be accepted, got %v", err)
+	}
+}
+
+// TestValidate_TemporalRejectsBadOperand verifies that a comparison operand
+// that parses into no temporal type against a temporal meta field is rejected.
+func TestValidate_TemporalRejectsBadOperand(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
+	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("non-temporal operand on creationDate should be CONDITION_TYPE_MISMATCH, got %v", err)
+	}
+}
+
+// TestValidate_TemporalAcceptsValidComparison verifies that a well-formed
+// comparison operator with an offset-bearing RFC3339 operand against a
+// temporal meta field is accepted.
+func TestValidate_TemporalAcceptsValidComparison(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2021-01-01T00:00:00Z"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("valid comparison on creationDate should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_TemporalBetweenValidOperands verifies that BETWEEN with two
+// offset-bearing RFC3339 operands against a temporal meta field is accepted.
+func TestValidate_TemporalBetweenValidOperands(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field: "lastUpdateTime", OperatorType: "BETWEEN",
+		Value: []any{"2021-01-01T00:00:00Z", "2021-12-31T00:00:00Z"},
+	}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("valid BETWEEN on lastUpdateTime should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_TemporalBetweenRejectsBadOperand verifies that BETWEEN with
+// one bad operand against a temporal meta field is rejected.
+func TestValidate_TemporalBetweenRejectsBadOperand(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field: "lastUpdateTime", OperatorType: "BETWEEN",
+		Value: []any{"2021-01-01T00:00:00Z", "not-a-date"},
+	}
+	if err := validateLifecycleType(c); !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("BETWEEN with a bad operand on lastUpdateTime should be CONDITION_TYPE_MISMATCH, got %v", err)
+	}
+}
+
+// TestValidate_TemporalIsNullSkipsOperandCheck verifies that IS_NULL/NOT_NULL
+// on a temporal meta field skip operand validation (the value is unused).
+func TestValidate_TemporalIsNullSkipsOperandCheck(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_NULL", Value: nil}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("IS_NULL on creationDate should be accepted regardless of operand, got %v", err)
+	}
+}
+
+// TestValidate_NonTemporalMetaFieldSkipsTemporalChecks verifies that a
+// non-temporal meta field (state) is not subject to the comparison-op /
+// RFC3339-operand constraints — any operator and operand are accepted.
+func TestValidate_NonTemporalMetaFieldSkipsTemporalChecks(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "state", OperatorType: "CONTAINS", Value: "ACT"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("CONTAINS on non-temporal meta field state should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_PreviousTransitionAliasKnown verifies that the
+// previousTransition alias is recognized as a known meta filter field (it
+// canonicalizes to transitionForLatestSave, a non-temporal field).
+func TestValidate_PreviousTransitionAliasKnown(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "previousTransition", OperatorType: "EQUALS", Value: "SUBMIT"}
+	if err := validateLifecycleType(c); err != nil {
+		t.Errorf("previousTransition alias should be a known field, got %v", err)
+	}
+}
+
+// TestValidate_UnknownMetaField verifies that an unrecognized meta field
+// name is rejected via errInvalidFieldPath (mapped by the handler to 400
+// INVALID_FIELD_PATH).
+func TestValidate_UnknownMetaField(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
+	err := validateLifecycleType(c)
+	if err == nil {
+		t.Fatal("unknown meta field must be rejected")
+	}
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath sentinel, got: %v", err)
+	}
+}
+
+// TestValidate_WalkConditionTypes_LifecycleNoLongerExempt verifies that
+// walkConditionTypes (invoked via ValidateConditionValueTypes) still routes
+// LifecycleCondition through validateLifecycleType — a comparison operand that
+// parses into no temporal type is rejected end-to-end.
+func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
+	model := buildDoubleModel()
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
+	err := ValidateConditionValueTypes(model, cond)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch through ValidateConditionValueTypes, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Nil model — lifecycle/temporal (model-independent) validation must still
+// run when no schema is available; only the data-field-vs-schema check is
+// schema-dependent and gracefully skipped. This is what lets grouped-stats
+// (which has no model-schema plumbing) reuse ValidateConditionValueTypes for
+// temporal/lifecycle type-soundness by passing a nil model.
+// ---------------------------------------------------------------------------
+
+// TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound verifies that
+// a nil model no longer causes ValidateConditionValueTypes to no-op: a
+// type-unsound lifecycle/temporal condition (a comparison operand that parses
+// into no temporal type) is still rejected even without a model schema.
+func TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
+	err := ValidateConditionValueTypes(nil, cond)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch even with nil model, got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_UnknownMetaField verifies that an
+// unknown meta filter field is still rejected as INVALID_FIELD_PATH even
+// without a model schema (model-independent check).
+func TestValidateConditionValueTypes_NilModel_UnknownMetaField(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
+	err := ValidateConditionValueTypes(nil, cond)
+	if !errors.Is(err, errInvalidFieldPath) {
+		t.Errorf("expected errInvalidFieldPath even with nil model, got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted
+// verifies that a nil model gracefully skips the schema-dependent data-field
+// type check (no schema to check against) rather than rejecting a
+// perfectly valid condition.
+func TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.price", OperatorType: "EQUALS", Value: float64(10)}
+	err := ValidateConditionValueTypes(nil, cond)
+	if err != nil {
+		t.Fatalf("expected no error for data condition with nil model (schema check skipped), got: %v", err)
+	}
+}
+
+// TestValidateConditionValueTypes_NilModel_NilCondition_Accepted verifies the
+// remaining nil-tolerant branch: a nil condition is always accepted
+// regardless of model.
+func TestValidateConditionValueTypes_NilModel_NilCondition_Accepted(t *testing.T) {
+	if err := ValidateConditionValueTypes(nil, nil); err != nil {
+		t.Fatalf("expected no error for nil condition, got: %v", err)
 	}
 }

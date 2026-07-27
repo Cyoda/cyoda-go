@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,15 @@ func newTestServerWithConfig(t *testing.T, cfg app.Config) *httptest.Server {
 
 func importAndLockModel(t *testing.T, base, entityName string, version int, sampleData string) {
 	t.Helper()
+	importSample(t, base, entityName, version, sampleData)
+	lockModel(t, base, entityName, version)
+}
+
+// importSample imports one SAMPLE_DATA payload into a model without locking it.
+// Repeated calls before lockModel accumulate observed types, so importing two
+// samples of different JSON kinds at the same path yields a polymorphic field.
+func importSample(t *testing.T, base, entityName string, version int, sampleData string) {
+	t.Helper()
 	url := base + "/model/import/JSON/SAMPLE_DATA/" + entityName + "/" + strconv.Itoa(version)
 	resp, err := http.Post(url, "application/json", strings.NewReader(sampleData))
 	if err != nil {
@@ -42,10 +52,14 @@ func importAndLockModel(t *testing.T, base, entityName string, version int, samp
 	}
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
+}
 
+// lockModel locks a previously-imported model version.
+func lockModel(t *testing.T, base, entityName string, version int) {
+	t.Helper()
 	lockURL := base + "/model/" + entityName + "/" + strconv.Itoa(version) + "/lock"
 	req, _ := http.NewRequest(http.MethodPut, lockURL, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("lock request failed: %v", err)
 	}
@@ -307,7 +321,23 @@ func TestHandlerDirectSearchEmpty(t *testing.T) {
 	}
 }
 
-func TestHandlerDirectSearchPagination(t *testing.T) {
+// TestHandlerDirectSearch_BoundedOrFail verifies the HTTP direct-search
+// endpoint is bounded-or-fail end-to-end: a limit smaller than the match
+// count no longer returns a silently truncated page, it 400s with
+// SEARCH_RESULT_LIMIT; a limit at or above the match count returns the full
+// match set. (Renamed from TestHandlerDirectSearchPagination, which no
+// longer describes what this asserts.)
+//
+// This condition is a LifecycleCondition, which lifecycleToFilter always
+// translates, so the request travels the real plugin Searcher pushdown path
+// (memory plugin) rather than a stub — unlike
+// TestSearchEntities_ResultLimitSentinel_Returns400 in handler_limit_test.go,
+// which only proves the handler maps a *stubbed* spi.ErrSearchResultLimitExceeded
+// sentinel to 400. This is the only test that reaches SEARCH_RESULT_LIMIT
+// through the real pushdown path over the full HTTP stack, so it asserts the
+// error code, not just the status: any unrelated 400 (binding failure,
+// validation) would also satisfy a bare status check.
+func TestHandlerDirectSearch_BoundedOrFail(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
 
@@ -315,15 +345,56 @@ func TestHandlerDirectSearchPagination(t *testing.T) {
 		createEntity(t, srv.URL, "Person", 1, fmt.Sprintf(`{"name":"Person%d","age":%d}`, i, 20+i))
 	}
 
-	// Search all with lifecycle match, limit=2
 	cond := `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"CREATED"}`
-	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=2")
-	expectStatus(t, resp, http.StatusOK)
-	body := readBody(t, resp)
-	results := parseNDJSON(t, body)
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results with limit=2, got %d", len(results))
+	// limit=2 against 5 matches: bounded-or-fail rejects rather than truncates.
+	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=2")
+	expectStatus(t, resp, http.StatusBadRequest)
+	body := readBody(t, resp)
+	var problem map[string]any
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("failed to unmarshal ProblemDetail body: %v; body=%s", err, body)
+	}
+	props, _ := problem["properties"].(map[string]any)
+	if props == nil || props["errorCode"] != common.ErrCodeSearchResultLimit {
+		t.Fatalf("errorCode = %v, want %s; body=%s", props, common.ErrCodeSearchResultLimit, body)
+	}
+
+	// limit=5 against 5 matches: within bound, returns the full set.
+	resp = doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=5")
+	expectStatus(t, resp, http.StatusOK)
+	results := parseNDJSON(t, readBody(t, resp))
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results with limit=5, got %d", len(results))
+	}
+}
+
+// TestHandlerDirectSearch_TrackingReadQueryParam_Accepted is an end-to-end
+// sanity check that the sync search endpoint's router accepts the
+// trackingRead query parameter (both true and false) over the real HTTP
+// stack without error. The DTO-to-SearchOptions mapping itself is covered
+// at a finer grain by TestHandlerDirectSearch_TrackingReadTrue_ReachesSearchOptions
+// and TestHandlerDirectSearch_TrackingReadAbsent_DefaultsFalse in
+// handler_tracking_read_test.go.
+func TestHandlerDirectSearch_TrackingReadQueryParam_Accepted(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
+	createEntity(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
+
+	cond := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
+
+	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "trackingRead=true")
+	expectStatus(t, resp, http.StatusOK)
+	results := parseNDJSON(t, readBody(t, resp))
+	if len(results) != 1 {
+		t.Fatalf("trackingRead=true: expected 1 result, got %d", len(results))
+	}
+
+	resp = doDirectSearch(t, srv.URL, "Person", 1, cond, "trackingRead=false")
+	expectStatus(t, resp, http.StatusOK)
+	results = parseNDJSON(t, readBody(t, resp))
+	if len(results) != 1 {
+		t.Fatalf("trackingRead=false: expected 1 result, got %d", len(results))
 	}
 }
 

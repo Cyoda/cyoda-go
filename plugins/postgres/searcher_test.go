@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func baseOpts() spi.SearchOptions {
 func TestPGSearcher_Eq(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -72,7 +73,7 @@ func TestPGSearcher_Eq(t *testing.T) {
 func TestPGSearcher_GtNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -86,13 +87,17 @@ func TestPGSearcher_BetweenNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
 		spi.Filter{Op: spi.FilterBetween, Path: "age", Source: spi.SourceData,
-			Values: []any{float64(28), float64(35)}},
+			Values: []any{float64(28), float64(35)}, Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(got) != 3 { // 30, 35, 28
-		t.Fatalf("age in [28,35]: want 3, got %d", len(got))
+	// Kernel-authoritative: FilterBetween is EXCLUSIVE (28 < age < 35). The
+	// inclusive SQL BETWEEN pushed as a sound superset is re-checked by the
+	// kernel, which drops the boundary rows (28, 35). Only age 30 (Alice)
+	// remains. (An inclusive range would use FilterBetweenInclusive.)
+	if len(got) != 1 {
+		t.Fatalf("age in (28,35) exclusive: want 1, got %d", len(got))
 	}
 }
 
@@ -101,8 +106,8 @@ func TestPGSearcher_And(t *testing.T) {
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
-			{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(31)},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterGt, Path: "age", Source: spi.SourceData, Value: float64(31), Declared: []spi.DataType{spi.Integer}},
 		},
 	}, baseOpts())
 	if err != nil {
@@ -118,8 +123,8 @@ func TestPGSearcher_Or(t *testing.T) {
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{
 		Op: spi.FilterOr,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg"},
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich", Declared: []spi.DataType{spi.String}},
 		},
 	}, baseOpts())
 	if err != nil {
@@ -134,14 +139,17 @@ func TestPGSearcher_Or(t *testing.T) {
 // postgresIter/evalPostFilter. Proves the residual path runs under Search.
 func TestPGSearcher_ResidualRegex(t *testing.T) {
 	store, ctx := setupSearcher(t)
+	// MATCHES_PATTERN is anchored to a whole-string match by the kernel (Cloud
+	// Pattern.matcher(x).matches() semantics), so "A.*" (not the prefix "^A")
+	// expresses "name starts with A".
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^A"},
+		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "A.*"},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(got) != 1 { // Alice
-		t.Fatalf("name ~ ^A: want 1, got %d", len(got))
+		t.Fatalf("name ~ A.*: want 1, got %d", len(got))
 	}
 }
 
@@ -151,83 +159,16 @@ func TestPGSearcher_MixedPushAndResidual(t *testing.T) {
 	got, err := searcherOf(t, store).Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
-			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "^C"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
+			// Anchored whole-string match: "C.*" expresses "name starts with C".
+			{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "C.*"},
 		},
 	}, baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(got) != 1 { // Charlie
-		t.Fatalf("Berlin AND name~^C: want 1, got %d", len(got))
-	}
-}
-
-// Pagination with NO residual → LIMIT/OFFSET pushed into SQL.
-func TestPGSearcher_PaginationNoResidual(t *testing.T) {
-	store, ctx := setupSearcher(t)
-	opts := baseOpts()
-	opts.Limit = 2
-	opts.Offset = 1
-	got, err := searcherOf(t, store).Search(ctx, spi.Filter{}, opts) // match-all, default order entity_id
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("limit 2 offset 1: want 2, got %d", len(got))
-	}
-	// Offset 1 over e1..e5 → page is e2 then e3.
-	if got[0].Meta.ID != "e2" {
-		t.Errorf("limit 2 offset 1: want got[0]=e2, got %s", got[0].Meta.ID)
-	}
-	if got[1].Meta.ID != "e3" {
-		t.Errorf("limit 2 offset 1: want got[1]=e3, got %s", got[1].Meta.ID)
-	}
-}
-
-// Pagination WITH residual → LIMIT/OFFSET applied in Go after post-filter.
-func TestPGSearcher_PaginationWithResidual(t *testing.T) {
-	store, ctx := setupSearcher(t)
-	opts := baseOpts()
-	opts.Limit = 1
-	// Residual regex matching all five names (contains any letter), so the
-	// residual path is active and pagination is applied in Go.
-	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "."},
-		opts)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("residual + limit 1: want 1, got %d", len(got))
-	}
-}
-
-// S1 guard: unbounded (Limit==0) + residual + non-zero offset must return the
-// correct page, not empty. A naive early-stop at offset+limit==offset breaks this.
-func TestPGSearcher_UnboundedOffsetWithResidual(t *testing.T) {
-	store, ctx := setupSearcher(t)
-	opts := baseOpts()
-	opts.Limit = 0 // unbounded
-	opts.Offset = 2
-	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: "."},
-		opts)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 3 { // 5 total, drop first 2
-		t.Fatalf("unbounded offset 2 + residual: want 3, got %d", len(got))
-	}
-	// Offset 2 over e1..e5 → page is e3, e4, e5.
-	if got[0].Meta.ID != "e3" {
-		t.Errorf("unbounded offset 2: want got[0]=e3, got %s", got[0].Meta.ID)
-	}
-	if got[1].Meta.ID != "e4" {
-		t.Errorf("unbounded offset 2: want got[1]=e4, got %s", got[1].Meta.ID)
-	}
-	if got[2].Meta.ID != "e5" {
-		t.Errorf("unbounded offset 2: want got[2]=e5, got %s", got[2].Meta.ID)
+		t.Fatalf("Berlin AND name~C.*: want 1, got %d", len(got))
 	}
 }
 
@@ -449,7 +390,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 	}
 	sr := store.(spi.Searcher)
 	results, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -507,7 +448,7 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 
 	sr := store.(spi.Searcher)
 	results, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -583,7 +524,7 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 	}
 	sr := store.(spi.Searcher)
 	results, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -697,7 +638,7 @@ func TestPGSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 func TestPGSearcher_InjectionFilterPath(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	_, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "city'); DROP TABLE entities;--", Source: spi.SourceData, Value: "x"},
+		spi.Filter{Op: spi.FilterEq, Path: "city'); DROP TABLE entities;--", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		baseOpts())
 	if !errors.Is(err, postgres.ErrInvalidFilterPath) {
 		t.Fatalf("want ErrInvalidFilterPath, got %v", err)
@@ -738,7 +679,7 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 		t.Fatalf("EntityStore B: %v", err)
 	}
 	got, err := searcherOf(t, storeB).Search(ctxB,
-		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search B: %v", err)
@@ -751,7 +692,7 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 func TestPGSearcher_EqNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterEq, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -764,7 +705,7 @@ func TestPGSearcher_EqNumeric(t *testing.T) {
 func TestPGSearcher_NeNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -776,22 +717,28 @@ func TestPGSearcher_NeNumeric(t *testing.T) {
 
 func TestPGSearcher_ContainsNumericValue(t *testing.T) {
 	store, ctx := setupSearcher(t)
-	// value is float64(3); string-op treats it as "3"; ages 30 and 35 contain "3"
+	// Kernel-authoritative: a string op (Contains) acts only on a TEXTUAL stored
+	// value; against a numeric stored slot (age) it is a non-match and never
+	// stringifies. The SQL doc->>'age' extraction stringifies (over-selects), so
+	// it is a sound superset re-checked by the kernel, which drops all numeric
+	// rows. Result: 0 matches (not the old SQL-stringify behaviour).
 	got, err := searcherOf(t, store).Search(ctx,
 		spi.Filter{Op: spi.FilterContains, Path: "age", Source: spi.SourceData, Value: float64(3)},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(got) != 2 { // Alice 30, Charlie 35
-		t.Fatalf("age contains '3': want 2, got %d", len(got))
+	if len(got) != 0 {
+		t.Fatalf("age contains '3' (string op on numeric = non-match): want 0, got %d", len(got))
 	}
 }
 
-// TestPGSearcher_NeNumeric_MissingFieldMatches verifies 3VL: a row that has no
-// "age" field at all must be included in age!=30 results (missing != value is
-// true under three-valued logic).
-func TestPGSearcher_NeNumeric_MissingFieldMatches(t *testing.T) {
+// TestPGSearcher_NeNumeric_MissingField verifies the kernel's null-uniformity
+// divergence: an absent stored value is a NON-match for every binary op,
+// INCLUDING the negatives (NE). A row with no "age" field is therefore EXCLUDED
+// from age!=30 results (not included as classic 3VL would). Ne is residual-only
+// (non-pushable), so the kernel is authoritative here.
+func TestPGSearcher_NeNumeric_MissingField(t *testing.T) {
 	store, ctx := setupSearcher(t) // seeds e1..e5
 	// Save an extra entity with no "age" field.
 	if _, err := store.Save(ctx, &spi.Entity{
@@ -801,24 +748,20 @@ func TestPGSearcher_NeNumeric_MissingFieldMatches(t *testing.T) {
 		t.Fatalf("Save e6: %v", err)
 	}
 	got, err := searcherOf(t, store).Search(ctx,
-		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30)},
+		spi.Filter{Op: spi.FilterNe, Path: "age", Source: spi.SourceData, Value: float64(30), Declared: []spi.DataType{spi.Integer}},
 		baseOpts())
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// Alice (age=30) is excluded; Bob/Charlie/Diana/Eve (age≠30) + Frank (no age) = 5.
-	if len(got) != 5 {
-		t.Fatalf("age!=30 with missing-field row: want 5, got %d", len(got))
+	// Alice (age=30) excluded by NE; Frank (no age) also excluded by null-
+	// uniformity; Bob/Charlie/Diana/Eve (age≠30) = 4.
+	if len(got) != 4 {
+		t.Fatalf("age!=30 (missing field excluded by null-uniformity): want 4, got %d", len(got))
 	}
-	found := false
 	for _, e := range got {
 		if e.Meta.ID == "e6" {
-			found = true
-			break
+			t.Error("age!=30: e6 (no age field) must be EXCLUDED under kernel null-uniformity")
 		}
-	}
-	if !found {
-		t.Error("age!=30: e6 (no age field) must be included but was absent")
 	}
 }
 
@@ -886,7 +829,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base}
 
 	active, err := store.(spi.Searcher).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active"}, opts)
+		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search active@base: %v", err)
 	}
@@ -895,7 +838,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	}
 
 	inactive, err := store.(spi.Searcher).Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive"}, opts)
+		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search inactive@base: %v", err)
 	}
@@ -972,7 +915,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 
 	// ASC: false < true → f, t.
 	asc, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -985,7 +928,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 
 	// DESC: true > false → t, f.
 	desc, err := sr.Search(ctx,
-		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y"},
+		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
@@ -995,4 +938,153 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		t.Fatalf("Search desc: %v", err)
 	}
 	assertIDOrder(t, desc, []string{"t", "f"})
+}
+
+// ---------------------------------------------------------------------------
+// Bounded-or-fail direct search.
+//
+// boundedSearchModel is a dedicated model (distinct from searchModel/"item")
+// so seedBoundedMatching's count is exact and unaffected by other subtests'
+// seed data.
+var boundedSearchModel = spi.ModelRef{EntityName: "bounded-item", ModelVersion: "1"}
+
+// newBoundedSearchStore returns a fresh store + ctx on its own tenant.
+func newBoundedSearchStore(t *testing.T) (spi.EntityStore, context.Context) {
+	t.Helper()
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("bounded-search-tenant")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	return store, ctx
+}
+
+// seedBoundedMatching saves n entities of boundedSearchModel, each carrying a
+// non-null "tag" field so both boundedPushdownFilter (IS NOT NULL, no
+// residual) and boundedResidualFilter (regex, always residual) match every
+// seeded row.
+func seedBoundedMatching(t *testing.T, store spi.EntityStore, ctx context.Context, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("bnd-%d", i)
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: id, ModelRef: boundedSearchModel, State: "NEW"},
+			Data: []byte(`{"tag":"present"}`),
+		}); err != nil {
+			t.Fatalf("seedBoundedMatching Save %s: %v", id, err)
+		}
+	}
+}
+
+func boundedOpts(limit int) spi.SearchOptions {
+	return spi.SearchOptions{
+		ModelName:    boundedSearchModel.EntityName,
+		ModelVersion: boundedSearchModel.ModelVersion,
+		Limit:        limit,
+	}
+}
+
+// boundedPushdownFilter is IS_NOT_NULL on "tag" — a presence check, which is
+// the ONLY leaf shape query_planner.go's planQuery treats as provably EXACT
+// (see leafExact): no residual, and the pushed leaf itself needs no kernel
+// re-check, so postFilter stays nil and Search takes the SQL "LIMIT
+// limit+1" probe branch.
+//
+// A FilterEq leaf does NOT reach that branch despite being in isPushable's
+// set: leafExact(Eq) is false (its SQL is only a SOUND SUPERSET, e.g. the
+// float8/text coercion in leafToSQL), so planQuery's soundness gate installs
+// the full original filter as postFilter and Search takes the residual path
+// instead. Confirmed by tracing planQuery → allPushedExact → leafExact
+// directly (see query_planner.go), and independently by the shared spitest
+// conformance suite (spitest/searcher.go), which drives its bounded-or-fail
+// assertions through a FilterEq predicate — if that predicate reached
+// postFilter == nil here, this plugin-local pushdown test would be
+// redundant; instead it is the ONLY coverage of the SQL "LIMIT limit+1"
+// probe path in this package. Do not swap this for an Eq filter without
+// re-verifying postFilter == nil.
+var boundedPushdownFilter = spi.Filter{Op: spi.FilterNotNull, Path: "tag", Source: spi.SourceData}
+
+// boundedResidualFilter is a regex — never pushable (query_planner.go's
+// isPushable has no FilterMatchesRegex case) — so it always drives the
+// residual/postgresIter early-raise branch. ".+" matches every seeded row's
+// non-empty "tag" value.
+var boundedResidualFilter = spi.Filter{Op: spi.FilterMatchesRegex, Path: "tag", Source: spi.SourceData, Value: ".+"}
+
+// TestPGSearcher_PushdownOverLimitFails exercises the no-residual branch: SQL
+// is asked for limit+1 rows, and the extra row proves the matched set (3)
+// does not fit in Limit (2).
+func TestPGSearcher_PushdownOverLimitFails(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	_, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(2))
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("pushdown branch, 3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// TestPGSearcher_ResidualOverLimitFails exercises the residual branch:
+// postgresIter streams post-filter matches and Search raises the moment the
+// count exceeds Limit, without draining the rest of the result set.
+func TestPGSearcher_ResidualOverLimitFails(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	_, err := searcherOf(t, store).Search(ctx, boundedResidualFilter, boundedOpts(2))
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("residual branch, 3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// TestPGSearcher_AtLimitSucceeds: exactly-at-limit is not an overflow.
+func TestPGSearcher_AtLimitSucceeds(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 2)
+	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(2))
+	if err != nil {
+		t.Fatalf("2 matches at limit 2: unexpected err %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2", len(got))
+	}
+}
+
+// TestPGSearcher_UnboundedReturnsAll: Limit<=0 must never raise, and must
+// never substitute a default cap.
+func TestPGSearcher_UnboundedReturnsAll(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(0))
+	if err != nil {
+		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d, want 3", len(got))
+	}
+}
+
+// TestPGSearcher_InTxOverLimitFails proves the bound applies through a live
+// pgx.Tx: postgres has no buffer overlay and never calls spi.MergeBounded —
+// Search's committed pushdown IS the in-tx result (the Querier resolves the
+// active pgx.Tx from ctx, so REPEATABLE READ gives RYW natively), so the same
+// searchCommitted code path and the same single bound check apply whether or
+// not a transaction is active. Here the 3 matches are staged but never
+// committed, so this exercises the bound over uncommitted rows visible only
+// inside the searching transaction itself.
+func TestPGSearcher_InTxOverLimitFails(t *testing.T) {
+	factory, tm := setupFCWTest(t)
+	ctx := ctxWithTenant("bounded-search-tx-tenant")
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	store, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore (tx): %v", err)
+	}
+	seedBoundedMatching(t, store, txCtx, 3)
+	_, err = searcherOf(t, store).Search(txCtx, boundedPushdownFilter, boundedOpts(2))
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("in-tx, 3 uncommitted matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
 }

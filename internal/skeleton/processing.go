@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type ExternalProcessingService struct{}
@@ -17,6 +18,10 @@ func (s *ExternalProcessingService) DispatchProcessor(_ context.Context, entity 
 	return entity, nil
 }
 
-func (s *ExternalProcessingService) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, error) {
-	return true, nil
+func (s *ExternalProcessingService) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, string, error) {
+	return true, "", nil
+}
+
+func (s *ExternalProcessingService) DispatchFunction(_ context.Context, _ *spi.Entity, _ spi.ScheduleFunction, _ string, _ string, _ string) (contract.FunctionResult, error) {
+	return contract.FunctionResult{}, nil
 }

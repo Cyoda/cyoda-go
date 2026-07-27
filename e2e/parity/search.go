@@ -1,6 +1,8 @@
 package parity
 
 import (
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -57,6 +59,60 @@ func RunSearchSimpleCondition(t *testing.T, fixture BackendFixture) {
 
 	if len(results) != 2 {
 		t.Errorf("expected 2 results (Alice, Carol), got %d", len(results))
+	}
+}
+
+// RunSearchBoolCondition creates 3 entities with a boolean field and searches
+// with a JSON boolean value (EQUALS true, then NOT_EQUALS true). Guards the
+// postgres bool->text encode bug: a raw Go bool bound against the text-typed
+// doc->>'path' extraction failed to encode ("cannot find encode plan"), 500ing
+// the search. Memory and sqlite always handled it; this asserts all backends agree.
+func RunSearchBoolCondition(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-bool"
+	const modelVersion = 1
+	// Own model import so the schema declares the boolean `active` field
+	// (the shared search model has no bool field).
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Sample","active":true}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.ImportWorkflow(t, modelName, modelVersion, searchWorkflowJSON); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","active":true}`); err != nil {
+		t.Fatalf("CreateEntity Alice: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Bob","active":false}`); err != nil {
+		t.Fatalf("CreateEntity Bob: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Carol","active":true}`); err != nil {
+		t.Fatalf("CreateEntity Carol: %v", err)
+	}
+
+	// EQUALS a JSON boolean true -> Alice, Carol.
+	eqCond := `{"type":"simple","jsonPath":"$.active","operatorType":"EQUALS","value":true}`
+	eqResults, err := c.SyncSearch(t, modelName, modelVersion, eqCond)
+	if err != nil {
+		t.Fatalf("SyncSearch (EQUALS true): %v", err)
+	}
+	if len(eqResults) != 2 {
+		t.Errorf("EQUALS true: expected 2 results (Alice, Carol), got %d", len(eqResults))
+	}
+
+	// NOT_EQUALS a JSON boolean true -> Bob (same text-branch encode path).
+	neCond := `{"type":"simple","jsonPath":"$.active","operatorType":"NOT_EQUAL","value":true}`
+	neResults, err := c.SyncSearch(t, modelName, modelVersion, neCond)
+	if err != nil {
+		t.Fatalf("SyncSearch (NOT_EQUAL true): %v", err)
+	}
+	if len(neResults) != 1 {
+		t.Errorf("NOT_EQUAL true: expected 1 result (Bob), got %d", len(neResults))
 	}
 }
 
@@ -201,6 +257,98 @@ func RunSearchAfterUpdate(t *testing.T, fixture BackendFixture) {
 	}
 	if len(results) != 1 {
 		t.Errorf("expected 1 result after update, got %d", len(results))
+	}
+}
+
+// RunSearchDirectBoundedOrFail asserts the bounded-or-fail contract on every
+// backend's direct-search path: the limit is a cap on the matched set, not a
+// page size. A matched set larger than the limit is a 400, never a truncated
+// prefix. The omitted-limit case is pinned from both sides: 1001 matches
+// (amount==1 or amount==2) exceed the default and 400, while the 1000-strong
+// amount==1 subset alone is under it and succeeds — so this scenario proves
+// the default is exactly 1000, not merely "1000 or smaller".
+func RunSearchDirectBoundedOrFail(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	const modelName = "parity-search-bounded-or-fail"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	// 1001 matching entities: one more than the documented default of 1000.
+	// The last one carries amount:2 so a narrower condition (amount==1) can
+	// isolate exactly 1000 of them without a second seeding pass.
+	for i := 0; i < 1001; i++ {
+		amount := 1
+		if i == 1000 {
+			amount = 2
+		}
+		if _, err := c.CreateEntity(t, modelName, modelVersion,
+			fmt.Sprintf(`{"name":"n%d","amount":%d,"status":"new"}`, i, amount)); err != nil {
+			t.Fatalf("CreateEntity %d: %v", i, err)
+		}
+	}
+
+	cond := `{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"new"}`
+
+	// Omitted limit → the 1000 default applies, and 1001 matches exceed it.
+	status, body, err := c.SyncSearchRawLimit(t, modelName, modelVersion, cond, -1)
+	if err != nil {
+		t.Fatalf("SyncSearch (omitted limit): %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("omitted limit: got status %d, want 400; body=%s", status, body)
+	}
+	if !containsErrorCode(body, "SEARCH_RESULT_LIMIT") {
+		t.Errorf("omitted limit: expected errorCode SEARCH_RESULT_LIMIT, body=%s", body)
+	}
+
+	// Omitted limit, narrowed to the 1000-strong amount==1 subset → under the
+	// default, so it succeeds and returns all 1000. Without this the previous
+	// 400 would equally pass under any default <= 1000 (e.g. 500); this pins
+	// the default from below and makes it exactly 1000.
+	amountOneCond := `{"type":"group","operator":"AND","conditions":[` +
+		`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"new"},` +
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":1}]}`
+	amountOneResults, err := c.SyncSearch(t, modelName, modelVersion, amountOneCond) // no limit param, 200 required
+	if err != nil {
+		t.Fatalf("SyncSearch (omitted limit, amount==1 subset): %v", err)
+	}
+	if len(amountOneResults) != 1000 {
+		t.Errorf("omitted limit, amount==1 subset: got %d results, want 1000", len(amountOneResults))
+	}
+
+	// Explicit limit one short of the match count → same outcome.
+	status, body, err = c.SyncSearchRawLimit(t, modelName, modelVersion, cond, 1000)
+	if err != nil {
+		t.Fatalf("SyncSearch (limit=1000): %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("limit=1000: got status %d, want 400; body=%s", status, body)
+	}
+	if !containsErrorCode(body, "SEARCH_RESULT_LIMIT") {
+		t.Errorf("limit=1000: expected errorCode SEARCH_RESULT_LIMIT, body=%s", body)
+	}
+
+	// Exactly at the match count → the whole set comes back.
+	results, err := c.SyncSearchSortedLimit(t, modelName, modelVersion, cond, nil, 1001)
+	if err != nil {
+		t.Fatalf("SyncSearch (limit=1001): %v", err)
+	}
+	if len(results) != 1001 {
+		t.Errorf("limit=1001: got %d results, want 1001", len(results))
+	}
+
+	// limit=0 means unbounded at the SPI, so the transport must reject it
+	// rather than hand out an unbounded synchronous search.
+	status, body, err = c.SyncSearchRawLimit(t, modelName, modelVersion, cond, 0)
+	if err != nil {
+		t.Fatalf("SyncSearch (limit=0): %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("limit=0: got status %d, want 400; body=%s", status, body)
+	}
+	if !containsErrorCode(body, "BAD_REQUEST") {
+		t.Errorf("limit=0: expected errorCode BAD_REQUEST, body=%s", body)
 	}
 }
 

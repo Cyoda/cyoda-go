@@ -1,6 +1,7 @@
 package txgate
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -50,6 +51,83 @@ func TestRegistry_ReleasesMapEntry(t *testing.T) {
 	r.Acquire("tx-1")() // acquire+release
 	if n := r.len(); n != 0 {
 		t.Fatalf("expected empty gate map after release, got %d", n)
+	}
+}
+
+// TestSuspend_NoHeldGate_NoOp: a ctx with no held gate installed (the owner
+// path, or a plain non-joined call) yields a no-op Suspend whose resume is also
+// a harmless no-op — it must never touch any gate.
+func TestSuspend_NoHeldGate_NoOp(t *testing.T) {
+	resume := Suspend(context.Background())
+	if resume == nil {
+		t.Fatal("Suspend returned a nil resume for a ctx with no held gate")
+	}
+	resume() // must not panic
+}
+
+// TestSuspend_ReleasesHeldGate_ResumeReacquires encodes the fix's core seam.
+// A joined caller holds gate(T) and installs a held handle on ctx via WithHeld.
+// While it is "parked in dispatch" it calls Suspend(ctx): the gate MUST be
+// released so a descendant on the same txID can Acquire and progress. After the
+// descendant releases, resume() MUST re-acquire the gate before the caller
+// resumes its buffer access — and the caller's own release variable must observe
+// the fresh release func so the deferred release matches the re-acquire.
+func TestSuspend_ReleasesHeldGate_ResumeReacquires(t *testing.T) {
+	r := New()
+	const txID = "tx-suspend"
+
+	// Joined caller acquires the gate and records it on ctx.
+	release := r.Acquire(txID)
+	ctx, _ := WithHeld(context.Background(), r, txID, &release)
+
+	// Descendant tries to acquire the SAME gate. It must block until Suspend
+	// releases, then complete, then release before resume can re-acquire.
+	descendantAcquired := make(chan struct{})
+	descendantReleased := make(chan struct{})
+	go func() {
+		rel := r.Acquire(txID) // blocks until the caller Suspends
+		close(descendantAcquired)
+		time.Sleep(20 * time.Millisecond) // hold briefly so resume must wait
+		rel()
+		close(descendantReleased)
+	}()
+
+	// Before Suspend the descendant must NOT be able to acquire.
+	select {
+	case <-descendantAcquired:
+		t.Fatal("descendant acquired gate(T) while the caller still held it — Suspend not yet called")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	resume := Suspend(ctx)
+
+	// Now the descendant progresses (the gate was released).
+	select {
+	case <-descendantAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("descendant could not acquire gate(T) after Suspend — the held gate was not released")
+	}
+
+	// resume() must block until the descendant releases, then re-acquire.
+	resume()
+	select {
+	case <-descendantReleased:
+	case <-time.After(time.Second):
+		t.Fatal("resume() returned before the descendant released — it did not re-acquire the gate")
+	}
+
+	// The caller's release variable now points at the re-acquired gate; calling
+	// it must free the gate (a fresh Acquire must not block afterward).
+	release()
+	done := make(chan struct{})
+	go func() { r.Acquire(txID)(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("gate still held after the caller's release() — resume did not rebind the release func")
+	}
+	if n := r.len(); n != 0 {
+		t.Fatalf("expected empty gate map after all releases, got %d", n)
 	}
 }
 

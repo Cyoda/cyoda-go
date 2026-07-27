@@ -19,7 +19,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Endpoints that accept a search-style condition in the request body — grouped statistics and the conditional form of delete-by-model — reject a body whose condition cannot be parsed. The condition type is unrecognised, a nested clause is malformed, or the JSON does not match the expected condition envelope.
+Endpoints that accept a search-style condition in the request body — grouped statistics and the conditional form of delete-by-model — reject a body whose condition cannot be parsed or is otherwise structurally invalid. The condition type is unrecognised, a nested clause is malformed, the JSON does not match the expected condition envelope, an `operatorType` is not one of the canonical operators, a `MATCHES_PATTERN` regex is malformed, or a `BETWEEN`/`BETWEEN_INCLUSIVE` operator's value is not a two-element array.
 
 To resolve: correct the condition body to a valid `AbstractConditionDto` (see `cyoda help search`).
 

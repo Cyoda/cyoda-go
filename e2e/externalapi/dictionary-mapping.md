@@ -141,7 +141,7 @@ The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd
 | ext/05-sync-error-flag-rolls-back | (skipped) | pending compute-test-client error-flag processor; processorFunc signature doesn't expose ProcessorResponse warnings/errors; out of tranche-3 scope |
 | ext/06-async-same-tx-error-flag-rolls-back | (skipped) | same as 09/05 (ASYNC_SAME_TX) |
 | ext/07-async-new-tx-error-flag-keeps-initial-save | (skipped) | same as 09/05 (ASYNC_NEW_TX) |
-| ext/08-no-external-registered-fails | new:RunExternalAPI_09_08_NoExternalRegisteredFails | tranche 3 — `equiv_or_better`: cyoda-go emits `WORKFLOW_FAILED` @400 ("no matching calculation member"); fresh tenant has no calc member registered |
+| ext/08-no-external-registered-fails | new:RunExternalAPI_09_08_NoExternalRegisteredFails | tranche 3 — `equiv_or_better`: cyoda-go emits `NO_COMPUTE_MEMBER_FOR_TAG` @503 retryable ("no matching calculation member"); fresh tenant has no calc member registered. Now classifies the no-member case as a transient compute-infra condition (retryable 503), not a client error — strictly stronger than the earlier `WORKFLOW_FAILED` @400 mapping, which mislabelled an unreachable/unregistered compute node as a bad request. |
 | ext/09-external-disconnect-succeeds-on-retry | (skipped) | multi-member orchestration not in tranche-3 fixture |
 | ext/10-external-timeout-failover | (skipped) | no per-call timeout config visible in cyoda-go; non-deterministic without one |
 | ext/11-processing-node-disconnects-mid-request | (skipped) | needs deterministic mid-request gRPC disconnect (fixture orchestration) |

@@ -9,9 +9,45 @@ import (
 
 func fields() map[string]schema.FieldDescriptor {
 	return map[string]schema.FieldDescriptor{
-		"$.surname": {Path: "$.surname", Types: []schema.DataType{schema.String}},
-		"$.age":     {Path: "$.age", Types: []schema.DataType{schema.Integer}},
-		"$.tags[*]": {Path: "$.tags[*]", Types: []schema.DataType{schema.String}, IsArray: true},
+		"$.surname":  {Path: "$.surname", Types: []schema.DataType{schema.String}},
+		"$.age":      {Path: "$.age", Types: []schema.DataType{schema.Integer}},
+		"$.tags[*]":  {Path: "$.tags[*]", Types: []schema.DataType{schema.String}, IsArray: true},
+		"$.bornOn":   {Path: "$.bornOn", Types: []schema.DataType{schema.LocalDate}},
+		"$.polyDate": {Path: "$.polyDate", Types: []schema.DataType{schema.String, schema.LocalDate}},
+	}
+}
+
+// TestResolveOrderBy_DataTemporalSortsAsText locks in the sort/filter decoupling:
+// a SourceData temporal field resolves to OrderText for ORDER BY (lexical
+// ISO-8601 = chronological, byte-identical across memory/sqlite/postgres), NOT
+// OrderTemporal (which would tie on memory's Num=0, NULL on postgres, and coerce
+// leading digits on sqlite — three divergent orders + a wrong pushed page).
+func TestResolveOrderBy_DataTemporalSortsAsText(t *testing.T) {
+	got, err := resolveOrderBy([]OrderKey{
+		{Path: "bornOn", Source: spi.SourceData},
+	}, fields())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := spi.OrderSpec{Path: "bornOn", Source: spi.SourceData, Kind: spi.OrderText}
+	if got[0] != want {
+		t.Fatalf("data-temporal sort spec = %+v, want %+v", got[0], want)
+	}
+}
+
+// TestResolveOrderBy_PolymorphicTemporalSortsAsText covers the Minor: a
+// polymorphic [String, LocalDate] data field must sort lexically (OrderText)
+// rather than failing the whole search on a mixed-class error.
+func TestResolveOrderBy_PolymorphicTemporalSortsAsText(t *testing.T) {
+	got, err := resolveOrderBy([]OrderKey{
+		{Path: "polyDate", Source: spi.SourceData},
+	}, fields())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := spi.OrderSpec{Path: "polyDate", Source: spi.SourceData, Kind: spi.OrderText}
+	if got[0] != want {
+		t.Fatalf("polymorphic-temporal sort spec = %+v, want %+v", got[0], want)
 	}
 }
 

@@ -43,6 +43,17 @@ func HasTxState(tm *TransactionManager, txID string) bool {
 	return ok
 }
 
+// OriginMapLenForTest returns the number of entries currently tracked in
+// tm.origins. Used by leak-detection tests to verify that Commit/Rollback's
+// cleanupTx removes the per-tx origin entry — see TransactionManager.origins
+// godoc for why this bookkeeping map exists (postgres rebuilds
+// TransactionState at Join and cannot rely on a shared pointer).
+func OriginMapLenForTest(tm *TransactionManager) int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return len(tm.origins)
+}
+
 // TxStateForTest exposes the recording/savepoint methods needed by tests.
 type TxStateForTest interface {
 	RecordRead(id string, version int64)
@@ -97,4 +108,45 @@ var ValidateJSONPathForTest = validateJSONPath
 // EXPLAIN) that don't fit any typed store method.
 func PoolForTest(f *StoreFactory) *pgxpool.Pool {
 	return f.pool
+}
+
+// SearchCandidateIDsForTest returns the entity IDs the SQL WHERE fragment
+// planQuery(filter) produces BEFORE any Go-side postFilter re-check — i.e.
+// the raw pushdown candidate set exactly as searchCommitted would scan it,
+// minus the residual application step. Used by the pushdown-soundness
+// property test (soundness_property_test.go) to assert the SQL pre-filter
+// is a SUPERSET of the kernel's true matches (never under-selects) —
+// independent of, and in addition to, the "backend result == kernel result"
+// equality proxy that store.Search() (which DOES apply the residual)
+// provides.
+func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID spi.TenantID, entityName, modelVersion string, filter spi.Filter) ([]string, error) {
+	s := &entityStore{q: pool, tenantID: tenantID}
+	var plan sqlPlan
+	if filter.Op != "" {
+		plan = planQuery(filter)
+	}
+	baseQuery, baseArgs := s.searchBaseQuery(entityName, modelVersion, nil)
+	if plan.where != "" {
+		shifted := shiftPlaceholders(plan.where, len(baseArgs))
+		baseQuery += " AND (" + shifted + ")"
+		baseArgs = append(baseArgs, plan.args...)
+	}
+	rows, err := s.q.Query(ctx, baseQuery, baseArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var doc []byte
+		if err := rows.Scan(&doc); err != nil {
+			return nil, err
+		}
+		e, err := unmarshalEntityDoc(doc)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, e.Meta.ID)
+	}
+	return ids, rows.Err()
 }

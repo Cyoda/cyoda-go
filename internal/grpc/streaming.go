@@ -156,22 +156,16 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 
 			switch evtType {
 			case CalculationMemberKeepAliveEvent:
+				// Liveness-only: an inbound keep-alive refreshes the member's
+				// LastSeen and nothing more. The server pings on its own ticker
+				// (keepAliveLoop); it must NOT echo a keep-alive back. Echoing
+				// against a client that also echoes inbound keep-alives produces
+				// a zero-delay, unbounded ping-pong storm pinning both processes
+				// at 100% CPU.
 				slog.Debug("keep-alive received", "pkg", "grpc", "memberId", memberID)
 				member := s.registry.Get(memberID)
 				if member != nil {
 					member.UpdateLastSeen()
-				}
-				// Send keep-alive response.
-				kaResp := events.CalculationMemberKeepAliveEventJson{
-					ID:       res.msg.Id,
-					MemberID: memberID,
-					Success:  true,
-				}
-				kaCE, err := NewCloudEvent(CalculationMemberKeepAliveEvent, kaResp)
-				if err == nil {
-					if err := stream.Send(kaCE); err != nil {
-						slog.Warn("failed to send keep-alive response", "pkg", "grpc", "memberId", memberID, "error", err)
-					}
 				}
 
 			case EntityProcessorCalculationResponse:
@@ -181,6 +175,10 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 			case EntityCriteriaCalculationResponse:
 				s.handleCriteriaResponse(memberID, evtPayload)
 				slog.Debug("criteria response routed", "pkg", "grpc", "memberId", memberID)
+
+			case EntityFunctionCalculationResponse:
+				s.handleFunctionResponse(memberID, evtPayload)
+				slog.Debug("function response routed", "pkg", "grpc", "memberId", memberID)
 
 			case EventAckResponse:
 				// Client acknowledged a server event — proves liveness.
@@ -283,6 +281,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
 		Matches   bool   `json:"matches"`
+		Reason    string `json:"reason"`
 		Error     *struct {
 			Message   string `json:"message"`
 			Retryable *bool  `json:"retryable"`
@@ -310,7 +309,56 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Success:   resp.Success,
 		Error:     errMsg,
 		Matches:   &matches,
+		Reason:    resp.Reason,
 		Warnings:  resp.Warnings,
 		Retryable: retryable,
+	})
+}
+
+// handleFunctionResponse routes a function calculation response to the
+// pending request on the given member.
+func (s *CloudEventsServiceImpl) handleFunctionResponse(memberID string, payload json.RawMessage) {
+	var resp struct {
+		RequestID  string           `json:"requestId"`
+		Success    bool             `json:"success"`
+		Result     *json.RawMessage `json:"result"`
+		ResultKind *string          `json:"resultKind"`
+		Error      *struct {
+			Message   string `json:"message"`
+			Retryable *bool  `json:"retryable"`
+		} `json:"error"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", memberID, "error", err)
+		return
+	}
+
+	member := s.registry.Get(memberID)
+	if member == nil {
+		return
+	}
+
+	errMsg := ""
+	var retryable *bool
+	if resp.Error != nil {
+		errMsg = resp.Error.Message
+		retryable = resp.Error.Retryable
+	}
+	var result json.RawMessage
+	if resp.Result != nil {
+		result = *resp.Result
+	}
+	resultKind := ""
+	if resp.ResultKind != nil {
+		resultKind = *resp.ResultKind
+	}
+	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
+		Success:    resp.Success,
+		Error:      errMsg,
+		Result:     result,
+		ResultKind: resultKind,
+		Warnings:   resp.Warnings,
+		Retryable:  retryable,
 	})
 }

@@ -6,6 +6,85 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Bounded-search failures now surface as `400`, not `500`** — a storage backend
+  (`Searcher` or grouped-stats aggregator) that detects a matched result set
+  exceeding its configured cap now returns `400 SEARCH_RESULT_LIMIT`; one whose
+  non-indexable residual scan exceeds the backend's row budget now returns
+  `400 SCAN_BUDGET_EXHAUSTED` — both previously surfaced as an opaque `500`
+  ticket on every transport. sqlite raises `SCAN_BUDGET_EXHAUSTED` on direct
+  search today; the commercial backend's index-driven searcher is expected to
+  raise `SEARCH_RESULT_LIMIT`. New error code: `SCAN_BUDGET_EXHAUSTED` (400).
+  ([#433](https://github.com/Cyoda-platform/cyoda-go/issues/433))
+
+- **Scheduled state transitions now fire automatically.** A transition
+  carrying `schedule: {delayMs, timeoutMs}` fires `delayMs` after the entity
+  enters its source state, via a durable per-backend `ScheduledTask` store
+  (memory/sqlite/postgres) armed and cancelled atomically with the entity
+  write. A cluster coordinator (lowest-live-node-ID, pluggable) scans due
+  tasks and distributes them (round-robin, pluggable) to a fire-and-forget
+  peer RPC; the firing node re-reads the task and entity as a guard before
+  acting, so a stale or superseded task is a silent no-op. The transition's
+  criterion is evaluated **once** at fire time — `false` declines the
+  transition (the entity stays put, not retried); a lateness grace band
+  separates expiry (`timeoutMs` exceeded, dropped unfired) from firing so
+  clock skew across nodes cannot produce a contradictory expire-and-fire.
+  Any entity write that leaves the entity in the same state (including a
+  routine data update or self-loop) resets the timer. Explicitly firing a
+  scheduled transition by name still returns `400 TRANSITION_NOT_FOUND`
+  (reworded: "is scheduled and fires automatically; it is not manually
+  fireable"). New audit events: `SCHEDULED_TRANSITION_ARM`/`FIRE`/`EXPIRE`/`CANCEL`.
+  New env vars: `CYODA_SCHEDULER_ENABLED`, `CYODA_SCHEDULER_SCAN_INTERVAL`,
+  `CYODA_SCHEDULER_BATCH_SIZE`, `CYODA_SCHEDULER_DISTRIBUTION`,
+  `CYODA_SCHEDULER_COORDINATOR`, `CYODA_SCHEDULER_REDISPATCH_BACKOFF`,
+  `CYODA_SCHEDULER_EXPIRY_GRACE`.
+  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+
+  **Per-entity firing time via a `schedule.function` compute-node callout.**
+  A scheduled transition's `schedule` may now carry `function` instead of a
+  static `delayMs` — mutually exclusive with it — naming a compute node
+  (routed by `calculationNodesTags`, same conventions as an externalized
+  processor/criterion) that computes the firing time per entity at arm time.
+  The callout returns a `resultKind: "Schedule"` result shaped
+  `{fireAt|fireAfterMs, expireAt?|expireAfterMs?}` (absolute epoch-ms or
+  relative), resolved into the same `scheduledTime`/`timeoutMs` a static
+  `delayMs` schedule would populate. A resolved expiry at or before the
+  resolved fire time is **born expired**: the transition is never armed, any
+  prior scheduling for it is cancelled, and a `SCHEDULED_TRANSITION_EXPIRE`
+  audit event is recorded directly — the entity write still succeeds. A
+  malformed or wrong-kind result rejects the entity write with the new
+  `500 SCHEDULE_FUNCTION_INVALID_RESULT`; the compute node being unreachable,
+  disconnected, or timing out surfaces the retryable `503`s below instead —
+  fail-closed either way, never a silent skip. Additive workflow schema
+  change: the workflow schema moves to **1.3** and every existing 1.1/1.2
+  payload remains valid (dual-shape). New error code:
+  `SCHEDULE_FUNCTION_INVALID_RESULT` (500). Contract note: because a
+  `function` schedule carries no `delayMs`, `TransitionScheduleDto.delayMs`
+  is no longer a `required` property — consumers of the workflow-**export**
+  response (`GET …/workflow/export`) must treat `delayMs` as optional on a
+  1.3+ schedule (a pre-1.3 exported workflow always has it). This is an
+  intentional, schema-version-gated contract change, allowlisted in the
+  oasdiff breaking-change gate.
+
+  **Uniform compute-infra `503`s across processor/criterion/function
+  callouts.** `NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`,
+  `DISPATCH_FORWARD_FAILED`, and `COMPUTE_MEMBER_DISCONNECTED` now surface
+  as retryable `503` uniformly regardless of which of the three callout
+  kinds triggered the dispatch — previously some of these paths
+  (e.g. no matching compute member) fell through to a misleading
+  `400 WORKFLOW_FAILED`. No new error codes.
+  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+
+- **Criterion stoppage reason** — a criteria compute node's `EntityCriteriaCalculationResponse`
+  may now carry an optional `reason` string on `matches: false`, explaining why a passage was
+  blocked. A manual explicit transition rejected by its criterion appends the reason to the
+  `400 WORKFLOW_FAILED` detail (`transition "<name>" criterion not matched: <reason>`) — the
+  guaranteed, backend-independent surface. For the automated-cascade and workflow-selection
+  paths, the reason is additionally recorded durably on the state-machine audit trail:
+  `TRANSITION_NOT_MATCH_CRITERION`'s `data` carries `{workflowName, transition, criterion, reason}`
+  and `WORKFLOW_SKIP`'s carries `{workflowName, reason}`. A manual rejection's own audit event is
+  not forced durable (it rolls back with the no-op transaction, same as before). Reason is capped
+  at 2 KiB; an omitted reason defaults to `"criterion did not match"`. No new error codes.
+
 - **Entity partial-update (PATCH / RFC 7386 merge patch)** — `PATCH /api/entity/{format}/{entityId}`
   and `PATCH /api/entity/{format}/{entityId}/{transition}` apply a sparse JSON patch to the stored
   payload with RFC 7386 merge semantics (non-null key overwrites, explicit `null` deletes, omitted
@@ -55,6 +134,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (default `16`). New SPI field: `OrderSpec.Kind OrderKind` (enum: `OrderText`, `OrderNumeric`,
   `OrderBool`, `OrderTemporal`); ships with `cyoda-go-spi v0.8.2`.
 
+- **Tx-aware search pushdown + `trackingRead`** — an in-transaction search no
+  longer falls back to a full `GetAll` scan plus in-memory filtering; the
+  plugin-level `Searcher` now honours the active transaction directly,
+  read-your-own-writes correct against the transaction's own uncommitted
+  writes, with no full-model materialisation (memory/sqlite overlay the
+  transaction buffer on the committed stream; postgres runs the query
+  natively on its own `pgx.Tx`). A new optional `trackingRead` boolean
+  (default `false`) on the synchronous search endpoints (HTTP
+  `POST /api/search/direct/{entityName}/{modelVersion}` and the gRPC
+  `Search` RPC) opts a search into recording its **returned** entities into
+  the transaction's read-set, so a concurrent write to one of them aborts
+  the transaction at commit — entity-level, same as `GetAll`, still no
+  phantom-write-skew protection. Default behaviour (`trackingRead=false`)
+  is a plain snapshot read that records nothing, a lighter-weight read-set
+  footprint than before. See `docs/CONSISTENCY.md` §3c for the updated fence
+  guidance. Async search does not expose the flag (it runs detached, outside
+  any transaction). No new error codes.
+
 - **Compute-node callback transaction-join** — processor and criteria-evaluation
   callbacks from a compute node now join the originating workflow transaction
   (`T`) rather than running in a standalone transaction. The engine mints a
@@ -103,6 +200,61 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (additive; 1.1 still accepted).
 
 ### Changed
+
+- **Direct search is bounded-or-fail on every backend (breaking).** A synchronous
+  search whose matched set exceeds the effective `limit` now returns
+  `400 SEARCH_RESULT_LIMIT` instead of silently truncating to the first `limit`
+  results. The default when `limit` is omitted is unchanged at 1000, so a query
+  matching more than 1000 entities that previously returned a truncated page now
+  fails. Narrow the condition, raise `limit` (maximum 10000), or use async
+  search, which snapshots and pages the full result set. Ordered top-N
+  (`sort` + a small `limit`) is no longer available on the synchronous path —
+  async search covers it. `limit=0`, which previously yielded an *unbounded*
+  synchronous search, is now rejected with `400 BAD_REQUEST`; gRPC rejects
+  `limit < 1` for the same reason.
+  ([#437](https://github.com/Cyoda-platform/cyoda-go/issues/437))
+
+- **Search/criteria predicate evaluation is now type-directed and same-type
+  only**, aligning cyoda-go with Cyoda Cloud's evaluation model (see
+  `cyoda help predicates`, `docs/cloud-parity/431-search-semantics.md`).
+  Observable changes:
+  - Comparison is same-type: an operand is parsed against the field's
+    declared type(s), so a numeric-looking string and a JSON number are
+    treated identically; there is no cross-type coincidental match.
+  - Numbers compare via precise arbitrary-precision types, replacing the
+    prior `float64`-based coercion (correct beyond 2^53).
+  - `LIKE` is now an anchored, escaped glob (`%`/`_`/`\`-escape, whole-string,
+    case-sensitive) on every backend — SQL `LIKE` is no longer wildcard-neutered.
+  - Data-field temporal comparison is lit up (six subtypes with resolution
+    upscale/downscale), subsuming the earlier temporal-search work; meta-field
+    temporal (`creationDate`/`lastUpdateTime`) now also accepts a coarser
+    operand (e.g. a bare year) and upscales it, relaxing the prior
+    offset-mandatory rule.
+  - Validation is parse-based: a `400` is returned only when the operand
+    parses into none of the field's declared types. This replaces the
+    previous value-type-assignability check, so some requests that used to
+    400 now succeed (and vice versa) — see `errors.CONDITION_TYPE_MISMATCH`.
+  - Negative operators (`NOT_EQUAL`, `NOT_CONTAINS`, `INOT_*`, ...) on an
+    absent or `null` field now evaluate to **non-match** (previously matched
+    via `!positive`).
+  - `BETWEEN_INCLUSIVE` is fixed: it previously fell through to a regex
+    evaluation on `Searcher`-backed stores instead of an inclusive range check.
+  - A field observed as both an object and a bare scalar is now searchable
+    via its scalar type; a scalar operator against a pure-container (object)
+    path now rejects `400 INVALID_FIELD_PATH` instead of silently returning
+    an empty result.
+  - `IS_CHANGED`/`IS_UNCHANGED` remain unimplemented — not search predicates.
+  ([#431](https://github.com/Cyoda-platform/cyoda-go/issues/431))
+
+- **Processor `config.attachEntity` now defaults to `true`.** A processor whose
+  `config` omits `attachEntity` is imported with `attachEntity: true`, so the
+  full entity payload is attached to its calculation request — matching
+  `schedule.function` and the criterion `function` callout, which already
+  default to `true`. Set `attachEntity: false` explicitly to opt out. Existing
+  workflows that omit the field and re-import (e.g. export → import) will start
+  attaching the entity payload; compute nodes that ignore the payload are
+  unaffected.
+  ([#421](https://github.com/Cyoda-platform/cyoda-go/issues/421))
 
 - **`DELETE /model/{entityName}/{modelVersion}` now enforces the documented
   UNLOCKED precondition** — deleting a `LOCKED` model returns `409
@@ -176,6 +328,75 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   valid UUID is accepted; the fictional constraint is removed from the spec.
 
 ### Fixed
+
+- **Conditional delete forwards a classified 4xx from its delete-selection
+  search** instead of surfacing an opaque `500`.
+  ([#437](https://github.com/Cyoda-platform/cyoda-go/issues/437))
+
+- **Direct search now applies the documented default limit** — omitting `limit`
+  on `POST /api/search/direct/{entityName}/{modelVersion}` (and the gRPC
+  `EntitySearchCollection`) now caps results at the documented default of 1000
+  on every storage backend; previously this default was applied only on the
+  `GetAll`+match fallback branch, while the `Searcher` pushdown branch used by
+  all three OSS backends (memory/sqlite/postgres) treated an omitted limit as
+  unbounded, returning the entire matched set.
+  ([#432](https://github.com/Cyoda-platform/cyoda-go/issues/432))
+
+- **`creationDate`/`lastUpdateTime` meta filters now compare chronologically, not
+  lexically** — search conditions and workflow criteria on these fields compare
+  values as floored epoch-milliseconds (consistent across memory/sqlite/postgres),
+  not as raw RFC3339 strings, so results no longer depend on incidental
+  lexical-vs-temporal ordering agreement. Both fields now accept only comparison
+  operators (`EQUALS`/`NOT_EQUAL`/`GREATER_THAN`/`LESS_THAN`/`GREATER_OR_EQUAL`/
+  `LESS_OR_EQUAL`/`BETWEEN`/`IS_NULL`/`NOT_NULL`) with offset-bearing RFC3339
+  operands; a string/pattern operator or a non-RFC3339 operand is rejected
+  `400 CONDITION_TYPE_MISMATCH`, and an unknown meta filter field is rejected
+  `400 INVALID_FIELD_PATH`.
+
+- **Depth-2 nested joined cascade no longer deadlocks the transaction** — when a
+  joined compute-node callback ran a transition whose own SYNC processor drove a
+  *further* joined write on the same transaction `T` (a 2-deep same-transaction
+  cascade), the third-level write blocked on the per-transaction gate the
+  second-level callback still held while parked in its processor dispatch. The
+  transaction hung for the full 30 s dispatch timeout and then failed
+  `WORKFLOW_FAILED`, forcing callers to break the join (run the inner transition
+  in its own transaction) and sacrifice cross-entity atomicity. The per-tx gate
+  is now **released across every external dispatch** (every processor mode —
+  SYNC / ASYNC_SAME_TX / ASYNC_NEW_TX — and FUNCTION criterion call-out) and
+  re-acquired before the buffer is touched again —
+  generalising the owner-side H3 invariant ("never hold the gate across the
+  engine's dispatch") to every joined callback. The dispatch window touches no
+  local buffer and is the one place a descendant callback can re-enter, so the
+  release is safe for concurrent same-tx siblings. Covers both HTTP and gRPC entry
+  points (both funnel through the same entity handler).
+  ([#410](https://github.com/Cyoda-platform/cyoda-go/issues/410))
+
+- **Compute-node callback transaction-join now covers the gRPC search RPCs** — a
+  processor/criteria callback that presented a valid `tx-token` on `EntitySearch` /
+  `EntitySearchCollection` had the token silently ignored: the joining
+  `txRouteInterceptor` was wired only for the write RPCs (`EntityManage` /
+  `EntityManageCollection`), so a callback's searches ran unjoined against
+  last-committed state while its writes joined the originating transaction `T`.
+  Read-your-own-writes was therefore asymmetric — a processor could not search for
+  entities it created or transitioned earlier in the same still-open transaction
+  (silent stale results, no error). The interceptor now routes the search RPCs
+  through the same join / peer-forward path: a local-owner token joins `T` for the
+  read; a peer-owner token forwards the search to the owner (B→A), mirroring the
+  write path. Routing/join failures on a search return the search-shaped error
+  envelope (`EntityResponse`, `Success=false`) rather than a raw gRPC status, and
+  a token-less search is unchanged (no join). The HTTP entity API already joined
+  reads (route-agnostic `X-Tx-Token` middleware) and was unaffected.
+  ([#402](https://github.com/Cyoda-platform/cyoda-go/issues/402))
+
+- **Boolean search conditions on postgres no longer 500** — a `simple` search
+  condition comparing a JSON path to a boolean (`{"operatorType":"EQUALS","value":true}`)
+  returned `500 SERVER_ERROR` (`unable to encode true into text format for text (OID 25):
+  cannot find encode plan`) on the postgres backend. The query planner bound a raw Go
+  `bool` against the text-typed `doc->>'path'` extraction, which pgx cannot encode; the
+  operand is now rendered as its text form (`"true"`/`"false"`), matching the lexicographic
+  text comparison already used for strings and the memory/sqlite backends. Affected normal
+  searches and grouped-stats queries alike (shared query planner); memory and sqlite were
+  never affected. ([#399](https://github.com/Cyoda-platform/cyoda-go/issues/399))
 
 - **OIDC / admin op error envelope** — the 7 OIDC provider ops and
   `searchEntityAuditEvents` now declare `application/problem+json` `ProblemDetail`

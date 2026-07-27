@@ -96,6 +96,12 @@ func setup() (*postgresFixture, func(), error) {
 		"CYODA_STORAGE_BACKEND=postgres",
 		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
+		// Tuned down from the 1s production default so the
+		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
+		// observe fires within a small, bounded poll window instead of
+		// needing multi-second timeouts. Harmless to every other parity
+		// scenario — an empty ScanDue is a cheap no-op query.
+		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
 	})
 	if err != nil {
 		containerCleanup()

@@ -4,51 +4,197 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/tidwall/gjson"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
-func TestToFloat64_JSONNumber(t *testing.T) {
+// --- operandToString ---
+
+func TestOperandString(t *testing.T) {
 	cases := []struct {
-		in   json.Number
-		want float64
+		in   any
+		want string
 	}{
-		{"0", 0},
-		{"42", 42},
-		{"-1.5", -1.5},
-		{"1e10", 1e10},
+		{nil, ""},
+		{"hello", "hello"},
+		{true, "true"},
+		{false, "false"},
+		{json.Number("1.5"), "1.5"},
+		{json.Number("1e10"), "1e10"},
+		{float64(42), "42"},
+		{int(7), "7"},
 	}
 	for _, tc := range cases {
-		t.Run(string(tc.in), func(t *testing.T) {
-			got, err := toFloat64(tc.in)
-			if err != nil {
-				t.Fatalf("toFloat64(%q): %v", tc.in, err)
-			}
-			if got != tc.want {
-				t.Errorf("toFloat64(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
+		if got := spi.OperandString(tc.in); got != tc.want {
+			t.Errorf("spi.OperandString(%v) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
-// TestOpEquals_JSONNumber proves that the toFloat64 extension propagates
-// through opEquals on the scalar EQUALS path — not just the array path.
-// Spec Section 4.3 calls for this integration-level coverage explicitly,
-// because PR-2's XML import produces json.Number values that flow into
-// EQUALS predicates against scalar entity fields, not only into array
-// predicates. This test guards against future regressions to opEquals
-// or toFloat64 that would silently break the scalar EQUALS path.
-func TestOpEquals_JSONNumber(t *testing.T) {
+// --- betweenBounds ---
+
+func TestBetweenBounds(t *testing.T) {
+	if got := betweenBounds([]any{float64(25), float64(35)}); len(got) != 2 || got[0] != "25" || got[1] != "35" {
+		t.Errorf("[]any bounds: got %v", got)
+	}
+	if got := betweenBounds("25,35"); len(got) != 2 || got[0] != "25" || got[1] != "35" {
+		t.Errorf("comma-string bounds: got %v", got)
+	}
+	if got := betweenBounds([]any{float64(1)}); got != nil {
+		t.Errorf("1-element []any must yield nil, got %v", got)
+	}
+	if got := betweenBounds("only-one"); got != nil {
+		t.Errorf("comma-less string must yield nil, got %v", got)
+	}
+	if got := betweenBounds(42); got != nil {
+		t.Errorf("unsupported type must yield nil, got %v", got)
+	}
+}
+
+// --- opNameToFilterOp ---
+
+func TestOpNameToFilterOp(t *testing.T) {
+	if op, ok := opNameToFilterOp("EQUALS"); !ok || op != spi.FilterEq {
+		t.Errorf("EQUALS → %v,%v", op, ok)
+	}
+	if op, ok := opNameToFilterOp("BETWEEN_INCLUSIVE"); !ok || op != spi.FilterBetweenInclusive {
+		t.Errorf("BETWEEN_INCLUSIVE → %v,%v", op, ok)
+	}
+	if op, ok := opNameToFilterOp("MATCHES_PATTERN"); !ok || op != spi.FilterMatchesRegex {
+		t.Errorf("MATCHES_PATTERN → %v,%v", op, ok)
+	}
+	// Dropped operators are not mapped (applyOperator turns these into errors).
+	for _, name := range []string{"IS_CHANGED", "IS_UNCHANGED", "TOTALLY_UNKNOWN"} {
+		if _, ok := opNameToFilterOp(name); ok {
+			t.Errorf("%s must not map to a FilterOp", name)
+		}
+	}
+	// Case-sensitive negatives route directly to their kernel FilterOp — the
+	// kernel handles null-uniform negation itself, no local special-casing.
+	negatives := []struct {
+		name string
+		want spi.FilterOp
+	}{
+		{"NOT_CONTAINS", spi.FilterNotContains},
+		{"NOT_STARTS_WITH", spi.FilterNotStartsWith},
+		{"NOT_ENDS_WITH", spi.FilterNotEndsWith},
+	}
+	for _, tc := range negatives {
+		if op, ok := opNameToFilterOp(tc.name); !ok || op != tc.want {
+			t.Errorf("%s → %v,%v, want %v,true", tc.name, op, ok, tc.want)
+		}
+	}
+}
+
+// --- applyOperator: kernel routing ---
+
+// TestApplyOperator_ComparisonNeedsDeclared proves the type-directed contract:
+// a comparison operator with NO declared types degrades to non-match (the
+// kernel cannot classify the operand), while the same comparison with a
+// declared numeric type matches.
+func TestApplyOperator_ComparisonNeedsDeclared(t *testing.T) {
+	stored := gjson.Parse(`100`)
+
+	// No declared types → non-match.
+	got, err := applyOperator("GREATER_THAN", stored, float64(20), nil)
+	if err != nil || got {
+		t.Errorf("untyped GREATER_THAN must non-match; got=%v err=%v", got, err)
+	}
+
+	// Declared numeric → numeric comparison, matches.
+	got, err = applyOperator("GREATER_THAN", stored, float64(20), []spi.DataType{spi.Integer})
+	if err != nil || !got {
+		t.Errorf("typed GREATER_THAN (100>20) must match; got=%v err=%v", got, err)
+	}
+}
+
+// TestApplyOperator_StringOpsAreDeclarationIndependent proves string operators
+// and the null tests work without declared types (they are not type-directed).
+func TestApplyOperator_StringOpsAreDeclarationIndependent(t *testing.T) {
+	stored := gjson.Parse(`"Alice"`)
+	if got, err := applyOperator("CONTAINS", stored, "lic", nil); err != nil || !got {
+		t.Errorf("CONTAINS without declared must still match; got=%v err=%v", got, err)
+	}
+	if got, err := applyOperator("STARTS_WITH", stored, "Al", nil); err != nil || !got {
+		t.Errorf("STARTS_WITH without declared must still match; got=%v err=%v", got, err)
+	}
+	absent := gjson.Result{}
+	if got, err := applyOperator("IS_NULL", absent, nil, nil); err != nil || !got {
+		t.Errorf("IS_NULL on absent must match; got=%v err=%v", got, err)
+	}
+}
+
+// TestApplyOperator_NegatedStringOpNullUniformity pins the kernel's
+// null/non-textual uniformity for the case-sensitive negatives (now routed
+// directly through spi.FilterNotContains/NotStartsWith/NotEndsWith, not a
+// local "!positive" negation): a present textual value that does not
+// contain the operand matches; an absent, JSON-null, or non-textual value is
+// always a non-match, never a spurious vacuous match.
+func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
+	present := gjson.Parse(`"Alice"`)
+	// Positive-satisfying operand per op (so !positive would spuriously match on
+	// null if the null-guard were absent — the RED behaviour this pins against).
+	cases := []struct {
+		op          string
+		nonMatchArg string // present value does contain/start/end with this → non-match
+		matchArg    string // present value does NOT contain/start/end with this → match
+	}{
+		{"NOT_CONTAINS", "lic", "xyz"},
+		{"NOT_STARTS_WITH", "Al", "xy"},
+		{"NOT_ENDS_WITH", "ce", "xy"},
+	}
+	jsonNull := gjson.Parse(`null`)
+	nonTextual := gjson.Parse(`42`)
+	absent := gjson.Result{}
+	for _, c := range cases {
+		if got, err := applyOperator(c.op, present, c.matchArg, nil); err != nil || !got {
+			t.Errorf("%s on present non-matching value must match; got=%v err=%v", c.op, got, err)
+		}
+		if got, err := applyOperator(c.op, present, c.nonMatchArg, nil); err != nil || got {
+			t.Errorf("%s on present matching value must non-match; got=%v err=%v", c.op, got, err)
+		}
+		// Null-uniform: absent / JSON-null / non-textual leaves must all
+		// non-match, NEVER !positive (which would spuriously match here since
+		// nonMatchArg makes the positive twin true on a present value).
+		for name, leaf := range map[string]gjson.Result{"absent": absent, "json-null": jsonNull, "non-textual": nonTextual} {
+			if got, err := applyOperator(c.op, leaf, c.nonMatchArg, nil); err != nil || got {
+				t.Errorf("%s on %s leaf must non-match (null uniformity); got=%v err=%v", c.op, name, got, err)
+			}
+		}
+	}
+}
+
+// TestApplyOperator_UnsupportedOperatorErrors confirms IS_CHANGED / IS_UNCHANGED
+// and unknown operators are hard errors (not silent non-matches).
+func TestApplyOperator_UnsupportedOperatorErrors(t *testing.T) {
+	stored := gjson.Parse(`"x"`)
+	for _, name := range []string{"IS_CHANGED", "IS_UNCHANGED", "BOGUS_OP"} {
+		if _, err := applyOperator(name, stored, "x", nil); err == nil {
+			t.Errorf("expected error for unsupported operator %s", name)
+		}
+	}
+}
+
+// TestApplyOperator_JSONNumberScalarEquals proves json.Number operands (from
+// XML import) route through the kernel as exact numeric text on the scalar
+// EQUALS path against a numeric-declared field.
+func TestApplyOperator_JSONNumberScalarEquals(t *testing.T) {
 	data := []byte(`{"score":1.5}`)
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.score",
 		OperatorType: "EQUALS",
 		Value:        json.Number("1.5"),
 	}
-	got, err := Match(cond, data, meta())
-	if err != nil {
-		t.Fatal(err)
+	types := func(p string) []spi.DataType {
+		if p == "$.score" {
+			return []spi.DataType{spi.UnboundDecimal}
+		}
+		return nil
 	}
-	if !got {
-		t.Error("expected match: scalar EQUALS with json.Number(\"1.5\") against JSON 1.5")
+	got, err := Match(cond, data, meta(), types)
+	if err != nil || !got {
+		t.Errorf("json.Number scalar EQUALS against declared numeric must match; got=%v err=%v", got, err)
 	}
 }

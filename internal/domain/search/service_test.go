@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -38,6 +39,54 @@ func saveMinimalModel(t *testing.T, ctx context.Context, factory *memory.StoreFa
 		t.Fatalf("ModelStore: %v", err)
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// helper: register a model whose schema declares the given top-level leaf
+// fields with their declared types. Search evaluation is type-directed: both
+// the plugin Searcher and the in-memory fallback resolve a data leaf's declared
+// subtype from the model's FieldsMap. A comparison/equality leaf over a path
+// with no declared type degrades to non-match — so a search test that expects
+// matches must register the schema the same way production does.
+func saveModelWithFields(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, fields map[string]schema.DataType) {
+	t.Helper()
+	node := schema.NewObjectNode()
+	for name, dt := range fields {
+		node.SetChild(name, schema.NewLeafNode(dt))
+	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// helper: register a model whose schema declares `arrayField` as an array of
+// objects each carrying a single String leaf `leafField`. The resulting
+// FieldsMap key is "$.<arrayField>[*].<leafField>", which is what a wildcard
+// array condition ("$.items[*].name") resolves its element type against.
+func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, arrayField, leafField string) {
+	t.Helper()
+	elem := schema.NewObjectNode()
+	elem.SetChild(leafField, schema.NewLeafNode(schema.String))
+	node := schema.NewObjectNode()
+	node.SetChild(arrayField, schema.NewArrayNode(elem))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
 }
@@ -72,7 +121,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String, "age": schema.Integer})
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice","age":30}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob","age":25}`))
 	saveEntity(t, ctx, factory, ref, "e3", []byte(`{"name":"Alice","age":40}`))
@@ -136,7 +185,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
 	// Save original
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -188,7 +237,14 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	}
 }
 
-func TestDirectSearchPagination(t *testing.T) {
+// TestDirectSearch_UnboundedReturnsAllMatches verifies that an omitted
+// (zero-value) Limit is genuinely unbounded on the Searcher pushdown path:
+// all 5 matches come back, none truncated. (Renamed from
+// TestDirectSearchPagination — this exercises no offset/pagination
+// parameter, only the unbounded-limit case; see also
+// TestSearch_FallbackBranchUnboundedReturnsAll for the same guarantee on
+// the GetAll in-memory fallback branch.)
+func TestDirectSearch_UnboundedReturnsAllMatches(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
@@ -198,7 +254,7 @@ func TestDirectSearchPagination(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"val": schema.Integer})
 	for i := 0; i < 5; i++ {
 		saveEntity(t, ctx, factory, ref,
 			fmt.Sprintf("e%d", i),
@@ -221,24 +277,6 @@ func TestDirectSearchPagination(t *testing.T) {
 	if len(all) != 5 {
 		t.Fatalf("expected 5, got %d", len(all))
 	}
-
-	// Limit=2, Offset=2: should get 2 results
-	page, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 2, Offset: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page) != 2 {
-		t.Fatalf("expected 2 results with limit=2,offset=2, got %d", len(page))
-	}
-
-	// Offset=4, Limit=10: should get 1 result (only 5 total)
-	tail, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10, Offset: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tail) != 1 {
-		t.Fatalf("expected 1 result with offset=4, got %d", len(tail))
-	}
 }
 
 func TestAsyncLifecycle(t *testing.T) {
@@ -251,7 +289,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
@@ -436,7 +474,6 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	pit := time.Now().Add(-1 * time.Hour)
 	opts := search.SearchOptions{
 		Limit:       50,
-		Offset:      10,
 		PointInTime: &pit,
 	}
 
@@ -457,8 +494,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 
 	// Verify it deserializes back correctly.
 	var decoded struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
+		Limit int `json:"limit"`
 	}
 	if err := json.Unmarshal(job.SearchOpts, &decoded); err != nil {
 		t.Fatalf("failed to unmarshal SearchOpts: %v", err)
@@ -466,8 +502,16 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	if decoded.Limit != 50 {
 		t.Errorf("SearchOpts.Limit = %d, want 50", decoded.Limit)
 	}
-	if decoded.Offset != 10 {
-		t.Errorf("SearchOpts.Offset = %d, want 10", decoded.Offset)
+
+	// The persisted job-opts JSON must no longer carry an "offset" key —
+	// SearchOptions.Offset was removed, and a SelfExecutingSearchStore that
+	// decodes this blob must not resurrect a phantom pagination field.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(job.SearchOpts, &raw); err != nil {
+		t.Fatalf("failed to unmarshal SearchOpts as raw map: %v", err)
+	}
+	if _, present := raw["offset"]; present {
+		t.Error(`persisted SearchOpts JSON must not contain an "offset" key`)
 	}
 }
 
@@ -640,16 +684,26 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 // --- Searcher delegation tests ---
 
 // searcherEntityStore wraps an EntityStore and implements spi.Searcher.
-// It records Search calls and delegates to a provided function.
+// It records Search calls and delegates to a provided function. It also
+// counts GetAll calls so tests can assert the fallback path was (or was
+// not) reached.
 type searcherEntityStore struct {
 	spi.EntityStore
-	searchFn    func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
-	searchCalls int
+	searchFn     func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
+	searchCalls  int
+	getAllCalls  int
+	capturedOpts spi.SearchOptions
 }
 
 func (s *searcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	s.searchCalls++
+	s.capturedOpts = opts
 	return s.searchFn(ctx, filter, opts)
+}
+
+func (s *searcherEntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
+	s.getAllCalls++
+	return s.EntityStore.GetAll(ctx, modelRef)
 }
 
 // searcherFactory wraps a StoreFactory and returns a Searcher-implementing EntityStore.
@@ -659,6 +713,26 @@ type searcherFactory struct {
 }
 
 func (f *searcherFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+// nonSearcherEntityStore embeds the spi.EntityStore INTERFACE (not a concrete
+// type), so no Search method is promoted and the wrapper does NOT satisfy
+// spi.Searcher. The memory plugin now implements spi.Searcher itself, so a
+// dedicated non-Searcher store is required to exercise the search service's
+// in-memory GetAll+match fallback path.
+type nonSearcherEntityStore struct {
+	spi.EntityStore
+}
+
+// nonSearcherFactory returns a non-Searcher EntityStore, delegating everything
+// else to the wrapped StoreFactory.
+type nonSearcherFactory struct {
+	spi.StoreFactory
+	entityStore spi.EntityStore
+}
+
+func (f *nonSearcherFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
 	return f.entityStore, nil
 }
 
@@ -711,19 +785,79 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 	}
 }
 
-func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
-	// The memory plugin doesn't implement Searcher, so this tests the fallback.
-	factory := memory.NewStoreFactory()
-	defer factory.Close()
-	uuids := common.NewTestUUIDGenerator()
-	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+// TestSearch_TrackingReadPushedToSearcher verifies that Search with
+// opts.TrackingRead set threads the flag through to the spi.SearchOptions
+// passed to the plugin Searcher's Search call (pushdown branch).
+func TestSearch_TrackingReadPushedToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	saveMinimalModel(t, ctx, factory, ref)
-	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+	saveMinimalModel(t, ctx, base, ref)
+
+	realStore, _ := base.EntityStore(ctx)
+
+	var capturedOpts spi.SearchOptions
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			capturedOpts = opts
+			return nil, nil
+		},
+	}
+
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{TrackingRead: true})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if ses.searchCalls != 1 {
+		t.Fatalf("expected searcher to be called once, got %d", ses.searchCalls)
+	}
+	if !capturedOpts.TrackingRead {
+		t.Errorf("capturedOpts.TrackingRead = false, want true")
+	}
+}
+
+func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
+	// Wrap the memory store so it does NOT implement spi.Searcher (the memory
+	// plugin implements it directly now), forcing the GetAll+match fallback.
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	if _, ok := realStore.(spi.Searcher); !ok {
+		t.Fatal("precondition: memory store expected to implement spi.Searcher")
+	}
+	nonSearcher := &nonSearcherEntityStore{EntityStore: realStore}
+	if _, ok := any(nonSearcher).(spi.Searcher); ok {
+		t.Fatal("wrapper must NOT implement spi.Searcher")
+	}
+	factory := &nonSearcherFactory{StoreFactory: base, entityStore: nonSearcher}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -740,7 +874,15 @@ func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	}
 }
 
-func TestSearchFallsBackWhenInTransaction(t *testing.T) {
+// TestSearchDelegatesToSearcherInTransaction verifies the de-guarded
+// contract (Task 13): a plugin Searcher is now tx-aware (read-your-own-writes)
+// on every OSS backend, so Search delegates to it even with an active
+// transaction in ctx — it must NOT fall back to GetAll+match just because a
+// tx is present. This replaces the pre-Task-13 expectation (formerly
+// TestSearchFallsBackWhenInTransaction) that in-tx searches always bypassed
+// pushdown; that expectation was correct for the old tx==nil gate but is now
+// the wrong contract now that all backends implement a tx-aware Searcher.
+func TestSearchDelegatesToSearcherInTransaction(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 
@@ -788,13 +930,90 @@ func TestSearchFallsBackWhenInTransaction(t *testing.T) {
 		t.Fatalf("Search: %v", err)
 	}
 
-	// Should NOT have used the searcher (in-tx fallback).
-	if ses.searchCalls != 0 {
-		t.Errorf("searchCalls = %d, want 0 (should fall back when in transaction)", ses.searchCalls)
+	// Should delegate to the plugin Searcher, NOT the GetAll fallback.
+	if ses.searchCalls != 1 {
+		t.Errorf("searchCalls = %d, want 1 (in-tx search must delegate to the tx-aware Searcher)", ses.searchCalls)
 	}
-	// Should get result from the fallback path.
+	if ses.getAllCalls != 0 {
+		t.Errorf("getAllCalls = %d, want 0 (must not use the GetAll fallback when a Searcher is available)", ses.getAllCalls)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "from-searcher" {
+		t.Fatalf("expected 1 result from the searcher, got %d results", len(results))
+	}
+}
+
+// TestSearch_TranslateFailure_FallsBackEvenInTransaction verifies the other
+// half of the Task 13 contract: a condition ConditionToFilter cannot
+// translate (a wildcard JsonPath, which is not pushdownable) still falls
+// back to GetAll+in-memory match, even with an active transaction — the
+// de-guard only removes the "in-tx ⇒ never pushdown" rule, it does not
+// change the translate-failure fallback.
+func TestSearch_TranslateFailure_FallsBackEvenInTransaction(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Register a schema declaring items[*].name as String so the type-directed
+	// in-memory fallback resolves the array-element leaf and matches the
+	// wildcard equality (FieldsMap key "$.items[*].name").
+	saveModelWithArrayOfStringField(t, ctx, base, ref, "items", "name")
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"items":[{"name":"gadget"},{"name":"widget"}]}`))
+	saveEntity(t, ctx, base, ref, "e2", []byte(`{"items":[{"name":"gadget"},{"name":"other"}]}`))
+
+	realStore, _ := base.EntityStore(ctx)
+
+	// Searcher is available (so the "no Searcher" fallback branch isn't what's
+	// exercised here) but must NOT be called: the wildcard path fails
+	// ConditionToFilter translation before the searcher is ever invoked.
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return []*spi.Entity{{Meta: spi.EntityMeta{ID: "from-searcher"}}}, nil
+		},
+	}
+
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// Active transaction — should not change the translate-failure fallback.
+	tx := &spi.TransactionState{
+		ID:           "test-tx-2",
+		TenantID:     "tenant-1",
+		SnapshotTime: time.Now(),
+		ReadSet:      make(map[string]bool),
+		WriteSet:     make(map[string]bool),
+		Buffer:       make(map[string]*spi.Entity),
+		Deletes:      make(map[string]bool),
+	}
+	txCtx := spi.WithTransaction(ctx, tx)
+
+	// Wildcard JsonPath: ConditionToFilter rejects "[*]" as non-pushdownable
+	// syntax, forcing the in-memory fallback; match.Match evaluates the
+	// wildcard against each element of "items" and matches e1 only.
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.items[*].name",
+		OperatorType: "EQUALS",
+		Value:        "widget",
+	}
+
+	results, err := svc.Search(txCtx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (translate failure must not reach the Searcher)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 1 {
+		t.Errorf("getAllCalls = %d, want 1 (translate failure must use the GetAll fallback)", ses.getAllCalls)
+	}
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
-		t.Fatalf("expected 1 result (e1) from fallback, got %d results", len(results))
+		t.Fatalf("expected 1 result (e1) from the in-memory fallback, got %d results", len(results))
 	}
 }
 
@@ -827,9 +1046,9 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// EnsureModelRegistered + validateConditionPaths (for $.surname) + resolveSortKeys
-		// each call Get once.
-		getQueue: []*spi.ModelDescriptor{desc, desc, desc},
+		// EnsureModelRegistered + validateConditionPaths (for $.surname) +
+		// validateConditionTypes + resolveSortKeys each call Get once.
+		getQueue: []*spi.ModelDescriptor{desc, desc, desc, desc},
 	}
 
 	var capturedOpts spi.SearchOptions
@@ -1370,4 +1589,355 @@ func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
 			t.Fatalf("expected success for unbounded limit=-1, got: %v", err)
 		}
 	})
+}
+
+// --- FieldsMap threading (Task 6b) ---
+
+// wrapModelStoreCounter wraps a real spi.ModelStore and counts Get calls, so
+// tests can observe whether a code path actually consults the schema.
+type wrapModelStoreCounter struct {
+	spi.ModelStore
+	getCalls int
+}
+
+func (m *wrapModelStoreCounter) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	m.getCalls++
+	return m.ModelStore.Get(ctx, ref)
+}
+
+// wrapModelStoreCounterFactory wraps a StoreFactory and returns a
+// wrapModelStoreCounter, delegating everything else (notably EntityStore, so
+// the real memory Searcher is still exercised) to the wrapped StoreFactory.
+type wrapModelStoreCounterFactory struct {
+	spi.StoreFactory
+	modelStore *wrapModelStoreCounter
+}
+
+func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
+	return f.modelStore, nil
+}
+
+// TestSearch_ThreadsFieldsMapIntoConditionToFilter verifies that the
+// Searcher pushdown branch of Search loads the model's FieldsMap and
+// threads it into ConditionToFilter, rather than hardcoding nil.
+//
+// A LifecycleCondition addresses no data-field paths, so
+// validateConditionPaths short-circuits without touching the ModelStore
+// (extractFieldPaths returns empty — see path_validate.go), and an empty
+// OrderBy makes resolveSortKeys return before touching it too. That isolates
+// the count: with no OrderBy and a lifecycle-only condition, the only
+// ModelStore.Get call before this task's change is EnsureModelRegistered's
+// single lookup. Once Search's Searcher branch calls loadFieldsMap to build
+// the fields argument for ConditionToFilter, a second Get call appears.
+//
+// (dataCoercion's routing effect is not separately observable via the
+// result set today — classifyType never classifies a *data* field as
+// spi.OrderTemporal until a future polymorphic-temporal-typing follow-up
+// flips scalarClass; meta-field temporal stamping, exercised in Task 6,
+// already works unconditionally of this fields argument. This test proves
+// the wiring itself: the schema is loaded and handed to ConditionToFilter
+// on the pushdown path, which is the forward-compatible behavior that
+// follow-up needs.)
+func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveMinimalModel(t, ctx, base, ref)
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	baseMS, err := base.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	cms := &wrapModelStoreCounter{ModelStore: baseMS}
+	factory := &wrapModelStoreCounterFactory{StoreFactory: base, modelStore: cms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "NEW",
+	}
+
+	// Precondition: EnsureModelRegistered is the only ModelStore.Get call a
+	// lifecycle-only, no-OrderBy search makes before Search's pushdown
+	// branch is threaded with a real FieldsMap.
+	realStore, err := base.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, ok := realStore.(spi.Searcher); !ok {
+		t.Fatal("precondition: memory store expected to implement spi.Searcher")
+	}
+
+	_, err = svc.Search(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if cms.getCalls < 2 {
+		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + Search's FieldsMap load for ConditionToFilter)", cms.getCalls)
+	}
+}
+
+func TestSearch_LimitZeroPassesUnboundedToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, nil // result set irrelevant here
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if ses.capturedOpts.Limit != 0 {
+		t.Errorf("spiLimit = %d, want 0 (unbounded); service must not inject 1000", ses.capturedOpts.Limit)
+	}
+}
+
+// newStubSearcherService builds a SearchService backed by a memory
+// StoreFactory whose EntityStore.Search is replaced by fn, with a minimal
+// "person" model already registered. Shared by the sentinel-mapping tests
+// below (and reusable by future Searcher-stub tests).
+func newStubSearcherService(t *testing.T, fn func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error)) (*search.SearchService, context.Context, spi.ModelRef) {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{EntityStore: realStore, searchFn: fn}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore), ctx, ref
+}
+
+func TestSearch_SearcherResultLimitSentinel_MapsTo400(t *testing.T) {
+	svc, ctx, ref := newStubSearcherService(t, func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+		return nil, fmt.Errorf("plugin detail: %w", spi.ErrSearchResultLimitExceeded)
+	})
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Errorf("errors.Is(err, ErrSearchResultLimitExceeded) = false; WithCause must preserve the sentinel")
+	}
+}
+
+func TestSearch_SearcherScanBudgetSentinel_MapsTo400(t *testing.T) {
+	svc, ctx, ref := newStubSearcherService(t, func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+		return nil, fmt.Errorf("examined N rows: %w", spi.ErrScanBudgetExhausted)
+	})
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
+	}
+}
+
+// --- GetAll + in-memory fallback bounded-or-fail tests ---
+
+// newFallbackFixture builds a SearchService whose EntityStore is wrapped so
+// it does NOT implement spi.Searcher (the nonSearcherEntityStore/
+// nonSearcherFactory pair defined above, also used by
+// TestSearchFallsBackWhenNotSearcher), then registers n entities that all
+// satisfy functionCondition(t)'s always-true first branch. Every Search call
+// against this fixture is forced through the GetAll + in-memory match
+// branch — there is no Searcher to even attempt pushdown against.
+func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Context, spi.ModelRef) {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"val": schema.Integer})
+	for i := 0; i < n; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	nonSearcher := &nonSearcherEntityStore{EntityStore: realStore}
+	factory := &nonSearcherFactory{StoreFactory: base, entityStore: nonSearcher}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	return svc, ctx, ref
+}
+
+// functionCondition returns a condition tree that puts a genuine
+// predicate.FunctionCondition on the wire — function conditions are a
+// first-class public request shape and, per filter_translate.go, can never
+// be translated to a spi.Filter, so any request containing one always
+// travels through the GetAll + in-memory fallback (independent of whether
+// the store also happens to lack a Searcher, as in newFallbackFixture).
+// TestSearch_FallbackBranchIsBounded_TranslateFailureRoute pins that
+// translate-failure property directly, against a real Searcher-implementing
+// store, rather than relying on newFallbackFixture's belt-and-braces (no
+// Searcher AND untranslatable) setup to demonstrate it.
+//
+// It is wrapped in an OR with an always-true SimpleCondition ($.val > -1,
+// true for every entity newFallbackFixture saves) rather than used bare,
+// because internal/match.Match has no evaluator for FunctionCondition by
+// design (see internal/match/match_test.go
+// TestMatchFunctionConditionError) — a bare FunctionCondition would error
+// out of the fallback's match loop on the first entity, never reaching the
+// bound check this test exists to exercise. matchGroup's OR is
+// short-circuiting, so the always-true first child matches every entity in
+// the fixture and the FunctionCondition child is never evaluated.
+func functionCondition(t *testing.T) predicate.Condition {
+	t.Helper()
+	return &predicate.GroupCondition{
+		Operator: "OR",
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{
+				JsonPath:     "$.val",
+				OperatorType: "GREATER_THAN",
+				Value:        float64(-1),
+			},
+			&predicate.FunctionCondition{},
+		},
+	}
+}
+
+// The GetAll + in-memory match fallback (reached when a condition is not
+// translatable to a pushdown filter — a function condition never is) must be
+// bounded-or-fail too. Otherwise a translate-failure request silently
+// truncates while the pushdown path 400s, which is the same divergence inside
+// one backend that this change removes across backends.
+func TestSearch_FallbackBranchIsBounded(t *testing.T) {
+	svc, ctx, ref := newFallbackFixture(t, 3) // 3 matching entities, no Searcher
+	_, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: 2})
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
+		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
+	// Same sentinel identity as the Searcher-pushdown branch
+	// (TestSearch_SearcherResultLimitSentinel_MapsTo400): the two
+	// bounded-or-fail paths must be indistinguishable to errors.Is callers.
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Errorf("errors.Is(err, ErrSearchResultLimitExceeded) = false; WithCause must preserve the sentinel")
+	}
+}
+
+// TestSearch_FallbackBranchUnboundedReturnsAll is table-driven over both
+// unbounded sentinels: 0 (the "client omitted"/async-submit case) and -1
+// (the sentinel a scoped conditional delete relies on at
+// internal/domain/entity/service.go:947 to select the complete match set —
+// silently truncating it would be data loss). Every -1 call site elsewhere
+// in the test suite travels the Searcher pushdown path, never this
+// fallback branch, so without -1 here a refactor of `opts.Limit > 0` into
+// `opts.Limit != 0` would keep every existing test green while silently
+// truncating -1 on this branch specifically.
+func TestSearch_FallbackBranchUnboundedReturnsAll(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			svc, ctx, ref := newFallbackFixture(t, 3)
+			got, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: limit})
+			if err != nil {
+				t.Fatalf("limit %d must be unbounded: unexpected err %v", limit, err)
+			}
+			if len(got) != 3 {
+				t.Fatalf("got %d, want 3", len(got))
+			}
+		})
+	}
+}
+
+// TestSearch_FallbackBranchIsBounded_TranslateFailureRoute pins the second,
+// independent route into the GetAll fallback that newFallbackFixture does
+// not isolate: the Search doc comment states the fallback is reached either
+// when the store has no Searcher, or when a condition simply fails
+// ConditionToFilter translation — but newFallbackFixture combines both (a
+// non-Searcher store AND an untranslatable condition), so neither mechanism
+// is individually pinned there. This test uses the real memory
+// StoreFactory, whose EntityStore DOES implement spi.Searcher, wrapped only
+// to observe calls (not to suppress the interface) — so a passing result
+// here proves translate failure alone, independent of Searcher
+// availability, routes to the bounded fallback and is bounded there too.
+func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"val": schema.Integer})
+	for i := 0; i < 3; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	// searcherEntityStore DOES implement spi.Searcher (it wraps the real,
+	// Searcher-capable memory store) — its searchFn returns an
+	// obviously-wrong sentinel result, so getAllCalls==1/searchCalls==0
+	// below proves translate failure, not a missing Searcher, drove the
+	// fallback.
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return []*spi.Entity{{Meta: spi.EntityMeta{ID: "from-searcher"}}}, nil
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	_, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: 2})
+
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (translate failure must not reach the Searcher)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 1 {
+		t.Errorf("getAllCalls = %d, want 1 (translate failure must use the GetAll fallback)", ses.getAllCalls)
+	}
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
+		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
 }

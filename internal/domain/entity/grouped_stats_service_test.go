@@ -5,21 +5,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // fakeIterable satisfies only spi.Iterable.
 type fakeIterable struct {
 	entities []*spi.Entity
 	lastFlt  spi.Filter
+	// iterErr, when set, is returned from the yielded fakeIter's Err()
+	// after Next() runs dry — models a mid-stream driver failure (e.g.
+	// a scan-budget sentinel) surfacing after iteration completes.
+	iterErr error
 }
 
 func (f *fakeIterable) Iterate(_ context.Context, _ spi.ModelRef, flt spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
 	f.lastFlt = flt
-	return &fakeIter{rows: f.entities}, nil
+	return &fakeIter{rows: f.entities, err: f.iterErr}, nil
 }
 
 type fakeIter struct {
@@ -67,6 +74,28 @@ type dualBackend struct {
 	*fakeAggregator
 }
 
+// newStreamingStatsFixture builds a service + streaming-only (Iterable)
+// store whose iterator's Err() returns iterErr once Next() runs dry —
+// used to exercise sentinel classification for errors surfaced from the
+// streaming fallback path (e.g. spi.ErrScanBudgetExhausted).
+func newStreamingStatsFixture(t *testing.T, iterErr error) (
+	svc *entity.GroupedStatsService,
+	ctx context.Context,
+	store *fakeIterable,
+	model spi.ModelRef,
+	req *entity.ValidatedGroupedStatsRequest,
+) {
+	t.Helper()
+	svc = entity.NewGroupedStatsService(10000)
+	ctx = context.Background()
+	store = &fakeIterable{iterErr: iterErr}
+	model = spi.ModelRef{}
+	req = &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{IsState: true}},
+	}
+	return svc, ctx, store, model, req
+}
+
 func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 	rows := []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
@@ -77,7 +106,7 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +126,7 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 func TestQueryGroupedStats_501WhenNoCapability(t *testing.T) {
 	type noop struct{}
 	svc := entity.NewGroupedStatsService(10000)
-	_, err := svc.QueryGroupedStats(context.Background(), noop{}, spi.ModelRef{}, &entity.ValidatedGroupedStatsRequest{GroupBy: []entity.GroupExprValidated{{IsState: true}}})
+	_, err := svc.QueryGroupedStats(context.Background(), noop{}, spi.ModelRef{}, nil, &entity.ValidatedGroupedStatsRequest{GroupBy: []entity.GroupExprValidated{{IsState: true}}})
 	if !errors.Is(err, entity.ErrBackendNotSupported) {
 		t.Fatalf("want ErrBackendNotSupported, got %v", err)
 	}
@@ -118,7 +147,7 @@ func TestQueryGroupedStats_PrefersPushdownWhenAvailable(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,7 +174,7 @@ func TestQueryGroupedStats_PushdownNotPushdownableFallsBackToStreaming(t *testin
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,9 +197,39 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
-	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, req)
+	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, nil, req)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("want %v, got %v", wantErr, err)
+	}
+	// Arbitrary storage/driver errors must NOT be classified as an
+	// AppError — otherwise the handler's default 500 fallback would be
+	// bypassed and an unrecognized failure would surface as a 4xx.
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		t.Errorf("arbitrary storage error must NOT be wrapped as AppError (would become 4xx): %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ScanBudgetMapsTo400 verifies that
+// spi.ErrScanBudgetExhausted surfacing from the streaming path is
+// classified by QueryGroupedStats into a 400 AppError with
+// common.ErrCodeScanBudgetExhausted, while remaining reachable via
+// errors.Is(err, spi.ErrScanBudgetExhausted) (WithCause preserves the
+// sentinel in the chain).
+func TestQueryGroupedStats_ScanBudgetMapsTo400(t *testing.T) {
+	// Iterable whose iter.Err() returns the scan-budget sentinel.
+	svc, ctx, store, model, req := newStreamingStatsFixture(t, spi.ErrScanBudgetExhausted)
+	_, err := svc.QueryGroupedStats(ctx, store, model, nil, req)
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
+	}
+	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
+		t.Errorf("WithCause must preserve the sentinel")
 	}
 }
 
@@ -186,7 +245,7 @@ func TestQueryGroupedStats_InTransactionSkipsPushdown(t *testing.T) {
 	}
 	tx := &spi.TransactionState{ID: "tx-test"}
 	ctx := spi.WithTransaction(context.Background(), tx)
-	buckets, err := svc.QueryGroupedStats(ctx, dual, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(ctx, dual, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -210,7 +269,7 @@ func TestQueryGroupedStats_CardinalityExceeded(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
-	_, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	_, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
 	if !errors.Is(err, spi.ErrGroupCardinalityExceeded) {
 		t.Fatalf("want ErrGroupCardinalityExceeded, got %v", err)
 	}
@@ -234,7 +293,7 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +322,7 @@ func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *te
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
 	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, req)
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	// match.Match returns an error for FunctionCondition — surface it.
 	if err == nil {
 		t.Fatal("expected match.Match error for function condition, got nil")
@@ -288,7 +347,7 @@ func TestQueryGroupedStats_AggregationsViaStreaming(t *testing.T) {
 			{Op: entity.AggAvg, Field: "$.v", Alias: "avg_v"},
 		},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -315,7 +374,7 @@ func TestQueryGroupedStats_GroupByNumberProducesMultipleBuckets(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.tier"}},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,7 +406,7 @@ func TestQueryGroupedStats_GroupByBoolProducesMultipleBuckets(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.premium"}},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -374,7 +433,7 @@ func TestQueryGroupedStats_NonScalarRuntimeValueCoercesToNull(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.variantId"}},
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, req)
+	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -401,8 +460,208 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
-	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, req)
+	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, nil, req)
 	if !errors.Is(err, spi.ErrGroupCardinalityExceeded) {
 		t.Fatalf("want ErrGroupCardinalityExceeded, got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_MalformedRegexRejected is a regression test for a
+// fail-open bug: the plugin residual filter evaluators
+// (plugins/sqlite/post_filter.go evaluateFilter, plugins/postgres/grouped_stats.go
+// evalPostFilter) delegate to the error-free spi.MatchFilter, which returns
+// false (non-match) rather than erroring on a malformed MATCHES_PATTERN
+// regex. Without upstream validation this silently under-includes buckets
+// instead of rejecting the request. QueryGroupedStats must reject a
+// malformed regex before dispatching to any backend, the same way the
+// search path already does.
+func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "MATCHES_PATTERN",
+		"value": "["
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if !errors.Is(err, entity.ErrInvalidCondition) {
+		t.Fatalf("want ErrInvalidCondition for malformed regex, got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected is a
+// regression test for the validation-consistency gap: /search rejects a
+// type-unsound temporal/lifecycle condition (400), but grouped-stats
+// previously accepted the same malformed condition and silently degraded to
+// an empty result (the condition doesn't translate to a pushdown filter and
+// never matches anything via match.Match either). QueryGroupedStats must
+// reject a temporal comparison operand that parses into no temporal type,
+// the same way search.ValidateConditionValueTypes does.
+func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
+	// Parse-based (spec §6): a comparison operand that parses into no temporal
+	// type is rejected; a string operator like CONTAINS is now accepted, so a
+	// genuinely-unparseable operand drives this rejection.
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "creationDate",
+		"operatorType": "GREATER_THAN",
+		"value": "not-a-date"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if err == nil {
+		t.Fatal("expected error for non-temporal operand against temporal field creationDate, got nil (previously silently degraded to empty result)")
+	}
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("want search.ErrConditionTypeMismatch (parity with /search's CONDITION_TYPE_MISMATCH), got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_MalformedBetweenArityRejected is a regression test
+// for the same validation-consistency gap: a BETWEEN condition with the
+// wrong number of operands must be rejected up front (search.ValidateCondition),
+// not silently mistranslated by the filter/match layers downstream.
+func TestQueryGroupedStats_MalformedBetweenArityRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.price",
+		"operatorType": "BETWEEN",
+		"value": [10]
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if !errors.Is(err, entity.ErrInvalidCondition) {
+		t.Fatalf("want ErrInvalidCondition for malformed-arity BETWEEN, got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_UnknownMetaFieldRejected is a regression test for
+// the same gap: an unrecognized meta filter field name must be rejected as
+// INVALID_FIELD_PATH parity with /search, not silently treated as
+// never-matching.
+func TestQueryGroupedStats_UnknownMetaFieldRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "bogus",
+		"operatorType": "EQUALS",
+		"value": "x"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if !errors.Is(err, search.ErrInvalidFieldPath) {
+		t.Fatalf("want search.ErrInvalidFieldPath (parity with /search's INVALID_FIELD_PATH), got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ValidTemporalConditionStillSucceeds guards against
+// an over-broad fix: a well-formed temporal lifecycle condition (valid
+// comparison operator + offset-bearing RFC3339 operand) must still succeed.
+func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "creationDate",
+		"operatorType": "GREATER_THAN",
+		"value": "2021-01-01T00:00:00Z"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if err != nil {
+		t.Fatalf("unexpected error for valid temporal condition: %v", err)
+	}
+}
+
+// TestQueryGroupedStats_ValidDataConditionStillSucceeds guards against an
+// over-broad fix: a well-formed data-field condition must still succeed
+// even though grouped-stats now runs search.ValidateConditionValueTypes with
+// a nil model (data-field checks are gracefully skipped without a schema).
+func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "EQUALS",
+		"value": "red"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if err != nil {
+		t.Fatalf("unexpected error for valid data condition: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 1 {
+		t.Fatalf("buckets = %+v, want one bucket count=1", buckets)
+	}
+}
+
+// TestQueryGroupedStats_ValidRegexStillSucceeds guards against an
+// over-broad fix: a well-formed MATCHES_PATTERN must still succeed.
+func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "MATCHES_PATTERN",
+		"value": "^r.*$"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 1 {
+		t.Fatalf("buckets = %+v, want one bucket count=1", buckets)
 	}
 }

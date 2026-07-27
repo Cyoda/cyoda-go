@@ -185,6 +185,10 @@ func TestEntityDoc_MetaFieldsPresent(t *testing.T) {
 		"wall_clock_time", "creation_date", "last_modified_date",
 		"change_type", "change_user", "transaction_id", "transition", "deleted",
 	}
+	// change_user_kind/change_executor_id/change_executor_kind are
+	// omitempty (legacy docs omit them entirely) so they are deliberately
+	// NOT in requiredKeys — testEntity() leaves ChangeUserKind/ChangeExecutor
+	// at their zero value.
 	for _, k := range requiredKeys {
 		if _, ok := meta[k]; !ok {
 			t.Errorf("missing _meta key: %q", k)
@@ -249,6 +253,82 @@ func TestEntityDoc_UnmarshalEntityVersion(t *testing.T) {
 	}
 	if ver.Deleted {
 		t.Error("expected deleted=false")
+	}
+}
+
+// TestEntityDoc_AttributionRoundTrip verifies that ChangeUserKind and
+// ChangeExecutor (Meta fields a caller stamps before Save, per the
+// attribution rule — see spi.AttributionFor) round-trip through
+// marshalEntityDoc/unmarshalEntityDoc, and that unmarshalEntityVersion
+// surfaces the same values independently as AttributedKind/Executor —
+// populated from the parsed _meta block directly, not derived from
+// EntityVersion.Entity (which is nil for some backends' DELETED versions).
+func TestEntityDoc_AttributionRoundTrip(t *testing.T) {
+	ent := testEntity()
+	ent.Meta.ChangeUserKind = spi.PrincipalService
+	ent.Meta.ChangeExecutor = spi.Principal{ID: "svc-42", Kind: spi.PrincipalService}
+
+	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	if err != nil {
+		t.Fatalf("marshalEntityDoc: %v", err)
+	}
+
+	got, err := unmarshalEntityDoc(raw)
+	if err != nil {
+		t.Fatalf("unmarshalEntityDoc: %v", err)
+	}
+	if got.Meta.ChangeUserKind != spi.PrincipalService {
+		t.Errorf("ChangeUserKind = %q, want %q", got.Meta.ChangeUserKind, spi.PrincipalService)
+	}
+	wantExecutor := spi.Principal{ID: "svc-42", Kind: spi.PrincipalService}
+	if got.Meta.ChangeExecutor != wantExecutor {
+		t.Errorf("ChangeExecutor = %+v, want %+v", got.Meta.ChangeExecutor, wantExecutor)
+	}
+
+	ver, err := unmarshalEntityVersion(raw, 1, testTime)
+	if err != nil {
+		t.Fatalf("unmarshalEntityVersion: %v", err)
+	}
+	if ver.AttributedKind != spi.PrincipalService {
+		t.Errorf("AttributedKind = %q, want %q", ver.AttributedKind, spi.PrincipalService)
+	}
+	if ver.Executor != wantExecutor {
+		t.Errorf("Executor = %+v, want %+v", ver.Executor, wantExecutor)
+	}
+}
+
+// TestEntityDoc_LegacyDocAttributionIsZeroValue verifies that a doc marshaled
+// without any attribution fields set (the pre-attribution shape, since the
+// _meta fields are omitempty) unmarshals to the zero PrincipalKind/Principal
+// — never a synthesized value — both on Entity.Meta and on the independently
+// populated EntityVersion.AttributedKind/Executor.
+func TestEntityDoc_LegacyDocAttributionIsZeroValue(t *testing.T) {
+	ent := testEntity() // ChangeUserKind/ChangeExecutor left at zero value
+	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	if err != nil {
+		t.Fatalf("marshalEntityDoc: %v", err)
+	}
+
+	got, err := unmarshalEntityDoc(raw)
+	if err != nil {
+		t.Fatalf("unmarshalEntityDoc: %v", err)
+	}
+	if got.Meta.ChangeUserKind != "" {
+		t.Errorf("ChangeUserKind = %q, want zero value", got.Meta.ChangeUserKind)
+	}
+	if got.Meta.ChangeExecutor != (spi.Principal{}) {
+		t.Errorf("ChangeExecutor = %+v, want zero Principal", got.Meta.ChangeExecutor)
+	}
+
+	ver, err := unmarshalEntityVersion(raw, 1, testTime)
+	if err != nil {
+		t.Fatalf("unmarshalEntityVersion: %v", err)
+	}
+	if ver.AttributedKind != "" {
+		t.Errorf("AttributedKind = %q, want zero value", ver.AttributedKind)
+	}
+	if ver.Executor != (spi.Principal{}) {
+		t.Errorf("Executor = %+v, want zero Principal", ver.Executor)
 	}
 }
 

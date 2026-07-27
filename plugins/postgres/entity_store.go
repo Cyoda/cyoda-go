@@ -298,8 +298,21 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	}
 
 	// Prepare delete entity.
+	//
+	// Attribution: stamp the tombstone from the DELETER's own attribution
+	// (spi.AttributionFor(ctx) — the caller of THIS Delete, i.e. the
+	// stager), never re-marshal the PRIOR doc's ChangeUser/ChangeUserKind/
+	// ChangeExecutor as-is — those describe the entity's previous writer,
+	// not who deleted it. Unlike memory/sqlite, postgres executes this
+	// DELETE (and its tombstone version insert) immediately in SQL — there
+	// is no buffer/flush split — so the ctx in scope here already IS the
+	// stager's; no separate stage-time-vs-commit-time distinction applies.
+	attributed, executor := spi.AttributionFor(ctx)
 	current.Meta.Version = nextVersion
 	current.Meta.ChangeType = "DELETED"
+	current.Meta.ChangeUser = attributed.ID
+	current.Meta.ChangeUserKind = attributed.Kind
+	current.Meta.ChangeExecutor = executor
 	current.Meta.LastModifiedDate = dbNow
 
 	deleteDoc, err := marshalEntityDoc(current, dbNow, dbNow, wallClockTime, true)

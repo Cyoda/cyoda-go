@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // Processor execution-mode tokens. Sourced from the OpenAPI enum in
@@ -195,6 +198,90 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
+// validateCriterion rejects a criterion that is malformed in either of two
+// ways:
+//   - a MATCHES_PATTERN operator carrying a regex that fails to compile.
+//   - a lifecycle/meta clause that is type-unsound: an unknown meta field
+//     path, a non-comparison operator on a temporal field (creationDate,
+//     lastUpdateTime), or a non-offset-RFC3339 operand on a temporal field.
+//     Delegates to search.ValidateLifecycleCondition, the same validator the
+//     search API boundary enforces on ad-hoc queries — a workflow criterion
+//     and a search query use the identical meta-field vocabulary and
+//     evaluate through the same match.Match/matchLifecycle path, so both
+//     entry points reject the same malformed conditions.
+//
+// Criteria are stored opaquely (json.RawMessage) and previously were only
+// parsed at transition-evaluation time (engine.go's evaluateCriterion ->
+// match.Match -> matchLifecycle / operators.go's opMatchesPattern), so a
+// malformed criterion imported successfully and then errored (or silently
+// misbehaved) on every subsequent evaluation of that transition. This closes
+// that fail-open gap by validating both classes of malformation at import
+// time.
+//
+// location names the workflow/state/transition the criterion belongs to, for
+// the error message. Empty/null criteria are skipped. A criterion that does
+// not parse as a predicate.Condition at all is left alone — this validator
+// only tightens already-parseable conditions, it does not newly reject
+// shapes ParseCondition already rejects (that is out of scope for this
+// check; those criteria fail at evaluation time exactly as before).
+func validateCriterion(criterion json.RawMessage, location string) error {
+	trimmed := bytes.TrimSpace(criterion)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	cond, err := predicate.ParseCondition(trimmed)
+	if err != nil {
+		return nil
+	}
+	return walkCriterion(cond, location)
+}
+
+// walkCriterion recurses into GroupCondition.Conditions and checks every
+// leaf condition: SimpleCondition / LifecycleCondition for a
+// non-compiling MATCHES_PATTERN regex, and LifecycleCondition additionally
+// for type-soundness (search.ValidateLifecycleCondition). Other condition
+// kinds (FunctionCondition, ArrayCondition) carry no OperatorType to check
+// and are silently skipped — in particular this is how a FUNCTION criterion
+// is exempted from these checks.
+func walkCriterion(cond predicate.Condition, location string) error {
+	switch c := cond.(type) {
+	case *predicate.SimpleCondition:
+		return compileMatchesPattern(c.OperatorType, c.Value, location)
+	case *predicate.LifecycleCondition:
+		if err := compileMatchesPattern(c.OperatorType, c.Value, location); err != nil {
+			return err
+		}
+		if err := search.ValidateLifecycleCondition(c); err != nil {
+			return fmt.Errorf("%s: %w", location, err)
+		}
+		return nil
+	case *predicate.GroupCondition:
+		for _, sub := range c.Conditions {
+			if err := walkCriterion(sub, location); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// compileMatchesPattern compiles value as a regex exactly the way
+// the evaluator does — internal/match/operators.go's opMatchesPattern calls
+// regexp.MatchString(fmt.Sprintf("%v", expected), actual.String()), which
+// itself compiles via regexp.Compile. Mirroring the %v stringification
+// and Compile call here means a pattern accepted here is guaranteed
+// compilable at evaluation time, and vice versa — no accept/reject skew.
+func compileMatchesPattern(operatorType string, value any, location string) error {
+	if operatorType != "MATCHES_PATTERN" {
+		return nil
+	}
+	pattern := fmt.Sprintf("%v", value)
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("%s: invalid MATCHES_PATTERN regex %q: %v", location, pattern, err)
+	}
+	return nil
+}
+
 // validateImportRequest enforces the per-incoming-workflow structural
 // rules (audit §H4, §H6.a–e, §M4). Violations are returned as plain
 // errors that the caller wraps in a 400 with ErrCodeValidationFailed.
@@ -267,11 +354,16 @@ func validateWorkflows(workflows []spi.WorkflowDefinition, allowCycles bool) err
 // validateWorkflowStructure enforces the per-workflow structural rules
 // (H6.a–e, H4) plus the security-audit follow-ups M-1 (empty state-map
 // keys), L-1 (empty transition / processor names) and L-2 (identifier
-// length cap). Any violation is a 4xx at import time —
-// the engine would otherwise silently degrade at runtime (park entity
-// in an undefined state, shadow duplicate transitions, coerce typo'd
+// length cap), plus criterion validation (regex compilability and
+// lifecycle/meta type-soundness). Any violation is a 4xx at import time —
+// the engine would otherwise silently degrade at runtime (park entity in an
+// undefined state, shadow duplicate transitions, coerce typo'd
 // ExecutionMode to SYNC) or accept arbitrarily long identifiers into
-// operational logs and audit events.
+// operational logs and audit events. A malformed MATCHES_PATTERN regex or a
+// type-unsound lifecycle clause (unknown meta field, non-comparison
+// operator or non-timestamp operand on a temporal field) in a
+// workflow-level or transition-level criterion is rejected here rather than
+// at every subsequent transition-evaluation attempt.
 func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	// H6.c — Name non-empty.
 	if wf.Name == "" {
@@ -291,6 +383,13 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 		return fmt.Errorf("workflow %q: initialState %q is not declared in states", wf.Name, wf.InitialState)
 	}
 
+	// Workflow-level criterion — reject a malformed MATCHES_PATTERN regex
+	// or a type-unsound lifecycle clause at import instead of failing (or
+	// silently misbehaving on) every evaluation.
+	if err := validateCriterion(wf.Criterion, fmt.Sprintf("workflow %q", wf.Name)); err != nil {
+		return err
+	}
+
 	// Iterate states once and enforce:
 	//   M-1 — state-map keys must be non-empty.
 	//   L-2 — state-map keys length cap.
@@ -302,6 +401,8 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
 	//   M1  — RetryPolicy ∈ {NONE, FIXED, ""}.
+	//   Transition.Criterion — a MATCHES_PATTERN regex, if present, must
+	//     compile; a lifecycle/meta clause, if present, must be type-sound.
 	for stateName, stateDef := range wf.States {
 		if stateName == "" {
 			return fmt.Errorf("workflow %q: empty state name is not allowed in the states map",
@@ -333,15 +434,49 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					wf.Name, stateName, tr.Name, tr.Next)
 			}
 
+			if err := validateCriterion(tr.Criterion,
+				fmt.Sprintf("workflow %q state %q transition %q", wf.Name, stateName, tr.Name)); err != nil {
+				return err
+			}
+
 			if tr.Manual && tr.Schedule != nil {
 				return fmt.Errorf(
 					"workflow %q state %q transition %q: manual and scheduled are mutually exclusive",
 					wf.Name, stateName, tr.Name)
 			}
-			if tr.Schedule != nil && tr.Schedule.DelayMs <= 0 {
-				return fmt.Errorf(
-					"workflow %q state %q transition %q: schedule.delayMs must be > 0 (got %d)",
-					wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
+			if tr.Schedule != nil {
+				hasDelay := tr.Schedule.DelayMs > 0
+				hasFn := tr.Schedule.Function != nil
+				// Exactly one of delayMs or function is required — a static
+				// delay or a Function callout that computes the firing time
+				// per entity. Both-present and neither-present are rejected
+				// alike; the mutual-exclusion is not expressible in the
+				// OpenAPI schema (see TransitionScheduleDto), so it is
+				// enforced here.
+				if hasDelay == hasFn {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: exactly one of schedule.delayMs or schedule.function is required",
+						wf.Name, stateName, tr.Name)
+				}
+				if hasFn {
+					f := tr.Schedule.Function
+					if f.ResultKind != "Schedule" {
+						return fmt.Errorf(
+							`workflow %q state %q transition %q: schedule.function.resultKind must be "Schedule" (got %q)`,
+							wf.Name, stateName, tr.Name, f.ResultKind)
+					}
+					if f.Name == "" || f.CalculationNodesTags == "" {
+						return fmt.Errorf(
+							"workflow %q state %q transition %q: schedule.function requires name and calculationNodesTags",
+							wf.Name, stateName, tr.Name)
+					}
+				}
+				// No separate `else if DelayMs <= 0` branch: once the XOR
+				// check above has passed with hasFn == false, hasDelay must
+				// be true (DelayMs > 0), so a dedicated delayMs<=0 rejection
+				// here would be unreachable. DelayMs <= 0 with no function
+				// is already caught by the XOR check as the "neither
+				// present" shape.
 			}
 
 			for _, p := range tr.Processors {

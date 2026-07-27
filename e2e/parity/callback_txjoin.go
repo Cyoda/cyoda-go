@@ -2,7 +2,6 @@ package parity
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -60,36 +59,54 @@ const cbSecondaryWorkflow = `{
 // processors read to learn the secondary model + marker for a scenario. It
 // returns a JSON-encoded (quoted, escaped) string literal ready to embed as the
 // "context" value inside a workflow JSON document.
+
 func cbContext(secondaryModel string, marker string) string {
 	inner, _ := json.Marshal(map[string]any{
 		"secondaryModel":   secondaryModel,
 		"secondaryVersion": 1,
 		"marker":           marker,
 	})
-	// json.Marshal of the inner-JSON string yields a fully quoted+escaped
-	// literal (e.g. "\"{\\\"secondaryModel\\\":...}\"") suitable for direct
-	// substitution as a JSON string value.
-	quoted, _ := json.Marshal(string(inner))
-	return string(quoted)
+	return string(inner)
+}
+
+// cbWorkflowDoc marshals a workflow-import document.
+//
+// These documents are built with an encoder rather than a string template on
+// purpose: a template interpolates with %s or %q, and Go's quoting rules are not
+// JSON's — they diverge on non-ASCII and control characters, and %s does not
+// quote at all. Passing Go values through json.Marshal is both correct and what
+// static analysis can verify.
+func cbWorkflowDoc(name string, states map[string]any) string {
+	b, _ := json.Marshal(map[string]any{
+		"importMode": "REPLACE",
+		"workflows": []any{map[string]any{
+			"version": "1.1", "name": name, "initialState": "NONE", "active": true,
+			"states": states,
+		}},
+	})
+	return string(b)
+}
+
+// cbProc builds one calculator-processor entry.
+func cbProc(name, execMode string, ctxValue string, extraConfig map[string]any) map[string]any {
+	cfg := map[string]any{"attachEntity": true, "calculationNodesTags": "", "context": ctxValue}
+	for k, v := range extraConfig {
+		cfg[k] = v
+	}
+	return map[string]any{"type": "calculator", "name": name, "executionMode": execMode, "config": cfg}
 }
 
 // cbPrimaryProcWorkflow builds a NONE→ACTIVE auto-transition workflow whose
 // transition carries a single callback processor with the given name, execution
 // mode, and pass-through context.
 func cbPrimaryProcWorkflow(wfName, procName, execMode, contextValue string) string {
-	return fmt.Sprintf(`{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
-						"config": {"attachEntity": true, "calculationNodesTags": "", "context": %s}}]
-				}]},
-				"ACTIVE": {}
-			}
-		}]
-	}`, wfName, procName, execMode, contextValue)
+	return cbWorkflowDoc(wfName, map[string]any{
+		"NONE": map[string]any{"transitions": []any{map[string]any{
+			"name": "init", "next": "ACTIVE", "manual": false,
+			"processors": []any{cbProc(procName, execMode, contextValue, nil)},
+		}}},
+		"ACTIVE": map[string]any{},
+	})
 }
 
 // cbSetupModel imports + locks a model with the given sample doc, then imports
@@ -234,6 +251,45 @@ func RunCallbackSyncReadYourWrites(t *testing.T, fixture BackendFixture) {
 	}
 }
 
+// RunCallbackGRPCSearchReadYourWrites proves that a callback which SEARCHES over
+// the gRPC entity API joins T identically on every backend: a SYNC processor
+// creates a secondary inside T (uncommitted), then issues an EntitySearchCollection
+// gRPC callback for it both WITH the tx-token (joined) and WITHOUT (standalone).
+// The joined search must match the uncommitted row (count >= 1); the standalone
+// control must match nothing (count 0). This guards the search-within-T
+// visibility the gRPC read-RPC routing depends on — before the search RPCs were
+// wired into the txRouteInterceptor, the joined count collapsed to the standalone
+// count on every backend.
+func RunCallbackGRPCSearchReadYourWrites(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const secondary = "cbtj-gsearch-secondary"
+	const primary = "cbtj-gsearch-primary"
+	const marker = "cbtj-gsearch-marker"
+
+	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+		cbPrimaryProcWorkflow("cbtj-gsearch-wf", "cb-grpc-search-read-your-writes", "SYNC", cbContext(secondary, marker)))
+
+	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create: %v", err)
+	}
+	prim, err := c.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
+	}
+	joined, _ := prim.Data["grpcSearchJoinedCount"].(float64)
+	standalone, _ := prim.Data["grpcSearchStandaloneCount"].(float64)
+	if joined < 1 {
+		t.Fatalf("joined gRPC search matched %v entities; want >= 1 — the tx-token was ignored on the search RPC (read-your-writes broken for gRPC search): data=%+v", prim.Data["grpcSearchJoinedCount"], prim.Data)
+	}
+	if standalone != 0 {
+		t.Errorf("standalone gRPC search (no token) matched %v entities; want 0 — the control must not see the uncommitted secondary", prim.Data["grpcSearchStandaloneCount"])
+	}
+}
+
 // RunCallbackCriteriaReadYourWrites proves invariant 3: a criteria callback that
 // reads an entity written earlier in T joins the transaction and sees the
 // uncommitted state.
@@ -255,23 +311,22 @@ func RunCallbackCriteriaReadYourWrites(t *testing.T, fixture BackendFixture) {
 	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
 
 	ctxVal := cbContext(secondary, marker)
-	wf := fmt.Sprintf(`{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": "cbtj-crit-wf", "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":     {"transitions": [{"name": "init", "next": "ENRICHED", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-create-secondary", "executionMode": "SYNC",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "context": %s}}]
-				}]},
-				"ENRICHED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": false,
-					"criterion": {"type": "function", "function": {"name": "cb-criterion-reads",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "context": %s}}}
-				}]},
-				"APPROVED": {}
-			}
-		}]
-	}`, ctxVal, ctxVal)
+	wf := cbWorkflowDoc("cbtj-crit-wf", map[string]any{
+		"NONE": map[string]any{"transitions": []any{map[string]any{
+			"name": "init", "next": "ENRICHED", "manual": false,
+			"processors": []any{cbProc("cb-create-secondary", "SYNC", ctxVal, nil)},
+		}}},
+		"ENRICHED": map[string]any{"transitions": []any{map[string]any{
+			"name": "approve", "next": "APPROVED", "manual": false,
+			"criterion": map[string]any{"type": "function", "function": map[string]any{
+				"name": "cb-criterion-reads",
+				"config": map[string]any{
+					"attachEntity": true, "calculationNodesTags": "", "context": ctxVal,
+				},
+			}},
+		}}},
+		"APPROVED": map[string]any{},
+	})
 	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`, wf)
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
@@ -375,7 +430,10 @@ func RunCallbackEmptyTokenStandalone(t *testing.T, fixture BackendFixture) {
 
 // cbStatusEquals builds a simple search condition matching data.status == value.
 func cbStatusEquals(value string) string {
-	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, value)
+	b, _ := json.Marshal(map[string]any{
+		"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": value,
+	})
+	return string(b)
 }
 
 // RunCallback_CBDPostJoinsTxPost proves that COMMIT_BEFORE_DISPATCH with
@@ -401,21 +459,14 @@ func RunCallback_CBDPostJoinsTxPost(t *testing.T, fixture BackendFixture) {
 	// Build the workflow inline: COMMIT_BEFORE_DISPATCH + startNewTxOnDispatch=true.
 	// cbPrimaryProcWorkflow does not support startNewTxOnDispatch, so inline here.
 	ctxVal := cbContext(secondary, marker)
-	wf := fmt.Sprintf(`{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": "cbtj-cbd-post-wf", "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-create-secondary",
-						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "",
-						           "startNewTxOnDispatch": true, "context": %s}}]
-				}]},
-				"ACTIVE": {}
-			}
-		}]
-	}`, ctxVal)
+	wf := cbWorkflowDoc("cbtj-cbd-post-wf", map[string]any{
+		"NONE": map[string]any{"transitions": []any{map[string]any{
+			"name": "init", "next": "ACTIVE", "manual": false,
+			"processors": []any{cbProc("cb-create-secondary", "COMMIT_BEFORE_DISPATCH", ctxVal,
+				map[string]any{"startNewTxOnDispatch": true})},
+		}}},
+		"ACTIVE": map[string]any{},
+	})
 	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`, wf)
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)

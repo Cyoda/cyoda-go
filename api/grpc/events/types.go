@@ -1401,6 +1401,204 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type EntityFunctionCalculationRequestJson struct {
+	// Entity ID.
+	EntityID string `json:"entityId" yaml:"entityId" mapstructure:"entityId"`
+
+	// Error details (if present).
+	Error *EntityFunctionCalculationRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Function ID.
+	FunctionID string `json:"functionId" yaml:"functionId" mapstructure:"functionId"`
+
+	// Function name.
+	FunctionName string `json:"functionName" yaml:"functionName" mapstructure:"functionName"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Configured parameters, if any.
+	Parameters interface{} `json:"parameters,omitempty" yaml:"parameters,omitempty" mapstructure:"parameters,omitempty"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload *DataPayloadJson `json:"payload,omitempty" yaml:"payload,omitempty" mapstructure:"payload,omitempty"`
+
+	// Request ID.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Transaction ID.
+	TransactionID *string `json:"transactionId,omitempty" yaml:"transactionId,omitempty" mapstructure:"transactionId,omitempty"`
+
+	// Transition information.
+	Transition *TransitionInfoJson `json:"transition,omitempty" yaml:"transition,omitempty" mapstructure:"transition,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+
+	// Workflow information.
+	Workflow WorkflowInfoJson `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// Error details (if present).
+type EntityFunctionCalculationRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Flag indicates whether this error is retryable (for example, whether cyoda
+	// should retry the calculation request).
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityFunctionCalculationRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityFunctionCalculationRequestJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityFunctionCalculationRequestJsonError: required")
+	}
+	type Plain EntityFunctionCalculationRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityFunctionCalculationRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityFunctionCalculationRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["entityId"]; raw != nil && !ok {
+		return fmt.Errorf("field entityId in EntityFunctionCalculationRequestJson: required")
+	}
+	if _, ok := raw["functionId"]; raw != nil && !ok {
+		return fmt.Errorf("field functionId in EntityFunctionCalculationRequestJson: required")
+	}
+	if _, ok := raw["functionName"]; raw != nil && !ok {
+		return fmt.Errorf("field functionName in EntityFunctionCalculationRequestJson: required")
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityFunctionCalculationRequestJson: required")
+	}
+	if _, ok := raw["requestId"]; raw != nil && !ok {
+		return fmt.Errorf("field requestId in EntityFunctionCalculationRequestJson: required")
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in EntityFunctionCalculationRequestJson: required")
+	}
+	type Plain EntityFunctionCalculationRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; !ok || v == nil {
+		plain.Success = true
+	}
+	*j = EntityFunctionCalculationRequestJson(plain)
+	return nil
+}
+
+type EntityFunctionCalculationResponseJson struct {
+	// Entity ID.
+	EntityID string `json:"entityId" yaml:"entityId" mapstructure:"entityId"`
+
+	// Error details (if present).
+	Error *EntityFunctionCalculationResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// ID of the original function calculation request.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Function calculation result.
+	Result *json.RawMessage `json:"result,omitempty" yaml:"result,omitempty" mapstructure:"result,omitempty"`
+
+	// Discriminator identifying the shape of `result`.
+	ResultKind *string `json:"resultKind,omitempty" yaml:"resultKind,omitempty" mapstructure:"resultKind,omitempty"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityFunctionCalculationResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Flag indicates whether this error is retryable (for example, whether cyoda
+	// should retry the calculation request).
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityFunctionCalculationResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityFunctionCalculationResponseJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityFunctionCalculationResponseJsonError: required")
+	}
+	type Plain EntityFunctionCalculationResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityFunctionCalculationResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityFunctionCalculationResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["entityId"]; raw != nil && !ok {
+		return fmt.Errorf("field entityId in EntityFunctionCalculationResponseJson: required")
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityFunctionCalculationResponseJson: required")
+	}
+	if _, ok := raw["requestId"]; raw != nil && !ok {
+		return fmt.Errorf("field requestId in EntityFunctionCalculationResponseJson: required")
+	}
+	type Plain EntityFunctionCalculationResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; !ok || v == nil {
+		plain.Success = true
+	}
+	*j = EntityFunctionCalculationResponseJson(plain)
+	return nil
+}
+
 type EntityGetAllRequestJson struct {
 	// Error details (if present).
 	Error *EntityGetAllRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
@@ -2793,7 +2991,9 @@ type EntitySearchRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// The maximum number of rows to return.
+	// Caps the matched result set; not a page size. A matched set larger than `limit`
+	// is rejected rather than returned as a truncated prefix. Values below 1 are
+	// rejected.
 	Limit *int `json:"limit,omitempty" yaml:"limit,omitempty" mapstructure:"limit,omitempty"`
 
 	// Entity model to use for building this snapshot.
@@ -2810,6 +3010,12 @@ type EntitySearchRequestJson struct {
 
 	// The maximum time to wait in milliseconds for the query to complete.
 	TimeoutMillis *int `json:"timeoutMillis,omitempty" yaml:"timeoutMillis,omitempty" mapstructure:"timeoutMillis,omitempty"`
+
+	// When true and this search runs inside an active transaction, the entities it
+	// returns are recorded into the transaction's read-set so commit-time
+	// first-committer-wins validates them. Defaults to false. Ignored outside a
+	// transaction.
+	TrackingRead bool `json:"trackingRead,omitempty" yaml:"trackingRead,omitempty" mapstructure:"trackingRead,omitempty"`
 
 	// Warnings (if applicable).
 	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
@@ -2939,6 +3145,9 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
 		plain.Success = true
+	}
+	if v, ok := raw["trackingRead"]; !ok || v == nil {
+		plain.TrackingRead = false
 	}
 	*j = EntitySearchRequestJson(plain)
 	return nil

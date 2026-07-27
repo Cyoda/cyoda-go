@@ -52,6 +52,40 @@ type Config struct {
 	// SearchMaxSortKeys caps the number of sort keys per search request.
 	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
 	SearchMaxSortKeys int
+	// Scheduler configures the coordinator-only scan loop that fires due
+	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
+	Scheduler SchedulerConfig
+}
+
+// SchedulerConfig controls the scheduled-transition scan loop: cadence,
+// coordinator/distribution strategy selection, redispatch throttling, and
+// the engine's expiry grace band. See design doc §9 and
+// docs/superpowers/plans/2026-07-16-scheduled-transition-runtime.md Task D4.
+type SchedulerConfig struct {
+	// Enabled is the kill switch for the scan loop. CYODA_SCHEDULER_ENABLED,
+	// default true.
+	Enabled bool
+	// ScanInterval is the coordinator's scan cadence.
+	// CYODA_SCHEDULER_SCAN_INTERVAL, default 1s.
+	ScanInterval time.Duration
+	// BatchSize caps how many due tasks a single scan pulls from the store.
+	// CYODA_SCHEDULER_BATCH_SIZE, default 100.
+	BatchSize int
+	// Distribution selects the dispatch-target strategy: "round-robin" or
+	// "self". CYODA_SCHEDULER_DISTRIBUTION, default "round-robin".
+	Distribution string
+	// Coordinator selects the coordinator-election strategy.
+	// CYODA_SCHEDULER_COORDINATOR, default "lowest-node-id".
+	Coordinator string
+	// RedispatchBackoff is the best-effort re-dispatch throttle window
+	// applied after a due task is picked up. CYODA_SCHEDULER_REDISPATCH_BACKOFF,
+	// default 30s.
+	RedispatchBackoff time.Duration
+	// ExpiryGrace is the margin above a scheduled transition's timeoutMs
+	// that the engine tolerates before expiring a late task instead of
+	// firing it. Size to at least the max inter-node clock skew.
+	// CYODA_SCHEDULER_EXPIRY_GRACE, default 100ms.
+	ExpiryGrace time.Duration
 }
 
 type AdminConfig struct {
@@ -81,11 +115,16 @@ type IAMConfig struct {
 	MockTenantID   string
 	MockTenantName string
 	MockRoles      []string
-	JWTSigningKey  string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
-	JWTIssuer      string // JWT issuer claim (CYODA_JWT_ISSUER)
-	JWTAudience    string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
-	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
-	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
+	// MockKind is the spi.PrincipalKind (as a string — "user", "service", or
+	// "system") assigned to the mock-mode default UserContext. CYODA_IAM_MOCK_KIND,
+	// default "user". Lets local/CI setups exercise service/system-attributed
+	// code paths without standing up real JWT auth.
+	MockKind      string
+	JWTSigningKey string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
+	JWTIssuer     string // JWT issuer claim (CYODA_JWT_ISSUER)
+	JWTAudience   string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
+	JWTExpiry     int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
+	RequireJWT    bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 
 	// IAM feature-flag fields — passed through to auth.IAMFeatures via AuthIAMFeatures().
 	// Individual fields document their own purpose; this block covers both
@@ -222,6 +261,7 @@ func DefaultConfig() Config {
 			MockTenantID:                  "mock-tenant",
 			MockTenantName:                "Mock Tenant",
 			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "user"),
 			JWTSigningKey:                 jwtSigningKey,
 			JWTIssuer:                     envString("CYODA_JWT_ISSUER", "cyoda"),
 			JWTAudience:                   envString("CYODA_JWT_AUDIENCE", ""),
@@ -270,6 +310,15 @@ func DefaultConfig() Config {
 			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
 			// this false so the SSRF guard stays active.
 			DispatchAllowLoopback: envBool("CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING", false),
+		},
+		Scheduler: SchedulerConfig{
+			Enabled:           envBool("CYODA_SCHEDULER_ENABLED", true),
+			ScanInterval:      envDuration("CYODA_SCHEDULER_SCAN_INTERVAL", 1*time.Second),
+			BatchSize:         envInt("CYODA_SCHEDULER_BATCH_SIZE", 100),
+			Distribution:      envString("CYODA_SCHEDULER_DISTRIBUTION", "round-robin"),
+			Coordinator:       envString("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id"),
+			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
+			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
 		},
 	}
 }

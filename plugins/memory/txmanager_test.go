@@ -618,3 +618,202 @@ func TestReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 
 	_ = tm.Rollback(ctxA, txAID)
 }
+
+// --- Follow-on-action attribution (#430) ---
+
+// TestBeginCapturesOriginFromUserContext verifies that Begin resolves
+// TransactionState.Origin from the caller's UserContext-derived Principal
+// via spi.ResolveOrigin.
+func TestBeginCapturesOriginFromUserContext(t *testing.T) {
+	_, tm := newTxManager(t)
+	ctx := ctxWithUserKind("tenant-A", "alice", spi.PrincipalUser)
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+
+	tx := spi.GetTransaction(txCtx)
+	if tx == nil {
+		t.Fatal("expected Begin to populate TransactionState in the returned context")
+	}
+	want := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	if tx.Origin != want {
+		t.Errorf("tx.Origin = %+v, want %+v", tx.Origin, want)
+	}
+	if tx.DeleteAttribution == nil {
+		t.Error("expected Begin to initialise tx.DeleteAttribution")
+	}
+}
+
+// TestBeginCapturesAmbientOrigin verifies that Begin honours an
+// ambient-seeded origin (WithAmbientOrigin) over the caller's own
+// UserContext-derived Principal when no parent tx exists — the
+// scheduled-fire case, per ResolveOrigin's documented precedence.
+func TestBeginCapturesAmbientOrigin(t *testing.T) {
+	_, tm := newTxManager(t)
+	base := ctxWithUserKind("tenant-A", "ambient-caller", spi.PrincipalUser)
+	seed := spi.Principal{ID: "scheduler", Kind: spi.PrincipalSystem}
+	ctx := spi.WithAmbientOrigin(base, seed)
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+
+	tx := spi.GetTransaction(txCtx)
+	if tx == nil {
+		t.Fatal("expected Begin to populate TransactionState in the returned context")
+	}
+	if tx.Origin != seed {
+		t.Errorf("tx.Origin = %+v, want ambient seed %+v", tx.Origin, seed)
+	}
+}
+
+// TestCommitDeleteAttribution_StagerNotCommitter is the central regression
+// test for the delete-attribution bug: a delete staged by a joined,
+// service-kind caller inside a user-origin transaction must be attributed to
+// the tx's origin user with an Executor recording the *stager* (service),
+// regardless of which context is later used to Commit. Before the fix,
+// Commit's flush stamped the tombstone's user from its own ctx parameter —
+// the committer, not the stager.
+func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
+	factory, tm := newTxManager(t)
+	rootCtx := ctxWithUserKind("tenant-A", "root-user", spi.PrincipalUser)
+
+	// Pre-populate the entity to be deleted.
+	store, err := factory.EntityStore(rootCtx)
+	if err != nil {
+		t.Fatalf("EntityStore failed: %v", err)
+	}
+	if _, err := store.Save(rootCtx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:       "e-del",
+			TenantID: "tenant-A",
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+		},
+		Data: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	txID, txCtx, err := tm.Begin(rootCtx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	tx := spi.GetTransaction(txCtx)
+	wantOrigin := spi.Principal{ID: "root-user", Kind: spi.PrincipalUser}
+	if tx.Origin != wantOrigin {
+		t.Fatalf("tx.Origin = %+v, want %+v", tx.Origin, wantOrigin)
+	}
+
+	// Join as a distinct, service-kind actor and stage the delete through it.
+	svcCtx := ctxWithUserKind("tenant-A", "svc-x", spi.PrincipalService)
+	joinedCtx, err := tm.Join(svcCtx, txID)
+	if err != nil {
+		t.Fatalf("Join failed: %v", err)
+	}
+	joinedStore, err := factory.EntityStore(joinedCtx)
+	if err != nil {
+		t.Fatalf("EntityStore(joinedCtx) failed: %v", err)
+	}
+	if err := joinedStore.Delete(joinedCtx, "e-del"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// DeleteAttribution must be captured immediately at stage time, under
+	// the joined (service) ctx — not deferred to Commit.
+	wantExecutor := spi.Principal{ID: "svc-x", Kind: spi.PrincipalService}
+	attr, ok := tx.DeleteAttribution["e-del"]
+	if !ok {
+		t.Fatal("expected tx.DeleteAttribution to record the staged delete immediately")
+	}
+	if attr.Attributed != wantOrigin {
+		t.Errorf("staged Attributed = %+v, want tx.Origin %+v", attr.Attributed, wantOrigin)
+	}
+	if attr.Executor != wantExecutor {
+		t.Errorf("staged Executor = %+v, want stager %+v", attr.Executor, wantExecutor)
+	}
+
+	// Commit using the ROOT ctx (the committer), which is a *different*
+	// actor from the stager. The fix must not re-derive attribution from
+	// this ctx.
+	if err := tm.Commit(rootCtx, txID); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	history, err := store.GetVersionHistory(rootCtx, "e-del")
+	if err != nil {
+		t.Fatalf("GetVersionHistory failed: %v", err)
+	}
+	tomb := history[len(history)-1]
+	if !tomb.Deleted {
+		t.Fatal("expected last version to be the DELETE tombstone")
+	}
+	if tomb.User != wantOrigin.ID {
+		t.Errorf("tombstone User = %q, want origin user %q", tomb.User, wantOrigin.ID)
+	}
+	if tomb.AttributedKind != wantOrigin.Kind {
+		t.Errorf("tombstone AttributedKind = %v, want %v", tomb.AttributedKind, wantOrigin.Kind)
+	}
+	if tomb.Executor != wantExecutor {
+		t.Errorf("tombstone Executor = %+v, want stager %+v (not the committer)", tomb.Executor, wantExecutor)
+	}
+}
+
+// TestCommitFlushesDeletes_FallbackAttribution extends
+// TestCommitFlushesDeletes: when a delete is staged directly on tx.Deletes
+// without a corresponding tx.DeleteAttribution entry (simulating a caller
+// that bypassed EntityStore.Delete), Commit's flush must fall back to
+// spi.AttributionFor(ctx) evaluated at commit time.
+func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
+	factory, tm := newTxManager(t)
+	ctx := ctxWithUserKind("tenant-A", "test-user", spi.PrincipalUser)
+
+	store, _ := factory.EntityStore(ctx)
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:         "e-del-fallback",
+			TenantID:   "tenant-A",
+			ChangeType: "CREATED",
+		},
+		Data: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	tx := spi.GetTransaction(txCtx)
+	// Stage the delete directly, bypassing EntityStore.Delete — no
+	// DeleteAttribution entry is recorded.
+	tx.Deletes["e-del-fallback"] = true
+	tx.WriteSet["e-del-fallback"] = true
+	if _, ok := tx.DeleteAttribution["e-del-fallback"]; ok {
+		t.Fatal("test setup error: DeleteAttribution must be absent to exercise the fallback path")
+	}
+
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	history, err := store.GetVersionHistory(ctx, "e-del-fallback")
+	if err != nil {
+		t.Fatalf("GetVersionHistory failed: %v", err)
+	}
+	tomb := history[len(history)-1]
+	if !tomb.Deleted {
+		t.Fatal("expected last version to be the DELETE tombstone")
+	}
+	want := spi.Principal{ID: "test-user", Kind: spi.PrincipalUser}
+	if tomb.User != want.ID {
+		t.Errorf("tombstone User = %q, want fallback (commit ctx) user %q", tomb.User, want.ID)
+	}
+	if tomb.Executor != want {
+		t.Errorf("tombstone Executor = %+v, want fallback %+v", tomb.Executor, want)
+	}
+}

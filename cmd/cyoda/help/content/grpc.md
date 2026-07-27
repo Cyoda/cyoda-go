@@ -5,9 +5,11 @@ stability: stable
 see_also:
   - config.grpc
   - workflows
+  - cloudevents
   - errors.COMPUTE_MEMBER_DISCONNECTED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.DISPATCH_TIMEOUT
+  - errors.SCHEDULE_FUNCTION_INVALID_RESULT
   - errors.DISPATCH_FORWARD_FAILED
 ---
 
@@ -118,6 +120,8 @@ message CloudEvent {
 - `EntityProcessorCalculationResponse` — client → server; processor result
 - `EntityCriteriaCalculationRequest` — server → client; criteria dispatch request
 - `EntityCriteriaCalculationResponse` — client → server; criteria result
+- `EntityFunctionCalculationRequest` — server → client; function dispatch request
+- `EntityFunctionCalculationResponse` — client → server; function result
 - `EventAckResponse` — client → server; acknowledges any server event
 
 **EventAckResponse `text_data` JSON shape:**
@@ -162,6 +166,7 @@ The full CloudEvent envelope for an ack:
 - `EntityDeleteRequest` / `EntityDeleteResponse`
 - `EntityDeleteAllRequest` / `EntityDeleteAllResponse`
 - `EntityTransitionRequest` / `EntityTransitionResponse`
+- `EntityPatchRequest` / `EntityTransactionResponse` — partial update; `PatchFormat` selects the dialect (`MERGE_PATCH`, RFC 7386 `application/merge-patch+json`, or `JSON_PATCH` `application/json-patch+json`). Requires `ifMatch` (the `transactionId` from the last read, or `"*"` for last-writer-wins); an optional `transition` names the transition to fire.
 
 **Model management event types**:
 
@@ -170,6 +175,7 @@ The full CloudEvent envelope for an ack:
 - `EntityModelTransitionRequest` / `EntityModelTransitionResponse`
 - `EntityModelDeleteRequest` / `EntityModelDeleteResponse`
 - `EntityModelGetAllRequest` / `EntityModelGetAllResponse`
+- `EntityModelSetUniqueKeysRequest` / `EntityModelSetUniqueKeysResponse`
 
 **Search / query event types**:
 
@@ -295,11 +301,67 @@ Client responds with `EntityCriteriaCalculationResponse`:
 }
 ```
 
+On `matches: false`, the response may also carry a `reason` string explaining
+why the criterion blocked the passage (capped at 2 KiB). It surfaces in two
+places: the manual-transition `400 WORKFLOW_FAILED` body
+(`detail: transition "<name>" criterion not matched: <reason>` — the
+guaranteed, backend-independent delivery for a manual rejection), and the
+`TRANSITION_NOT_MATCH_CRITERION` / `WORKFLOW_SKIP` state-machine audit events'
+`data.reason` — durable there only for the automated-cascade and
+workflow-selection paths, since a manual rejection rolls its transaction back.
+An omitted `reason` defaults to `"criterion did not match"` in the audit and
+is left out of the 400 detail (bare `criterion not matched`).
+
+**Function callout wire shape:**
+
+`EntityFunctionCalculationRequest`/`EntityFunctionCalculationResponse` are the wire types for the Function callout — a third callout shape alongside processor and criteria that returns a declared typed value instead of a boolean or entity payload (e.g. computing a scheduled state transition's fire time). Request shape mirrors the processor request, naming the callout target `functionId`/`functionName`:
+
+```json
+{
+  "id": "<requestId>",
+  "requestId": "<requestId>",
+  "entityId": "<entityUUID>",
+  "functionId": "compute-fire-at",
+  "functionName": "compute-fire-at",
+  "workflow": {"id": "prize-lifecycle", "name": "prize-lifecycle"},
+  "transition": {"id": "APPROVE", "name": "APPROVE"},
+  "transactionId": "<txUUID>",
+  "success": true
+}
+```
+
+Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON object) plus a `resultKind` discriminator string identifying its shape:
+
+```json
+{
+  "requestId": "<same requestId>",
+  "success": true,
+  "result": {"fireAt": 1},
+  "resultKind": "Schedule",
+  "warnings": [],
+  "error": null
+}
+```
+
+`resultKind: "Schedule"` is the only shape currently defined — it drives a
+scheduled transition's `schedule.function` (see `cyoda help workflows`).
+`success: false` or an `error` fails the dispatch the same way a processor
+or criteria failure does; a `result` that doesn't parse against the
+declared `resultKind` is rejected by the caller (a scheduled transition's
+`SCHEDULE_FUNCTION_INVALID_RESULT`), not by this wire contract. Full JSON
+Schemas for both messages: `docs/cyoda/schema/processing/EntityFunctionCalculationRequest.json`
+and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
+
 **Auth context on dispatched events:**
 
 The server attaches CloudEvent Auth Context extension attributes to every dispatched request:
 
-- `authtype` — `"user"` or `"service_account"` (based on whether the originating user has `ROLE_M2M`)
+- `authtype` — `"user"`, `"service"`, or `"system"`, driven by the originating
+  principal's explicit kind (not sniffed from roles). **Wire change:** this was
+  previously `"user"` / `"service_account"` inferred from a `ROLE_M2M` role;
+  it is now one of exactly these three values, always. Dispatch fails closed
+  — no callout is sent — if the principal's kind is unset or unrecognized, so
+  a bogus or absent `authtype` never reaches a compute node.
 - `authid` — the user ID of the originating request
 - `authclaims` — comma-separated roles of the originating user
 

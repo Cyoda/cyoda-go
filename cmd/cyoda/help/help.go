@@ -21,6 +21,12 @@ var embeddedContent embed.FS
 // at package init; panics if content is malformed (a compile-time
 // guarantee would be preferable, but go:embed can't enforce topic
 // structure).
+//
+// This is the OSS-only base. Runtime consumers (the CLI and the HTTP help
+// routes) build from BuildTree (see overlay.go), which merges this base with
+// any plugin-registered overlays. DefaultTree is retained for tests and
+// OSS-only consumers; its eager init also keeps process-start fail-fast for
+// malformed OSS content, independent of when BuildTree is first called.
 var DefaultTree = func() *Tree {
 	t, err := Load(embeddedContent)
 	if err != nil {

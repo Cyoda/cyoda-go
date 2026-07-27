@@ -20,6 +20,8 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_SQLITE_BUSY_TIMEOUT", Description: "Wait time for write lock", Default: "5s"},
 		{Name: "CYODA_SQLITE_CACHE_SIZE", Description: "Page cache in KiB", Default: "64000"},
 		{Name: "CYODA_SQLITE_SEARCH_SCAN_LIMIT", Description: "Max rows examined per search with residual filter", Default: "100000"},
+		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
+		{Name: "CYODA_SCHEMA_EXTEND_MAX_RETRIES", Description: "Max retries on concurrent schema extension", Default: "8"},
 	}
 }
 

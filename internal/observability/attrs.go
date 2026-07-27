@@ -25,6 +25,9 @@ const (
 	AttrCriterionTarget = attribute.Key("criterion.target")
 	AttrCriteriaMatches = attribute.Key("criteria.matches")
 
+	AttrFunctionName = attribute.Key("function.name")
+	AttrFunctionTags = attribute.Key("function.tags")
+
 	AttrDispatchType = attribute.Key("type")
 
 	AttrEntityCount = attribute.Key("entity.count")

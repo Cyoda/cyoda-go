@@ -9,10 +9,11 @@ import (
 
 // TestWorkflowSchemaVersion_ImportAcceptsCurrent — happy path: a
 // workflow stamped with a supported MINOR imports successfully. As of
-// v0.8.2, "1.2" is CurrentSchemaVersion; "1.1" remains accepted under
-// dual-shape retention (SupportedSchemaRanges is {1, 1, 2}). This test
-// exercises the still-accepted "1.1" shape;
-// TestWorkflowSchemaVersion_ImportAccepts12 covers the new "1.2" shape.
+// v0.8.3, "1.3" is CurrentSchemaVersion; "1.1" and "1.2" remain accepted
+// under dual-shape retention (SupportedSchemaRanges is {1, 1, 3}). This
+// test exercises the still-accepted "1.1" shape;
+// TestWorkflowSchemaVersion_ImportAccepts12 covers the "1.2" shape and
+// TestWorkflowSchemaVersion_ImportAccepts13 covers the new "1.3" shape.
 func TestWorkflowSchemaVersion_ImportAcceptsCurrent(t *testing.T) {
 	const entity = "wf-schema-accept"
 	importModelE2E(t, entity, 1)
@@ -169,8 +170,8 @@ func TestWorkflowSchemaVersion_ExportStampsCurrent(t *testing.T) {
 		if !ok {
 			t.Fatalf("workflow[%d] not a map: %T", i, raw)
 		}
-		if m["version"] != "1.2" {
-			t.Fatalf("workflow[%d] version = %v; want \"1.2\"", i, m["version"])
+		if m["version"] != "1.3" {
+			t.Fatalf("workflow[%d] version = %v; want \"1.3\"", i, m["version"])
 		}
 	}
 }
@@ -192,20 +193,20 @@ func TestWorkflowSchemaVersion_HelpVersionsAction(t *testing.T) {
 	if err := json.Unmarshal([]byte(respBody), &got); err != nil {
 		t.Fatalf("decode: %v; raw: %s", err, respBody)
 	}
-	if got.Current != "1.2" {
-		t.Fatalf("current = %q; want 1.2", got.Current)
+	if got.Current != "1.3" {
+		t.Fatalf("current = %q; want 1.3", got.Current)
 	}
 	if len(got.Supported) != 1 {
 		t.Fatalf("supported length = %d; want 1; got %+v", len(got.Supported), got.Supported)
 	}
 	s := got.Supported[0]
-	if s["major"] != 1 || s["minMinor"] != 1 || s["maxMinor"] != 2 {
-		t.Fatalf("supported[0] = %+v; want {major:1, minMinor:1, maxMinor:2}", s)
+	if s["major"] != 1 || s["minMinor"] != 1 || s["maxMinor"] != 3 {
+		t.Fatalf("supported[0] = %+v; want {major:1, minMinor:1, maxMinor:3}", s)
 	}
 }
 
-// TestWorkflowSchemaVersion_ImportAccepts12 proves the new current MINOR is
-// accepted. The pre-existing 1.1-import test stays as the dual-shape proof.
+// TestWorkflowSchemaVersion_ImportAccepts12 proves the still-accepted prior
+// MINOR keeps working under 1.3's dual-shape retention.
 func TestWorkflowSchemaVersion_ImportAccepts12(t *testing.T) {
 	const entity, version = "schemaver-12", 1
 	importModelE2E(t, entity, version)
@@ -218,6 +219,26 @@ func TestWorkflowSchemaVersion_ImportAccepts12(t *testing.T) {
 	}`
 	if status, body := importWorkflowE2E(t, entity, version, payload); status != http.StatusOK {
 		t.Fatalf("import 1.2: expected 200, got %d: %s", status, body)
+	}
+}
+
+// TestWorkflowSchemaVersion_ImportAccepts13 proves the new current MINOR is
+// accepted, including the new `schedule.function` field it introduces.
+func TestWorkflowSchemaVersion_ImportAccepts13(t *testing.T) {
+	const entity, version = "schemaver-13", 1
+	importModelE2E(t, entity, version)
+	payload := `{
+	  "importMode": "REPLACE",
+	  "workflows": [{
+	    "version": "1.3", "name": "v13-wf", "initialState": "S", "active": true,
+	    "states": { "S": { "transitions": [ {
+	      "name": "t", "next": "Done",
+	      "schedule": { "function": { "name": "computeFire", "resultKind": "Schedule", "calculationNodesTags": "scheduler" } }
+	    } ] }, "Done": {} }
+	  }]
+	}`
+	if status, body := importWorkflowE2E(t, entity, version, payload); status != http.StatusOK {
+		t.Fatalf("import 1.3: expected 200, got %d: %s", status, body)
 	}
 }
 

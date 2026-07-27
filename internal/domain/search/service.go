@@ -30,10 +30,16 @@ var ErrSearchJobNotFound = errors.New("search job not found")
 type SearchOptions struct {
 	PointInTime     *time.Time
 	Limit           int
-	Offset          int
 	PerShardTimeout *time.Duration // nil means use node default; ignored by memory/postgres
 	AllowUnbounded  bool           // opt into "no per-shard timeout"; ignored by memory/postgres
 	OrderBy         []OrderKey     // sort keys; empty ⇒ entity_id asc
+
+	// TrackingRead, when true and a transaction is active, records the
+	// entities this search returns into the transaction's read-set, so
+	// commit-time first-committer-wins validates them (a FOR-SHARE /
+	// locking read, implemented optimistically). Default false: a plain
+	// snapshot predicate read that records nothing.
+	TrackingRead bool
 }
 
 // ResultOptions controls pagination when retrieving async search results.
@@ -110,11 +116,30 @@ func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 	return s
 }
 
+// structuralConditionErrCode classifies a ValidateCondition error for the
+// Search/SubmitAsync boundary: an object-operand shape violation
+// (ErrInvalidCondition, spec §6/§8) maps to INVALID_CONDITION; every other
+// structural failure (unknown operatorType, malformed BETWEEN arity) keeps
+// the existing BAD_REQUEST classification these two entry points have
+// always used.
+func structuralConditionErrCode(cErr error) string {
+	if errors.Is(cErr, ErrInvalidCondition) {
+		return common.ErrCodeInvalidCondition
+	}
+	return common.ErrCodeBadRequest
+}
+
 // Search performs a synchronous entity search, returning matching entities.
 //
-// When the plugin's EntityStore implements spi.Searcher and there is no active
-// transaction, Search delegates to the plugin for SQL predicate pushdown.
-// Otherwise it falls back to GetAll + in-memory filtering.
+// When the plugin's EntityStore implements spi.Searcher, Search delegates to
+// the plugin for SQL predicate pushdown — tx or not. Every OSS backend's
+// Searcher.Search is transaction-aware: called with an active transaction in
+// ctx, it honors the transaction's buffered writes and produces
+// read-your-own-writes results equal to GetAll+match, so the engine no
+// longer needs to special-case "in a transaction" to preserve correctness.
+// The GetAll/GetAllAsAt + in-memory match fallback below now serves only two
+// cases: (1) a store that does not implement spi.Searcher at all, and (2) a
+// condition ConditionToFilter cannot translate to a pushdownable filter.
 //
 // Pre-execution path validation: every condition path is checked against
 // the cached model schema's FieldsMap. When a path is unknown, the
@@ -133,6 +158,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — model-independent, so it runs before any model-store access.
+	// This is the single boundary every transport (HTTP, gRPC) funnels
+	// through; the HTTP handler no longer duplicates this check.
+	if cErr := ValidateCondition(cond); cErr != nil {
+		return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
+	}
+
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
@@ -143,6 +176,16 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return nil, vErr
+	}
+	if rErr := ValidateRegexPatterns(cond); rErr != nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
+	// Condition type-soundness (correctness-over-availability): every
+	// transport funnels through Search, so this is the single boundary that
+	// closes the gap where gRPC previously bypassed HTTP-only validation.
+	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+		return nil, tErr
 	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
@@ -155,12 +198,12 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// Delegate to plugin Searcher when available and not in a transaction.
-	// In-transaction searches bypass pushdown because the search would miss
-	// buffered writes that haven't been flushed to the store yet.
-	tx := spi.GetTransaction(ctx)
-	if searcher, ok := store.(spi.Searcher); ok && tx == nil {
-		filter, translateErr := ConditionToFilter(cond)
+	// Delegate to the plugin Searcher whenever it's available. Searcher.Search
+	// is transaction-aware on every OSS backend (RYW), so this is safe with or
+	// without an active transaction in ctx — see the Search doc comment.
+	if searcher, ok := store.(spi.Searcher); ok {
+		fields, _ := loadFieldsMap(ctx, modelStore, modelRef) // best-effort; nil-tolerant
+		filter, translateErr := ConditionToFilter(cond, fields)
 		if translateErr == nil {
 			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
 			// "no explicit limit" in all store implementations.
@@ -168,21 +211,50 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			if spiLimit < 0 {
 				spiLimit = 0
 			}
-			return searcher.Search(ctx, filter, spi.SearchOptions{
+			res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
 				ModelName:    modelRef.EntityName,
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
 				Limit:        spiLimit,
-				Offset:       opts.Offset,
 				OrderBy:      orderBy,
+				TrackingRead: opts.TrackingRead,
 			})
+			switch {
+			case errors.Is(sErr, spi.ErrSearchResultLimitExceeded):
+				return nil, common.Operational(http.StatusBadRequest,
+					common.ErrCodeSearchResultLimit,
+					"matched result count exceeds the configured limit").WithCause(sErr)
+			case errors.Is(sErr, spi.ErrScanBudgetExhausted):
+				return nil, common.Operational(http.StatusBadRequest,
+					common.ErrCodeScanBudgetExhausted,
+					"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(sErr)
+			}
+			return res, sErr
 		}
 		// Fall through to in-memory filtering if translation fails.
 		slog.Debug("condition-to-filter translation failed, falling back to in-memory",
 			"pkg", "search", "error", translateErr)
 	}
 
-	// Fallback: GetAll + in-memory filtering.
+	// Fallback: GetAll/GetAllAsAt + in-memory filtering. In-tx, this path is a
+	// rare edge (a store without Searcher, or a translate-failure condition):
+	// GetAll unconditionally records every returned entity into the
+	// transaction's read-set (unlike the Searcher's TrackingRead-gated
+	// pushdown path above), so a translate-failure search conservatively
+	// widens the read-set to the whole model regardless of opts.TrackingRead.
+	// The GetAllAsAt (point-in-time) branch of this same fallback records no
+	// read-set at all, matching GetAsAt/GetAllAsAt's historical-read semantics.
+	//
+	// Two consequences of GetAll running before any bound can be evaluated,
+	// worth keeping in mind reading the bounded-or-fail check below: (1) it is
+	// a correctness fix, not a resource-protection one — GetAll has already
+	// materialised the entire model into memory by the time the oversized
+	// match set is detected, so the fix stops a truncated answer from being
+	// returned, it does not avoid the memory cost of computing it; and (2)
+	// in-transaction, GetAll has also already recorded every entity into the
+	// transaction's read-set before the bound can raise, so a request that
+	// ends in a 400 here still leaves the transaction holding a model-wide
+	// read-set, same as a request that succeeds.
 	var entities []*spi.Entity
 	if opts.PointInTime != nil {
 		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)
@@ -193,9 +265,29 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to retrieve entities: %w", err)
 	}
 
+	// Declared-type resolver for the predicate evaluator: the type-directed
+	// kernel compares temporal data fields temporally (not lexically) only when
+	// the model supplies their declared subtype. Load the model's FieldsMap so
+	// this in-memory fallback path matches the pushdown's typing. A genuine
+	// store/schema-load error fails closed (correctness-over-availability): the
+	// model schema is a required input for correct typing, so we surface the
+	// error rather than silently under-match with untyped leaves. The
+	// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
+	// returns nil types, and comparison leaves degrade to non-match as intended.
+	fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
+	if ffErr != nil {
+		return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
+	}
+	fieldTypes := func(p string) []spi.DataType {
+		if fd, ok := fallbackFields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
+
 	var matches []*spi.Entity
 	for _, e := range entities {
-		ok, matchErr := match.Match(cond, e.Data, e.Meta)
+		ok, matchErr := match.Match(cond, e.Data, e.Meta, fieldTypes)
 		if matchErr != nil {
 			return nil, fmt.Errorf("predicate match failed: %w", matchErr)
 		}
@@ -206,21 +298,18 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 
 	sortEntities(matches, orderBy)
 
-	// Apply offset.
-	if opts.Offset > 0 {
-		if opts.Offset >= len(matches) {
-			return nil, nil
-		}
-		matches = matches[opts.Offset:]
-	}
-
-	// Apply limit. Default 1000 when zero; negative means unbounded (no cap).
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 1000
-	}
-	if limit > 0 && limit < len(matches) {
-		matches = matches[:limit]
+	// Bounded-or-fail, same contract as the Searcher path above. A truncated
+	// prefix here would be indistinguishable from a complete result, so an
+	// oversized match set is an error rather than a silently shortened one.
+	// Limit <= 0 is unbounded (async submit, scoped delete) and never raises;
+	// the direct entry points resolve an omitted client limit to
+	// DefaultDirectSearchLimit before reaching the service, so 0 here means an
+	// explicit store-all (async submit or an internal caller), never "client
+	// omitted".
+	if opts.Limit > 0 && len(matches) > opts.Limit {
+		return nil, common.Operational(http.StatusBadRequest,
+			common.ErrCodeSearchResultLimit,
+			"matched result count exceeds the configured limit").WithCause(spi.ErrSearchResultLimitExceeded)
 	}
 
 	return matches, nil
@@ -240,6 +329,13 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — same single boundary as Search, so an async job is never
+	// created for a structurally-malformed condition regardless of transport.
+	if cErr := ValidateCondition(cond); cErr != nil {
+		return "", common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
+	}
+
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
@@ -255,6 +351,16 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 
 	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
 		return "", vErr
+	}
+	if rErr := ValidateRegexPatterns(cond); rErr != nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
+	// Condition type-soundness (correctness-over-availability): same
+	// single-boundary guard as Search, so an async job is never created for
+	// a type-unsound condition regardless of transport.
+	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+		return "", tErr
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400
@@ -286,12 +392,10 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// implementations that decode this blob must expect that casing.
 	optsJSON, err := json.Marshal(struct {
 		Limit       int             `json:"limit"`
-		Offset      int             `json:"offset"`
 		PointInTime *time.Time      `json:"pointInTime,omitempty"`
 		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
 	}{
 		Limit:       opts.Limit,
-		Offset:      opts.Offset,
 		PointInTime: opts.PointInTime,
 		OrderBy:     orderBy,
 	})

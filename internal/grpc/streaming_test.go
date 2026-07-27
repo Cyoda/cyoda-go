@@ -243,8 +243,18 @@ func TestStreaming_MemberRegisteredAndUnregistered(t *testing.T) {
 	}
 }
 
-func TestStreaming_KeepAliveExchange(t *testing.T) {
+// TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho asserts the keep-alive
+// protocol invariant: an inbound member keep-alive is liveness-only. The server
+// updates the member's LastSeen and does NOT echo a keep-alive back. Echoing
+// turns a client that also echoes inbound keep-alives into a zero-delay,
+// unbounded ping-pong storm that pins both processes at 100% CPU. Each side
+// must ping only on its own ticker (see TestStreaming_ServerSendsKeepAliveOnTicker).
+func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
 	svc := newServiceForTest()
+	// Long ticker interval so the server's own keep-alive ticker cannot fire
+	// during the test window and be mistaken for an echo.
+	svc.SetKeepAliveConfig(time.Hour, 2*time.Hour)
+
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
 
@@ -256,35 +266,156 @@ func TestStreaming_KeepAliveExchange(t *testing.T) {
 		done <- svc.StartStreaming(stream)
 	}()
 
-	// Wait for greet.
-	_ = stream.waitForSent(t, 2*time.Second)
+	// Wait for greet, then grab the member so we can observe liveness.
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	_, greetPayload, _ := ParseCloudEvent(greetCE)
+	memberID := ExtractStringField(greetPayload, "memberId")
+	member := svc.registry.Get(memberID)
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	before := member.LastSeen()
 
-	// Send keep-alive.
+	// Send an inbound keep-alive from the "client".
 	stream.enqueue(makeKeepAliveEvent(t))
 
-	// Wait for keep-alive response.
-	kaCE := stream.waitForSent(t, 2*time.Second)
-	if kaCE.Type != CalculationMemberKeepAliveEvent {
-		t.Fatalf("expected keep-alive response type %s, got %s", CalculationMemberKeepAliveEvent, kaCE.Type)
+	// Liveness must be refreshed: poll until LastSeen advances past the
+	// registration timestamp (proves the keep-alive was processed).
+	deadline := time.Now().Add(2 * time.Second)
+	for member.LastSeen().Equal(before) {
+		if time.Now().After(deadline) {
+			t.Fatal("inbound keep-alive did not refresh member liveness")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 
-	_, kaPayload, _ := ParseCloudEvent(kaCE)
-	var kaResp struct {
-		MemberID string `json:"memberId"`
-		Success  bool   `json:"success"`
-	}
-	if err := json.Unmarshal(kaPayload, &kaResp); err != nil {
-		t.Fatalf("failed to unmarshal keep-alive response: %v", err)
-	}
-	if !kaResp.Success {
-		t.Error("expected success=true in keep-alive response")
-	}
-	if kaResp.MemberID == "" {
-		t.Error("expected non-empty memberId in keep-alive response")
+	// The server must NOT echo a keep-alive back. Nothing (other than the
+	// already-consumed greet) should have been sent. Give any (buggy) echo a
+	// generous window to arrive on the send channel.
+	select {
+	case ce := <-stream.sentCh:
+		t.Fatalf("server echoed an event in response to an inbound keep-alive: type=%s", ce.Type)
+	case <-time.After(200 * time.Millisecond):
+		// No echo — correct.
 	}
 
 	// Close.
 	stream.closeRecv()
+	<-done
+}
+
+// TestStreaming_ServerSendsKeepAliveOnTicker guards the mechanism the server
+// now relies on solely: it pings the member on its own interval ticker,
+// independent of any inbound traffic. This is what keeps the member's liveness
+// fresh (via the client echoing on its own schedule) now that the server no
+// longer echoes inbound keep-alives.
+func TestStreaming_ServerSendsKeepAliveOnTicker(t *testing.T) {
+	svc := newServiceForTest()
+	// Short interval so the ticker fires quickly; large timeout so the member
+	// is never reaped during the test.
+	svc.SetKeepAliveConfig(30*time.Millisecond, time.Hour)
+
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	defer cancel()
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StartStreaming(stream)
+	}()
+
+	// Consume the greet.
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	if greetCE.Type != CalculationMemberGreetEvent {
+		t.Fatalf("expected greet first, got %s", greetCE.Type)
+	}
+
+	// Without sending any inbound message, the server's ticker must emit a
+	// keep-alive on its own.
+	kaCE := stream.waitForSent(t, 2*time.Second)
+	if kaCE.Type != CalculationMemberKeepAliveEvent {
+		t.Fatalf("expected server ticker to send a keep-alive, got %s", kaCE.Type)
+	}
+
+	stream.closeRecv()
+	<-done
+}
+
+// TestStreaming_EchoingClientDoesNotStorm reproduces the storm scenario from
+// the wild: a client that echoes every inbound keep-alive back to the server.
+// If the server also echoed inbound keep-alives, the two would ping-pong with
+// zero delay and the server's keep-alive output would grow without bound. With
+// the server treating inbound keep-alives as liveness-only, its output is
+// capped at roughly one keep-alive per ticker interval regardless of how
+// eagerly the client echoes.
+func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
+	svc := newServiceForTest()
+	const interval = 20 * time.Millisecond
+	svc.SetKeepAliveConfig(interval, time.Hour)
+
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	defer cancel()
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StartStreaming(stream)
+	}()
+
+	// Echoing client: for every keep-alive the server sends, immediately send
+	// one back — the exact behavior that ignited the storm in the field. The
+	// echoed event is read-only to the server, so one instance is reused (and
+	// built here, not in the goroutine, to keep t.* off a non-test goroutine).
+	echo := makeKeepAliveEvent(t)
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case ce := <-stream.sentCh:
+				if ce != nil && ce.Type == CalculationMemberKeepAliveEvent {
+					select {
+					case stream.recvCh <- echo:
+					case <-stop:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	// Let the loop run for a fixed number of ticker intervals.
+	const window = 10 * interval
+	start := time.Now()
+	time.Sleep(window)
+	elapsed := time.Since(start)
+
+	// Count keep-alives the server emitted. A correct server emits ~one per
+	// ticker interval of elapsed wall-time; a storming server emits orders of
+	// magnitude more (one per client echo, compounding with zero delay — the
+	// buggy code produced ~50k in this window). Scale the bound to actual
+	// elapsed time (not the nominal sleep) so a scheduling overrun on a loaded
+	// CI box can't false-fail, while still flagging any true storm.
+	expected := int(elapsed / interval)
+	limit := expected + 20
+	sent := stream.sentMessages()
+	kaCount := 0
+	for _, ce := range sent {
+		if ce.Type == CalculationMemberKeepAliveEvent {
+			kaCount++
+		}
+	}
+	if kaCount > limit {
+		t.Fatalf("server emitted %d keep-alives in %v with an echoing client — storm not contained (expected ~%d ticker sends, limit %d)", kaCount, elapsed, expected, limit)
+	}
+
+	close(stop)
+	cancel()
 	<-done
 }
 
@@ -478,6 +609,55 @@ func TestStreaming_CriteriaResponse(t *testing.T) {
 		}
 		if resp.Matches == nil || !*resp.Matches {
 			t.Error("expected matches=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for criteria response")
+	}
+
+	stream.closeRecv()
+	<-done
+}
+
+func TestStreaming_CriteriaResponse_PropagatesReason(t *testing.T) {
+	svc := newServiceForTest()
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	defer cancel()
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{"python"}))
+
+	done := make(chan error, 1)
+	go func() { done <- svc.StartStreaming(stream) }()
+
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	_, greetPayload, _ := ParseCloudEvent(greetCE)
+	memberID := ExtractStringField(greetPayload, "memberId")
+
+	member := svc.registry.Get(memberID)
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	respCh := member.TrackRequest("req-reason-1")
+
+	respPayload := map[string]any{
+		"requestId": "req-reason-1",
+		"success":   true,
+		"matches":   false,
+		"reason":    "credit score 540 below threshold 600",
+	}
+	respCE, err := NewCloudEvent(EntityCriteriaCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create criteria response event: %v", err)
+	}
+	stream.enqueue(respCE)
+
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if resp.Reason != "credit score 540 below threshold 600" {
+			t.Errorf("expected reason propagated, got %q", resp.Reason)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for criteria response")
@@ -699,6 +879,106 @@ func TestStreaming_CriteriaResponse_PropagatesRetryableFlag(t *testing.T) {
 			t.Errorf("expected Retryable=nil on criteria success; got *Retryable=%v", *resp.Retryable)
 		}
 	})
+}
+
+// TestStreaming_FunctionResponse exercises the inbound handler for the
+// Function callout (a third callout shape alongside processor/criteria):
+// EntityFunctionCalculationResponse carries Result (raw JSON) + ResultKind
+// (a discriminator string) instead of the processor's Payload or the
+// criteria's Matches/Reason.
+func TestStreaming_FunctionResponse(t *testing.T) {
+	svc := newServiceForTest()
+	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+	defer cancel()
+
+	stream := newMockBidiStream(ctx)
+	stream.enqueue(makeJoinEvent(t, "tenant-1", []string{"python"}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StartStreaming(stream)
+	}()
+
+	greetCE := stream.waitForSent(t, 2*time.Second)
+	_, greetPayload, _ := ParseCloudEvent(greetCE)
+	memberID := ExtractStringField(greetPayload, "memberId")
+
+	member := svc.registry.Get(memberID)
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	respCh := member.TrackRequest("req-fn-1")
+
+	respPayload := map[string]any{
+		"requestId":  "req-fn-1",
+		"entityId":   "e",
+		"success":    true,
+		"result":     map[string]any{"fireAfterMs": 1000},
+		"resultKind": "Schedule",
+	}
+	respCE, err := NewCloudEvent(EntityFunctionCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create function response event: %v", err)
+	}
+	stream.enqueue(respCE)
+
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if !resp.Success {
+			t.Error("expected success=true")
+		}
+		if resp.ResultKind != "Schedule" {
+			t.Errorf("expected resultKind=%q, got %q", "Schedule", resp.ResultKind)
+		}
+		if resp.Result == nil {
+			t.Fatal("expected non-nil Result")
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(resp.Result, &decoded); err != nil {
+			t.Fatalf("failed to unmarshal Result: %v", err)
+		}
+		if decoded["fireAfterMs"] != float64(1000) {
+			t.Errorf("expected fireAfterMs=1000, got %v", decoded["fireAfterMs"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for function response")
+	}
+
+	stream.closeRecv()
+	<-done
+}
+
+func TestStreaming_FunctionResponse_PropagatesError(t *testing.T) {
+	h := newRetryableHarness(t, "req-fn-err")
+	defer h.closeAndWait()
+
+	respPayload := map[string]any{
+		"requestId": "req-fn-err",
+		"success":   false,
+		"error": map[string]any{
+			"message":   "function boom",
+			"retryable": true,
+		},
+	}
+	respCE, err := NewCloudEvent(EntityFunctionCalculationResponse, respPayload)
+	if err != nil {
+		t.Fatalf("failed to create function response event: %v", err)
+	}
+	h.stream.enqueue(respCE)
+
+	resp := h.awaitResponse(t)
+	if resp.Success {
+		t.Error("expected success=false")
+	}
+	if resp.Error != "function boom" {
+		t.Errorf("expected error message propagated, got %q", resp.Error)
+	}
+	if resp.Retryable == nil || !*resp.Retryable {
+		t.Errorf("expected Retryable=true, got %v", resp.Retryable)
+	}
 }
 
 func TestStreaming_KeepAliveTimeout(t *testing.T) {

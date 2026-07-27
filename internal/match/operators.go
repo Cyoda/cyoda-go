@@ -1,261 +1,142 @@
 package match
 
 import (
-	"encoding/json"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// applyOperator dispatches to the appropriate operator function.
-func applyOperator(operatorType string, actual gjson.Result, expected any) (bool, error) {
-	switch operatorType {
-	// Equality
+// applyOperator evaluates a single predicate leaf against a stored gjson value
+// by routing through the type-directed EvalLeaf kernel (spi.EvalLeafString) —
+// the same comparison core the search pushdown and spi.MatchFilter use, so the
+// predicate-tree evaluator and the Filter evaluator agree bit-for-bit.
+//
+// declared carries the leaf field's model DataTypes. The kernel is
+// type-directed: comparison/range operators (EQUALS, the four orderings,
+// BETWEEN) need declared to parse the operand and classify the stored value;
+// with an empty declared set they degrade to non-match (an unknown/untyped
+// field simply doesn't match a typed comparison). String operators and the
+// unary null tests are declared-independent.
+//
+// A kernel expansion error (e.g. an operand that parses into no declared type)
+// is treated as a per-entity non-match rather than a hard error: the search /
+// grouped-stats / workflow validation boundaries reject genuinely invalid
+// conditions up front, so a residual error here means "this entity doesn't
+// match", not "fail the request". A genuinely unsupported operator name
+// (IS_CHANGED / IS_UNCHANGED / unknown) is still a hard error.
+func applyOperator(operatorType string, actual gjson.Result, expected any, declared []spi.DataType) (bool, error) {
+	op, ok := opNameToFilterOp(operatorType)
+	if !ok {
+		return false, fmt.Errorf("unsupported operator: %s", operatorType)
+	}
+
+	var values []string
+	if op == spi.FilterBetween || op == spi.FilterBetweenInclusive {
+		values = betweenBounds(expected)
+	}
+
+	matched, err := spi.EvalLeafString(op, spi.OperandString(expected), values, declared, actual)
+	if err != nil {
+		return false, nil
+	}
+	return matched, nil
+}
+
+// opNameToFilterOp maps a predicate operator NAME to the corresponding kernel
+// spi.FilterOp. The boolean is false for operator names with no kernel op:
+// IS_CHANGED / IS_UNCHANGED (deliberately unimplemented) and any unknown
+// name.
+func opNameToFilterOp(op string) (spi.FilterOp, bool) {
+	switch op {
 	case "EQUALS":
-		return opEquals(actual, expected), nil
+		return spi.FilterEq, true
 	case "NOT_EQUAL":
-		return !opEquals(actual, expected), nil
-	case "IS_NULL":
-		return opIsNull(actual), nil
-	case "NOT_NULL":
-		return !opIsNull(actual), nil
-
-	// Comparison
+		return spi.FilterNe, true
 	case "GREATER_THAN":
-		return opCompare(actual, expected, func(a, b float64) bool { return a > b }, func(a, b string) bool { return a > b })
+		return spi.FilterGt, true
 	case "LESS_THAN":
-		return opCompare(actual, expected, func(a, b float64) bool { return a < b }, func(a, b string) bool { return a < b })
+		return spi.FilterLt, true
 	case "GREATER_OR_EQUAL":
-		return opCompare(actual, expected, func(a, b float64) bool { return a >= b }, func(a, b string) bool { return a >= b })
+		return spi.FilterGte, true
 	case "LESS_OR_EQUAL":
-		return opCompare(actual, expected, func(a, b float64) bool { return a <= b }, func(a, b string) bool { return a <= b })
-	case "BETWEEN", "BETWEEN_INCLUSIVE":
-		return opBetween(actual, expected)
-
-	// String
+		return spi.FilterLte, true
 	case "CONTAINS":
-		return opContains(actual, expected, false), nil
-	case "NOT_CONTAINS":
-		return !opContains(actual, expected, false), nil
+		return spi.FilterContains, true
 	case "STARTS_WITH":
-		return opStartsWith(actual, expected, false), nil
-	case "NOT_STARTS_WITH":
-		return !opStartsWith(actual, expected, false), nil
+		return spi.FilterStartsWith, true
 	case "ENDS_WITH":
-		return opEndsWith(actual, expected, false), nil
-	case "NOT_ENDS_WITH":
-		return !opEndsWith(actual, expected, false), nil
-	case "MATCHES_PATTERN":
-		return opMatchesPattern(actual, expected)
+		return spi.FilterEndsWith, true
 	case "LIKE":
-		return opLike(actual, expected)
-
-	// Case-insensitive
+		return spi.FilterLike, true
+	case "MATCHES_PATTERN":
+		return spi.FilterMatchesRegex, true
+	case "IS_NULL":
+		return spi.FilterIsNull, true
+	case "NOT_NULL":
+		return spi.FilterNotNull, true
+	case "BETWEEN":
+		return spi.FilterBetween, true
+	case "BETWEEN_INCLUSIVE":
+		return spi.FilterBetweenInclusive, true
 	case "IEQUALS":
-		return opIEquals(actual, expected), nil
+		return spi.FilterIEq, true
 	case "INOT_EQUAL":
-		return !opIEquals(actual, expected), nil
+		return spi.FilterINe, true
 	case "ICONTAINS":
-		return opContains(actual, expected, true), nil
+		return spi.FilterIContains, true
 	case "INOT_CONTAINS":
-		return !opContains(actual, expected, true), nil
+		return spi.FilterINotContains, true
+	case "NOT_CONTAINS":
+		return spi.FilterNotContains, true
 	case "ISTARTS_WITH":
-		return opStartsWith(actual, expected, true), nil
+		return spi.FilterIStartsWith, true
 	case "INOT_STARTS_WITH":
-		return !opStartsWith(actual, expected, true), nil
+		return spi.FilterINotStartsWith, true
+	case "NOT_STARTS_WITH":
+		return spi.FilterNotStartsWith, true
 	case "IENDS_WITH":
-		return opEndsWith(actual, expected, true), nil
+		return spi.FilterIEndsWith, true
 	case "INOT_ENDS_WITH":
-		return !opEndsWith(actual, expected, true), nil
-
-	// Not implemented
-	case "IS_CHANGED", "IS_UNCHANGED":
-		return false, fmt.Errorf("operator %s not implemented", operatorType)
-
+		return spi.FilterINotEndsWith, true
+	case "NOT_ENDS_WITH":
+		return spi.FilterNotEndsWith, true
 	default:
-		return false, fmt.Errorf("unknown operator: %s", operatorType)
+		return "", false
 	}
 }
 
-func opIsNull(actual gjson.Result) bool {
-	return !actual.Exists() || actual.Type == gjson.Null
+// operandsToStrings renders each element of a BETWEEN operand slice through
+// spi.OperandString (the single shared operand→string normalization).
+func operandsToStrings(vs []any) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = spi.OperandString(v)
+	}
+	return out
 }
 
-func opEquals(actual gjson.Result, expected any) bool {
-	if opIsNull(actual) {
-		return expected == nil
-	}
-
-	expStr := fmt.Sprintf("%v", expected)
-
-	// Try numeric comparison if both are numbers.
-	if actual.Type == gjson.Number {
-		if expFloat, err := toFloat64(expected); err == nil {
-			return actual.Float() == expFloat
-		}
-	}
-
-	return actual.String() == expStr
-}
-
-func opIEquals(actual gjson.Result, expected any) bool {
-	if opIsNull(actual) {
-		return expected == nil
-	}
-	expStr := fmt.Sprintf("%v", expected)
-	return strings.EqualFold(actual.String(), expStr)
-}
-
-func opCompare(actual gjson.Result, expected any,
-	numCmp func(float64, float64) bool,
-	strCmp func(string, string) bool,
-) (bool, error) {
-	if opIsNull(actual) {
-		return false, nil
-	}
-
-	expFloat, err := toFloat64(expected)
-	if err == nil && actual.Type == gjson.Number {
-		return numCmp(actual.Float(), expFloat), nil
-	}
-
-	expStr := fmt.Sprintf("%v", expected)
-	return strCmp(actual.String(), expStr), nil
-}
-
-func opBetween(actual gjson.Result, expected any) (bool, error) {
-	if opIsNull(actual) {
-		return false, nil
-	}
-
-	var lo, hi float64
+// betweenBounds extracts the two BETWEEN bounds as kernel operand strings.
+// The canonical (and only validation-accepted) shape is a two-element []any;
+// a legacy "lo,hi" comma string is also tolerated for in-process callers that
+// bypass validation. Any other shape yields nil, which the kernel's
+// expandBetween rejects into a per-entity non-match.
+func betweenBounds(expected any) []string {
 	switch v := expected.(type) {
+	case []any:
+		if len(v) != 2 {
+			return nil
+		}
+		return operandsToStrings(v)
 	case string:
 		parts := strings.SplitN(v, ",", 2)
 		if len(parts) != 2 {
-			return false, fmt.Errorf("BETWEEN expects two values separated by comma, got: %s", v)
+			return nil
 		}
-		var err error
-		lo, err = strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-		if err != nil {
-			return false, fmt.Errorf("BETWEEN: invalid lower bound: %w", err)
-		}
-		hi, err = strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-		if err != nil {
-			return false, fmt.Errorf("BETWEEN: invalid upper bound: %w", err)
-		}
-	case []any:
-		if len(v) != 2 {
-			return false, fmt.Errorf("BETWEEN expects exactly 2 values, got %d", len(v))
-		}
-		var err error
-		lo, err = toFloat64(v[0])
-		if err != nil {
-			return false, fmt.Errorf("BETWEEN: invalid lower bound: %w", err)
-		}
-		hi, err = toFloat64(v[1])
-		if err != nil {
-			return false, fmt.Errorf("BETWEEN: invalid upper bound: %w", err)
-		}
+		return []string{strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])}
 	default:
-		return false, fmt.Errorf("BETWEEN: unsupported value type %T", expected)
-	}
-
-	val := actual.Float()
-	return val >= lo && val <= hi, nil
-}
-
-func opContains(actual gjson.Result, expected any, caseInsensitive bool) bool {
-	if opIsNull(actual) {
-		return false
-	}
-	expStr := fmt.Sprintf("%v", expected)
-	actualStr := actual.String()
-	if caseInsensitive {
-		actualStr = strings.ToLower(actualStr)
-		expStr = strings.ToLower(expStr)
-	}
-	return strings.Contains(actualStr, expStr)
-}
-
-func opStartsWith(actual gjson.Result, expected any, caseInsensitive bool) bool {
-	if opIsNull(actual) {
-		return false
-	}
-	expStr := fmt.Sprintf("%v", expected)
-	actualStr := actual.String()
-	if caseInsensitive {
-		actualStr = strings.ToLower(actualStr)
-		expStr = strings.ToLower(expStr)
-	}
-	return strings.HasPrefix(actualStr, expStr)
-}
-
-func opEndsWith(actual gjson.Result, expected any, caseInsensitive bool) bool {
-	if opIsNull(actual) {
-		return false
-	}
-	expStr := fmt.Sprintf("%v", expected)
-	actualStr := actual.String()
-	if caseInsensitive {
-		actualStr = strings.ToLower(actualStr)
-		expStr = strings.ToLower(expStr)
-	}
-	return strings.HasSuffix(actualStr, expStr)
-}
-
-func opMatchesPattern(actual gjson.Result, expected any) (bool, error) {
-	if opIsNull(actual) {
-		return false, nil
-	}
-	pattern := fmt.Sprintf("%v", expected)
-	return regexp.MatchString(pattern, actual.String())
-}
-
-func opLike(actual gjson.Result, expected any) (bool, error) {
-	if opIsNull(actual) {
-		return false, nil
-	}
-	pattern := fmt.Sprintf("%v", expected)
-
-	// Convert SQL LIKE to regex by processing character-by-character.
-	// We must handle % and _ before escaping other regex metacharacters.
-	var b strings.Builder
-	b.WriteString("^")
-	for _, ch := range pattern {
-		switch ch {
-		case '%':
-			b.WriteString(".*")
-		case '_':
-			b.WriteByte('.')
-		default:
-			b.WriteString(regexp.QuoteMeta(string(ch)))
-		}
-	}
-	b.WriteString("$")
-
-	return regexp.MatchString(b.String(), actual.String())
-}
-
-// toFloat64 converts various numeric types and strings to float64.
-func toFloat64(v any) (float64, error) {
-	switch n := v.(type) {
-	case float64:
-		return n, nil
-	case float32:
-		return float64(n), nil
-	case int:
-		return float64(n), nil
-	case int64:
-		return float64(n), nil
-	case json.Number:
-		return n.Float64()
-	case string:
-		return strconv.ParseFloat(n, 64)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", v)
+		return nil
 	}
 }

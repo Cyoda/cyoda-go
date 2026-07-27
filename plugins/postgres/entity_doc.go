@@ -24,31 +24,44 @@ type entityMeta struct {
 	LastModifiedDate string `json:"last_modified_date"`
 	ChangeType       string `json:"change_type"`
 	ChangeUser       string `json:"change_user"`
-	TransactionID    string `json:"transaction_id"`
-	Transition       string `json:"transition"`
-	Deleted          bool   `json:"deleted"`
+	// ChangeUserKind is the PrincipalKind of the attributed ChangeUser above;
+	// empty ("") on legacy docs written before attribution existed — reads
+	// back as spi.PrincipalKind("") (the zero value), never synthesized.
+	ChangeUserKind string `json:"change_user_kind,omitempty"`
+	// ChangeExecutorID/ChangeExecutorKind carry the actual caller that
+	// performed the change (spi.EntityMeta.ChangeExecutor), independent of
+	// the attributed ChangeUser/ChangeUserKind above. Both empty on legacy
+	// docs.
+	ChangeExecutorID   string `json:"change_executor_id,omitempty"`
+	ChangeExecutorKind string `json:"change_executor_kind,omitempty"`
+	TransactionID      string `json:"transaction_id"`
+	Transition         string `json:"transition"`
+	Deleted            bool   `json:"deleted"`
 }
 
 // marshalEntityDoc produces a merged JSONB document containing a _meta block
 // and the entity's domain data as top-level keys.
 func marshalEntityDoc(entity *spi.Entity, validTime, txTime, wallClockTime time.Time, deleted bool) ([]byte, error) {
 	meta := entityMeta{
-		ID:               entity.Meta.ID,
-		TenantID:         string(entity.Meta.TenantID),
-		ModelName:        entity.Meta.ModelRef.EntityName,
-		ModelVersion:     entity.Meta.ModelRef.ModelVersion,
-		Version:          entity.Meta.Version,
-		State:            entity.Meta.State,
-		ValidTime:        validTime.UTC().Format(time.RFC3339Nano),
-		TransactionTime:  txTime.UTC().Format(time.RFC3339Nano),
-		WallClockTime:    wallClockTime.UTC().Format(time.RFC3339Nano),
-		CreationDate:     entity.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
-		LastModifiedDate: entity.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
-		ChangeType:       entity.Meta.ChangeType,
-		ChangeUser:       entity.Meta.ChangeUser,
-		TransactionID:    entity.Meta.TransactionID,
-		Transition:       entity.Meta.TransitionForLatestSave,
-		Deleted:          deleted,
+		ID:                 entity.Meta.ID,
+		TenantID:           string(entity.Meta.TenantID),
+		ModelName:          entity.Meta.ModelRef.EntityName,
+		ModelVersion:       entity.Meta.ModelRef.ModelVersion,
+		Version:            entity.Meta.Version,
+		State:              entity.Meta.State,
+		ValidTime:          validTime.UTC().Format(time.RFC3339Nano),
+		TransactionTime:    txTime.UTC().Format(time.RFC3339Nano),
+		WallClockTime:      wallClockTime.UTC().Format(time.RFC3339Nano),
+		CreationDate:       entity.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
+		LastModifiedDate:   entity.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
+		ChangeType:         entity.Meta.ChangeType,
+		ChangeUser:         entity.Meta.ChangeUser,
+		ChangeUserKind:     string(entity.Meta.ChangeUserKind),
+		ChangeExecutorID:   entity.Meta.ChangeExecutor.ID,
+		ChangeExecutorKind: string(entity.Meta.ChangeExecutor.Kind),
+		TransactionID:      entity.Meta.TransactionID,
+		Transition:         entity.Meta.TransitionForLatestSave,
+		Deleted:            deleted,
 	}
 
 	metaJSON, err := json.Marshal(meta)
@@ -127,6 +140,8 @@ func unmarshalEntityDoc(raw []byte) (*spi.Entity, error) {
 			TransactionID:           meta.TransactionID,
 			ChangeType:              meta.ChangeType,
 			ChangeUser:              meta.ChangeUser,
+			ChangeUserKind:          spi.PrincipalKind(meta.ChangeUserKind),
+			ChangeExecutor:          spi.Principal{ID: meta.ChangeExecutorID, Kind: spi.PrincipalKind(meta.ChangeExecutorKind)},
 			TransitionForLatestSave: meta.Transition,
 		},
 		Data: data,
@@ -158,5 +173,10 @@ func unmarshalEntityVersion(raw []byte, version int64, validTime time.Time) (*sp
 		Timestamp:  validTime,
 		Version:    version,
 		Deleted:    meta.Deleted,
+		// AttributedKind/Executor are populated independently of Entity —
+		// meta is parsed directly above, so this holds even for a DELETED
+		// version whose Entity carries no domain data.
+		AttributedKind: spi.PrincipalKind(meta.ChangeUserKind),
+		Executor:       spi.Principal{ID: meta.ChangeExecutorID, Kind: spi.PrincipalKind(meta.ChangeExecutorKind)},
 	}, nil
 }

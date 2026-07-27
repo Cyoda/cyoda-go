@@ -81,7 +81,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second, nil, 0)
 
 		ctx := testContext()
-		matches, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-integration-2")
+		matches, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-integration-2")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -136,7 +136,7 @@ func TestIntegration_ClusterDispatch_NoMemberTimeout(t *testing.T) {
 	t.Run("criteria_timeout", func(t *testing.T) {
 		ctx := testContext()
 		start := time.Now()
-		_, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-timeout-2")
+		_, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-timeout-2")
 		elapsed := time.Since(start)
 
 		if err == nil {

@@ -11,9 +11,11 @@ import (
 
 func meta() spi.EntityMeta {
 	return spi.EntityMeta{
+		ID:                      "entity-999",
 		State:                   "CREATED",
 		CreationDate:            time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
 		TransitionForLatestSave: "workflow.step1",
+		TransactionID:           "tx-123",
 	}
 }
 
@@ -31,11 +33,34 @@ var sampleData = []byte(`{
 	]
 }`)
 
+// sampleTypes is the declared-type resolver for sampleData (plus the auxiliary
+// paths used by the numeric-array tests). The kernel is type-directed:
+// comparison and range operators only evaluate against a leaf whose declared
+// type set is supplied here; string operators and null tests are
+// declaration-independent. Keys are in FieldsMap form ("$."-prefixed, "[*]"
+// for array-wildcard element leaves).
+func sampleTypes(path string) []spi.DataType {
+	m := map[string][]spi.DataType{
+		"$.name":                    {spi.String},
+		"$.age":                     {spi.Integer},
+		"$.score":                   {spi.UnboundDecimal},
+		"$.active":                  {spi.Boolean},
+		"$.city":                    {spi.String},
+		"$.tags[*]":                 {spi.String},
+		"$.address.street":          {spi.String},
+		"$.address.zip":             {spi.String},
+		"$.laureates[*].name":       {spi.String},
+		"$.laureates[*].motivation": {spi.String},
+		"$.scores[*]":               {spi.UnboundDecimal},
+	}
+	return m[path]
+}
+
 // --- 1. Simple EQUALS ---
 
 func TestMatchSimpleEqualsString(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +71,7 @@ func TestMatchSimpleEqualsString(t *testing.T) {
 
 func TestMatchSimpleEqualsStringFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +82,7 @@ func TestMatchSimpleEqualsStringFalse(t *testing.T) {
 
 func TestMatchSimpleEqualsNumber(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(30)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,20 +91,24 @@ func TestMatchSimpleEqualsNumber(t *testing.T) {
 	}
 }
 
+// TestMatchSimpleEqualsNumberAsString proves a string-encoded numeric operand
+// is compared numerically when the field is declared numeric (the kernel parses
+// the operand per declared type). This is the converged, type-directed
+// behaviour shared with the search pushdown.
 func TestMatchSimpleEqualsNumberAsString(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: "30"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected true for numeric string comparison")
+		t.Error("expected true for numeric string comparison against declared-numeric field")
 	}
 }
 
 func TestMatchSimpleEqualsBool(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.active", OperatorType: "EQUALS", Value: "true"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +121,7 @@ func TestMatchSimpleEqualsBool(t *testing.T) {
 
 func TestMatchSimpleNotEqual(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_EQUAL", Value: "Bob"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +132,7 @@ func TestMatchSimpleNotEqual(t *testing.T) {
 
 func TestMatchSimpleNotEqualFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_EQUAL", Value: "Alice"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +145,7 @@ func TestMatchSimpleNotEqualFalse(t *testing.T) {
 
 func TestMatchSimpleIsNull(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.city", OperatorType: "IS_NULL"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +156,7 @@ func TestMatchSimpleIsNull(t *testing.T) {
 
 func TestMatchSimpleIsNullMissing(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.nonexistent", OperatorType: "IS_NULL"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +167,7 @@ func TestMatchSimpleIsNullMissing(t *testing.T) {
 
 func TestMatchSimpleNotNull(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_NULL"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +178,7 @@ func TestMatchSimpleNotNull(t *testing.T) {
 
 func TestMatchSimpleNotNullOnNull(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.city", OperatorType: "NOT_NULL"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +191,7 @@ func TestMatchSimpleNotNullOnNull(t *testing.T) {
 
 func TestMatchSimpleGreaterThan(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(25)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +202,7 @@ func TestMatchSimpleGreaterThan(t *testing.T) {
 
 func TestMatchSimpleGreaterThanFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(30)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +213,7 @@ func TestMatchSimpleGreaterThanFalse(t *testing.T) {
 
 func TestMatchSimpleLessThan(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_THAN", Value: float64(35)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +224,7 @@ func TestMatchSimpleLessThan(t *testing.T) {
 
 func TestMatchSimpleLessThanFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_THAN", Value: float64(30)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +237,7 @@ func TestMatchSimpleLessThanFalse(t *testing.T) {
 
 func TestMatchSimpleGreaterOrEqual(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_OR_EQUAL", Value: float64(30)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +248,7 @@ func TestMatchSimpleGreaterOrEqual(t *testing.T) {
 
 func TestMatchSimpleLessOrEqual(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_OR_EQUAL", Value: float64(30)}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +261,7 @@ func TestMatchSimpleLessOrEqual(t *testing.T) {
 
 func TestMatchSimpleContains(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "CONTAINS", Value: "lic"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +272,7 @@ func TestMatchSimpleContains(t *testing.T) {
 
 func TestMatchSimpleNotContains(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_CONTAINS", Value: "xyz"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +285,7 @@ func TestMatchSimpleNotContains(t *testing.T) {
 
 func TestMatchSimpleStartsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "STARTS_WITH", Value: "Ali"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +296,7 @@ func TestMatchSimpleStartsWith(t *testing.T) {
 
 func TestMatchSimpleNotStartsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_STARTS_WITH", Value: "Bob"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +307,7 @@ func TestMatchSimpleNotStartsWith(t *testing.T) {
 
 func TestMatchSimpleEndsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "ENDS_WITH", Value: "ice"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +318,7 @@ func TestMatchSimpleEndsWith(t *testing.T) {
 
 func TestMatchSimpleNotEndsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_ENDS_WITH", Value: "xyz"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +331,7 @@ func TestMatchSimpleNotEndsWith(t *testing.T) {
 
 func TestMatchSimpleIEquals(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IEQUALS", Value: "alice"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +342,7 @@ func TestMatchSimpleIEquals(t *testing.T) {
 
 func TestMatchSimpleINotEqual(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_EQUAL", Value: "alice"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +353,7 @@ func TestMatchSimpleINotEqual(t *testing.T) {
 
 func TestMatchSimpleIContains(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "ICONTAINS", Value: "LIC"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +364,7 @@ func TestMatchSimpleIContains(t *testing.T) {
 
 func TestMatchSimpleINotContains(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_CONTAINS", Value: "XYZ"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +375,7 @@ func TestMatchSimpleINotContains(t *testing.T) {
 
 func TestMatchSimpleIStartsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "ISTARTS_WITH", Value: "ALI"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +386,7 @@ func TestMatchSimpleIStartsWith(t *testing.T) {
 
 func TestMatchSimpleINotStartsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_STARTS_WITH", Value: "BOB"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +397,7 @@ func TestMatchSimpleINotStartsWith(t *testing.T) {
 
 func TestMatchSimpleIEndsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IENDS_WITH", Value: "ICE"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +408,7 @@ func TestMatchSimpleIEndsWith(t *testing.T) {
 
 func TestMatchSimpleINotEndsWith(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_ENDS_WITH", Value: "XYZ"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +421,7 @@ func TestMatchSimpleINotEndsWith(t *testing.T) {
 
 func TestMatchSimpleMatchesPattern(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "MATCHES_PATTERN", Value: "^A.*e$"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +432,7 @@ func TestMatchSimpleMatchesPattern(t *testing.T) {
 
 func TestMatchSimpleMatchesPatternFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "MATCHES_PATTERN", Value: "^B.*"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +445,7 @@ func TestMatchSimpleMatchesPatternFalse(t *testing.T) {
 
 func TestMatchSimpleLike(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "A%"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +456,7 @@ func TestMatchSimpleLike(t *testing.T) {
 
 func TestMatchSimpleLikeUnderscore(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "Alic_"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +467,7 @@ func TestMatchSimpleLikeUnderscore(t *testing.T) {
 
 func TestMatchSimpleLikeFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "B%"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +480,7 @@ func TestMatchSimpleLikeFalse(t *testing.T) {
 
 func TestMatchSimpleBetweenString(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: "25,35"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +491,7 @@ func TestMatchSimpleBetweenString(t *testing.T) {
 
 func TestMatchSimpleBetweenSlice(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: []any{float64(25), float64(35)}}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +502,7 @@ func TestMatchSimpleBetweenSlice(t *testing.T) {
 
 func TestMatchSimpleBetweenInclusiveEdge(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: "30,30"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +515,7 @@ func TestMatchSimpleBetweenInclusiveEdge(t *testing.T) {
 
 func TestMatchLifecycleStateMatch(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "CREATED"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +526,7 @@ func TestMatchLifecycleStateMatch(t *testing.T) {
 
 func TestMatchLifecycleStateNoMatch(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "DELETED"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,20 +535,223 @@ func TestMatchLifecycleStateNoMatch(t *testing.T) {
 	}
 }
 
-func TestMatchLifecycleCreationDate(t *testing.T) {
+// TestMatchLifecycleCreationDate_ContainsIsNotTemporal proves creationDate is
+// no longer lexically matched: CONTAINS is not a valid comparison operator for
+// a temporal field (spec §6.4 — rejected at validation on validated entry
+// points), and matchLifecycle degrades safely to no-match rather than falling
+// back to substring matching on the formatted date string.
+func TestMatchLifecycleCreationDate_ContainsIsNotTemporal(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026-01-15"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected false: CONTAINS is not a valid temporal comparison operator")
+	}
+}
+
+func TestMatchLifecycleCreationDate_GreaterThan(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2026-01-15T00:00:00Z"}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected true for creation date contains")
+		t.Error("expected true: 2026-01-15T10:30:00Z > 2026-01-15T00:00:00Z")
+	}
+}
+
+func TestMatchLifecycleCreationDate_LessThan(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "LESS_THAN", Value: "2026-01-15T00:00:00Z"}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected false: 2026-01-15T10:30:00Z is not < 2026-01-15T00:00:00Z")
+	}
+}
+
+func TestMatchLifecycleCreationDate_NotEqual(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "NOT_EQUAL", Value: "2020-01-01T00:00:00Z"}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true: creationDate does not equal an unrelated instant")
+	}
+}
+
+func TestMatchLifecycleCreationDate_Between(t *testing.T) {
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"},
+	}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true: creationDate falls within the January 2026 range")
+	}
+}
+
+func TestMatchLifecycleCreationDate_BetweenOutsideRange(t *testing.T) {
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2020-01-01T00:00:00Z", "2020-01-31T00:00:00Z"},
+	}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected false: creationDate falls outside the 2020 range")
+	}
+}
+
+// TestMatchLifecycleCreationDate_UnsetIsExcluded pins the kernel's null
+// uniformity for meta temporal leaves: a zero-value stored CreationDate bridges
+// to an absent Result, so EVERY binary op is a non-match — including NOT_EQUAL
+// (no longer a vacuous true). This is the intentional divergence documented in
+// the kernel (negatives are null-guarded to non-match, not implemented as
+// !positive).
+func TestMatchLifecycleCreationDate_UnsetIsExcluded(t *testing.T) {
+	unsetMeta := spi.EntityMeta{State: "CREATED"} // CreationDate is zero-value
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "EQUALS", Value: "2026-01-15T10:30:00Z"}
+	got, err := matchLifecycle(cond, unsetMeta)
+	if err != nil || got {
+		t.Errorf("expected exclude (false) for unset stored value; got=%v err=%v", got, err)
+	}
+
+	neCond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "NOT_EQUAL", Value: "2026-01-15T10:30:00Z"}
+	got, err = matchLifecycle(neCond, unsetMeta)
+	if err != nil || got {
+		t.Errorf("expected non-match (false) for NOT_EQUAL on unset stored value under null uniformity; got=%v err=%v", got, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalEquals: creationDate EQUALS compares
+// chronologically (epoch-ms via the kernel), not lexically, so an operand with
+// a differently-formatted-but-identical instant still matches.
+func TestMatchLifecycle_TemporalEquals(t *testing.T) {
+	m := spi.EntityMeta{CreationDate: time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "EQUALS", Value: "2021-01-01T00:00:00.000Z"}
+	ok, err := matchLifecycle(c, m)
+	if err != nil || !ok {
+		t.Errorf("EQUALS same-instant should match; ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMatchLifecycle_LastUpdateTime(t *testing.T) {
+	m := spi.EntityMeta{LastModifiedDate: time.Date(2021, 6, 1, 12, 0, 0, 0, time.UTC)}
+	c := &predicate.LifecycleCondition{Field: "lastUpdateTime", OperatorType: "GREATER_THAN", Value: "2021-06-01T11:00:00Z"}
+	ok, err := matchLifecycle(c, m)
+	if err != nil || !ok {
+		t.Errorf("lastUpdateTime GT earlier should match; ok=%v err=%v", ok, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalGteLte pins the boundary-inclusive behavior of the
+// GREATER_OR_EQUAL / LESS_OR_EQUAL temporal branches routed through the kernel:
+// GE/LE of the exact stored instant matches, and GE of a strictly later instant
+// does not.
+func TestMatchLifecycle_TemporalGteLte(t *testing.T) {
+	instant := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+	m := spi.EntityMeta{CreationDate: instant}
+
+	geExact := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_OR_EQUAL", Value: "2026-01-15T10:30:00Z"}
+	if ok, err := matchLifecycle(geExact, m); err != nil || !ok {
+		t.Errorf("GE of the exact instant should match; ok=%v err=%v", ok, err)
+	}
+
+	leExact := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "LESS_OR_EQUAL", Value: "2026-01-15T10:30:00Z"}
+	if ok, err := matchLifecycle(leExact, m); err != nil || !ok {
+		t.Errorf("LE of the exact instant should match; ok=%v err=%v", ok, err)
+	}
+
+	geLater := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_OR_EQUAL", Value: "2026-01-15T10:30:00.001Z"}
+	if ok, err := matchLifecycle(geLater, m); err != nil || ok {
+		t.Errorf("GE of a later instant should not match; ok=%v err=%v", ok, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalBetweenUnsetExcluded: a zero-value stored
+// CreationDate is excluded (absent Result), never a vacuous match, for BETWEEN.
+func TestMatchLifecycle_TemporalBetweenUnsetExcluded(t *testing.T) {
+	unsetMeta := spi.EntityMeta{} // CreationDate is zero-value
+	cond := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"},
+	}
+	got, err := matchLifecycle(cond, unsetMeta)
+	if err != nil || got {
+		t.Errorf("expected exclude (false) for BETWEEN against unset stored value; got=%v err=%v", got, err)
+	}
+}
+
+// TestMatchLifecycle_TemporalBetweenMalformedOperand: a malformed bound set
+// degrades safely to no-match rather than panicking.
+func TestMatchLifecycle_TemporalBetweenMalformedOperand(t *testing.T) {
+	m := spi.EntityMeta{CreationDate: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)}
+
+	oneElement := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2026-01-01T00:00:00Z"}, // wrong shape: only one bound
+	}
+	if got, err := matchLifecycle(oneElement, m); err != nil || got {
+		t.Errorf("expected no-match for malformed (1-element) BETWEEN operand; got=%v err=%v", got, err)
+	}
+
+	nonRFC3339Bound := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"not-a-timestamp", "2026-01-31T00:00:00Z"}, // lo bound not offset-RFC3339
+	}
+	if got, err := matchLifecycle(nonRFC3339Bound, m); err != nil || got {
+		t.Errorf("expected no-match for malformed (non-RFC3339 bound) BETWEEN operand; got=%v err=%v", got, err)
+	}
+}
+
+func TestMatchLifecycle_TransactionId(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "transactionId", OperatorType: "EQUALS", Value: "tx-123"}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true for transactionId match")
+	}
+}
+
+func TestMatchLifecycle_ID(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "id", OperatorType: "EQUALS", Value: "entity-999"}
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected true for id match")
+	}
+}
+
+func TestMatchLifecycle_UnknownFieldError(t *testing.T) {
+	cond := &predicate.LifecycleCondition{Field: "bogusField", OperatorType: "EQUALS", Value: "x"}
+	_, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err == nil {
+		t.Error("expected error for unknown lifecycle field")
 	}
 }
 
 func TestMatchLifecycleTransition(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "transitionForLatestSave", OperatorType: "EQUALS", Value: "workflow.step1"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +762,7 @@ func TestMatchLifecycleTransition(t *testing.T) {
 
 func TestMatchLifecyclePreviousTransition(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "previousTransition", OperatorType: "EQUALS", Value: "workflow.step1"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +781,7 @@ func TestMatchGroupAndAllMatch(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(30)},
 		},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +798,7 @@ func TestMatchGroupAndOneFails(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(99)},
 		},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +817,7 @@ func TestMatchGroupOrOneMatches(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
 		},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +834,7 @@ func TestMatchGroupOrNoneMatch(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Carol"},
 		},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +859,7 @@ func TestMatchNestedGroupAndContainingOr(t *testing.T) {
 			},
 		},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +875,7 @@ func TestMatchArrayCondition(t *testing.T) {
 		JsonPath: "$.tags",
 		Values:   []any{"go", nil, "python"},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +889,7 @@ func TestMatchArrayConditionMismatch(t *testing.T) {
 		JsonPath: "$.tags",
 		Values:   []any{"go", nil, "java"},
 	}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +902,7 @@ func TestMatchArrayConditionMismatch(t *testing.T) {
 
 func TestMatchFunctionConditionError(t *testing.T) {
 	cond := &predicate.FunctionCondition{}
-	_, err := Match(cond, sampleData, meta())
+	_, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err == nil {
 		t.Error("expected error for function condition")
 	}
@@ -680,7 +912,7 @@ func TestMatchFunctionConditionError(t *testing.T) {
 
 func TestMatchIsChangedError(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IS_CHANGED"}
-	_, err := Match(cond, sampleData, meta())
+	_, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err == nil {
 		t.Error("expected error for IS_CHANGED")
 	}
@@ -688,7 +920,7 @@ func TestMatchIsChangedError(t *testing.T) {
 
 func TestMatchIsUnchangedError(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IS_UNCHANGED"}
-	_, err := Match(cond, sampleData, meta())
+	_, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err == nil {
 		t.Error("expected error for IS_UNCHANGED")
 	}
@@ -698,7 +930,7 @@ func TestMatchIsUnchangedError(t *testing.T) {
 
 func TestMatchMissingFieldReturnsFalse(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.nonexistent", OperatorType: "EQUALS", Value: "anything"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +943,7 @@ func TestMatchMissingFieldReturnsFalse(t *testing.T) {
 
 func TestMatchArrayWildcardContains(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "peace"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -722,7 +954,7 @@ func TestMatchArrayWildcardContains(t *testing.T) {
 
 func TestMatchArrayWildcardContainsNoMatch(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "physics"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +967,7 @@ func TestMatchArrayWildcardContainsNoMatch(t *testing.T) {
 
 func TestMatchNestedField(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.address.street", OperatorType: "EQUALS", Value: "Main St"}
-	got, err := Match(cond, sampleData, meta())
+	got, err := Match(cond, sampleData, meta(), sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +976,17 @@ func TestMatchNestedField(t *testing.T) {
 	}
 }
 
-// --- Issue #24: matchArray numeric-aware comparison ---
+// --- Array positional numeric-aware comparison ---
+
+func numericScoresTypes(path string) []spi.DataType {
+	if path == "$.scores[*]" {
+		return []spi.DataType{spi.UnboundDecimal}
+	}
+	if path == "$.tags[*]" {
+		return []spi.DataType{spi.String}
+	}
+	return nil
+}
 
 func TestMatchArrayCondition_NumericInt(t *testing.T) {
 	data := []byte(`{"scores":[1,2,3]}`)
@@ -752,12 +994,12 @@ func TestMatchArrayCondition_NumericInt(t *testing.T) {
 		JsonPath: "$.scores",
 		Values:   []any{1, 2, 3}, // Go int
 	}
-	got, err := Match(cond, data, meta())
+	got, err := Match(cond, data, meta(), numericScoresTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected match for int values against numeric JSON array")
+		t.Error("expected match for int values against declared-numeric JSON array")
 	}
 }
 
@@ -767,12 +1009,12 @@ func TestMatchArrayCondition_NumericInt64(t *testing.T) {
 		JsonPath: "$.scores",
 		Values:   []any{int64(1), int64(2), int64(3)},
 	}
-	got, err := Match(cond, data, meta())
+	got, err := Match(cond, data, meta(), numericScoresTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected match for int64 values against numeric JSON array")
+		t.Error("expected match for int64 values against declared-numeric JSON array")
 	}
 }
 
@@ -782,66 +1024,85 @@ func TestMatchArrayCondition_NumericFloat64(t *testing.T) {
 		JsonPath: "$.scores",
 		Values:   []any{1.0, 2.0, 3.0},
 	}
-	got, err := Match(cond, data, meta())
+	got, err := Match(cond, data, meta(), numericScoresTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected match for float64 values against numeric JSON array")
+		t.Error("expected match for float64 values against declared-numeric JSON array")
 	}
 }
 
 func TestMatchArrayCondition_JSONNumber(t *testing.T) {
-	// Predicates built from XML imports (after PR-2) deliver json.Number.
+	// Predicates built from XML imports deliver json.Number.
 	data := []byte(`{"scores":[1.5]}`)
 	cond := &predicate.ArrayCondition{
 		JsonPath: "$.scores",
 		Values:   []any{json.Number("1.5")},
 	}
-	got, err := Match(cond, data, meta())
+	got, err := Match(cond, data, meta(), numericScoresTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected match for json.Number expected against numeric JSON array")
+		t.Error("expected match for json.Number expected against declared-numeric JSON array")
 	}
 }
 
 func TestMatchArrayCondition_TypeMismatch(t *testing.T) {
-	// String entity field, numeric expected — must NOT match.
+	// String entity field, numeric expected — the numeric-looking operand is
+	// compared as a string against the declared-String element and does not
+	// equal "go".
 	data := []byte(`{"tags":["go"]}`)
 	cond := &predicate.ArrayCondition{
 		JsonPath: "$.tags",
 		Values:   []any{42},
 	}
-	got, err := Match(cond, data, meta())
+	got, err := Match(cond, data, meta(), numericScoresTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got {
-		t.Error("expected no match: numeric expected against string JSON array element")
+		t.Error("expected no match: \"42\" does not equal string element \"go\"")
 	}
 }
 
-// TestMatchArrayCondition_NumericFormatDivergence proves the regression that
-// motivated this fix. Pre-fix, matchArray compared fmt.Sprintf("%v", expected)
-// to gjson's result.String(). For float64(1e10), Sprintf renders "1e+10"
-// while gjson decimal-expands the JSON literal 1e10 to "10000000000". These
-// strings differ even though the values are equal. The pre-fix code would
-// return no-match; opEquals does numeric comparison (actual.Float() ==
-// toFloat64(expected)) and returns match. This case is the executable proof
-// that the change has user-visible behavioral effect.
+// TestMatchArrayCondition_NumericFormatDivergence proves numeric-equality
+// semantics on the array path: float64(1e10) (fmt-rendered "1e+10") equals the
+// JSON literal 1e10 (gjson Raw "1e10") numerically, where a string comparison
+// of the two textual forms would fail.
 func TestMatchArrayCondition_NumericFormatDivergence(t *testing.T) {
-	data := []byte(`{"scores":[1e10]}`) // gjson.String() = "10000000000"
+	data := []byte(`{"scores":[1e10]}`)
 	cond := &predicate.ArrayCondition{
 		JsonPath: "$.scores",
-		Values:   []any{float64(1e10)}, // Sprintf renders "1e+10"
+		Values:   []any{float64(1e10)},
 	}
-	got, err := Match(cond, data, meta())
+	got, err := Match(cond, data, meta(), numericScoresTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got {
-		t.Error("expected match: float64(1e10) against JSON 1e10 — numeric equality required, string comparison would fail")
+		t.Error("expected match: float64(1e10) against JSON 1e10 — numeric equality via the kernel")
+	}
+}
+
+// TestMatchArrayCondition_StringOperandCoercesWhenNumericDeclared pins the
+// converged, type-directed semantics: a numeric-looking string operand
+// ("100.0") IS compared numerically against a declared-numeric element, so it
+// equals the stored 100. (Pre-kernel, internal/match had no type info and fell
+// back to a lexical "100" != "100.0" non-match; the kernel's declared type is
+// what changes this, consistent with the search pushdown.)
+func TestMatchArrayCondition_StringOperandCoercesWhenNumericDeclared(t *testing.T) {
+	data := []byte(`{"scores":[100]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{"100.0"},
+	}
+	got, err := Match(cond, data, meta(), numericScoresTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected match: string \"100.0\" numerically equals stored 100 under declared UnboundDecimal")
 	}
 }

@@ -207,3 +207,73 @@ func RunWorkflowProcCriterionAnnotationsRoundTrip(t *testing.T, fixture BackendF
 		t.Errorf("processor annotations: got %#v, want %#v", got, want)
 	}
 }
+
+const workflowProcAttachEntityPayload = `{
+  "importMode": "REPLACE",
+  "workflows": [{
+    "version": "1.3", "name": "proc-attach-wf", "initialState": "NONE", "active": true,
+    "states": { "NONE": { "transitions": [
+      { "name": "t", "next": "NONE", "manual": true, "processors": [
+        { "name": "p_omitted", "type": "externalized", "config": { "calculationNodesTags": "billing" } },
+        { "name": "p_false", "type": "externalized", "config": { "calculationNodesTags": "billing", "attachEntity": false } },
+        { "name": "p_true", "type": "externalized", "config": { "calculationNodesTags": "billing", "attachEntity": true } }
+      ] }
+    ] } }
+  }]
+}`
+
+// RunWorkflowProcAttachEntityDefaultRoundTrip verifies that an omitted
+// processor config.attachEntity defaults to true on import, while an explicit
+// false/true is preserved, consistently on every backend.
+func RunWorkflowProcAttachEntityDefaultRoundTrip(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "wf-proc-attach-test"
+	const modelVersion = 1
+
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test Order","status":"draft"}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.ImportWorkflow(t, modelName, modelVersion, workflowProcAttachEntityPayload); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+	raw, err := c.ExportWorkflow(t, modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportWorkflow: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("ExportWorkflow: parse: %v", err)
+	}
+	wf := body["workflows"].([]any)[0].(map[string]any)
+	tr := wf["states"].(map[string]any)["NONE"].(map[string]any)["transitions"].([]any)[0].(map[string]any)
+	procs := tr["processors"].([]any)
+	if len(procs) != 3 {
+		t.Fatalf("expected 3 processors, got %d", len(procs))
+	}
+
+	// attach reads config.attachEntity, treating an absent key (omitempty on
+	// an explicit/defaulted false) as false.
+	attach := func(i int) bool {
+		p := procs[i].(map[string]any)
+		cfg, _ := p["config"].(map[string]any)
+		if cfg == nil {
+			return false
+		}
+		b, _ := cfg["attachEntity"].(bool)
+		return b
+	}
+	if !attach(0) {
+		t.Errorf("p_omitted: attachEntity = false, want true (defaulted)")
+	}
+	if attach(1) {
+		t.Errorf("p_false: attachEntity = true, want false (preserved)")
+	}
+	if !attach(2) {
+		t.Errorf("p_true: attachEntity = false, want true (preserved)")
+	}
+}

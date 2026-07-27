@@ -14,14 +14,16 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 )
 
-func makeProcessorReq() *dispatch.DispatchProcessorRequest {
-	return &dispatch.DispatchProcessorRequest{
-		Entity:     json.RawMessage(`{"amount":100}`),
-		EntityMeta: spi.EntityMeta{ID: "ent-1", TenantID: "t1"},
-		Processor: spi.ProcessorDefinition{
-			Type: "HTTP",
-			Name: "calc",
-		},
+func makeProcessorReq() dispatch.DispatchCalloutRequest {
+	processor := spi.ProcessorDefinition{
+		Type: "HTTP",
+		Name: "calc",
+	}
+	return dispatch.DispatchCalloutRequest{
+		Kind:           "processor",
+		Entity:         json.RawMessage(`{"amount":100}`),
+		EntityMeta:     spi.EntityMeta{ID: "ent-1", TenantID: "t1"},
+		Processor:      &processor,
 		WorkflowName:   "wf",
 		TransitionName: "run",
 		TxID:           "tx-1",
@@ -29,8 +31,9 @@ func makeProcessorReq() *dispatch.DispatchProcessorRequest {
 	}
 }
 
-func makeCriteriaReq() *dispatch.DispatchCriteriaRequest {
-	return &dispatch.DispatchCriteriaRequest{
+func makeCriteriaReq() dispatch.DispatchCalloutRequest {
+	return dispatch.DispatchCalloutRequest{
+		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"status":"pending"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "t2"},
 		Criterion:      json.RawMessage(`{"type":"ALWAYS_TRUE"}`),
@@ -58,14 +61,14 @@ func verifyAEADHeaders(t *testing.T, r *http.Request) {
 }
 
 func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
-	wantResp := dispatch.DispatchProcessorResponse{
-		EntityData: json.RawMessage(`{"amount":200}`),
+	wantResp := dispatch.DispatchCalloutResponse{
+		EntityData: []byte(`{"amount":200}`),
 		Success:    true,
 		Warnings:   []string{"adjusted"},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/dispatch/processor" {
+		if r.URL.Path != "/internal/dispatch/callout" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		if r.Method != http.MethodPost {
@@ -79,9 +82,9 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
+	resp, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
 	if err != nil {
-		t.Fatalf("ForwardProcessor: %v", err)
+		t.Fatalf("ForwardCallout: %v", err)
 	}
 	if !resp.Success {
 		t.Errorf("Success = false, want true")
@@ -95,13 +98,14 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 }
 
 func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
-	wantResp := dispatch.DispatchCriteriaResponse{
-		Matches: true,
+	matches := true
+	wantResp := dispatch.DispatchCalloutResponse{
+		Matches: &matches,
 		Success: true,
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/dispatch/criteria" {
+		if r.URL.Path != "/internal/dispatch/callout" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		verifyAEADHeaders(t, r)
@@ -112,12 +116,12 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCriteria(context.Background(), srv.URL, makeCriteriaReq())
+	resp, err := f.ForwardCallout(context.Background(), srv.URL, makeCriteriaReq())
 	if err != nil {
-		t.Fatalf("ForwardCriteria: %v", err)
+		t.Fatalf("ForwardCallout: %v", err)
 	}
-	if !resp.Matches {
-		t.Errorf("Matches = false, want true")
+	if resp.Matches == nil || !*resp.Matches {
+		t.Errorf("Matches = %v, want true", resp.Matches)
 	}
 	if !resp.Success {
 		t.Errorf("Success = false, want true")
@@ -128,12 +132,12 @@ func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 	// localhost:1 is guaranteed unreachable (privileged port, never listening)
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 2*time.Second).AllowLoopbackForTesting()
 
-	_, err := f.ForwardProcessor(context.Background(), "http://localhost:1", makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), "http://localhost:1", makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for unreachable peer, got nil")
 	}
 
-	_, err = f.ForwardCriteria(context.Background(), "http://localhost:1", makeCriteriaReq())
+	_, err = f.ForwardCallout(context.Background(), "http://localhost:1", makeCriteriaReq())
 	if err == nil {
 		t.Fatal("expected error for unreachable peer, got nil")
 	}
@@ -147,13 +151,13 @@ func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(dispatch.DispatchProcessorResponse{Success: true})
+		_ = json.NewEncoder(w).Encode(dispatch.DispatchCalloutResponse{Success: true})
 	}))
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	if _, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq()); err != nil {
-		t.Fatalf("ForwardProcessor: %v", err)
+	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
+		t.Fatalf("ForwardCallout: %v", err)
 	}
 
 	// Plaintext markers from makeProcessorReq() must not appear on the wire.
@@ -174,7 +178,7 @@ func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 // "cyoda-go-node-2:8123"). Regression test for unsupported protocol error.
 func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(dispatch.DispatchProcessorResponse{Success: true})
+		_ = json.NewEncoder(w).Encode(dispatch.DispatchCalloutResponse{Success: true})
 	}))
 	defer srv.Close()
 
@@ -182,9 +186,9 @@ func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	addrWithoutScheme := srv.Listener.Addr().String() // e.g., "127.0.0.1:PORT"
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardProcessor(context.Background(), addrWithoutScheme, makeProcessorReq())
+	resp, err := f.ForwardCallout(context.Background(), addrWithoutScheme, makeProcessorReq())
 	if err != nil {
-		t.Fatalf("ForwardProcessor with schemeless addr should work: %v", err)
+		t.Fatalf("ForwardCallout with schemeless addr should work: %v", err)
 	}
 	if !resp.Success {
 		t.Error("expected Success=true")
@@ -198,7 +202,7 @@ func TestHTTPForwarder_PeerReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	_, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
 	}

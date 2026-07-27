@@ -3,6 +3,18 @@
 Lightweight, multi-node Go implementation of the Cyoda platform.
 cyoda-go defines the API and integration contract; Cyoda Cloud aligns to it.
 
+## Design Philosophy
+
+**Correctness and consistency over availability.** When the two conflict,
+cyoda-go fails closed: an operation that cannot be completed correctly is
+rejected and rolled back — never committed partially, and never with a
+substituted or fallback value standing in for the correct one. Do not weigh
+availability as a reason to weaken an invariant, and do not propose
+graceful-degradation fallbacks that return a wrong-but-available result. An
+unavailable dependency a correct result requires (e.g. the compute node a
+required Function/processor/criterion callout needs) fails the operation; it
+does not downgrade it. See `.claude/rules/correctness-over-availability.md`.
+
 ## Development Gates
 
 These are STOP-and-verify checkpoints. Do not proceed past a gate without completing it.

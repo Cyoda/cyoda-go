@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
@@ -143,5 +145,58 @@ func TestClassifyWorkflowError_PartialUniqueKey422(t *testing.T) {
 	}
 	if strings.Contains(appErr.Message, innerText) {
 		t.Errorf("partial key: Message leaks raw error text: %q", appErr.Message)
+	}
+}
+
+// TestClassifyWorkflowError_AuthContextUnavailableMapsTo5xx guards a
+// server-side condition (missed constructor / missed cross-node context
+// forwarding leaves a principal's Kind unset) from being classified as a
+// client-attributable 400. An unset/nil/unrecognized principal Kind can
+// never originate from client-supplied input — the client does not control
+// dispatch-path UserContext construction — so it must map to a sanitized
+// 5xx with a ticket, not 400 WORKFLOW_FAILED echoing the raw principal id.
+func TestClassifyWorkflowError_AuthContextUnavailableMapsTo5xx(t *testing.T) {
+	principalID := "user-super-secret-internal-id-123"
+	// Mirror the production wrapping shape: dispatch.go wraps AttachAuthContext's
+	// error with "failed to attach auth context to %s cloud event: %w", and
+	// AttachAuthContext itself joins the sentinel with the detailed message.
+	inner := errors.Join(contract.ErrAuthContextUnavailable,
+		fmt.Errorf("attach auth context: principal kind unset for principal %q", principalID))
+	prod := fmt.Errorf("failed to attach auth context to %s cloud event: %w", "processor", inner)
+
+	if !errors.Is(prod, contract.ErrAuthContextUnavailable) {
+		t.Fatalf("test setup bug: errors.Is should detect ErrAuthContextUnavailable in wrapped error")
+	}
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Status != http.StatusInternalServerError {
+		t.Errorf("auth-context-unavailable: expected 500, got %d", appErr.Status)
+	}
+	if appErr.Level != common.LevelInternal {
+		t.Errorf("auth-context-unavailable: expected LevelInternal, got %v", appErr.Level)
+	}
+	if appErr.Code != common.ErrCodeServerError {
+		t.Errorf("auth-context-unavailable: expected code %q, got %q", common.ErrCodeServerError, appErr.Code)
+	}
+	if strings.Contains(appErr.Message, principalID) {
+		t.Errorf("auth-context-unavailable: Message leaks principal id: %q", appErr.Message)
+	}
+
+	// Client-visible assertion: the actual HTTP response body must be a
+	// generic 500 with a ticket UUID — never the raw principal id or the
+	// internal wrapping text.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/transition", nil)
+	common.WriteError(rr, req, appErr)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("client response: expected HTTP 500, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, principalID) {
+		t.Errorf("client response leaks principal id: %s", body)
+	}
+	if !strings.Contains(body, "ticket") {
+		t.Errorf("client response missing ticket correlation field: %s", body)
 	}
 }

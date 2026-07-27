@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -672,3 +673,89 @@ func TestUpdateEntity_WorkflowFailed_FallbackCode(t *testing.T) {
 // infrastructure: newTestServer, importAndLockModel, doCreateEntity,
 // expectStatus.
 var _ = strconv.Itoa // ensure strconv is not flagged as unused
+
+// newDeleteFixture builds a Handler wired to a real search.SearchService
+// whose EntityStore is Searcher-capable (searcherEntityStore, defined in
+// mock_store_test.go), so a stubbed Search failure travels the exact same
+// path a production sqlite/postgres backend's plugin Searcher would (see
+// search.SearchService.Search's Searcher-delegation branch) rather than a
+// synthetic error type invented for this test alone. A model is registered
+// up front so DeleteEntitiesConditional's own ModelStore.Get check passes
+// and the flow actually reaches the selection search.
+func newDeleteFixture(t *testing.T, searchFn func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error)) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+
+	ctx = statsTestCtx("tenant-delete-forward")
+	ref := spi.ModelRef{EntityName: "DeleteFixtureModel", ModelVersion: "1"}
+
+	ms, err := base.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+
+	realStore, err := base.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	searchFactory := &searcherFactory{
+		StoreFactory: base,
+		entityStore:  &searcherEntityStore{EntityStore: realStore, searchFn: searchFn},
+	}
+
+	searchStore, err := base.AsyncSearchStore(ctx)
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	searchSvc := search.NewSearchService(searchFactory, common.NewTestUUIDGenerator(), searchStore)
+
+	txMgr, err := base.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), searchSvc)
+
+	return h, ctx, ref.EntityName, ref.ModelVersion
+}
+
+// someCondition returns a well-formed conditional-delete request body: a
+// simple equality condition in the AbstractConditionDto wire shape
+// DeleteEntitiesConditional parses via predicate.ParseCondition.
+func someCondition(t *testing.T) []byte {
+	t.Helper()
+	return []byte(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"drop"}`)
+}
+
+// TestDeleteEntitiesConditional_ForwardsSearch4xx verifies that a classified
+// 4xx from the delete-selection search (a scan-budget exhaustion, an
+// unknown field path, an invalid condition) reaches the caller as-is instead
+// of being re-wrapped into an opaque 500 + ticket.
+//
+// common.Internal only unwraps ErrUniqueViolation / ErrPartialUniqueKey /
+// ErrConflict (internal/common/errors.go) — none of which this search error
+// is — so before the fix it fell through to the generic "detail redacted"
+// 500 branch, and the caller could not tell a bad request from a server
+// fault.
+func TestDeleteEntitiesConditional_ForwardsSearch4xx(t *testing.T) {
+	h, ctx, entityName, modelVersion := newDeleteFixture(t, func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
+			"search scan budget exhausted")
+	})
+
+	_, err := h.DeleteEntitiesConditional(ctx, entityName, modelVersion, someCondition(t), nil, false)
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Fatalf("got status %d, want %d", appErr.Status, http.StatusBadRequest)
+	}
+	if appErr.Code != common.ErrCodeScanBudgetExhausted {
+		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeScanBudgetExhausted)
+	}
+}

@@ -2,10 +2,8 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -431,145 +429,9 @@ func aggregateExprToSQL(a spi.AggregateExpr) (string, error) {
 // ---------- Post-filter evaluator (residual application) ----------
 
 // evalPostFilter evaluates a residual Filter subtree against a decoded
-// entity in Go. Only the ops that the planner cannot push down can ever
-// appear in a residual; this evaluator covers exactly that set
-// (MatchesRegex + the case-insensitive op family). Op codes that *are*
-// pushable surface as errors here — they should never reach the residual
-// path. Defensive coverage is intentionally narrow: a broader evaluator
-// invites silent disagreement with the SQL pushdown semantics.
+// entity in Go. Delegates to spi.MatchFilter, the canonical cross-backend
+// evaluator that sqlite's post-filter and the memory plugin also use — see
+// that function's doc for why the two must never diverge.
 func evalPostFilter(f spi.Filter, entity *spi.Entity, doc []byte) (bool, error) {
-	switch f.Op {
-	case spi.FilterAnd:
-		for _, c := range f.Children {
-			ok, err := evalPostFilter(c, entity, doc)
-			if err != nil {
-				return false, err
-			}
-			if !ok {
-				return false, nil
-			}
-		}
-		return true, nil
-	case spi.FilterOr:
-		for _, c := range f.Children {
-			ok, err := evalPostFilter(c, entity, doc)
-			if err != nil {
-				return false, err
-			}
-			if ok {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-	return evalPostLeaf(f, entity, doc)
-}
-
-func evalPostLeaf(f spi.Filter, entity *spi.Entity, doc []byte) (bool, error) {
-	val, found := extractFieldValueForPost(f, entity, doc)
-	switch f.Op {
-	case spi.FilterMatchesRegex:
-		if !found || val == nil {
-			return false, nil
-		}
-		re, err := regexp.Compile(fmt.Sprint(f.Value))
-		if err != nil {
-			return false, fmt.Errorf("invalid regex %q: %w", f.Value, err)
-		}
-		return re.MatchString(fmt.Sprint(val)), nil
-	case spi.FilterIEq:
-		if !found || val == nil {
-			return false, nil
-		}
-		return strings.EqualFold(fmt.Sprint(val), fmt.Sprint(f.Value)), nil
-	case spi.FilterINe:
-		if !found || val == nil {
-			return true, nil
-		}
-		return !strings.EqualFold(fmt.Sprint(val), fmt.Sprint(f.Value)), nil
-	case spi.FilterIContains:
-		if !found || val == nil {
-			return false, nil
-		}
-		return strings.Contains(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value))), nil
-	case spi.FilterINotContains:
-		if !found || val == nil {
-			return true, nil
-		}
-		return !strings.Contains(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value))), nil
-	case spi.FilterIStartsWith:
-		if !found || val == nil {
-			return false, nil
-		}
-		return strings.HasPrefix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value))), nil
-	case spi.FilterINotStartsWith:
-		if !found || val == nil {
-			return true, nil
-		}
-		return !strings.HasPrefix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value))), nil
-	case spi.FilterIEndsWith:
-		if !found || val == nil {
-			return false, nil
-		}
-		return strings.HasSuffix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value))), nil
-	case spi.FilterINotEndsWith:
-		if !found || val == nil {
-			return true, nil
-		}
-		return !strings.HasSuffix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value))), nil
-	}
-	return false, fmt.Errorf("post-filter: unsupported residual op %q", f.Op)
-}
-
-// extractFieldValueForPost resolves f.Path against the decoded entity for
-// post-filter evaluation. SourceMeta paths come from EntityMeta fields;
-// SourceData paths walk the doc JSON.
-func extractFieldValueForPost(f spi.Filter, entity *spi.Entity, doc []byte) (any, bool) {
-	if f.Source == spi.SourceMeta {
-		switch f.Path {
-		case "entity_id":
-			return entity.Meta.ID, true
-		case "state":
-			return entity.Meta.State, true
-		case "version":
-			return entity.Meta.Version, true
-		case "model_name":
-			return entity.Meta.ModelRef.EntityName, true
-		case "model_version":
-			return entity.Meta.ModelRef.ModelVersion, true
-		case "change_type":
-			return entity.Meta.ChangeType, true
-		case "transaction_id":
-			return entity.Meta.TransactionID, true
-		default:
-			// Fall through to the JSONB doc's _meta block.
-			return extractJSONPath(doc, "_meta."+f.Path)
-		}
-	}
-	return extractJSONPath(doc, f.Path)
-}
-
-// extractJSONPath walks a dot-separated path through doc (a JSONB blob)
-// and returns the leaf scalar value. Returns (nil, false) for missing,
-// (nil, true) for explicit null, (scalar, true) for present.
-func extractJSONPath(doc []byte, path string) (any, bool) {
-	if len(doc) == 0 {
-		return nil, false
-	}
-	var cur any
-	if err := json.Unmarshal(doc, &cur); err != nil {
-		return nil, false
-	}
-	for _, seg := range strings.Split(path, ".") {
-		obj, ok := cur.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		v, present := obj[seg]
-		if !present {
-			return nil, false
-		}
-		cur = v
-	}
-	return cur, true
+	return spi.MatchFilter(f, doc, entity.Meta), nil
 }

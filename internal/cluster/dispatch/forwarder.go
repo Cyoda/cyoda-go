@@ -11,10 +11,9 @@ import (
 	"time"
 )
 
-// DispatchForwarder sends processor and criteria dispatch requests to a peer node.
+// DispatchForwarder sends a callout dispatch request to a peer node.
 type DispatchForwarder interface {
-	ForwardProcessor(ctx context.Context, addr string, req *DispatchProcessorRequest) (*DispatchProcessorResponse, error)
-	ForwardCriteria(ctx context.Context, addr string, req *DispatchCriteriaRequest) (*DispatchCriteriaResponse, error)
+	ForwardCallout(ctx context.Context, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error)
 }
 
 // HTTPForwarder implements DispatchForwarder over HTTP with a PeerAuth
@@ -54,25 +53,13 @@ func (f *HTTPForwarder) AllowLoopbackForTesting() *HTTPForwarder {
 	return f
 }
 
-// ForwardProcessor POSTs a processor dispatch request to the peer at addr and returns the response.
-func (f *HTTPForwarder) ForwardProcessor(ctx context.Context, addr string, req *DispatchProcessorRequest) (*DispatchProcessorResponse, error) {
+// ForwardCallout POSTs a callout dispatch request to the peer at addr and returns the response.
+func (f *HTTPForwarder) ForwardCallout(ctx context.Context, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
 	if err := validatePeerAddress(addr, f.allowLoopback); err != nil {
 		return nil, err
 	}
-	var resp DispatchProcessorResponse
-	if err := f.forward(ctx, ensureScheme(addr)+"/internal/dispatch/processor", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// ForwardCriteria POSTs a criteria dispatch request to the peer at addr and returns the response.
-func (f *HTTPForwarder) ForwardCriteria(ctx context.Context, addr string, req *DispatchCriteriaRequest) (*DispatchCriteriaResponse, error) {
-	if err := validatePeerAddress(addr, f.allowLoopback); err != nil {
-		return nil, err
-	}
-	var resp DispatchCriteriaResponse
-	if err := f.forward(ctx, ensureScheme(addr)+"/internal/dispatch/criteria", req, &resp); err != nil {
+	var resp DispatchCalloutResponse
+	if err := f.forward(ctx, ensureScheme(addr)+"/internal/dispatch/callout", &req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

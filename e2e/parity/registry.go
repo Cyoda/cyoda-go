@@ -2,13 +2,18 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 169
+// Total parity scenarios: 218 (guarded by TestParityScenarioCount — bump
+// wantParityScenarioCount in registry_count_test.go when adding/removing an
+// entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
 // distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
 // + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
 // + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
 // + Phase 9.6 Audit fixes + grouped stats + unknown-model 404 contract).
-// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/
+// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/,
+// scheduled-transition-runtime scenarios registered via parity.Register()
+// in e2e/parity/scheduledtransition/, and scheduled-transition Function
+// scenarios registered via parity.Register() in e2e/parity/scheduledfunction/
 // are additional to this count.
 //
 // Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
@@ -44,6 +49,7 @@ var allTests = []NamedTest{
 	{"WorkflowImportExport", RunWorkflowImportExport},
 	{"WorkflowAnnotationsRoundTrip", RunWorkflowAnnotationsRoundTrip},
 	{"WorkflowProcCriterionAnnotationsRoundTrip", RunWorkflowProcCriterionAnnotationsRoundTrip},
+	{"WorkflowProcAttachEntityDefaultRoundTrip", RunWorkflowProcAttachEntityDefaultRoundTrip},
 
 	// Phase 4a — entity CRUD (Task 4a.2)
 	{"EntityCreateAndGet", RunEntityCreateAndGet},
@@ -99,11 +105,26 @@ var allTests = []NamedTest{
 
 	// Phase 4b — search scenarios (Task 4b.6-8)
 	{"SearchSimpleCondition", RunSearchSimpleCondition},
+	{"SearchBoolCondition", RunSearchBoolCondition},
 	{"SearchLifecycleCondition", RunSearchLifecycleCondition},
 	{"SearchGroupCondition", RunSearchGroupCondition},
 	{"SearchNoMatches", RunSearchNoMatches},
 	{"SearchAfterUpdate", RunSearchAfterUpdate},
 	{"SearchPointInTime", RunSearchPointInTime},
+	{"SearchDirectBoundedOrFail", RunSearchDirectBoundedOrFail},
+
+	// Temporal search filters (#423) — chronological date-typed meta
+	// compare + meta-vocabulary reconciliation, cross-backend.
+	{"SearchTemporalCreationDate", RunSearchTemporalCreationDate},
+	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
+	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
+	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
+	{"SearchBetweenArity400", RunSearchBetweenArity400},
+	// Type-directed contract: a scalar comparison on a PURE-container path (a
+	// known structural interior with substructure but no scalar observation)
+	// is rejected with HTTP 400 INVALID_FIELD_PATH uniformly across backends —
+	// fail-closed rather than the pre-fix silent empty-result degradation.
+	{"SearchScalarOnContainerPath400", RunSearchScalarOnContainerPath400},
 
 	// Phase 4b — workflow selection (Task 4b.7)
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},
@@ -117,6 +138,7 @@ var allTests = []NamedTest{
 	// Concurrency/torn-write cases are intentionally NOT here (isolated e2e).
 	{"CallbackTxJoin_SyncWriteAtomic", RunCallbackSyncWriteAtomic},
 	{"CallbackTxJoin_SyncReadYourWrites", RunCallbackSyncReadYourWrites},
+	{"CallbackTxJoin_GRPCSearchReadYourWrites", RunCallbackGRPCSearchReadYourWrites},
 	{"CallbackTxJoin_CriteriaReadYourWrites", RunCallbackCriteriaReadYourWrites},
 	{"CallbackTxJoin_IfMatchUpdate", RunCallbackIfMatchUpdate},
 	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
@@ -307,6 +329,7 @@ var allTests = []NamedTest{
 	// the exact entity-id sequence.  Divergence here is a real bug in the
 	// backend comparator or default-order path, not a test weakness.
 	{"SearchSortDataText", RunSearchSortDataText},
+	{"SearchSortDataTemporalLexical", RunSearchSortDataTemporalLexical},
 	{"SearchSortDataNumeric", RunSearchSortDataNumeric},
 	{"SearchSortDataBool", RunSearchSortDataBool},
 	{"SearchSortMetaCreationDate", RunSearchSortMetaCreationDate},
@@ -325,6 +348,7 @@ var allTests = []NamedTest{
 	{"GroupedStats_CountByDataField", RunParityGroupedStats_CountByDataField},
 	{"GroupedStats_MultiDimGroupBy", RunParityGroupedStats_MultiDimGroupBy},
 	{"GroupedStats_WithCondition", RunParityGroupedStats_WithCondition},
+	{"GroupedStats_BoolCondition", RunParityGroupedStats_BoolCondition},
 	{"GroupedStats_PointInTime", RunParityGroupedStats_PointInTime},
 	{"GroupedStats_AggregationsTier1", RunParityGroupedStats_AggregationsTier1},
 	{"GroupedStats_StdevLowVarianceHighMean", RunParityGroupedStats_StdevLowVarianceHighMean},
@@ -337,6 +361,47 @@ var allTests = []NamedTest{
 	// an unknown model before doing any query work. (The GET stats endpoint runs
 	// the model-existence check first; grouped-stats validates groupBy beforehand.)
 	{"UnknownModel404", RunUnknownModel404},
+
+	// Criterion rejection reason — inline (non-FUNCTION) criterion default
+	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
+	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
+
+	// Follow-on-action attribution — the {attributed principal, executor} pair
+	// recorded on change history must be IDENTICAL on every backend. Guards the
+	// 3-way delete-tombstone divergence staying fixed, plus the executor
+	// round-trip, scheduled-fire (system executor), and joined-cascade
+	// (origin-propagated, distinct executor) contracts.
+	{"AttributionTombstoneUniformity", RunAttributionTombstoneUniformity},
+	{"AttributionExecutorRoundTrip", RunAttributionExecutorRoundTrip},
+	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
+	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
+
+	// Spec §10 backend-agnostic scenarios that lacked a dedicated named
+	// parity scenario (search_type_directed.go). Data-field temporal
+	// resolution is registered separately below.
+	//
+	// SearchPolymorphicIntStringExpansion guards the polymorphic [INTEGER,
+	// STRING] pushdown soundness fix: an operand matching stored values of
+	// different SQLite storage classes (int-30 and string-"30") must return
+	// both on every backend. sqlite achieves this by routing polymorphic
+	// comparison leaves to the residual (kernel-evaluated) rather than pushing
+	// a single-storage-class-bound WHERE that under-selects — see
+	// plugins/sqlite/query_planner.go isLeafPushable.
+	{"SearchPolymorphicIntStringExpansion", RunSearchPolymorphicIntStringExpansion},
+	{"SearchNumericBucketRounding", RunSearchNumericBucketRounding},
+	{"SearchLikeAnchoredEscapedGlob", RunSearchLikeAnchoredEscapedGlob},
+	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},
+	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
+	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
+
+	// Spec §4 — data-field temporal (subsumes the earlier standalone
+	// temporal-search-on-data-fields work). Model discovery content-sniffs
+	// ISO-8601 sample strings into a temporal subtype, so a data field
+	// compares chronologically with cross-subtype resolution: a LocalDate
+	// field's `>= 2024-09-09` is a chronological compare, and a Year field
+	// resolves that same operand to `> 2024` (imprecise-floor op mutation) —
+	// matching 2025, not 2024. See search_type_directed.go.
+	{"SearchDataFieldTemporalResolution", RunSearchDataFieldTemporalResolution},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.
@@ -348,9 +413,10 @@ var allTests = []NamedTest{
 // Per-backend test wrappers (memory, sqlite, postgres, and any out-of-tree
 // plugin like cyoda-go-cassandra) MUST blank-import every parity-extension
 // package — otherwise the extension's init() never runs and the wrapper
-// silently misses the entire scenario set. Currently the only extension
-// package is `e2e/parity/externalapi`. New parity-extension packages added
-// in future tranches must be added to all backend wrappers in lockstep.
+// silently misses the entire scenario set. Current extension packages are
+// `e2e/parity/externalapi`, `e2e/parity/scheduledtransition`, and
+// `e2e/parity/scheduledfunction`. New parity-extension packages added in
+// future tranches must be added to all backend wrappers in lockstep.
 func Register(tests ...NamedTest) {
 	allTests = append(allTests, tests...)
 }

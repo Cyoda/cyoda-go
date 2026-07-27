@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // captureSlogWarn swaps slog.Default with a JSON-handler writing to a buffer
@@ -99,6 +100,10 @@ func TestDefaultFallback_NoCriterionMatched_EmitsSlogWarn(t *testing.T) {
 			States:       map[string]spi.StateDefinition{"S": {Transitions: []spi.TransitionDefinition{}}},
 		},
 	})
+	// Model declares the entity's real leaf `k`; the criterion's $.never is
+	// untyped, so the equality leaf degrades to non-match — exercising the
+	// "no_criterion_matched" fallback reason rather than a load error.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"k": schema.String})
 
 	entity := makeEntity("ord-1", modelRef, map[string]any{"k": "v"})
 	if _, err := engine.Execute(ctx, entity, ""); err != nil {

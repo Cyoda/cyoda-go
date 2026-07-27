@@ -56,7 +56,7 @@ func main() {
 
 	cat := newCatalog(cb, gcb)
 	slog.Info("catalog loaded", "pkg", "compute-test-client",
-		"processors", len(cat.processors), "criteria", len(cat.criteria),
+		"processors", len(cat.processors), "criteria", len(cat.criteria), "functions", len(cat.functions),
 		"callbackProcessors", len(cat.callbackProcessors), "callbackCriteria", len(cat.callbackCriteria),
 		"callbackEnabled", cb != nil, "grpcCallbackEnabled", gcb != nil)
 

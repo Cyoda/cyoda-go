@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -22,12 +23,16 @@ func TestPlanQuery_EqSourceData(t *testing.T) {
 	if len(plan.args) != 1 || plan.args[0] != "Berlin" {
 		t.Errorf("args = %v, want [Berlin]", plan.args)
 	}
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil for pushable op, got %+v", plan.postFilter)
+	// SOUND SUPERSET: Eq is not EXACT (only IsNull/NotNull are), so the kernel
+	// re-checks — the FULL filter is installed as postFilter.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterEq {
+		t.Errorf("postFilter should be the full Eq filter, got %+v", plan.postFilter)
 	}
 }
 
 func TestPlanQuery_NeSourceData(t *testing.T) {
+	// Ne is NON-pushable (SQL "!=" under-selects under float8/text collision).
+	// It becomes residual-only: no WHERE fragment, kernel-evaluated.
 	f := spi.Filter{
 		Op:     spi.FilterNe,
 		Path:   "status",
@@ -35,27 +40,27 @@ func TestPlanQuery_NeSourceData(t *testing.T) {
 		Value:  "CLOSED",
 	}
 	plan := planQuery(f)
-	wantWhere := "(doc->>'status' IS NULL OR doc->>'status' != $1)"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("where should be empty for non-pushable Ne, got %s", plan.where)
 	}
-	if len(plan.args) != 1 || plan.args[0] != "CLOSED" {
-		t.Errorf("args = %v, want [CLOSED]", plan.args)
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Ne is not pushed)", plan.args)
 	}
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil")
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
 	}
 }
 
 func TestPlanQuery_ComparisonOps_String(t *testing.T) {
-	// String values use plain text comparison.
+	// String values use plain text comparison; Gt/Lt are RELAXED to >=/<=
+	// (SOUND SUPERSET).
 	tests := []struct {
 		name  string
 		op    spi.FilterOp
 		sqlOp string
 	}{
-		{"gt", spi.FilterGt, ">"},
-		{"lt", spi.FilterLt, "<"},
+		{"gt", spi.FilterGt, ">="},
+		{"lt", spi.FilterLt, "<="},
 		{"gte", spi.FilterGte, ">="},
 		{"lte", spi.FilterLte, "<="},
 	}
@@ -86,8 +91,8 @@ func TestPlanQuery_ComparisonOps_Numeric(t *testing.T) {
 		op    spi.FilterOp
 		sqlOp string
 	}{
-		{"gt", spi.FilterGt, ">"},
-		{"lt", spi.FilterLt, "<"},
+		{"gt", spi.FilterGt, ">="},
+		{"lt", spi.FilterLt, "<="},
 		{"gte", spi.FilterGte, ">="},
 		{"lte", spi.FilterLte, "<="},
 	}
@@ -107,8 +112,9 @@ func TestPlanQuery_ComparisonOps_Numeric(t *testing.T) {
 			if len(plan.args) != 1 || plan.args[0] != float64(25) {
 				t.Errorf("args = %v, want [25]", plan.args)
 			}
-			if plan.postFilter != nil {
-				t.Errorf("postFilter should be nil")
+			// SOUND SUPERSET → full-filter kernel re-check.
+			if plan.postFilter == nil || plan.postFilter.Op != tt.op {
+				t.Errorf("postFilter should be the full filter (op %s), got %+v", tt.op, plan.postFilter)
 			}
 		})
 	}
@@ -150,6 +156,11 @@ func TestPlanQuery_StartsWith(t *testing.T) {
 }
 
 func TestPlanQuery_EndsWith(t *testing.T) {
+	// postgres uses right(col, char_length($N)) = $N, NOT sqlite's
+	// substr(col, -length($N)) idiom — postgres substr's negative-start
+	// semantics don't mean "last N characters" (see the fix's doc comment
+	// on leafToSQL, case spi.FilterEndsWith, and the now-passing
+	// TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG).
 	f := spi.Filter{
 		Op:     spi.FilterEndsWith,
 		Path:   "email",
@@ -157,7 +168,7 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 		Value:  ".com",
 	}
 	plan := planQuery(f)
-	wantWhere := "substr(doc->>'email', -length($1)) = $2"
+	wantWhere := "right(doc->>'email', char_length($1)) = $2"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -167,6 +178,10 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 }
 
 func TestPlanQuery_Like(t *testing.T) {
+	// Like is NOT pushable (see isPushable's doc comment): SQL LIKE's
+	// wildcards don't line up with Cloud's LIKE grammar, so pushing it
+	// under-selects real wildcard patterns. It is residual-only — no WHERE
+	// fragment, kernel-evaluated. Mirrors sqlite's TestPlanQuery_Like.
 	f := spi.Filter{
 		Op:     spi.FilterLike,
 		Path:   "desc",
@@ -174,13 +189,14 @@ func TestPlanQuery_Like(t *testing.T) {
 		Value:  "foo%bar_baz\\qux",
 	}
 	plan := planQuery(f)
-	wantWhere := "doc->>'desc' LIKE $1 ESCAPE '\\'"
-	if plan.where != wantWhere {
-		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	if plan.where != "" {
+		t.Errorf("where should be empty for non-pushable Like, got %s", plan.where)
 	}
-	wantVal := "foo\\%bar\\_baz\\\\qux"
-	if len(plan.args) != 1 || plan.args[0] != wantVal {
-		t.Errorf("args = %v, want [%s]", plan.args, wantVal)
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Like is not pushed)", plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterLike {
+		t.Fatalf("postFilter should be the Like residual, got %+v", plan.postFilter)
 	}
 }
 
@@ -377,11 +393,12 @@ func TestPlanQuery_GreedyAND_MixedPushable(t *testing.T) {
 		t.Errorf("args count = %d, want 2", len(plan.args))
 	}
 
+	// Not exact (has a residual) → the FULL filter is re-checked by the kernel.
 	if plan.postFilter == nil {
 		t.Fatal("postFilter should be non-nil")
 	}
-	if plan.postFilter.Op != spi.FilterMatchesRegex {
-		t.Errorf("postFilter.Op = %s, want matches_regex", plan.postFilter.Op)
+	if plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter.Op = %s, want and (full filter re-check)", plan.postFilter.Op)
 	}
 }
 
@@ -394,8 +411,9 @@ func TestPlanQuery_GreedyAND_AllPushable(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil when all children pushable")
+	// All children pushable but none EXACT → full-filter kernel re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 	if plan.where == "" {
 		t.Error("where should not be empty")
@@ -437,8 +455,9 @@ func TestPlanQuery_ConservativeOR_AllPushable(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil when all OR children pushable")
+	// All OR children pushable but not EXACT → full-filter kernel re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterOr {
+		t.Errorf("postFilter should be the full OR filter, got %+v", plan.postFilter)
 	}
 	wantWhere := "((doc->>'city' IS NOT NULL AND doc->>'city' = $1)) OR " +
 		"((doc->>'city' IS NOT NULL AND doc->>'city' = $2))"
@@ -482,8 +501,9 @@ func TestPlanQuery_NestedANDWithOR(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil, got %+v", plan.postFilter)
+	// Fully pushable but no leaf is EXACT → full-filter kernel re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 	if plan.where == "" {
 		t.Error("where should not be empty")
@@ -509,11 +529,12 @@ func TestPlanQuery_NestedANDWithPartialOR(t *testing.T) {
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
+	// Residual present (the partial OR) → full filter re-checked by the kernel.
 	if plan.postFilter == nil {
 		t.Fatal("postFilter should be non-nil")
 	}
-	if plan.postFilter.Op != spi.FilterOr {
-		t.Errorf("postFilter.Op = %s, want or", plan.postFilter.Op)
+	if plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter.Op = %s, want and (full filter re-check)", plan.postFilter.Op)
 	}
 }
 
@@ -540,11 +561,18 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil")
+	// Single pushable Eq child, not EXACT → the FULL filter (the AND wrapper) is re-checked.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 }
 
+// C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
+// (exclude every row), matching memory's spi.MatchFilter behavior, not
+// match-all ("1=1"). Validation now rejects this upstream (see
+// internal/domain/search/operators.go validateBetweenArity), so this guard
+// is defense-in-depth for any Filter constructed directly (bypassing the
+// domain validator), never a panic and never a false match-all.
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterBetween,
@@ -553,8 +581,40 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 		Values: []any{float64(10)},
 	}
 	plan := planQuery(f)
-	if plan.where != "1=1" {
-		t.Errorf("where = %s, want 1=1", plan.where)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude, matching memory's fail-closed semantics)", plan.where)
+	}
+}
+
+// TestPlan_TemporalBetween_NilValues_DoesNotPanic is the C1 regression test:
+// a CoerceTemporal BETWEEN leaf with Values=nil (the shape produced by
+// betweenValues for a malformed BETWEEN operand, before the fix landed) must
+// not panic indexing f.Values[0]/[1], and must emit an exclude predicate —
+// never the sqlite/memory-diverging match-all.
+func TestPlan_TemporalBetween_NilValues_DoesNotPanic(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: nil,
+	}
+	plan := planQuery(f)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with no values", plan.where)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want none", plan.args)
+	}
+}
+
+// TestPlan_TemporalBetween_OneValue_DoesNotPanic covers the 1-element-array
+// shape of the same malformed condition.
+func TestPlan_TemporalBetween_OneValue_DoesNotPanic(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z"},
+	}
+	plan := planQuery(f)
+	if plan.where != "false" {
+		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with one value", plan.where)
 	}
 }
 
@@ -644,8 +704,9 @@ func TestPlanQuery_DeeplyNested(t *testing.T) {
 		},
 	}
 	plan := planQuery(f)
-	if plan.postFilter != nil {
-		t.Errorf("postFilter should be nil for fully pushable tree, got %+v", plan.postFilter)
+	// Fully pushable tree, but none of its leaves is EXACT → full re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
 	}
 	if plan.where == "" {
 		t.Error("where should not be empty")
@@ -668,22 +729,27 @@ func TestPlanQuery_SourceMeta_StateIsNull(t *testing.T) {
 // TestPlanQuery_IsPushableParityWithSqlite asserts the set of ops we mark
 // pushable is the same as sqlite's. This protects Task 16's parity tests.
 func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
-	// These must all be pushable (mirror sqlite's isPushable).
+	// These must all be pushable (mirror sqlite's isPushable). Ne and Like are
+	// deliberately excluded (residual-only); BetweenInclusive is included.
 	pushable := []spi.FilterOp{
-		spi.FilterEq, spi.FilterNe,
+		spi.FilterEq,
 		spi.FilterGt, spi.FilterLt, spi.FilterGte, spi.FilterLte,
 		spi.FilterContains, spi.FilterStartsWith, spi.FilterEndsWith,
-		spi.FilterLike,
 		spi.FilterIsNull, spi.FilterNotNull,
-		spi.FilterBetween,
+		spi.FilterBetween, spi.FilterBetweenInclusive,
 	}
 	for _, op := range pushable {
 		if !isPushable(op) {
 			t.Errorf("op %s should be pushable", op)
 		}
 	}
-	// These must NOT be pushable.
+	// These must NOT be pushable. Ne under-selects in SQL (float8/text collision),
+	// so it is residual-only. Like's SQL-wildcard grammar doesn't line up with
+	// Cloud's LIKE grammar, so it is residual-only too (see isPushable's doc
+	// comment).
 	notPushable := []spi.FilterOp{
+		spi.FilterNe,
+		spi.FilterLike,
 		spi.FilterMatchesRegex,
 		spi.FilterIEq, spi.FilterINe,
 		spi.FilterIContains, spi.FilterINotContains,
@@ -694,5 +760,352 @@ func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
 		if isPushable(op) {
 			t.Errorf("op %s should NOT be pushable", op)
 		}
+	}
+}
+
+// TestFieldExpr_MetaCanonicalMapping asserts fieldExpr resolves canonical
+// SourceMeta lifecycle-filter paths through the same metaJSONKey map
+// orderByFieldExpr uses for ORDER BY, and special-cases "id" to the
+// entity_id column (not present in metaJSONKey).
+func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"creationDate", "creationDate", "doc->'_meta'->>'creation_date'"},
+		{"lastUpdateTime", "lastUpdateTime", "doc->'_meta'->>'last_modified_date'"},
+		{"transitionForLatestSave", "transitionForLatestSave", "doc->'_meta'->>'transition'"},
+		{"transactionId", "transactionId", "doc->'_meta'->>'transaction_id'"},
+		{"id", "id", "entity_id"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fieldExpr(spi.Filter{Source: spi.SourceMeta, Path: tc.path})
+			if got != tc.want {
+				t.Errorf("fieldExpr(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlan_TemporalMetaEmitsEpochMillis asserts a CoerceTemporal meta leaf
+// routes through cyoda_epoch_millis on the canonically-mapped JSONB key, and
+// binds a Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
+func TestPlan_TemporalMetaEmitsEpochMillis(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	if !strings.Contains(plan.where, "cyoda_epoch_millis(doc->'_meta'->>'creation_date')") {
+		t.Errorf("where = %q", plan.where)
+	}
+	// SOUND SUPERSET: temporal Gt is relaxed to >=.
+	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') >= $1)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != int64(1609459200000) {
+		t.Errorf("args = %v, want [1609459200000]", plan.args)
+	}
+	// Temporal compare is a SOUND SUPERSET → full-filter kernel re-check.
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterGt {
+		t.Errorf("postFilter should be the full Gt filter, got %+v", plan.postFilter)
+	}
+}
+
+// TestPlan_TemporalMetaNE asserts the NE 3VL form (IS NULL OR != ) is
+// preserved for temporal leaves, mirroring the non-temporal NE shape.
+func TestPlan_TemporalMetaNE(t *testing.T) {
+	// Ne is non-pushable (isPushable is coercion-blind) → residual-only.
+	f := spi.Filter{Op: spi.FilterNe, Source: spi.SourceMeta, Path: "lastUpdateTime", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	if plan.where != "" {
+		t.Errorf("temporal Ne must not be pushed, got where %q", plan.where)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want [] (Ne is not pushed)", plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
+	}
+}
+
+// TestPlan_TemporalMetaBetween asserts BETWEEN binds two Go-precomputed
+// int64 epoch-ms operands from f.Values.
+func TestPlan_TemporalMetaBetween(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z", "2021-06-01T14:00:00+02:00"},
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') BETWEEN $1 AND $2)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 2 || plan.args[0] != int64(1609459200000) || plan.args[1] != int64(1622548800000) {
+		t.Errorf("args = %v, want [1609459200000 1622548800000]", plan.args)
+	}
+}
+
+// TestPlan_TemporalData asserts that a SourceData temporal COMPARISON leaf is
+// NOT pushed — it is routed to the residual so the kernel (spi.MatchFilter),
+// which performs temporal-subtype resolution, is authoritative. The flat
+// epoch-ms push (cyoda_epoch_millis) cannot reproduce the kernel's imprecise-
+// floor op mutation as a sound superset, and cyoda_epoch_millis returns NULL
+// for a bare ISO subtype (e.g. "2024" / "2024-09-09"), so pushing would
+// under-select. Meta temporal leaves (full offset-bearing instants) remain
+// pushable — see TestPlan_Temporal*. This is a deliberate leaf-level mirror
+// divergence from the op-level isPushable set (identical results, not
+// identical WHERE clauses).
+func TestPlan_TemporalData(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	if plan.where != "" {
+		t.Errorf("data temporal comparison must not be pushed; got where=%q", plan.where)
+	}
+	if plan.postFilter == nil {
+		t.Errorf("data temporal comparison must be routed to the residual (kernel-authoritative); postFilter is nil")
+	}
+	if isLeafPushable(f) {
+		t.Errorf("isLeafPushable must be false for a SourceData CoerceTemporal comparison leaf")
+	}
+}
+
+// TestPlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
+// FilterIsNull/FilterNotNull emits a plain null-check on the raw field
+// expression (doc->'_meta'->>'creation_date') — NOT the cyoda_epoch_millis(...)
+// wrapped form and NOT the "col = $1" / "= 0" nonsense that sqlOpForTemporal's
+// unconditional "default: return \"=\"" previously produced for an op it
+// doesn't recognize. Presence checks are coercion-independent: they must be
+// handled before the CoerceTemporal routing, mirroring spi.evalLeafFilter's
+// ordering.
+func TestPlan_TemporalIsNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	plan := planQuery(f)
+	wantWhere := "doc->'_meta'->>'creation_date' IS NULL"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want []", plan.args)
+	}
+	if strings.Contains(plan.where, "cyoda_epoch_millis") {
+		t.Errorf("where must not route through cyoda_epoch_millis for a presence check: %s", plan.where)
+	}
+	if strings.Contains(plan.where, "= $1") || strings.Contains(plan.where, "= 0") {
+		t.Errorf("where must not be the nonsense equality fallback: predicate was silently corrupted: %s", plan.where)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil — IsNull must remain pushable, just correct: %+v", plan.postFilter)
+	}
+	if !isPushable(spi.FilterIsNull) {
+		t.Errorf("FilterIsNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+func TestPlan_TemporalNotNull(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
+	plan := planQuery(f)
+	wantWhere := "doc->'_meta'->>'creation_date' IS NOT NULL"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 0 {
+		t.Errorf("args = %v, want []", plan.args)
+	}
+	if strings.Contains(plan.where, "cyoda_epoch_millis") {
+		t.Errorf("where must not route through cyoda_epoch_millis for a presence check: %s", plan.where)
+	}
+	if plan.postFilter != nil {
+		t.Errorf("postFilter should be nil — NotNull must remain pushable, just correct: %+v", plan.postFilter)
+	}
+	if !isPushable(spi.FilterNotNull) {
+		t.Errorf("FilterNotNull must remain pushable — the fix must push the CORRECT SQL, not fall back to residual")
+	}
+}
+
+// --- json.Number operand handling (Task 6c) ---
+//
+// The SPI's predicate parser now decodes numeric search operands as
+// json.Number (a string-kind type) instead of float64, to preserve
+// precision losslessly. json.Number must still be treated as numeric by
+// the query planner's pushdown routing — otherwise it misroutes to the
+// lexical text-comparison branch, diverging from the memory/SPI kernel
+// (which type-switches on the underlying numeric value, not the Go kind).
+
+func TestIsNumericValue_JSONNumber(t *testing.T) {
+	if !isNumericValue(json.Number("5")) {
+		t.Errorf("isNumericValue(json.Number(\"5\")) = false, want true")
+	}
+	if !isNumericValue(json.Number("3.14")) {
+		t.Errorf("isNumericValue(json.Number(\"3.14\")) = false, want true")
+	}
+}
+
+func TestPlanQuery_Eq_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterEq,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') = $1::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if strings.Contains(plan.where, "doc->>'age' = $1)") {
+		t.Errorf("json.Number operand must not fall through to the lexical text-comparison branch: %s", plan.where)
+	}
+	if len(plan.args) != 1 || plan.args[0] != float64(25) {
+		t.Errorf("args = %v, want [25.0] (bound as a float64, not the raw json.Number string)", plan.args)
+	}
+}
+
+func TestPlanQuery_Ne_JSONNumberOperand(t *testing.T) {
+	// Ne is non-pushable regardless of operand kind — never translated to SQL.
+	f := spi.Filter{
+		Op:     spi.FilterNe,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	if plan.where != "" || len(plan.args) != 0 {
+		t.Errorf("Ne must not be pushed: where=%q args=%v", plan.where, plan.args)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
+	}
+}
+
+func TestPlanQuery_Gt_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterGt,
+		Path:   "age",
+		Source: spi.SourceData,
+		Value:  json.Number("25"),
+	}
+	plan := planQuery(f)
+	// SOUND SUPERSET: Gt relaxed to >=.
+	wantWhere := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') >= $1::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 1 || plan.args[0] != float64(25) {
+		t.Errorf("args = %v, want [25.0] (bound as a float64, not the raw json.Number string)", plan.args)
+	}
+}
+
+func TestPlanQuery_Between_JSONNumberOperand(t *testing.T) {
+	f := spi.Filter{
+		Op:     spi.FilterBetween,
+		Path:   "score",
+		Source: spi.SourceData,
+		Values: []any{json.Number("10"), json.Number("20")},
+	}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if len(plan.args) != 2 || plan.args[0] != float64(10) || plan.args[1] != float64(20) {
+		t.Errorf("args = %v, want [10.0 20.0] (bound as float64, not raw json.Number strings)", plan.args)
+	}
+}
+
+// --- SQL-pushdown soundness contract (Task 11) ---
+
+// TestSoundness_ExactFastPath asserts a plan whose pushed leaves are ALL EXACT
+// (IsNull/NotNull only) keeps postFilter == nil — the SQL LIMIT/OFFSET fast
+// path stays enabled because the SQL matches the kernel bit-for-bit.
+func TestSoundness_ExactFastPath(t *testing.T) {
+	cases := []struct {
+		name string
+		f    spi.Filter
+	}{
+		{"is_null", spi.Filter{Op: spi.FilterIsNull, Path: "a", Source: spi.SourceData}},
+		{"not_null", spi.Filter{Op: spi.FilterNotNull, Path: "a", Source: spi.SourceData}},
+		{"and of presence checks", spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+			{Op: spi.FilterIsNull, Path: "a", Source: spi.SourceData},
+			{Op: spi.FilterNotNull, Path: "b", Source: spi.SourceData},
+		}}},
+		{"or of presence checks", spi.Filter{Op: spi.FilterOr, Children: []spi.Filter{
+			{Op: spi.FilterIsNull, Path: "a", Source: spi.SourceData},
+			{Op: spi.FilterNotNull, Path: "b", Source: spi.SourceData},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planQuery(tc.f)
+			if plan.postFilter != nil {
+				t.Errorf("postFilter should be nil (fast path) for an all-EXACT plan, got %+v", plan.postFilter)
+			}
+			if plan.where == "" {
+				t.Error("where should narrow even on the fast path")
+			}
+		})
+	}
+}
+
+// TestSoundness_MixedPresenceAndValue asserts adding a single non-EXACT leaf
+// (Eq) to a presence check disables the fast path: the whole plan is re-checked
+// against the FULL filter.
+func TestSoundness_MixedPresenceAndValue(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+		{Op: spi.FilterNotNull, Path: "a", Source: spi.SourceData},
+		{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "x"},
+	}}
+	plan := planQuery(f)
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
+		t.Fatalf("a non-EXACT leaf must force a full-filter re-check, got %+v", plan.postFilter)
+	}
+	if plan.where == "" {
+		t.Error("the EXACT + SOUND-SUPERSET leaves must still narrow the WHERE")
+	}
+}
+
+// TestSoundness_BetweenInclusivePushable asserts BETWEEN_INCLUSIVE is pushable
+// as a SOUND SUPERSET (inclusive SQL BETWEEN) and forces a full-filter re-check.
+func TestSoundness_BetweenInclusivePushable(t *testing.T) {
+	if !isPushable(spi.FilterBetweenInclusive) {
+		t.Fatal("FilterBetweenInclusive must be pushable")
+	}
+	f := spi.Filter{Op: spi.FilterBetweenInclusive, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterBetweenInclusive {
+		t.Errorf("postFilter should be the full BetweenInclusive filter, got %+v", plan.postFilter)
+	}
+}
+
+// TestSoundness_ExclusiveBetweenIsInclusiveSuperset asserts the exclusive kernel
+// FilterBetween pushes an inclusive SQL BETWEEN (a sound superset) and re-checks.
+func TestSoundness_ExclusiveBetweenIsInclusiveSuperset(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterBetween, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}}
+	plan := planQuery(f)
+	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
+	if plan.where != wantWhere {
+		t.Errorf("where:\n  got  %s\n  want %s (inclusive SQL BETWEEN is a superset of the exclusive kernel)", plan.where, wantWhere)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterBetween {
+		t.Errorf("postFilter should be the full Between filter so the kernel enforces the open bounds, got %+v", plan.postFilter)
+	}
+}
+
+// TestSoundness_NeNonPushable asserts Ne (temporal or plain) is residual-only.
+func TestSoundness_NeNonPushable(t *testing.T) {
+	if isPushable(spi.FilterNe) {
+		t.Fatal("FilterNe must NOT be pushable")
+	}
+	f := spi.Filter{Op: spi.FilterNe, Path: "creationDate", Source: spi.SourceMeta, Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
+	plan := planQuery(f)
+	if plan.where != "" {
+		t.Errorf("temporal Ne must not be pushed, got where %q", plan.where)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNe {
+		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
 	}
 }

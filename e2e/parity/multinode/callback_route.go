@@ -2,7 +2,6 @@ package multinode
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -42,6 +41,7 @@ func init() {
 	Register(
 		NamedTest{Name: "Callback_ForwardedDispatch_HTTP", Fn: RunCallback_ForwardedDispatch_HTTP},
 		NamedTest{Name: "Callback_ForwardedDispatch_GRPC", Fn: RunCallback_ForwardedDispatch_GRPC},
+		NamedTest{Name: "Callback_ForwardedGRPCSearch", Fn: RunCallback_ForwardedGRPCSearch},
 	)
 }
 
@@ -60,8 +60,7 @@ func cbRouteContext(secondaryModel, marker string) string {
 		"secondaryVersion": 1,
 		"marker":           marker,
 	})
-	quoted, _ := json.Marshal(string(inner))
-	return string(quoted)
+	return string(inner)
 }
 
 // cbRouteSecondaryWorkflow is a trivial NONE→STORED workflow (no processors) so a
@@ -82,19 +81,29 @@ const cbRouteSecondaryWorkflow = `{
 // transition carries one callback processor pinned to computeMemberTag, so the
 // dispatch is forwarded to the member-hosting node when driven from any other node.
 func cbRoutePrimaryWorkflow(wfName, procName, contextValue string) string {
-	return fmt.Sprintf(`{
+	// Built with an encoder, not a string template: Go's %s/%q quoting rules
+	// are not JSON's, and the names and context are caller-supplied.
+	b, _ := json.Marshal(map[string]any{
 		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
-						"config": {"attachEntity": true, "calculationNodesTags": %q, "context": %s}}]
-				}]},
-				"ACTIVE": {}
-			}
-		}]
-	}`, wfName, procName, computeMemberTag, contextValue)
+		"workflows": []any{map[string]any{
+			"version": "1.1", "name": wfName, "initialState": "NONE", "active": true,
+			"states": map[string]any{
+				"NONE": map[string]any{"transitions": []any{map[string]any{
+					"name": "init", "next": "ACTIVE", "manual": false,
+					"processors": []any{map[string]any{
+						"type": "calculator", "name": procName, "executionMode": "SYNC",
+						"config": map[string]any{
+							"attachEntity":         true,
+							"calculationNodesTags": computeMemberTag,
+							"context":              contextValue,
+						},
+					}},
+				}}},
+				"ACTIVE": map[string]any{},
+			},
+		}},
+	})
+	return string(b)
 }
 
 // cbRouteSetupModel imports+locks a model with the given sample doc, then imports
@@ -332,9 +341,68 @@ func RunCallback_ForwardedDispatch_GRPC(t *testing.T, fixture MultiNodeFixture) 
 	}
 }
 
+// RunCallback_ForwardedGRPCSearch proves the cross-node gRPC SEARCH-forward path:
+// a callback that searches within T over gRPC from a non-owner node forwards the
+// EntitySearchCollection call to the owner (B→A) and joins T there, observing the
+// transaction's uncommitted write — the read-side counterpart of the gRPC
+// EntityManage forward (RunCallback_ForwardedDispatch_GRPC).
+//
+//   - Node 1 (OWNER, no member) forwards the tagged processor dispatch to node 0
+//     (A→B). Node 0's member fires two joined gRPC callbacks presenting the
+//     tx-token (owner=node 1): first EntityManage(EntityCreateRequest) to write a
+//     secondary into T on node 1 (B→A), then EntitySearchCollection to search for
+//     it. Node 0 is a non-owner for T, so the search forwards B→A to node 1,
+//     joins T, and matches the uncommitted secondary.
+//   - Without the search RPC wired into the txRouteInterceptor the search would
+//     run locally on node 0 (no T) and match nothing, so the joined count would
+//     collapse to 0 and this scenario would fail.
+func RunCallback_ForwardedGRPCSearch(t *testing.T, fixture MultiNodeFixture) {
+	t.Helper()
+	urls := fixture.BaseURLs()
+	if len(urls) < 2 {
+		t.Fatalf("forwarded gRPC search callback routing needs ≥2 nodes, got %d", len(urls))
+	}
+	tenant := fixture.ComputeTenant(t)
+
+	cSetup := client.NewClient(urls[0], tenant.Token)
+
+	const secondary = "cbroute-gsearch-secondary"
+	const primary = "cbroute-gsearch-primary"
+	const marker = "cbroute-gsearch-marker"
+
+	cbRouteSetupModel(t, cSetup, secondary, `{"name":"child","amount":1,"status":"new"}`, cbRouteSecondaryWorkflow)
+	cbRouteSetupModel(t, cSetup, primary, `{"name":"Test","amount":10,"status":"new"}`,
+		cbRoutePrimaryWorkflow("cbroute-gsearch-wf", "cb-grpc-search-forward", cbRouteContext(secondary, marker)))
+
+	// OWNER = node 1 (no local compute member → dispatch forwards to node 0).
+	const ownerIdx = 1
+	cOwner := client.NewClient(urls[ownerIdx], tenant.Token)
+
+	primaryID, err := cOwner.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create via owner node %d (forwarded dispatch + cross-node gRPC search): %v", ownerIdx, err)
+	}
+	prim, err := cOwner.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary via owner: %v", err)
+	}
+	if prim.Meta.State != "ACTIVE" {
+		t.Fatalf("primary state = %q; want ACTIVE (cross-node gRPC search cascade did not complete): data=%+v", prim.Meta.State, prim.Data)
+	}
+	if empty, _ := prim.Data["tokenWasEmpty"].(bool); empty {
+		t.Errorf("forwarded SYNC dispatch: tokenWasEmpty=true; want false (owner token must survive A→B forward)")
+	}
+	if cnt, _ := prim.Data["grpcForwardSearchCount"].(float64); cnt < 1 {
+		t.Fatalf("forwarded gRPC search matched %v entities; want >= 1 — the B→A search forward did not join T on the owner (search RPC not routed): data=%+v", prim.Data["grpcForwardSearchCount"], prim.Data)
+	}
+}
+
 // cbRouteStatusEquals builds a simple search condition matching data.status.
 func cbRouteStatusEquals(value string) string {
-	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, value)
+	b, _ := json.Marshal(map[string]any{
+		"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": value,
+	})
+	return string(b)
 }
 
 // cbRouteSameTxID queries the audit REST endpoint for both entities and

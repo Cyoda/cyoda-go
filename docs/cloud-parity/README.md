@@ -23,3 +23,11 @@ Cloud needs to adopt.
 | `openapi-conformance.md` | OpenAPI operation status, live common ground, tolerant-reader obligation, deferred open questions (E6, D2) |
 | `search-sort.md` | Search result sorting — HTTP `sort` grammar, gRPC `orderBy`, canonical ordering semantics |
 | `processor-criteria-annotations.md` | Processor `annotations` + workflow/transition `criterionAnnotations`, well-known renderer keys, schema 1.1 → 1.2 |
+| `processor-attach-entity-default.md` | Processor `config.attachEntity` defaults to `true` on import, aligning with the function callouts |
+| `nested-join-tx-serialisation.md` | Per-tx gate must release across external dispatch so depth-2+ nested joined cascades commit atomically instead of deadlocking |
+| `criterion-stoppage-reason.md` | Criteria `reason` field: 400-response delivery + durable audit `data.reason` on automated/skip paths |
+| `scheduled-transitions.md` | Scheduled-transition runtime: arm/cancel atomicity, one-shot criterion, grace-band expiry, explicit-fire reject, audit events, settled-interval reset |
+| `tx-aware-search.md` | In-transaction `Search` is RYW-correct pushdown (no full-model fallback); `trackingRead` opt-in read-set recording; tx-owner co-location requirement |
+| `authcontext-attribution.md` | AuthContext `authtype`/`authid`/`authclaims` contract (`service_account` retired → `service`); attributed/executor pair on change history; attribution semantics for cascade/scheduled/CBD-detached follow-on actions |
+| `431-search-semantics.md` | Type-directed same-type predicate comparison, precise numerics; deliberate divergences (negative-op null handling, mixed object-or-scalar field searchability, meta-temporal coarse-operand upscale); Cloud quirks not replicated (BETWEEN representations/widening/UUID comparator, `Matches` NPE); accepted RE2-vs-Java regex divergence; `searchInStrings` out of scope; pushdown EXACT/SOUND-SUPERSET contract |
+| `direct-search-bounded-or-fail.md` | Direct search is bounded-or-fail on every backend: positive `limit` caps the matched set and fails rather than truncates when exceeded; non-positive `limit` is unbounded and must not be re-defaulted by a plugin; `Offset` is removed; `MergePage` renamed `MergeBounded` |

@@ -90,6 +90,80 @@ type importRequest struct {
 	Workflows   []workflowImportDef `json:"workflows"`
 }
 
+// attachEntityProbe captures the raw-JSON presence of an omitted attachEntity
+// per transition, for both callout shapes that carry one:
+// schedule.function.attachEntity and each processors[].config.attachEntity.
+// The OpenAPI DTOs document these as "Defaults to true", but the SPI decodes
+// them into plain bool fields, which — decoded straight from the request body
+// as workflowImportDef.States does for the whole state graph — collapse
+// "omitted" and "explicit false" to the same zero value. This probe is a
+// second, non-strict decode of the same request body that declares only the
+// field paths needed to recover the distinction; every other field is ignored.
+type attachEntityProbe struct {
+	Workflows []struct {
+		States map[string]struct {
+			Transitions []struct {
+				Schedule *struct {
+					Function *struct {
+						AttachEntity *bool `json:"attachEntity"`
+					} `json:"function"`
+				} `json:"schedule"`
+				Processors []struct {
+					Config struct {
+						AttachEntity *bool `json:"attachEntity"`
+					} `json:"config"`
+				} `json:"processors"`
+			} `json:"transitions"`
+		} `json:"states"`
+	} `json:"workflows"`
+}
+
+// applyAttachEntityDefaults defaults an omitted attachEntity to true for every
+// callout in every transition — schedule.function.attachEntity and each
+// processors[].config.attachEntity — using probe (decoded from the same raw
+// request body) to distinguish omission from an explicit false. workflows and
+// probe.Workflows are index-aligned (both decoded from the same top-level JSON
+// array in the same order); states are matched by map key; transitions and
+// processors within a state are index-aligned (both decoded from the same JSON
+// arrays).
+func applyAttachEntityDefaults(workflows []workflowImportDef, probe attachEntityProbe) {
+	for i, w := range workflows {
+		if i >= len(probe.Workflows) {
+			continue
+		}
+		pwf := probe.Workflows[i]
+		for stateName, state := range w.States {
+			pState, ok := pwf.States[stateName]
+			if !ok {
+				continue
+			}
+			for j := range state.Transitions {
+				if j >= len(pState.Transitions) {
+					continue
+				}
+				// state.Transitions shares its backing array with the stored
+				// StateDefinition, so mutations via tr propagate to the value
+				// the handler goes on to persist.
+				tr := &state.Transitions[j]
+				pTr := pState.Transitions[j]
+				if tr.Schedule != nil && tr.Schedule.Function != nil &&
+					pTr.Schedule != nil && pTr.Schedule.Function != nil &&
+					pTr.Schedule.Function.AttachEntity == nil {
+					tr.Schedule.Function.AttachEntity = true
+				}
+				for k := range tr.Processors {
+					if k >= len(pTr.Processors) {
+						continue
+					}
+					if pTr.Processors[k].Config.AttachEntity == nil {
+						tr.Processors[k].Config.AttachEntity = true
+					}
+				}
+			}
+		}
+	}
+}
+
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
 func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
@@ -123,6 +197,18 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
 		return
 	}
+
+	// Second, non-strict decode of the same bytes to recover the
+	// "attachEntity omitted" signal the strict decode above collapsed into
+	// the SPI's plain-bool AttachEntity zero value (both on
+	// ScheduleFunction and ProcessorConfig). data was already proven valid
+	// JSON matching this shape by the strict decode, so this unmarshal
+	// cannot fail on a well-formed request; ignoring a defensive error here
+	// just leaves every attachEntity un-defaulted, which is the safe
+	// fallback.
+	var probe attachEntityProbe
+	_ = json.Unmarshal(data, &probe)
+	applyAttachEntityDefaults(req.Workflows, probe)
 
 	mode := strings.ToUpper(req.ImportMode)
 	if mode == "" {

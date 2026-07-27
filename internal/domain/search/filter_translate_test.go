@@ -1,10 +1,12 @@
 package search
 
 import (
+	"reflect"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 func TestConditionToFilter_SimpleEquals(t *testing.T) {
@@ -13,7 +15,7 @@ func TestConditionToFilter_SimpleEquals(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "Alice",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatalf("ConditionToFilter: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestConditionToFilter_SimpleNoPrefix(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "Berlin",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +54,7 @@ func TestConditionToFilter_SimpleNestedPath(t *testing.T) {
 		OperatorType: "NOT_EQUAL",
 		Value:        "Berlin",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,11 +84,15 @@ func TestConditionToFilter_AllSimpleOperators(t *testing.T) {
 		{"IS_NULL", spi.FilterIsNull},
 		{"NOT_NULL", spi.FilterNotNull},
 		{"BETWEEN", spi.FilterBetween},
+		{"BETWEEN_INCLUSIVE", spi.FilterBetweenInclusive},
 		{"MATCHES_PATTERN", spi.FilterMatchesRegex},
 		{"IEQUALS", spi.FilterIEq},
 		{"ICONTAINS", spi.FilterIContains},
 		{"ISTARTS_WITH", spi.FilterIStartsWith},
 		{"IENDS_WITH", spi.FilterIEndsWith},
+		{"NOT_CONTAINS", spi.FilterNotContains},
+		{"NOT_STARTS_WITH", spi.FilterNotStartsWith},
+		{"NOT_ENDS_WITH", spi.FilterNotEndsWith},
 	}
 
 	for _, tt := range tests {
@@ -96,7 +102,7 @@ func TestConditionToFilter_AllSimpleOperators(t *testing.T) {
 				OperatorType: tt.op,
 				Value:        "val",
 			}
-			f, err := ConditionToFilter(cond)
+			f, err := ConditionToFilter(cond, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +119,7 @@ func TestConditionToFilter_UnknownOperator(t *testing.T) {
 		OperatorType: "SOME_UNKNOWN_OP",
 		Value:        "val",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +135,7 @@ func TestConditionToFilter_Lifecycle(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "ACTIVE",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +153,27 @@ func TestConditionToFilter_Lifecycle(t *testing.T) {
 	}
 }
 
+// M3b — TestConditionToFilter_PreviousTransitionAlias verifies that a
+// LifecycleCondition naming the "previousTransition" client-facing alias
+// is canonicalized by lifecycleToFilter to the storage-vocabulary path
+// "transitionForLatestSave" (see sortableMetaFields in orderclass.go, the
+// single source of truth for the meta vocabulary). This alias mapping was
+// previously untested at the translator layer.
+func TestConditionToFilter_PreviousTransitionAlias(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field:        "previousTransition",
+		OperatorType: "EQUALS",
+		Value:        "t",
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Path != "transitionForLatestSave" {
+		t.Errorf("Path = %q, want transitionForLatestSave (previousTransition alias canonicalization)", f.Path)
+	}
+}
+
 func TestConditionToFilter_GroupAND(t *testing.T) {
 	cond := &predicate.GroupCondition{
 		Operator: "AND",
@@ -155,7 +182,7 @@ func TestConditionToFilter_GroupAND(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(25)},
 		},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +208,7 @@ func TestConditionToFilter_GroupOR(t *testing.T) {
 			&predicate.SimpleCondition{JsonPath: "$.city", OperatorType: "EQUALS", Value: "Munich"},
 		},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +234,7 @@ func TestConditionToFilter_NestedGroup(t *testing.T) {
 			},
 		},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +254,7 @@ func TestConditionToFilter_Array(t *testing.T) {
 		JsonPath: "$.tags",
 		Values:   []any{"go", nil, "test"},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +288,7 @@ func TestConditionToFilter_ArraySingleValue(t *testing.T) {
 		JsonPath: "$.items",
 		Values:   []any{nil, "only"},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +306,7 @@ func TestConditionToFilter_ArrayAllNil(t *testing.T) {
 		JsonPath: "$.arr",
 		Values:   []any{nil, nil},
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,14 +321,14 @@ func TestConditionToFilter_ArrayAllNil(t *testing.T) {
 
 func TestConditionToFilter_Function(t *testing.T) {
 	cond := &predicate.FunctionCondition{}
-	_, err := ConditionToFilter(cond)
+	_, err := ConditionToFilter(cond, nil)
 	if err == nil {
 		t.Fatal("expected error for FunctionCondition, got nil")
 	}
 }
 
 func TestConditionToFilter_Nil(t *testing.T) {
-	_, err := ConditionToFilter(nil)
+	_, err := ConditionToFilter(nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nil condition, got nil")
 	}
@@ -323,7 +350,7 @@ func TestConditionToFilter_WildcardPath_ReturnsError(t *testing.T) {
 			OperatorType: "EQUALS",
 			Value:        "x",
 		}
-		_, err := ConditionToFilter(cond)
+		_, err := ConditionToFilter(cond, nil)
 		if err == nil {
 			t.Errorf("ConditionToFilter with path %q: expected error (non-pushdownable), got nil", path)
 		}
@@ -340,11 +367,271 @@ func TestConditionToFilter_HyphenatedPath_Accepted(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	f, err := ConditionToFilter(cond)
+	f, err := ConditionToFilter(cond, nil)
 	if err != nil {
 		t.Fatalf("ConditionToFilter with hyphenated path: unexpected error: %v", err)
 	}
 	if f.Path != "some-array.some-object" {
 		t.Errorf("Path = %q, want some-array.some-object", f.Path)
+	}
+}
+
+// TestConditionToFilter_StampsTemporalMeta verifies that a lifecycle
+// condition against a known temporal meta field (creationDate) stamps
+// Filter.Coercion = CoerceTemporal so storage plugins compare it as
+// floored epoch-millis rather than lexicographically.
+func TestConditionToFilter_StampsTemporalMeta(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2021-01-01T00:00:00Z"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Coercion != spi.CoerceTemporal {
+		t.Errorf("creationDate leaf Coercion = %v, want CoerceTemporal", f.Coercion)
+	}
+}
+
+// TestConditionToFilter_DataLeafStampsNone verifies that a data-field leaf
+// without a schema FieldsMap stamps Filter.Coercion = CoerceNone (no
+// classification information available → default, non-temporal comparison).
+func TestConditionToFilter_DataLeafStampsNone(t *testing.T) {
+	c := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "x"}
+	f, _ := ConditionToFilter(c, nil) // no schema → CoerceNone
+	if f.Coercion != spi.CoerceNone {
+		t.Errorf("data leaf Coercion = %v, want CoerceNone", f.Coercion)
+	}
+}
+
+// TestConditionToFilter_SimpleBetween_PopulatesValues verifies that a
+// BETWEEN SimpleCondition (data leaf) populates Filter.Values with the two
+// bounds. Every downstream BETWEEN consumer (spi.evalLeafFilter,
+// postgres/sqlite query planners) reads Filter.Values, not Filter.Value —
+// leaving Values unset means BETWEEN silently never matches.
+func TestConditionToFilter_SimpleBetween_PopulatesValues(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN",
+		Value:        []any{float64(18), float64(65)},
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterBetween {
+		t.Fatalf("Op = %s, want between", f.Op)
+	}
+	if len(f.Values) != 2 {
+		t.Fatalf("Values = %v, want 2-element slice [18, 65]", f.Values)
+	}
+	if f.Values[0] != float64(18) || f.Values[1] != float64(65) {
+		t.Errorf("Values = %v, want [18 65]", f.Values)
+	}
+}
+
+// TestConditionToFilter_LifecycleBetween_PopulatesValues verifies that a
+// BETWEEN LifecycleCondition on a temporal meta field (creationDate)
+// populates Filter.Values with the two bounds AND stamps CoerceTemporal, so
+// storage-plugin BETWEEN pushdown and spi.MatchFilter can actually match.
+func TestConditionToFilter_LifecycleBetween_PopulatesValues(t *testing.T) {
+	c := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "BETWEEN",
+		Value:        []any{"2021-01-01T00:00:00Z", "2021-12-31T00:00:00Z"},
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterBetween {
+		t.Fatalf("Op = %s, want between", f.Op)
+	}
+	if f.Source != spi.SourceMeta {
+		t.Errorf("Source = %s, want meta", f.Source)
+	}
+	if f.Coercion != spi.CoerceTemporal {
+		t.Errorf("Coercion = %v, want CoerceTemporal", f.Coercion)
+	}
+	if len(f.Values) != 2 {
+		t.Fatalf("Values = %v, want 2-element slice", f.Values)
+	}
+	if f.Values[0] != "2021-01-01T00:00:00Z" || f.Values[1] != "2021-12-31T00:00:00Z" {
+		t.Errorf("Values = %v, want [2021-01-01T00:00:00Z 2021-12-31T00:00:00Z]", f.Values)
+	}
+}
+
+// TestConditionToFilter_SimpleBetweenInclusive_PopulatesValues verifies that
+// a BETWEEN_INCLUSIVE SimpleCondition (data leaf) populates Filter.Values
+// with the two bounds, exactly like BETWEEN — both range ops share the same
+// downstream Values contract (spi.evalLeafFilter, postgres/sqlite planners).
+func TestConditionToFilter_SimpleBetweenInclusive_PopulatesValues(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN_INCLUSIVE",
+		Value:        []any{float64(18), float64(65)},
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterBetweenInclusive {
+		t.Fatalf("Op = %s, want between_inclusive", f.Op)
+	}
+	if len(f.Values) != 2 {
+		t.Fatalf("Values = %v, want 2-element slice [18, 65]", f.Values)
+	}
+	if f.Values[0] != float64(18) || f.Values[1] != float64(65) {
+		t.Errorf("Values = %v, want [18 65]", f.Values)
+	}
+}
+
+// TestConditionToFilter_NotContains_RoutesToKernelOp verifies that a
+// NOT_CONTAINS SimpleCondition translates to a spi.Filter with
+// Op: spi.FilterNotContains — NOT a matches_regex leaf. Prior to this fix,
+// NOT_CONTAINS (and the other case-sensitive negatives) fell through
+// mapOperator's default case to FilterMatchesRegex, silently mistranslating
+// the condition into a regex match on Searcher (sqlite/postgres) backends.
+func TestConditionToFilter_NotContains_RoutesToKernelOp(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "NOT_CONTAINS",
+		Value:        "foo",
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Op != spi.FilterNotContains {
+		t.Fatalf("Op = %s, want not_contains (must not fall through to matches_regex)", f.Op)
+	}
+}
+
+// TestConditionToFilter_SimpleBetween_MalformedValue_LeavesValuesNil verifies
+// that a malformed BETWEEN value (not a 2-element []any) leaves Filter.Values
+// nil rather than panicking — validation elsewhere rejects malformed BETWEEN
+// conditions, and a nil Values correctly no-matches downstream.
+func TestConditionToFilter_SimpleBetween_MalformedValue_LeavesValuesNil(t *testing.T) {
+	c := &predicate.SimpleCondition{
+		JsonPath:     "$.age",
+		OperatorType: "BETWEEN",
+		Value:        "not-a-slice",
+	}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Values != nil {
+		t.Errorf("Values = %v, want nil for malformed BETWEEN value", f.Values)
+	}
+}
+
+// TestConditionToFilter_DataLeaf_StampsDeclaredFromFieldsMap verifies that a
+// data-field leaf stamps Filter.Declared from the model's FieldsMap, keyed by
+// the SAME (unstripped) JsonPath that dataCoercion uses — not the "$."-
+// stripped Path stored on the Filter itself.
+func TestConditionToFilter_DataLeaf_StampsDeclaredFromFieldsMap(t *testing.T) {
+	fields := map[string]schema.FieldDescriptor{
+		"$.age": {Path: "$.age", Types: []schema.DataType{schema.Integer, schema.String}},
+	}
+	c := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(1)}
+	f, err := ConditionToFilter(c, fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.Integer, spi.String}
+	if !reflect.DeepEqual(f.Declared, want) {
+		t.Errorf("Declared = %v, want %v", f.Declared, want)
+	}
+}
+
+// TestConditionToFilter_DataLeaf_DeclaredNilWhenUnresolvable verifies that a
+// data-field leaf whose path isn't present in the FieldsMap (or with a nil
+// FieldsMap) leaves Filter.Declared nil rather than panicking.
+func TestConditionToFilter_DataLeaf_DeclaredNilWhenUnresolvable(t *testing.T) {
+	c := &predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "EQUALS", Value: "x"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Declared != nil {
+		t.Errorf("Declared = %v, want nil for unresolvable field", f.Declared)
+	}
+}
+
+// TestConditionToFilter_LifecycleTemporalMeta_StampsDeclaredZonedDateTime
+// verifies that a lifecycle condition on a temporal meta field (creationDate)
+// stamps Filter.Declared = [ZonedDateTime] — the fixed declared type for
+// temporal meta leaves, mirroring the isTemporalMetaField routing that also
+// drives Coercion.
+func TestConditionToFilter_LifecycleTemporalMeta_StampsDeclaredZonedDateTime(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "2021-01-01T00:00:00Z"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.ZonedDateTime}
+	if !reflect.DeepEqual(f.Declared, want) {
+		t.Errorf("Declared = %v, want %v", f.Declared, want)
+	}
+}
+
+// TestConditionToFilter_LifecycleStringMeta_StampsDeclaredString verifies
+// that a lifecycle condition on a non-temporal meta field (state) stamps
+// Filter.Declared = [String].
+func TestConditionToFilter_LifecycleStringMeta_StampsDeclaredString(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "ACTIVE"}
+	f, err := ConditionToFilter(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.String}
+	if !reflect.DeepEqual(f.Declared, want) {
+		t.Errorf("Declared = %v, want %v", f.Declared, want)
+	}
+}
+
+// TestConditionToFilter_Array_StampsDeclaredFromFieldsMap verifies that
+// arrayToFilter's positional-equality leaves stamp Filter.Declared from the
+// array element's FieldsMap entry (recorded under the base path with a
+// trailing "[*]", per schema.ModelNode.FieldsMap's convention).
+func TestConditionToFilter_Array_StampsDeclaredFromFieldsMap(t *testing.T) {
+	fields := map[string]schema.FieldDescriptor{
+		"$.tags[*]": {Path: "$.tags[*]", Types: []schema.DataType{schema.String}, IsArray: true},
+	}
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.tags",
+		Values:   []any{"go", nil, "test"},
+	}
+	f, err := ConditionToFilter(cond, fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []spi.DataType{spi.String}
+	if len(f.Children) != 2 {
+		t.Fatalf("Children count = %d, want 2", len(f.Children))
+	}
+	for i, child := range f.Children {
+		if !reflect.DeepEqual(child.Declared, want) {
+			t.Errorf("Children[%d].Declared = %v, want %v", i, child.Declared, want)
+		}
+	}
+}
+
+// TestConditionToFilter_Array_DeclaredNilWhenUnresolvable verifies that
+// arrayToFilter's positional leaves leave Declared nil when the array's
+// element path is not present in the FieldsMap (e.g. a nil FieldsMap) — the
+// kernel falls back to non-type-directed comparison for such leaves.
+func TestConditionToFilter_Array_DeclaredNilWhenUnresolvable(t *testing.T) {
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.tags",
+		Values:   []any{"go", nil, "test"},
+	}
+	f, err := ConditionToFilter(cond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, child := range f.Children {
+		if child.Declared != nil {
+			t.Errorf("Children[%d].Declared = %v, want nil", i, child.Declared)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -55,11 +56,49 @@ type MessageStore struct {
 	factory *StoreFactory
 }
 
+// blobPath resolves the on-disk path for a message blob and confines it to the
+// store's tenant directory.
+//
+// The message id is caller-supplied through the SPI, and filepath.Join cleans a
+// path without constraining it — a ".." segment escapes blobDir entirely. That
+// matters most for Delete, which removes whatever the path resolves to, but the
+// read and write paths are confined through here too so the invariant holds in
+// one place rather than three. The tenant is folded into the same check because
+// it also reaches the filesystem as a path segment.
+func (s *MessageStore) blobPath(id string) (string, error) {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		return "", fmt.Errorf("invalid message id")
+	}
+	tenant := string(s.tenant)
+	if tenant == "" || tenant == "." || tenant == ".." || strings.ContainsAny(tenant, `/\`) {
+		return "", fmt.Errorf("invalid tenant id")
+	}
+	root := s.factory.blobDir
+	p := filepath.Join(root, tenant, id)
+	rel, err := filepath.Rel(root, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid message id")
+	}
+	return p, nil
+}
+
+// tenantBlobDir is blobPath's directory half, for the write path's MkdirAll.
+func (s *MessageStore) tenantBlobDir() (string, error) {
+	p, err := s.blobPath("placeholder")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(p), nil
+}
+
 func (s *MessageStore) Save(_ context.Context, id string, header spi.MessageHeader, metaData spi.MessageMetaData, payload io.Reader) error {
 	f := s.factory
 
 	// Step 1: Write blob to a temp file OUTSIDE the lock.
-	tenantDir := filepath.Join(f.blobDir, string(s.tenant))
+	tenantDir, err := s.tenantBlobDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(tenantDir, 0755); err != nil {
 		return fmt.Errorf("failed to create tenant blob dir: %w", err)
 	}
@@ -82,7 +121,11 @@ func (s *MessageStore) Save(_ context.Context, id string, header spi.MessageHead
 	}
 
 	// Step 2: Atomic rename to final path (POSIX atomic).
-	blobPath := filepath.Join(tenantDir, id)
+	blobPath, err := s.blobPath(id)
+	if err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
 	if err := os.Rename(tmpPath, blobPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename blob file: %w", err)
@@ -123,7 +166,10 @@ func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi
 		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, spi.ErrNotFound
 	}
 
-	blobPath := filepath.Join(f.blobDir, string(s.tenant), id)
+	blobPath, err := s.blobPath(id)
+	if err != nil {
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, err
+	}
 	file, err := os.Open(blobPath)
 	if err != nil {
 		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, fmt.Errorf("failed to open blob file: %w", err)
@@ -144,8 +190,9 @@ func (s *MessageStore) Delete(_ context.Context, id string) error {
 	f.msgMu.Unlock()
 
 	// Remove blob file outside lock (best-effort).
-	blobPath := filepath.Join(f.blobDir, string(s.tenant), id)
-	os.Remove(blobPath)
+	if blobPath, err := s.blobPath(id); err == nil {
+		os.Remove(blobPath)
+	}
 
 	return nil
 }

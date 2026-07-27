@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/processing/EntityFunctionCalculationRequest.json",
+  "title": "EntityFunctionCalculationRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "Request ID."
+    },
+    "entityId": {
+      "type": "string",
+      "description": "Entity ID.",
+      "format": "uuid"
+    },
+    "functionId": {
+      "type": "string",
+      "description": "Function ID."
+    },
+    "functionName": {
+      "type": "string",
+      "description": "Function name."
+    },
+    "workflow": {
+      "description": "Workflow information.",
+      "$ref": "../common/statemachine/WorkflowInfo.json"
+    },
+    "transition": {
+      "description": "Transition information.",
+      "$ref": "../common/statemachine/TransitionInfo.json"
+    },
+    "transactionId": {
+      "type": "string",
+      "description": "Transaction ID."
+    },
+    "parameters": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Configured parameters, if any."
+    },
+    "payload": {
+      "$ref": "../common/DataPayload.json"
+    }
+  },
+  "required": [
+    "requestId",
+    "entityId",
+    "functionId",
+    "functionName",
+    "workflow"
+  ]
+}

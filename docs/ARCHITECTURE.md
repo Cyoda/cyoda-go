@@ -595,8 +595,8 @@ Three strategy interfaces, each with a default implementation:
       with NO_COMPUTE_MEMBER_FOR_TAG
 
 3. Forward to selected peer:
-   HTTPForwarder.ForwardProcessor(ctx, peer.Addr, request)
-   - POST to http://peer/internal/dispatch/processor
+   HTTPForwarder.ForwardCallout(ctx, peer.Addr, request)
+   - POST to http://peer/internal/dispatch/callout
    - AES-256-GCM AEAD envelope over the request body
      (Content-Type: application/cyoda-dispatch-v1)
    - Peer verifies envelope, decrypts, calls local dispatch, returns result
@@ -606,13 +606,14 @@ Dispatch forwarding reuses a shared `http.Transport` (`MaxIdleConns: 20`,
 `MaxIdleConnsPerHost: 5`, timeout via `CYODA_DISPATCH_FORWARD_TIMEOUT`,
 default 30s) across all peer requests.
 
-**Internal dispatch endpoints:**
+**Internal dispatch endpoint:**
 
 ```
-POST /internal/dispatch/processor
-POST /internal/dispatch/criteria
+POST /internal/dispatch/callout
 ```
 
+- Single route for every callout kind (processor, criteria); `Kind` in the
+  request body discriminates
 - Authenticated via HMAC-SHA256 (same cluster secret)
 - Not exposed through nginx (only `/api/*` is proxied)
 - 10MB max body size
@@ -621,10 +622,10 @@ POST /internal/dispatch/criteria
 **Dispatch request/response types:**
 
 ```go
-type DispatchProcessorRequest struct {
+type DispatchCalloutRequest struct {
+    Kind           string // "processor" or "criteria"
     Entity         json.RawMessage
-    EntityMeta     common.EntityMeta
-    Processor      common.ProcessorDefinition
+    EntityMeta     spi.EntityMeta
     WorkflowName   string
     TransitionName string
     TxID           string
@@ -632,12 +633,20 @@ type DispatchProcessorRequest struct {
     Tags           string
     UserID         string
     Roles          []string
+    TxToken        string
+
+    Processor     *spi.ProcessorDefinition // set when Kind == "processor"
+    Criterion     json.RawMessage          // set when Kind == "criteria"
+    Target        string                   // set when Kind == "criteria"
+    ProcessorName string                   // set when Kind == "criteria"
 }
 
-type DispatchProcessorResponse struct {
-    EntityData json.RawMessage
+type DispatchCalloutResponse struct {
     Success    bool
     Error      string
+    EntityData []byte   // populated for a processor response
+    Matches    *bool    // populated for a criteria response
+    Reason     string   // populated for a criteria response
     Warnings   []string
 }
 ```
@@ -675,7 +684,7 @@ t3a  Node A: Check local MemberRegistry --> not found
 t3b  Node A: Query gossip --> Node B has tag for this tenant
 t3c  Node A: PeerSelector picks Node B (random from candidates)
 t3d  Node A: Mint signed tx-token {NodeID=A, TxRef=tx-123}, attach as cyodatxtoken attribute
-t3e  Node A: HTTPForwarder --> POST Node B /internal/dispatch/processor
+t3e  Node A: HTTPForwarder --> POST Node B /internal/dispatch/callout
 t3f  Node B: Receives forwarded dispatch, finds local member, dispatches via gRPC stream
 t4   Compute: Receives CloudEvent with cyodatxtoken (signed tx-token referencing Node A / tx-123)
 t5   Compute: Executes business logic
@@ -1603,7 +1612,7 @@ Items carried forward from the `cyoda-light-go` predecessor repository. Issues w
 
 **Context:** What protocol to use for cross-node dispatch forwarding.
 
-**Decision:** HTTP POST to `/internal/dispatch/processor` and `/internal/dispatch/criteria`, authenticated and encrypted with AES-256-GCM AEAD (PeerAuth interface, AEADPeerAuth impl). The AEAD key is HKDF-derived from `CYODA_HMAC_SECRET`; the forwarder and handler share a `PeerAuth` seam so a future mTLS-based transport can be swapped in without changing the dispatch logic.
+**Decision:** HTTP POST to `/internal/dispatch/callout` (single route for every callout kind, discriminated by `Kind` in the request body), authenticated and encrypted with AES-256-GCM AEAD (PeerAuth interface, AEADPeerAuth impl). The AEAD key is HKDF-derived from `CYODA_HMAC_SECRET`; the forwarder and handler share a `PeerAuth` seam so a future mTLS-based transport can be swapped in without changing the dispatch logic.
 
 **Rationale:** Reuses the existing HTTP infrastructure. The dispatch payload is a single request-response pair (not a stream), making HTTP a natural fit. AEAD gives integrity + confidentiality + replay resistance (via timestamp skew + nonce cache) in one primitive, closing the plaintext-and-replayable gap the earlier HMAC-on-body design left open. Per-node identity remains cluster-scoped; adding it is a future transport change, not a protocol change.
 

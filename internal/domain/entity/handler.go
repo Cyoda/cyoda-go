@@ -115,6 +115,25 @@ func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, boo
 	return txID, txCtx, true, err
 }
 
+// acquireJoinedGate acquires the per-tx gate for a joined (owned==false) call
+// and installs a suspendable handle on txCtx so the engine can release the gate
+// across a blocking external dispatch (SYNC processor / FUNCTION criterion) and
+// re-acquire it afterward. This generalises the owner's H3 invariant — "never
+// hold the gate across engine.Execute" — to the joined-callback path: without
+// it, a depth-2 cascade (a joined callback whose own SYNC processor drives a
+// further joined write on the same tx) hold-and-waits on the non-reentrant gate
+// and deadlocks until the 30s dispatch timeout.
+//
+// It returns the ctx to pass to engine.Execute and a release func the caller
+// MUST defer. Both the returned release closure and the installed handle alias
+// the same release variable, so a mid-dispatch Suspend/resume that re-acquires
+// the gate is observed by the caller's deferred release.
+func (h *Handler) acquireJoinedGate(txCtx context.Context, txID string) (context.Context, func()) {
+	release := h.gate.Acquire(txID)
+	txCtx, _ = txgate.WithHeld(txCtx, h.gate, txID, &release)
+	return txCtx, func() { release() }
+}
+
 // commitOwned commits the transaction only when this request owns it. For a
 // joined callback (owned==false) the owner is responsible for the commit, so
 // this is a no-op. Callers gate the whole final Save+Commit critical section
@@ -472,10 +491,15 @@ func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, pa
 
 	result := make([]genapi.ModelStatsDto, 0, len(stats))
 	for _, s := range stats {
-		ver, _ := strconv.Atoi(s.ModelVersion)
+		// ParseInt with a 32-bit width: a model version that does not fit in
+		// int32 is reported as 0 rather than silently truncated by a int->int32
+		// conversion. The error is deliberately ignored — a malformed stored
+		// version should not fail the whole statistics response.
+		ver64, _ := strconv.ParseInt(s.ModelVersion, 10, 32)
+		ver := int32(ver64)
 		result = append(result, genapi.ModelStatsDto{
 			ModelName:    s.ModelName,
-			ModelVersion: int32(ver),
+			ModelVersion: ver,
 			Count:        s.Count,
 		})
 	}
@@ -497,10 +521,15 @@ func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Requ
 
 	result := make([]genapi.ModelStateStatsDto, 0, len(stats))
 	for _, s := range stats {
-		ver, _ := strconv.Atoi(s.ModelVersion)
+		// ParseInt with a 32-bit width: a model version that does not fit in
+		// int32 is reported as 0 rather than silently truncated by a int->int32
+		// conversion. The error is deliberately ignored — a malformed stored
+		// version should not fail the whole statistics response.
+		ver64, _ := strconv.ParseInt(s.ModelVersion, 10, 32)
+		ver := int32(ver64)
 		result = append(result, genapi.ModelStateStatsDto{
 			ModelName:    s.ModelName,
-			ModelVersion: int32(ver),
+			ModelVersion: ver,
 			State:        s.State,
 			Count:        s.Count,
 		})
@@ -584,6 +613,12 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 		}
 		if e.HasEntity {
 			entry["transactionId"] = e.TransactionID
+		}
+		if e.AttributedKind != "" {
+			entry["attributedKind"] = e.AttributedKind
+		}
+		if e.Executor.ID != "" {
+			entry["executedBy"] = map[string]any{"id": e.Executor.ID, "kind": string(e.Executor.Kind)}
 		}
 		result = append(result, entry)
 	}

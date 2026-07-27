@@ -10,9 +10,13 @@ see_also:
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
+  - errors.SCAN_BUDGET_EXHAUSTED
   - errors.SEARCH_SHARD_TIMEOUT
   - errors.INVALID_FIELD_PATH
   - errors.CONDITION_TYPE_MISMATCH
+  - errors.INVALID_CONDITION
+  - predicates
+  - workflows
   - openapi
 ---
 
@@ -38,11 +42,13 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 Search operates against a specific entity model `(entityName, modelVersion)`. Two modes are supported:
 
-**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 — values above 10000 are rejected with `400 BAD_REQUEST`.
+**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. Search is bounded-or-fail: `limit` caps the matched set rather than paging it — a matched set larger than `limit` returns `400 SEARCH_RESULT_LIMIT`, never a truncated prefix. The default `limit` when omitted is 1000; the maximum is 10000; values below 1 are rejected with `400 BAD_REQUEST`.
 
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
-Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend. When translation fails (unsupported condition type) or an active transaction is present, the service falls back to in-memory filtering after a full `GetAll` scan.
+Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend — including inside an active transaction, where the pushdown is read-your-own-writes correct against the transaction's own uncommitted writes (see `trackingRead` below and `docs/CONSISTENCY.md` §3c). Only when translation fails (unsupported condition type) does the service fall back to in-memory filtering after a full `GetAll` scan. The pushdown is a narrowing optimization only — the in-process kernel is authoritative for every match decision, so results never diverge by backend.
+
+Operator semantics (type-directed comparison, null handling, LIKE/regex grammar, validation) are documented in the `predicates` topic; workflow and transition criteria use the identical predicate semantics (see `workflows`).
 
 ## CONDITION DSL
 
@@ -64,33 +70,9 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
 - `value`: any JSON scalar
 
-**Valid `operatorType` values** (exhaustive):
-- `EQUALS` — exact equality; numeric-aware (JSON number vs string representation)
-- `NOT_EQUAL` — inequality; inverse of EQUALS
-- `GREATER_THAN` — numeric or lexicographic greater-than
-- `LESS_THAN` — numeric or lexicographic less-than
-- `GREATER_OR_EQUAL` — greater-than or equal
-- `LESS_OR_EQUAL` — less-than or equal
-- `CONTAINS` — substring or array-element containment
-- `NOT_CONTAINS` — inverse of CONTAINS
-- `STARTS_WITH` — string prefix match
-- `NOT_STARTS_WITH` — inverse of STARTS_WITH
-- `ENDS_WITH` — string suffix match
-- `NOT_ENDS_WITH` — inverse of ENDS_WITH
-- `LIKE` — SQL-style LIKE pattern (`%` = any sequence, `_` = any single char)
-- `IS_NULL` — field is absent or JSON null
-- `NOT_NULL` — field is present and not JSON null
-- `BETWEEN` — range check (exclusive bounds); `value` must be a two-element array `[low, high]`
-- `BETWEEN_INCLUSIVE` — range check (inclusive bounds); same `value` shape as BETWEEN
-- `MATCHES_PATTERN` — regular expression match
-- `IEQUALS` — case-insensitive EQUALS
-- `INOT_EQUAL` — case-insensitive NOT_EQUAL
-- `ICONTAINS` — case-insensitive CONTAINS
-- `INOT_CONTAINS` — case-insensitive NOT CONTAINS
-- `ISTARTS_WITH` — case-insensitive STARTS_WITH
-- `INOT_STARTS_WITH` — case-insensitive NOT STARTS_WITH
-- `IENDS_WITH` — case-insensitive ENDS_WITH
-- `INOT_ENDS_WITH` — case-insensitive NOT ENDS_WITH
+**Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]`. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
+
+`IS_CHANGED`/`IS_UNCHANGED` are not supported.
 
 Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
 
@@ -106,9 +88,11 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 ```
 
 - `type`: `"lifecycle"`
-- `field`: `"state"`, `"creationDate"`, or `"previousTransition"`
+- `field`: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`
 - `operatorType` (also accepted as `operator` or `operation`): operator string — same valid values as for `SimpleCondition`
 - `value`: any JSON scalar
+
+`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String operators and `IS_NULL`/`NOT_NULL` carry no type constraint on these fields (they parse any operand and evaluate to a non-match, per `predicates`). An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
 
 **GroupCondition** — combine conditions with a logical operator:
 
@@ -178,7 +162,8 @@ The function is dispatched as `EntityCriteriaCalculationRequest` to the matching
 - `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
   Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
   see `cyoda help crud` ("Point-in-time semantics").
-- `limit` (query, optional): string-encoded integer, maximum 10000 (values above 10000 are rejected with `400 BAD_REQUEST`); default 1000
+- `limit` (query, optional): string-encoded integer, minimum 1, maximum 10000; default 1000
+- `trackingRead` (query, optional): boolean, default `false`. Only meaningful inside an active transaction (see `crud` topic and `docs/CONSISTENCY.md` §3c for the transactional read-set): when `true`, the entities this search returns are recorded into the transaction's read-set, so a concurrent commit touching any of them aborts with `409 Conflict` at commit time. When `false` (default), the search is a plain snapshot read that records nothing — cheap, but it does not protect the returned rows from concurrent writes, and neither setting protects against phantoms (a new entity matching the predicate after the snapshot was taken). Ignored outside a transaction.
 
 Request body: `Condition` JSON document.
 
@@ -326,17 +311,18 @@ Both sync and async search accept one or more `sort` query parameters. Repeat th
 
 Async search results use page-number pagination: `pageNumber=0` is the first page, `offset = pageNumber * pageSize`. `pageNumber` and `pageSize` are both string-encoded integers in query parameters.
 
-Synchronous search does not paginate; use the `limit` parameter (maximum 10000; above rejects `400`) to bound results. For large datasets, use async search with page retrieval.
+Synchronous search neither paginates nor truncates: the matched set must fit within `limit` or the request fails `400 SEARCH_RESULT_LIMIT`. Any result set larger than that — including an ordered top-N over a large model (`sort` plus a small `limit`) — belongs on the async path, which snapshots the full result set and pages over it.
 
 ## ERRORS
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
-- `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
+- `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced on every direct-search code path (Searcher pushdown and in-memory fallback alike). Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
+- `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
-- `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema; the response detail names each offending path
-- `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType
+- `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path
+- `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. a string/pattern operator or a non-timestamp value on a temporal meta field (`creationDate`/`lastUpdateTime`)
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 
 ## EXAMPLES
@@ -425,9 +411,14 @@ curl -s -X PUT \
 - crud
 - models
 - analytics
+- predicates
+- workflows
 - errors.MODEL_NOT_FOUND
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
 - errors.SEARCH_SHARD_TIMEOUT
+- errors.INVALID_FIELD_PATH
+- errors.CONDITION_TYPE_MISMATCH
+- errors.INVALID_CONDITION
 - openapi

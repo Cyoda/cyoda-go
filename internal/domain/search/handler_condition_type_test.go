@@ -129,25 +129,49 @@ func TestSearch_ConditionTypeMatch_DoubleField_Accepted(t *testing.T) {
 	}
 }
 
-// TestSearch_ConditionType_IntegerFieldWithStringValue_Rejects verifies that
-// a STRING condition value against an INTEGER field is rejected.
-func TestSearch_ConditionType_IntegerFieldWithStringValue_Rejects(t *testing.T) {
-	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "stationsInt", 1, `{"station_id": 42}`)
-
+// TestSearch_ConditionType_IntegerFieldWithStringValue verifies parse-based
+// (spec §6) type validation on the operand, in two cases:
+//
+//   - an INTEGER-only field with a non-numeric string operand is REJECTED:
+//     "text-value" parses into no declared type (INTEGER).
+//   - a polymorphic [INTEGER, STRING] field with the same string operand is
+//     ACCEPTED: the operand parses as STRING, one of the declared types.
+func TestSearch_ConditionType_IntegerFieldWithStringValue(t *testing.T) {
 	const condition = `{
 		"type":"simple","jsonPath":"$.station_id","operatorType":"EQUALS","value":"text-value"
 	}`
-	resp := doDirectSearch(t, srv.URL, "stationsInt", 1, condition)
-	defer resp.Body.Close()
-	body := readBody(t, resp)
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("string on int field: expected 400, got %d; body: %s", resp.StatusCode, body)
-	}
-	if !strings.Contains(string(body), "CONDITION_TYPE_MISMATCH") {
-		t.Errorf("body missing CONDITION_TYPE_MISMATCH: %s", body)
-	}
+	t.Run("integer-only field rejects non-numeric string", func(t *testing.T) {
+		srv := newTestServer(t)
+		importAndLockModel(t, srv.URL, "stationsInt", 1, `{"station_id": 42}`)
+
+		resp := doDirectSearch(t, srv.URL, "stationsInt", 1, condition)
+		defer resp.Body.Close()
+		body := readBody(t, resp)
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("string on int field: expected 400, got %d; body: %s", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "CONDITION_TYPE_MISMATCH") {
+			t.Errorf("body missing CONDITION_TYPE_MISMATCH: %s", body)
+		}
+	})
+
+	t.Run("polymorphic int|string field accepts string", func(t *testing.T) {
+		srv := newTestServer(t)
+		// Two samples before lock make station_id polymorphic [INTEGER, STRING].
+		importSample(t, srv.URL, "stationsPoly", 1, `{"station_id": 42}`)
+		importSample(t, srv.URL, "stationsPoly", 1, `{"station_id": "s-1"}`)
+		lockModel(t, srv.URL, "stationsPoly", 1)
+
+		resp := doDirectSearch(t, srv.URL, "stationsPoly", 1, condition)
+		defer resp.Body.Close()
+		body := readBody(t, resp)
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("string on [int,string] field: expected 200 (parses as STRING), got %d; body: %s", resp.StatusCode, body)
+		}
+	})
 }
 
 // TestSearch_ConditionType_UnknownField_Rejected verifies that a search

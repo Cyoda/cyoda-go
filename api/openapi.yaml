@@ -1141,8 +1141,9 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`,
-        `GROUP_CARDINALITY_EXCEEDED`, `NOT_IMPLEMENTED_BY_BACKEND`).
+        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
+        `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`,
+        `SCAN_BUDGET_EXHAUSTED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
         - name: entityName
@@ -1450,7 +1451,8 @@ paths:
 
         - Timestamp when the change occurred
 
-        - User who made the change
+        - User the change is attributed to (and, when present, that
+        principal's kind and the executor that performed it on their behalf)
 
         - Type of change (CREATE, UPDATE, DELETE)
 
@@ -2894,7 +2896,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update. When the transition's criterion evaluates false, `detail` is `transition \"<name>\" criterion not matched: <reason>` — <reason> is the criteria compute node's explanation, or omitted (bare `criterion not matched`) when no reason was supplied."
           content:
             application/problem+json:
               schema:
@@ -7041,12 +7043,26 @@ paths:
         - UI components with real-time search functionality
 
 
+        This endpoint is bounded-or-fail: `limit` caps the matched result
+        set rather than paging it. A matched set larger than `limit` is
+        rejected — never returned as a truncated prefix, because a partial
+        result would be indistinguishable from a complete one. An exact
+        match at `limit` succeeds.
+
+
         Limitations:
 
-        - Maximum result limit: 10000 entities (this will silently limit the
-        result to 10000)
+        - Result limit range: 1-10000 entities (values outside this range,
+        including 0, are rejected with 400 `BAD_REQUEST`)
 
-        - Default result limit: 1000 entities
+        - Default result limit: 1000 entities (applied when `limit` is omitted)
+
+
+        Error responses use RFC 9457 problem+json with the cyoda-go
+        `properties.errorCode` extension. A storage backend that enforces a
+        bounded result set returns 400 `SEARCH_RESULT_LIMIT` when the matched
+        count exceeds `limit`; a non-indexable condition that forces an
+        over-budget residual scan returns 400 `SCAN_BUDGET_EXHAUSTED`.
       operationId: searchEntities
       parameters:
         - name: entityName
@@ -7072,12 +7088,19 @@ paths:
             format: date-time
         - name: limit
           in: query
-          description: "The maximum number of rows to return. Defaults to 1000 if not
-            provided. Values above 10000 are rejected with 400."
+          description: "Caps the matched result set; not a page size. Defaults to
+            1000 if not provided. Accepts 1-10000; values outside this range,
+            including 0, are rejected with 400. A matched set larger than
+            `limit` fails 400 `SEARCH_RESULT_LIMIT` rather than returning a
+            truncated prefix."
           required: false
           schema:
             type: string
-            maximum: 10000
+            # Intentionally stricter than the server: the handler parses this
+            # with strconv.Atoi, which also accepts a leading '+' and leading
+            # zeros ("+5", "007"). The spec pins the canonical 1-10000 shape;
+            # do not loosen the pattern to chase runtime leniency.
+            pattern: "^([1-9][0-9]{0,3}|10000)$"
         - name: sort
           in: query
           description: >
@@ -7094,6 +7117,18 @@ paths:
               type: string
           style: form
           explode: true
+        - name: trackingRead
+          in: query
+          description: >
+            When true and the request runs inside an active transaction, the
+            entities this search returns are recorded into the transaction's
+            read-set so commit-time first-committer-wins validates them.
+            Defaults to false (a plain snapshot read that records nothing).
+            Ignored outside a transaction.
+          required: false
+          schema:
+            type: boolean
+            default: false
       requestBody:
         content:
           application/json:
@@ -9066,7 +9101,9 @@ components:
       properties:
         attachEntity:
           type: boolean
-          description: Whether to attach entity data to the function call
+          default: true
+          description: Whether to attach the full entity payload to the
+            criterion function calculation request. Defaults to true.
         calculationNodesTags:
           type: string
           description: Comma-separated list of calculation node tags
@@ -9776,7 +9813,9 @@ components:
       properties:
         attachEntity:
           type: boolean
-          description: Whether to attach entity data to the function call
+          default: true
+          description: Whether to attach the full entity payload to the
+            processor calculation request. Defaults to true.
         calculationNodesTags:
           type: string
           description: Comma-separated list of calculation node tags
@@ -9943,12 +9982,15 @@ components:
           $ref: "#/components/schemas/TransitionScheduleDto"
           description: |
             Optional scheduling configuration. Presence marks the transition
-            as scheduled — it fires automatically `delayMs` milliseconds
-            after the entity enters the source state. Mutually exclusive
-            with `manual=true`. The runtime scheduler is not yet
-            implemented; until it ships, the engine silently skips
-            scheduled transitions during automated cascade selection, and
-            explicit fires by name return HTTP 400 `TRANSITION_NOT_FOUND`.
+            as scheduled — it fires automatically at a computed time (driven
+            by a coordinator-only background scan loop) rather than by an API
+            call or automated cascade. The firing time comes from either a
+            static `delayMs` or a per-entity `function` callout — see
+            `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
+            Explicit fires of a scheduled transition by name return HTTP 400
+            `TRANSITION_NOT_FOUND` — it is not manually fireable. See
+            `cyoda help workflows` (authoring) and `cyoda help config.scheduler`
+            (runtime tuning).
         criterion:
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
@@ -9964,26 +10006,81 @@ components:
         - manual
         - name
         - next
+    ScheduleFunctionDto:
+      type: object
+      description: |
+        A Function callout that computes a scheduled transition's firing
+        time (and optionally its expiry) per entity, in place of a static
+        `delayMs`. Dispatched like an externalized processor/criterion
+        function: a calculation node selected by `calculationNodesTags`
+        receives the request and returns a result with
+        `resultKind: "Schedule"`.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Name of the registered function to call.
+        resultKind:
+          type: string
+          enum:
+            - Schedule
+          description: |
+            Result-shape discriminator the calculation node must echo back.
+            Only `Schedule` is supported for scheduled-transition timing.
+        calculationNodesTags:
+          type: string
+          description: Comma-separated list of calculation node tags used to
+            select the dispatch target.
+        attachEntity:
+          type: boolean
+          default: true
+          description: Whether to attach entity data to the function call.
+            Defaults to true.
+        context:
+          type: string
+          description: |
+            Pass-through string forwarded verbatim as the `parameters` JSON
+            node of the outgoing calculation request. Empty value causes
+            the `parameters` field to be omitted entirely.
+        responseTimeoutMs:
+          type: integer
+          format: int64
+          description: Response timeout in milliseconds.
+      required:
+        - name
+        - resultKind
+        - calculationNodesTags
     TransitionScheduleDto:
       type: object
       description: |
         Scheduling configuration for an automatic future state transition.
-        Presence of this object marks the parent transition as scheduled.
-        The transition is scheduled to fire at `stateEntryTime + delayMs`
-        (the "scheduledTime"). When the scheduler picks the task up for
-        execution at `executionTime`, it computes `lateness = executionTime
-        - scheduledTime`; if `lateness > timeoutMs` the task is dropped
-        and the transition is NOT attempted. `timeoutMs` gives operators
-        control over how the system should handle backlog or intermittent-
-        offline conditions: short timeoutMs values prefer freshness over
-        eventual execution; absent timeoutMs always eventually fires.
+        Presence of this object marks the parent transition as scheduled, and
+        is mutually exclusive with the parent transition's `manual=true`.
 
-        Mutually exclusive with parent transition's manual=true.
+        The firing time is set one of two mutually exclusive ways — exactly
+        one is required (enforced server-side; not expressible in the OpenAPI
+        schema):
 
-        The runtime that arms and fires the timer is not yet implemented.
-        Until it ships, the engine silently skips scheduled transitions
-        during automated cascade selection, and explicit fires by name are
-        rejected with HTTP 400 TRANSITION_NOT_FOUND.
+          * `delayMs` — a static delay: the transition fires at
+            `scheduledTime = stateEntryTime + delayMs`.
+          * `function` — a per-entity Function callout that computes the
+            firing time (and optionally an expiry) from the entity itself
+            (see `ScheduleFunctionDto`).
+
+        Late-tolerance: when the scheduler picks a due task up at
+        `executionTime`, if `executionTime - scheduledTime > timeoutMs` the
+        task is dropped and the transition is NOT attempted. `timeoutMs` is
+        set directly on a `delayMs` schedule, or derived from a `function`
+        schedule's returned expiry; absent, the task always eventually fires.
+
+        The timer is armed on entry to the source state and re-armed by every
+        write that leaves the entity in that state (the settled-interval
+        semantic), atomically with the entity write — for a `function`
+        schedule, each re-arm re-invokes the callout. Explicit fires of a
+        scheduled transition by name are rejected with HTTP 400
+        `TRANSITION_NOT_FOUND` — it is not manually fireable. See
+        `cyoda help workflows` for full authoring semantics (the `Schedule`
+        result shape, born-expired, and fail-closed dispatch behaviour).
       properties:
         delayMs:
           type: integer
@@ -9993,6 +10090,7 @@ components:
             Delay between source-state entry and the scheduled execution
             time, in milliseconds. Must be a positive integer (zero or
             negative would make this a regular automated transition).
+            Mutually exclusive with `function`.
         timeoutMs:
           type: integer
           format: int64
@@ -10005,8 +10103,12 @@ components:
             whenever the scheduler eventually picks it up. Explicit zero
             is the strictest setting — drop on any lateness. Independent
             of `delayMs`; the two measure different quantities.
-      required:
-        - delayMs
+        function:
+          $ref: "#/components/schemas/ScheduleFunctionDto"
+          description: |
+            Function callout that computes the firing time (and optional
+            expiry) per entity, instead of a static `delayMs`. Mutually
+            exclusive with `delayMs`.
     WorkflowConfigurationDto:
       type: object
       properties:
@@ -10425,6 +10527,12 @@ components:
         - success
     EntityChangeMeta:
       type: object
+      description: |
+        One entry in an entity's change history. `user` is the attributed
+        actor and is always present. `attributedKind` and `executedBy` are
+        present only when attribution was recorded for the change; absent on
+        legacy rows. Typed-but-open: known fields are enumerated, the object
+        is not sealed.
       properties:
         transactionId:
           type: string
@@ -10434,6 +10542,17 @@ components:
           format: date-time
         user:
           type: string
+        attributedKind:
+          type: string
+          description: Kind of the attributed `user` above (e.g. "user", "service", "system"). Absent on legacy rows.
+        executedBy:
+          type: object
+          description: The actual caller that performed the change, independent of attribution. Absent on legacy rows.
+          properties:
+            id:
+              type: string
+            kind:
+              type: string
         changeType:
           type: string
           enum:
@@ -10890,6 +11009,10 @@ components:
                 - PROCESS_NOT_MATCH_CRITERION
                 - PAUSE_FOR_PROCESSING
                 - STATE_PROCESS_RESULT
+                - SCHEDULED_TRANSITION_ARM
+                - SCHEDULED_TRANSITION_FIRE
+                - SCHEDULED_TRANSITION_EXPIRE
+                - SCHEDULED_TRANSITION_CANCEL
             data:
               type: object
               nullable: true
@@ -10897,7 +11020,10 @@ components:
                 Optional event-specific payload. Present for some event types
                 (e.g. STATE_MACHINE_FINISH includes {"success": true},
                 STATE_PROCESS_RESULT includes {"success": false}).
-                Null for most event types.
+                TRANSITION_NOT_MATCH_CRITERION carries
+                {workflowName, transition, criterion, reason} and WORKFLOW_SKIP
+                carries {workflowName, reason}, where reason explains why the
+                criterion blocked the passage. Null for most event types.
               additionalProperties: true
       required:
         - eventType

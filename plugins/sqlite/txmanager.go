@@ -23,10 +23,18 @@ type committedTx struct {
 
 // savepointSnapshot holds a deep copy of transaction state at savepoint time.
 type savepointSnapshot struct {
-	buffer   map[string]*spi.Entity
-	readSet  map[string]bool
-	writeSet map[string]bool
-	deletes  map[string]bool
+	buffer            map[string]*spi.Entity
+	readSet           map[string]bool
+	writeSet          map[string]bool
+	deletes           map[string]bool
+	deleteAttribution map[string]spi.WriteAttribution // paired 1:1 with deletes — see TransactionState godoc
+
+	// scheduledTaskOpsLen is len(transactionManager.scheduledTaskOps[txID]) at
+	// the moment this savepoint was taken. scheduledTaskOps is append-only
+	// (see stageScheduledTaskOp), so — unlike the maps above, which are
+	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
+	// truncating back to this recorded length instead of snapshotting it.
+	scheduledTaskOpsLen int
 }
 
 // transactionManager implements spi.TransactionManager with application-layer
@@ -54,6 +62,20 @@ type transactionManager struct {
 	// Save may carry a different set of keys in its context.
 	// Protected by mu. Cleaned up after commit or rollback.
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
+
+	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
+	// transaction is open (mirrors txUniqueKeys's staging pattern — it
+	// exists because *spi.TransactionState is a shared cyoda-go-spi type
+	// plugins may not add fields to). Applied inside flushToSQLite's single
+	// sqlTx, after the entity buffer/delete flush, so it commits atomically
+	// with the entity write; discarded, never applied, on Rollback and on
+	// every mid-Commit abort path (FCW conflict, flush error). Also
+	// savepoint-scoped like tx.Buffer/ReadSet/WriteSet/Deletes: Savepoint
+	// records the current length and RollbackToSavepoint truncates back to
+	// it, so an op staged after a savepoint that is then rolled back is
+	// discarded too, never orphaned from the entity work it must be atomic
+	// with. Protected by mu. Cleaned up after commit or rollback (no leak).
+	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
 }
 
 // Verify interface compliance at compile time.
@@ -61,13 +83,14 @@ var _ spi.TransactionManager = (*transactionManager)(nil)
 
 func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *transactionManager {
 	return &transactionManager{
-		factory:      factory,
-		uuids:        uuids,
-		active:       make(map[string]*spi.TransactionState),
-		committing:   make(map[string]bool),
-		submitTimes:  make(map[string]time.Time),
-		savepoints:   make(map[string]map[string]savepointSnapshot),
-		txUniqueKeys: make(map[string]map[string][]spi.UniqueKey),
+		factory:          factory,
+		uuids:            uuids,
+		active:           make(map[string]*spi.TransactionState),
+		committing:       make(map[string]bool),
+		submitTimes:      make(map[string]time.Time),
+		savepoints:       make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
+		scheduledTaskOps: make(map[string][]scheduledTaskOp),
 	}
 }
 
@@ -89,6 +112,24 @@ func (m *transactionManager) uniqueKeysFor(txID, entityID string) []spi.UniqueKe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.txUniqueKeys[txID][entityID]
+}
+
+// stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
+// flushToSQLite applies the accumulated ops inside the same sqlTx as the
+// entity buffer flush (atomically with it); every abort path — FCW
+// conflict, flush error, and Rollback — discards them unapplied.
+// Protected by mu.
+func (m *transactionManager) stageScheduledTaskOp(txID string, op scheduledTaskOp) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
+}
+
+// scheduledTaskOpsFor retrieves the ops staged for txID. Protected by mu.
+func (m *transactionManager) scheduledTaskOpsFor(txID string) []scheduledTaskOp {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.scheduledTaskOps[txID]
 }
 
 // seedLastSubmitTime reads the maximum submit_time from entity_versions
@@ -118,12 +159,14 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	nowMicro := m.factory.clock.Now().UnixMicro()
 
 	tx := &spi.TransactionState{
-		ID:       txID,
-		TenantID: uc.Tenant.ID,
-		ReadSet:  make(map[string]bool),
-		WriteSet: make(map[string]bool),
-		Buffer:   make(map[string]*spi.Entity),
-		Deletes:  make(map[string]bool),
+		ID:                txID,
+		TenantID:          uc.Tenant.ID,
+		Origin:            spi.ResolveOrigin(ctx),
+		ReadSet:           make(map[string]bool),
+		WriteSet:          make(map[string]bool),
+		Buffer:            make(map[string]*spi.Entity),
+		Deletes:           make(map[string]bool),
+		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
 
 	// Snapshot time must be at least lastSubmitTime so that the transaction
@@ -229,6 +272,8 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 						delete(m.committing, txID)
 						delete(m.active, txID)
 						delete(m.savepoints, txID)
+						delete(m.txUniqueKeys, txID)
+						delete(m.scheduledTaskOps, txID)
 						return spi.ErrConflict
 					}
 				}
@@ -255,8 +300,15 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		return time.UnixMicro(nowMicro)
 	}()
 
-	// 5. Flush buffer and deletes to SQLite.
-	if err := m.flushToSQLite(ctx, tx, submitTime); err != nil {
+	// 4.5. Snapshot staged ScheduledTaskStore ops for this tx. Safe to read
+	// without extending m.mu across the whole flush: tx.OpMu.Lock (held
+	// since step 1b) blocks every stage() call (which requires
+	// tx.OpMu.RLock) from appending more ops for the duration of Commit,
+	// so the slice is stable once captured here.
+	scheduledOps := m.scheduledTaskOpsFor(txID)
+
+	// 5. Flush buffer, deletes, and staged scheduled-task ops to SQLite.
+	if err := m.flushToSQLite(ctx, tx, submitTime, scheduledOps); err != nil {
 		// On flush failure, clean up the transaction.
 		func() {
 			m.mu.Lock()
@@ -266,6 +318,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.committing, txID)
 			delete(m.savepoints, txID)
 			delete(m.txUniqueKeys, txID)
+			delete(m.scheduledTaskOps, txID)
 		}()
 		// ErrUniqueViolation from claim writes must not be re-classified —
 		// classifyError passes through non-sqlite errors unchanged.
@@ -297,6 +350,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		delete(m.committing, txID)
 		delete(m.savepoints, txID)
 		delete(m.txUniqueKeys, txID)
+		delete(m.scheduledTaskOps, txID)
 		var oldest time.Time
 		for _, activeTx := range m.active {
 			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -328,7 +382,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 
 // flushToSQLite performs the atomic write of the transaction's buffered
 // entities and deletes to SQLite within a single SQLite transaction.
-func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time) error {
+func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time, scheduledOps []scheduledTaskOp) error {
 	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin sqlite tx: %w", err)
@@ -364,23 +418,16 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		}
 
 		var nextVersion int64
-		changeType := "CREATED"
 		createdAtMicro := submitMicro
 		if !isNew {
 			nextVersion = existingVersion.Int64 + 1
-			changeType = "UPDATED"
 			createdAtMicro = existingCreatedAt.Int64
-		}
-
-		// Preserve the entity's change type if explicitly set (e.g. by workflow).
-		if entity.Meta.ChangeType != "" && entity.Meta.ChangeType != "CREATED" && !isNew {
-			changeType = entity.Meta.ChangeType
 		}
 
 		entity.Meta.Version = nextVersion
 		entity.Meta.LastModifiedDate = submitTime
 		entity.Meta.TransactionID = tx.ID
-		entity.Meta.ChangeType = changeType
+		entity.Meta.ChangeType = deriveChangeType(entity.Meta.ChangeType, isNew)
 		entity.Meta.TenantID = tx.TenantID
 		if isNew {
 			entity.Meta.CreationDate = submitTime
@@ -412,7 +459,7 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			tid, entityID,
 			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
 			nextVersion, string(entity.Data), string(metaJSON),
-			changeType, tx.ID, submitMicro,
+			entity.Meta.ChangeType, tx.ID, submitMicro,
 			entity.Meta.ChangeUser)
 		if err != nil {
 			return fmt.Errorf("insert version %s: %w", entityID, err)
@@ -452,13 +499,32 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			return fmt.Errorf("soft delete entity %s: %w", entityID, err)
 		}
 
+		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
+		// stage time (the STAGER's context, under the same OpMu section
+		// that set tx.Deletes[entityID] — see entityStore.Delete/DeleteAll).
+		// Fall back to spi.AttributionFor(ctx) — this Commit call's own
+		// ctx, i.e. the committer — only when no staged entry exists (a
+		// caller that mutated tx.Deletes directly, bypassing EntityStore).
+		// This is what fixes the prior bug: the tombstone's user_id column
+		// was always written as '' — no actor at all, staged or committer.
+		attribution, staged := tx.DeleteAttribution[entityID]
+		if !staged {
+			a, e := spi.AttributionFor(ctx)
+			attribution = spi.WriteAttribution{Attributed: a, Executor: e}
+		}
+		tombstoneMeta, err := marshalTombstoneMeta(attribution.Attributed.Kind, attribution.Executor)
+		if err != nil {
+			return fmt.Errorf("marshal tombstone meta %s: %w", entityID, err)
+		}
+
 		_, err = sqlTx.ExecContext(ctx,
 			`INSERT INTO entity_versions
 			 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
-			 VALUES (?, ?, ?, ?, ?, NULL, NULL, 'DELETED', ?, ?, '')`,
+			 VALUES (?, ?, ?, ?, ?, NULL, jsonb(?), 'DELETED', ?, ?, ?)`,
 			tid, entityID,
 			modelName, modelVersion,
-			nextVersion, tx.ID, submitMicro)
+			nextVersion, string(tombstoneMeta), tx.ID, submitMicro,
+			attribution.Attributed.ID)
 		if err != nil {
 			return fmt.Errorf("insert delete version %s: %w", entityID, err)
 		}
@@ -472,6 +538,16 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		tx.ID, submitMicro)
 	if err != nil {
 		return fmt.Errorf("record submit time: %w", err)
+	}
+
+	// Apply staged ScheduledTaskStore ops. Still inside sqlTx, which is what
+	// makes the scheduled-task arm/cancel commit atomically with the entity
+	// write above (and, symmetrically, why every early-return in this
+	// function rolls the ops back too via the deferred sqlTx.Rollback()).
+	for _, op := range scheduledOps {
+		if err := applyScheduledTaskOp(ctx, sqlTx, op); err != nil {
+			return fmt.Errorf("apply scheduled task op %s: %w", op.id, err)
+		}
 	}
 
 	return sqlTx.Commit()
@@ -507,6 +583,7 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 		delete(m.committing, txID)
 		delete(m.savepoints, txID)
 		delete(m.txUniqueKeys, txID)
+		delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
 	}()
 	return nil
 }
@@ -607,6 +684,10 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 	for k, v := range tx.Deletes {
 		delCopy[k] = v
 	}
+	delAttrCopy := make(map[string]spi.WriteAttribution, len(tx.DeleteAttribution))
+	for k, v := range tx.DeleteAttribution {
+		delAttrCopy[k] = v
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -614,10 +695,12 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 		m.savepoints[txID] = make(map[string]savepointSnapshot)
 	}
 	m.savepoints[txID][spID] = savepointSnapshot{
-		buffer:   bufCopy,
-		readSet:  readCopy,
-		writeSet: writeCopy,
-		deletes:  delCopy,
+		buffer:              bufCopy,
+		readSet:             readCopy,
+		writeSet:            writeCopy,
+		deletes:             delCopy,
+		deleteAttribution:   delAttrCopy,
+		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
 	}
 	return spID, nil
 }
@@ -669,6 +752,17 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	tx.ReadSet = snap.readSet
 	tx.WriteSet = snap.writeSet
 	tx.Deletes = snap.deletes
+	tx.DeleteAttribution = snap.deleteAttribution
+
+	// Truncate staged scheduled-task ops back to the length recorded at the
+	// savepoint — append-only, so truncation (not replacement) is how it is
+	// "restored". Clamp to the current length defensively: rolling back to a
+	// savepoint ID whose recorded length exceeds what's currently staged
+	// cannot happen via the normal linear-nesting flow, but truncating past
+	// slice bounds would panic.
+	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
+		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
+	}
 
 	delete(txSavepoints, savepointID)
 	return nil

@@ -83,6 +83,12 @@ func setup() (*sqliteFixture, func(), error) {
 		"CYODA_STORAGE_BACKEND=sqlite",
 		"CYODA_SQLITE_PATH=" + dbPath,
 		"CYODA_SQLITE_AUTO_MIGRATE=true",
+		// Tuned down from the 1s production default so the
+		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
+		// observe fires within a small, bounded poll window instead of
+		// needing multi-second timeouts. Harmless to every other parity
+		// scenario — an empty ScanDue is a cheap no-op query.
+		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
 	})
 	if err != nil {
 		tmpCleanup()

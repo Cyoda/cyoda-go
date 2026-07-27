@@ -40,7 +40,7 @@ The tree is organized by domain:
 - **`common/statemachine/`** — workflow metadata descriptors: `WorkflowInfo`, `TransitionInfo`, `ProcessorInfo`.
 - **`entity/`** — entity create / update / delete / transition / audit requests and responses.
 - **`model/`** — model snapshot events and management requests.
-- **`processing/`** — compute-member protocol events: `EntityCriteriaCalculationRequest`/`Response`, `EntityProcessorCalculationRequest`/`Response`, `CalculationMemberJoinEvent`, `CalculationMemberGreetEvent`, `EventAckResponse`.
+- **`processing/`** — compute-member protocol events: `EntityCriteriaCalculationRequest`/`Response`, `EntityProcessorCalculationRequest`/`Response`, `EntityFunctionCalculationRequest`/`Response`, `CalculationMemberJoinEvent`, `CalculationMemberGreetEvent`, `EventAckResponse`.
 - **`search/`** — search snapshot lifecycle events.
 
 Every schema carries a `$id` in the form `https://cyoda.com/cloud/event/<relative-path>`. Inter-schema references use relative `$ref` paths (e.g. `../common/BaseEvent.json`) so a materialized filesystem copy resolves out of the box.

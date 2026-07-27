@@ -1,11 +1,17 @@
 package grpc
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // TestEntityStatsByStateGet_UnknownModel_ModelNotFound verifies that
@@ -626,5 +632,254 @@ func TestEntitySearch_SnapshotSearch_OrderBy_InvalidField(t *testing.T) {
 	// No snapshot ID must be issued when submit fails.
 	if typed.Status.SnapshotID != nilUUID {
 		t.Errorf("expected nilUUID for failed submit, got %q", typed.Status.SnapshotID)
+	}
+}
+
+// --- Direct-search omitted-limit default ---
+
+// grpcTenantCtx builds a context with a UserContext, mirroring newTestEnv's
+// shape, for tests that construct a CloudEventsServiceImpl directly over
+// capture stubs rather than via newTestEnv.
+func grpcTenantCtx() context.Context {
+	uc := &spi.UserContext{
+		UserID:   "test-user",
+		UserName: "Test User",
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test Tenant"},
+		Roles:    []string{"ADMIN"},
+	}
+	return spi.WithUserContext(context.Background(), uc)
+}
+
+// saveMinimalModelGRPC registers a minimal model descriptor so
+// EnsureModelRegistered passes.
+func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+	t.Helper()
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// searcherEntityStoreG wraps an EntityStore and implements spi.Searcher,
+// capturing the spi.SearchOptions passed to Search. Mirrors
+// internal/domain/search's searcherEntityStore test helper.
+type searcherEntityStoreG struct {
+	spi.EntityStore
+	searchFn     func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
+	capturedOpts spi.SearchOptions
+}
+
+func (s *searcherEntityStoreG) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	s.capturedOpts = opts
+	return s.searchFn(ctx, filter, opts)
+}
+
+// searcherFactoryG wraps a StoreFactory and returns a Searcher-implementing
+// EntityStore.
+type searcherFactoryG struct {
+	spi.StoreFactory
+	entityStore *searcherEntityStoreG
+}
+
+func (f *searcherFactoryG) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+func TestDirectSearch_OmittedLimitDefaultsTo1000(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "capdef", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
+	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "s-capdef-1",
+		"model":     map[string]any{"name": "capdef", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Alice"},
+		// no "limit"
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if ses.capturedOpts.Limit != 1000 {
+		t.Errorf("gRPC omitted limit → spiLimit %d, want 1000", ses.capturedOpts.Limit)
+	}
+}
+
+func TestDirectSearch_ResultLimitSentinel_ClientError(t *testing.T) {
+	base := memory.NewStoreFactory()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "caperr", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, spi.ErrSearchResultLimitExceeded
+		}}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(&searcherFactoryG{StoreFactory: base, entityStore: ses}, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "s-caperr-1",
+		"model":     map[string]any{"name": "caperr", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Alice"},
+		"limit":     10,
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("want success=false")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" || !strings.Contains(typed.Error.Message, common.ErrCodeSearchResultLimit) {
+		t.Errorf("got code=%q msg=%q, want CLIENT_ERROR / contains %s", typed.Error.Code, typed.Error.Message, common.ErrCodeSearchResultLimit)
+	}
+}
+
+// TestDirectSearch_ScanBudgetExhausted_ClientError mirrors
+// TestDirectSearch_ResultLimitSentinel_ClientError but for the scan-budget
+// sentinel: a stub Searcher returning spi.ErrScanBudgetExhausted must
+// surface through the gRPC envelope as CLIENT_ERROR with a message
+// containing SCAN_BUDGET_EXHAUSTED, exactly like SEARCH_RESULT_LIMIT does
+// for its sentinel.
+func TestDirectSearch_ScanBudgetExhausted_ClientError(t *testing.T) {
+	base := memory.NewStoreFactory()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "capscan", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, spi.ErrScanBudgetExhausted
+		}}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(&searcherFactoryG{StoreFactory: base, entityStore: ses}, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "s-capscan-1",
+		"model":     map[string]any{"name": "capscan", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.val", "operatorType": "MATCHES_PATTERN", "value": ".*"},
+		"limit":     10,
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("want success=false")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" || !strings.Contains(typed.Error.Message, common.ErrCodeScanBudgetExhausted) {
+		t.Errorf("got code=%q msg=%q, want CLIENT_ERROR / contains %s", typed.Error.Code, typed.Error.Message, common.ErrCodeScanBudgetExhausted)
+	}
+}
+
+// --- Direct-search non-positive limit ---
+
+// directSearchOpt mutates the raw EntitySearchRequest field map built by
+// directSearch before it is sent, letting individual tests override the
+// default request (e.g. to set a specific limit).
+type directSearchOpt func(fields map[string]any)
+
+// withLimit sets the request's "limit" field to n.
+func withLimit(n int) directSearchOpt {
+	return func(fields map[string]any) { fields["limit"] = n }
+}
+
+// directSearch issues an EntitySearchRequest against a fresh in-memory
+// model/store (a Searcher stub that, if reached, returns a single matching
+// entity — so a request that's accepted produces a real envelope on the
+// stream, not a silently-empty one) and returns the decoded
+// EntityResponseJson from the stream. Mirrors the setup shared by
+// TestDirectSearch_OmittedLimitDefaultsTo1000 and
+// TestDirectSearch_ResultLimitSentinel_ClientError above.
+func directSearch(t *testing.T, opts ...directSearchOpt) *events.EntityResponseJson {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "capnonpos", ModelVersion: "1"}
+	saveMinimalModelGRPC(t, ctx, base, ref)
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStoreG{EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			now := time.Now()
+			return []*spi.Entity{{
+				Meta: spi.EntityMeta{
+					ID:               "alice-1",
+					ModelRef:         ref,
+					State:            "NEW",
+					CreationDate:     now,
+					LastModifiedDate: now,
+				},
+				Data: []byte(`{"name":"Alice"}`),
+			}}, nil
+		}}
+	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	fields := map[string]any{
+		"id":        "s-capnonpos-1",
+		"model":     map[string]any{"name": "capnonpos", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Alice"},
+	}
+	for _, o := range opts {
+		o(fields)
+	}
+
+	ce := makeCE(EntitySearchRequest, fields)
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected a response on the stream, got none")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	return &typed
+}
+
+// gRPC validated neither bound on limit, so limit:-1 reached the SPI as
+// Limit 0 — an unbounded search. HTTP has always rejected negatives; gRPC
+// must too, or the compute-node transport is a cap bypass.
+func TestDirectSearch_NonPositiveLimit_ClientError(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		resp := directSearch(t, withLimit(limit))
+		if resp.Success {
+			t.Fatalf("limit=%d: got Success=true, want a client error", limit)
+		}
+		if resp.Error.Code != "CLIENT_ERROR" {
+			t.Fatalf("limit=%d: got Error.Code %q, want CLIENT_ERROR", limit, resp.Error.Code)
+		}
+	}
+}
+
+// limit=1 is the smallest legal value and must succeed, not be rejected —
+// pins the accepted side of the boundary TestDirectSearch_NonPositiveLimit_ClientError
+// exercises from the other side. Without this, a future limit<1 -> limit<=1
+// typo would silently reject every single-result gRPC search while every
+// existing test (including Task 10's e2e at-limit case, which uses limit=2)
+// stayed green.
+func TestDirectSearch_LimitOneAccepted(t *testing.T) {
+	resp := directSearch(t, withLimit(1))
+	if !resp.Success {
+		t.Fatalf("limit=1: got Success=false (Error=%+v), want a successful search", resp.Error)
 	}
 }

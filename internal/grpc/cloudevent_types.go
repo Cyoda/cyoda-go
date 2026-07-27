@@ -15,6 +15,9 @@ const (
 	EntityCriteriaCalculationRequest  = "EntityCriteriaCalculationRequest"
 	EntityCriteriaCalculationResponse = "EntityCriteriaCalculationResponse"
 
+	EntityFunctionCalculationRequest  = "EntityFunctionCalculationRequest"
+	EntityFunctionCalculationResponse = "EntityFunctionCalculationResponse"
+
 	EventAckResponse = "EventAckResponse"
 )
 

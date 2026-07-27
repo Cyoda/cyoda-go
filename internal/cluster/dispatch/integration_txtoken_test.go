@@ -43,11 +43,23 @@ func (d *capturingLocalDispatcher) DispatchCriteria(
 	_ *spi.Entity,
 	_ json.RawMessage,
 	_, _, _, _, _ string,
-) (bool, error) {
+) (bool, string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.capturedCtx = ctx
-	return d.matches, nil
+	return d.matches, "", nil
+}
+
+func (d *capturingLocalDispatcher) DispatchFunction(
+	ctx context.Context,
+	_ *spi.Entity,
+	_ spi.ScheduleFunction,
+	_, _, _ string,
+) (contract.FunctionResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.capturedCtx = ctx
+	return contract.FunctionResult{}, nil
 }
 
 func (d *capturingLocalDispatcher) captured() context.Context {
@@ -157,7 +169,7 @@ func TestIntegration_HandlerReinjectsTxToken_Criteria(t *testing.T) {
 	d := NewClusterDispatcher(nodeALocal, registry, "node-A", selector, forwarder, 2*time.Second, signer, time.Minute)
 
 	const txID = "tx-token-integration-crit"
-	matches, err := d.DispatchCriteria(testContext(), testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", txID)
+	matches, _, err := d.DispatchCriteria(testContext(), testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", txID)
 	if err != nil {
 		t.Fatalf("DispatchCriteria: %v", err)
 	}

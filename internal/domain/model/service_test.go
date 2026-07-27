@@ -126,6 +126,9 @@ func (f *fakeStoreFactory) StateMachineAuditStore(_ context.Context) (spi.StateM
 func (f *fakeStoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
 	return nil, errUnused
 }
+func (f *fakeStoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, errUnused
+}
 func (f *fakeStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, errUnused
 }

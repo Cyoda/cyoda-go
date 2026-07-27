@@ -2257,6 +2257,17 @@ paths:
                 transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: >
+            Bad request — TRANSITION_NOT_FOUND: named transition absent from
+            the model; WORKFLOW_FAILED: workflow processor rejected the
+            update. When the transition's criterion evaluates false, `detail`
+            is `transition "<name>" criterion not matched: <reason>`
+            (`<reason>` omitted when the criteria compute node supplied none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /entity/{format}/{entityName}/{modelVersion}:
     post:
       tags:
@@ -9230,7 +9241,11 @@ components:
               description: Name of the criterion that was not matched
             reason:
               type: string
-              description: Reason why the criterion was not matched
+              description: >
+                Why the criterion blocked the passage: the criteria compute
+                node's explanation, or "criterion did not match" when none was
+                supplied. Present on events recorded since this field was
+                introduced; older audit events omit it.
       required:
         - criterion
         - transition
@@ -9289,9 +9304,13 @@ components:
               description: Name of the workflow that was skipped
             reason:
               type: string
-              description: Reason for skipping the workflow
+              description: >
+                Why the workflow-selection criterion blocked the workflow: the
+                criteria compute node's explanation, or "criterion did not
+                match" when none was supplied. Present on events recorded since
+                this field was introduced; older audit events omit it.
       required:
-        - reason
+        - workflowName
         - workflowName
     StateProcessIdDto:
       type: object

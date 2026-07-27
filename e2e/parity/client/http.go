@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1160,7 +1161,19 @@ func (c *Client) GetEntityStatsRaw(t *testing.T) (int, error) {
 // non-2xx. Used for negative-path discover-and-compare.
 func (c *Client) SyncSearchRaw(t *testing.T, modelName string, modelVersion int, condition string) (int, []byte, error) {
 	t.Helper()
+	return c.SyncSearchRawLimit(t, modelName, modelVersion, condition, -1)
+}
+
+// SyncSearchRawLimit is SyncSearchRaw with the `limit` query param set, so a
+// negative-path assertion can see the status and problem body a bounded
+// search produces. limit < 0 omits the param entirely (the "client omitted
+// it" case).
+func (c *Client) SyncSearchRawLimit(t *testing.T, modelName string, modelVersion int, condition string, limit int) (int, []byte, error) {
+	t.Helper()
 	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	if limit >= 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)
@@ -1244,6 +1257,25 @@ func (c *Client) SyncSearchSorted(t *testing.T, modelName string, modelVersion i
 	return decodeEntityResultNDJSON(raw)
 }
 
+// SyncSearchSortedLimit is like SyncSearchSorted but also sets the `limit`
+// query param, so the server applies the LIMIT to the sorted result set. Used
+// to prove that a pushed page (LIMIT on a sorted query) is byte-identical
+// across backends.
+func (c *Client) SyncSearchSortedLimit(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string, limit int) ([]EntityResult, error) {
+	t.Helper()
+	vals := url.Values{}
+	vals.Set("limit", strconv.Itoa(limit))
+	for _, k := range sortKeys {
+		vals.Add("sort", k)
+	}
+	path := fmt.Sprintf("/api/search/direct/%s/%d?%s", modelName, modelVersion, vals.Encode())
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntityResultNDJSON(raw)
+}
+
 // SyncSearchSortedAt is like SyncSearchSorted but also adds a pointInTime
 // query parameter so the search operates on the snapshot at the given instant.
 func (c *Client) SyncSearchSortedAt(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string, at time.Time) ([]EntityResult, error) {
@@ -1305,6 +1337,16 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 		return EntityAuditEventsResponse{}, err
 	}
 	return resp, nil
+}
+
+// SetLogLevel issues POST /api/admin/log-level to change the target node's
+// runtime log level (e.g. "debug", "info"). Requires a ROLE_ADMIN token.
+// Used by cross-node scenarios that need a peer node to emit its (Debug-level)
+// scheduled-fire log lines so a test can positively assert peer execution.
+func (c *Client) SetLogLevel(t *testing.T, level string) error {
+	t.Helper()
+	_, err := c.doJSON(t, http.MethodPost, "/api/admin/log-level", map[string]string{"level": level}, nil)
+	return err
 }
 
 // DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version},

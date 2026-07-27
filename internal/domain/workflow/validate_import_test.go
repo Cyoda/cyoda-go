@@ -457,8 +457,11 @@ func TestValidator_DelayMsZero_Rejected(t *testing.T) {
 		},
 	}
 	err := validateImportRequest([]spi.WorkflowDefinition{wf})
-	if err == nil || !strings.Contains(err.Error(), "delayMs must be > 0") {
-		t.Errorf("expected delayMs error, got: %v", err)
+	// DelayMs=0 is falsy under hasDelay := DelayMs > 0, and no function is
+	// set, so this is the "neither present" XOR shape, not a dedicated
+	// delayMs<=0 message — see the delayMs XOR rework in validate.go.
+	if err == nil || !strings.Contains(err.Error(), "exactly one of schedule.delayMs or schedule.function is required") {
+		t.Errorf("expected delayMs/function XOR error, got: %v", err)
 	}
 }
 
@@ -482,8 +485,10 @@ func TestValidator_DelayMsNegative_Rejected(t *testing.T) {
 		},
 	}
 	err := validateImportRequest([]spi.WorkflowDefinition{wf})
-	if err == nil || !strings.Contains(err.Error(), "delayMs must be > 0") {
-		t.Errorf("expected delayMs error, got: %v", err)
+	// DelayMs=-100 is also falsy under hasDelay := DelayMs > 0 — same XOR
+	// shape as the zero case above.
+	if err == nil || !strings.Contains(err.Error(), "exactly one of schedule.delayMs or schedule.function is required") {
+		t.Errorf("expected delayMs/function XOR error, got: %v", err)
 	}
 }
 
@@ -542,6 +547,173 @@ func TestValidator_ScheduleHappyPaths(t *testing.T) {
 				t.Errorf("expected acceptance for shape %q; got: %v", tc.name, err)
 			}
 		})
+	}
+}
+
+// --- Schedule.Function — delayMs XOR function -----------------------------
+//
+// TransitionScheduleDto documents that exactly one of `delayMs` or
+// `function` must be present. Function-only schedules must NOT be rejected
+// by the delayMs<=0 rule (the R2-B2 regression this suite guards against).
+
+func validFunctionSchedule() *spi.TransitionSchedule {
+	return &spi.TransitionSchedule{
+		Function: &spi.ScheduleFunction{
+			Name:                 "computeNextFireTime",
+			ResultKind:           "Schedule",
+			CalculationNodesTags: "billing",
+		},
+	}
+}
+
+func TestValidator_FunctionAndDelayMsBothSet_Rejected(t *testing.T) {
+	sch := validFunctionSchedule()
+	sch.DelayMs = 1000
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "exactly one of schedule.delayMs or schedule.function is required") {
+		t.Errorf("expected delayMs/function XOR error, got: %v", err)
+	}
+}
+
+func TestValidator_FunctionAndManual_Rejected(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: true, Schedule: validFunctionSchedule()},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "manual and scheduled are mutually exclusive") {
+		t.Errorf("expected manual+schedule error, got: %v", err)
+	}
+}
+
+// TestValidator_FunctionOnly_Accepted is the key regression guard: a
+// function-only schedule (no delayMs) must be ACCEPTED. Before this rework,
+// the unconditional `schedule.delayMs <= 0` check at :341 rejected every
+// function-only schedule because DelayMs is the zero value when unset.
+func TestValidator_FunctionOnly_Accepted(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: validFunctionSchedule()},
+				},
+			},
+		},
+	}
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Errorf("expected function-only schedule to be accepted, got: %v", err)
+	}
+}
+
+func TestValidator_NeitherDelayMsNorFunction_Rejected(t *testing.T) {
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: &spi.TransitionSchedule{}},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "exactly one of schedule.delayMs or schedule.function is required") {
+		t.Errorf("expected delayMs/function XOR error, got: %v", err)
+	}
+}
+
+func TestValidator_FunctionResultKindNotSchedule_Rejected(t *testing.T) {
+	sch := validFunctionSchedule()
+	sch.Function.ResultKind = "Bogus"
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), `schedule.function.resultKind must be "Schedule"`) {
+		t.Errorf("expected resultKind error, got: %v", err)
+	}
+}
+
+func TestValidator_FunctionMissingName_Rejected(t *testing.T) {
+	sch := validFunctionSchedule()
+	sch.Function.Name = ""
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "schedule.function requires name and calculationNodesTags") {
+		t.Errorf("expected missing name/tags error, got: %v", err)
+	}
+}
+
+func TestValidator_FunctionMissingCalculationNodesTags_Rejected(t *testing.T) {
+	sch := validFunctionSchedule()
+	sch.Function.CalculationNodesTags = ""
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "schedule.function requires name and calculationNodesTags") {
+		t.Errorf("expected missing name/tags error, got: %v", err)
 	}
 }
 

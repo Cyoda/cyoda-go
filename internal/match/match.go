@@ -12,18 +12,32 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
-// Match evaluates a predicate.Condition against entity data and metadata, returning
-// true if the entity satisfies the condition.
-func Match(condition predicate.Condition, entityData []byte, entityMeta spi.EntityMeta) (bool, error) {
+// FieldTypes resolves a condition's JSONPath (in "$."-prefixed FieldsMap key
+// form, with "[*]" marking array-wildcard hops) to the field's declared model
+// DataTypes. It is the plumbing that makes the predicate-tree evaluator
+// type-directed, exactly like the search pushdown: a temporal data field whose
+// stored JSON is an ISO string is only known to compare temporally (not
+// lexically) because the model declares its type here.
+//
+// A nil FieldTypes, or a lookup that returns nil for an unknown/untyped path,
+// is tolerated: comparison/range leaves on that path degrade to non-match
+// (they cannot be typed), while string and null-test leaves are unaffected.
+type FieldTypes func(jsonPath string) []spi.DataType
+
+// Match evaluates a predicate.Condition against entity data and metadata,
+// returning true if the entity satisfies the condition. fieldTypes supplies
+// the declared model types for data leaves; pass nil when no model is
+// available (comparison leaves then non-match, string/null leaves still work).
+func Match(condition predicate.Condition, entityData []byte, entityMeta spi.EntityMeta, fieldTypes FieldTypes) (bool, error) {
 	switch c := condition.(type) {
 	case *predicate.SimpleCondition:
-		return matchSimple(c, entityData)
+		return matchSimple(c, entityData, fieldTypes)
 	case *predicate.LifecycleCondition:
 		return matchLifecycle(c, entityMeta)
 	case *predicate.GroupCondition:
-		return matchGroup(c, entityData, entityMeta)
+		return matchGroup(c, entityData, entityMeta, fieldTypes)
 	case *predicate.ArrayCondition:
-		return matchArray(c, entityData)
+		return matchArray(c, entityData, fieldTypes)
 	case *predicate.FunctionCondition:
 		return false, fmt.Errorf("function conditions not implemented")
 	default:
@@ -59,26 +73,53 @@ func convertJSONPath(jsonPath string) string {
 	return path
 }
 
-func matchSimple(c *predicate.SimpleCondition, data []byte) (bool, error) {
+// arrayElementFieldPath returns the FieldsMap key that addresses an
+// ArrayCondition's element type. ArrayCondition names a container path
+// ("$.tags"); the model records the element type under the same path with a
+// trailing "[*]" ("$.tags[*]"), mirroring search.arrayElementPath so the
+// predicate evaluator and the search pushdown stamp the same declared types on
+// positional array leaves.
+func arrayElementFieldPath(raw string) string {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "$") {
+		p = "$." + p
+	}
+	if strings.HasSuffix(p, "[*]") {
+		return p
+	}
+	return p + "[*]"
+}
+
+func matchSimple(c *predicate.SimpleCondition, data []byte, fieldTypes FieldTypes) (bool, error) {
 	path := convertJSONPath(c.JsonPath)
 	result := gjson.GetBytes(data, path)
+
+	var declared []spi.DataType
+	if fieldTypes != nil {
+		declared = fieldTypes(c.JsonPath)
+	}
 
 	// If the path produced an array result (from # wildcard), check if ANY
 	// element matches for applicable operators.
 	if result.IsArray() {
-		return matchArrayWildcard(c.OperatorType, result, c.Value)
+		return matchArrayWildcard(c.OperatorType, result, c.Value, declared)
 	}
 
-	return applyOperator(c.OperatorType, result, c.Value)
+	return applyOperator(c.OperatorType, result, c.Value, declared)
 }
 
-// matchArrayWildcard checks if any element in an array result matches the operator.
-func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected any) (bool, error) {
+// matchArrayWildcard checks if any element in an array result matches the
+// operator. declared is the array element's declared type set (the wildcard
+// path is itself the FieldsMap key, e.g. "$.laureates[*].motivation").
+func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected any, declared []spi.DataType) (bool, error) {
 	var lastErr error
 	matched := false
 
 	arrayResult.ForEach(func(_, value gjson.Result) bool {
-		ok, err := applyOperator(operatorType, value, expected)
+		ok, err := applyOperator(operatorType, value, expected, declared)
 		if err != nil {
 			lastErr = err
 			return false // stop iteration
@@ -96,32 +137,95 @@ func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected 
 	return matched, nil
 }
 
+// matchLifecycle evaluates a lifecycle (meta) condition. Field routing is
+// identity-driven, never operand-driven: creationDate/lastUpdateTime always
+// compare chronologically via the temporal kernel branch (declared
+// ZonedDateTime) regardless of operator, and the remaining canonical meta
+// fields compare as declared strings via the same kernel. See spec §6.3-§6.5
+// (temporal-search-filters design) for the canonical vocabulary and the
+// rationale for unconditional field-identity routing.
 func matchLifecycle(c *predicate.LifecycleCondition, meta spi.EntityMeta) (bool, error) {
-	var fieldValue string
+	field := c.Field
+	if field == "previousTransition" {
+		field = "transitionForLatestSave"
+	}
 
-	switch c.Field {
-	case "state":
-		fieldValue = meta.State
+	switch field {
 	case "creationDate":
-		fieldValue = meta.CreationDate.Format(time.RFC3339Nano)
-	case "previousTransition", "transitionForLatestSave":
-		fieldValue = meta.TransitionForLatestSave
+		return matchTemporalMeta(c.OperatorType, meta.CreationDate, c.Value)
+	case "lastUpdateTime":
+		return matchTemporalMeta(c.OperatorType, meta.LastModifiedDate, c.Value)
+	case "state":
+		return applyStringLifecycle(c, meta.State)
+	case "transitionForLatestSave":
+		return applyStringLifecycle(c, meta.TransitionForLatestSave)
+	case "transactionId":
+		return applyStringLifecycle(c, meta.TransactionID)
+	case "id":
+		return applyStringLifecycle(c, meta.ID)
 	default:
 		return false, fmt.Errorf("unknown lifecycle field: %s", c.Field)
 	}
-
-	// Wrap the field value in a gjson.Result for uniform operator dispatch.
-	fakeJSON := fmt.Sprintf(`{"v":%q}`, fieldValue)
-	result := gjson.Get(fakeJSON, "v")
-
-	return applyOperator(c.OperatorType, result, c.Value)
 }
 
-func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (bool, error) {
+// applyStringLifecycle evaluates a string-valued meta field: wrap the value in
+// a gjson document and route it through the kernel with a declared String
+// type, so meta string comparison shares the one comparison core with data
+// leaves and the search pushdown.
+func applyStringLifecycle(c *predicate.LifecycleCondition, value string) (bool, error) {
+	fakeJSON := fmt.Sprintf(`{"v":%q}`, value)
+	result := gjson.Get(fakeJSON, "v")
+	return applyOperator(c.OperatorType, result, c.Value, []spi.DataType{spi.String})
+}
+
+// matchTemporalMeta compares a stored meta time.Time chronologically against
+// the condition operand(s) via the kernel. The stored instant is bridged to a
+// gjson.Result (an RFC3339 string from json.Marshal) and evaluated with a
+// declared ZonedDateTime type, so meta temporal comparison shares the single
+// EvalLeaf kernel with data-field temporal comparison. A zero-value time
+// (unset) bridges to an absent Result: IS_NULL matches, every binary op
+// (including NOT_EQUAL) non-matches under the kernel's null uniformity.
+func matchTemporalMeta(op string, stored time.Time, value any) (bool, error) {
+	// A temporal field admits only comparison / range / null operators. A
+	// non-comparison operator (e.g. CONTAINS) is invalid on a temporal field
+	// and degrades to non-match here — it must NOT lexically substring-match the
+	// formatted RFC3339 string. Validated entry points reject these operators up
+	// front; this guard keeps the unvalidated in-process path safe.
+	if !isTemporalOperator(op) {
+		return false, nil
+	}
+	var result gjson.Result
+	if !stored.IsZero() {
+		b, err := json.Marshal(stored)
+		if err != nil {
+			return false, nil
+		}
+		result = gjson.ParseBytes(b)
+	}
+	return applyOperator(op, result, value, []spi.DataType{spi.ZonedDateTime})
+}
+
+// isTemporalOperator reports whether op is a valid operator on a temporal
+// field: the six comparisons, the two range ops, and the two null tests.
+// String operators are excluded so a temporal field never substring-matches
+// its formatted representation.
+func isTemporalOperator(op string) bool {
+	switch op {
+	case "EQUALS", "NOT_EQUAL",
+		"GREATER_THAN", "LESS_THAN", "GREATER_OR_EQUAL", "LESS_OR_EQUAL",
+		"BETWEEN", "BETWEEN_INCLUSIVE",
+		"IS_NULL", "NOT_NULL":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta, fieldTypes FieldTypes) (bool, error) {
 	switch c.Operator {
 	case "AND":
 		for _, child := range c.Conditions {
-			ok, err := Match(child, data, meta)
+			ok, err := Match(child, data, meta, fieldTypes)
 			if err != nil {
 				return false, err
 			}
@@ -133,7 +237,7 @@ func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (
 
 	case "OR":
 		for _, child := range c.Conditions {
-			ok, err := Match(child, data, meta)
+			ok, err := Match(child, data, meta, fieldTypes)
 			if err != nil {
 				return false, err
 			}
@@ -148,8 +252,13 @@ func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (
 	}
 }
 
-func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
+func matchArray(c *predicate.ArrayCondition, data []byte, fieldTypes FieldTypes) (bool, error) {
 	basePath := convertJSONPath(c.JsonPath)
+
+	var declared []spi.DataType
+	if fieldTypes != nil {
+		declared = fieldTypes(arrayElementFieldPath(c.JsonPath))
+	}
 
 	for i, expected := range c.Values {
 		if expected == nil {
@@ -159,11 +268,12 @@ func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 		elemPath := fmt.Sprintf("%s.%d", basePath, i)
 		result := gjson.GetBytes(data, elemPath)
 
-		// Delegate to opEquals: it handles numeric-aware comparison
-		// (gjson.Number actual + numeric expected) consistently with
-		// scalar EQUALS, so per-element semantics don't diverge from
-		// scalar EQUALS.
-		if !result.Exists() || !opEquals(result, expected) {
+		// Each positional value is an equality check on the array element,
+		// routed through the kernel so numeric/type-directed semantics match
+		// scalar EQUALS and the search pushdown's arrayToFilter. A missing
+		// element (absent Result) non-matches under the kernel's null rule.
+		ok, err := applyOperator("EQUALS", result, expected, declared)
+		if err != nil || !ok {
 			return false, nil
 		}
 	}
@@ -173,317 +283,19 @@ func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 
 // --- spi.Filter-based evaluation (used by Iterable/GroupedAggregator/streaming-tally) ---
 //
-// The helpers below mirror plugins/sqlite/post_filter.go semantics so that an
-// in-process evaluator (memory Iterate, residual post-filter, streaming tally)
-// produces bit-identical results to the sqlite backend's post-filter step.
-// Drift between the two would silently change grouped-stats results across
-// backends — see e2e/parity/MatchFilterSqliteEvaluateFilterParity (the smoke
-// test that pins this contract).
+// MatchFilter delegates to spi.MatchFilter, the canonical evaluator shared
+// with plugins/sqlite's post-filter step. Keeping a single implementation
+// (rather than a duplicate copy in this package) is what prevents drift
+// between the in-process evaluator (memory Iterate, residual post-filter,
+// streaming tally) and the sqlite backend's post-filter — see
+// e2e/parity/MatchFilterSqliteEvaluateFilterParity (the smoke test that pins
+// this contract) and TestMatchFilter_SqliteParity_Smoke.
 
 // MatchFilter evaluates an spi.Filter against an entity. Filter is the
 // pushdown-friendly subset of predicate.Condition used by GroupedAggregator,
 // Iterable, and the existing Searcher. Used by the memory plugin's Iterate
 // to apply filters inside Next() and by the streaming-tally path when a
 // pushdown leaves a residual.
-//
-// A zero-value filter (no Op) matches everything. An explicit empty AND
-// (Op = FilterAnd with no children) is the AND identity (true). An explicit
-// empty OR is the OR identity (false).
-//
-// Unlike Match, MatchFilter does not return an error. The pushdown contract
-// guarantees ops are well-formed before they reach here; an unsupported op
-// (which would only happen on a programmer error or SPI/plugin drift) is
-// treated as a non-match.
 func MatchFilter(f spi.Filter, data []byte, meta spi.EntityMeta) bool {
-	// Zero-value filter (no Op) matches everything. We deliberately only
-	// check Op: an explicit Op (even FilterAnd with no children) must reach
-	// the group evaluator so the group identity is honored (empty AND → true,
-	// empty OR → false). evalLeafFilter returns false when Source/Path are
-	// also empty, so a non-empty Op with an unset Source/Path won't false-
-	// positive into the "match everything" branch.
-	if f.Op == "" {
-		return true
-	}
-	return evalFilter(f, data, meta)
-}
-
-func evalFilter(f spi.Filter, data []byte, meta spi.EntityMeta) bool {
-	switch f.Op {
-	case spi.FilterAnd:
-		for _, c := range f.Children {
-			if !evalFilter(c, data, meta) {
-				return false
-			}
-		}
-		return true
-	case spi.FilterOr:
-		for _, c := range f.Children {
-			if evalFilter(c, data, meta) {
-				return true
-			}
-		}
-		return false
-	}
-	return evalLeafFilter(f, data, meta)
-}
-
-// evalLeafFilter mirrors the sqlite plugin's evaluateLeaf (post_filter.go)
-// but takes raw data + meta instead of *spi.Entity so it can be called from
-// inner loops without constructing an Entity wrapper.
-func evalLeafFilter(f spi.Filter, data []byte, meta spi.EntityMeta) bool {
-	// IsNull / NotNull are checked first because they care about presence,
-	// not value extraction succeeding.
-	switch f.Op {
-	case spi.FilterIsNull:
-		_, found := extractFilterValue(f, data, meta)
-		return !found
-	case spi.FilterNotNull:
-		val, found := extractFilterValue(f, data, meta)
-		return found && val != nil
-	}
-
-	val, found := extractFilterValue(f, data, meta)
-
-	// For "negative" ops (Ne, INe, NotContains, NotStartsWith, NotEndsWith),
-	// a missing-or-null field is vacuously true; for everything else, missing
-	// short-circuits to false.
-	isNegativeOp := f.Op == spi.FilterNe ||
-		f.Op == spi.FilterINe ||
-		f.Op == spi.FilterINotContains ||
-		f.Op == spi.FilterINotStartsWith ||
-		f.Op == spi.FilterINotEndsWith
-	if !found || val == nil {
-		return isNegativeOp
-	}
-
-	switch f.Op {
-	case spi.FilterEq:
-		return compareFilterValues(val, f.Value) == 0
-	case spi.FilterNe:
-		return compareFilterValues(val, f.Value) != 0
-	case spi.FilterGt:
-		return compareFilterValues(val, f.Value) > 0
-	case spi.FilterLt:
-		return compareFilterValues(val, f.Value) < 0
-	case spi.FilterGte:
-		return compareFilterValues(val, f.Value) >= 0
-	case spi.FilterLte:
-		return compareFilterValues(val, f.Value) <= 0
-	case spi.FilterContains:
-		return strings.Contains(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterStartsWith:
-		return strings.HasPrefix(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterEndsWith:
-		return strings.HasSuffix(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterLike:
-		return matchFilterLike(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterBetween:
-		if len(f.Values) < 2 {
-			return false
-		}
-		return compareFilterValues(val, f.Values[0]) >= 0 &&
-			compareFilterValues(val, f.Values[1]) <= 0
-	case spi.FilterMatchesRegex:
-		ok, err := opMatchesPattern(toGjsonResult(val), f.Value)
-		return err == nil && ok
-	case spi.FilterIEq:
-		return strings.EqualFold(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterINe:
-		return !strings.EqualFold(fmt.Sprint(val), fmt.Sprint(f.Value))
-	case spi.FilterIContains:
-		return strings.Contains(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterINotContains:
-		return !strings.Contains(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterIStartsWith:
-		return strings.HasPrefix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterINotStartsWith:
-		return !strings.HasPrefix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterIEndsWith:
-		return strings.HasSuffix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	case spi.FilterINotEndsWith:
-		return !strings.HasSuffix(strings.ToLower(fmt.Sprint(val)), strings.ToLower(fmt.Sprint(f.Value)))
-	}
-	return false
-}
-
-// extractFilterValue extracts the field value referenced by the filter.
-// SourceData uses a gjson path on the entity's JSON data; SourceMeta uses
-// a fixed set of metadata field names (matching the sqlite plugin's
-// extractMetaValue, which is the canonical mapping for SourceMeta paths).
-// Returns (value, found). found=false means the field is missing; found=true
-// with value=nil means the field exists and is JSON null.
-func extractFilterValue(f spi.Filter, data []byte, meta spi.EntityMeta) (any, bool) {
-	if f.Source == spi.SourceMeta {
-		return extractFilterMetaValue(f.Path, meta)
-	}
-	return extractFilterDataValue(f.Path, data)
-}
-
-func extractFilterDataValue(path string, data []byte) (any, bool) {
-	result := gjson.GetBytes(data, path)
-	if !result.Exists() {
-		return nil, false
-	}
-	if result.Type == gjson.Null {
-		return nil, true
-	}
-	return result.Value(), true
-}
-
-// extractFilterMetaValue mirrors the sqlite plugin's extractMetaValue keyset
-// (plugins/sqlite/post_filter.go). Keep this list in sync with that file —
-// the two must agree on which meta paths are valid for a Filter.
-func extractFilterMetaValue(path string, meta spi.EntityMeta) (any, bool) {
-	switch path {
-	case "entity_id":
-		return meta.ID, true
-	case "state":
-		return meta.State, true
-	case "version":
-		return meta.Version, true
-	case "created_at":
-		return timeToMicro(meta.CreationDate), true
-	case "updated_at":
-		return timeToMicro(meta.LastModifiedDate), true
-	case "model_name":
-		return meta.ModelRef.EntityName, true
-	case "model_version":
-		return meta.ModelRef.ModelVersion, true
-	case "change_type":
-		return meta.ChangeType, true
-	case "transaction_id":
-		return meta.TransactionID, true
-	default:
-		return nil, false
-	}
-}
-
-// timeToMicro converts a time.Time to microseconds since Unix epoch.
-// Mirrors plugins/sqlite/post_filter.go timeToMicro.
-//
-// The t.IsZero() guard is intentional: a zero time.Time is year 1
-// (0001-01-01 UTC), which UnixMicro() reports as a very large negative
-// number (~-62,135,596,800,000,000), not 0. Without the guard, ordering
-// ops against created_at/updated_at on a zero-time entity would silently
-// classify it as "much earlier than any valid timestamp" rather than
-// "unset/sentinel zero". The sqlite plugin handles this the same way.
-func timeToMicro(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.UnixMicro()
-}
-
-// compareFilterValues orders two raw values. Returns <0, 0, >0 like strings.Compare.
-//
-// Numeric coercion intentionally does NOT parse strings — only float64/float32/
-// int/int64/json.Number are treated as numeric. This mirrors the sqlite plugin's
-// compareValues + toFloat64 (plugins/sqlite/post_filter.go). The Match path
-// (predicate.Condition) does parse strings via operators.go toFloat64 — keep
-// the two helpers separate so the Filter path stays in lockstep with sqlite.
-func compareFilterValues(a, b any) int {
-	af, aok := toFilterFloat64(a)
-	bf, bok := toFilterFloat64(b)
-	if aok && bok {
-		switch {
-		case af < bf:
-			return -1
-		case af > bf:
-			return 1
-		default:
-			return 0
-		}
-	}
-	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
-}
-
-// toFilterFloat64 mirrors plugins/sqlite/post_filter.go toFloat64 exactly.
-// Strings are NOT parsed as numbers — a stringly-typed numeric field falls
-// through to byte-lex string comparison, just like in sqlite. Keep this in
-// sync with that file; drift would silently change cross-backend semantics
-// for ordering ops (Gt/Lt/Gte/Lte/Between) on string-encoded numerics.
-func toFilterFloat64(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case json.Number:
-		f, err := n.Float64()
-		if err != nil {
-			return 0, false
-		}
-		return f, true
-	}
-	return 0, false
-}
-
-// matchFilterLike mirrors the sqlite plugin's matchLike (plugins/sqlite/
-// post_filter.go) — byte-based, NOT rune-based. `_` matches a single byte;
-// `%` matches any byte sequence; `\` escapes. Multibyte characters in the
-// data string are spanned by multiple `_` pattern bytes, matching SQLite's
-// default LIKE semantics. Keep in sync with the sqlite implementation —
-// drift would silently disagree on LIKE patterns crossing multibyte chars.
-func matchFilterLike(s, pattern string) bool {
-	return matchFilterLikeHelper(s, 0, pattern, 0)
-}
-
-func matchFilterLikeHelper(s string, si int, pattern string, pi int) bool {
-	for pi < len(pattern) {
-		ch := pattern[pi]
-		switch {
-		case ch == '\\' && pi+1 < len(pattern):
-			pi++
-			if si >= len(s) || s[si] != pattern[pi] {
-				return false
-			}
-			si++
-			pi++
-		case ch == '%':
-			for pi < len(pattern) && pattern[pi] == '%' {
-				pi++
-			}
-			if pi == len(pattern) {
-				return true
-			}
-			for si <= len(s) {
-				if matchFilterLikeHelper(s, si, pattern, pi) {
-					return true
-				}
-				si++
-			}
-			return false
-		case ch == '_':
-			if si >= len(s) {
-				return false
-			}
-			si++
-			pi++
-		default:
-			if si >= len(s) || s[si] != ch {
-				return false
-			}
-			si++
-			pi++
-		}
-	}
-	return si == len(s)
-}
-
-// toGjsonResult wraps a raw value in a gjson.Result for reuse of the
-// existing operators.go opMatchesPattern (which takes gjson.Result).
-// This is a thin shim — we encode the value as JSON, parse it, and let
-// gjson surface it as a Result. Used only for regex leaf evaluation,
-// where the per-entity cost is dominated by regex compile anyway.
-func toGjsonResult(v any) gjson.Result {
-	b, err := json.Marshal(v)
-	if err != nil {
-		// Fall back to a string-typed Result via fmt.Sprint.
-		return gjson.Parse(fmt.Sprintf("%q", fmt.Sprint(v)))
-	}
-	return gjson.ParseBytes(b)
+	return spi.MatchFilter(f, data, meta)
 }

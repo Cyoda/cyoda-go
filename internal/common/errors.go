@@ -74,6 +74,17 @@ func (e *AppError) AsRetryable() *AppError {
 	return e
 }
 
+// WithCause attaches a wrapped cause to a freshly-constructed *AppError and
+// returns the receiver for fluent chaining. The cause is exposed via Unwrap,
+// so errors.Is(returned, cause) holds — use this when translating a storage
+// SPI sentinel into a client-facing AppError while keeping the sentinel
+// inspectable by callers. Like AsRetryable, this mutates the receiver; call
+// only on a just-constructed Operational(...), never on a shared instance.
+func (e *AppError) WithCause(err error) *AppError {
+	e.Err = err
+	return e
+}
+
 // Operational creates a client error (4xx). No internal detail is captured.
 //
 // Default is non-retryable; for the rare retry-eligible 4xx (e.g. an
@@ -112,6 +123,30 @@ func Internal(message string, err error) *AppError {
 		Status:  http.StatusInternalServerError,
 		Code:    ErrCodeServerError,
 		Message: fmt.Sprintf("%s: %s", ErrCodeServerError, message),
+		Detail:  detail,
+		Err:     err,
+	}
+}
+
+// InternalWithCode creates a 500 error with internal detail, like Internal,
+// but stamps a specific client-facing error code instead of the generic
+// ErrCodeServerError. Use when the 500 is precise enough for the caller to
+// distinguish it from an opaque infra failure (e.g. a compute node returned
+// a result the engine could not interpret) — the code needs a matching
+// errors/<CODE>.md topic (TestErrCode_Parity enforces the pairing). Unlike
+// Internal, this does not remap known sentinel errors (unique-violation,
+// partial-key, tx-conflict) to their dedicated 4xx codes; callers with a
+// custom code are not passing those sentinels.
+func InternalWithCode(code, message string, err error) *AppError {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	return &AppError{
+		Level:   LevelInternal,
+		Status:  http.StatusInternalServerError,
+		Code:    code,
+		Message: fmt.Sprintf("%s: %s", code, message),
 		Detail:  detail,
 		Err:     err,
 	}

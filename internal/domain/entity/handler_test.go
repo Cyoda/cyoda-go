@@ -1625,6 +1625,96 @@ func TestGetEntityChangesMetadata_PointInTimeExactBoundary(t *testing.T) {
 	}
 }
 
+// TestGetEntityChangesMetadata_AttributionModern asserts that a change-history
+// entry produced under a non-zero attributed Principal (the normal case —
+// every request in mock-IAM mode carries MockUserID/MockKind) surfaces
+// "user", "attributedKind", and "executedBy":{"id","kind"} in the JSON entry.
+func TestGetEntityChangesMetadata_AttributionModern(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaAttrModern", 1, `{"k":1}`)
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaAttrModern", 1, `{"k":1}`)
+
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes metadata request failed: %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+
+	var changes []map[string]any
+	if err := json.Unmarshal(body, &changes); err != nil {
+		t.Fatalf("failed to parse changes response: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change entry, got %d", len(changes))
+	}
+
+	entry := changes[0]
+	if user, _ := entry["user"].(string); user != "mock-user-001" {
+		t.Errorf("user: got %v, want mock-user-001", entry["user"])
+	}
+	if kind, _ := entry["attributedKind"].(string); kind != "user" {
+		t.Errorf("attributedKind: got %v, want user", entry["attributedKind"])
+	}
+	executedBy, ok := entry["executedBy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected executedBy object, got %v", entry["executedBy"])
+	}
+	if id, _ := executedBy["id"].(string); id != "mock-user-001" {
+		t.Errorf("executedBy.id: got %v, want mock-user-001", executedBy["id"])
+	}
+	if kind, _ := executedBy["kind"].(string); kind != "user" {
+		t.Errorf("executedBy.kind: got %v, want user", executedBy["kind"])
+	}
+}
+
+// TestGetEntityChangesMetadata_AttributionLegacy asserts that a change-history
+// entry with zero attribution (no AttributedKind, no Executor — the shape of
+// rows written before follow-on-action attribution existed) surfaces "user"
+// unchanged and emits NEITHER "attributedKind" NOR "executedBy" — no JSON
+// null, the key is simply absent.
+func TestGetEntityChangesMetadata_AttributionLegacy(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	// Zero out the mock principal so spi.AttributionFor(ctx) yields the zero
+	// Principal for both attributed and executor, reproducing a legacy row
+	// with no attribution recorded.
+	cfg.IAM.MockUserID = ""
+	cfg.IAM.MockKind = ""
+	srv := newTestServerWithConfig(t, cfg)
+
+	importAndLockModel(t, srv.URL, "ChangesMetaAttrLegacy", 1, `{"k":1}`)
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaAttrLegacy", 1, `{"k":1}`)
+
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes metadata request failed: %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+
+	var changes []map[string]any
+	if err := json.Unmarshal(body, &changes); err != nil {
+		t.Fatalf("failed to parse changes response: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change entry, got %d", len(changes))
+	}
+
+	entry := changes[0]
+	if _, present := entry["user"]; !present {
+		t.Errorf("expected user key to remain present (even if empty)")
+	}
+	if _, present := entry["attributedKind"]; present {
+		t.Errorf("expected no attributedKind key on legacy row, got %v", entry["attributedKind"])
+	}
+	if _, present := entry["executedBy"]; present {
+		t.Errorf("expected no executedBy key on legacy row, got %v", entry["executedBy"])
+	}
+}
+
 // --- Workflow integration tests ---
 
 // importWorkflow posts a workflow definition for the given model.

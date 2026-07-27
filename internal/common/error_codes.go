@@ -71,6 +71,11 @@ const (
 	ErrCodeSearchJobAlreadyTerminal = "SEARCH_JOB_ALREADY_TERMINAL"
 	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
+	// ErrCodeScanBudgetExhausted is returned when a residual (non-pushdown)
+	// search or streaming aggregation examined more rows than the backend's
+	// configured scan budget before completing. Non-retryable: the client
+	// must narrow the query or add an indexable predicate.
+	ErrCodeScanBudgetExhausted = "SCAN_BUDGET_EXHAUSTED"
 	// ErrCodeConditionTypeMismatch is returned when a simple condition's value
 	// type does not match the field's locked DataType (e.g. "abc" against a
 	// DOUBLE field). Equivalent to Cloud's InvalidTypesInClientConditionException.
@@ -105,6 +110,18 @@ const (
 // Help subsystem
 const (
 	ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
+)
+
+// Scheduled transition Function callouts
+const (
+	// ErrCodeScheduleFunctionInvalidResult is returned when a scheduled
+	// transition's arm-time Function callout completes but its result
+	// cannot be interpreted as a Schedule (wrong resultKind, or a
+	// malformed/ambiguous fireAt/fireAfterMs/expireAt/expireAfterMs
+	// payload). Non-retryable: the compute node's implementation must be
+	// fixed. Internal (500 + ticket) because the caller supplied a valid
+	// transition; the failure is in the compute node's response.
+	ErrCodeScheduleFunctionInvalidResult = "SCHEDULE_FUNCTION_INVALID_RESULT"
 )
 
 // OIDC provider management

@@ -240,6 +240,81 @@ func TestJWKSValidator_CacheRefresh(t *testing.T) {
 	}
 }
 
+func TestJWKSValidator_PrincipalKind(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+
+	baseClaims := func() map[string]any {
+		return map[string]any{
+			"iss":          issuer,
+			"exp":          float64(time.Now().Add(time.Hour).Unix()),
+			"iat":          float64(time.Now().Unix()),
+			"caas_user_id": "user-42",
+			"caas_org_id":  "org-7",
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any)
+		wantKnd spi.PrincipalKind
+	}{
+		{
+			name: "user_roles present",
+			mutate: func(c map[string]any) {
+				c["user_roles"] = []any{"ROLE_ADMIN"}
+			},
+			wantKnd: spi.PrincipalUser,
+		},
+		{
+			name: "user_roles present but empty array — key presence, not len",
+			mutate: func(c map[string]any) {
+				c["user_roles"] = []any{}
+			},
+			wantKnd: spi.PrincipalUser,
+		},
+		{
+			name: "scopes only — service",
+			mutate: func(c map[string]any) {
+				c["scopes"] = []any{"read"}
+			},
+			wantKnd: spi.PrincipalService,
+		},
+		{
+			name: "both user_roles and scopes present — user",
+			mutate: func(c map[string]any) {
+				c["user_roles"] = []any{"ROLE_ADMIN"}
+				c["scopes"] = []any{"read"}
+			},
+			wantKnd: spi.PrincipalUser,
+		},
+		{
+			name:    "neither claim present — attribution-safe default user",
+			mutate:  func(c map[string]any) {},
+			wantKnd: spi.PrincipalUser,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claims := baseClaims()
+			tt.mutate(claims)
+			token := signTestToken(t, key, kid, claims)
+
+			uc, err := v.Validate(token)
+			if err != nil {
+				t.Fatalf("Validate failed: %v", err)
+			}
+			if uc.Kind != tt.wantKnd {
+				t.Errorf("Kind = %q, want %q", uc.Kind, tt.wantKnd)
+			}
+		})
+	}
+}
+
 func join(strs []string, sep string) string {
 	if len(strs) == 0 {
 		return ""

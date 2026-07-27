@@ -115,6 +115,31 @@ func ForwardEntityManageCollection(ctx context.Context, pool *ClientPool, addr s
 	return client.EntityManageCollection(withForwardedMetadata(ctx), ce)
 }
 
+// ForwardEntitySearch dials the owning node and replays a unary EntitySearch
+// call, propagating the inbound metadata (auth + tx-token) so the owner joins
+// the referenced transaction and the read observes its uncommitted writes.
+// Connections are cached per addr. The token is never logged.
+func ForwardEntitySearch(ctx context.Context, pool *ClientPool, addr string, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+	conn, err := pool.Get(addr)
+	if err != nil {
+		return nil, err
+	}
+	client := cyodapb.NewCloudEventsServiceClient(conn)
+	return client.EntitySearch(withForwardedMetadata(ctx), ce)
+}
+
+// ForwardEntitySearchCollection dials the owning node and re-issues the
+// server-streaming EntitySearchCollection call, returning the client stream so
+// the caller can copy frames back to the inbound stream.
+func ForwardEntitySearchCollection(ctx context.Context, pool *ClientPool, addr string, ce *cepb.CloudEvent) (grpc.ServerStreamingClient[cepb.CloudEvent], error) {
+	conn, err := pool.Get(addr)
+	if err != nil {
+		return nil, err
+	}
+	client := cyodapb.NewCloudEventsServiceClient(conn)
+	return client.EntitySearchCollection(withForwardedMetadata(ctx), ce)
+}
+
 // withForwardedMetadata copies inbound metadata (auth + tx-token) onto the
 // outgoing context so the owner node re-authenticates and re-routes correctly.
 func withForwardedMetadata(ctx context.Context) context.Context {

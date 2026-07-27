@@ -38,7 +38,11 @@ func (w *walker) walkValue(v any) (*schema.ModelNode, error) {
 	case []any:
 		return w.walkArray(val)
 	case string:
-		return schema.NewLeafNode(schema.String), nil
+		// Delegate string classification to the shared inference used by
+		// validation so discovery and validation never diverge. This
+		// content-sniffs ISO-8601 strings into a temporal subtype (LocalDate,
+		// Year, …) and leaves every other string as String.
+		return schema.NewLeafNode(schema.InferDataType(val)), nil
 	case json.Number:
 		return classifyNumber(val)
 	case float64:

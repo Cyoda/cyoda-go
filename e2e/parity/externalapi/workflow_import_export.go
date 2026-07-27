@@ -462,8 +462,11 @@ func RunExternalAPI_08_07_ScheduledTransitionRoundtrip(t *testing.T, fixture par
 // Validator rejection matrix:
 //  1. manual+schedule mutually exclusive — HTTP 400 + VALIDATION_FAILED
 //     with "manual and scheduled are mutually exclusive" in the detail.
-//  2. schedule.delayMs <= 0 — HTTP 400 + VALIDATION_FAILED with
-//     "delayMs must be > 0" in the detail.
+//  2. schedule.delayMs<=0 with no schedule.function — HTTP 400 +
+//     VALIDATION_FAILED with "exactly one of schedule.delayMs or
+//     schedule.function is required" in the detail. delayMs=0 is falsy
+//     under the delayMs/function XOR (hasDelay := DelayMs > 0), so this
+//     is the "neither present" shape, not a dedicated delayMs<=0 message.
 func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -516,8 +519,8 @@ func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parit
 		HTTPStatus: http.StatusBadRequest,
 		ErrorCode:  "VALIDATION_FAILED",
 	})
-	if detail := rfc9457Detail(body); !strings.Contains(detail, "delayMs must be > 0") {
-		t.Errorf("zero-delay: expected detail substring 'delayMs must be > 0'; got %q (body=%s)", detail, string(body))
+	if detail := rfc9457Detail(body); !strings.Contains(detail, "exactly one of schedule.delayMs or schedule.function is required") {
+		t.Errorf("zero-delay: expected detail substring 'exactly one of schedule.delayMs or schedule.function is required'; got %q (body=%s)", detail, string(body))
 	}
 }
 

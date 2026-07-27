@@ -18,6 +18,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -109,11 +110,13 @@ type DeleteAllResult struct {
 
 // EntityChangeEntry holds a single entry in version history.
 type EntityChangeEntry struct {
-	ChangeType    string
-	TimeOfChange  string
-	User          string
-	TransactionID string
-	HasEntity     bool
+	ChangeType     string
+	TimeOfChange   string
+	User           string
+	TransactionID  string
+	HasEntity      bool
+	AttributedKind string
+	Executor       spi.Principal
 }
 
 // PaginationParams holds pagination parameters.
@@ -266,11 +269,19 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
 	now := time.Now()
+
+	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
+	// the pre-Begin outer ctx — origin inheritance for a service/system
+	// executor is only visible once the joined/owned TransactionState is on
+	// ctx (see spi.AttributionFor).
+	attributed, executor := spi.AttributionFor(txCtx)
 
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{
@@ -283,7 +294,9 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 			TransactionID:           txID,
 			TransitionForLatestSave: "",
 			ChangeType:              "CREATED",
-			ChangeUser:              uc.UserID,
+			ChangeUser:              attributed.ID,
+			ChangeUserKind:          attributed.Kind,
+			ChangeExecutor:          executor,
 		},
 		Data: bodyBytes,
 	}
@@ -639,7 +652,9 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -748,10 +763,12 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	result := make([]EntityChangeEntry, 0, len(versions))
 	for _, v := range versions {
 		entry := EntityChangeEntry{
-			ChangeType:   v.ChangeType,
-			TimeOfChange: v.Timestamp.UTC().Format(time.RFC3339Nano),
-			User:         v.User,
-			HasEntity:    v.Entity != nil,
+			ChangeType:     v.ChangeType,
+			TimeOfChange:   v.Timestamp.UTC().Format(time.RFC3339Nano),
+			User:           v.User,
+			HasEntity:      v.Entity != nil,
+			AttributedKind: string(v.AttributedKind),
+			Executor:       v.Executor,
 		}
 		if v.Entity != nil {
 			entry.TransactionID = v.Entity.Meta.TransactionID
@@ -775,7 +792,9 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -855,9 +874,12 @@ type DeleteResult struct {
 // deletes all (backward-compatible). A present condBody is parsed and only
 // matching entities (as-at pointInTime, when supplied) are deleted — reusing
 // the search condition primitive so no special engine rights are claimed
-// (design §6.1). Selection and deletion run inside one transaction; because
-// SearchService.Search bypasses backend pushdown when a tx is on the context,
-// buffered writes are visible to the selection.
+// (design §6.1). Selection and deletion run inside one transaction; in-tx
+// Search is tx-aware (overlay/native-pgx.Tx pushdown) and returns
+// read-your-own-writes results, so buffered writes are visible to the
+// selection. TrackingRead is left default-false: the deleted ids are already
+// conflict-protected via the write-set, so the selection need not also record
+// a read-set — that would widen the conflict footprint beyond what's needed.
 func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
 	ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 
@@ -894,7 +916,9 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	modelStore, err := h.factory.ModelStore(txCtx)
@@ -917,12 +941,19 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 disables
-	// the in-memory fallback's default 1000-entity cap so a scoped delete is never
-	// silently partial regardless of match-set size.
+	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 maps to
+	// spiLimit=0 (unbounded) in the tx-aware Searcher path, so a scoped delete is
+	// never silently capped regardless of match-set size.
 	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
 	if err != nil {
 		h.rollbackOwned(txCtx, txID, owned)
+		// A classified 4xx from the selection search (scan budget exhausted,
+		// unknown field path, invalid condition) is the caller's error, not a
+		// server fault — common.Internal would bury it as a 500 + ticket.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			return nil, appErr
+		}
 		return nil, common.Internal("failed to select entities for delete", err)
 	}
 
@@ -1145,7 +1176,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	now := time.Now()
@@ -1162,6 +1195,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	currentCtx, currentTxID := txCtx, txID
 
 	for i, item := range parsed {
+		// Computed on currentCtx (the current segment's tx-carrying
+		// context) rather than the pre-Begin outer ctx — for a segmenting
+		// cascade currentCtx advances to FinalCtx between items, and only
+		// the tx actually backing this item's save can carry the Origin an
+		// inherited service/system executor needs (see spi.AttributionFor).
+		attributed, executor := spi.AttributionFor(currentCtx)
+
 		entity := &spi.Entity{
 			Meta: spi.EntityMeta{
 				ID:                      entityIDs[i],
@@ -1173,7 +1213,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 				TransactionID:           currentTxID,
 				TransitionForLatestSave: "",
 				ChangeType:              "CREATED",
-				ChangeUser:              uc.UserID,
+				ChangeUser:              attributed.ID,
+				ChangeUserKind:          attributed.Kind,
+				ChangeExecutor:          executor,
 			},
 			Data: item.payloadBytes,
 		}
@@ -1321,7 +1363,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	// Load existing entity within transaction (adds to read set).
@@ -1385,11 +1429,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 
 	now := time.Now()
 
-	uc := spi.GetUserContext(ctx)
-	changeUser := ""
-	if uc != nil {
-		changeUser = uc.UserID
-	}
+	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
+	// the pre-Begin outer ctx — see the CreateEntity site above for why.
+	attributed, executor := spi.AttributionFor(txCtx)
 
 	updated := &spi.Entity{
 		Meta: spi.EntityMeta{
@@ -1402,7 +1444,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			LastModifiedDate:        now,
 			TransactionID:           txID,
 			ChangeType:              "UPDATED",
-			ChangeUser:              changeUser,
+			ChangeUser:              attributed.ID,
+			ChangeUserKind:          attributed.Kind,
+			ChangeExecutor:          executor,
 			TransitionForLatestSave: input.Transition,
 		},
 		Data: bodyBytes,
@@ -1665,15 +1709,12 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 	if !owned {
-		defer h.gate.Acquire(txID)()
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
 	}
 
 	now := time.Now()
-	uc := spi.GetUserContext(ctx)
-	changeUser := ""
-	if uc != nil {
-		changeUser = uc.UserID
-	}
 
 	entityIDs := make([]string, 0, len(parsed))
 	failed := make([]UpdateCollectionItemFailure, 0)
@@ -1723,6 +1764,10 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
+		// Computed on currentCtx (the current segment's tx-carrying
+		// context) — see CreateEntityCollection's identical reasoning above.
+		attributed, executor := spi.AttributionFor(currentCtx)
+
 		updated := &spi.Entity{
 			Meta: spi.EntityMeta{
 				ID:               existing.Meta.ID,
@@ -1734,7 +1779,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				LastModifiedDate: now,
 				TransactionID:    currentTxID,
 				ChangeType:       "UPDATED",
-				ChangeUser:       changeUser,
+				ChangeUser:       attributed.ID,
+				ChangeUserKind:   attributed.Kind,
+				ChangeExecutor:   executor,
 			},
 			Data: item.bodyBytes,
 		}
@@ -1914,15 +1961,37 @@ func classifyError(err error) *common.AppError {
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
 // error code:
 //
+//   - An already-classified *common.AppError (matched via errors.As, so it is
+//     found even several layers deep behind %w-wrapping) passes through
+//     unchanged — the minted status/code/retryable flags are authoritative.
+//   - ErrNoMatchingMember (no calculation member registered for the
+//     processor/criterion's tags — a compute-infra condition, not a bad
+//     request) → retryable 503 NO_COMPUTE_MEMBER_FOR_TAG.
 //   - ErrCommitBeforeDispatchInfra (Begin/Commit/Save plugin failure inside
 //     the engine's segment-boundary code) → sanitized 5xx via common.Internal,
 //     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
+//   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
+//     dispatch CloudEvent's Auth Context — no UserContext, unset/unrecognized
+//     principal Kind, or nil CloudEvent) → sanitized 5xx via common.Internal.
+//     These are server-side conditions never attributable to client input, so
+//     the raw message (which may include the principal id) never reaches the
+//     client via 4xx WORKFLOW_FAILED.
 //   - ErrTransitionNotFound → 400 TRANSITION_NOT_FOUND (client-attributable).
 //   - Everything else (processor-domain failures, criterion mismatches, CAS
 //     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	if errors.Is(err, contract.ErrNoMatchingMember) {
+		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag, err.Error()).AsRetryable()
+	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)
+	}
+	if errors.Is(err, contract.ErrAuthContextUnavailable) {
+		return common.Internal("auth context unavailable for dispatch", err)
 	}
 	if errors.Is(err, spi.ErrUniqueViolation) {
 		return common.Operational(http.StatusConflict, common.ErrCodeUniqueViolation, "a composite unique key constraint was violated")

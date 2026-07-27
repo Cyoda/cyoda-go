@@ -20,6 +20,7 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_POSTGRES_MIN_CONNS", Description: "Min pool connections", Default: "5"},
 		{Name: "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", Description: "Max idle time before closing connection", Default: "5m"},
 		{Name: "CYODA_POSTGRES_AUTO_MIGRATE", Description: "Run embedded SQL migrations on startup", Default: "true"},
+		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
 	}
 }
 
