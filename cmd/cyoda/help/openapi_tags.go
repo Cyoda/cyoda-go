@@ -229,9 +229,9 @@ func marshalComponent(comps *openapi3.Components, ref string) ([]byte, error) {
 	// missing map key gives a NIL pointer, and a nil pointer stored in an `any`
 	// is a non-nil interface — so a plain `v == nil` never fires. Without the
 	// reflect check a dangling $ref marshals to "null" instead of being skipped.
-	if v == nil {
-		return nil, nil
-	}
+	// No `v == nil` check: every arm assigns a typed pointer, so v always holds
+	// a type and the interface itself is never nil. Only the pointer inside it
+	// can be.
 	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil, nil
 	}
