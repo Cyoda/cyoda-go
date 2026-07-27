@@ -2,7 +2,6 @@ package multinode
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -38,17 +37,6 @@ import (
 // The token value is never logged or asserted (Gate 3); scenarios observe only
 // entity state and derived data.
 
-// jsonQuote renders s as a JSON string literal.
-//
-// Prefer this over %q when interpolating into a JSON document: %q applies Go
-// quoting rules, which diverge from JSON's for non-ASCII and control characters
-// (Go emits \x.. and \u.. forms JSON does not accept). Duplicated from the
-// parity package rather than exported, to keep the fixture helpers package-local.
-func jsonQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
 func init() {
 	Register(
 		NamedTest{Name: "Callback_ForwardedDispatch_HTTP", Fn: RunCallback_ForwardedDispatch_HTTP},
@@ -72,8 +60,7 @@ func cbRouteContext(secondaryModel, marker string) string {
 		"secondaryVersion": 1,
 		"marker":           marker,
 	})
-	quoted, _ := json.Marshal(string(inner))
-	return string(quoted)
+	return string(inner)
 }
 
 // cbRouteSecondaryWorkflow is a trivial NONE→STORED workflow (no processors) so a
@@ -94,19 +81,29 @@ const cbRouteSecondaryWorkflow = `{
 // transition carries one callback processor pinned to computeMemberTag, so the
 // dispatch is forwarded to the member-hosting node when driven from any other node.
 func cbRoutePrimaryWorkflow(wfName, procName, contextValue string) string {
-	return fmt.Sprintf(`{
+	// Built with an encoder, not a string template: Go's %s/%q quoting rules
+	// are not JSON's, and the names and context are caller-supplied.
+	b, _ := json.Marshal(map[string]any{
 		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": %s, "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %s, "executionMode": "SYNC",
-						"config": {"attachEntity": true, "calculationNodesTags": %s, "context": %s}}]
-				}]},
-				"ACTIVE": {}
-			}
-		}]
-	}`, jsonQuote(wfName), jsonQuote(procName), jsonQuote(computeMemberTag), contextValue)
+		"workflows": []any{map[string]any{
+			"version": "1.1", "name": wfName, "initialState": "NONE", "active": true,
+			"states": map[string]any{
+				"NONE": map[string]any{"transitions": []any{map[string]any{
+					"name": "init", "next": "ACTIVE", "manual": false,
+					"processors": []any{map[string]any{
+						"type": "calculator", "name": procName, "executionMode": "SYNC",
+						"config": map[string]any{
+							"attachEntity":         true,
+							"calculationNodesTags": computeMemberTag,
+							"context":              contextValue,
+						},
+					}},
+				}}},
+				"ACTIVE": map[string]any{},
+			},
+		}},
+	})
+	return string(b)
 }
 
 // cbRouteSetupModel imports+locks a model with the given sample doc, then imports
@@ -402,7 +399,10 @@ func RunCallback_ForwardedGRPCSearch(t *testing.T, fixture MultiNodeFixture) {
 
 // cbRouteStatusEquals builds a simple search condition matching data.status.
 func cbRouteStatusEquals(value string) string {
-	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%s}`, jsonQuote(value))
+	b, _ := json.Marshal(map[string]any{
+		"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": value,
+	})
+	return string(b)
 }
 
 // cbRouteSameTxID queries the audit REST endpoint for both entities and

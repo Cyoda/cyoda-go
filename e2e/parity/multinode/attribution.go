@@ -1,6 +1,7 @@
 package multinode
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -329,23 +330,29 @@ const attrScheduledWorkflow = `{
 // forwarded to the member-hosting node when driven from any other node).
 // contextValue may be "" for processors that need no pass-through context.
 func attrPrimaryProcWorkflow(wfName, procName, execMode, contextValue string) string {
-	ctxField := ""
+	// Built with an encoder, not a string template. contextValue arrives as a
+	// plain JSON string from cbRouteContext and is encoded here — splicing it
+	// raw would emit a nested object where the DTO expects a string.
+	cfg := map[string]any{"attachEntity": true, "calculationNodesTags": computeMemberTag}
 	if contextValue != "" {
-		ctxField = ", \"context\": " + contextValue
+		cfg["context"] = contextValue
 	}
-	return fmt.Sprintf(`{
+	b, _ := json.Marshal(map[string]any{
 		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
-						"config": {"attachEntity": true, "calculationNodesTags": %q%s}}]
-				}]},
-				"ACTIVE": {}
-			}
-		}]
-	}`, wfName, procName, execMode, computeMemberTag, ctxField)
+		"workflows": []any{map[string]any{
+			"version": "1.1", "name": wfName, "initialState": "NONE", "active": true,
+			"states": map[string]any{
+				"NONE": map[string]any{"transitions": []any{map[string]any{
+					"name": "init", "next": "ACTIVE", "manual": false,
+					"processors": []any{map[string]any{
+						"type": "calculator", "name": procName, "executionMode": execMode, "config": cfg,
+					}},
+				}}},
+				"ACTIVE": map[string]any{},
+			},
+		}},
+	})
+	return string(b)
 }
 
 // --- assertion helpers -------------------------------------------------------
