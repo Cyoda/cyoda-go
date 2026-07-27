@@ -61,8 +61,8 @@ require (
 	github.com/moby/moby/client v0.4.0 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/ncruces/go-sqlite3 v0.35.1 // indirect
-	github.com/ncruces/go-sqlite3-wasm/v3 v3.1.35302 // indirect
+	github.com/ncruces/go-sqlite3 v0.35.2 // indirect
+	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
@@ -102,9 +102,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.3-0.20260726200328-db9a4a7ffad1
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.3-0.20260726200328-db9a4a7ffad1
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.3-0.20260726200328-db9a4a7ffad1
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.3
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.3
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.3
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
