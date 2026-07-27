@@ -112,13 +112,17 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 	// Parse limit from string parameter.
 	if params.Limit != nil {
 		lim, err := strconv.Atoi(*params.Limit)
-		if err != nil || lim < 0 {
+		if err != nil || lim < 1 {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit"))
 			return
 		}
 		// Reject (don't silently clamp): the async path does the same.
 		// Silent clamping would hide misuse from clients and mask bugs
 		// where a caller assumed a larger window than the server allows.
+		// The lower bound matters just as much: a non-positive limit means
+		// UNBOUNDED at the SPI, so accepting it would hand clients an
+		// unbounded synchronous search past the cap this endpoint exists
+		// to enforce.
 		if lim > pagination.MaxPageSize {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize)))
 			return

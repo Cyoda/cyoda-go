@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -86,9 +87,8 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	}
 }
 
-// TestMemorySearch_NonTx_OrderAndPage checks ordering + offset/limit paging on
-// the non-tx path.
-func TestMemorySearch_NonTx_OrderAndPage(t *testing.T) {
+// TestMemorySearch_NonTx_Order checks ordering on the non-tx path.
+func TestMemorySearch_NonTx_Order(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
@@ -102,16 +102,19 @@ func TestMemorySearch_NonTx_OrderAndPage(t *testing.T) {
 
 	order := []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}}
 	got, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", OrderBy: order, Offset: 1, Limit: 1,
+		ModelName: "Order", ModelVersion: "1", OrderBy: order,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 entity (offset 1 limit 1), got %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("expected 3 entities (unbounded), got %d", len(got))
 	}
-	if got[0].Meta.ID != "e-b" {
-		t.Errorf("expected e-b at offset 1 (n asc), got %s", got[0].Meta.ID)
+	wantOrder := []string{"e-a", "e-b", "e-c"}
+	for i, id := range wantOrder {
+		if got[i].Meta.ID != id {
+			t.Errorf("index %d: expected %s (n asc), got %s", i, id, got[i].Meta.ID)
+		}
 	}
 }
 
@@ -505,5 +508,106 @@ func TestMemorySearch_TrackingRead_BufferedNotInReadSet(t *testing.T) {
 	}
 	if !tx.ReadSet["e-committed"] {
 		t.Errorf("committed e-committed must be in read-set, got %v", tx.ReadSet)
+	}
+}
+
+// TestMemorySearch_OverLimitFails: a matched set larger than Limit must fail
+// with spi.ErrSearchResultLimitExceeded rather than returning a truncated
+// prefix.
+func TestMemorySearch_OverLimitFails(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
+	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
+	store.Save(ctx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
+
+	_, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
+		ModelName: "Order", ModelVersion: "1", Limit: 2,
+	})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("3 matches over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// TestMemorySearch_AtLimitSucceeds: a matched set exactly equal to Limit
+// succeeds and returns the whole set.
+func TestMemorySearch_AtLimitSucceeds(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
+	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
+
+	got, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
+		ModelName: "Order", ModelVersion: "1", Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("2 matches at limit 2: unexpected err %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2", len(got))
+	}
+}
+
+// TestMemorySearch_UnboundedReturnsAll: Limit <= 0 means unbounded and must
+// never raise, even with a match count that would exceed a positive limit.
+func TestMemorySearch_UnboundedReturnsAll(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
+	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
+	store.Save(ctx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
+
+	got, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
+		ModelName: "Order", ModelVersion: "1", Limit: 0,
+	})
+	if err != nil {
+		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d, want 3", len(got))
+	}
+}
+
+// TestMemorySearch_TxOverlayOverLimitFails: the in-tx RYW overlay must apply
+// the same bound as the non-tx path — committed rows plus the transaction's
+// own buffered writes together must fit within Limit.
+func TestMemorySearch_TxOverlayOverLimitFails(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
+	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
+
+	_, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	store.Save(txCtx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
+
+	_, err = searcher.Search(txCtx, spi.Filter{}, spi.SearchOptions{
+		ModelName: "Order", ModelVersion: "1", Limit: 2,
+	})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("2 committed + 1 buffered over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
 	}
 }

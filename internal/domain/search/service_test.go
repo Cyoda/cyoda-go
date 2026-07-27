@@ -237,7 +237,14 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	}
 }
 
-func TestDirectSearchPagination(t *testing.T) {
+// TestDirectSearch_UnboundedReturnsAllMatches verifies that an omitted
+// (zero-value) Limit is genuinely unbounded on the Searcher pushdown path:
+// all 5 matches come back, none truncated. (Renamed from
+// TestDirectSearchPagination — this exercises no offset/pagination
+// parameter, only the unbounded-limit case; see also
+// TestSearch_FallbackBranchUnboundedReturnsAll for the same guarantee on
+// the GetAll in-memory fallback branch.)
+func TestDirectSearch_UnboundedReturnsAllMatches(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
@@ -269,24 +276,6 @@ func TestDirectSearchPagination(t *testing.T) {
 	}
 	if len(all) != 5 {
 		t.Fatalf("expected 5, got %d", len(all))
-	}
-
-	// Limit=2, Offset=2: should get 2 results
-	page, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 2, Offset: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page) != 2 {
-		t.Fatalf("expected 2 results with limit=2,offset=2, got %d", len(page))
-	}
-
-	// Offset=4, Limit=10: should get 1 result (only 5 total)
-	tail, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10, Offset: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tail) != 1 {
-		t.Fatalf("expected 1 result with offset=4, got %d", len(tail))
 	}
 }
 
@@ -485,7 +474,6 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	pit := time.Now().Add(-1 * time.Hour)
 	opts := search.SearchOptions{
 		Limit:       50,
-		Offset:      10,
 		PointInTime: &pit,
 	}
 
@@ -506,8 +494,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 
 	// Verify it deserializes back correctly.
 	var decoded struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
+		Limit int `json:"limit"`
 	}
 	if err := json.Unmarshal(job.SearchOpts, &decoded); err != nil {
 		t.Fatalf("failed to unmarshal SearchOpts: %v", err)
@@ -515,8 +502,16 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	if decoded.Limit != 50 {
 		t.Errorf("SearchOpts.Limit = %d, want 50", decoded.Limit)
 	}
-	if decoded.Offset != 10 {
-		t.Errorf("SearchOpts.Offset = %d, want 10", decoded.Offset)
+
+	// The persisted job-opts JSON must no longer carry an "offset" key —
+	// SearchOptions.Offset was removed, and a SelfExecutingSearchStore that
+	// decodes this blob must not resurrect a phantom pagination field.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(job.SearchOpts, &raw); err != nil {
+		t.Fatalf("failed to unmarshal SearchOpts as raw map: %v", err)
+	}
+	if _, present := raw["offset"]; present {
+		t.Error(`persisted SearchOpts JSON must not contain an "offset" key`)
 	}
 }
 
@@ -1769,5 +1764,180 @@ func TestSearch_SearcherScanBudgetSentinel_MapsTo400(t *testing.T) {
 	}
 	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
 		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
+	}
+}
+
+// --- GetAll + in-memory fallback bounded-or-fail tests ---
+
+// newFallbackFixture builds a SearchService whose EntityStore is wrapped so
+// it does NOT implement spi.Searcher (the nonSearcherEntityStore/
+// nonSearcherFactory pair defined above, also used by
+// TestSearchFallsBackWhenNotSearcher), then registers n entities that all
+// satisfy functionCondition(t)'s always-true first branch. Every Search call
+// against this fixture is forced through the GetAll + in-memory match
+// branch — there is no Searcher to even attempt pushdown against.
+func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Context, spi.ModelRef) {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"val": schema.Integer})
+	for i := 0; i < n; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	nonSearcher := &nonSearcherEntityStore{EntityStore: realStore}
+	factory := &nonSearcherFactory{StoreFactory: base, entityStore: nonSearcher}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	return svc, ctx, ref
+}
+
+// functionCondition returns a condition tree that puts a genuine
+// predicate.FunctionCondition on the wire — function conditions are a
+// first-class public request shape and, per filter_translate.go, can never
+// be translated to a spi.Filter, so any request containing one always
+// travels through the GetAll + in-memory fallback (independent of whether
+// the store also happens to lack a Searcher, as in newFallbackFixture).
+// TestSearch_FallbackBranchIsBounded_TranslateFailureRoute pins that
+// translate-failure property directly, against a real Searcher-implementing
+// store, rather than relying on newFallbackFixture's belt-and-braces (no
+// Searcher AND untranslatable) setup to demonstrate it.
+//
+// It is wrapped in an OR with an always-true SimpleCondition ($.val > -1,
+// true for every entity newFallbackFixture saves) rather than used bare,
+// because internal/match.Match has no evaluator for FunctionCondition by
+// design (see internal/match/match_test.go
+// TestMatchFunctionConditionError) — a bare FunctionCondition would error
+// out of the fallback's match loop on the first entity, never reaching the
+// bound check this test exists to exercise. matchGroup's OR is
+// short-circuiting, so the always-true first child matches every entity in
+// the fixture and the FunctionCondition child is never evaluated.
+func functionCondition(t *testing.T) predicate.Condition {
+	t.Helper()
+	return &predicate.GroupCondition{
+		Operator: "OR",
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{
+				JsonPath:     "$.val",
+				OperatorType: "GREATER_THAN",
+				Value:        float64(-1),
+			},
+			&predicate.FunctionCondition{},
+		},
+	}
+}
+
+// The GetAll + in-memory match fallback (reached when a condition is not
+// translatable to a pushdown filter — a function condition never is) must be
+// bounded-or-fail too. Otherwise a translate-failure request silently
+// truncates while the pushdown path 400s, which is the same divergence inside
+// one backend that this change removes across backends.
+func TestSearch_FallbackBranchIsBounded(t *testing.T) {
+	svc, ctx, ref := newFallbackFixture(t, 3) // 3 matching entities, no Searcher
+	_, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: 2})
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
+		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
+	// Same sentinel identity as the Searcher-pushdown branch
+	// (TestSearch_SearcherResultLimitSentinel_MapsTo400): the two
+	// bounded-or-fail paths must be indistinguishable to errors.Is callers.
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Errorf("errors.Is(err, ErrSearchResultLimitExceeded) = false; WithCause must preserve the sentinel")
+	}
+}
+
+// TestSearch_FallbackBranchUnboundedReturnsAll is table-driven over both
+// unbounded sentinels: 0 (the "client omitted"/async-submit case) and -1
+// (the sentinel a scoped conditional delete relies on at
+// internal/domain/entity/service.go:947 to select the complete match set —
+// silently truncating it would be data loss). Every -1 call site elsewhere
+// in the test suite travels the Searcher pushdown path, never this
+// fallback branch, so without -1 here a refactor of `opts.Limit > 0` into
+// `opts.Limit != 0` would keep every existing test green while silently
+// truncating -1 on this branch specifically.
+func TestSearch_FallbackBranchUnboundedReturnsAll(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			svc, ctx, ref := newFallbackFixture(t, 3)
+			got, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: limit})
+			if err != nil {
+				t.Fatalf("limit %d must be unbounded: unexpected err %v", limit, err)
+			}
+			if len(got) != 3 {
+				t.Fatalf("got %d, want 3", len(got))
+			}
+		})
+	}
+}
+
+// TestSearch_FallbackBranchIsBounded_TranslateFailureRoute pins the second,
+// independent route into the GetAll fallback that newFallbackFixture does
+// not isolate: the Search doc comment states the fallback is reached either
+// when the store has no Searcher, or when a condition simply fails
+// ConditionToFilter translation — but newFallbackFixture combines both (a
+// non-Searcher store AND an untranslatable condition), so neither mechanism
+// is individually pinned there. This test uses the real memory
+// StoreFactory, whose EntityStore DOES implement spi.Searcher, wrapped only
+// to observe calls (not to suppress the interface) — so a passing result
+// here proves translate failure alone, independent of Searcher
+// availability, routes to the bounded fallback and is bounded there too.
+func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"val": schema.Integer})
+	for i := 0; i < 3; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
+	}
+
+	realStore, _ := base.EntityStore(ctx)
+	// searcherEntityStore DOES implement spi.Searcher (it wraps the real,
+	// Searcher-capable memory store) — its searchFn returns an
+	// obviously-wrong sentinel result, so getAllCalls==1/searchCalls==0
+	// below proves translate failure, not a missing Searcher, drove the
+	// fallback.
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return []*spi.Entity{{Meta: spi.EntityMeta{ID: "from-searcher"}}}, nil
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	_, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: 2})
+
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (translate failure must not reach the Searcher)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 1 {
+		t.Errorf("getAllCalls = %d, want 1 (translate failure must use the GetAll fallback)", ses.getAllCalls)
+	}
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
+		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
 	}
 }

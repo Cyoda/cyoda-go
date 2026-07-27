@@ -67,6 +67,29 @@ func TestDeleteEntities_InvalidCondition(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }
 
+// TestDeleteEntities_UnknownFieldPath asserts a well-formed condition that
+// names a field not present in the model's schema is forwarded as the
+// selection search's classified 400 INVALID_FIELD_PATH, not buried as a 500.
+// Unlike TestDeleteEntities_InvalidCondition (which fails earlier, inside
+// predicate.ParseCondition in the handler, before any search runs), this
+// condition parses fine -- the rejection comes from the field-path validator
+// inside the selection search that DeleteEntitiesConditional forwards
+// (internal/domain/entity/service.go, the h.searchSvc.Search error path).
+func TestDeleteEntities_UnknownFieldPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const model = "e2e-delcond-badpath"
+	importModel(t, model, 1) // schema inferred from {"x":1}; "unknownField" is not in it.
+
+	cond := `{"type":"simple","jsonPath":"$.unknownField","operatorType":"EQUALS","value":"whatever"}`
+	resp := doAuth(t, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), cond)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field path: expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
+}
+
 // TestDeleteEntities_UnknownModel asserts deleting an unregistered model → 404 MODEL_NOT_FOUND.
 func TestDeleteEntities_UnknownModel(t *testing.T) {
 	if testing.Short() {

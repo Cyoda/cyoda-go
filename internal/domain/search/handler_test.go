@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // ---------------------------------------------------------------------------
@@ -320,7 +321,23 @@ func TestHandlerDirectSearchEmpty(t *testing.T) {
 	}
 }
 
-func TestHandlerDirectSearchPagination(t *testing.T) {
+// TestHandlerDirectSearch_BoundedOrFail verifies the HTTP direct-search
+// endpoint is bounded-or-fail end-to-end: a limit smaller than the match
+// count no longer returns a silently truncated page, it 400s with
+// SEARCH_RESULT_LIMIT; a limit at or above the match count returns the full
+// match set. (Renamed from TestHandlerDirectSearchPagination, which no
+// longer describes what this asserts.)
+//
+// This condition is a LifecycleCondition, which lifecycleToFilter always
+// translates, so the request travels the real plugin Searcher pushdown path
+// (memory plugin) rather than a stub — unlike
+// TestSearchEntities_ResultLimitSentinel_Returns400 in handler_limit_test.go,
+// which only proves the handler maps a *stubbed* spi.ErrSearchResultLimitExceeded
+// sentinel to 400. This is the only test that reaches SEARCH_RESULT_LIMIT
+// through the real pushdown path over the full HTTP stack, so it asserts the
+// error code, not just the status: any unrelated 400 (binding failure,
+// validation) would also satisfy a bare status check.
+func TestHandlerDirectSearch_BoundedOrFail(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "Person", 1, `{"name":"Alice","age":30}`)
 
@@ -328,15 +345,27 @@ func TestHandlerDirectSearchPagination(t *testing.T) {
 		createEntity(t, srv.URL, "Person", 1, fmt.Sprintf(`{"name":"Person%d","age":%d}`, i, 20+i))
 	}
 
-	// Search all with lifecycle match, limit=2
 	cond := `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"CREATED"}`
-	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=2")
-	expectStatus(t, resp, http.StatusOK)
-	body := readBody(t, resp)
-	results := parseNDJSON(t, body)
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results with limit=2, got %d", len(results))
+	// limit=2 against 5 matches: bounded-or-fail rejects rather than truncates.
+	resp := doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=2")
+	expectStatus(t, resp, http.StatusBadRequest)
+	body := readBody(t, resp)
+	var problem map[string]any
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("failed to unmarshal ProblemDetail body: %v; body=%s", err, body)
+	}
+	props, _ := problem["properties"].(map[string]any)
+	if props == nil || props["errorCode"] != common.ErrCodeSearchResultLimit {
+		t.Fatalf("errorCode = %v, want %s; body=%s", props, common.ErrCodeSearchResultLimit, body)
+	}
+
+	// limit=5 against 5 matches: within bound, returns the full set.
+	resp = doDirectSearch(t, srv.URL, "Person", 1, cond, "limit=5")
+	expectStatus(t, resp, http.StatusOK)
+	results := parseNDJSON(t, readBody(t, resp))
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results with limit=5, got %d", len(results))
 	}
 }
 

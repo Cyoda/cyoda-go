@@ -7043,10 +7043,17 @@ paths:
         - UI components with real-time search functionality
 
 
+        This endpoint is bounded-or-fail: `limit` caps the matched result
+        set rather than paging it. A matched set larger than `limit` is
+        rejected — never returned as a truncated prefix, because a partial
+        result would be indistinguishable from a complete one. An exact
+        match at `limit` succeeds.
+
+
         Limitations:
 
-        - Maximum result limit: 10000 entities (values above 10000 are rejected
-        with 400 `BAD_REQUEST`)
+        - Result limit range: 1-10000 entities (values outside this range,
+        including 0, are rejected with 400 `BAD_REQUEST`)
 
         - Default result limit: 1000 entities (applied when `limit` is omitted)
 
@@ -7054,7 +7061,7 @@ paths:
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension. A storage backend that enforces a
         bounded result set returns 400 `SEARCH_RESULT_LIMIT` when the matched
-        count exceeds its cap; a non-indexable condition that forces an
+        count exceeds `limit`; a non-indexable condition that forces an
         over-budget residual scan returns 400 `SCAN_BUDGET_EXHAUSTED`.
       operationId: searchEntities
       parameters:
@@ -7081,12 +7088,19 @@ paths:
             format: date-time
         - name: limit
           in: query
-          description: "The maximum number of rows to return. Defaults to 1000 if not
-            provided. Values above 10000 are rejected with 400."
+          description: "Caps the matched result set; not a page size. Defaults to
+            1000 if not provided. Accepts 1-10000; values outside this range,
+            including 0, are rejected with 400. A matched set larger than
+            `limit` fails 400 `SEARCH_RESULT_LIMIT` rather than returning a
+            truncated prefix."
           required: false
           schema:
             type: string
-            maximum: 10000
+            # Intentionally stricter than the server: the handler parses this
+            # with strconv.Atoi, which also accepts a leading '+' and leading
+            # zeros ("+5", "007"). The spec pins the canonical 1-10000 shape;
+            # do not loosen the pattern to chase runtime leniency.
+            pattern: "^([1-9][0-9]{0,3}|10000)$"
         - name: sort
           in: query
           description: >

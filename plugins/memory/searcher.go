@@ -13,19 +13,22 @@ var _ spi.Searcher = (*EntityStore)(nil)
 
 // Search implements spi.Searcher for the in-memory entity store. It produces
 // the same result set that GetAll + spi.MatchFilter would for the same
-// transaction state, but filters/orders/pages with the canonical SPI helpers
-// (spi.MatchFilter, spi.LessByOrder, spi.MergePage) so every backend agrees.
+// transaction state, but filters/orders/bounds with the canonical SPI helpers
+// (spi.MatchFilter, spi.LessByOrder, spi.MergeBounded) so every backend
+// agrees. Search is bounded-or-fail: opts.Limit > 0 caps the matched set, and
+// a matched set larger than the limit is spi.ErrSearchResultLimitExceeded,
+// never a truncated prefix. opts.Limit <= 0 is unbounded.
 //
 // Three branches:
 //   - non-tx: iterate the current committed model (or the PIT snapshot when
-//     opts.PointInTime is set), filter, sort, page. No read-set.
+//     opts.PointInTime is set), filter, sort, bound. No read-set.
 //   - in-tx with PointInTime: committed-only snapshot at the PIT — no buffer
 //     overlay, no read-set (mirrors GetAllAsAt).
 //   - in-tx, PointInTime==nil: read-your-own-writes overlay — a k-way merge of
 //     the committed snapshot (suppressing tx.Deletes and buffered ids) with the
-//     matching buffer entries. Returned committed ids enter tx.ReadSet ONLY
-//     when opts.TrackingRead is set (unlike GetAll, which records every read
-//     unconditionally).
+//     matching buffer entries, bounded by spi.MergeBounded. Returned committed
+//     ids enter tx.ReadSet ONLY when opts.TrackingRead is set (unlike GetAll,
+//     which records every read unconditionally).
 func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	tx := spi.GetTransaction(ctx)
@@ -44,7 +47,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 				committed = s.currentStateMatchesUnlocked(modelRef)
 			}
 		}()
-		return matchSortPage(filter, committed, opts.OrderBy, opts.Offset, opts.Limit), nil
+		return matchSortBounded(filter, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-transaction: hold tx.OpMu.RLock for the whole operation so Commit/
@@ -66,7 +69,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 			defer s.factory.entityMu.RUnlock()
 			committed = s.getAllSnapshotUnlocked(modelRef, *opts.PointInTime)
 		}()
-		return matchSortPage(filter, committed, opts.OrderBy, opts.Offset, opts.Limit), nil
+		return matchSortBounded(filter, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-tx read-your-own-writes overlay. Snapshot the committed model at the
@@ -124,15 +127,17 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		return e, true, nil
 	}
 
-	page, err := spi.MergePage(next, adds, deleted, opts.OrderBy, opts.Offset, opts.Limit)
+	page, err := spi.MergeBounded(next, adds, deleted, opts.OrderBy, opts.Limit)
 	if err != nil {
 		return nil, err
 	}
 
 	// Read-set recording is CONDITIONAL on TrackingRead (GetAll records
 	// unconditionally). Only committed rows (not in the buffer — those are
-	// own-writes already in the write-set) enter the read-set. Still under
-	// tx.OpMu.RLock (held via defer for the whole function).
+	// own-writes already in the write-set) enter the read-set. Bounded-or-fail
+	// means page is exactly the matched set — there is no smaller page to
+	// under-record against. Still under tx.OpMu.RLock (held via defer for the
+	// whole function).
 	if opts.TrackingRead {
 		for _, e := range page {
 			if _, buffered := tx.Buffer[e.Meta.ID]; !buffered {
@@ -163,27 +168,24 @@ func (s *EntityStore) currentStateMatchesUnlocked(modelRef spi.ModelRef) []*spi.
 	return result
 }
 
-// matchSortPage filters rows with spi.MatchFilter, orders with spi.LessByOrder,
-// and applies offset/limit with the same semantics as spi.MergePage
-// (offset >= len ⇒ empty). Used by the non-tx and in-tx PIT branches.
-func matchSortPage(filter spi.Filter, rows []*spi.Entity, order []spi.OrderSpec, offset, limit int) []*spi.Entity {
+// matchSortBounded filters rows with spi.MatchFilter, orders with
+// spi.LessByOrder, and enforces the bounded-or-fail cap: limit > 0 means the
+// whole matched set must fit, and a larger match set is an error rather than a
+// truncated prefix. limit <= 0 is unbounded. Used by the non-tx and in-tx PIT
+// branches; the RYW overlay branch gets the same bound from spi.MergeBounded.
+func matchSortBounded(filter spi.Filter, rows []*spi.Entity, order []spi.OrderSpec, limit int) ([]*spi.Entity, error) {
 	filtered := make([]*spi.Entity, 0, len(rows))
 	for _, e := range rows {
 		if spi.MatchFilter(filter, e.Data, e.Meta) {
 			filtered = append(filtered, e)
+			// Short-circuit before sorting: the result is an error either way.
+			if limit > 0 && len(filtered) > limit {
+				return nil, fmt.Errorf("search: more than %d matches: %w", limit, spi.ErrSearchResultLimitExceeded)
+			}
 		}
 	}
 	sortByOrder(filtered, order)
-	if offset > 0 {
-		if offset >= len(filtered) {
-			return nil
-		}
-		filtered = filtered[offset:]
-	}
-	if limit > 0 && len(filtered) > limit {
-		filtered = filtered[:limit]
-	}
-	return filtered
+	return filtered, nil
 }
 
 // sortByOrder sorts entities in place by the canonical spi.LessByOrder

@@ -1161,7 +1161,19 @@ func (c *Client) GetEntityStatsRaw(t *testing.T) (int, error) {
 // non-2xx. Used for negative-path discover-and-compare.
 func (c *Client) SyncSearchRaw(t *testing.T, modelName string, modelVersion int, condition string) (int, []byte, error) {
 	t.Helper()
+	return c.SyncSearchRawLimit(t, modelName, modelVersion, condition, -1)
+}
+
+// SyncSearchRawLimit is SyncSearchRaw with the `limit` query param set, so a
+// negative-path assertion can see the status and problem body a bounded
+// search produces. limit < 0 omits the param entirely (the "client omitted
+// it" case).
+func (c *Client) SyncSearchRawLimit(t *testing.T, modelName string, modelVersion int, condition string, limit int) (int, []byte, error) {
+	t.Helper()
 	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	if limit >= 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)

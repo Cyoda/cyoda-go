@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -334,6 +335,23 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		TrackingRead: req.TrackingRead,
 	}
 	if req.Limit != nil {
+		// A non-positive limit means UNBOUNDED at the SPI, so accepting it
+		// would make this transport an unbounded-search bypass of the cap
+		// the direct-search endpoint exists to enforce. HTTP rejects the
+		// same values. Report as a CLIENT_ERROR envelope on the stream,
+		// like every other client error in this handler (e.g. the
+		// condition-parse failures above), not a bare gRPC status — so a
+		// caller sees the same error shape regardless of what about the
+		// request was invalid.
+		if *req.Limit < 1 {
+			vErr := common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit: must be at least 1")
+			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", vErr.Error())
+			errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(errCE)
+		}
 		opts.Limit = *req.Limit
 	} else {
 		opts.Limit = search.DefaultDirectSearchLimit

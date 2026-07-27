@@ -88,7 +88,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — not retryable — a non-indexable condition forced a residual scan that examined more rows than the backend's configured scan budget
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `409` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
-- `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — search query matched more results than the server-enforced maximum
+- `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — direct search's matched entity count exceeded the requested `limit` (a cap on the matched set, not a page size)
 - `errors.SEARCH_SHARD_TIMEOUT` — `503` — retryable — one or more search shards did not respond within the configured timeout
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.TRANSACTION_EXPIRED` — `400` — not retryable — transaction token's `exp` claim is in the past

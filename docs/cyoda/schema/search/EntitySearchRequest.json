@@ -27,7 +27,7 @@
     },
     "limit": {
       "type": "integer",
-      "description": "The maximum number of rows to return."
+      "description": "Caps the matched result set; not a page size. A matched set larger than `limit` is rejected rather than returned as a truncated prefix. Values below 1 are rejected."
     },
     "orderBy": {
       "type": "array",

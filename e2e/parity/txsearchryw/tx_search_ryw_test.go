@@ -2,6 +2,7 @@ package txsearchryw
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -198,8 +199,8 @@ func TestTxSearchRYW(t *testing.T) {
 		b := b
 		t.Run(b.name, func(t *testing.T) {
 			t.Run("CoreMatrix", func(t *testing.T) { runCoreMatrix(t, b) })
-			t.Run("PageTiebreak", func(t *testing.T) { runPageTiebreak(t, b) })
-			t.Run("PageNullsLast", func(t *testing.T) { runPageNullsLast(t, b) })
+			t.Run("TiebreakOrder", func(t *testing.T) { runTiebreakOrder(t, b) })
+			t.Run("NullsLastOrder", func(t *testing.T) { runNullsLastOrder(t, b) })
 			t.Run("InTxPITCommittedOnly", func(t *testing.T) { runInTxPIT(t, b) })
 		})
 	}
@@ -277,11 +278,14 @@ func runCoreMatrix(t *testing.T, b backend) {
 	}
 }
 
-// runPageTiebreak covers invariant 7 (tiebreak arm): a buffered add ties three
-// committed rows on the only explicit sort key (rank) and interleaves at the
-// entity_id tiebreak boundary. An offset/limit page straddling the buffered add
-// must be identical across backends.
-func runPageTiebreak(t *testing.T, b backend) {
+// runTiebreakOrder covers invariant 7 (tiebreak arm): a buffered add ties
+// three committed rows on the only explicit sort key (rank) and interleaves
+// at the entity_id tiebreak boundary, identically across backends. Direct
+// search is now bounded-or-fail (no Offset in spi.SearchOptions; Limit caps
+// the matched set rather than paging it), so the old offset/limit page
+// assertion is gone; Limit is instead exercised as a cap over these same
+// four tied rows.
+func runTiebreakOrder(t *testing.T, b backend) {
 	f, baseCtx, cleanup := b.open(t)
 	defer cleanup()
 
@@ -310,23 +314,36 @@ func runPageTiebreak(t *testing.T, b backend) {
 		t.Fatalf("tiebreak full order = %v, want [p1 p2 p3 p5]", got)
 	}
 
-	// Page straddling the buffered add: offset 1, limit 2 → [p2, p3].
-	page, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
+	// Limit below the merged (committed + buffered) count → bounded-or-fail,
+	// not a truncated page. This is the only cross-backend assertion that an
+	// in-tx buffered add pushing the merged count over the cap fails
+	// identically everywhere; per-plugin tests cover the same case but not
+	// from this shared table.
+	_, err = sr.Search(txCtx, cityBerlin, spi.SearchOptions{
 		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion,
-		OrderBy: order, Offset: 1, Limit: 2,
+		OrderBy: order, Limit: 3,
+	})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("Search(limit=3) over 4 matches: err = %v, want ErrSearchResultLimitExceeded", err)
+	}
+
+	// Limit exactly at the merged count → succeeds, same order as unbounded.
+	atLimit, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion,
+		OrderBy: order, Limit: 4,
 	})
 	if err != nil {
-		t.Fatalf("Search(page): %v", err)
+		t.Fatalf("Search(limit=4): %v", err)
 	}
-	if got := idsInOrder(page); !reflect.DeepEqual(got, []string{"p2", "p3"}) {
-		t.Fatalf("tiebreak page(offset1,limit2) = %v, want [p2 p3]", got)
+	if got := idsInOrder(atLimit); !reflect.DeepEqual(got, []string{"p1", "p2", "p3", "p5"}) {
+		t.Fatalf("tiebreak limit=4 order = %v, want [p1 p2 p3 p5]", got)
 	}
 }
 
-// runPageNullsLast covers invariant 7 (NULLS-LAST arm): a committed row with no
-// sort-key value sorts last in both directions, and a buffered add lands
+// runNullsLastOrder covers invariant 7 (NULLS-LAST arm): a committed row with
+// no sort-key value sorts last in both directions, and a buffered add lands
 // adjacent to it under an explicit OrderBy. Identical across backends.
-func runPageNullsLast(t *testing.T, b backend) {
+func runNullsLastOrder(t *testing.T, b backend) {
 	f, baseCtx, cleanup := b.open(t)
 	defer cleanup()
 

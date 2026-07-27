@@ -42,7 +42,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 Search operates against a specific entity model `(entityName, modelVersion)`. Two modes are supported:
 
-**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 — values above 10000 are rejected with `400 BAD_REQUEST`.
+**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. Search is bounded-or-fail: `limit` caps the matched set rather than paging it — a matched set larger than `limit` returns `400 SEARCH_RESULT_LIMIT`, never a truncated prefix. The default `limit` when omitted is 1000; the maximum is 10000; values below 1 are rejected with `400 BAD_REQUEST`.
 
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
@@ -162,7 +162,7 @@ The function is dispatched as `EntityCriteriaCalculationRequest` to the matching
 - `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
   Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
   see `cyoda help crud` ("Point-in-time semantics").
-- `limit` (query, optional): string-encoded integer, maximum 10000 (values above 10000 are rejected with `400 BAD_REQUEST`); default 1000
+- `limit` (query, optional): string-encoded integer, minimum 1, maximum 10000; default 1000
 - `trackingRead` (query, optional): boolean, default `false`. Only meaningful inside an active transaction (see `crud` topic and `docs/CONSISTENCY.md` §3c for the transactional read-set): when `true`, the entities this search returns are recorded into the transaction's read-set, so a concurrent commit touching any of them aborts with `409 Conflict` at commit time. When `false` (default), the search is a plain snapshot read that records nothing — cheap, but it does not protect the returned rows from concurrent writes, and neither setting protects against phantoms (a new entity matching the predicate after the snapshot was taken). Ignored outside a transaction.
 
 Request body: `Condition` JSON document.
@@ -311,14 +311,14 @@ Both sync and async search accept one or more `sort` query parameters. Repeat th
 
 Async search results use page-number pagination: `pageNumber=0` is the first page, `offset = pageNumber * pageSize`. `pageNumber` and `pageSize` are both string-encoded integers in query parameters.
 
-Synchronous search does not paginate; use the `limit` parameter (maximum 10000; above rejects `400`) to bound results. For large datasets, use async search with page retrieval.
+Synchronous search neither paginates nor truncates: the matched set must fit within `limit` or the request fails `400 SEARCH_RESULT_LIMIT`. Any result set larger than that — including an ordered top-N over a large model (`sort` plus a small `limit`) — belongs on the async path, which snapshots the full result set and pages over it.
 
 ## ERRORS
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
-- `errors.SEARCH_RESULT_LIMIT` — `400` — a backend that enforces a bounded result set matched more entities than the configured cap (direct search); async paths also surface it when a requested page or result set exceeds the maximum
+- `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced on every direct-search code path (Searcher pushdown and in-memory fallback alike). Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path

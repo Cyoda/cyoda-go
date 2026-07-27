@@ -15,14 +15,19 @@ var _ spi.Searcher = (*entityStore)(nil)
 // predicates go into the SQL WHERE via planQuery; the residual (regex /
 // case-insensitive ops) is evaluated in Go by postgresIter/evalPostFilter.
 //
-// Pagination: when there is no residual, LIMIT/OFFSET are pushed into SQL.
-// With a residual, rows are streamed, post-filtered, and offset/limit applied
-// in Go — early-stopping once offset+limit matches are gathered, but ONLY when
-// Limit > 0 (an unbounded Limit<=0 request must drain all matches before
-// applying the offset, else a naive offset+limit==offset stop returns empty).
+// Bounding: Search is bounded-or-fail. opts.Limit > 0 is a cap on the matched
+// set, not a page size — a matched set larger than Limit is
+// spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
+// succeeds. opts.Limit <= 0 is unbounded and must never raise; no default is
+// substituted for it. When there is no residual, the bound is pushed into SQL
+// as "LIMIT limit+1": the extra row, if returned, is the proof that the
+// matched set does not fit, which Search reports instead of truncating to
+// limit. With a residual, rows are streamed and post-filtered in Go, and
+// Search raises the moment the running count exceeds Limit — there is no page
+// to gather, so it stops as soon as the matched set is known not to fit.
 //
 // No scan budget (unlike sqlite): the production engine streams in SQL order
-// and bounds memory via the early-stop when a limit is set. An unbounded
+// and bounds memory via the limit+1 probe / early-raise above. An unbounded
 // request with a residual is O(n) memory — the same profile as the in-memory
 // fallback it replaces.
 //
@@ -34,7 +39,7 @@ var _ spi.Searcher = (*entityStore)(nil)
 // context-resolving Querier (s.q), which resolves the active pgx.Tx from ctx, so
 // it already observes the transaction's own uncommitted creates/updates/deletes:
 // RYW is provided by the database, and the committed pushdown IS the RYW result.
-// No buffer overlay, no spi.MergePage, and no tx.OpMu are involved (postgres
+// No buffer overlay, no spi.MergeBounded, and no tx.OpMu are involved (postgres
 // never populates Buffer/Deletes/DeleteAttribution or any other
 // TransactionState bookkeeping field; Get/GetAll don't take tx.OpMu either).
 // The one tx-specific behaviour Search adds over the committed pushdown
@@ -58,10 +63,11 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// validates it (mirroring Get/GetAll, which record via recordReadIfInTx —
 	// but they record unconditionally; Search records only when asked).
 	//
-	// Recording only the RETURNED page (post-LIMIT/OFFSET) is intentional and
-	// matches the sqlite overlay: a search "reads" exactly the rows it returns.
-	// recordReadIfInTx → RecordRead no-ops for ids already in the tx write-set,
-	// so an in-tx UPDATE's row never enters the read-set (it's in the write-set).
+	// Recording the matched set, which under bounded-or-fail is everything the
+	// search returns, matches the sqlite overlay: a search "reads" exactly the
+	// rows it returns. recordReadIfInTx → RecordRead no-ops for ids already in
+	// the tx write-set, so an in-tx UPDATE's row never enters the read-set (it's
+	// in the write-set).
 	// A fresh in-tx INSERT is NOT tracked in the write-set (see Save's isNew
 	// comment), so a TrackingRead search returning it DOES add it to the
 	// read-set — harmless: ValidateReadSet runs inside the same pgx.Tx at
@@ -78,8 +84,10 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 }
 
 // searchCommitted runs the committed pushdown: plan the filter, push the
-// pushable portion (and, when there is no residual, LIMIT/OFFSET) to SQL, then
-// post-filter the residual and page in Go. Executed through the context-
+// pushable portion to SQL, and — when there is no residual — push the
+// limit+1 probe described on Search above. When there is a residual, rows
+// are streamed and post-filtered in Go with no paging: Search raises the
+// moment the running count exceeds the bound. Executed through the context-
 // resolving Querier, so inside a transaction it observes the tx's own writes
 // (read-your-own-writes) natively; outside a transaction it reads committed data.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
@@ -100,16 +108,12 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 
 	baseQuery += orderByClause(opts)
 
-	// No residual → LIMIT/OFFSET in SQL.
-	if plan.postFilter == nil {
-		if opts.Limit > 0 {
-			baseQuery += fmt.Sprintf(" LIMIT $%d", len(baseArgs)+1)
-			baseArgs = append(baseArgs, opts.Limit)
-		}
-		if opts.Offset > 0 {
-			baseQuery += fmt.Sprintf(" OFFSET $%d", len(baseArgs)+1)
-			baseArgs = append(baseArgs, opts.Offset)
-		}
+	// No residual → push the bound into SQL. Ask for limit+1: the extra row is
+	// the proof that the matched set does not fit, which bounded-or-fail must
+	// report instead of truncating to limit.
+	if plan.postFilter == nil && opts.Limit > 0 {
+		baseQuery += fmt.Sprintf(" LIMIT $%d", len(baseArgs)+1)
+		baseArgs = append(baseArgs, opts.Limit+1)
 	}
 
 	rows, err := s.q.Query(ctx, baseQuery, baseArgs...)
@@ -121,7 +125,7 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 
 	var results []*spi.Entity
 
-	// No residual: SQL already applied LIMIT/OFFSET; collect everything.
+	// No residual: SQL already applied the limit+1 probe; collect everything.
 	if plan.postFilter == nil {
 		for it.Next() {
 			results = append(results, it.Entity())
@@ -129,28 +133,22 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 		if err := it.Err(); err != nil {
 			return nil, err
 		}
+		if opts.Limit > 0 && len(results) > opts.Limit {
+			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
+		}
 		return results, nil
 	}
 
-	// Residual present: postgresIter yields only post-filter matches. Apply
-	// offset/limit in Go. Early-stop only when a limit is set (S1 guard).
+	// Residual present: postgresIter yields only post-filter matches. Stop the
+	// moment the matched set is known not to fit — there is no page to gather.
 	for it.Next() {
 		results = append(results, it.Entity())
-		if opts.Limit > 0 && len(results) >= opts.Offset+opts.Limit {
-			break
+		if opts.Limit > 0 && len(results) > opts.Limit {
+			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 	}
 	if err := it.Err(); err != nil {
 		return nil, err
-	}
-	if opts.Offset > 0 {
-		if opts.Offset >= len(results) {
-			return nil, nil
-		}
-		results = results[opts.Offset:]
-	}
-	if opts.Limit > 0 && len(results) > opts.Limit {
-		results = results[:opts.Limit]
 	}
 	return results, nil
 }

@@ -223,9 +223,9 @@ func TestSearchTx_BufferedSupersedesCommitted(t *testing.T) {
 	}
 }
 
-// TestSearchTx_OrderAndPage_Overlay: ordering + offset/limit must apply across
-// the merged (committed + buffer) result set.
-func TestSearchTx_OrderAndPage_Overlay(t *testing.T) {
+// TestSearchTx_OrderAcrossOverlay: ordering must apply across the merged
+// (committed + buffer) result set.
+func TestSearchTx_OrderAcrossOverlay(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// Buffer a new Berlin person that sorts between the committed ones by id.
 	if _, err := store.Save(txCtx, mkPerson("e2b", "Berlin", "NEW")); err != nil {
@@ -234,16 +234,37 @@ func TestSearchTx_OrderAndPage_Overlay(t *testing.T) {
 	// Committed Berlin: e1, e3. Buffered Berlin: e2b. id-asc order: e1, e2b, e3.
 	order := []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}}
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", OrderBy: order, Offset: 1, Limit: 1,
+		ModelName: "person", ModelVersion: "1", OrderBy: order,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 result (offset 1 limit 1), got %d", len(got))
+	wantOrder := []string{"e1", "e2b", "e3"}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("expected %d results, got %d", len(wantOrder), len(got))
 	}
-	if got[0].Meta.ID != "e2b" {
-		t.Errorf("expected e2b at offset 1 (id asc: e1,e2b,e3), got %s", got[0].Meta.ID)
+	for i, id := range wantOrder {
+		if got[i].Meta.ID != id {
+			t.Errorf("index %d: expected %s (id asc: e1,e2b,e3), got %s", i, id, got[i].Meta.ID)
+		}
+	}
+}
+
+// TestSearchTx_OverlayOverLimitFails: the in-tx RYW overlay must apply the
+// same bound as the non-tx path — committed rows plus the transaction's own
+// buffered writes together must fit within Limit.
+func TestSearchTx_OverlayOverLimitFails(t *testing.T) {
+	store, txCtx, searcher := beginTxSearcher(t)
+	// Committed Berlin matches from setup: e1, e3 (2). Buffered own-write
+	// Berlin match: e6. 3 survivors total.
+	if _, err := store.Save(txCtx, mkPerson("e6", "Berlin", "NEW")); err != nil {
+		t.Fatalf("Save e6: %v", err)
+	}
+	_, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", Limit: 2,
+	})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("overlay, 3 survivors over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
 	}
 }
 
@@ -282,26 +303,26 @@ func TestSearchTx_TrackingRead_RecordsReturnedCommittedOnly(t *testing.T) {
 	}
 }
 
-// TestSearchTx_TrackingRead_PagedWindowOnly: an in-tx TrackingRead=true search
-// with a non-trivial Offset/Limit must record into tx.ReadSet only the
-// committed ids that fall inside the RETURNED page window — matching
-// committed rows that were paged OUT (before the offset or beyond the limit)
-// must NOT be recorded, even though they satisfied the filter.
-func TestSearchTx_TrackingRead_PagedWindowOnly(t *testing.T) {
+// TestSearchTx_TrackingRead_RecordsMatchedSet: under bounded-or-fail there is
+// no page smaller than the matched set, so an in-tx TrackingRead=true search
+// records into tx.ReadSet exactly the matched COMMITTED set — the whole of
+// it, not a window — and nothing this transaction itself buffered, even when
+// the buffered write is present in the same transaction. This supersedes the
+// pre-bounded-or-fail invariant (paged-out matches stayed out of the
+// read-set): there is no smaller page anymore, so the read-set widens to the
+// full matched set, which is what first-committer-wins validates at commit.
+func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
-	// Widen the committed Berlin set beyond the standard e1,e3 so a 5-row
-	// window with offset/limit has rows on both sides of the returned page.
-	for _, id := range []string{"e6", "e7", "e8"} {
-		if _, err := store.Save(ctx, mkPerson(id, "Berlin", "NEW")); err != nil {
-			t.Fatalf("Save %s: %v", id, err)
-		}
+	// One more committed Berlin match beyond the standard e1,e3 → 3 committed
+	// matches, id-asc order: e1, e3, e6.
+	if _, err := store.Save(ctx, mkPerson("e6", "Berlin", "NEW")); err != nil {
+		t.Fatalf("Save e6: %v", err)
 	}
-	// Committed Berlin set, id-asc order: e1, e3, e6, e7, e8 (5 rows).
 
 	tm, err := factory.TransactionManager(ctx)
 	if err != nil {
@@ -316,41 +337,44 @@ func TestSearchTx_TrackingRead_PagedWindowOnly(t *testing.T) {
 		t.Fatal("entityStore does not implement spi.Searcher")
 	}
 
-	// Offset=1, Limit=2 over id-asc order [e1,e3,e6,e7,e8] returns exactly
-	// the page [e3,e6] — e1 is paged out by Offset, e7/e8 are paged out by Limit.
-	order := []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}}
+	// A buffered own-write that DOES match cityBerlin — it is part of the
+	// returned matched set (RYW), so it must actually reach tx.ReadSet's
+	// exclusion check, not merely be absent because it never matched.
+	if _, err := store.Save(txCtx, mkPerson("e9", "Berlin", "NEW")); err != nil {
+		t.Fatalf("Save e9: %v", err)
+	}
+
+	// Limit exactly at the total matched-set size (3 committed + 1 buffered =
+	// 4) succeeds and returns all of it.
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", OrderBy: order,
-		Offset: 1, Limit: 2, TrackingRead: true,
+		ModelName: "person", ModelVersion: "1", Limit: 4, TrackingRead: true,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	gotIDs := idSetTx(got)
-	wantPage := map[string]bool{"e3": true, "e6": true}
-	if len(gotIDs) != len(wantPage) {
-		t.Fatalf("page id-set mismatch: got %v, want %v", gotIDs, wantPage)
+	wantReturned := map[string]bool{"e1": true, "e3": true, "e6": true, "e9": true}
+	wantMatched := map[string]bool{"e1": true, "e3": true, "e6": true}
+	if len(gotIDs) != len(wantReturned) {
+		t.Fatalf("returned-set mismatch: got %v, want %v", gotIDs, wantReturned)
 	}
-	for id := range wantPage {
+	for id := range wantReturned {
 		if !gotIDs[id] {
-			t.Errorf("expected %s in returned page, got %v", id, gotIDs)
+			t.Errorf("expected %s in returned set, got %v", id, gotIDs)
 		}
 	}
 
 	tx := spi.GetTransaction(txCtx)
-	for id := range wantPage {
+	for id := range wantMatched {
 		if !tx.ReadSet[id] {
-			t.Errorf("returned page id %s must be in read-set, got %v", id, tx.ReadSet)
+			t.Errorf("committed match %s must be in read-set, got %v", id, tx.ReadSet)
 		}
 	}
-	// Matched but paged-out: e1 (before offset), e7 and e8 (beyond limit).
-	for _, id := range []string{"e1", "e7", "e8"} {
-		if tx.ReadSet[id] {
-			t.Errorf("paged-out matching id %s must NOT be in read-set, got %v", id, tx.ReadSet)
-		}
+	if tx.ReadSet["e9"] {
+		t.Errorf("buffered own-write e9 must NOT be in read-set even though it matched and was returned, got %v", tx.ReadSet)
 	}
-	if len(tx.ReadSet) != len(wantPage) {
-		t.Errorf("read-set must contain exactly the returned page, got %v", tx.ReadSet)
+	if len(tx.ReadSet) != len(wantMatched) {
+		t.Errorf("read-set must contain exactly the matched committed set, got %v", tx.ReadSet)
 	}
 }
 

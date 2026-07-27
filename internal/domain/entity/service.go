@@ -947,6 +947,13 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
 	if err != nil {
 		h.rollbackOwned(txCtx, txID, owned)
+		// A classified 4xx from the selection search (scan budget exhausted,
+		// unknown field path, invalid condition) is the caller's error, not a
+		// server fault — common.Internal would bury it as a 500 + ticket.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			return nil, appErr
+		}
 		return nil, common.Internal("failed to select entities for delete", err)
 	}
 
