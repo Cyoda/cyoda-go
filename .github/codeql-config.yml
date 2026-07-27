@@ -1,0 +1,29 @@
+name: cyoda-go CodeQL config
+
+# Query suite is set in codeql.yml (security-and-quality). This file records the
+# query exclusions, each with the evidence that justifies it. An exclusion
+# without a test pinning the invariant it relies on does not belong here.
+
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  # go/log-injection — excluded: neutralised by the log handler, not by the
+  # ~49 call sites.
+  #
+  # The rule fires wherever request-derived data reaches a log call, on the
+  # assumption that an embedded newline can forge a second record. This project
+  # logs exclusively through log/slog with a TextHandler (internal/logging.Init),
+  # which quotes any value needing it — the newline is escaped and one call still
+  # emits one line.
+  #
+  # The guarantee is a property of the handler, so sanitising at every call site
+  # would add noise at ~49 places to restate something already true once. It is
+  # asserted instead by TestHandlerNeutralisesLogInjection in
+  # internal/logging/injection_test.go, covering newline, CR, CRLF, quote+newline,
+  # NUL and U+2028 against both the message and a structured attribute.
+  #
+  # If the handler is ever replaced with one that does not quote, that test fails
+  # and this exclusion must be removed along with it.
+  - exclude:
+      id: go/log-injection

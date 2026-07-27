@@ -30,8 +30,11 @@ func applyImportMode(existing, incoming []spi.WorkflowDefinition, mode string) [
 
 	default: // MERGE (default)
 		// Build name→workflow map from existing.
-		merged := make(map[string]spi.WorkflowDefinition, len(existing)+len(incoming))
-		order := make([]string, 0, len(existing)+len(incoming))
+		// Size hints from len(existing) alone: the sum could in principle
+		// overflow int, and a hint is only an optimisation — the map and slice
+		// grow on demand either way.
+		merged := make(map[string]spi.WorkflowDefinition, len(existing))
+		order := make([]string, 0, len(existing))
 		for _, wf := range existing {
 			merged[wf.Name] = wf
 			order = append(order, wf.Name)

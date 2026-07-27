@@ -60,6 +60,18 @@ const cbSecondaryWorkflow = `{
 // processors read to learn the secondary model + marker for a scenario. It
 // returns a JSON-encoded (quoted, escaped) string literal ready to embed as the
 // "context" value inside a workflow JSON document.
+// jsonQuote renders s as a JSON string literal.
+//
+// Prefer this over %q when interpolating into a JSON document: %q applies Go
+// quoting rules, which diverge from JSON's for non-ASCII and control characters
+// (Go emits \x.. and \u.. forms JSON does not accept). For ASCII test fixtures
+// the two coincide, which is why this went unnoticed — but the document is JSON,
+// so it should be built with a JSON encoder.
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func cbContext(secondaryModel string, marker string) string {
 	inner, _ := json.Marshal(map[string]any{
 		"secondaryModel":   secondaryModel,
@@ -80,16 +92,16 @@ func cbPrimaryProcWorkflow(wfName, procName, execMode, contextValue string) stri
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"version": "1.1", "name": %s, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
+					"processors": [{"type": "calculator", "name": %s, "executionMode": %s,
 						"config": {"attachEntity": true, "calculationNodesTags": "", "context": %s}}]
 				}]},
 				"ACTIVE": {}
 			}
 		}]
-	}`, wfName, procName, execMode, contextValue)
+	}`, jsonQuote(wfName), jsonQuote(procName), jsonQuote(execMode), contextValue)
 }
 
 // cbSetupModel imports + locks a model with the given sample doc, then imports
@@ -414,7 +426,7 @@ func RunCallbackEmptyTokenStandalone(t *testing.T, fixture BackendFixture) {
 
 // cbStatusEquals builds a simple search condition matching data.status == value.
 func cbStatusEquals(value string) string {
-	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, value)
+	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%s}`, jsonQuote(value))
 }
 
 // RunCallback_CBDPostJoinsTxPost proves that COMMIT_BEFORE_DISPATCH with

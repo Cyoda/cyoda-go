@@ -47,7 +47,7 @@ func resolveSchedule(raw json.RawMessage, armMs int64) (scheduledTime int64, tim
 		return 0, nil, false, invalidScheduleResult("at most one of expireAt/expireAfterMs")
 	}
 
-	sched := armMs
+	var sched int64
 	if s.FireAt != nil {
 		sched = *s.FireAt
 	} else {

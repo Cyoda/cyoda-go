@@ -40,7 +40,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: go
-          queries: security-and-quality
+          # Query suite and the justified exclusions live in the config file so
+          # every exclusion carries its rationale next to it.
+          config-file: ./.github/codeql-config.yml
 
       # Explicit build across the workspace (root + plugins/memory|postgres|sqlite
       # via go.work). CodeQL's autobuild would normally handle this, but being

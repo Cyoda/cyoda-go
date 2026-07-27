@@ -38,6 +38,17 @@ import (
 // The token value is never logged or asserted (Gate 3); scenarios observe only
 // entity state and derived data.
 
+// jsonQuote renders s as a JSON string literal.
+//
+// Prefer this over %q when interpolating into a JSON document: %q applies Go
+// quoting rules, which diverge from JSON's for non-ASCII and control characters
+// (Go emits \x.. and \u.. forms JSON does not accept). Duplicated from the
+// parity package rather than exported, to keep the fixture helpers package-local.
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func init() {
 	Register(
 		NamedTest{Name: "Callback_ForwardedDispatch_HTTP", Fn: RunCallback_ForwardedDispatch_HTTP},
@@ -86,16 +97,16 @@ func cbRoutePrimaryWorkflow(wfName, procName, contextValue string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"version": "1.1", "name": %s, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
-						"config": {"attachEntity": true, "calculationNodesTags": %q, "context": %s}}]
+					"processors": [{"type": "calculator", "name": %s, "executionMode": "SYNC",
+						"config": {"attachEntity": true, "calculationNodesTags": %s, "context": %s}}]
 				}]},
 				"ACTIVE": {}
 			}
 		}]
-	}`, wfName, procName, computeMemberTag, contextValue)
+	}`, jsonQuote(wfName), jsonQuote(procName), jsonQuote(computeMemberTag), contextValue)
 }
 
 // cbRouteSetupModel imports+locks a model with the given sample doc, then imports
@@ -391,7 +402,7 @@ func RunCallback_ForwardedGRPCSearch(t *testing.T, fixture MultiNodeFixture) {
 
 // cbRouteStatusEquals builds a simple search condition matching data.status.
 func cbRouteStatusEquals(value string) string {
-	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%q}`, value)
+	return fmt.Sprintf(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":%s}`, jsonQuote(value))
 }
 
 // cbRouteSameTxID queries the audit REST endpoint for both entities and
