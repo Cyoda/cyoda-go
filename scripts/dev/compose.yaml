@@ -1,0 +1,39 @@
+# Local-development services for running cyoda-go on bare metal.
+#
+# This is NOT a provisioning artifact — canonical ones live under deploy/.
+# deploy/docker/compose.yaml runs the packaged app against sqlite in one
+# container; this file provides the opposite: just the database, so you can
+# build and run cyoda-go yourself against the postgres backend.
+#
+#   make dev-up                          # start (waits for healthy)
+#   CYODA_PROFILES=postgres ./bin/cyoda  # or: make dev-run
+#   make dev-down                        # stop
+#   make dev-reset                       # stop and delete the volume
+#
+# Credentials and port match .env.postgres.example, so the postgres profile
+# connects with no further configuration. Bound to 127.0.0.1 so the database
+# is never reachable off-host.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: cyoda-dev-postgres
+    environment:
+      POSTGRES_DB: minicyoda
+      POSTGRES_USER: minicyoda
+      POSTGRES_PASSWORD: minicyoda
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Required by `docker compose up --wait` in the dev-up target: without a
+    # healthcheck the wait returns as soon as the container starts, before
+    # postgres is accepting connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minicyoda -d minicyoda"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  pgdata:

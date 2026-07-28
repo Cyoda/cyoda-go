@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
+.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-all test-short-all race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
 
 # Plugin submodules: each has its own go.mod, so `go test ./...` from the
 # repo root does not recurse into them. The aggregator targets below close
@@ -6,29 +6,43 @@
 PLUGIN_MODULES := plugins/memory plugins/sqlite plugins/postgres
 
 # --- Docker services ---
+#
+# Dev-only PostgreSQL for running cyoda-go on bare metal. Not a provisioning
+# artifact — deploy/docker/compose.yaml is the packaged app (sqlite-backed);
+# this is just the database.
+DEV_COMPOSE := scripts/dev/compose.yaml
+
+# Postgres connection for the dev targets, matching scripts/dev/compose.yaml.
+# Set explicitly rather than via CYODA_PROFILES=postgres: that would read
+# .env.postgres, which is gitignored — on a fresh clone the profile would find
+# nothing and cyoda would fall back to the memory backend silently, which is a
+# worse failure than an error. The compose file is the single source of truth.
+DEV_PG_ENV := CYODA_STORAGE_BACKEND=postgres \
+	CYODA_POSTGRES_URL='postgres://minicyoda:minicyoda@localhost:5432/minicyoda?sslmode=disable' \
+	CYODA_POSTGRES_AUTO_MIGRATE=true
 
 dev-up:                ## Start local services (PostgreSQL)
-	docker compose up -d --wait
+	docker compose -f $(DEV_COMPOSE) up -d --wait
 
 dev-down:              ## Stop local services
-	docker compose down
+	docker compose -f $(DEV_COMPOSE) down
 
 dev-reset:             ## Stop services and delete volumes (fresh start)
-	docker compose down -v
+	docker compose -f $(DEV_COMPOSE) down -v
 
 dev-ps:                ## Show service status
-	docker compose ps
+	docker compose -f $(DEV_COMPOSE) ps
 
 dev-logs:              ## Tail service logs
-	docker compose logs -f
+	docker compose -f $(DEV_COMPOSE) logs -f
 
 # --- Build & Run ---
 
 build:                 ## Build the binary
 	go build -o bin/cyoda ./cmd/cyoda
 
-dev-run: dev-up build  ## Start services + run cyoda with postgres KV
-	set -a && . .env.dev && set +a && ./bin/cyoda
+dev-run: dev-up build  ## Start services + run cyoda against local postgres
+	$(DEV_PG_ENV) ./bin/cyoda
 
 # --- Docker image ---
 
@@ -82,7 +96,7 @@ race:                  ## Run race detector on race-sensitive packages (CI parit
 	go test -race -timeout=15m $$pkgs
 
 dev-test: dev-up       ## Run all tests against local postgres
-	set -a && . .env.dev && set +a && go test ./... -v -count=1
+	$(DEV_PG_ENV) go test ./... -v -count=1
 
 # --- TODOs ---
 
