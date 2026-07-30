@@ -5,72 +5,33 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"sort"
 	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
 // The `workflows` CRITERIA section and the `search` Condition-DSL section
 // describe the same evaluation kernel (predicate.ParseCondition ->
-// match.Match). These guards pin both topics to the source of truth so the
-// two cannot drift apart, or away from the code, again.
+// match.Match). These guards pin both topics to what that kernel accepts, so
+// the two cannot drift apart, or away from the code, again.
+//
+// The lifecycle-field vocabulary is taken from match.matchLifecycle because
+// that is the evaluator the topics describe. Its agreement with
+// search.sortableMetaFields — the allowlist the API boundary and
+// workflow-criterion import validate against, and the documented source of
+// truth for the vocabulary — is pinned separately by
+// TestMetaVocabulary_EvaluatorMatchesAllowlist.
 
 var (
-	// matchLifecycleFunc isolates the body of matchLifecycle in
-	// internal/match/match.go. The body's closing brace is the only "}" at
-	// column 0 after the signature, so the non-greedy match stops there.
-	matchLifecycleFunc = regexp.MustCompile(`(?s)func matchLifecycle\(.*?\n}`)
-	// caseLabel captures each `case "field":` label of that switch — the
-	// canonical lifecycle-field vocabulary.
-	caseLabel = regexp.MustCompile(`case "([A-Za-z]+)":`)
-	// lifecycleAlias captures the `field == "x"` -> `field = "y"` alias
-	// normalisation performed on entry.
-	lifecycleAlias = regexp.MustCompile(`field == "([A-Za-z]+)"\s*\{\s*field = "([A-Za-z]+)"`)
 	// backticked captures each `token` in a markdown span.
 	backticked = regexp.MustCompile("`([A-Za-z]+)`")
 	// searchConditionHeading captures the **XCondition** headings that form
 	// the search topic's condition-type catalogue.
 	searchConditionHeading = regexp.MustCompile(`(?m)^\*\*([A-Za-z]+)Condition\*\*`)
 )
-
-// acceptedLifecycleFields derives the lifecycle (meta) field vocabulary from
-// matchLifecycle: every switch case, plus the alias it normalises on entry.
-func acceptedLifecycleFields(t *testing.T, root string) []string {
-	t.Helper()
-	src, err := os.ReadFile(filepath.Join(root, "internal/match/match.go"))
-	if err != nil {
-		t.Fatalf("read match.go: %v", err)
-	}
-	body := matchLifecycleFunc.Find(src)
-	if body == nil {
-		t.Fatal("matchLifecycle not found in internal/match/match.go")
-	}
-	fields := map[string]bool{}
-	for _, m := range caseLabel.FindAllStringSubmatch(string(body), -1) {
-		fields[m[1]] = true
-	}
-	for _, m := range lifecycleAlias.FindAllStringSubmatch(string(body), -1) {
-		if !fields[m[2]] {
-			t.Errorf("alias %q normalises to %q, which is not a switch case", m[1], m[2])
-		}
-		fields[m[1]] = true
-	}
-	if len(fields) == 0 {
-		t.Fatal("no lifecycle fields extracted from matchLifecycle")
-	}
-	return sortedKeys(fields)
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
 
 // topicSentence returns the backticked tokens listed after marker in body, up
 // to the end of that sentence. Doc lists are written as a run of `code` spans
@@ -95,7 +56,7 @@ func topicSentence(t *testing.T, body, marker, topic string) []string {
 	if len(seen) == 0 {
 		t.Fatalf("%s: no `code` tokens after %q", topic, marker)
 	}
-	return sortedKeys(seen)
+	return commontest.SortedKeys(seen)
 }
 
 func readTopic(t *testing.T, root, name string) string {
@@ -114,7 +75,7 @@ func readTopic(t *testing.T, root, name string) string {
 // topic must see the same six fields plus the previousTransition alias.
 func TestHelpTopics_LifecycleFieldParity(t *testing.T) {
 	root := repoRoot(t)
-	accepted := acceptedLifecycleFields(t, root)
+	accepted := commontest.MatchLifecycleFields(t)
 
 	workflows := topicSentence(t,
 		readTopic(t, root, "workflows.md"),
@@ -151,7 +112,7 @@ func TestHelpTopics_ConditionTypeParity(t *testing.T) {
 	if len(catalogued) == 0 {
 		t.Fatal("search.md: no **XCondition** headings found")
 	}
-	if want := sortedKeys(catalogued); !reflect.DeepEqual(documented, want) {
+	if want := commontest.SortedKeys(catalogued); !reflect.DeepEqual(documented, want) {
 		t.Errorf("workflows.md lists condition types %v; search.md catalogues %v", documented, want)
 	}
 
