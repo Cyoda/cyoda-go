@@ -6700,10 +6700,13 @@ paths:
 
         1. Simple conditions - search within entity data using JSONPath
 
-        2. Lifecycle conditions - search based on entity lifecycle (state,
-        creationDate, previousTransition)
+        2. Lifecycle conditions - search based on entity metadata (state,
+        creationDate, lastUpdateTime, transitionForLatestSave — alias
+        previousTransition, transactionId, id)
 
         3. Group conditions - combine multiple conditions with AND/OR operators
+
+        4. Array conditions - positional matching against array elements
 
 
         Operator Types (Predicates)
