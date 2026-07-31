@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 218 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 220 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -105,6 +105,8 @@ var allTests = []NamedTest{
 
 	// Phase 4b — search scenarios (Task 4b.6-8)
 	{"SearchSimpleCondition", RunSearchSimpleCondition},
+	{"SearchFunctionCondition400", RunSearchFunctionCondition400},
+	{"SearchFunctionConditionNestedInGroup400", RunSearchFunctionConditionNestedInGroup400},
 	{"SearchBoolCondition", RunSearchBoolCondition},
 	{"SearchLifecycleCondition", RunSearchLifecycleCondition},
 	{"SearchGroupCondition", RunSearchGroupCondition},

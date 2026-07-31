@@ -213,3 +213,16 @@ error at api/openapi.yaml, in API GET /model/{entityName}/{modelVersion}/workflo
 # on the string encoding — this is an INTENTIONAL, accepted breaking change,
 # not spec-to-reality drift, called out in CHANGELOG.md.
 error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} added the pattern `^([1-9][0-9]{0,3}|10000)$` to the `query` request parameter `limit` [request-parameter-pattern-added].
+
+# function conditions removed from the search / async-search / grouped-stats request
+# unions: a FUNCTION clause is a workflow/transition-criterion shape the engine dispatches
+# to a compute member. Search has no dispatcher — the clause defeated pushdown translation
+# and then died in the in-process kernel, so the server answered a request carrying one with
+# a 500 (or, on async submit, a job that silently ended FAILED). The spec advertised a shape
+# the server never served; it is now rejected at the boundary with 400 INVALID_CONDITION and
+# the union corrected to match. No working client depended on it — there was no working
+# client. FunctionConditionDto is unchanged and still reachable from the workflow/transition
+# `criterion` unions, where it is valid. ADR 0003 Decision 7 (spec-to-reality reconciliation).
+error at api/openapi.yaml, in API POST /entity/stats/{entityName}/{modelVersion}/query removed `#/components/schemas/FunctionConditionDto` from the `condition` request property `oneOf` list [request-property-one-of-removed].
+error at api/openapi.yaml, in API POST /search/async/{entityName}/{modelVersion} removed `#/components/schemas/FunctionConditionDto` from the request body `oneOf` list [request-body-one-of-removed].
+error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed `#/components/schemas/FunctionConditionDto` from the request body `oneOf` list [request-body-one-of-removed].

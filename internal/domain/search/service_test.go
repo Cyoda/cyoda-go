@@ -91,6 +91,30 @@ func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory 
 	}
 }
 
+// helper: register a model declaring an Integer leaf `val` alongside an
+// `items` array of objects carrying a String leaf `name`. The array member
+// exists purely so untranslatableCondition's wildcard path resolves against a
+// declared field and survives pre-execution path validation.
+func saveModelWithValAndItemsArray(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+	t.Helper()
+	elem := schema.NewObjectNode()
+	elem.SetChild("name", schema.NewLeafNode(schema.String))
+	node := schema.NewObjectNode()
+	node.SetChild("val", schema.NewLeafNode(schema.Integer))
+	node.SetChild("items", schema.NewArrayNode(elem))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
 // helper: save an entity with JSON data, return its ID.
 func saveEntity(t *testing.T, ctx context.Context, factory *memory.StoreFactory, modelRef spi.ModelRef, id string, data []byte) {
 	t.Helper()
@@ -1773,7 +1797,7 @@ func TestSearch_SearcherScanBudgetSentinel_MapsTo400(t *testing.T) {
 // it does NOT implement spi.Searcher (the nonSearcherEntityStore/
 // nonSearcherFactory pair defined above, also used by
 // TestSearchFallsBackWhenNotSearcher), then registers n entities that all
-// satisfy functionCondition(t)'s always-true first branch. Every Search call
+// satisfy untranslatableCondition(t)'s always-true first branch. Every Search call
 // against this fixture is forced through the GetAll + in-memory match
 // branch — there is no Searcher to even attempt pushdown against.
 func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Context, spi.ModelRef) {
@@ -1784,7 +1808,7 @@ func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Con
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
-	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"val": schema.Integer})
+	saveModelWithValAndItemsArray(t, ctx, base, ref)
 	for i := 0; i < n; i++ {
 		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
 	}
@@ -1800,27 +1824,29 @@ func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Con
 	return svc, ctx, ref
 }
 
-// functionCondition returns a condition tree that puts a genuine
-// predicate.FunctionCondition on the wire — function conditions are a
-// first-class public request shape and, per filter_translate.go, can never
-// be translated to a spi.Filter, so any request containing one always
-// travels through the GetAll + in-memory fallback (independent of whether
-// the store also happens to lack a Searcher, as in newFallbackFixture).
+// untranslatableCondition returns a condition tree that ConditionToFilter
+// cannot push down, so any request carrying it always travels through the
+// GetAll + in-memory fallback — independent of whether the store also happens
+// to lack a Searcher, as in newFallbackFixture.
 // TestSearch_FallbackBranchIsBounded_TranslateFailureRoute pins that
 // translate-failure property directly, against a real Searcher-implementing
 // store, rather than relying on newFallbackFixture's belt-and-braces (no
 // Searcher AND untranslatable) setup to demonstrate it.
 //
-// It is wrapped in an OR with an always-true SimpleCondition ($.val > -1,
-// true for every entity newFallbackFixture saves) rather than used bare,
-// because internal/match.Match has no evaluator for FunctionCondition by
-// design (see internal/match/match_test.go
-// TestMatchFunctionConditionError) — a bare FunctionCondition would error
-// out of the fallback's match loop on the first entity, never reaching the
-// bound check this test exists to exercise. matchGroup's OR is
-// short-circuiting, so the always-true first child matches every entity in
-// the fixture and the FunctionCondition child is never evaluated.
-func functionCondition(t *testing.T) predicate.Condition {
+// The untranslatable member is a wildcard array path: stripDollarDot rejects
+// the "[" as non-pushdownable syntax, and groupToFilter propagates that
+// failure, so the whole tree fails translation. It is a declared field
+// ($.items[*].name in saveModelWithValAndItemsArray) so the tree still clears
+// pre-execution path validation, and it is OR'd with an always-true
+// SimpleCondition ($.val > -1, true for every entity the fixtures save) so the
+// fallback's match loop still yields every entity and reaches the bound check
+// these tests exist to exercise.
+//
+// This used to be a FunctionCondition, which is untranslatable for the same
+// reason. It no longer can be: a function clause is a criterion shape and
+// ValidateCondition now rejects it at the search boundary, so it never reaches
+// translation at all (see function_condition_reject_test.go).
+func untranslatableCondition(t *testing.T) predicate.Condition {
 	t.Helper()
 	return &predicate.GroupCondition{
 		Operator: "OR",
@@ -1830,7 +1856,11 @@ func functionCondition(t *testing.T) predicate.Condition {
 				OperatorType: "GREATER_THAN",
 				Value:        float64(-1),
 			},
-			&predicate.FunctionCondition{},
+			&predicate.SimpleCondition{
+				JsonPath:     "$.items[*].name",
+				OperatorType: "EQUALS",
+				Value:        "never-present",
+			},
 		},
 	}
 }
@@ -1842,7 +1872,7 @@ func functionCondition(t *testing.T) predicate.Condition {
 // one backend that this change removes across backends.
 func TestSearch_FallbackBranchIsBounded(t *testing.T) {
 	svc, ctx, ref := newFallbackFixture(t, 3) // 3 matching entities, no Searcher
-	_, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: 2})
+	_, err := svc.Search(ctx, ref, untranslatableCondition(t), search.SearchOptions{Limit: 2})
 
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
@@ -1872,7 +1902,7 @@ func TestSearch_FallbackBranchUnboundedReturnsAll(t *testing.T) {
 	for _, limit := range []int{0, -1} {
 		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
 			svc, ctx, ref := newFallbackFixture(t, 3)
-			got, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: limit})
+			got, err := svc.Search(ctx, ref, untranslatableCondition(t), search.SearchOptions{Limit: limit})
 			if err != nil {
 				t.Fatalf("limit %d must be unbounded: unexpected err %v", limit, err)
 			}
@@ -1901,7 +1931,7 @@ func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
-	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"val": schema.Integer})
+	saveModelWithValAndItemsArray(t, ctx, base, ref)
 	for i := 0; i < 3; i++ {
 		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
 	}
@@ -1924,7 +1954,7 @@ func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
-	_, err := svc.Search(ctx, ref, functionCondition(t), search.SearchOptions{Limit: 2})
+	_, err := svc.Search(ctx, ref, untranslatableCondition(t), search.SearchOptions{Limit: 2})
 
 	if ses.searchCalls != 0 {
 		t.Errorf("searchCalls = %d, want 0 (translate failure must not reach the Searcher)", ses.searchCalls)

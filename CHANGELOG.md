@@ -6,6 +6,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **`function` conditions in a search body no longer produce a 5xx.** A
+  `{"type":"function", ...}` clause is a workflow/transition-criterion shape the
+  engine dispatches to a compute member; search has no dispatcher for it. It was
+  accepted by every validator, defeated pushdown translation, and then died in
+  the in-process predicate kernel — surfacing as **500** on sync search, grouped
+  statistics and conditional delete-by-model, as a **`success:false`
+  `SERVER_ERROR` envelope** over gRPC, and worst on async submit as **200 plus a
+  job that silently ended `FAILED`** with no reason on either poll. Nested
+  inside an `OR` whose earlier clause matched, it was skipped entirely and the
+  request returned a wrong **200**. Every search-shaped entry point now rejects
+  the clause at any depth with **400 `INVALID_CONDITION`**, before any store
+  access — so no transaction is opened for a conditional delete and no job is
+  created for an async submit. Workflow and transition criteria are unaffected.
+  `FunctionConditionDto` is removed from the three search request unions in the
+  OpenAPI document and retained in the `criterion` unions, where it is valid.
+  ([#458](https://github.com/Cyoda-platform/cyoda-go/issues/458))
+
 - **`cyoda help workflows` understated what criteria accept** — the CRITERIA
   section advertised "all four condition types" (omitting `function`) and three
   lifecycle fields, so a reader believed valid criteria were invalid. It now

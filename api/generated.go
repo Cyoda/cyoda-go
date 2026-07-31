@@ -4204,32 +4204,6 @@ func (t *GroupedStatsRequest_Condition) MergeArrayConditionDto(v ArrayConditionD
 	return err
 }
 
-// AsFunctionConditionDto returns the union data inside the GroupedStatsRequest_Condition as a FunctionConditionDto
-func (t GroupedStatsRequest_Condition) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided FunctionConditionDto
-func (t *GroupedStatsRequest_Condition) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided FunctionConditionDto
-func (t *GroupedStatsRequest_Condition) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
 // AsGroupConditionDto returns the union data inside the GroupedStatsRequest_Condition as a GroupConditionDto
 func (t GroupedStatsRequest_Condition) AsGroupConditionDto() (GroupConditionDto, error) {
 	var body GroupConditionDto
@@ -4722,32 +4696,6 @@ func (t *SubmitAsyncSearchJobJSONBody) MergeArrayConditionDto(v ArrayConditionDt
 	return err
 }
 
-// AsFunctionConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a FunctionConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided FunctionConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided FunctionConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
 // AsGroupConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a GroupConditionDto
 func (t SubmitAsyncSearchJobJSONBody) AsGroupConditionDto() (GroupConditionDto, error) {
 	var body GroupConditionDto
@@ -4852,32 +4800,6 @@ func (t *SearchEntitiesJSONBody) FromArrayConditionDto(v ArrayConditionDto) erro
 
 // MergeArrayConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided ArrayConditionDto
 func (t *SearchEntitiesJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the SearchEntitiesJSONBody as a FunctionConditionDto
-func (t SearchEntitiesJSONBody) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided FunctionConditionDto
-func (t *SearchEntitiesJSONBody) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided FunctionConditionDto
-func (t *SearchEntitiesJSONBody) MergeFunctionConditionDto(v FunctionConditionDto) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

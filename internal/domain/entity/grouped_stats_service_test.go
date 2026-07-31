@@ -11,6 +11,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -307,14 +308,23 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 }
 
 func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *testing.T) {
-	// FunctionCondition is parseable but ConditionToFilter rejects it,
-	// so the service must pass zero-value Filter and re-apply match.Match.
+	// A wildcard array path is parseable and evaluable in-memory but
+	// ConditionToFilter rejects the "[" as non-pushdownable, so the service
+	// must pass a zero-value Filter to Iterate and re-apply match.Match as a
+	// residual — the residual, not the store, is what excludes the second row.
+	//
+	// This used to use a FunctionCondition, which is untranslatable for the
+	// same reason. It no longer can be: search.ValidateCondition rejects a
+	// function clause upstream, so it never reaches this service.
 	cond := json.RawMessage(`{
-		"type": "function",
-		"function": {"name": "any-fn"}
+		"type": "simple",
+		"jsonPath": "$.items[*].name",
+		"operatorType": "EQUALS",
+		"value": "keep"
 	}`)
 	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"items":[{"name":"keep"}]}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"items":[{"name":"drop"}]}`)},
 	}
 	iter := &fakeIterable{entities: rows}
 	svc := entity.NewGroupedStatsService(10000)
@@ -322,14 +332,40 @@ func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *te
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
 	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	// match.Match returns an error for FunctionCondition — surface it.
-	if err == nil {
-		t.Fatal("expected match.Match error for function condition, got nil")
+	// The residual runs the type-directed kernel, which needs the declared
+	// type of the leaf: an undeclared comparison leaf degrades to non-match.
+	fields := map[string]schema.FieldDescriptor{
+		"$.items[*].name": {Path: "$.items[*].name", Types: []spi.DataType{spi.String}, IsArray: true},
 	}
-	// And critically, Iterate must have been called with a zero-value Filter.
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Critically, Iterate must have been called with a zero-value Filter.
 	if iter.lastFlt.Op != "" {
 		t.Fatalf("expected zero-value Filter, got %+v", iter.lastFlt)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 1 {
+		t.Fatalf("buckets = %+v, want one bucket count=1 (residual excluded the second row)", buckets)
+	}
+}
+
+// A function clause reaching the grouped-stats service would be a boundary
+// bug — search.ValidateCondition rejects it first. Defence in depth: if one
+// ever does, it must fail closed rather than silently produce buckets over an
+// unevaluated predicate.
+func TestQueryGroupedStats_FunctionConditionFailsClosed(t *testing.T) {
+	cond := json.RawMessage(`{"type":"function","function":{"name":"any-fn"}}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	if _, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req); err == nil {
+		t.Fatal("expected a function condition to fail closed, got nil")
 	}
 }
 

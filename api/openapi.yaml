@@ -6806,7 +6806,6 @@ paths:
             schema:
               oneOf:
                 - $ref: "#/components/schemas/ArrayConditionDto"
-                - $ref: "#/components/schemas/FunctionConditionDto"
                 - $ref: "#/components/schemas/GroupConditionDto"
                 - $ref: "#/components/schemas/LifecycleConditionDto"
                 - $ref: "#/components/schemas/SimpleConditionDto"
@@ -7138,7 +7137,6 @@ paths:
             schema:
               oneOf:
                 - $ref: "#/components/schemas/ArrayConditionDto"
-                - $ref: "#/components/schemas/FunctionConditionDto"
                 - $ref: "#/components/schemas/GroupConditionDto"
                 - $ref: "#/components/schemas/LifecycleConditionDto"
                 - $ref: "#/components/schemas/SimpleConditionDto"
@@ -10720,7 +10718,6 @@ components:
             Uses the same union shape as the async-search endpoint.
           oneOf:
             - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/FunctionConditionDto"
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"

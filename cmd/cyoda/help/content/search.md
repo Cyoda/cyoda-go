@@ -129,7 +129,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 - `jsonPath`: path to the array field
 - `values`: positional values; `null` entries match any value at that index
 
-**FunctionCondition** — server-side function predicate dispatched to a compute member:
+**FunctionCondition** — server-side function predicate dispatched to a compute member. **Criteria only — search requests reject it.** Documented here because criteria and search share the one `Condition` DSL; a search, async-search, grouped-stats or conditional-delete body carrying a `function` clause at any depth is rejected `400 INVALID_CONDITION`. Use it in a workflow or transition `criterion` (see `workflows`).
 
 ```json
 {
@@ -151,7 +151,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 - `function.config.attachEntity`: boolean (optional, default `true`) — when `true`, the full entity payload is included in the dispatch request
 - `function.config.responseTimeoutMs`: int64 (optional, default `30000`) — timeout in milliseconds
 
-The function is dispatched as `EntityCriteriaCalculationRequest` to the matching compute member — see the `grpc` topic for the request/response shape. `FunctionCondition` cannot be translated to a storage-plugin pushdown filter; it always executes as a post-filter with in-memory entity loading.
+When used as a criterion, the function is dispatched as `EntityCriteriaCalculationRequest` to the matching compute member — see the `grpc` topic for the request/response shape — and must be the whole criterion; one nested inside a `group` fails the evaluation. Search has no dispatcher: `FunctionCondition` cannot be translated to a storage-plugin pushdown filter and the in-process kernel has no evaluator for it, which is why it is rejected up front rather than attempted.
 
 ## ENDPOINTS
 
