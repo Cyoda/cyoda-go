@@ -116,8 +116,15 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		}
 		return nil
 	case *predicate.FunctionCondition:
-		// Function conditions are not operator-typed; nothing to check.
-		return nil
+		// A FUNCTION clause is a criterion shape, not a search shape. The
+		// workflow engine intercepts it in evaluateCriterion and dispatches it
+		// to a compute member; search has no dispatcher, ConditionToFilter
+		// cannot translate it, and match.Match has no evaluator for it. Reject
+		// it here — the one boundary every search-shaped entry point funnels
+		// through — rather than letting it reach the evaluator and surface as a
+		// 500 on a client-supplied condition.
+		return fmt.Errorf("%w: function conditions are not supported in search; "+
+			"they are only valid as workflow or transition criteria", ErrInvalidCondition)
 	default:
 		return nil
 	}

@@ -402,3 +402,76 @@ func RunWorkflowCriteriaSelectingWorkflow(t *testing.T, fixture BackendFixture) 
 		t.Errorf("expected STD_CREATED (standard workflow selected), got %s", got.Meta.State)
 	}
 }
+
+// RunSearchFunctionCondition400 asserts a `function` clause in a search
+// condition is rejected with HTTP 400 and errorCode INVALID_CONDITION on
+// every backend, at the ValidateCondition boundary — before any store is
+// touched, so no backend gets a chance to diverge on it.
+//
+// A function clause is a workflow/transition-criterion shape: the engine
+// dispatches it to a compute member. Search has no dispatcher, so before this
+// rejection the clause fell through to the in-memory evaluator and produced a
+// 500 on every backend identically — but the divergence risk is real, because
+// the clause also defeats pushdown translation and each backend reaches the
+// evaluator by its own route.
+func RunSearchFunctionCondition400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-function-400"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":100,"status":"active"}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	const cond = `{"type":"function","function":{"name":"approval-check","config":{"calculationNodesTags":"approval-service"}}}`
+	status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+	if err != nil {
+		t.Fatalf("SyncSearchRaw: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body=%s", status, body)
+	}
+	if !containsErrorCode(body, "INVALID_CONDITION") {
+		t.Errorf("expected errorCode INVALID_CONDITION, body=%s", body)
+	}
+}
+
+// RunSearchFunctionConditionNestedInGroup400 is the depth counterpart: the
+// walker must find a function clause buried inside a group on every backend.
+// Left unrejected, an OR group whose earlier child matched short-circuited
+// past the function clause entirely and returned 200 with results — a
+// silently wrong answer rather than a loud failure.
+func RunSearchFunctionConditionNestedInGroup400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-function-nested-400"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":100,"status":"active"}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	const cond = `{
+		"type": "group",
+		"operator": "OR",
+		"conditions": [
+			{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"},
+			{"type":"function","function":{"name":"approval-check"}}
+		]
+	}`
+	status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+	if err != nil {
+		t.Fatalf("SyncSearchRaw: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body=%s", status, body)
+	}
+	if !containsErrorCode(body, "INVALID_CONDITION") {
+		t.Errorf("expected errorCode INVALID_CONDITION, body=%s", body)
+	}
+}

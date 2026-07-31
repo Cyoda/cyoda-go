@@ -447,7 +447,7 @@ above.
 | **Lifecycle** | Predicate on entity metadata (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id) |
 | **Group** | AND/OR composition with arbitrary nesting |
 | **Array** | Positional matching against array elements |
-| **Function** | Delegated to external compute node via gRPC |
+| **Function** | Criteria only — a search body carrying one is rejected `400 INVALID_CONDITION` (no per-entity compute dispatch in the search path) |
 
 ---
 
