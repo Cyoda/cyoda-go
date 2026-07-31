@@ -908,6 +908,25 @@ func TestMatchFunctionConditionError(t *testing.T) {
 	}
 }
 
+// A FUNCTION criterion is dispatched to a compute member by the engine only
+// when it is the whole criterion; nested inside a group it reaches this
+// evaluator, which has no dispatcher and fails closed rather than silently
+// treating the branch as a non-match. The `workflows` help topic documents
+// this restriction — keep the two in step.
+func TestMatchFunctionConditionNestedInGroupError(t *testing.T) {
+	cond := &predicate.GroupCondition{
+		Operator: "AND",
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+			&predicate.FunctionCondition{},
+		},
+	}
+	_, err := Match(cond, sampleData, meta(), sampleTypes)
+	if err == nil {
+		t.Error("expected error for a function condition nested in a group")
+	}
+}
+
 // --- 17. IS_CHANGED → error ---
 
 func TestMatchIsChangedError(t *testing.T) {

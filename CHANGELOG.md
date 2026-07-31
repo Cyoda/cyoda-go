@@ -6,6 +6,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **`cyoda help workflows` understated what criteria accept** — the CRITERIA
+  section advertised "all four condition types" (omitting `function`) and three
+  lifecycle fields, so a reader believed valid criteria were invalid. It now
+  lists all five condition types and all six lifecycle fields —
+  `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias
+  `previousTransition`), `transactionId`, `id` — matching `cyoda help search`,
+  which describes the same evaluation kernel. New parity tests pin both topics
+  to `matchLifecycle` and to each other. The async-search description in the
+  OpenAPI document carried the same three-field list and is corrected with it.
+  ([#455](https://github.com/Cyoda-platform/cyoda-go/issues/455))
+
 - **`make dev-*` targets restored** — the dev targets had been broken since the
   root `docker-compose.yml` was deleted while every target still invoked bare
   `docker compose`; `dev-run`/`dev-test` separately sourced a `.env.dev` that

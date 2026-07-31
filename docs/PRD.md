@@ -246,7 +246,7 @@ have changed.
 | Type | Evaluation | Description |
 |------|-----------|-------------|
 | **Simple** | Local | JSONPath expression + operator + value against entity data |
-| **Lifecycle** | Local | Predicate on entity metadata (state, creationDate, previousTransition) |
+| **Lifecycle** | Local | Predicate on entity metadata (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id) |
 | **Group** | Local | AND/OR composition with arbitrary nesting depth |
 | **Array** | Local | Positional matching against array elements |
 | **Function** | Remote | Delegated to external compute node via gRPC CloudEvents |
@@ -444,7 +444,7 @@ above.
 | Type | Description |
 |------|-------------|
 | **Simple** | JSONPath + operator + value against entity data |
-| **Lifecycle** | Predicate on entity metadata (state, creationDate, previousTransition) |
+| **Lifecycle** | Predicate on entity metadata (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id) |
 | **Group** | AND/OR composition with arbitrary nesting |
 | **Array** | Positional matching against array elements |
 | **Function** | Delegated to external compute node via gRPC |
