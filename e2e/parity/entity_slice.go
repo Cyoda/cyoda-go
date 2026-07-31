@@ -153,12 +153,18 @@ func RunGetAllEntitiesAsAt(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond)
-	midpoint := time.Now().UTC()
+	tCreate := LatestChangeTime(t, c, id)
+
+	// Space the writes so the two versions land in distinct instants (distinct
+	// milliseconds on the commercial backend).
 	time.Sleep(10 * time.Millisecond)
 	if err := c.UpdateEntityData(t, id, `{"name":"Bob","amount":2,"status":"active"}`); err != nil {
 		t.Fatalf("UpdateEntityData: %v", err)
 	}
+	tUpdate := LatestChangeTime(t, c, id)
+
+	// Boundary between the two versions, on the server's clock — see pit_time.go.
+	midpoint := MidpointBetween(t, tCreate, tUpdate)
 
 	asAt, err := c.ListEntitiesByModelAt(t, modelName, modelVersion, midpoint)
 	if err != nil {

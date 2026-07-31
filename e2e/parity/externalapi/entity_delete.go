@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 )
@@ -92,13 +94,18 @@ func RunExternalAPI_06_06_DeleteAtPointInTime(t *testing.T, fixture parity.Backe
 		t.Fatalf("LockModel: %v", err)
 	}
 	// Phase A: 3 entities created before T1.
+	var lastPhaseA uuid.UUID
 	for i := 0; i < 3; i++ {
-		if _, err := d.CreateEntity("delpit", 1, `{"k":1}`); err != nil {
+		id, err := d.CreateEntity("delpit", 1, `{"k":1}`)
+		if err != nil {
 			t.Fatalf("CreateEntity[before-T1][%d]: %v", i, err)
 		}
+		lastPhaseA = id
 	}
-	// Capture T1 *after* phase A is fully durable.
-	t1 := time.Now().UTC()
+	// T1 is the last phase-A write's own server-stamped time — inclusive <=
+	// covers all three. Taking it from time.Now() would compare the test's
+	// clock against server-stamped versions (see e2e/parity/pit_time.go).
+	t1 := latestChangeTime(t, d, lastPhaseA)
 	// Ensure observable temporal delta. Server timestamps are usually
 	// millisecond-precision; sleep beyond that.
 	time.Sleep(100 * time.Millisecond)

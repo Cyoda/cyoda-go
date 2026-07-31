@@ -73,20 +73,7 @@ func RunPITBoundaryExactT(t *testing.T, fixture BackendFixture) {
 // the timestamp of the version just written.
 func pitbLatestChangeTime(t *testing.T, c *client.Client, id uuid.UUID) time.Time {
 	t.Helper()
-	changes, err := c.GetEntityChanges(t, id)
-	if err != nil {
-		t.Fatalf("GetEntityChanges: %v", err)
-	}
-	if len(changes) == 0 {
-		t.Fatal("GetEntityChanges returned no entries")
-	}
-	latest := changes[0].TimeOfChange
-	for _, ch := range changes[1:] {
-		if ch.TimeOfChange.After(latest) {
-			latest = ch.TimeOfChange
-		}
-	}
-	return latest
+	return LatestChangeTime(t, c, id)
 }
 
 // pitbAssertKAt queries the entity at the exact timestamp at and asserts that

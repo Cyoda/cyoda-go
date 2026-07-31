@@ -54,19 +54,16 @@ func RunTemporalPointInTimeRetrieval(t *testing.T, fixture BackendFixture) {
 
 	setupTemporalWorkflow(t, c, modelName, modelVersion)
 
-	// Record time before entity creation.
-	beforeCreate := time.Now().UTC()
-	time.Sleep(50 * time.Millisecond)
-
 	// Create entity v1: amount=100, status="v1".
 	entityID, err := c.CreateEntity(t, modelName, modelVersion,
 		`{"name":"Temporal","amount":100,"status":"v1"}`)
 	if err != nil {
 		t.Fatalf("CreateEntity v1: %v", err)
 	}
+	t1 := LatestChangeTime(t, c, entityID)
 
-	time.Sleep(50 * time.Millisecond)
-	afterCreate := time.Now().UTC()
+	// Sleeps space consecutive versions into distinct instants; the boundaries
+	// themselves are derived from the server's clock — see pit_time.go.
 	time.Sleep(50 * time.Millisecond)
 
 	// Update entity v2: amount=200, status="v2".
@@ -74,9 +71,8 @@ func RunTemporalPointInTimeRetrieval(t *testing.T, fixture BackendFixture) {
 		`{"name":"Temporal","amount":200,"status":"v2"}`); err != nil {
 		t.Fatalf("UpdateEntity v2: %v", err)
 	}
+	t2 := LatestChangeTime(t, c, entityID)
 
-	time.Sleep(50 * time.Millisecond)
-	afterUpdate1 := time.Now().UTC()
 	time.Sleep(50 * time.Millisecond)
 
 	// Update entity v3: amount=300, status="v3".
@@ -84,8 +80,13 @@ func RunTemporalPointInTimeRetrieval(t *testing.T, fixture BackendFixture) {
 		`{"name":"Temporal","amount":300,"status":"v3"}`); err != nil {
 		t.Fatalf("UpdateEntity v3: %v", err)
 	}
+	t3 := LatestChangeTime(t, c, entityID)
 
-	time.Sleep(50 * time.Millisecond)
+	// Boundaries between consecutive versions, and one comfortably before the
+	// entity existed.
+	afterCreate := MidpointBetween(t, t1, t2)
+	afterUpdate1 := MidpointBetween(t, t2, t3)
+	beforeCreate := t1.Add(-time.Hour)
 
 	// Current (no pointInTime) should be v3.
 	current, err := c.GetEntity(t, entityID)
@@ -178,21 +179,19 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("ImportWorkflow: %v", err)
 	}
 
-	beforeCreate := time.Now().UTC()
-	time.Sleep(50 * time.Millisecond)
-
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"MetaTest","value":1}`)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	afterCreate := time.Now().UTC()
+	// The version's own server-stamped time; as-at that instant resolves to it
+	// under the canonical inclusive <= rule — see pit_time.go.
+	tCreate := LatestChangeTime(t, c, entityID)
 
 	// The point-in-time read.
-	got, err := c.GetEntityAt(t, entityID, afterCreate)
+	got, err := c.GetEntityAt(t, entityID, tCreate)
 	if err != nil {
-		t.Fatalf("GetEntityAt(afterCreate): %v", err)
+		t.Fatalf("GetEntityAt(tCreate): %v", err)
 	}
 
 	// Assert Meta.State is populated (was "" before the fix).
@@ -204,8 +203,8 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 	if got.Meta.CreationDate.IsZero() {
 		t.Error("Meta.CreationDate is the zero time -- not populated")
 	} else {
-		lower := beforeCreate.Add(-1 * time.Second)
-		upper := afterCreate.Add(1 * time.Second)
+		lower := tCreate.Add(-1 * time.Second)
+		upper := tCreate.Add(1 * time.Second)
 		if got.Meta.CreationDate.Before(lower) || got.Meta.CreationDate.After(upper) {
 			t.Errorf("Meta.CreationDate %v outside expected window [%v, %v]",
 				got.Meta.CreationDate, lower, upper)

@@ -142,6 +142,34 @@ func begin(t *testing.T, f spi.StoreFactory, baseCtx context.Context) (spi.Entit
 }
 
 // seed saves the committed baseline through a fresh (non-tx) store.
+// latestCommittedTime returns the newest server-stamped LastModifiedDate among
+// the committed entities of personRef — a point-in-time boundary expressed on
+// the backend's own clock rather than the test process's.
+func latestCommittedTime(t *testing.T, f spi.StoreFactory, baseCtx context.Context) time.Time {
+	t.Helper()
+	store, err := f.EntityStore(baseCtx)
+	if err != nil {
+		t.Fatalf("EntityStore(latestCommittedTime): %v", err)
+	}
+	all, err := store.GetAll(baseCtx, personRef)
+	if err != nil {
+		t.Fatalf("GetAll(latestCommittedTime): %v", err)
+	}
+	if len(all) == 0 {
+		t.Fatal("latestCommittedTime: no committed entities")
+	}
+	latest := all[0].Meta.LastModifiedDate
+	for _, e := range all[1:] {
+		if e.Meta.LastModifiedDate.After(latest) {
+			latest = e.Meta.LastModifiedDate
+		}
+	}
+	if latest.IsZero() {
+		t.Fatal("latestCommittedTime: LastModifiedDate not populated by the backend")
+	}
+	return latest
+}
+
 func seed(t *testing.T, f spi.StoreFactory, baseCtx context.Context, rows ...*spi.Entity) {
 	t.Helper()
 	store, err := f.EntityStore(baseCtx)
@@ -395,9 +423,14 @@ func runInTxPIT(t *testing.T, b backend) {
 		ent("b2", `{"city":"Berlin","note":"committed"}`),
 	)
 
-	// pit strictly AFTER the committed writes and strictly BEFORE any tx write.
-	time.Sleep(20 * time.Millisecond)
-	pit := time.Now()
+	// pit covers the committed writes and excludes every later tx write. It is
+	// the newest committed version's OWN timestamp (inclusive <= includes it),
+	// read back from the store rather than taken from time.Now(): the postgres
+	// backend stamps versions from the database clock, which on a testcontainer
+	// is not the test process's clock. See e2e/parity/pit_time.go.
+	pit := latestCommittedTime(t, f, baseCtx)
+
+	// Separate the buffered tx writes below into a strictly later instant.
 	time.Sleep(20 * time.Millisecond)
 
 	store, sr, txCtx := begin(t, f, baseCtx)
