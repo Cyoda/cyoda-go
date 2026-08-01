@@ -47,6 +47,55 @@ func awaitEntityStateE2E(t *testing.T, entityID, wantState string, timeout time.
 	}
 }
 
+// Scheduled-transition assertions read their timings from the SERVER's audit
+// trail, never from elapsed wall-clock on the test side.
+//
+// A "the timer has not fired yet" assertion phrased as "peek the state and
+// expect the old one" races the delay against an HTTP round-trip: under load a
+// round-trip can exceed the delay, the scheduler fires legitimately, and the
+// test reports a defect that does not exist. The audit trail records both the
+// armed fire time and the instant each event happened, stamped by the engine's
+// own clock (`time.Now()` in-process, the same clock the scheduler compares
+// against), so assertions built from it are exact and load-independent.
+
+// smEventsOfType returns the events whose eventType equals wantType, oldest
+// first. getSMAuditEvents returns newest-first, so the slice is reversed.
+func smEventsOfType(events []map[string]any, wantType string) []map[string]any {
+	var out []map[string]any
+	for i := len(events) - 1; i >= 0; i-- {
+		if et, _ := events[i]["eventType"].(string); et == wantType {
+			out = append(out, events[i])
+		}
+	}
+	return out
+}
+
+// smEventTime returns the instant an audit event was recorded.
+func smEventTime(t *testing.T, ev map[string]any) time.Time {
+	t.Helper()
+	raw, _ := ev["utcTime"].(string)
+	ts, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatalf("audit event has unparseable utcTime %q: %v (event=%+v)", raw, err, ev)
+	}
+	return ts
+}
+
+// smEventScheduledTime returns the fire time an ARM event recorded, i.e. when
+// the engine decided the transition should fire.
+func smEventScheduledTime(t *testing.T, ev map[string]any) time.Time {
+	t.Helper()
+	data, ok := ev["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("audit event has no data map: %+v", ev)
+	}
+	ms, ok := data["scheduledTime"].(float64)
+	if !ok {
+		t.Fatalf("audit event data has no numeric scheduledTime: %+v", ev)
+	}
+	return time.UnixMilli(int64(ms)).UTC()
+}
+
 // hasSMEventType reports whether events contains one whose eventType equals
 // wantType. If wantState is non-empty, the event's state must also match.
 func hasSMEventType(events []map[string]any, wantType, wantState string) bool {
@@ -190,15 +239,31 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	setupModelWithWorkflow(t, model, wf)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
-	if s := getEntityState(t, entityID); s != "Open" {
-		t.Fatalf("expected entity to rest in Open immediately after creation (200ms delay hasn't elapsed); got %q", s)
+
+	// The transition must be ARMED by the create, not fired inline. This is the
+	// load-independent form of "the entity rests in Open after creation": it
+	// asserts the scheduling decision itself rather than racing the 200ms delay
+	// against a state-read round-trip.
+	arms := smEventsOfType(getSMAuditEvents(t, entityID), "SCHEDULED_TRANSITION_ARM")
+	if len(arms) == 0 {
+		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline); got events: %+v",
+			getSMAuditEvents(t, entityID))
 	}
+	scheduledFor := smEventScheduledTime(t, arms[0])
 
 	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)
 
 	events := getSMAuditEvents(t, entityID)
 	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
-		t.Errorf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed; got events: %+v", events)
+		t.Fatalf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed; got events: %+v", events)
+	}
+
+	// The delay was honoured: the fire did not precede the armed fire time.
+	// Both instants come from the engine's own clock, so this is exact.
+	fires := smEventsOfType(events, "SCHEDULED_TRANSITION_FIRE")
+	if firedAt := smEventTime(t, fires[0]); firedAt.Before(scheduledFor) {
+		t.Errorf("scheduled transition fired at %s, before its armed fire time %s — the %dms delay was not honoured",
+			firedAt.Format(time.RFC3339Nano), scheduledFor.Format(time.RFC3339Nano), 200)
 	}
 }
 
@@ -210,19 +275,26 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 // proves "a busy entity never fires; a settled one does" through the real
 // HTTP stack, not just the unit-level arm/re-arm math.
 //
-// The 500ms delay and 90ms write cadence (≈5.5x headroom) keep every gap
-// between writes comfortably below DelayMs, so the "did not fire" window is
-// not racing the scheduler regardless of scan cadence. The final positive
-// assertion still uses bounded polling, never a bare sleep.
+// Timings are read back from the audit trail rather than assumed from the
+// test's own sleeps: a write's round-trip is not bounded under load, so a
+// nominal 90ms cadence could in reality leave a gap longer than DelayMs, let
+// the timer fire legitimately, and make the test report a defect that does not
+// exist. The delay is sized so the loop keeps its headroom on a loaded machine,
+// and the deferral precondition — every write landing before the fire time then
+// in force — is verified from the ARM events before the "did not fire"
+// assertion is trusted.
 func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 	const model = "e2e-scheduled-loopback-defers"
+	const delayMs = 3000
+	const writes = 10
+	const cadence = 400 * time.Millisecond // busy window 4s > 3s delay
 
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
 			"version": "1.1", "name": "sched-loopback-wf", "initialState": "Open", "active": true,
 			"states": {
-				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 500}}]},
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 3000}}]},
 				"Closed": {}
 			}
 		}]
@@ -231,13 +303,12 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":0,"status":"draft"}`)
 
-	// Keep the entity busy — a same-state, data-only loopback write every
-	// 90ms, for a window (8 writes ≈ 720ms) that comfortably exceeds the
-	// 500ms delay. Each write re-arms the task 500ms further out, so it
-	// should never come due while this loop runs.
+	// Keep the entity busy with same-state, data-only loopback writes for a
+	// window that exceeds the delay. Each write re-arms the task further out,
+	// so it must never come due while this loop runs.
 	loopbackPath := fmt.Sprintf("/api/entity/JSON/%s", entityID)
-	for i := 1; i <= 8; i++ {
-		time.Sleep(90 * time.Millisecond)
+	for i := 1; i <= writes; i++ {
+		time.Sleep(cadence)
 		payload := fmt.Sprintf(`{"name":"Test Order","amount":%d,"status":"draft"}`, i)
 		resp := doAuth(t, http.MethodPut, loopbackPath, payload)
 		body := readBody(t, resp)
@@ -246,15 +317,42 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 		}
 	}
 
-	// Immediately after the busy window: the entity must still be resting
-	// in Open (the last write pushed the fire time ~500ms further out), and
-	// no fire must have happened yet.
-	if s := getEntityState(t, entityID); s != "Open" {
-		t.Fatalf("expected entity to still be in Open right after the busy loopback window (timer kept getting deferred); got %q", s)
+	// Fetch the WHOLE history: each loopback write emits several StateMachine
+	// events, so the endpoint's default 20-item page would truncate the older
+	// ARM events and hide the first arm this test reasons about.
+	events := getSMAuditEventsWithLimit(t, entityID, 500)
+	arms := smEventsOfType(events, "SCHEDULED_TRANSITION_ARM")
+
+	// The busy window must have outlasted the FIRST armed fire time, or the
+	// entity was never kept busy past the point where it would have fired and
+	// the assertion below would prove nothing.
+	if len(arms) < 2 {
+		t.Fatalf("expected the loopback writes to re-arm the task (want >= 2 ARM events, got %d); events: %+v", len(arms), events)
 	}
-	events := getSMAuditEvents(t, entityID)
+	firstScheduled := smEventScheduledTime(t, arms[0])
+	lastArmedAt := smEventTime(t, arms[len(arms)-1])
+	if !lastArmedAt.After(firstScheduled) {
+		t.Fatalf("busy window ended at %s, before the first armed fire time %s — the entity was never held past the point it would have fired, so deferral is untested",
+			lastArmedAt.Format(time.RFC3339Nano), firstScheduled.Format(time.RFC3339Nano))
+	}
+
+	// Precondition for deferral: each write landed before the fire time then in
+	// force. If a round-trip stalled past it, the scheduler was entitled to fire
+	// and this run cannot test deferral — report that cause, not a false defect.
+	for i := 1; i < len(arms); i++ {
+		prevDue := smEventScheduledTime(t, arms[i-1])
+		if armedAt := smEventTime(t, arms[i]); !armedAt.Before(prevDue) {
+			t.Fatalf("loopback write %d landed at %s, at/after the fire time %s armed by the previous write — the machine stalled longer than the %dms delay, so this run cannot test deferral (not a scheduler defect)",
+				i+1, armedAt.Format(time.RFC3339Nano), prevDue.Format(time.RFC3339Nano), delayMs)
+		}
+	}
+
+	// With that established, no fire may have happened during the busy window.
 	if hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "") {
 		t.Errorf("expected no SCHEDULED_TRANSITION_FIRE event while the entity was kept busy; got events: %+v", events)
+	}
+	if s := getEntityState(t, entityID); s != "Open" {
+		t.Errorf("expected entity to still be in Open while the timer kept getting deferred; got %q", s)
 	}
 
 	// Now stop updating and let the last-armed timer run out. Bounded,

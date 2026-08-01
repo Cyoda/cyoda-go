@@ -34,7 +34,19 @@ func getEntityState(t *testing.T, entityID string) string {
 // getSMAuditEvents retrieves state machine audit events for an entity.
 func getSMAuditEvents(t *testing.T, entityID string) []map[string]any {
 	t.Helper()
+	// The endpoint's default page size is 20; callers that need the whole
+	// history of a write-heavy entity use getSMAuditEventsWithLimit.
+	return getSMAuditEventsWithLimit(t, entityID, 0)
+}
+
+// getSMAuditEventsWithLimit is getSMAuditEvents with an explicit page size.
+// limit <= 0 leaves the endpoint's default in place.
+func getSMAuditEventsWithLimit(t *testing.T, entityID string, limit int) []map[string]any {
+	t.Helper()
 	path := fmt.Sprintf("/api/audit/entity/%s?eventType=StateMachine", entityID)
+	if limit > 0 {
+		path += fmt.Sprintf("&limit=%d", limit)
+	}
 	resp := doAuth(t, http.MethodGet, path, "")
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {

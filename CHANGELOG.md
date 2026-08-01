@@ -21,6 +21,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   change: as-at reads were never at fault.
   ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
 
+- **Scheduled-transition e2e tests no longer race an HTTP round-trip against
+  the timer.** `TestE2E_ScheduledTransition_FiresThroughHTTPStack` and
+  `_LoopbackDefersTimer` asserted "the entity has not fired yet" by reading the
+  state back and expecting the old one — which under load loses to the delay,
+  the scheduler fires legitimately, and the test reports a defect that does not
+  exist. Both now assert from the server's audit trail instead: the transition
+  was *armed* (so it was scheduled, not fired inline), and the fire did not
+  precede its armed `scheduledTime`. The deferral test additionally verifies its
+  own precondition — that every loopback write landed before the fire time then
+  in force — so a stalled machine reports that cause instead of a false
+  scheduler defect. `getSMAuditEvents` gained an explicit page size; the default
+  20-item page silently truncated the history the deferral test reasons about.
+  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+
 - **`function` conditions in a search body no longer produce a 5xx.** A
   `{"type":"function", ...}` clause is a workflow/transition-criterion shape the
   engine dispatches to a compute member; search has no dispatcher for it. It was
