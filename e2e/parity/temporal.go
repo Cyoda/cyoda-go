@@ -214,7 +214,10 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 	// the version at save, a few hundred µs later.)
 	if got.Meta.CreationDate.IsZero() {
 		t.Error("Meta.CreationDate is the zero time -- not populated")
-	} else if got.Meta.CreationDate.After(tCreate) {
+	} else if got.Meta.CreationDate.After(tCreate.Add(time.Millisecond)) {
+		// The 1ms forward tolerance is for backends that re-stamp CreationDate at
+		// save time from a slightly later reading than the version's own — the
+		// check targets an unpopulated or nonsense value, not sub-ms ordering.
 		t.Errorf("Meta.CreationDate %s postdates the entity's first version time %s",
 			got.Meta.CreationDate.Format(time.RFC3339Nano), tCreate.Format(time.RFC3339Nano))
 	} else if gap := tCreate.Sub(got.Meta.CreationDate); gap > time.Second {

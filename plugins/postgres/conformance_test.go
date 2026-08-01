@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -162,7 +163,10 @@ func TestConformance(t *testing.T) {
 		Now: func() time.Time {
 			var now time.Time
 			if err := pool.QueryRow(context.Background(), `SELECT CURRENT_TIMESTAMP`).Scan(&now); err != nil {
-				t.Fatalf("Harness.Now: read DB clock: %v", err)
+				// The harness calls this from its subtests' goroutines, so the
+				// outer t's FailNow would be invalid here — panic instead, which
+				// surfaces against whichever subtest is running.
+				panic(fmt.Sprintf("Harness.Now: read DB clock: %v", err))
 			}
 			return now
 		},

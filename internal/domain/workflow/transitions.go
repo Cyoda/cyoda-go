@@ -5,23 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// GetAvailableTransitions returns the names of transitions available from
-// the entity's current state in the matching workflow at the given point in time.
-// It fetches the entity by ID at the specified pointInTime, then delegates to
-// GetAvailableTransitionsForEntity.
-func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, modelRef spi.ModelRef, pointInTime time.Time) ([]string, error) {
+// GetAvailableTransitions returns the names of transitions available from the
+// entity's CURRENT state in the matching workflow. It fetches the entity by ID,
+// then delegates to GetAvailableTransitionsForEntity.
+//
+// This deliberately reads the current version rather than issuing a
+// point-in-time read at the caller's "now": version times are stamped by the
+// backend (the database itself, on postgres), so a process-clock "now" compared
+// against them is a two-clock comparison that can report an existing entity as
+// missing. Callers wanting a genuine historical view pass their own point in
+// time to the store directly.
+func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, modelRef spi.ModelRef) ([]string, error) {
 	entityStore, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	entity, err := entityStore.GetAsAt(ctx, entityID, pointInTime)
+	entity, err := entityStore.Get(ctx, entityID)
 	if err != nil {
 		return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 			fmt.Sprintf("entity %s not found", entityID))

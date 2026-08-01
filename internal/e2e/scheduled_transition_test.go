@@ -57,6 +57,16 @@ func awaitEntityStateE2E(t *testing.T, entityID, wantState string, timeout time.
 // armed fire time and the instant each event happened, stamped by the engine's
 // own clock (`time.Now()` in-process, the same clock the scheduler compares
 // against), so assertions built from it are exact and load-independent.
+//
+// Caveat on that equivalence: the arm time comes from Engine.now(), which honours
+// the injectable WithScheduledClock, while recordEvent stamps audit events with a
+// bare time.Now(). They coincide only because these tests inject no clock. A test
+// that injects one must not compare the two.
+//
+// Where a precondition for an assertion cannot be established (e.g. the machine
+// stalled so long that the scheduler was entitled to fire), these tests fail
+// loudly with that cause rather than skipping: a skip would hide a genuine
+// scheduler regression behind "the box was busy".
 
 // smEventsOfType returns the events whose eventType equals wantType, oldest
 // first. getSMAuditEvents returns newest-first, so the slice is reversed.
@@ -225,6 +235,7 @@ func TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound(t *test
 // thresholds).
 func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	const model = "e2e-scheduled-fires-http"
+	const delayMs = 200
 
 	wf := `{
 		"importMode": "REPLACE",
@@ -244,12 +255,23 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	// load-independent form of "the entity rests in Open after creation": it
 	// asserts the scheduling decision itself rather than racing the 200ms delay
 	// against a state-read round-trip.
-	arms := smEventsOfType(getSMAuditEvents(t, entityID), "SCHEDULED_TRANSITION_ARM")
+	created := getSMAuditEventsWithLimit(t, entityID, 500)
+	arms := smEventsOfType(created, "SCHEDULED_TRANSITION_ARM")
 	if len(arms) == 0 {
-		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline); got events: %+v",
-			getSMAuditEvents(t, entityID))
+		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline); got events: %+v", created)
 	}
+	armedAt := smEventTime(t, arms[0])
 	scheduledFor := smEventScheduledTime(t, arms[0])
+
+	// The delay was actually applied when arming — without this, a regression
+	// that armed for "now" would still satisfy every other assertion here (the
+	// scanner would fire it on its next tick, after scheduledFor). The tolerance
+	// absorbs the gap between the engine's internal arm instant and the audit
+	// event's own stamp, measured at well under a millisecond for this path.
+	if applied := scheduledFor.Sub(armedAt); applied < 150*time.Millisecond {
+		t.Errorf("armed fire time is only %s after the arm event; want ~%dms — the delay was not applied",
+			applied, delayMs)
+	}
 
 	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)
 
@@ -263,7 +285,7 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	fires := smEventsOfType(events, "SCHEDULED_TRANSITION_FIRE")
 	if firedAt := smEventTime(t, fires[0]); firedAt.Before(scheduledFor) {
 		t.Errorf("scheduled transition fired at %s, before its armed fire time %s — the %dms delay was not honoured",
-			firedAt.Format(time.RFC3339Nano), scheduledFor.Format(time.RFC3339Nano), 200)
+			firedAt.Format(time.RFC3339Nano), scheduledFor.Format(time.RFC3339Nano), delayMs)
 	}
 }
 

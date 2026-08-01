@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"testing"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -39,7 +38,7 @@ func TestGetAvailableTransitions_WithTransitions(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	names, err := engine.GetAvailableTransitions(ctx, "e-trans-1", modelRef, time.Now())
+	names, err := engine.GetAvailableTransitions(ctx, "e-trans-1", modelRef)
 	if err != nil {
 		t.Fatalf("GetAvailableTransitions failed: %v", err)
 	}
@@ -78,7 +77,7 @@ func TestGetAvailableTransitions_TerminalState(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	names, err := engine.GetAvailableTransitions(ctx, "e-trans-2", modelRef, time.Now())
+	names, err := engine.GetAvailableTransitions(ctx, "e-trans-2", modelRef)
 	if err != nil {
 		t.Fatalf("GetAvailableTransitions failed: %v", err)
 	}
@@ -93,7 +92,7 @@ func TestGetAvailableTransitions_EntityNotFound(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
-	_, err := engine.GetAvailableTransitions(ctx, "nonexistent-entity", modelRef, time.Now())
+	_, err := engine.GetAvailableTransitions(ctx, "nonexistent-entity", modelRef)
 	if err == nil {
 		t.Fatal("expected error for nonexistent entity")
 	}
@@ -126,7 +125,7 @@ func TestGetAvailableTransitions_NoWorkflow_UsesDefault(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	names, err := engine.GetAvailableTransitions(ctx, "e-trans-4", modelRef, time.Now())
+	names, err := engine.GetAvailableTransitions(ctx, "e-trans-4", modelRef)
 	if err != nil {
 		t.Fatalf("GetAvailableTransitions failed: %v", err)
 	}
@@ -170,7 +169,7 @@ func TestGetAvailableTransitions_CustomWorkflowTakesPrecedence(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	names, err := engine.GetAvailableTransitions(ctx, "e-trans-5", modelRef, time.Now())
+	names, err := engine.GetAvailableTransitions(ctx, "e-trans-5", modelRef)
 	if err != nil {
 		t.Fatalf("GetAvailableTransitions failed: %v", err)
 	}

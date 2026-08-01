@@ -54,6 +54,10 @@ func latestChangeTimeE2E(t *testing.T, entityID string) time.Time {
 
 // midpointBetweenE2E returns an instant strictly between two server-stamped
 // version times, formatted for the pointInTime query parameter.
+//
+// Deliberately a local reimplementation of parity.MidpointBetween rather than a
+// call to it: importing e2e/parity here would pull in the scenario registry and
+// its init()s for the sake of five lines.
 func midpointBetweenE2E(t *testing.T, earlier, later time.Time) string {
 	t.Helper()
 	if !earlier.Before(later) {
