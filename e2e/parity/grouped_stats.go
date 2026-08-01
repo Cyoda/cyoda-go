@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
@@ -473,7 +475,8 @@ func RunParityGroupedStats_PointInTime(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("CreateEntity 1: %v", err)
 	}
-	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":1}`); err != nil {
+	id2, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":1}`)
+	if err != nil {
 		t.Fatalf("CreateEntity 2: %v", err)
 	}
 	id3, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":1}`)
@@ -483,10 +486,16 @@ func RunParityGroupedStats_PointInTime(t *testing.T, fixture BackendFixture) {
 
 	// T1 must sit after all three creates and before the mutations below. Both
 	// bounds are read back from the server so the comparison stays on the
-	// backend's own clock — see pit_time.go. The sleep separates the last
-	// create from the first mutation, so T1 lands in a distinct instant on
-	// every backend (millisecond resolution on the commercial one).
-	tCreated := LatestChangeTime(t, c, id3)
+	// backend's own clock — see pit_time.go. Take the max over all three rather
+	// than assuming the backend clock is monotone across separate writes. The
+	// sleep separates the last create from the first mutation, so T1 lands in a
+	// distinct instant on every backend (ms resolution on the commercial one).
+	tCreated := LatestChangeTime(t, c, id1)
+	for _, id := range []uuid.UUID{id2, id3} {
+		if ts := LatestChangeTime(t, c, id); ts.After(tCreated) {
+			tCreated = ts
+		}
+	}
 	time.Sleep(20 * time.Millisecond)
 
 	// Post-T1 mutations that should be INVISIBLE to the pointInTime query.

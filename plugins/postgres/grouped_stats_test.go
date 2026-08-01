@@ -148,23 +148,25 @@ func TestPostgresIterate_ResidualApplied(t *testing.T) {
 }
 
 func TestPostgresIterate_PointInTime(t *testing.T) {
-	_, store, ctx := gsNewStore(t)
+	factory, store, ctx := gsNewStore(t)
 
 	// Seed two entities. We'll delete one after a snapshot instant; PIT
 	// before the delete must show both, PIT after must show one.
 	gsSave(t, ctx, store, "a", "available", map[string]any{"x": 1})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"x": 2})
 
-	// Snapshot before the delete.
-	beforeDelete := time.Now()
+	// Both bounds come from the database clock, never time.Now() — see
+	// pit_time_test.go.
+	beforeDelete := dbNow(t, ctx, factory.Pool())
+
+	// Separate the deletion marker into a distinct instant.
 	time.Sleep(10 * time.Millisecond)
 
 	if err := store.Delete(ctx, "b"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
-	afterDelete := time.Now()
+	afterDelete := dbNow(t, ctx, factory.Pool())
 
 	it := store.(spi.Iterable)
 

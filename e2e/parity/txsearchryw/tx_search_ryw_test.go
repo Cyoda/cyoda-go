@@ -141,7 +141,6 @@ func begin(t *testing.T, f spi.StoreFactory, baseCtx context.Context) (spi.Entit
 	return store, sr, txCtx
 }
 
-// seed saves the committed baseline through a fresh (non-tx) store.
 // latestCommittedTime returns the newest server-stamped LastModifiedDate among
 // the committed entities of personRef — a point-in-time boundary expressed on
 // the backend's own clock rather than the test process's.
@@ -170,6 +169,7 @@ func latestCommittedTime(t *testing.T, f spi.StoreFactory, baseCtx context.Conte
 	return latest
 }
 
+// seed saves the committed baseline through a fresh (non-tx) store.
 func seed(t *testing.T, f spi.StoreFactory, baseCtx context.Context, rows ...*spi.Entity) {
 	t.Helper()
 	store, err := f.EntityStore(baseCtx)
@@ -411,8 +411,9 @@ func runNullsLastOrder(t *testing.T, b backend) {
 // runInTxPIT covers invariant 8: an in-tx Search with PointInTime BEFORE the
 // tx's writes returns the committed-as-at snapshot only — buffered creates and
 // buffered updates are excluded — identical to GetAllAsAt(pit)+MatchFilter and
-// identical across backends. Uses wall-clock separation (works uniformly on all
-// three backends without backend-specific time surgery).
+// identical across backends. The boundary is read back from the store rather
+// than taken from the test process's clock, so it works uniformly on all three
+// backends without backend-specific time surgery.
 func runInTxPIT(t *testing.T, b backend) {
 	f, baseCtx, cleanup := b.open(t)
 	defer cleanup()

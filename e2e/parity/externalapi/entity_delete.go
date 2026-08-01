@@ -94,18 +94,24 @@ func RunExternalAPI_06_06_DeleteAtPointInTime(t *testing.T, fixture parity.Backe
 		t.Fatalf("LockModel: %v", err)
 	}
 	// Phase A: 3 entities created before T1.
-	var lastPhaseA uuid.UUID
+	phaseA := make([]uuid.UUID, 0, 3)
 	for i := 0; i < 3; i++ {
 		id, err := d.CreateEntity("delpit", 1, `{"k":1}`)
 		if err != nil {
 			t.Fatalf("CreateEntity[before-T1][%d]: %v", i, err)
 		}
-		lastPhaseA = id
+		phaseA = append(phaseA, id)
 	}
-	// T1 is the last phase-A write's own server-stamped time — inclusive <=
+	// T1 is the newest phase-A write's own server-stamped time — inclusive <=
 	// covers all three. Taking it from time.Now() would compare the test's
-	// clock against server-stamped versions (see e2e/parity/pit_time.go).
-	t1 := latestChangeTime(t, d, lastPhaseA)
+	// clock against server-stamped versions (see e2e/parity/pit_time.go); taking
+	// the max avoids assuming the backend clock is monotone across writes.
+	t1 := latestChangeTime(t, d, phaseA[0])
+	for _, id := range phaseA[1:] {
+		if ts := latestChangeTime(t, d, id); ts.After(t1) {
+			t1 = ts
+		}
+	}
 	// Ensure observable temporal delta. Server timestamps are usually
 	// millisecond-precision; sleep beyond that.
 	time.Sleep(100 * time.Millisecond)

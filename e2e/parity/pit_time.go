@@ -34,8 +34,16 @@ func LatestChangeTime(t *testing.T, c *client.Client, id uuid.UUID) time.Time {
 	if err != nil {
 		t.Fatalf("GetEntityChanges: %v", err)
 	}
+	return MaxChangeTime(t, changes)
+}
+
+// MaxChangeTime returns the newest TimeOfChange in an already-fetched change
+// list. Callers holding a different client abstraction (e.g. the external-API
+// driver) fetch the list themselves and reduce it here.
+func MaxChangeTime(t *testing.T, changes []client.EntityChangeMeta) time.Time {
+	t.Helper()
 	if len(changes) == 0 {
-		t.Fatal("GetEntityChanges returned no entries")
+		t.Fatal("entity change list is empty")
 	}
 	latest := changes[0].TimeOfChange
 	for _, ch := range changes[1:] {
@@ -46,9 +54,26 @@ func LatestChangeTime(t *testing.T, c *client.Client, id uuid.UUID) time.Time {
 	return latest
 }
 
-// MidpointBetween returns an instant strictly between the two server-stamped
-// version times earlier and later, for use as a point-in-time boundary that
-// must resolve to the version written at earlier.
+// MinChangeTime returns the oldest TimeOfChange in an already-fetched change
+// list — the entity's creation instant on the server's clock.
+func MinChangeTime(t *testing.T, changes []client.EntityChangeMeta) time.Time {
+	t.Helper()
+	if len(changes) == 0 {
+		t.Fatal("entity change list is empty")
+	}
+	earliest := changes[0].TimeOfChange
+	for _, ch := range changes[1:] {
+		if ch.TimeOfChange.Before(earliest) {
+			earliest = ch.TimeOfChange
+		}
+	}
+	return earliest
+}
+
+// MidpointBetween returns an instant at or after earlier and strictly before
+// later — a point-in-time boundary that resolves to the version written at
+// earlier. (For sub-nanosecond gaps it degenerates to earlier itself, which
+// still resolves correctly under the inclusive <= rule.)
 //
 // It fails the test if the two are not strictly ordered — that means the writes
 // were not spaced far enough apart for the backend's timestamp resolution, and

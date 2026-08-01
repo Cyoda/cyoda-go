@@ -32,16 +32,7 @@ func latestChangeTime(t *testing.T, d *driver.Driver, id uuid.UUID) time.Time {
 	if err != nil {
 		t.Fatalf("GetEntityChanges: %v", err)
 	}
-	if len(changes) == 0 {
-		t.Fatal("GetEntityChanges returned no entries")
-	}
-	latest := changes[0].TimeOfChange
-	for _, ch := range changes[1:] {
-		if ch.TimeOfChange.After(latest) {
-			latest = ch.TimeOfChange
-		}
-	}
-	return latest
+	return parity.MaxChangeTime(t, changes)
 }
 
 // RunExternalAPI_07_01_GetEntityAtPointInTime — dictionary 07/01.

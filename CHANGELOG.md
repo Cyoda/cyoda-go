@@ -11,11 +11,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   clock and compared it against version times stamped by the *database* — on a
   testcontainer, the Docker VM's clock, measured lagging the host by 10–13 ms
   under load, more than the 10 ms sleep the scenario relied on. Every affected
-  scenario now derives its boundary from timestamps read back from the server,
-  so the comparison stays on one clock; sleeps remain only to separate
-  consecutive versions. Nine other point-in-time tests carrying the same latent
-  defect (one with no margin at all) are fixed with it. No product change — as-at
-  reads were never at fault. ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  test now derives its boundary from the backend's own clock (read back from the
+  server, or from `SELECT CURRENT_TIMESTAMP` in the postgres plugin's white-box
+  tests), so the comparison stays on one clock; sleeps remain only to separate
+  consecutive versions. The sweep covers the parity suite, `internal/e2e`, the
+  postgres plugin's own as-at tests — which had 2 ms, 10 ms and zero-margin
+  variants of the same defect — and the SPI conformance harness, whose
+  `Harness.Now` now reads the database clock instead of `time.Now`. No product
+  change: as-at reads were never at fault.
+  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
 
 - **`function` conditions in a search body no longer produce a 5xx.** A
   `{"type":"function", ...}` clause is a workflow/transition-criterion shape the

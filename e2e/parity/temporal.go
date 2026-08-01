@@ -82,11 +82,12 @@ func RunTemporalPointInTimeRetrieval(t *testing.T, fixture BackendFixture) {
 	}
 	t3 := LatestChangeTime(t, c, entityID)
 
-	// Boundaries between consecutive versions, and one comfortably before the
-	// entity existed.
+	// Boundaries between consecutive versions, plus one just before the entity
+	// existed — 1ms, not a wide margin, so the 404 below still exercises the
+	// exclusion boundary rather than a trivially distant past.
 	afterCreate := MidpointBetween(t, t1, t2)
 	afterUpdate1 := MidpointBetween(t, t2, t3)
-	beforeCreate := t1.Add(-time.Hour)
+	beforeCreate := t1.Add(-time.Millisecond)
 
 	// Current (no pointInTime) should be v3.
 	current, err := c.GetEntity(t, entityID)
@@ -184,14 +185,19 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	// The version's own server-stamped time; as-at that instant resolves to it
-	// under the canonical inclusive <= rule — see pit_time.go.
-	tCreate := LatestChangeTime(t, c, entityID)
+	// The newest version's own server-stamped time; as-at that instant resolves
+	// to it under the canonical inclusive <= rule — see pit_time.go.
+	changes, err := c.GetEntityChanges(t, entityID)
+	if err != nil {
+		t.Fatalf("GetEntityChanges: %v", err)
+	}
+	tCreate := MinChangeTime(t, changes)
+	tLatest := MaxChangeTime(t, changes)
 
 	// The point-in-time read.
-	got, err := c.GetEntityAt(t, entityID, tCreate)
+	got, err := c.GetEntityAt(t, entityID, tLatest)
 	if err != nil {
-		t.Fatalf("GetEntityAt(tCreate): %v", err)
+		t.Fatalf("GetEntityAt(tLatest): %v", err)
 	}
 
 	// Assert Meta.State is populated (was "" before the fix).
@@ -200,15 +206,20 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 	}
 
 	// Assert Meta.CreationDate is non-zero and in the expected window.
+	// CreationDate must not postdate the entity's FIRST version, and must sit
+	// close to it — both values come from the backend's own clock, so this is a
+	// real ordering invariant rather than a clock-tolerance window. (Backends
+	// differ on the sub-millisecond gap: postgres stamps both from one
+	// CURRENT_TIMESTAMP, while memory stamps CreationDate at construction and
+	// the version at save, a few hundred µs later.)
 	if got.Meta.CreationDate.IsZero() {
 		t.Error("Meta.CreationDate is the zero time -- not populated")
-	} else {
-		lower := tCreate.Add(-1 * time.Second)
-		upper := tCreate.Add(1 * time.Second)
-		if got.Meta.CreationDate.Before(lower) || got.Meta.CreationDate.After(upper) {
-			t.Errorf("Meta.CreationDate %v outside expected window [%v, %v]",
-				got.Meta.CreationDate, lower, upper)
-		}
+	} else if got.Meta.CreationDate.After(tCreate) {
+		t.Errorf("Meta.CreationDate %s postdates the entity's first version time %s",
+			got.Meta.CreationDate.Format(time.RFC3339Nano), tCreate.Format(time.RFC3339Nano))
+	} else if gap := tCreate.Sub(got.Meta.CreationDate); gap > time.Second {
+		t.Errorf("Meta.CreationDate %s is %s before the first version time %s -- implausible",
+			got.Meta.CreationDate.Format(time.RFC3339Nano), gap, tCreate.Format(time.RFC3339Nano))
 	}
 
 	// Assert Meta.LastUpdateTime is non-zero.

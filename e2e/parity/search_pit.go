@@ -25,7 +25,7 @@ func RunSearchPointInTime(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
-	t1 := pitbLatestChangeTime(t, c, id)
+	t1 := LatestChangeTime(t, c, id)
 
 	// Space ≥1ms so v2 lands in a distinct millisecond (commercial backend
 	// stores ms precision — see pit_boundary.go rationale).
@@ -33,7 +33,7 @@ func RunSearchPointInTime(t *testing.T, fixture BackendFixture) {
 	if err := c.UpdateEntityData(t, id, `{"name":"Alice","status":"inactive"}`); err != nil {
 		t.Fatalf("UpdateEntityData: %v", err)
 	}
-	t2 := pitbLatestChangeTime(t, c, id)
+	t2 := LatestChangeTime(t, c, id)
 	if !t1.Before(t2) {
 		t.Fatalf("version timestamps not increasing: t1=%s t2=%s",
 			t1.Format(time.RFC3339Nano), t2.Format(time.RFC3339Nano))
