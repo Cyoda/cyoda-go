@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -36,12 +35,9 @@ func TestModelSchemaExtensions_ConcurrentUpdatesNoConflict(t *testing.T) {
 	// distinct new property (field_i) so every write genuinely triggers
 	// an ExtendSchema path. Under the old Save-based path, N-1 of these
 	// would fail with 40001/CONFLICT.
-	var (
-		wg        sync.WaitGroup
-		conflicts atomic.Int32
-		other     atomic.Int32
-		okCount   atomic.Int32
-	)
+	ctx := e2eCtx(t)
+	results := make([]httpResult, N)
+	var wg sync.WaitGroup
 	for i := 0; i < N; i++ {
 		i := i
 		wg.Add(1)
@@ -52,32 +48,39 @@ func TestModelSchemaExtensions_ConcurrentUpdatesNoConflict(t *testing.T) {
 				i, i*10, i, i,
 			)
 			path := fmt.Sprintf("/api/entity/JSON/%s/%d", modelName, version)
-			resp := doAuth(t, http.MethodPost, path, payload)
-			body := readBody(t, resp)
-			switch resp.StatusCode {
-			case http.StatusOK:
-				okCount.Add(1)
-			case http.StatusConflict:
-				conflicts.Add(1)
-				t.Logf("goroutine %d got 409 CONFLICT: %s", i, body)
-			default:
-				other.Add(1)
-				t.Logf("goroutine %d got %d: %s", i, resp.StatusCode, body)
-			}
+			results[i] = resultOf(doAuthRaw(ctx, http.MethodPost, path, payload))
 		}()
 	}
 	wg.Wait()
 
-	if conflicts.Load() != 0 {
+	// Classify on the test goroutine — Fatal is only legal here.
+	var conflicts, other, okCount int
+	for i, res := range results {
+		if res.err != nil {
+			t.Fatalf("goroutine %d transport error: %v", i, res.err)
+		}
+		switch res.status {
+		case http.StatusOK:
+			okCount++
+		case http.StatusConflict:
+			conflicts++
+			t.Logf("goroutine %d got 409 CONFLICT: %s", i, res.body)
+		default:
+			other++
+			t.Logf("goroutine %d got %d: %s", i, res.status, res.body)
+		}
+	}
+
+	if conflicts != 0 {
 		t.Errorf("regression: %d of %d concurrent entity updates returned CONFLICT (409). ExtendSchema must eliminate hot-row contention.",
-			conflicts.Load(), N)
+			conflicts, N)
 	}
-	if other.Load() != 0 {
+	if other != 0 {
 		t.Errorf("%d of %d concurrent entity updates returned neither 200 nor 409 (unexpected status).",
-			other.Load(), N)
+			other, N)
 	}
-	if okCount.Load() != int32(N) {
-		t.Errorf("expected all %d concurrent creates to succeed, got %d", N, okCount.Load())
+	if okCount != N {
+		t.Errorf("expected all %d concurrent creates to succeed, got %d", N, okCount)
 	}
 
 	// 3. After the storm, the folded schema must reflect every new field.

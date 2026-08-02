@@ -838,12 +838,13 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 
 	// Driver goroutine: fires the PUT that triggers the CBD cascade. It
 	// will block in the dispatch fake until releaseDispatch is closed.
+	driverCtx := e2eCtx(t)
 	driverDone := make(chan struct{})
+	var driverRes httpResult
 	go func() {
 		defer close(driverDone)
 		path := fmt.Sprintf("/api/entity/JSON/%s/approve", entityID)
-		resp := doAuth(t, http.MethodPut, path, `{"name":"Test","amount":100,"status":"approved"}`)
-		readBody(t, resp)
+		driverRes = resultOf(doAuthRaw(driverCtx, http.MethodPut, path, `{"name":"Test","amount":100,"status":"approved"}`))
 	}()
 
 	// Wait until the dispatch fake has been entered — TX_pre is committed
@@ -867,6 +868,12 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 	// will return.
 	close(releaseDispatch)
 	<-driverDone
+	if driverRes.err != nil {
+		t.Fatalf("driver PUT: %v", driverRes.err)
+	}
+	if driverRes.status != http.StatusOK {
+		t.Fatalf("driver PUT: status=%d body=%s", driverRes.status, driverRes.body)
+	}
 
 	// Post-cascade durability: the cascade has fully committed.
 	if state := getEntityState(t, entityID); state != "APPROVED" {

@@ -113,18 +113,12 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 	}`, primProc)
 	h.SetupModelWithWorkflow(t, primary, primaryWF)
 
-	type result struct {
-		id     string
-		status int
-		body   string
-	}
-	done := make(chan result, 1)
+	done := make(chan createEntityResult, 1)
 	go func() {
-		id, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
-		done <- result{id, status, body}
+		done <- h.CreateEntityRaw(primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	}()
 
-	var r result
+	var r createEntityResult
 	select {
 	case r = <-done:
 	case <-time.After(20 * time.Second):
@@ -133,10 +127,13 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 			"not upheld for the joined path); the third-level joined write cannot acquire the gate", execMode)
 	}
 
+	if r.err != nil {
+		t.Fatalf("primary create: %v", r.err)
+	}
 	if r.status != http.StatusOK {
 		t.Fatalf("primary create: status=%d body=%s", r.status, r.body)
 	}
-	if got := h.GetEntityData(t, r.id)["secondaryId"]; got == nil || got == "" {
+	if got := h.GetEntityData(t, r.entityID)["secondaryId"]; got == nil || got == "" {
 		t.Fatal("primary missing secondaryId — depth-2 cascade did not complete")
 	}
 
@@ -245,18 +242,12 @@ func TestCallback_Depth2NestedJoin_FunctionCriterion(t *testing.T) {
 	}`
 	h.SetupModelWithWorkflow(t, primary, primaryWF)
 
-	type result struct {
-		id     string
-		status int
-		body   string
-	}
-	done := make(chan result, 1)
+	done := make(chan createEntityResult, 1)
 	go func() {
-		id, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
-		done <- result{id, status, body}
+		done <- h.CreateEntityRaw(primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	}()
 
-	var r result
+	var r createEntityResult
 	select {
 	case r = <-done:
 	case <-time.After(20 * time.Second):
@@ -264,10 +255,13 @@ func TestCallback_Depth2NestedJoin_FunctionCriterion(t *testing.T) {
 			"within 20s — a joined callback is holding the txgate across the criterion dispatch")
 	}
 
+	if r.err != nil {
+		t.Fatalf("primary create: %v", r.err)
+	}
 	if r.status != http.StatusOK {
 		t.Fatalf("primary create: status=%d body=%s", r.status, r.body)
 	}
-	if got := h.GetEntityData(t, r.id)["secondaryId"]; got == nil || got == "" {
+	if got := h.GetEntityData(t, r.entityID)["secondaryId"]; got == nil || got == "" {
 		t.Fatal("primary missing secondaryId — depth-2 cascade did not complete")
 	}
 	select {

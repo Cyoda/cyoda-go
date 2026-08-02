@@ -74,7 +74,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	// transition-error surface belongs to a follow-on.
 	// CONFLICT (409) is exempt from all rows: it is a retryable serialization
 	// abort emitted non-deterministically by any write op under concurrency and
-	// is therefore not a per-endpoint documented code (see universalConcurrencyCodes).
+	// is therefore not a per-endpoint documented code (see universalCrossCuttingCodes).
 	"create": {
 		{Status: 400, Code: "BAD_REQUEST"},        // invalid payload, transactionWindow out of range
 		{Status: 400, Code: "INCOMPATIBLE_TYPE"},  // payload type mismatches the model
@@ -92,7 +92,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	"updateSingleWithLoopback": {
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
-		// 409 CONFLICT is exempt (universalConcurrencyCodes)
+		// 409 CONFLICT is exempt (universalCrossCuttingCodes)
 	},
 	"updateSingle": {
 		{Status: 400, Code: "TRANSITION_NOT_FOUND"}, // named transition absent from the model
@@ -136,25 +136,33 @@ func producibleGaps(matrix map[string][]codeCell, observed []openapivalidator.Er
 	return gaps
 }
 
-// universalConcurrencyCodes is the set of error codes that any write operation
-// may emit non-deterministically under concurrency. They are retryable,
-// cross-cutting serialization outcomes — not part of any endpoint's per-code
-// documented contract — and are exempt from the declared check.
+// universalCrossCuttingCodes is the set of error codes that are not part of any
+// endpoint's per-code documented contract — they arise from layers that sit in
+// front of, or underneath, every operation — and are exempt from the declared
+// check.
+//
 // CONFLICT (409) is a retryable SERIALIZABLE serialization abort: whichever
 // concurrent writer loses the optimistic-lock race emits it, so it can appear
 // on any write endpoint depending on timing and is not pin-able to a specific op.
-var universalConcurrencyCodes = map[string]bool{
-	"CONFLICT": true,
+//
+// UNAUTHORIZED (401) is emitted by the auth middleware before the request ever
+// reaches a handler, so it is producible on every authenticated route and
+// belongs to the middleware's contract rather than any one endpoint's. Its
+// coverage is pinned across representative routes by
+// TestAuth_MissingOrInvalidCredentials_401 (auth_failures_test.go).
+var universalCrossCuttingCodes = map[string]bool{
+	"CONFLICT":     true,
+	"UNAUTHORIZED": true,
 }
 
 // declaredGaps returns "op status code" strings for every observed error triple
 // whose operation is IN the matrix but whose (status, code) is undocumented.
-// Triples whose Code is in universalConcurrencyCodes are exempt: they are
-// cross-cutting, non-deterministic concurrency outcomes, not per-endpoint codes.
+// Triples whose Code is in universalCrossCuttingCodes are exempt: they belong
+// to the auth middleware or the concurrency layer, not to any one endpoint.
 func declaredGaps(matrix map[string][]codeCell, observed []openapivalidator.ErrorTriple) []string {
 	var gaps []string
 	for _, tr := range observed {
-		if universalConcurrencyCodes[tr.ErrorCode] {
+		if universalCrossCuttingCodes[tr.ErrorCode] {
 			continue // cross-cutting concurrency code; not endpoint-specific
 		}
 		cells, inScope := matrix[tr.Operation]

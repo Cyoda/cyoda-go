@@ -198,29 +198,26 @@ func TestDispatch_NeverHoldsGateAcrossDispatch(t *testing.T) {
 
 	// Watchdog: the create blocks until the cascade completes. Run it off-goroutine
 	// so a gate-across-dispatch deadlock surfaces as a timeout, not a frozen test.
-	type result struct {
-		id     string
-		status int
-		body   string
-	}
-	done := make(chan result, 1)
+	done := make(chan createEntityResult, 1)
 	go func() {
-		id, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
-		done <- result{id, status, body}
+		done <- h.CreateEntityRaw(primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	}()
 
-	var r result
+	var r createEntityResult
 	select {
 	case r = <-done:
 	case <-time.After(15 * time.Second):
 		t.Fatal("DEADLOCK: primary transition did not complete within 15s — the owner is holding the txgate across engine.Execute (H3 invariant violated); a joined callback cannot acquire the gate")
 	}
 
+	if r.err != nil {
+		t.Fatalf("primary create: %v", r.err)
+	}
 	if r.status != http.StatusOK {
 		t.Fatalf("primary create: status=%d body=%s", r.status, r.body)
 	}
 
-	data := h.GetEntityData(t, r.id)
+	data := h.GetEntityData(t, r.entityID)
 	if ok, _ := data["joinedReadOK"].(bool); !ok {
 		t.Fatalf("joined callback read-your-writes failed: joinedReadOK=%v", data["joinedReadOK"])
 	}

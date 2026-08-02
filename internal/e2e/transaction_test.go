@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -29,8 +28,9 @@ func TestTransaction_ConcurrentCreates(t *testing.T) {
 	}`)
 
 	const n = 10
+	ctx := e2eCtx(t)
+	results := make([]httpResult, n)
 	var wg sync.WaitGroup
-	var successCount atomic.Int32
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -38,17 +38,23 @@ func TestTransaction_ConcurrentCreates(t *testing.T) {
 			defer wg.Done()
 			payload := fmt.Sprintf(`{"name":"concurrent-%d","amount":%d,"status":"new"}`, idx, idx*10)
 			path := fmt.Sprintf("/api/entity/JSON/%s/%d", model, 1)
-			resp := doAuth(t, http.MethodPost, path, payload)
-			readBody(t, resp)
-			if resp.StatusCode == http.StatusOK {
-				successCount.Add(1)
-			}
+			results[idx] = resultOf(doAuthRaw(ctx, http.MethodPost, path, payload))
 		}(i)
 	}
 	wg.Wait()
 
-	if successCount.Load() != int32(n) {
-		t.Errorf("expected all %d creates to succeed, got %d", n, successCount.Load())
+	// Assert on the test goroutine — Fatal is only legal here.
+	successCount := 0
+	for idx, res := range results {
+		if res.err != nil {
+			t.Fatalf("concurrent create %d: %v", idx, res.err)
+		}
+		if res.status == http.StatusOK {
+			successCount++
+		}
+	}
+	if successCount != n {
+		t.Errorf("expected all %d creates to succeed, got %d", n, successCount)
 	}
 
 	// Verify total entity count.
@@ -78,8 +84,9 @@ func TestTransaction_ConcurrentUpdates(t *testing.T) {
 	entityID := createEntityE2E(t, model, 1, `{"name":"shared","amount":0,"status":"new"}`)
 
 	const n = 5
+	ctx := e2eCtx(t)
+	results := make([]httpResult, n)
 	var wg sync.WaitGroup
-	var successCount, conflictCount atomic.Int32
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -87,20 +94,24 @@ func TestTransaction_ConcurrentUpdates(t *testing.T) {
 			defer wg.Done()
 			payload := fmt.Sprintf(`{"name":"shared","amount":%d,"status":"updated"}`, idx)
 			path := fmt.Sprintf("/api/entity/JSON/%s", entityID)
-			resp := doAuth(t, http.MethodPut, path, payload)
-			readBody(t, resp)
-			switch resp.StatusCode {
-			case http.StatusOK:
-				successCount.Add(1)
-			case http.StatusConflict:
-				conflictCount.Add(1)
-			}
+			results[idx] = resultOf(doAuthRaw(ctx, http.MethodPut, path, payload))
 		}(i)
 	}
 	wg.Wait()
 
+	// Assert on the test goroutine — Fatal is only legal here.
+	successCount := 0
+	for idx, res := range results {
+		if res.err != nil {
+			t.Fatalf("concurrent update %d: %v", idx, res.err)
+		}
+		if res.status == http.StatusOK {
+			successCount++
+		}
+	}
+
 	// At least one should succeed.
-	if successCount.Load() < 1 {
+	if successCount < 1 {
 		t.Error("expected at least one concurrent update to succeed")
 	}
 
@@ -165,8 +176,9 @@ func TestTransaction_StressTest(t *testing.T) {
 	}`)
 
 	const n = 25
+	ctx := e2eCtx(t)
+	results := make([]httpResult, n)
 	var wg sync.WaitGroup
-	var successCount atomic.Int32
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -174,17 +186,23 @@ func TestTransaction_StressTest(t *testing.T) {
 			defer wg.Done()
 			payload := fmt.Sprintf(`{"name":"stress-%d","amount":%d,"status":"new"}`, idx, idx)
 			path := fmt.Sprintf("/api/entity/JSON/%s/%d", model, 1)
-			resp := doAuth(t, http.MethodPost, path, payload)
-			readBody(t, resp)
-			if resp.StatusCode == http.StatusOK {
-				successCount.Add(1)
-			}
+			results[idx] = resultOf(doAuthRaw(ctx, http.MethodPost, path, payload))
 		}(i)
 	}
 	wg.Wait()
 
-	if successCount.Load() != int32(n) {
-		t.Errorf("expected all %d creates to succeed, got %d", n, successCount.Load())
+	// Assert on the test goroutine — Fatal is only legal here.
+	successCount := 0
+	for idx, res := range results {
+		if res.err != nil {
+			t.Fatalf("stress create %d: %v", idx, res.err)
+		}
+		if res.status == http.StatusOK {
+			successCount++
+		}
+	}
+	if successCount != n {
+		t.Errorf("expected all %d creates to succeed, got %d", n, successCount)
 	}
 
 	// Verify total count — must match exactly, no duplicates or missing.

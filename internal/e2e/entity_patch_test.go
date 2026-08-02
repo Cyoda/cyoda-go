@@ -27,21 +27,34 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// patchEntity issues an authenticated PATCH request to path with the given
-// Content-Type, If-Match (non-empty), and body. It returns the raw response.
-func patchEntity(t *testing.T, path, contentType, ifMatch, body string) *http.Response {
-	t.Helper()
-	token := getToken(t, "testclient", "testsecret")
-	req, err := e2eNewRequest(t, http.MethodPatch, serverURL+path, strings.NewReader(body))
+// patchEntityRaw issues an authenticated PATCH request to path with the given
+// Content-Type, If-Match (non-empty), and body. It never touches *testing.T,
+// so it is safe to call from a goroutine.
+func patchEntityRaw(ctx context.Context, path, contentType, ifMatch, body string) (*http.Response, error) {
+	token, err := getTokenRaw(ctx, "testclient", "testsecret")
 	if err != nil {
-		t.Fatalf("patchEntity newRequest: %v", err)
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, serverURL+path, strings.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("patchEntity newRequest: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("If-Match", ifMatch)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("patchEntity do: %v", err)
+		return nil, fmt.Errorf("patchEntity do: %w", err)
+	}
+	return resp, nil
+}
+
+// patchEntity is the test-goroutine form of patchEntityRaw.
+func patchEntity(t *testing.T, path, contentType, ifMatch, body string) *http.Response {
+	t.Helper()
+	resp, err := patchEntityRaw(e2eCtx(t), path, contentType, ifMatch, body)
+	if err != nil {
+		t.Fatalf("%v", err)
 	}
 	return resp
 }
@@ -343,44 +356,42 @@ func TestE2E_EntityPatch_ConcurrentConflict(t *testing.T) {
 		`{"name":"Race","amount":1,"status":"draft"}`)
 
 	type patchResult struct {
-		status int
+		res    httpResult
 		amount int // 100 or 200 — which value this goroutine tried to set
 	}
 	results := [2]patchResult{}
+	amounts := [2]int{100, 200}
+	ctx := e2eCtx(t)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	go func() {
-		defer wg.Done()
-		resp := patchEntity(t,
-			fmt.Sprintf("/api/entity/JSON/%s", entityID),
-			"application/merge-patch+json",
-			createTxID,
-			`{"amount":100}`,
-		)
-		readBody(t, resp)
-		results[0] = patchResult{status: resp.StatusCode, amount: 100}
-	}()
-	go func() {
-		defer wg.Done()
-		resp := patchEntity(t,
-			fmt.Sprintf("/api/entity/JSON/%s", entityID),
-			"application/merge-patch+json",
-			createTxID,
-			`{"amount":200}`,
-		)
-		readBody(t, resp)
-		results[1] = patchResult{status: resp.StatusCode, amount: 200}
-	}()
+	for i, amount := range amounts {
+		go func(slot, amount int) {
+			defer wg.Done()
+			results[slot] = patchResult{
+				res: resultOf(patchEntityRaw(ctx,
+					fmt.Sprintf("/api/entity/JSON/%s", entityID),
+					"application/merge-patch+json",
+					createTxID,
+					fmt.Sprintf(`{"amount":%d}`, amount),
+				)),
+				amount: amount,
+			}
+		}(i, amount)
+	}
 	wg.Wait()
 
 	// Exactly one goroutine must have won (200); the other must have been
 	// rejected with 409 (Conflict) or 412 (Precondition Failed).
+	// Assert on the test goroutine — Fatal is only legal here.
 	var winnerAmount int
 	var successCount int
 	for _, r := range results {
-		switch r.status {
+		if r.res.err != nil {
+			t.Fatalf("concurrent PATCH (amount=%d): %v", r.amount, r.res.err)
+		}
+		switch r.res.status {
 		case http.StatusOK:
 			successCount++
 			winnerAmount = r.amount
@@ -388,7 +399,7 @@ func TestE2E_EntityPatch_ConcurrentConflict(t *testing.T) {
 			// expected loser codes
 		default:
 			t.Errorf("concurrent PATCH goroutine (amount=%d): unexpected status %d; want 200, 409, or 412",
-				r.amount, r.status)
+				r.amount, r.res.status)
 		}
 	}
 	if successCount != 1 {
