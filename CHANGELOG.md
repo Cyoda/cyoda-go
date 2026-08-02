@@ -6,6 +6,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A request body with trailing content after a valid JSON value now returns
+  400, not 500.** `POST /entity/{format}/{name}/{version}` accepted a body such as
+  `{"x":1}}}`: the decoder stops at the end of the first JSON value and ignores
+  whatever follows, so the request passed validation while the *original* — still
+  malformed — bytes went on to be persisted, surfacing the client's input error as
+  a storage failure with a support ticket. Entity payload decoding now requires the
+  body to hold exactly one JSON value, matching `json.Unmarshal`.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
 - **Point-in-time tests no longer compare two clocks.** `TestParity/GetAllEntitiesAsAt`
   flaked on postgres: it built its `pointInTime` from the test process's clock and
   compared it against version times stamped by the *database* — on a testcontainer

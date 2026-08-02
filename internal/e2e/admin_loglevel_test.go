@@ -33,6 +33,13 @@ func getLogLevelE2E(t *testing.T) string {
 // previous one, and that the change is visible to a subsequent GET.
 func TestAdminLogLevel_SetRoundTrip(t *testing.T) {
 	original := getLogLevelE2E(t)
+	// Target a level that differs from the current one, so "previous" and the
+	// post-POST GET both prove something even if the suite is already running
+	// at debug.
+	target := "debug"
+	if original == target {
+		target = "warn"
+	}
 	// Restore the level so this test cannot leak verbosity into the rest of
 	// the suite (the level is process-global).
 	defer func() {
@@ -40,7 +47,7 @@ func TestAdminLogLevel_SetRoundTrip(t *testing.T) {
 		readBody(t, resp)
 	}()
 
-	resp := doAuth(t, http.MethodPost, "/api/admin/log-level", `{"level":"debug"}`)
+	resp := doAuth(t, http.MethodPost, "/api/admin/log-level", `{"level":"`+target+`"}`)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST log-level: status=%d body=%s", resp.StatusCode, body)
@@ -53,15 +60,15 @@ func TestAdminLogLevel_SetRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("POST log-level: decode %q: %v", body, err)
 	}
-	if got.Level != "debug" {
-		t.Errorf("POST log-level: level=%q, want debug", got.Level)
+	if got.Level != target {
+		t.Errorf("POST log-level: level=%q, want %q", got.Level, target)
 	}
 	if got.Previous != original {
 		t.Errorf("POST log-level: previous=%q, want %q", got.Previous, original)
 	}
 
-	if now := getLogLevelE2E(t); now != "debug" {
-		t.Errorf("GET after POST: level=%q, want debug — the change did not take effect process-wide", now)
+	if now := getLogLevelE2E(t); now != target {
+		t.Errorf("GET after POST: level=%q, want %q — the change did not take effect process-wide", now, target)
 	}
 }
 

@@ -101,11 +101,16 @@ func assertUnauthorizedProblem(t *testing.T, resp *http.Response) {
 	}
 }
 
-// TestAuth_RejectionCarriesNoEnumerationSignal asserts that a 401 body is
-// byte-identical no matter why authentication failed. A caller must not be
-// able to distinguish "no such client", "wrong secret", "expired token" or
-// "untrusted signer" from the response — that difference is an account
-// enumeration oracle.
+// TestAuth_RejectionCarriesNoEnumerationSignal asserts that the 401 a
+// protected route returns is identical no matter how the credential was
+// malformed — absent, empty, unparseable, wrong scheme, or signed by an
+// untrusted key. Any variation would let a caller probe which part of the
+// credential the server got far enough to reject.
+//
+// The credential-validity oracle proper (valid client + wrong secret vs.
+// unknown client) lives on the token endpoint, not here; it is covered by
+// internal/auth/delegating_uniform_message_test.go and
+// delegating_enumeration_test.go.
 func TestAuth_RejectionCarriesNoEnumerationSignal(t *testing.T) {
 	const path = "/api/entity/e2e-auth-probe/1"
 	headers := []string{

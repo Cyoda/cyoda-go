@@ -19,17 +19,19 @@ const e2eSourceDir = ".."
 // friends — terminates only the calling goroutine via runtime.Goexit, so the
 // test keeps running past a failure it believes it aborted on.
 var safeTMethods = map[string]bool{
-	"Error":  true,
-	"Errorf": true,
-	"Fail":   true,
-	"Failed": true,
-	"Helper": true,
-	"Log":    true,
-	"Logf":   true,
-	"Name":   true,
+	"Deadline": true,
+	"Error":    true,
+	"Errorf":   true,
+	"Fail":     true,
+	"Failed":   true,
+	"Helper":   true,
+	"Log":      true,
+	"Logf":     true,
+	"Name":     true,
+	"Skipped":  true,
 }
 
-// TestNoTestingTUseInGoroutines asserts that no goroutine spawned by the E2E
+// TestNoTestingTUseInGoroutines asserts that no `go` statement in the E2E
 // suite touches a *testing.T except through safeTMethods.
 //
 // The rule is deliberately stricter than "no direct t.Fatal in a go func":
@@ -37,6 +39,21 @@ var safeTMethods = map[string]bool{
 // doAuth/getToken/readBody smuggled t.Fatalf into concurrent tests. The
 // goroutine-safe shape is to return values, collect them, and assert on the
 // test goroutine after wg.Wait().
+//
+// Scope, stated precisely so the guard is not mistaken for more than it is.
+// It reasons syntactically about `go` statements in this one package, and
+// tracks *testing.T through function parameters and direct aliases (tt := t).
+// It does NOT catch a t that reaches another goroutine by:
+//   - being stored in a struct field or sent over a channel,
+//   - being captured by a func literal that some registrar invokes later on
+//     its own goroutine — notably callbackHarness.RegisterProc/RegisterCriterion/
+//     RegisterFunction bodies, which run on the compute-member goroutine,
+//   - a method value (f := t.Fatalf) called elsewhere.
+//
+// Those need type/callgraph analysis. The syntactic check covers the class
+// that actually regressed here; the blind spots are listed so a reviewer knows
+// to look for them by hand rather than trusting a green run to mean more than
+// it does.
 func TestNoTestingTUseInGoroutines(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, e2eSourceDir, nil, 0)
@@ -102,20 +119,31 @@ func (c *checker) walk(n ast.Node, tNames map[string]bool, inGoroutine bool) {
 			c.walk(v.Body, tNamesOf(v.Type, tNames), inGoroutine)
 			return false
 
+		case *ast.AssignStmt:
+			// Track aliases (`tt := t`) so a goroutine using the alias is still
+			// caught. Over-approximates across sibling scopes, which is the
+			// safe direction for a lint.
+			for i, rhs := range v.Rhs {
+				id, ok := rhs.(*ast.Ident)
+				if !ok || !tNames[id.Name] || i >= len(v.Lhs) {
+					continue
+				}
+				if lhs, ok := v.Lhs[i].(*ast.Ident); ok && lhs.Name != "_" {
+					tNames[lhs.Name] = true
+				}
+			}
+			return true
+
 		case *ast.GoStmt:
-			// Arguments are evaluated on the current goroutine; only the
-			// called function value runs on the new one.
+			// Arguments are evaluated on the current goroutine, so walk them
+			// with the enclosing goroutine-ness...
 			for _, arg := range v.Call.Args {
 				c.walk(arg, tNames, inGoroutine)
 			}
-			// `go f(t)` hands t to a function body that runs concurrently.
-			if !inGoroutine {
-				for _, arg := range v.Call.Args {
-					if id, ok := arg.(*ast.Ident); ok && tNames[id.Name] {
-						c.reportf(arg.Pos(), "go %s(…) passes %s to a goroutine", exprString(v.Call.Fun), id.Name)
-					}
-				}
-			}
+			// ...but the call itself runs on the new goroutine. This covers
+			// both `go t.Fatal(...)` (unsafe method on the receiver) and
+			// `go f(t)` (handing t to a concurrently-running body).
+			c.checkCall(v.Call, tNames)
 			c.walk(v.Call.Fun, tNames, true)
 			return false
 

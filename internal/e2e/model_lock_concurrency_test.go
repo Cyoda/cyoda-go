@@ -6,8 +6,10 @@ package e2e_test
 // never a precise interleave.
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -61,7 +63,10 @@ func TestModelLock_Concurrent_ConvergesToLocked(t *testing.T) {
 		case http.StatusOK:
 			winners++
 		case http.StatusConflict:
-			assertErrorCode(t, res.body, "MODEL_ALREADY_LOCKED")
+			// MODEL_ALREADY_LOCKED is the business conflict. CONFLICT is the
+			// retryable serialization abort, which doAuthRaw may still surface
+			// if all five of its retries lose the race — not a defect.
+			assertErrorCodeOneOf(t, res.body, "MODEL_ALREADY_LOCKED", "CONFLICT")
 		default:
 			t.Errorf("lock attempt %d: status=%d, want 200 or 409; body: %s", idx, res.status, res.body)
 		}
@@ -78,9 +83,32 @@ func TestModelLock_Concurrent_ConvergesToLocked(t *testing.T) {
 	}
 	assertErrorCode(t, body, "MODEL_ALREADY_LOCKED")
 
-	// The schema must have survived the race — a locked model is readable and
-	// exports the fields it declared before the storm.
-	if raw := fmt.Sprintf("%v", exportModelE2E(t, model, 1)); raw == "" {
-		t.Error("model export empty after concurrent locks — schema fold did not survive the race")
+	// The schema must have survived the race: the locked model still exports
+	// the properties it declared before the storm.
+	exported := exportModelE2E(t, model, 1)
+	if len(exported) == 0 {
+		t.Fatalf("model export empty after concurrent locks — schema did not survive the race")
 	}
+	if raw := fmt.Sprintf("%v", exported); !strings.Contains(raw, "name") {
+		t.Errorf("exported schema lost its declared properties after the race: %s", raw)
+	}
+}
+
+// assertErrorCodeOneOf asserts the problem body carries one of the given error
+// codes.
+func assertErrorCodeOneOf(t *testing.T, body string, codes ...string) {
+	t.Helper()
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(body), &pd); err != nil {
+		t.Fatalf("decode problem detail %q: %v", body, err)
+	}
+	got, _ := pd.Properties["errorCode"].(string)
+	for _, want := range codes {
+		if got == want {
+			return
+		}
+	}
+	t.Errorf("errorCode=%q, want one of %v; body: %s", got, codes, body)
 }

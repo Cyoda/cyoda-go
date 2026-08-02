@@ -47,18 +47,26 @@ func resultOf(resp *http.Response, err error) httpResult {
 	return httpResult{status: resp.StatusCode, body: string(raw)}
 }
 
-// e2eCtx returns a context carrying t for the OpenAPI validator middleware.
-// Build it on the test goroutine and pass it to the Raw helpers; the validator
-// only ever calls t.Errorf, which is safe from any goroutine.
+// e2eCtx returns the request context for a test's HTTP calls.
+//
+// It attaches t via openapivalidator.WithTestT for continuity with the
+// existing helpers, but note that this does NOT reach the validator: the
+// suite talks to a real httptest TCP listener (see TestMain), and the
+// middleware reads TestTFromContext(r.Context()) — the *server's* context,
+// which is built fresh per connection. A client-side context value cannot
+// cross the wire, so the validator's TestName is always "unknown" and its
+// enforce-mode t.Errorf never fires. That is pre-existing; wiring it up
+// needs the test identity carried in a header and resolved server-side.
+//
+// What the context is actually good for here is the standard thing —
+// cancellation and deadlines — and giving the Raw helpers an idiomatic
+// first parameter. Nothing about goroutine safety depends on it.
 func e2eCtx(t *testing.T) context.Context {
 	t.Helper()
 	return openapivalidator.WithTestT(context.Background(), t)
 }
 
-// e2eNewRequest creates an http.Request with the test name attached to the
-// request context via openapivalidator.WithTestT. The validator middleware
-// uses the captured *testing.T to call t.Errorf in -run-filtered enforce
-// mode (see openapivalidator/doc.go).
+// e2eNewRequest creates an http.Request bound to the test's context.
 func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.Request, error) {
 	t.Helper()
 	return http.NewRequestWithContext(e2eCtx(t), method, urlStr, body)

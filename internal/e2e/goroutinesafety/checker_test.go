@@ -56,7 +56,37 @@ func worker(t *testing.T) {}
 func TestX(t *testing.T) {
 	go worker(t)
 }`,
-			wantViolations: []string{"passes t to a goroutine"},
+			wantViolations: []string{"passes t to worker(…) from a goroutine"},
+		},
+		{
+			name: "go t.Fatal directly",
+			src: `package p
+import "testing"
+func TestX(t *testing.T) {
+	go t.Fatal("boom")
+}`,
+			wantViolations: []string{"calls t.Fatal from a goroutine"},
+		},
+		{
+			name: "aliased t used in a goroutine",
+			src: `package p
+import "testing"
+func TestX(t *testing.T) {
+	tt := t
+	go func() { tt.Fatalf("boom") }()
+}`,
+			wantViolations: []string{"calls tt.Fatalf from a goroutine"},
+		},
+		{
+			name: "aliased t handed to a helper in a goroutine",
+			src: `package p
+import "testing"
+func helper(t *testing.T) {}
+func TestX(t *testing.T) {
+	tt := t
+	go func() { helper(tt) }()
+}`,
+			wantViolations: []string{"passes tt to helper(…) from a goroutine"},
 		},
 		{
 			name: "violation nested in a closure inside the goroutine",
