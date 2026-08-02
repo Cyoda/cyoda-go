@@ -56,14 +56,23 @@ const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 // handler (post-engine CompareAndSave conflict on non-segmenting cascades).
 // The TimeUUID for the event is generated via the supplied uuids generator
 // so engine and handler call sites share the same monotonic ordering.
+//
+// now supplies the event's Timestamp. The engine passes its own clock so audit
+// times stay comparable with the scheduled-transition timings computed from it;
+// callers without an injectable clock pass time.Now. A nil now defaults to
+// time.Now.
 func EmitTransitionAborted(
 	ctx context.Context,
 	auditStore spi.StateMachineAuditStore,
 	uuids spi.UUIDGenerator,
+	now func() time.Time,
 	entityID, cascadeEntryTxID, state, transitionName, expectedTxID, actualTxID string,
 ) {
 	if auditStore == nil {
 		return
+	}
+	if now == nil {
+		now = time.Now
 	}
 	data := map[string]any{
 		"reason":         TransitionAbortedReasonEntityModified,
@@ -79,7 +88,7 @@ func EmitTransitionAborted(
 		TransactionID: cascadeEntryTxID,
 		Details:       fmt.Sprintf("Transition %q aborted: entity has been modified since last read", transitionName),
 		Data:          data,
-		Timestamp:     time.Now(),
+		Timestamp:     now(),
 	}
 	if err := auditStore.Record(ctx, entityID, event); err != nil {
 		slog.Debug("transition-aborted audit emission failed",
@@ -126,7 +135,7 @@ func (e *Engine) recordAbortForIfMatchConflict(
 	expectedTxID string,
 ) {
 	actualTxID := LookupActualTxID(ctx, e.factory, entity.Meta.ID)
-	EmitTransitionAborted(ctx, auditStore, e.uuids,
+	EmitTransitionAborted(ctx, auditStore, e.uuids, e.now,
 		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
 		transitionName, expectedTxID, actualTxID)
 }
