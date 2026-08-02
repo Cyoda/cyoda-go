@@ -522,7 +522,7 @@ func RunSearchSortPointInTime(t *testing.T, fixture BackendFixture) {
 	}
 
 	// Capture t1 at B's creation so both entities exist in the snapshot.
-	t1 := pitbLatestChangeTime(t, c, bID)
+	t1 := LatestChangeTime(t, c, bID)
 
 	// Space ≥1 ms so the update lands in a strictly later millisecond.
 	time.Sleep(2 * time.Millisecond)

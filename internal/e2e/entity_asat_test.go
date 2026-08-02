@@ -26,8 +26,9 @@ func TestGetAllEntities_AsAt(t *testing.T) {
 	setupModelWithWorkflow(t, model, wf)
 
 	id := createEntityE2E(t, model, 1, `{"name":"Bob","status":"draft"}`)
-	time.Sleep(10 * time.Millisecond)
-	midpoint := time.Now().UTC().Format(time.RFC3339Nano)
+	tCreate := latestChangeTimeE2E(t, id)
+
+	// Space the two versions into distinct instants.
 	time.Sleep(10 * time.Millisecond)
 
 	// Update via manual transition so state + data change after midpoint.
@@ -35,6 +36,10 @@ func TestGetAllEntities_AsAt(t *testing.T) {
 	if up.StatusCode != http.StatusOK {
 		t.Fatalf("transition: %d: %s", up.StatusCode, readBody(t, up))
 	}
+	tUpdate := latestChangeTimeE2E(t, id)
+
+	// Boundary between the two versions, on the server's clock.
+	midpoint := midpointBetweenE2E(t, tCreate, tUpdate)
 
 	// List as-at midpoint — must show CREATED (pre-update) + meta.pointInTime.
 	resp := doAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s/1?pointInTime=%s", model, midpoint), "")

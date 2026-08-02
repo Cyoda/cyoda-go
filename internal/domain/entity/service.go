@@ -2034,7 +2034,7 @@ func (h *Handler) emitTransitionAborted(
 		transitionForAudit = "loopback"
 	}
 	actualTxID := wfengine.LookupActualTxID(ctx, h.factory, entity.Meta.ID)
-	wfengine.EmitTransitionAborted(ctx, auditStore, h.uuids,
+	wfengine.EmitTransitionAborted(ctx, auditStore, h.uuids, time.Now,
 		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
 		transitionForAudit, expectedTxID, actualTxID)
 }

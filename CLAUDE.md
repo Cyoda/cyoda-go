@@ -126,6 +126,14 @@ Do not skip steps. Brainstorming prevents building the wrong thing.
 TDD prevents shipping untested code. Verification prevents false "done" claims.
 Review and security audit prevent defects reaching main.
 
+**The review gates need a *fresh-context* reviewer, and this is a standing
+request from the user to dispatch one.** `requesting-code-review` and the
+brainstorming design review (`.claude/rules/gate-brainstorming.md`) both depend
+on a reviewer that has not seen the working context; running them inline defeats
+their purpose. Treat reaching either gate as the user having asked for a subagent
+on that task — no need to ask again. If anything still prevents dispatching one,
+**say so and stop — never drop the gate silently and mention it afterwards.**
+
 ## Common Commands
 
 Plugin submodules (`plugins/memory`, `plugins/sqlite`, `plugins/postgres`)

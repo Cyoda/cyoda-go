@@ -22,6 +22,19 @@ func init() {
 	)
 }
 
+// latestChangeTime returns the server-stamped time of the entity's most recent
+// version — the driver-based counterpart of parity.LatestChangeTime. Use it
+// instead of time.Now() when building a point-in-time boundary, so the
+// comparison stays on a single clock (see e2e/parity/pit_time.go).
+func latestChangeTime(t *testing.T, d *driver.Driver, id uuid.UUID) time.Time {
+	t.Helper()
+	changes, err := d.GetEntityChanges(id)
+	if err != nil {
+		t.Fatalf("GetEntityChanges: %v", err)
+	}
+	return parity.MaxChangeTime(t, changes)
+}
+
 // RunExternalAPI_07_01_GetEntityAtPointInTime — dictionary 07/01.
 // GET entity at three different points in time returns three states.
 func RunExternalAPI_07_01_GetEntityAtPointInTime(t *testing.T, fixture parity.BackendFixture) {
@@ -37,13 +50,17 @@ func RunExternalAPI_07_01_GetEntityAtPointInTime(t *testing.T, fixture parity.Ba
 	if err != nil {
 		t.Fatalf("create entity: %v", err)
 	}
-	t1 := time.Now().UTC()
+	// Boundaries come from the server's clock, never time.Now() — the backend
+	// stamps version times, and on postgres that is the database's clock.
+	// See e2e/parity/pit_time.go. The sleeps space consecutive versions into
+	// distinct milliseconds so each exact-T read is unambiguous.
+	t1 := latestChangeTime(t, d, id)
 	time.Sleep(100 * time.Millisecond)
 
 	if err := d.UpdateEntityData(id, `{"k":2}`); err != nil {
 		t.Fatalf("update@t2: %v", err)
 	}
-	t2 := time.Now().UTC()
+	t2 := latestChangeTime(t, d, id)
 	time.Sleep(100 * time.Millisecond)
 
 	if err := d.UpdateEntityData(id, `{"k":3}`); err != nil {
@@ -180,8 +197,11 @@ func RunExternalAPI_07_04_ChangeHistoryAtPointInTime(t *testing.T, fixture parit
 	if err := d.UpdateEntityData(id, `{"k":2}`); err != nil {
 		t.Fatalf("update@k=2: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	cutoff := time.Now().UTC()
+	// The cutoff is the k=2 version's own server-stamped time: inclusive <=
+	// keeps CREATE + that UPDATE and excludes the k=3 UPDATE written after it.
+	// A time.Now() cutoff would compare the test's clock against server-stamped
+	// history — see e2e/parity/pit_time.go.
+	cutoff := latestChangeTime(t, d, id)
 	time.Sleep(50 * time.Millisecond)
 	if err := d.UpdateEntityData(id, `{"k":3}`); err != nil {
 		t.Fatalf("update@k=3: %v", err)

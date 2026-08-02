@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
@@ -473,7 +475,8 @@ func RunParityGroupedStats_PointInTime(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("CreateEntity 1: %v", err)
 	}
-	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":1}`); err != nil {
+	id2, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":1}`)
+	if err != nil {
 		t.Fatalf("CreateEntity 2: %v", err)
 	}
 	id3, err := c.CreateEntity(t, modelName, modelVersion, `{"variantId":"v1","price":1}`)
@@ -481,22 +484,30 @@ func RunParityGroupedStats_PointInTime(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("CreateEntity 3: %v", err)
 	}
 
-	// Capture T1 here — we want the snapshot to include all three
-	// CREATED-state entities. A small sleep on either side defends
-	// against clock-tick granularity in the backend's timestamp source
-	// (postgres NOW() in particular has microsecond granularity but
-	// transaction commits within the same tick share a timestamp).
-	time.Sleep(20 * time.Millisecond)
-	pit := time.Now().UTC()
+	// T1 must sit after all three creates and before the mutations below. Both
+	// bounds are read back from the server so the comparison stays on the
+	// backend's own clock — see pit_time.go. Take the max over all three rather
+	// than assuming the backend clock is monotone across separate writes. The
+	// sleep separates the last create from the first mutation, so T1 lands in a
+	// distinct instant on every backend (ms resolution on the commercial one).
+	tCreated := LatestChangeTime(t, c, id1)
+	for _, id := range []uuid.UUID{id2, id3} {
+		if ts := LatestChangeTime(t, c, id); ts.After(tCreated) {
+			tCreated = ts
+		}
+	}
 	time.Sleep(20 * time.Millisecond)
 
 	// Post-T1 mutations that should be INVISIBLE to the pointInTime query.
 	if err := c.UpdateEntity(t, id1, "ship", `{"variantId":"v1","price":1}`); err != nil {
 		t.Fatalf("ship 1: %v", err)
 	}
+	tShipped := LatestChangeTime(t, c, id1)
 	if err := c.DeleteEntity(t, id3); err != nil {
 		t.Fatalf("DeleteEntity 3: %v", err)
 	}
+
+	pit := MidpointBetween(t, tCreated, tShipped)
 
 	buckets, err := c.QueryGroupedStats(t, modelName, modelVersion, client.GroupedStatsRequest{
 		GroupBy:     []string{"state"},

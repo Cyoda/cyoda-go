@@ -232,21 +232,20 @@ func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture
 	const modelName = "iso-pit-test"
 	const modelVersion = 1
 
-	// Record a "before any tenant created anything" timestamp for the
-	// bogus probe.
-	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
-
-	// Tenant A: set up model + workflow + entity. Sleep around create to
-	// give us a stable t1+epsilon window.
+	// Tenant A: set up model + workflow + entity.
 	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
-	time.Sleep(10 * time.Millisecond)
 	entityID, err := clientA.CreateEntity(t, modelName, modelVersion,
 		`{"name":"TenantA","amount":10,"status":"new"}`)
 	if err != nil {
 		t.Fatalf("CreateEntity (tenant A): %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	afterCreate := time.Now().UTC()
+
+	// afterCreate must be a PIT at which the entity genuinely EXISTS for
+	// tenant A — that is what makes probe (1) below distinct from the bogus-PIT
+	// probe (2). Derived from the server's clock so skew cannot silently
+	// collapse the two probes into the same test (see pit_time.go).
+	afterCreate := LatestChangeTime(t, clientA, entityID)
+	beforeCreate := afterCreate.Add(-1 * time.Hour)
 
 	// (1) Tenant B asks for tenant A's entity at t1+epsilon (when it
 	// exists in A's tenant). Must be 404 ENTITY_NOT_FOUND.
@@ -298,9 +297,6 @@ func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixtur
 	const modelName = "iso-changes-pit-test"
 	const modelVersion = 1
 
-	// PIT in the far past, before any tenant created anything.
-	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
-
 	// Tenant A: set up the temporal workflow (NONE->CREATED auto,
 	// CREATED->CREATED manual UPDATE) so we can produce multiple changes.
 	if err := clientA.ImportModel(t, modelName, modelVersion, `{"name":"Temporal","amount":0,"status":"init"}`); err != nil {
@@ -322,8 +318,11 @@ func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixtur
 		`{"name":"TenantA","amount":2,"status":"v2"}`); err != nil {
 		t.Fatalf("UpdateEntity v2 (tenant A): %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	afterUpdates := time.Now().UTC()
+
+	// A PIT at which the history genuinely EXISTS for tenant A, on the server's
+	// clock — see pit_time.go. beforeCreate is the far-past bogus probe.
+	afterUpdates := LatestChangeTime(t, clientA, entityID)
+	beforeCreate := afterUpdates.Add(-1 * time.Hour)
 
 	// (1) Tenant B asks for the change history of tenant A's entity at a
 	// PIT after the updates landed. Must be 404 ENTITY_NOT_FOUND.

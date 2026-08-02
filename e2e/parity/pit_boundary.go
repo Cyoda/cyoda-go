@@ -33,7 +33,7 @@ func RunPITBoundaryExactT(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("create entity: %v", err)
 	}
-	t1 := pitbLatestChangeTime(t, c, id)
+	t1 := LatestChangeTime(t, c, id)
 
 	// Space writes ≥1ms apart so each version lands in a distinct millisecond.
 	// The commercial backend stores timestamps at millisecond precision; two
@@ -46,13 +46,13 @@ func RunPITBoundaryExactT(t *testing.T, fixture BackendFixture) {
 	if err := c.UpdateEntityData(t, id, `{"k":2}`); err != nil {
 		t.Fatalf("update k=2: %v", err)
 	}
-	t2 := pitbLatestChangeTime(t, c, id)
+	t2 := LatestChangeTime(t, c, id)
 
 	time.Sleep(2 * time.Millisecond)
 	if err := c.UpdateEntityData(t, id, `{"k":3}`); err != nil {
 		t.Fatalf("update k=3: %v", err)
 	}
-	t3 := pitbLatestChangeTime(t, c, id)
+	t3 := LatestChangeTime(t, c, id)
 
 	// Precondition: the spacing above must yield strictly increasing version
 	// timestamps on every supported backend. A violation means the backend's
@@ -67,26 +67,6 @@ func RunPITBoundaryExactT(t *testing.T, fixture BackendFixture) {
 	pitbAssertKAt(t, c, id, t1, 1)
 	pitbAssertKAt(t, c, id, t2, 2)
 	pitbAssertKAt(t, c, id, t3, 3)
-}
-
-// pitbLatestChangeTime returns the most recent TimeOfChange for the entity —
-// the timestamp of the version just written.
-func pitbLatestChangeTime(t *testing.T, c *client.Client, id uuid.UUID) time.Time {
-	t.Helper()
-	changes, err := c.GetEntityChanges(t, id)
-	if err != nil {
-		t.Fatalf("GetEntityChanges: %v", err)
-	}
-	if len(changes) == 0 {
-		t.Fatal("GetEntityChanges returned no entries")
-	}
-	latest := changes[0].TimeOfChange
-	for _, ch := range changes[1:] {
-		if ch.TimeOfChange.After(latest) {
-			latest = ch.TimeOfChange
-		}
-	}
-	return latest
 }
 
 // pitbAssertKAt queries the entity at the exact timestamp at and asserts that

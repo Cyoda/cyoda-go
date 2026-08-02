@@ -229,20 +229,24 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
+	pool := factory.Pool()
+
 	ent := makeEntity("ent-asat")
 	ent.Data = []byte(`{"value":"v1"}`)
 	store.Save(ctx, ent)
+	// Boundaries come from the DB clock, never time.Now() — see pit_time_test.go.
+	// (Save takes a defensive copy, so the stamp is not readable off ent.)
+	afterV1 := dbNow(t, ctx, pool)
 
-	// Record time after v1 was saved
-	time.Sleep(2 * time.Millisecond)
-	afterV1 := time.Now().UTC()
+	// Space the two versions into distinct instants.
 	time.Sleep(2 * time.Millisecond)
 
 	ent.Data = []byte(`{"value":"v2"}`)
 	ent.Meta.State = "MODIFIED"
 	store.Save(ctx, ent)
+	afterV2 := dbNow(t, ctx, pool)
 
-	// GetAsAt at afterV1 should return v1
+	// GetAsAt after v1 but before v2 should return v1
 	got, err := store.GetAsAt(ctx, "ent-asat", afterV1)
 	if err != nil {
 		t.Fatalf("GetAsAt: %v", err)
@@ -251,8 +255,8 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 		t.Errorf("GetAsAt version = %d, want 1", got.Meta.Version)
 	}
 
-	// GetAsAt at now should return v2
-	got2, err := store.GetAsAt(ctx, "ent-asat", time.Now().UTC())
+	// GetAsAt after v2 should return v2
+	got2, err := store.GetAsAt(ctx, "ent-asat", afterV2)
 	if err != nil {
 		t.Fatalf("GetAsAt now: %v", err)
 	}
@@ -293,16 +297,20 @@ func TestEntityStore_GetAllAsAt(t *testing.T) {
 
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
+	pool := factory.Pool()
+
 	store.Save(ctx, makeEntity("ent-aa-1"))
 	store.Save(ctx, makeEntity("ent-aa-2"))
+	// Boundaries come from the DB clock, never time.Now() — see pit_time_test.go.
+	afterFirst := dbNow(t, ctx, pool)
 
-	time.Sleep(2 * time.Millisecond)
-	afterFirst := time.Now().UTC()
+	// Space the third save into a distinct instant.
 	time.Sleep(2 * time.Millisecond)
 
 	store.Save(ctx, makeEntity("ent-aa-3"))
+	afterThird := dbNow(t, ctx, pool)
 
-	// GetAllAsAt at afterFirst should return 2
+	// GetAllAsAt after the first two saves should return 2
 	all, err := store.GetAllAsAt(ctx, ref, afterFirst)
 	if err != nil {
 		t.Fatalf("GetAllAsAt: %v", err)
@@ -311,8 +319,8 @@ func TestEntityStore_GetAllAsAt(t *testing.T) {
 		t.Errorf("expected 2, got %d", len(all))
 	}
 
-	// GetAllAsAt at now should return 3
-	allNow, err := store.GetAllAsAt(ctx, ref, time.Now().UTC())
+	// GetAllAsAt after the third save should return 3
+	allNow, err := store.GetAllAsAt(ctx, ref, afterThird)
 	if err != nil {
 		t.Fatalf("GetAllAsAt now: %v", err)
 	}

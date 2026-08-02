@@ -912,7 +912,10 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 		TransactionID: txID,
 		Details:       details,
 		Data:          data,
-		Timestamp:     time.Now(),
+		// The engine's clock, not time.Now: scheduled-transition timings are
+		// computed from e.now(), so stamping audit events from a different
+		// source makes the two incomparable whenever a clock is injected.
+		Timestamp: e.now(),
 	}
 	// Best-effort recording; audit failures should not break workflow execution.
 	_ = auditStore.Record(ctx, entityID, event)

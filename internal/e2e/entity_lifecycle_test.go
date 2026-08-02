@@ -279,15 +279,19 @@ func TestEntityLifecycle_TemporalAsAt(t *testing.T) {
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Grace","amount":50,"status":"v1"}`)
 
-	// Record time between creates.
-	time.Sleep(50 * time.Millisecond)
-	midpoint := time.Now().UTC().Format(time.RFC3339Nano)
+	tCreate := latestChangeTimeE2E(t, entityID)
+
+	// Space the two versions into distinct instants.
 	time.Sleep(50 * time.Millisecond)
 
 	// Update entity.
 	path := fmt.Sprintf("/api/entity/JSON/%s", entityID)
 	resp := doAuth(t, http.MethodPut, path, `{"name":"Grace","amount":100,"status":"v2"}`)
 	readBody(t, resp)
+	tUpdate := latestChangeTimeE2E(t, entityID)
+
+	// Boundary between the two versions, on the server's clock.
+	midpoint := midpointBetweenE2E(t, tCreate, tUpdate)
 
 	// Get current version — should be v2.
 	currentData := getEntityData(t, entityID, "")

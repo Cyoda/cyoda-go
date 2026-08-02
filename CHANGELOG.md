@@ -6,42 +6,35 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
-- **`function` conditions in a search body no longer produce a 5xx.** A
-  `{"type":"function", ...}` clause is a workflow/transition-criterion shape the
-  engine dispatches to a compute member; search has no dispatcher for it. It was
-  accepted by every validator, defeated pushdown translation, and then died in
-  the in-process predicate kernel — surfacing as **500** on sync search, grouped
-  statistics and conditional delete-by-model, as a **`success:false`
-  `SERVER_ERROR` envelope** over gRPC, and worst on async submit as **200 plus a
-  job that silently ended `FAILED`** with no reason on either poll. Nested
-  inside an `OR` whose earlier clause matched, it was skipped entirely and the
-  request returned a wrong **200**. Every search-shaped entry point now rejects
-  the clause at any depth with **400 `INVALID_CONDITION`**, before any store
-  access — so no transaction is opened for a conditional delete and no job is
-  created for an async submit. Workflow and transition criteria are unaffected.
-  `FunctionConditionDto` is removed from the three search request unions in the
-  OpenAPI document and retained in the `criterion` unions, where it is valid.
-  ([#458](https://github.com/Cyoda-platform/cyoda-go/issues/458))
+- **Point-in-time tests no longer compare two clocks.** `TestParity/GetAllEntitiesAsAt`
+  flaked on postgres: it built its `pointInTime` from the test process's clock and
+  compared it against version times stamped by the *database* — on a testcontainer
+  the Docker VM's clock, measured lagging the host by 10–13 ms under load, more than
+  the 10 ms sleep it relied on. Every affected test now takes its boundary from the
+  backend's own clock; sleeps remain only to separate consecutive versions. Covers the
+  parity suite, `internal/e2e`, the postgres plugin's own as-at tests (which had 2 ms,
+  10 ms and zero-margin variants), and the SPI conformance harness, whose `Harness.Now`
+  now reads the database clock.
+  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
 
-- **`cyoda help workflows` understated what criteria accept** — the CRITERIA
-  section advertised "all four condition types" (omitting `function`) and three
-  lifecycle fields, so a reader believed valid criteria were invalid. It now
-  lists all five condition types and all six lifecycle fields —
-  `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias
-  `previousTransition`), `transactionId`, `id` — matching `cyoda help search`,
-  which describes the same evaluation kernel. New parity tests pin both topics
-  to `matchLifecycle` and to each other. The async-search description in the
-  OpenAPI document carried the same three-field list and is corrected with it.
-  ([#455](https://github.com/Cyoda-platform/cyoda-go/issues/455))
+- **`GET /entity/{id}/transitions` no longer 404s an existing entity when the
+  database clock runs ahead of the application.** With no `pointInTime` supplied, the
+  handler defaulted to `time.Now()` and issued a *historical* read — comparing the
+  application's clock against database-stamped version times. When the database ran
+  ahead, a just-written version compared as not-yet-valid and the entity read as
+  missing, so a request for the current state got **404 ENTITY_NOT_FOUND** for an
+  entity that exists. A request with no point in time now reads the current version.
+  Same fix in `GetAvailableTransitions`, behind `/platform-api/entity/fetch/transitions`.
+  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
 
-- **`make dev-*` targets restored** — the dev targets had been broken since the
-  root `docker-compose.yml` was deleted while every target still invoked bare
-  `docker compose`; `dev-run`/`dev-test` separately sourced a `.env.dev` that
-  does not exist. A dev-only `scripts/dev/compose.yaml` (PostgreSQL only,
-  healthchecked) now backs them, with the postgres variables set explicitly
-  rather than via `CYODA_PROFILES=postgres` — which reads the gitignored
-  `.env.postgres` and would silently fall back to the memory backend on a fresh
-  clone. ([#453](https://github.com/Cyoda-platform/cyoda-go/issues/453))
+- **Scheduled-transition e2e tests no longer race an HTTP round-trip against the
+  timer.** `TestE2E_ScheduledTransition_FiresThroughHTTPStack` and `_LoopbackDefersTimer`
+  asserted "has not fired yet" by reading the state back and expecting the old value,
+  which under load loses to the delay and reports a defect that does not exist. Both now
+  assert from the server's audit trail: the transition was *armed* with its delay applied,
+  and the fire did not precede the armed time. `getSMAuditEvents` gained an explicit page
+  size — the default 20-item page silently truncated the history one of them reasons about.
+  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
 
 ## [0.8.3] — 2026-07-27
 
