@@ -9,7 +9,6 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -17,7 +16,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -27,48 +26,6 @@ import (
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
 const maxEntityBodySize = 10 * 1024 * 1024
-
-// errInternalSchema tags schema-processing errors inside validateOrExtend
-// that represent internal failures (codec decode/encode, Diff computation,
-// plugin-layer ExtendSchema write) rather than client-contract violations.
-// The handler classifier uses errors.Is to route these to 5xx with a
-// logged ticket. Using a sentinel rather than string-matching the wrap
-// messages makes classification robust to future wording changes — the
-// prior string-match classifier would have silently shifted a renamed
-// "failed to extend schema" to 4xx.
-var errInternalSchema = errors.New("internal schema processing failure")
-
-// incompatibleTypeError is the typed validation failure surfaced when at
-// least one ValidationError carries ErrKindIncompatibleType (the
-// dictionary-aligned "wrong DataType" signal — Cloud's
-// FoundIncompatibleTypeWithEntityModelException).
-//
-// Rendered by classifyValidateOrExtendErr into a 400 INCOMPATIBLE_TYPE
-// AppError with Props {fieldPath, expectedType, actualType} so SDKs can
-// branch on the precondition without scraping the message string.
-type incompatibleTypeError struct {
-	path          string
-	expectedTypes []schema.DataType
-	actualType    schema.DataType
-	message       string
-	entityName    string // populated by enrichWithModelRef post-validation
-	entityVersion string // populated by enrichWithModelRef post-validation
-}
-
-func (e *incompatibleTypeError) Error() string { return e.message }
-
-// enrichWithModelRef threads model identification (entity name, version)
-// onto an *incompatibleTypeError so the classifier can render those Props
-// alongside the validator-supplied (path, expected/actualType). For all
-// other error types the input is returned unchanged.
-func enrichWithModelRef(err error, ref spi.ModelRef) error {
-	var incompatErr *incompatibleTypeError
-	if errors.As(err, &incompatErr) {
-		incompatErr.entityName = ref.EntityName
-		incompatErr.entityVersion = ref.ModelVersion
-	}
-	return err
-}
 
 // maxStatesFilterSize bounds the cardinality of the user-supplied ?states= query
 // parameter on stats-by-state endpoints. Without this cap, an oversized list would
@@ -165,86 +122,6 @@ func (h *Handler) rollbackOwned(ctx context.Context, txID string, owned bool) {
 // contend on a single "models" row — the hot-row regression that
 // ModelStore.Save would otherwise produce under REPEATABLE READ.
 // Returns an error on validation or extension failure.
-func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
-	modelNode, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return fmt.Errorf("%w: failed to unmarshal model schema: %w", errInternalSchema, err)
-	}
-
-	if desc.ChangeLevel == "" {
-		errs := schema.Validate(modelNode, parsedData)
-		if len(errs) > 0 {
-			return enrichWithModelRef(validationErrorsToError(errs), desc.Ref)
-		}
-		return nil
-	}
-
-	incomingModel, err := importer.Walk(parsedData)
-	if err != nil {
-		return fmt.Errorf("failed to walk data: %w", err)
-	}
-	extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
-	if err != nil {
-		// Polymorphic-slot rejections cannot be resolved by raising ChangeLevel
-		// and so must not wear the "change level violation" prefix — the phrase
-		// misleads clients into tuning a setting that wouldn't help.
-		if errors.Is(err, schema.ErrPolymorphicSlot) {
-			return err
-		}
-		return fmt.Errorf("change level violation: %w", err)
-	}
-
-	// Guard: if any unique key field would become non-scalar in the extended
-	// schema, reject the write now. This catches the null-only-leaf → object/array
-	// widening case (a TYPE-level change permitted by Structural ChangeLevel)
-	// that would otherwise surface as an opaque Diff "kind change" 5xx. The
-	// unique keys were valid when declared; the schema extension must not
-	// silently invalidate them.
-	if len(desc.UniqueKeys) > 0 {
-		if vErr := schema.ValidateUniqueKeys(extended, desc.UniqueKeys); vErr != nil {
-			var de *schema.UniqueKeyDefError
-			if errors.As(vErr, &de) {
-				return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKeyDefinition,
-					"schema change would invalidate a composite unique key: "+de.Reason)
-			}
-			return fmt.Errorf("%w: re-validate unique keys: %w", errInternalSchema, vErr)
-		}
-	}
-
-	// Compute the additive delta. Diff returns (nil, nil) when the
-	// extension is a semantic no-op, which is the common case on
-	// every entity write.
-	delta, err := schema.Diff(modelNode, extended)
-	if err != nil {
-		return fmt.Errorf("%w: failed to compute schema delta: %w", errInternalSchema, err)
-	}
-	if delta == nil {
-		return nil
-	}
-	// Append to the extension log via the plugin. Participates in the
-	// ambient entity transaction so visibility is commit-bound.
-	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
-		return fmt.Errorf("%w: failed to extend schema: %w", errInternalSchema, err)
-	}
-	return nil
-}
-
-// validateStrict validates parsedData against the model schema WITHOUT
-// extending it. PATCH uses this: a sparse delta must never widen the tenant's
-// model (a stray/typo'd key is rejected, not absorbed). Mirrors the
-// ChangeLevel=="" branch of validateOrExtend.
-func (h *Handler) validateStrict(desc *spi.ModelDescriptor, parsedData any) error {
-	modelNode, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return fmt.Errorf("%w: failed to unmarshal model schema: %w", errInternalSchema, err)
-	}
-	errs := schema.Validate(modelNode, parsedData)
-	if len(errs) > 0 {
-		return enrichWithModelRef(validationErrorsToError(errs), desc.Ref)
-	}
-	return nil
-}
-
 // ValidateWithRefresh runs strict schema validation with a bounded
 // refresh-on-stale safety net. One refresh attempt, only on unknown-
 // schema-element errors — the signal that our cached schema is behind
@@ -256,68 +133,27 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 	if err != nil {
 		return err
 	}
-	errs := validateDescriptor(desc, data)
+	errs := ingest.ValidateDescriptor(desc, data)
 	if errs == nil {
 		return nil
 	}
 	if !schema.HasUnknownSchemaElement(errs) {
-		return validationErrorsToError(errs)
+		return ingest.ValidationErrorsToError(errs)
 	}
 	refresher, ok := modelStore.(interface {
 		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
 	})
 	if !ok {
-		return validationErrorsToError(errs) // plugin has no cache
+		return ingest.ValidationErrorsToError(errs) // plugin has no cache
 	}
 	freshDesc, rErr := refresher.RefreshAndGet(ctx, ref)
 	if rErr != nil {
 		return rErr
 	}
-	if errs2 := validateDescriptor(freshDesc, data); errs2 != nil {
-		return validationErrorsToError(errs2)
+	if errs2 := ingest.ValidateDescriptor(freshDesc, data); errs2 != nil {
+		return ingest.ValidationErrorsToError(errs2)
 	}
 	return nil
-}
-
-// validateDescriptor unmarshals desc.Schema and runs schema.Validate.
-// Returns nil on success, or a []ValidationError on failure (including
-// a descriptive entry if desc itself is malformed or nil).
-func validateDescriptor(desc *spi.ModelDescriptor, data any) []schema.ValidationError {
-	if desc == nil {
-		return []schema.ValidationError{{Message: "nil descriptor"}}
-	}
-	node, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return []schema.ValidationError{{Message: fmt.Sprintf("unmarshal schema: %v", err)}}
-	}
-	return schema.Validate(node, data)
-}
-
-// validationErrorsToError converts a []ValidationError to a single error,
-// preserving the concatenation style used by validateOrExtend.
-//
-// When at least one entry classifies as ErrKindIncompatibleType (the
-// dictionary-aligned "wrong DataType" signal), the function returns a
-// typed *incompatibleTypeError carrying the first such entry's structured
-// fields so classifyValidateOrExtendErr can render INCOMPATIBLE_TYPE Props
-// without scraping the message string. Other validation errors fall back
-// to the generic "validation failed: ..." wrap, classified as
-// BAD_REQUEST downstream.
-func validationErrorsToError(errs []schema.ValidationError) error {
-	msgs := make([]string, len(errs))
-	for i, e := range errs {
-		msgs[i] = e.Error()
-	}
-	joined := fmt.Sprintf("validation failed: %s", strings.Join(msgs, "; "))
-	if first := schema.FirstIncompatibleType(errs); first != nil {
-		return &incompatibleTypeError{
-			path:          first.Path,
-			expectedTypes: first.ExpectedTypes,
-			actualType:    first.ActualType,
-			message:       joined,
-		}
-	}
-	return fmt.Errorf("%s", joined)
 }
 
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
@@ -327,10 +163,10 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 // in the wrap strings:
 //
 //   - ErrPolymorphicSlot      → 4xx POLYMORPHIC_SLOT (client normalizes payload)
-//   - *incompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
+//   - *ingest.IncompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
 //     (fieldPath, expectedType, actualType) — Cloud's
 //     FoundIncompatibleTypeWithEntityModelException equivalent
-//   - errInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
+//   - ingest.ErrInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
 //   - anything else           → 4xx BAD_REQUEST (change-level violation,
 //     other validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
@@ -343,28 +179,28 @@ func classifyValidateOrExtendErr(err error) *common.AppError {
 	if errors.Is(err, schema.ErrPolymorphicSlot) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
 	}
-	var incompatErr *incompatibleTypeError
+	var incompatErr *ingest.IncompatibleTypeError
 	if errors.As(err, &incompatErr) {
 		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeIncompatibleType, err.Error())
-		expected := make([]string, len(incompatErr.expectedTypes))
-		for i, dt := range incompatErr.expectedTypes {
+		expected := make([]string, len(incompatErr.ExpectedTypes))
+		for i, dt := range incompatErr.ExpectedTypes {
 			expected[i] = dt.String()
 		}
 		props := map[string]any{
-			"fieldPath":    incompatErr.path,
+			"fieldPath":    incompatErr.Path,
 			"expectedType": expected,
-			"actualType":   incompatErr.actualType.String(),
+			"actualType":   incompatErr.ActualType.String(),
 		}
-		if incompatErr.entityName != "" {
-			props["entityName"] = incompatErr.entityName
+		if incompatErr.EntityName != "" {
+			props["entityName"] = incompatErr.EntityName
 		}
-		if incompatErr.entityVersion != "" {
-			props["entityVersion"] = incompatErr.entityVersion
+		if incompatErr.EntityVersion != "" {
+			props["entityVersion"] = incompatErr.EntityVersion
 		}
 		appErr.Props = props
 		return appErr
 	}
-	if errors.Is(err, errInternalSchema) {
+	if errors.Is(err, ingest.ErrInternalSchema) {
 		return common.Internal("failed to process model schema", err)
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())

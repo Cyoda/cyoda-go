@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // TestInternalizedRejection_ExecutionModeMatrix asserts that Type:
@@ -102,6 +103,12 @@ func TestType_Externalized_FallsThroughToExecutionModeDispatch(t *testing.T) {
 			ctx := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "fall-through-" + tc.typeVal, ModelVersion: "1.0"}
 
+			// The processor echoes the entity back unchanged, so its output
+			// still passes the model checks a client write does. The entity
+			// carries no data fields, so an empty (but registered, strict)
+			// model is the honest declaration.
+			registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
+
 			var dispatched bool
 			engine.extProc = &mockExternalProcessing{
 				dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
@@ -156,6 +163,11 @@ func TestType_UnknownValues_FallThrough(t *testing.T) {
 			engine, factory := setupEngine(t)
 			ctx := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "unknown-" + typeVal, ModelVersion: "1.0"}
+
+			// Same reasoning as the fall-through test above: the echoing
+			// processor's output is checked against the model, so the model
+			// must exist. Registered under the same subtest-derived name.
+			registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
 
 			var dispatched bool
 			engine.extProc = &mockExternalProcessing{
@@ -246,6 +258,14 @@ func TestInternalizedRejection_CascadePosition_SYNC(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cascade-position", ModelVersion: "1.0"}
+
+	// Processor A's output goes through the same model checks a client write
+	// does: declare the entity's own field (`original`) and the field A writes
+	// (`A_ran`). Strict model — an undeclared field would still fail.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"original": schema.Boolean,
+		"A_ran":    schema.Boolean,
+	})
 
 	dispatchOrder := []string{}
 	engine.extProc = &mockExternalProcessing{

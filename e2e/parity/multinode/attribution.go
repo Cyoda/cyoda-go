@@ -45,6 +45,13 @@ import (
 // the compute tenant) so the causal origin (user) is observably distinct from
 // the member's service identity. The tx-token is never logged/asserted (Gate 3).
 
+// attrSampleCreateSecondary is the cascade primary's model sample, seeding
+// zero-valued declarations for the fields cb-create-secondary stamps back onto
+// the primary. Processor output passes the SAME model checks a client write
+// does, so the model must declare them; seeding rather than loosening the
+// model's changeLevel keeps the model strict.
+const attrSampleCreateSecondary = `{"name":"parent","amount":10,"status":"new","secondaryId":"","secondaryTxId":"","tokenWasEmpty":false}`
+
 func init() {
 	Register(
 		NamedTest{Name: "Attribution_ProxiedJoinCascade", Fn: RunAttribution_ProxiedJoinCascade},
@@ -109,8 +116,8 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 
 	const secondary = "attr-mn-casc-secondary"
 	const primary = "attr-mn-casc-primary"
-	cbRouteSetupModel(t, cSetup, secondary, `{"name":"child","amount":1,"status":"new"}`, cbRouteSecondaryWorkflow)
-	cbRouteSetupModel(t, cSetup, primary, `{"name":"parent","amount":10,"status":"new"}`,
+	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	cbRouteSetupModel(t, cSetup, primary, attrSampleCreateSecondary,
 		attrPrimaryProcWorkflow("attr-mn-casc-wf", "cb-create-secondary", "SYNC",
 			cbRouteContext(secondary, "attr-mn-casc-marker")))
 

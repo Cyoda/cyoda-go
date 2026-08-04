@@ -219,7 +219,10 @@ func TestIntxSearch_HTTP_TrackingRead_SeesUncommittedWrite(t *testing.T) {
 		return out, nil
 	})
 
-	h.SetupModelWithWorkflow(t, primary, intxSearchPrimaryWF("primary-intx-http-wf", "cb-intx-http-search"))
+	// cb-intx-http-search reports its findings through the primary's data.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"joinedStatus": 0, "joinedCount": 0, "standaloneStatus": 0, "standaloneCount": 0, "secondaryId": ""`),
+		intxSearchPrimaryWF("primary-intx-http-wf", "cb-intx-http-search"))
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -313,7 +316,10 @@ func TestIntxSearch_GRPC_TrackingRead_SeesUncommittedWrite(t *testing.T) {
 		return out, nil
 	})
 
-	h.SetupModelWithWorkflow(t, primary, intxSearchPrimaryWF("primary-intx-grpc-wf", "cb-intx-grpc-search"))
+	// cb-intx-grpc-search reports its findings through the primary's data.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"searchCountJoined": 0, "searchCountStandalone": 0, "secondaryId": ""`),
+		intxSearchPrimaryWF("primary-intx-grpc-wf", "cb-intx-grpc-search"))
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -405,7 +411,12 @@ func TestIntxSearch_InTx_ErrorCodes(t *testing.T) {
 		return out, nil
 	})
 
-	h.SetupModelWithWorkflow(t, primary, intxSearchPrimaryWF("primary-intx-errcodes-wf", "cb-intx-search-errcodes"))
+	// cb-intx-search-errcodes reports the four observed outcomes through the
+	// primary's data; the model must declare every field it writes.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"httpNotFoundStatus": 0, "httpNotFoundCode": "", "httpBadPathStatus": 0, "httpBadPathCode": "", `+
+			`"grpcNotFoundMsg": "", "grpcBadPathMsg": ""`),
+		intxSearchPrimaryWF("primary-intx-errcodes-wf", "cb-intx-search-errcodes"))
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {

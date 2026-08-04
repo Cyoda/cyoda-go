@@ -109,6 +109,33 @@ func cbPrimaryProcWorkflow(wfName, procName, execMode, contextValue string) stri
 	})
 }
 
+// cbSample* — primary-model samples for the callback scenarios.
+//
+// A callback processor stamps its observations back onto the primary's data,
+// and processor output passes the SAME model checks a client write does: the
+// model must DECLARE every field the processor writes. Each sample therefore
+// seeds the exact field set of the processor the scenario runs, at ZERO VALUE —
+// the sample states the field's type, never the value under test. Seeding
+// (rather than loosening the model's changeLevel) keeps the model strict, so a
+// mistyped field name in a processor still fails loudly instead of silently
+// widening the model and hollowing out the scenario's assertions.
+const (
+	// cbSampleNoWriteback — processors that fail before returning data.
+	cbSampleNoWriteback = `{"name":"Test","amount":10,"status":"new"}`
+	// cbSampleSecondary — the secondary model, written only by clients.
+	cbSampleSecondary = `{"name":"child","amount":1,"status":"new"}`
+	// cbSampleCreateSecondary — cb-create-secondary / cb-grpc-create-secondary.
+	cbSampleCreateSecondary = `{"name":"Test","amount":10,"status":"new","secondaryId":"","secondaryTxId":"","tokenWasEmpty":false}`
+	// cbSampleReadYourWrites — cb-read-your-writes.
+	cbSampleReadYourWrites = `{"name":"Test","amount":10,"status":"new","secondaryId":"","readbackFound":false,"readbackMarker":""}`
+	// cbSampleGRPCSearchRYW — cb-grpc-search-read-your-writes.
+	cbSampleGRPCSearchRYW = `{"name":"Test","amount":10,"status":"new","secondaryId":"","grpcSearchJoinedCount":0,"grpcSearchStandaloneCount":0}`
+	// cbSampleIfMatchUpdate — cb-ifmatch-update.
+	cbSampleIfMatchUpdate = `{"name":"Test","amount":10,"status":"new","secondaryId":"","ifMatchStatus":0,"ifMatchOK":false}`
+	// cbSampleConditionalDelete — cb-conditional-delete.
+	cbSampleConditionalDelete = `{"name":"Test","amount":10,"status":"new","deleteEntityId":"","keepEntityId":"","tokenWasEmpty":false}`
+)
+
 // cbSetupModel imports + locks a model with the given sample doc, then imports
 // the workflow. Unlike setupModelWithWorkflow it takes an explicit sample doc so
 // callers can seed marker-bearing fields.
@@ -143,10 +170,10 @@ func RunCallbackSyncWriteAtomic(t *testing.T, fixture BackendFixture) {
 	const okMarker = "cbtj-atomic-ok"
 	const doomedMarker = "cbtj-atomic-doomed"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
 
 	// --- success branch ---
-	cbSetupModel(t, c, primaryOK, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, primaryOK, cbSampleCreateSecondary,
 		cbPrimaryProcWorkflow("cbtj-atomic-ok-wf", "cb-create-secondary", "SYNC", cbContext(secondary, okMarker)))
 
 	primaryID, err := c.CreateEntity(t, primaryOK, 1, `{"name":"parent","amount":100,"status":"new"}`)
@@ -196,7 +223,7 @@ func RunCallbackSyncWriteAtomic(t *testing.T, fixture BackendFixture) {
 	cbAssertSameTxID(t, c, primaryID, secID)
 
 	// --- failure branch (THE ATOMICITY PROOF) ---
-	cbSetupModel(t, c, primaryFail, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, primaryFail, cbSampleNoWriteback,
 		cbPrimaryProcWorkflow("cbtj-atomic-fail-wf", "cb-create-then-fail", "SYNC", cbContext(secondary, doomedMarker)))
 
 	status, body, err := c.CreateEntityRaw(t, primaryFail, 1, `{"name":"parent2","amount":100,"status":"new"}`)
@@ -231,8 +258,8 @@ func RunCallbackSyncReadYourWrites(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-ryw-primary"
 	const marker = "cbtj-ryw-marker"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, cbSampleReadYourWrites,
 		cbPrimaryProcWorkflow("cbtj-ryw-wf", "cb-read-your-writes", "SYNC", cbContext(secondary, marker)))
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
@@ -268,8 +295,8 @@ func RunCallbackGRPCSearchReadYourWrites(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-gsearch-primary"
 	const marker = "cbtj-gsearch-marker"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, cbSampleGRPCSearchRYW,
 		cbPrimaryProcWorkflow("cbtj-gsearch-wf", "cb-grpc-search-read-your-writes", "SYNC", cbContext(secondary, marker)))
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
@@ -308,7 +335,7 @@ func RunCallbackCriteriaReadYourWrites(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-crit-primary"
 	const marker = "cbtj-crit-marker"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
 
 	ctxVal := cbContext(secondary, marker)
 	wf := cbWorkflowDoc("cbtj-crit-wf", map[string]any{
@@ -327,7 +354,7 @@ func RunCallbackCriteriaReadYourWrites(t *testing.T, fixture BackendFixture) {
 		}}},
 		"APPROVED": map[string]any{},
 	})
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`, wf)
+	cbSetupModel(t, c, primary, cbSampleCreateSecondary, wf)
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
@@ -359,8 +386,8 @@ func RunCallbackIfMatchUpdate(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-ifmatch-primary"
 	const marker = "cbtj-ifmatch-marker"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, cbSampleIfMatchUpdate,
 		cbPrimaryProcWorkflow("cbtj-ifmatch-wf", "cb-ifmatch-update", "SYNC", cbContext(secondary, marker)))
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
@@ -389,11 +416,11 @@ func RunCallbackEmptyTokenStandalone(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-standalone-primary"
 	const marker = "cbtj-standalone"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
 	// COMMIT_BEFORE_DISPATCH default (startNewTxOnDispatch omitted → false):
 	// the dispatcher sends no tx-token, so the processor's callback runs
 	// standalone.
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, primary, cbSampleCreateSecondary,
 		cbPrimaryProcWorkflow("cbtj-standalone-wf", "cb-create-secondary", "COMMIT_BEFORE_DISPATCH", cbContext(secondary, marker)))
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
@@ -454,7 +481,7 @@ func RunCallback_CBDPostJoinsTxPost(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-cbd-post-primary"
 	const marker = "cbtj-cbd-post"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
 
 	// Build the workflow inline: COMMIT_BEFORE_DISPATCH + startNewTxOnDispatch=true.
 	// cbPrimaryProcWorkflow does not support startNewTxOnDispatch, so inline here.
@@ -467,7 +494,7 @@ func RunCallback_CBDPostJoinsTxPost(t *testing.T, fixture BackendFixture) {
 		}}},
 		"ACTIVE": map[string]any{},
 	})
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`, wf)
+	cbSetupModel(t, c, primary, cbSampleCreateSecondary, wf)
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
@@ -522,8 +549,8 @@ func RunCallback_AsyncNewTxDiscardOnFailure(t *testing.T, fixture BackendFixture
 	const primary = "cbtj-anytx-fail-primary"
 	const marker = "cbtj-anytx-doomed"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, cbSampleNoWriteback,
 		cbPrimaryProcWorkflow("cbtj-anytx-fail-wf", "cb-create-then-fail", "ASYNC_NEW_TX", cbContext(secondary, marker)))
 
 	// Pipeline must continue — ASYNC_NEW_TX failure is non-fatal → primary succeeds.

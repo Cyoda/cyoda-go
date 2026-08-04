@@ -6,13 +6,30 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// setupModelWithWorkflow imports a model, locks it, and imports the given
-// workflow JSON. This is the parity equivalent of the internal/e2e helper
-// with the same name.
-func setupModelWithWorkflow(t *testing.T, c *client.Client, modelName string, modelVersion int, workflowJSON string) {
+// wfBaseSample is the plain model sample used by scenarios whose workflow has
+// no processor writing entity data back.
+const wfBaseSample = `{"name":"Test","amount":10,"status":"new"}`
+
+// wfTaggedSample is wfBaseSample plus a zero-valued "tag" field.
+//
+// A processor's returned data passes the SAME model checks a client write does,
+// so a model must DECLARE every field its processors stamp. The "tag-with-foo"
+// processor writes data.tag, hence the seed. The value is the zero value on
+// purpose: the sample declares the field's type without asserting a value, and
+// keeping the model strict means a mistyped field name in a processor still
+// fails loudly instead of silently widening the model.
+const wfTaggedSample = `{"name":"Test","amount":10,"status":"new","tag":""}`
+
+// setupModelWithWorkflow imports a model from sampleDoc, locks it, and imports
+// the given workflow JSON. This is the parity equivalent of the internal/e2e
+// helper with the same name.
+//
+// sampleDoc is explicit rather than hard-coded because the model must declare
+// the fields the workflow's processors write back (see wfTaggedSample).
+func setupModelWithWorkflow(t *testing.T, c *client.Client, modelName string, modelVersion int, sampleDoc, workflowJSON string) {
 	t.Helper()
 
-	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`); err != nil {
+	if err := c.ImportModel(t, modelName, modelVersion, sampleDoc); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {
@@ -46,7 +63,7 @@ func RunWorkflowProcessorChainOnCreation(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfTaggedSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -92,7 +109,7 @@ func RunWorkflowCriteriaMatch(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -132,7 +149,7 @@ func RunWorkflowCriteriaNoMatch(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -178,7 +195,7 @@ func RunWorkflowMultiStateCascade(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfTaggedSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -229,7 +246,7 @@ func RunWorkflowManualTransition(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfTaggedSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {

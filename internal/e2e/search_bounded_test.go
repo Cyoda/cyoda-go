@@ -186,7 +186,10 @@ func TestSearchDirect_InTx_OverLimit_Returns400(t *testing.T) {
 		return out, nil
 	})
 
-	h.SetupModelWithWorkflow(t, primary, intxSearchPrimaryWF("primary-intx-bounded-wf", "cb-intx-bounded-search"))
+	// cb-intx-bounded-search reports both search outcomes through the primary's data.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"joinedStatus": 0, "joinedCode": "", "standaloneStatus": 0, "standaloneCount": 0`),
+		intxSearchPrimaryWF("primary-intx-bounded-wf", "cb-intx-bounded-search"))
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {

@@ -306,6 +306,8 @@ Transitions:
 
 The `changeLevel` field controls schema evolution on locked models. When set, entity ingestion that introduces new structure triggers an additive schema extension (delta computed via `schema.Diff`, appended via `ModelStore.ExtendSchema`, committed with the entity transaction).
 
+Entity ingestion here includes data returned by a workflow processor, not just data sent by a client. A processor that writes a field the model does not declare needs `changeLevel` set exactly as a client would.
+
 ## ERRORS
 
 - `errors.MODEL_NOT_FOUND` — `404` — model does not exist for the given name and version

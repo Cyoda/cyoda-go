@@ -312,8 +312,8 @@ func RunAttributionCascadeJoinedWrite(t *testing.T, fixture BackendFixture) {
 	const primary = "attr-cascade-primary"
 	const marker = "attr-cascade-mark"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, cbSampleCreateSecondary,
 		cbPrimaryProcWorkflow("attr-cascade-wf", "cb-create-secondary", "SYNC", cbContext(secondary, marker)))
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)

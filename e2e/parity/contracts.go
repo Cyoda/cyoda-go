@@ -93,8 +93,10 @@ func RunConcurrentTransitionsDifferentEntities(t *testing.T, fixture BackendFixt
 	const modelVersion = 1
 	const N = 10 // CI-friendly concurrency level
 
-	// Setup with tag-with-foo processor on create transition.
-	if err := c.ImportModel(t, modelName, modelVersion, `{"index":0}`); err != nil {
+	// Setup with tag-with-foo processor on create transition. The sample seeds
+	// a zero-valued "tag" so the model DECLARES the field the processor writes
+	// — processor output passes the same model checks a client write does.
+	if err := c.ImportModel(t, modelName, modelVersion, `{"index":0,"tag":""}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {

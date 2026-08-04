@@ -368,7 +368,7 @@ func flattenStatsByState(stats []entity.EntityStatByState) map[string]int64 {
 // decodeJSONResponseUseNumber decodes an HTTP response body using
 // json.Decoder.UseNumber() so numeric leaves arrive as json.Number and
 // the test can assert exact literal preservation. Mirrors the
-// production helper entity.decodeJSONPreservingNumbers (unexported).
+// production helper ingest.DecodeJSONPreservingNumbers.
 // Keep the two in sync when changing numeric-decode policy.
 func decodeJSONResponseUseNumber(t *testing.T, body []byte, v any) {
 	t.Helper()
@@ -470,7 +470,7 @@ func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
 // dedicated collection-create path (POST /entity/{format} with an array
 // of {model, payload} items) preserves integer literals >2^53 exactly.
 // Spec Section 6.4: this exercises the CreateEntityCollection JSON-array
-// parsing path (service.go decodeJSONPreservingNumbers call), which is
+// parsing path (service.go ingest.DecodeJSONPreservingNumbers call), which is
 // distinct from the single-create path covered by
 // TestCreateEntity_PreservesLargeIntPrecision.
 func TestCollectionCreate_PreservesLargeIntPrecision(t *testing.T) {

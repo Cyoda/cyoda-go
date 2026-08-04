@@ -85,7 +85,10 @@ func RunWorkflowProc_CBD_TxPostPinnedToHomeNode(t *testing.T, fixture MultiNodeF
 	const modelName = "cbd-tx-pinning"
 	const modelVersion = 1
 
-	if err := cSetup.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`); err != nil {
+	// The sample seeds a zero-valued "tag" so the model DECLARES the field the
+	// cascade's tag-with-foo processor writes — processor output passes the same
+	// model checks a client write does.
+	if err := cSetup.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new","tag":""}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
 	if err := cSetup.LockModel(t, modelName, modelVersion); err != nil {

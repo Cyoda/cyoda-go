@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -74,7 +76,6 @@ func descriptorWithChangeLevel(t *testing.T, node *schema.ModelNode, cl spi.Chan
 }
 
 func TestValidateOrExtend_NoChangeLevel_ValidatesOnly(t *testing.T) {
-	h := &Handler{}
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
 	desc := descriptorWithChangeLevel(t, node, spi.ChangeLevel(""))
@@ -84,7 +85,7 @@ func TestValidateOrExtend_NoChangeLevel_ValidatesOnly(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := h.validateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 || ms.saveCalls != 0 {
@@ -94,7 +95,6 @@ func TestValidateOrExtend_NoChangeLevel_ValidatesOnly(t *testing.T) {
 }
 
 func TestValidateOrExtend_NoChangeLevel_UnknownField_Fails(t *testing.T) {
-	h := &Handler{}
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
 	desc := descriptorWithChangeLevel(t, node, spi.ChangeLevel(""))
@@ -104,14 +104,13 @@ func TestValidateOrExtend_NoChangeLevel_UnknownField_Fails(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"a","email":"b@c.d"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	err := h.validateOrExtend(context.Background(), ms, desc, data)
+	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil || !strings.Contains(err.Error(), "validation failed") {
 		t.Errorf("expected validation failure, got %v", err)
 	}
 }
 
 func TestValidateOrExtend_ChangeLevel_NoDelta_NoExtendCall(t *testing.T) {
-	h := &Handler{}
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
 	desc := descriptorWithChangeLevel(t, node, spi.ChangeLevelStructural)
@@ -122,7 +121,7 @@ func TestValidateOrExtend_ChangeLevel_NoDelta_NoExtendCall(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := h.validateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 {
@@ -134,7 +133,6 @@ func TestValidateOrExtend_ChangeLevel_NoDelta_NoExtendCall(t *testing.T) {
 }
 
 func TestValidateOrExtend_ChangeLevel_NewField_CallsExtendSchema(t *testing.T) {
-	h := &Handler{}
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
 	desc := descriptorWithChangeLevel(t, node, spi.ChangeLevelStructural)
@@ -144,7 +142,7 @@ func TestValidateOrExtend_ChangeLevel_NewField_CallsExtendSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice","email":"a@b.c"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := h.validateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 1 {
@@ -182,7 +180,6 @@ func descriptorWithChangeLevelAndKeys(t *testing.T, node *schema.ModelNode, cl s
 // Structural ChangeLevel), validateOrExtend rejects the write with 422
 // INVALID_UNIQUE_KEY_DEFINITION rather than silently widening the schema.
 func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
-	h := &Handler{}
 
 	// score is initially a null-only leaf (nullable marker).
 	// A unique key on $.score is valid at declaration time (it is a scalar leaf).
@@ -199,7 +196,7 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 	data := map[string]any{
 		"score": map[string]any{"sub": "val"},
 	}
-	err := h.validateOrExtend(context.Background(), ms, desc, data)
+	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil {
 		t.Fatal("expected error for key-field widening, got nil")
 	}
@@ -219,7 +216,6 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 // a normal additive extension (new field added, keyed field untouched) is
 // accepted and ExtendSchema is called exactly once.
 func TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds(t *testing.T) {
-	h := &Handler{}
 
 	node := schema.NewObjectNode()
 	node.SetChild("score", schema.NewLeafNode(schema.Null))
@@ -235,7 +231,7 @@ func TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds(t *testing.
 		"score":    nil,
 		"category": "sports",
 	}
-	if err := h.validateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend unexpected error: %v", err)
 	}
 	if ms.extendCalls != 1 {

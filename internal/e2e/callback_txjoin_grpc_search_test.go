@@ -241,7 +241,11 @@ func TestCallback_GRPCSearch_SeesUncommittedWrite(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-grpc-search reports its findings through the primary's data; the model
+	// must declare every field it writes.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"getFoundJoined": false, "getFoundStandalone": false, "searchCountJoined": 0, `+
+			`"searchCountStandalone": 0, "joinedMarker": "", "secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {

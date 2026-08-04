@@ -54,6 +54,9 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		spi.SMEventProcessingPaused,
 		fmt.Sprintf("Paused for processors: %v", names), nil)
 
+	// Resolved lazily and at most once across the pipeline — see modelDescMemo.
+	desc := &modelDescMemo{}
+
 	currentCtx := ctx
 	currentTxID := txID
 
@@ -96,7 +99,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		case ExecutionModeCommitBeforeDispatch:
 			var nCtx context.Context
 			var nTxID string
-			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, proc, workflow, transition, currentTxID, auditStore, txID)
+			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, desc, proc, workflow, transition, currentTxID, auditStore, txID)
 			success = procErr == nil
 			if procErr == nil {
 				currentCtx = nCtx
@@ -104,7 +107,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			}
 
 		default: // SYNC, ASYNC_SAME_TX — both inline in caller's transaction.
-			procErr = e.executeSyncProcessor(currentCtx, entity, proc, workflow, transition, currentTxID)
+			procErr = e.executeSyncProcessor(currentCtx, entity, desc, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 		}
 
@@ -158,7 +161,7 @@ func (e *Engine) rollbackOpenSegmentOnFailure(ctx context.Context, currentTxID, 
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
 // caller's transaction. On success the entity's Data is updated with the
 // processor's returned modifications.
-func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
+func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
 	if e.extProc == nil {
 		return nil
 	}
@@ -178,7 +181,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, p
 		return err
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
-		entity.Data = modifiedEntity.Data
+		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
 	}
 	return nil
 }
@@ -245,8 +248,13 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
 // must not save the cascade-anchor entity themselves AND also return
 // mutations for it (last-writer-wins inside TX_post's buffer).
-func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
+func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
 	tPre := txID
+	// Staged here rather than assigned: in the startNewTxOnDispatch=false
+	// branch, ctx still carries the committed TX_pre at the point the result
+	// arrives, so a schema extension would run outside any transaction. Both
+	// branches converge below on TX_post, which is the correct place to check.
+	var pending []byte
 
 	// Read the flag. Nil pointer == default == false.
 	startNewTx := proc.Config.StartNewTxOnDispatch != nil && *proc.Config.StartNewTxOnDispatch
@@ -285,7 +293,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 				return nil, "", dispatchErr
 			}
 			if modified != nil && modified.Data != nil {
-				entity.Data = modified.Data
+				pending = modified.Data
 			}
 		}
 	} else {
@@ -318,13 +326,20 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			return nil, "", dispatchErr
 		}
 		if modified != nil && modified.Data != nil {
-			entity.Data = modified.Data
+			pending = modified.Data
 		}
 
 		// Begin TX_post.
 		newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
 		if err != nil {
 			return nil, "", fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+		}
+	}
+
+	if pending != nil {
+		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
+			_ = e.txMgr.Rollback(newCtx, newTxID)
+			return nil, "", applyErr
 		}
 	}
 

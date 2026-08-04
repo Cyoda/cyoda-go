@@ -12,7 +12,7 @@ see_also:
 
 ## NAME
 
-WORKFLOW_FAILED — a workflow processor or guard condition returned a failure during entity state transition.
+WORKFLOW_FAILED — a workflow processor or guard condition returned a failure during entity state transition, or returned data the model rejects.
 
 ## SYNOPSIS
 

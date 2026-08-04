@@ -4,7 +4,104 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- **A workflow processor's returned data is now governed by the model, exactly as a
+  client's write is.** Previously a processor could write anything at all: content no
+  backend could store (returning **500**), or fields the model does not declare —
+  producing an entity the API would return but then refuse to accept back on a `PUT`,
+  and that the model export did not mention. Returned data now passes the same
+  storability guard and the same schema validation or extension as a client write, so
+  a processor may introduce a new field exactly where the model's `changeLevel` would
+  let a client do so, and not otherwise. When it may not, the transition fails with
+  **400 WORKFLOW_FAILED** and rolls back, leaving neither the entity nor any schema
+  change behind — rather than blaming the caller, who sent nothing invalid.
+
+  **Integrators:** a processor that writes a field outside its model now needs that
+  model's `changeLevel` set, or the field declared in the model. This applies to
+  every ingress that runs a cascade, including scheduled transitions and
+  peer-forwarded dispatch.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
 ### Fixed
+
+- **A payload that repeats a name within one object is now rejected with 400.**
+  A duplicated name was read as the *last* occurrence by schema validation, the `GET`
+  response and unique-key computation, and as the *first* by the workflow criterion
+  evaluator, search and grouped statistics — on the same bytes in the same request.
+  An entity created with `{"amount":"not-a-number","amount":5}` was reported by the API
+  as `amount=5` while a criterion `amount == 5` did not fire, leaving it in the wrong
+  workflow state with nothing logged. All three backends were affected, since the
+  criterion runs against the request bytes before any store normalisation. Names
+  repeated in sibling objects, across array elements or at different depths are
+  ordinary JSON and remain accepted. RFC 8259 permits rejecting duplicate names.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **A number outside PostgreSQL's `numeric` range is now rejected with 400 instead of
+  failing inside the store.** Beyond 131072 digits before the decimal point or 16383
+  after, the write returned **500 SERVER_ERROR** on postgres while memory and sqlite
+  accepted it. Only reachable on a field that inferred an unbounded numeric type. The
+  check is on the *effective* weight and scale, so `1.5e-16383` is rejected despite
+  having one fraction digit and an in-range exponent, while `0.0001e131075` is accepted
+  because leading zeros are not significant. It is purely lexical — deciding that
+  `1e1000000` is too large never builds a million-digit value.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **A processor returning `{"data":null}` no longer panics and leaks a database
+  connection.** The literal `null` is non-empty, so it passed the empty-payload check
+  and then unmarshalled into a *nil map*, and assigning into a nil map panics. The
+  panic was recovered only by the HTTP middleware several packages up, unwinding past
+  the entity service's non-deferred rollback — so the transaction was neither committed
+  nor rolled back and its pooled connection was never returned. Repeated, that exhausts
+  the pool and the node stops serving. The plugin now returns a clean error, so the
+  normal error path runs and the transaction is released.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **An empty entity payload no longer makes the entity — and its whole model's
+  listing — permanently unreadable on PostgreSQL.** `{}` was accepted with 200 and
+  then failed every subsequent read with **500 SERVER_ERROR**: not only `GET` of that
+  entity, but `GET /entity/{model}/{version}` for the entire model, because one
+  unreadable row failed the whole listing. Updating a healthy, readable entity to `{}`
+  bricked it the same way. The plugin merges its `_meta` block into the domain data,
+  so `{}` was stored as `{"_meta":…}`; on read `_meta` was removed and nothing
+  remained, leaving no data to decode. An empty payload now round-trips as `{}`, while
+  a DELETED version — which legitimately carries no domain data — still reports none.
+  The memory and sqlite stores were unaffected, so this was also a backend divergence.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **Unpaired UTF-16 surrogates and invalid UTF-8 in an HTTP entity payload are now
+  rejected with 400 on every backend.** Both are accepted by Go's JSON parser and
+  rejected by PostgreSQL text/jsonb, so they reached the store and came back as
+  **500 SERVER_ERROR** with a support ticket, while memory and sqlite accepted them —
+  the same divergence as the NUL case below. The guard reads the raw request bytes
+  rather than the decoded value, which is load-bearing: Go's decoder silently rewrites
+  both forms to U+FFFD, so validating the decoded value cannot see them, and
+  re-serialising it would store a replacement character the client never sent.
+  Correctly paired surrogates, literal emoji and a client-sent U+FFFD remain valid
+  payload content. Note this covers the HTTP ingress: the gRPC entity API decodes
+  its payload into a Go value before the guard runs, which normalises these two
+  forms away, so they cannot be detected there — tracked separately.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
+  backend.** `{"name":"a\u0000b"}` is valid JSON and passes schema validation, but
+  PostgreSQL's text and jsonb types cannot represent U+0000 — so the write reached
+  the store and failed there, returning **500 SERVER_ERROR** with a support ticket
+  for what is a client input error. The memory and sqlite stores accepted the same
+  payload, making the set of storable values depend on the backend. All entity write
+  paths (create, batch-array create, collection create, update, collection update)
+  now reject it at the boundary with 400 `BAD_REQUEST`, naming the offending field
+  path. (NUL survives the gRPC ingress's decode, so it is caught there too.) Covered by a cross-backend parity scenario.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **A request body with trailing content after a valid JSON value now returns
+  400, not 500.** `POST /entity/{format}/{name}/{version}` accepted a body such as
+  `{"x":1}}}`: the decoder stops at the end of the first JSON value and ignores
+  whatever follows, so the request passed validation while the *original* — still
+  malformed — bytes went on to be persisted, surfacing the client's input error as
+  a storage failure with a support ticket. Entity payload decoding now requires the
+  body to hold exactly one JSON value, matching `json.Unmarshal`.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
 - **Point-in-time tests no longer compare two clocks.** `TestParity/GetAllEntitiesAsAt`
   flaked on postgres: it built its `pointInTime` from the test process's clock and

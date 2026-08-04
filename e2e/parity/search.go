@@ -27,7 +27,7 @@ const searchWorkflowJSON = `{
 // workflow (with a manual "approve" transition).
 func setupSearchModel(t *testing.T, c *client.Client, modelName string, modelVersion int) {
 	t.Helper()
-	setupModelWithWorkflow(t, c, modelName, modelVersion, searchWorkflowJSON)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, searchWorkflowJSON)
 }
 
 // RunSearchSimpleCondition creates 3 entities with different statuses,
@@ -386,7 +386,7 @@ func RunWorkflowCriteriaSelectingWorkflow(t *testing.T, fixture BackendFixture) 
 			}
 		]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":50,"status":"new"}`)
 	if err != nil {

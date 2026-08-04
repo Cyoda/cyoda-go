@@ -37,7 +37,7 @@ func RunCriterionReasonInlineDefault(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"X","amount":10}`)
 	if err != nil {

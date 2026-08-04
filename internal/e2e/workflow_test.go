@@ -10,6 +10,20 @@ import (
 
 const workflowSampleModel = `{"name": "Test Order", "amount": 100, "status": "draft"}`
 
+// workflowSampleWith returns workflowSampleModel extended with extra top-level
+// fields, given as the inner body of a JSON object
+// (e.g. `"total":0,"enriched":false`).
+//
+// A processor's returned data passes the same model checks a client write does,
+// so a locked model must DECLARE every field the workflow's processors write.
+// Seeding a zero value states that contract explicitly while keeping the model
+// strict — raising the model's changeLevel instead would let the model absorb
+// any key, so a typo'd field name would silently widen the model rather than
+// fail the test.
+func workflowSampleWith(extraFieldsJSON string) string {
+	return `{"name": "Test Order", "amount": 100, "status": "draft", ` + extraFieldsJSON + `}`
+}
+
 const workflowV1 = `{
 	"importMode": "REPLACE",
 	"workflows": [
@@ -59,8 +73,14 @@ const workflowV2 = `{
 // importModelE2E imports a model via the REST API and asserts a 200 response.
 func importModelE2E(t *testing.T, entityName string, modelVersion int) {
 	t.Helper()
+	importModelSampleE2E(t, entityName, modelVersion, workflowSampleModel)
+}
+
+// importModelSampleE2E is importModelE2E from a CUSTOM sample.
+func importModelSampleE2E(t *testing.T, entityName string, modelVersion int, sample string) {
+	t.Helper()
 	path := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", entityName, modelVersion)
-	resp := doAuth(t, http.MethodPost, path, workflowSampleModel)
+	resp := doAuth(t, http.MethodPost, path, sample)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("importModel %s/%d: expected 200, got %d: %s", entityName, modelVersion, resp.StatusCode, body)

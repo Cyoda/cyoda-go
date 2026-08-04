@@ -411,22 +411,48 @@ func (h *callbackHarness) SetupModelWithWorkflow(t *testing.T, entityName, workf
 // can assert on both success and failure of the cascade.
 func (h *callbackHarness) CreateEntity(t *testing.T, entityName string, modelVersion int, payload string) (entityID string, status int, body string) {
 	t.Helper()
-	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/%d", entityName, modelVersion), payload, "")
-	body = h.readBody(t, resp)
-	status = resp.StatusCode
-	if status != http.StatusOK {
-		return "", status, body
+	h.token(t) // seed the cached bearer token that CreateEntityRaw reads
+	res := h.CreateEntityRaw(entityName, modelVersion, payload)
+	if res.err != nil {
+		t.Fatalf("%v", res.err)
+	}
+	return res.entityID, res.status, res.body
+}
+
+// createEntityResult is the outcome of a client-facing entity POST, captured
+// so it can be asserted on the test goroutine.
+type createEntityResult struct {
+	entityID string
+	status   int
+	body     string
+	err      error
+}
+
+// CreateEntityRaw is the goroutine-safe form of CreateEntity: it returns the
+// outcome instead of aborting the test, so callers driving the cascade from a
+// goroutine can assert after joining. It reuses h.callback, which reads the
+// cached bearer token seeded on the test goroutine during setup.
+func (h *callbackHarness) CreateEntityRaw(entityName string, modelVersion int, payload string) createEntityResult {
+	res, err := h.callback(http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/%d", entityName, modelVersion), payload, "")
+	if err != nil {
+		return createEntityResult{status: -1, err: fmt.Errorf("createEntity %s: %w", entityName, err)}
+	}
+	out := createEntityResult{status: res.StatusCode, body: res.Body}
+	if out.status != http.StatusOK {
+		return out
 	}
 	var arr []map[string]any
-	if err := json.Unmarshal([]byte(body), &arr); err != nil || len(arr) == 0 {
-		t.Fatalf("createEntity %s: unparseable response: %s", entityName, body)
+	if err := json.Unmarshal([]byte(res.Body), &arr); err != nil || len(arr) == 0 {
+		out.err = fmt.Errorf("createEntity %s: unparseable response: %s", entityName, res.Body)
+		return out
 	}
 	ids, _ := arr[0]["entityIds"].([]any)
 	if len(ids) == 0 {
-		t.Fatalf("createEntity %s: no entityIds: %s", entityName, body)
+		out.err = fmt.Errorf("createEntity %s: no entityIds: %s", entityName, res.Body)
+		return out
 	}
-	entityID, _ = ids[0].(string)
-	return entityID, status, body
+	out.entityID, _ = ids[0].(string)
+	return out
 }
 
 // GetEntityState returns an entity's state, or "" (with the status) when the GET
