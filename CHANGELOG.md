@@ -6,6 +6,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
+  backend.** `{"name":"a\u0000b"}` is valid JSON and passes schema validation, but
+  PostgreSQL's text and jsonb types cannot represent U+0000 — so the write reached
+  the store and failed there, returning **500 SERVER_ERROR** with a support ticket
+  for what is a client input error. The memory and sqlite stores accepted the same
+  payload, making the set of storable values depend on the backend. All entity write
+  paths (create, batch-array create, collection create, update, collection update)
+  now reject it at the boundary with 400 `BAD_REQUEST`, naming the offending field
+  path. Covered by a cross-backend parity scenario.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
 - **A request body with trailing content after a valid JSON value now returns
   400, not 500.** `POST /entity/{format}/{name}/{version}` accepted a body such as
   `{"x":1}}}`: the decoder stops at the end of the first JSON value and ignores

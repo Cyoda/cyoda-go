@@ -260,6 +260,10 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
 	}
 
+	if err := rejectUnstorablePayload(parsedData); err != nil {
+		return nil, err
+	}
+
 	// Validate or extend model schema
 	if err := h.validateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 		return nil, classifyValidateOrExtendErr(err)
@@ -1147,6 +1151,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
 		}
+		if err := rejectUnstorablePayload(parsedData); err != nil {
+			return nil, prefixItemErr(err, i)
+		}
 
 		// Validate or extend model schema
 		if err := h.validateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
@@ -1366,6 +1373,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		}
 	default:
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
+	}
+
+	if err := rejectUnstorablePayload(parsedData); err != nil {
+		return nil, err
 	}
 
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
@@ -1693,6 +1704,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		if err := decodeJSONPreservingNumbers([]byte(item.Payload), &data); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
+		}
+		if err := rejectUnstorablePayload(data); err != nil {
+			return nil, prefixItemErr(err, i)
 		}
 		parsed = append(parsed, parsedItem{
 			id:         item.EntityID,

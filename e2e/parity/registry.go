@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 220 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 221 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -53,6 +53,7 @@ var allTests = []NamedTest{
 
 	// Phase 4a — entity CRUD (Task 4a.2)
 	{"EntityCreateAndGet", RunEntityCreateAndGet},
+	{"EntityNulPayloadRejected", RunEntityNulPayloadRejected},
 	{"EntityDelete", RunEntityDelete},
 	{"EntityListByModel", RunEntityListByModel},
 	{"EntityMetaShape", RunEntityMetaShape},

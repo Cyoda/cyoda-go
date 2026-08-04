@@ -90,6 +90,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_CollectionPartialKeyCreate
 	},
 	"updateSingleWithLoopback": {
+		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
 		// 409 CONFLICT is exempt (universalCrossCuttingCodes)
