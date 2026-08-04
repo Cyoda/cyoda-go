@@ -420,7 +420,7 @@ A `null` criterion on a workflow means the workflow matches any entity. A `null`
 
 ### Workflow-level selection
 
-When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on every `Execute` / `ManualTransition` / `Loopback` (no caching across calls):
+When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on **every** door onto the engine, with no caching across calls: entity creation, a named transition, a loopback re-evaluation, a scheduled transition firing, and `GET /entity/{entityId}/transitions`:
 
 1. Iterate workflows in their stored declaration order. (Storage preserves the order from the most recent import; MERGE inserts new workflows at the tail.)
 2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
@@ -431,6 +431,10 @@ When a model has more than one imported workflow definition, the engine picks th
 Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
 
 Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
+
+Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, a loopback settles as a no-op, and a pending scheduled task for a transition the selected workflow no longer declares is discarded. Give per-kind workflows criteria that stay true for the entity's whole lifetime — a criterion over a mutable field can strand entities mid-flow.
+
+Selection is audited: each skipped workflow records a `WORKFLOW_SKIP` event (with the criterion's rejection reason) and the chosen one a `WORKFLOW_FOUND` event, under the transaction driving the call. `GET /entity/{entityId}/transitions` is a pure read and records nothing.
 
 ## IMPORT REQUEST
 

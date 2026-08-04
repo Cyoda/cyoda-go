@@ -1576,9 +1576,11 @@ paths:
         consistency time is used.
 
 
-        The transitions list is derived from the workflow definition that
-        matches the entity's model. If no workflow matches, the default
-        workflow is used.
+        The transitions list is derived from the workflow definition the
+        entity's selection criterion binds it to — the same definition a
+        subsequent transition will run. If no workflow criterion matches,
+        the default workflow is used; if a criterion cannot be evaluated,
+        the request fails rather than answering from another workflow.
       operationId: getEntityTransitions
       parameters:
         - name: entityId

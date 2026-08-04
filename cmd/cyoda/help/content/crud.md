@@ -394,6 +394,8 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
 
+The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). A workflow criterion that cannot be evaluated (e.g. a `function` criterion with no compute member for its tags) fails the request rather than answering from a different workflow.
+
 **GET /api/platform-api/entity/fetch/transitions** — List available transitions (platform-api format)
 
 - `entityClass` (query, required): string in `Name.Version` format, e.g., `Offer.1`
