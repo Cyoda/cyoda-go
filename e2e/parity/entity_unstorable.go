@@ -121,8 +121,8 @@ func RunEntityEmptyDocumentRoundTrips(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("listing a model containing an empty document: %v", err)
 	}
-	if len(entities) == 0 {
-		t.Error("list returned no entities although two empty documents were created")
+	if len(entities) < 2 {
+		t.Errorf("list returned %d entities; two empty documents were created", len(entities))
 	}
 }
 
@@ -213,7 +213,9 @@ func RunEntityDuplicateKeysRejected(t *testing.T, fixture BackendFixture) {
 		t.Errorf("errorCode=%q, want BAD_REQUEST; body: %s", got, raw)
 	}
 
-	// A name repeated in a DIFFERENT object is ordinary JSON and must be accepted.
+	// A clean payload must still be accepted, so the guard is not simply
+	// rejecting the model. (Per-object scoping — the same name in two different
+	// objects — is covered at the unit level, where a nested sample is free.)
 	okStatus, okRaw, err := c.CreateEntityRaw(t, modelName, modelVersion,
 		`{"name":"x","amount":5,"status":"active"}`)
 	if err != nil {

@@ -70,3 +70,27 @@ func TestDecodeJSONPreservingNumbers_KeepsNumberPrecision(t *testing.T) {
 		t.Errorf("n = %s; precision lost", n.String())
 	}
 }
+
+// TestDecodeStoredJSON_ToleratesTrailingContent pins the split between the two
+// decoders.
+//
+// The ingress decoder requires exactly one JSON value. The read decoder must
+// not: a row written by an earlier build could carry trailing content, and
+// rejecting it on read would turn a historical write defect into a permanent
+// 500 — on that entity and, because one unreadable row fails a listing, on its
+// whole model.
+func TestDecodeStoredJSON_ToleratesTrailingContent(t *testing.T) {
+	const stored = `{"x":1}}}`
+
+	if err := DecodeJSONPreservingNumbers([]byte(stored), new(any)); err == nil {
+		t.Error("ingress decoder accepted trailing content; it must reject it")
+	}
+
+	var v map[string]any
+	if err := DecodeStoredJSON([]byte(stored), &v); err != nil {
+		t.Fatalf("read decoder rejected stored data: %v — this makes the row, and its model listing, unreadable", err)
+	}
+	if v["x"] != json.Number("1") {
+		t.Errorf("v[x] = %v, want 1", v["x"])
+	}
+}

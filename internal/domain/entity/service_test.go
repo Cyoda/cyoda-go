@@ -368,7 +368,7 @@ func flattenStatsByState(stats []entity.EntityStatByState) map[string]int64 {
 // decodeJSONResponseUseNumber decodes an HTTP response body using
 // json.Decoder.UseNumber() so numeric leaves arrive as json.Number and
 // the test can assert exact literal preservation. Mirrors the
-// production helper entity.ingest.DecodeJSONPreservingNumbers (unexported).
+// production helper ingest.DecodeJSONPreservingNumbers.
 // Keep the two in sync when changing numeric-decode policy.
 func decodeJSONResponseUseNumber(t *testing.T, body []byte, v any) {
 	t.Helper()

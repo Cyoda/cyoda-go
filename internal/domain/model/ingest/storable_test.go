@@ -51,6 +51,8 @@ func TestRejectUnstorablePayload(t *testing.T) {
 		{name: "nul in nested array of objects", payload: `{"items":[{"sku":"ok"},{"sku":"\u0000x"}]}`, wantPath: "items[1].sku", wantWord: "NUL"},
 		{name: "nul in object key", payload: "{\"bad\\u0000key\":\"v\"}", wantPath: "bad\x00key", wantWord: "NUL"},
 		{name: "bare string payload", payload: `"a\u0000"`, wantPath: "(root)", wantWord: "NUL"},
+		{name: "raw nul byte in a value", payload: "{\"name\":\"a\x00b\"}", wantPath: "name", wantWord: "NUL"},
+		{name: "unpaired surrogate in an object KEY", payload: `{"a\ud800b":1}`, wantPath: "a\ufffdb", wantWord: "surrogate"},
 
 		// --- unstorable: unpaired surrogate ---
 		{name: "lone high surrogate", payload: `{"name":"a\ud800b"}`, wantPath: "name", wantWord: "surrogate"},
@@ -105,11 +107,12 @@ func TestRejectUnstorablePayload(t *testing.T) {
 // rejection to make, with its own message; the guard must not pre-empt it with
 // a confusing "unstorable" error.
 func TestRejectUnstorablePayload_MalformedJSONIsNotOurJob(t *testing.T) {
-	// A RAW (unescaped) NUL byte inside a string literal belongs here rather
-	// than with the unstorable cases: JSON forbids unescaped control
-	// characters, so the decoder rejects the body before the guard sees it.
-	// The caller still gets a 400, just from the decoder's message.
-	for _, payload := range []string{`{"a":`, `not json`, ``, `{`, `[1,`, "{\"name\":\"a\x00b\"}"} {
+	// A RAW (unescaped) NUL byte is deliberately NOT in this list. JSON forbids
+	// unescaped control characters, so the decoder rejects such a body before
+	// the guard runs in production — but the in-place scanner does see it, and
+	// naming the NUL is more useful than the decoder's "invalid character"
+	// message, so it is covered with the other NUL cases above.
+	for _, payload := range []string{`{"a":`, `not json`, ``, `{`, `[1,`} {
 		if err := RejectUnstorable([]byte(payload)); err != nil {
 			t.Errorf("payload %q: guard returned %v; malformed JSON is the decoder's rejection", payload, err)
 		}

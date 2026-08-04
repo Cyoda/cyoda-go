@@ -29,3 +29,17 @@ func DecodeJSONPreservingNumbers(data []byte, v any) error {
 	}
 	return nil
 }
+
+// DecodeStoredJSON decodes bytes that are already in the store.
+//
+// Deliberately NOT DecodeJSONPreservingNumbers: that one requires the input to
+// hold exactly one JSON value, which is the right rule for a request body but
+// the wrong one for stored data. A row written by an earlier build could carry
+// trailing content, and rejecting it on read would turn a historical write
+// defect into a permanent 500 — on the entity and, because one bad row fails a
+// listing, on its whole model.
+func DecodeStoredJSON(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
+}

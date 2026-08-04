@@ -133,7 +133,7 @@ func (c *Client) doJSON(t *testing.T, method, path string, body any, out any, op
 // --- Operation methods ---
 //
 // Each method maps to one cyoda HTTP API operation. The methods are
-// added incrementally as parity scenarios need them. Methods that fail
+// added incrementally as parity scenarios need them. Most methods return an error rather than failing the test; older ones that fail
 // (non-2xx status, decode error, transport error) call t.Fatalf with
 // a clear message including the operation name and the response body
 // where applicable.

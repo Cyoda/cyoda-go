@@ -69,7 +69,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The memory and sqlite stores were unaffected, so this was also a backend divergence.
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
-- **Unpaired UTF-16 surrogates and invalid UTF-8 in an entity payload are now
+- **Unpaired UTF-16 surrogates and invalid UTF-8 in an HTTP entity payload are now
   rejected with 400 on every backend.** Both are accepted by Go's JSON parser and
   rejected by PostgreSQL text/jsonb, so they reached the store and came back as
   **500 SERVER_ERROR** with a support ticket, while memory and sqlite accepted them —
@@ -78,7 +78,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   both forms to U+FFFD, so validating the decoded value cannot see them, and
   re-serialising it would store a replacement character the client never sent.
   Correctly paired surrogates, literal emoji and a client-sent U+FFFD remain valid
-  payload content.
+  payload content. Note this covers the HTTP ingress: the gRPC entity API decodes
+  its payload into a Go value before the guard runs, which normalises these two
+  forms away, so they cannot be detected there — tracked separately.
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
 - **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
@@ -89,7 +91,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   payload, making the set of storable values depend on the backend. All entity write
   paths (create, batch-array create, collection create, update, collection update)
   now reject it at the boundary with 400 `BAD_REQUEST`, naming the offending field
-  path. Covered by a cross-backend parity scenario.
+  path. (NUL survives the gRPC ingress's decode, so it is caught there too.) Covered by a cross-backend parity scenario.
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
 - **A request body with trailing content after a valid JSON value now returns

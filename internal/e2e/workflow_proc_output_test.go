@@ -123,13 +123,15 @@ func TestWorkflowProcOutput_UnstorableRejected(t *testing.T) {
 	assertErrorCode(t, body, "WORKFLOW_FAILED")
 }
 
-// TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition pins where the
-// check happens for commit-before-dispatch.
+// TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition asserts that a
+// schema extension made by one processor does not survive a later processor
+// failing the same transition.
 //
-// A first processor extends the model; a second then fails. The whole
-// transition rolls back, so the extension must not survive. This fails if the
-// check is ever moved to the point between committing TX_pre and opening
-// TX_post, where a schema write would run outside any transaction.
+// Both processors here are SYNC, so this exercises the ordinary in-transaction
+// path. The commit-before-dispatch placement — where the check must run on
+// TX_post rather than where the data arrives — is pinned at the unit level by
+// TestProcessorOutput_OffModelFieldRejectedInEveryExecutionMode, which drives
+// all three execution modes.
 func TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition(t *testing.T) {
 	const model = "e2e-procout-rollback"
 	registerRewriter(t, "procout-p1", `{"name":"x","amount":1,"status":"new","p1Field":"v"}`)

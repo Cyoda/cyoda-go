@@ -1,11 +1,11 @@
 package ingest
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -28,6 +28,9 @@ const (
 const (
 	maxNumericWeightDigits = 131072
 	maxNumericScaleDigits  = 16383
+	// PostgreSQL bounds the exponent itself, whatever the coefficient: a zero
+	// coefficient has no weight, but 0e2000000000 still overflows on input.
+	maxNumericExponent = 1073741823
 	// maxExponentMagnitude saturates exponent accumulation. Any exponent this
 	// large already breaches both limits, so clamping cannot change a verdict —
 	// it only stops a 20-digit exponent from overflowing the accumulator.
@@ -69,7 +72,15 @@ func RejectUnstorable(raw []byte) error {
 	return nil
 }
 
+// maxReportedPathLen bounds the field path echoed back. The path comes from the
+// caller's own document, so an oversized key would otherwise inflate both the
+// response body and the log line WriteError emits for every operational error.
+const maxReportedPathLen = 200
+
 func unstorableErr(path, reason string) error {
+	if len(path) > maxReportedPathLen {
+		path = path[:maxReportedPathLen] + "…(truncated)"
+	}
 	return common.Operational(
 		http.StatusBadRequest,
 		common.ErrCodeBadRequest,
@@ -87,78 +98,209 @@ func unstorableErr(path, reason string) error {
 // client wrote it. Object KEYS are the one exception — the decoder hands them
 // back as Go strings, already normalised — so a key is only checked for NUL,
 // which survives decoding. A surrogate in a key is not detectable here.
-func findUnstorable(raw json.RawMessage, path string) (string, string, bool) {
-	trimmed := trimJSONSpace(raw)
-	if len(trimmed) == 0 {
-		return "", "", false
+func findUnstorable(raw []byte, path string) (string, string, bool) {
+	var segs []pathSeg
+	if path != "" {
+		segs = append(segs, pathSeg{key: path})
+	}
+	p, r, found, _ := scanValue(raw, 0, segs, 0)
+	return p, r, found
+}
+
+// pathSeg is one step of a JSON path. The scan carries a stack of these rather
+// than an accumulated string: building the string at every node would itself be
+// quadratic in depth, which is the cost this scanner exists to avoid. The string
+// is rendered only when something is actually rejected.
+type pathSeg struct {
+	key   string
+	idx   int
+	isIdx bool
+}
+
+func renderPath(segs []pathSeg) string {
+	var b strings.Builder
+	for _, s := range segs {
+		if s.isIdx {
+			fmt.Fprintf(&b, "[%d]", s.idx)
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(s.key)
+	}
+	return b.String()
+}
+
+// maxScanDepth caps nesting. encoding/json refuses to decode deeper than this
+// anyway, so a document beyond it is rejected by the decoder regardless; the cap
+// exists so the scan itself can never be driven into unbounded recursion.
+const maxScanDepth = 10000
+
+// scanValue examines the JSON value starting at i and returns the offset just
+// past it, along with the first unstorable content found inside.
+//
+// It scans in place. An earlier version re-parsed each subtree once per nesting
+// level — json.Unmarshal into []json.RawMessage copies every element, and a
+// json.Decoder per object level copies every member — which made the walk
+// O(size × depth) in both time and allocation. Measured on the version this
+// replaces: a 21 KB payload nested 9999 deep took 1.1 s and allocated 1.76 GiB,
+// an ~85,000x amplification on one authenticated request. Nothing bounds the
+// product of size and depth: the 10 MB body limit bounds only size.
+//
+// This version allocates only a per-object key set, and only for objects.
+func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool, int) {
+	i = skipJSONSpace(b, i)
+	if i >= len(b) {
+		return "", "", false, i
+	}
+	if depth > maxScanDepth {
+		// Deeper than any decoder will accept; let the decoder reject it.
+		return "", "", false, len(b)
 	}
 
-	switch trimmed[0] {
+	switch b[i] {
 	case '{':
-		// Read members with a token decoder rather than into a map. A map would
-		// collapse duplicate names before they could be seen, and would lose
-		// document order; the decoder gives ordered members, each value still as
-		// raw bytes.
-		dec := json.NewDecoder(bytes.NewReader(trimmed))
-		if _, err := dec.Token(); err != nil { // opening brace
-			return "", "", false
-		}
+		i++
 		seen := make(map[string]struct{})
-		for dec.More() {
-			keyTok, err := dec.Token()
-			if err != nil {
-				return "", "", false // malformed JSON is the decoder's rejection, not ours
+		for {
+			i = skipJSONSpace(b, i)
+			if i >= len(b) {
+				return "", "", false, i
 			}
-			key, ok := keyTok.(string)
+			if b[i] == '}' {
+				return "", "", false, i + 1
+			}
+			if b[i] == ',' {
+				i++
+				continue
+			}
+			if b[i] != '"' {
+				return "", "", false, len(b) // malformed; the decoder rejects it
+			}
+			keyStart := i
+			keyEnd, ok := scanString(b, i)
 			if !ok {
-				return "", "", false
+				return "", "", false, len(b)
 			}
-			child := key
-			if path != "" {
-				child = path + "." + key
+			keyRaw := b[keyStart:keyEnd]
+			key, kok := unquoteJSONKey(keyRaw)
+			if !kok {
+				return "", "", false, len(b)
 			}
-			for _, r := range key {
-				if r == 0 {
-					return child, reasonNul, true
-				}
+			child := append(segs, pathSeg{key: key})
+			// The key's RAW bytes, so an unpaired surrogate or a NUL escape in a
+			// key is caught. Decoding the key first would normalise both away.
+			if reason := checkJSONStringToken(keyRaw); reason != "" {
+				return renderPath(child), reason, true, i
 			}
 			if _, dup := seen[key]; dup {
-				return child, reasonDuplicateKey, true
+				return renderPath(child), reasonDuplicateKey, true, i
 			}
 			seen[key] = struct{}{}
 
-			var val json.RawMessage
-			if err := dec.Decode(&val); err != nil {
-				return "", "", false
+			i = skipJSONSpace(b, keyEnd)
+			if i >= len(b) || b[i] != ':' {
+				return "", "", false, len(b)
 			}
-			if p, reason, found := findUnstorable(val, child); found {
-				return p, reason, true
+			i++
+			var p, r string
+			var found bool
+			p, r, found, i = scanValue(b, i, child, depth+1)
+			if found {
+				return p, r, true, i
 			}
 		}
+
 	case '[':
-		var arr []json.RawMessage
-		if json.Unmarshal(trimmed, &arr) != nil {
-			return "", "", false
-		}
-		for i, elem := range arr {
-			if p, reason, found := findUnstorable(elem, fmt.Sprintf("%s[%d]", path, i)); found {
-				return p, reason, true
+		i++
+		idx := 0
+		for {
+			i = skipJSONSpace(b, i)
+			if i >= len(b) {
+				return "", "", false, i
 			}
+			if b[i] == ']' {
+				return "", "", false, i + 1
+			}
+			if b[i] == ',' {
+				i++
+				continue
+			}
+			var p, r string
+			var found bool
+			p, r, found, i = scanValue(b, i, append(segs, pathSeg{idx: idx, isIdx: true}), depth+1)
+			if found {
+				return p, r, true, i
+			}
+			idx++
 		}
+
 	case '"':
-		if reason := checkJSONStringToken(trimmed); reason != "" {
-			return path, reason, true
+		end, ok := scanString(b, i)
+		if !ok {
+			return "", "", false, len(b)
 		}
+		if reason := checkJSONStringToken(b[i:end]); reason != "" {
+			return renderPath(segs), reason, true, end
+		}
+		return "", "", false, end
+
 	default:
-		// A number token. true/false/null start with t/f/n, so a leading digit
-		// or minus sign is unambiguous.
-		if c := trimmed[0]; c == '-' || (c >= '0' && c <= '9') {
-			if reason := checkJSONNumberToken(trimmed); reason != "" {
-				return path, reason, true
+		end := scanScalar(b, i)
+		if c := b[i]; c == '-' || (c >= '0' && c <= '9') {
+			if reason := checkJSONNumberToken(b[i:end]); reason != "" {
+				return renderPath(segs), reason, true, end
 			}
+		}
+		return "", "", false, end
+	}
+}
+
+// scanString returns the offset just past the string token starting at i
+// (which must be the opening quote), honouring escapes.
+func scanString(b []byte, i int) (int, bool) {
+	if i >= len(b) || b[i] != '"' {
+		return 0, false
+	}
+	for j := i + 1; j < len(b); j++ {
+		switch b[j] {
+		case '\\':
+			j++ // skip the escaped byte; \uXXXX's digits are ordinary bytes here
+		case '"':
+			return j + 1, true
 		}
 	}
-	return "", "", false
+	return 0, false
+}
+
+// scanScalar returns the offset just past a number, true, false or null.
+func scanScalar(b []byte, i int) int {
+	for j := i; j < len(b); j++ {
+		switch b[j] {
+		case ',', '}', ']', ' ', '\t', '\n', '\r':
+			return j
+		}
+	}
+	return len(b)
+}
+
+// unquoteJSONKey decodes a raw key token to the string the rest of the system
+// will see, for duplicate detection and path reporting.
+func unquoteJSONKey(raw []byte) (string, bool) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// skipJSONSpace advances past the whitespace JSON permits.
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) && isJSONSpace(b[i]) {
+		i++
+	}
+	return i
 }
 
 // checkJSONNumberToken reports whether a raw JSON number literal is outside the
@@ -220,6 +362,12 @@ func checkJSONNumberToken(tok []byte) string {
 	intDigits := int64(intEnd - intStart)
 	fracDigits := int64(fracEnd - fracStart)
 
+	// The exponent alone, before any coefficient reasoning: PostgreSQL rejects
+	// a literal past this even when the coefficient is zero.
+	if exp > maxNumericExponent || exp < -maxNumericExponent {
+		return reasonNumWeight
+	}
+
 	// Scale: digits that end up to the right of the point. Counted lexically,
 	// so trailing zeros bite — 1.00000000e-16383 really does overflow.
 	if fracDigits-exp > maxNumericScaleDigits {
@@ -227,7 +375,8 @@ func checkJSONNumberToken(tok []byte) string {
 	}
 
 	// Weight: digits to the left of the point, ignoring leading zeros. A zero
-	// coefficient has no weight at all however large the exponent.
+	// coefficient has no weight, however large the exponent — within the
+	// exponent bound checked above.
 	leadingZeros, allZero := int64(0), true
 	for _, r := range [2][2]int{{intStart, intEnd}, {fracStart, fracEnd}} {
 		for j := r[0]; j < r[1]; j++ {

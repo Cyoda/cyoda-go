@@ -56,7 +56,13 @@ func TestCheckJSONNumberToken(t *testing.T) {
 		{"1.00000000e-16383", true}, // trailing zeros count toward scale
 
 		// --- zero coefficient ---
-		{"0e999999999", false}, // exempt from the weight limit
+		// A zero coefficient has no weight, but PostgreSQL still bounds the
+		// exponent itself: 0e2000000000 overflows on input.
+		{"0e999999999", false},
+		{"0e1073741823", false},
+		{"0e1073741824", true},
+		{"0e2000000000", true},
+		{"-0e2000000000", true},
 		{"0e-999999999", true}, // NOT exempt from the scale limit
 		{"0.0", false},
 

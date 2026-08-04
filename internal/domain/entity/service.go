@@ -433,7 +433,7 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 
 	// Parse entity data to any for response
 	var data any
-	if err := ingest.DecodeJSONPreservingNumbers(ent.Data, &data); err != nil {
+	if err := ingest.DecodeStoredJSON(ent.Data, &data); err != nil {
 		return nil, common.Internal("failed to parse entity data", err)
 	}
 
@@ -1054,7 +1054,7 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 	result := make([]EntityEnvelope, 0, len(pageSlice))
 	for _, ent := range pageSlice {
 		var data any
-		if err := ingest.DecodeJSONPreservingNumbers(ent.Data, &data); err != nil {
+		if err := ingest.DecodeStoredJSON(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)
 		}
 
