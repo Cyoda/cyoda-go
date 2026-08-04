@@ -206,9 +206,13 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 			i++
 			var p, r string
 			var found bool
+			before := i
 			p, r, found, i = scanValue(b, i, child, depth+1)
 			if found {
 				return p, r, true, i
+			}
+			if i <= before {
+				return "", "", false, len(b) // no progress: malformed
 			}
 		}
 
@@ -229,9 +233,13 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 			}
 			var p, r string
 			var found bool
+			before := i
 			p, r, found, i = scanValue(b, i, append(segs, pathSeg{idx: idx, isIdx: true}), depth+1)
 			if found {
 				return p, r, true, i
+			}
+			if i <= before {
+				return "", "", false, len(b) // no progress: malformed
 			}
 			idx++
 		}
@@ -248,6 +256,12 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 
 	default:
 		end := scanScalar(b, i)
+		if end <= i {
+			// b[i] cannot start a value — a mismatched '}' or ']', or a stray
+			// byte. The document is malformed and the decoder will reject it;
+			// stop rather than re-examine the same offset forever.
+			return "", "", false, len(b)
+		}
 		if c := b[i]; c == '-' || (c >= '0' && c <= '9') {
 			if reason := checkJSONNumberToken(b[i:end]); reason != "" {
 				return renderPath(segs), reason, true, end
