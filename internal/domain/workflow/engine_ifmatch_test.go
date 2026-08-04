@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -106,6 +107,16 @@ func TestManualTransitionWithIfMatch_CBDCascadeMatching(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ifmatch-cbd-match", ModelVersion: "1.0"}
+
+	// The processor's returned data passes the same model checks a client
+	// write does, so the model must declare the entity's own field (`x`) and
+	// every field cbd-proc writes (`enriched`). Zero values declare the type
+	// without asserting a value; the model stays strict (no ChangeLevel), so a
+	// processor writing an undeclared field still fails.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":        schema.Integer,
+		"enriched": schema.Boolean,
+	})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "IfMatchCbdWF", InitialState: "S_pre", Active: true,

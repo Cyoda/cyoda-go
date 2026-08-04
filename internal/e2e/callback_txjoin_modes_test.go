@@ -227,7 +227,8 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-cbd-post-proc writes `secondaryId`; the model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -318,7 +319,8 @@ func TestCallback_CBDDefault_RunsStandalone(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-cbd-default-proc writes `secondaryId`; the model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {

@@ -106,6 +106,27 @@ func cbRoutePrimaryWorkflow(wfName, procName, contextValue string) string {
 	return string(b)
 }
 
+// cbRouteSample* — primary-model samples for the cross-node callback scenarios.
+//
+// A callback processor stamps its observations back onto the primary's data,
+// and processor output passes the SAME model checks a client write does: the
+// model must DECLARE every field the processor writes. Each sample therefore
+// seeds the exact field set of the processor the scenario runs, at ZERO VALUE —
+// the sample states the field's type, never the value under test. Seeding
+// (rather than loosening the model's changeLevel) keeps the model strict, so a
+// mistyped field name in a processor still fails loudly instead of silently
+// widening the model and hollowing out the scenario's assertions.
+const (
+	// cbRouteSampleNoWriteback — processors that fail before returning data.
+	cbRouteSampleNoWriteback = `{"name":"Test","amount":10,"status":"new"}`
+	// cbRouteSampleSecondary — the secondary model, written only by clients.
+	cbRouteSampleSecondary = `{"name":"child","amount":1,"status":"new"}`
+	// cbRouteSampleCreateSecondary — cb-create-secondary / cb-grpc-create-secondary.
+	cbRouteSampleCreateSecondary = `{"name":"Test","amount":10,"status":"new","secondaryId":"","secondaryTxId":"","tokenWasEmpty":false}`
+	// cbRouteSampleGRPCSearchForward — cb-grpc-search-forward.
+	cbRouteSampleGRPCSearchForward = `{"name":"Test","amount":10,"status":"new","secondaryId":"","tokenWasEmpty":false,"grpcForwardSearchCount":0}`
+)
+
 // cbRouteSetupModel imports+locks a model with the given sample doc, then imports
 // the workflow. Setup is routed through node 0 (any node works — the model store
 // is cluster-shared).
@@ -154,10 +175,10 @@ func RunCallback_ForwardedDispatch_HTTP(t *testing.T, fixture MultiNodeFixture) 
 	const okMarker = "cbroute-http-ok"
 	const doomedMarker = "cbroute-http-doomed"
 
-	cbRouteSetupModel(t, cSetup, secondary, `{"name":"child","amount":1,"status":"new"}`, cbRouteSecondaryWorkflow)
-	cbRouteSetupModel(t, cSetup, primaryOK, `{"name":"Test","amount":10,"status":"new"}`,
+	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	cbRouteSetupModel(t, cSetup, primaryOK, cbRouteSampleCreateSecondary,
 		cbRoutePrimaryWorkflow("cbroute-http-ok-wf", "cb-create-secondary", cbRouteContext(secondary, okMarker)))
-	cbRouteSetupModel(t, cSetup, primaryFail, `{"name":"Test","amount":10,"status":"new"}`,
+	cbRouteSetupModel(t, cSetup, primaryFail, cbRouteSampleNoWriteback,
 		cbRoutePrimaryWorkflow("cbroute-http-fail-wf", "cb-create-then-fail", cbRouteContext(secondary, doomedMarker)))
 
 	// OWNER = node 1 (no local compute member → dispatch forwards to node 0).
@@ -266,10 +287,10 @@ func RunCallback_ForwardedDispatch_GRPC(t *testing.T, fixture MultiNodeFixture) 
 	const okMarker = "cbroute-grpc-ok"
 	const doomedMarker = "cbroute-grpc-doomed"
 
-	cbRouteSetupModel(t, cSetup, secondary, `{"name":"child","amount":1,"status":"new"}`, cbRouteSecondaryWorkflow)
-	cbRouteSetupModel(t, cSetup, primaryOK, `{"name":"Test","amount":10,"status":"new"}`,
+	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	cbRouteSetupModel(t, cSetup, primaryOK, cbRouteSampleCreateSecondary,
 		cbRoutePrimaryWorkflow("cbroute-grpc-ok-wf", "cb-grpc-create-secondary", cbRouteContext(secondary, okMarker)))
-	cbRouteSetupModel(t, cSetup, primaryFail, `{"name":"Test","amount":10,"status":"new"}`,
+	cbRouteSetupModel(t, cSetup, primaryFail, cbRouteSampleNoWriteback,
 		cbRoutePrimaryWorkflow("cbroute-grpc-fail-wf", "cb-grpc-create-then-fail", cbRouteContext(secondary, doomedMarker)))
 
 	// OWNER = node 1 (no local compute member → dispatch forwards to node 0).
@@ -370,8 +391,8 @@ func RunCallback_ForwardedGRPCSearch(t *testing.T, fixture MultiNodeFixture) {
 	const primary = "cbroute-gsearch-primary"
 	const marker = "cbroute-gsearch-marker"
 
-	cbRouteSetupModel(t, cSetup, secondary, `{"name":"child","amount":1,"status":"new"}`, cbRouteSecondaryWorkflow)
-	cbRouteSetupModel(t, cSetup, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	cbRouteSetupModel(t, cSetup, primary, cbRouteSampleGRPCSearchForward,
 		cbRoutePrimaryWorkflow("cbroute-gsearch-wf", "cb-grpc-search-forward", cbRouteContext(secondary, marker)))
 
 	// OWNER = node 1 (no local compute member → dispatch forwards to node 0).

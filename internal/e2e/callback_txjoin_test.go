@@ -82,7 +82,8 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 			}
 		}]
 	}`)
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-create-ok writes `secondaryId`; the model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -233,7 +234,10 @@ func TestCallback_SyncRead_SeesUncommittedCascadeWrite(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-read reports its joined read back through the primary's data; the
+	// model must declare those fields.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"readbackStatus": 0, "readbackFound": false, "readbackMarker": "", "secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {

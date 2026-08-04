@@ -287,7 +287,8 @@ func TestE2E_EntityPatch_MergeOrdering_WithProcessor(t *testing.T) {
 			}
 		}]
 	}`, procName)
-	setupModelWithWorkflow(t, model, wf)
+	// The processor writes `seenAmount`; the model must declare it.
+	setupModelSampleWithWorkflow(t, model, workflowSampleWith(`"seenAmount": 0`), wf)
 
 	entityID, createTxID := createEntityE2EWithTxID(t, model, 1,
 		`{"name":"Charlie","amount":50,"status":"draft"}`)

@@ -82,7 +82,10 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 			}
 		}]
 	}`, secProc, execMode)
-	h.SetupModelWithWorkflow(t, secondary, secondaryWF)
+	// The inner processor writes `tertiaryId` onto the SECONDARY; that model must
+	// declare it, or the inner transition fails and the rejection surfaces nested
+	// inside the outer processor's error.
+	h.setupModelSampleWithWorkflow(t, secondary, workflowSampleWith(`"tertiaryId": ""`), secondaryWF)
 
 	// primary: `init` runs a SYNC processor that creates a secondary in T.
 	primProc := "cb-d2-" + tag + "-primary"
@@ -111,7 +114,8 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 			}
 		}]
 	}`, primProc)
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// The outer processor writes `secondaryId`; the primary model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), primaryWF)
 
 	done := make(chan createEntityResult, 1)
 	go func() {
@@ -240,7 +244,8 @@ func TestCallback_Depth2NestedJoin_FunctionCriterion(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-d2-crit-primary writes `secondaryId`; the primary model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), primaryWF)
 
 	done := make(chan createEntityResult, 1)
 	go func() {

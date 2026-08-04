@@ -4,6 +4,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- **A workflow processor's returned data is now governed by the model, exactly as a
+  client's write is.** Previously a processor could write anything at all: content no
+  backend could store (returning **500**), or fields the model does not declare —
+  producing an entity the API would return but then refuse to accept back on a `PUT`,
+  and that the model export did not mention. Returned data now passes the same
+  storability guard and the same schema validation or extension as a client write, so
+  a processor may introduce a new field exactly where the model's `changeLevel` would
+  let a client do so, and not otherwise. When it may not, the transition fails with
+  **400 WORKFLOW_FAILED** and rolls back, leaving neither the entity nor any schema
+  change behind — rather than blaming the caller, who sent nothing invalid.
+
+  **Integrators:** a processor that writes a field outside its model now needs that
+  model's `changeLevel` set, or the field declared in the model. This applies to
+  every ingress that runs a cascade, including scheduled transitions and
+  peer-forwarded dispatch.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
 ### Fixed
 
 - **A payload that repeats a name within one object is now rejected with 400.**

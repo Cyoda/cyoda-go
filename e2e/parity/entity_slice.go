@@ -92,8 +92,8 @@ func RunEntityConditionalDeleteInTx(t *testing.T, fixture BackendFixture) {
 	const primary = "cbtj-cdel-primary"
 	const deleteMarker = "cbtj-cdel-delete"
 
-	cbSetupModel(t, c, secondary, `{"name":"child","amount":1,"status":"new"}`, cbSecondaryWorkflow)
-	cbSetupModel(t, c, primary, `{"name":"Test","amount":10,"status":"new"}`,
+	cbSetupModel(t, c, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, c, primary, cbSampleConditionalDelete,
 		cbPrimaryProcWorkflow("cbtj-cdel-wf", "cb-conditional-delete", "SYNC", cbContext(secondary, deleteMarker)))
 
 	primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)

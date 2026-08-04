@@ -1992,6 +1992,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	if errors.Is(err, contract.ErrNoMatchingMember) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag, err.Error()).AsRetryable()
 	}
+	if errors.Is(err, wfengine.ErrProcessorOutputInfra) {
+		return common.Internal("processor output check failed", err)
+	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)
 	}

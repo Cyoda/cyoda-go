@@ -31,7 +31,7 @@ const sortMatchAll = `{"type":"group","operator":"AND","conditions":[]}`
 // attaches the simple sort workflow (NONE→CREATED, no manual transitions).
 func setupSortModel(t *testing.T, c *client.Client, modelName string, modelVersion int) {
 	t.Helper()
-	setupModelWithWorkflow(t, c, modelName, modelVersion, sortSimpleWorkflowJSON)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, sortSimpleWorkflowJSON)
 }
 
 // setupSortModelWithSample is like setupSortModel but accepts a custom sample

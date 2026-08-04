@@ -1338,6 +1338,11 @@ func TestFireScheduled_CBDSegmentedFire_HappyPath(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-fire-order", ModelVersion: "1.0"}
 
+	// cbd-proc echoes the entity back, and that output still passes the same
+	// model checks a client write does. The entity carries no data fields, so
+	// an empty (but registered, strict) model is the honest declaration.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CBDFireWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -1487,6 +1492,11 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	engine, factory, _, advance := setupEngineForCBDFire(t, armMs, mock, 0)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-intermediate-order", ModelVersion: "1.0"}
+
+	// cbd-proc echoes the entity back, and that output still passes the same
+	// model checks a client write does. The entity carries no data fields, so
+	// an empty (but registered, strict) model is the honest declaration.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CBDIntermediateWF", InitialState: "OPEN", Active: true,
@@ -1651,6 +1661,15 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	engine, factory, _, advance := setupEngineForCBDFire(t, armMs, mock, 0)
 	factoryRef = factory
 	ctx := ctxWithTenant(testTenant)
+
+	// sibling-writer-proc echoes the anchor back, and that output passes the
+	// same model checks a client write does — the anchor carries no data
+	// fields. The sibling entity it saves shares this model, so `createdBy`
+	// is declared too, keeping the model an accurate description of every
+	// field the test stores under it.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"createdBy": schema.String,
+	})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "SiblingWriteWF", InitialState: "OPEN", Active: true,

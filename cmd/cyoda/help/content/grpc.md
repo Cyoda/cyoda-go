@@ -269,6 +269,8 @@ Client responds with `EntityProcessorCalculationResponse`:
 
 When `success=false`, the workflow engine fails the processor dispatch. When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow.
 
+Returned data is subject to the same checks as a client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
+
 **Criteria dispatch (server → client):**
 
 Server sends `EntityCriteriaCalculationRequest` when a workflow transition evaluates a `function`-type criterion:

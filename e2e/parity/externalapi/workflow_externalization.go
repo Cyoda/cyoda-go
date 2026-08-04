@@ -405,7 +405,10 @@ func RunExternalAPI_09_13_ProcessorContextPassesThrough(t *testing.T, fixture pa
 	const modelVersion = 1
 	const contextValue = "premium-role"
 	wf := externalProcessorWorkflowWithContext("ext-ctx-proc-wf", "echo-context-to-field", contextValue)
-	setupExternalModel(t, c, modelName, modelVersion, `{"k":1}`, wf)
+	// The sample seeds a zero-valued "_context" so the model DECLARES the field
+	// echo-context-to-field writes: processor output passes the same model
+	// checks a client write does.
+	setupExternalModel(t, c, modelName, modelVersion, `{"k":1,"_context":""}`, wf)
 
 	id, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
 	if err != nil {

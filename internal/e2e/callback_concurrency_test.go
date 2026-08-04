@@ -94,7 +94,8 @@ func TestCallback_ConcurrentCallbacks_Serialise(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-concurrent-fanout writes `secondaryCount`; the model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryCount": 0`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -194,7 +195,9 @@ func TestDispatch_NeverHoldsGateAcrossDispatch(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-join-during-dispatch writes `joinedSecondaryId`/`joinedReadOK`; declare both.
+	h.setupModelSampleWithWorkflow(t, primary,
+		workflowSampleWith(`"joinedSecondaryId": "", "joinedReadOK": false`), primaryWF)
 
 	// Watchdog: the create blocks until the cascade completes. Run it off-goroutine
 	// so a gate-across-dispatch deadlock surfaces as a timeout, not a frozen test.

@@ -139,6 +139,8 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ## PROCESSORS
 
+A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, leaving neither the entity nor any schema change behind.
+
 **ProcessorDefinition fields:**
 
 - `type` — string — execution-location axis; see below for valid values
