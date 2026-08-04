@@ -824,3 +824,135 @@ func TestEvaluateCriterion_TypingFailureIsMarkedInfra(t *testing.T) {
 		t.Errorf("error must keep the store cause in the chain for logging; got: %v", err)
 	}
 }
+
+// --- Guard-path store failures must not be swallowed ---
+
+// failingDeleteTaskStore delegates everything except Delete, which always
+// fails. Models a store error on the self-heal paths that resolve a task by
+// removing its row.
+type failingDeleteTaskStore struct {
+	spi.ScheduledTaskStore
+	err error
+}
+
+func (s *failingDeleteTaskStore) Delete(context.Context, string) (bool, error) {
+	return false, s.err
+}
+
+type failingDeleteTaskFactory struct {
+	spi.StoreFactory
+	err error
+}
+
+func (f *failingDeleteTaskFactory) ScheduledTaskStore(ctx context.Context) (spi.ScheduledTaskStore, error) {
+	real, err := f.StoreFactory.ScheduledTaskStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &failingDeleteTaskStore{ScheduledTaskStore: real, err: f.err}, nil
+}
+
+// TestFireScheduled_EntityMovedOnDeleteFailureIsSurfaced asserts the
+// entity-moved-on guard does not commit after a failed delete. Swallowing
+// the error and committing anyway would report the task resolved while its
+// row is still live, so the coordinator re-dispatches it on every scan
+// forever.
+func TestFireScheduled_EntityMovedOnDeleteFailureIsSurfaced(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	realFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { realFactory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := realFactory.NewTransactionManager(uuids)
+	clock, advance := steppableClock(armMs)
+	deleteErr := errors.New("scheduled task store unavailable")
+	engine := NewEngine(&failingDeleteTaskFactory{StoreFactory: realFactory, err: deleteErr},
+		uuids, txMgr, WithScheduledClock(clock))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "fire-del-fail", ModelVersion: "1.0"}
+	saveWorkflow(t, realFactory, ctx, modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "wf", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
+			}},
+			"CLOSED": {},
+		},
+	}})
+	// Entity has already left the task's SourceState — the guard fires.
+	seedFireEntity(t, realFactory, ctx, "fire-del-1", modelRef, "CLOSED", "seed-tx-1", map[string]any{})
+
+	id := taskID(testTenant, "fire-del-1", "OPEN", "AutoClose")
+	armTask(t, realFactory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "fire-del-1",
+		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+	advance(delayMs)
+
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
+	if err == nil {
+		t.Fatal("expected the delete failure to be surfaced, not swallowed before a commit")
+	}
+	if !errors.Is(err, deleteErr) {
+		t.Errorf("error must carry the store cause; got: %v", err)
+	}
+	if outcome != OutcomeDropped {
+		t.Errorf("outcome = %v, want Dropped", outcome)
+	}
+}
+
+// errEntityStoreFactory makes EntityStore.Get fail with a non-ErrNotFound
+// error, modelling a store outage rather than a missing entity.
+type errEntityStoreFactory struct {
+	spi.StoreFactory
+	err error
+}
+
+func (f *errEntityStoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	real, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &errEntityStore{EntityStore: real, err: f.err}, nil
+}
+
+type errEntityStore struct {
+	spi.EntityStore
+	err error
+}
+
+func (s *errEntityStore) Get(context.Context, string) (*spi.Entity, error) { return nil, s.err }
+
+// TestGetAvailableTransitions_StoreOutageIsNot404 asserts an entity-store
+// outage is not reported as "entity not found". Answering 404 for an entity
+// that may well exist is a wrong-but-available result
+// (.claude/rules/correctness-over-availability.md) and would send a caller
+// down a create-it-again path against live data.
+func TestGetAvailableTransitions_StoreOutageIsNot404(t *testing.T) {
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := base.NewTransactionManager(uuids)
+	storeErr := errors.New("pgx: connection refused")
+	engine := NewEngine(&errEntityStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "outage-404", ModelVersion: "1.0"}
+
+	_, err := engine.GetAvailableTransitions(ctx, "some-entity-id", modelRef)
+	if err == nil {
+		t.Fatal("expected the store outage to fail the read")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected a classified *common.AppError; got %T: %v", err, err)
+	}
+	if appErr.Status == 404 {
+		t.Errorf("status = 404 %q; a store outage is not a missing entity", appErr.Message)
+	}
+	if appErr.Status < 500 {
+		t.Errorf("status = %d, want 5xx", appErr.Status)
+	}
+}
