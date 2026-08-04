@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -37,34 +36,23 @@ func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, m
 
 // GetAvailableTransitionsForEntity returns transition names for a pre-fetched entity.
 // Use this when the caller already has the entity to avoid a redundant store lookup.
+//
+// Resolution goes through the engine's single selection path, so the answer
+// names the transitions of the definition the entity is actually bound to —
+// the same one a subsequent ManualTransition will run.
+//
+// Two properties matter here and are pinned by tests:
+//   - The query records no audit events. Selection events belong to the
+//     transaction executing the entity, and a read has none to key them to.
+//   - A criterion that cannot be evaluated fails the request. Answering with
+//     some other workflow's transitions would be a wrong-but-available
+//     result (.claude/rules/correctness-over-availability.md); a criterion
+//     that merely does not MATCH still resolves to the default workflow,
+//     which is selection working as documented, not a degradation.
 func (e *Engine) GetAvailableTransitionsForEntity(ctx context.Context, entity *spi.Entity) ([]string, error) {
-	wfStore, err := e.factory.WorkflowStore(ctx)
+	selectedWF, err := e.resolveWorkflow(ctx, entity, discardedAuditStore{}, "")
 	if err != nil {
-		return nil, common.Internal("failed to access workflow store", err)
-	}
-
-	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, spi.ErrNotFound) {
-		workflows = nil
-	} else if err != nil {
-		return nil, common.Internal("failed to load workflows", err)
-	}
-
-	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
-		workflows = e.defaultWorkflows
-	}
-
-	// Find matching workflow. Use a no-op audit approach since we're just querying.
-	smStore, _ := e.factory.StateMachineAuditStore(ctx)
-	selectedWF, err := e.selectWorkflow(ctx, workflows, entity, smStore, "")
-	if err != nil {
-		// No workflow matched — use default
-		if len(e.defaultWorkflows) > 0 {
-			selectedWF = &e.defaultWorkflows[0]
-		} else {
-			return []string{}, nil
-		}
+		return nil, err
 	}
 
 	stateDef, ok := selectedWF.States[entity.Meta.State]

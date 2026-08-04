@@ -232,15 +232,17 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	}
 
 	// --- Resolve the workflow + transition (design §5.2) ---
-	wfStore, err := e.factory.WorkflowStore(txCtx)
+	//
+	// Selection is criterion-based, exactly as on the client-facing doors
+	// (Engine.resolveWorkflow): a scheduled fire must run the definition the
+	// entity is bound to now, not whichever one happens to declare its
+	// source state. A resolution failure — including a workflow criterion
+	// that cannot be evaluated — leaves the task in place and is retried on
+	// the next scan; it never falls through to another definition.
+	wf, err := e.resolveWorkflow(txCtx, entity, auditStore, txID)
 	if err != nil {
-		return OutcomeDropped, fmt.Errorf("failed to get workflow store: %w", err)
+		return OutcomeDropped, fmt.Errorf("failed to resolve workflow for scheduled fire: %w", err)
 	}
-	workflows, err := wfStore.Get(txCtx, entity.Meta.ModelRef)
-	if err != nil && !errors.Is(err, spi.ErrNotFound) {
-		return OutcomeDropped, fmt.Errorf("failed to load workflows: %w", err)
-	}
-	wf := e.findWorkflowForState(workflows, entity.Meta.State)
 	transition := findTransitionInState(wf, entity.Meta.State, cur.Transition)
 	if transition == nil {
 		// The workflow was re-imported and the state or transition this
