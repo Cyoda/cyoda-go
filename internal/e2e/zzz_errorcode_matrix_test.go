@@ -91,6 +91,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	},
 	"updateSingleWithLoopback": {
 		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
+		{Status: 400, Code: "WORKFLOW_FAILED"},    // engine rejected the loopback — e.g. an unevaluable workflow selection criterion (TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor)
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
 		// 409 CONFLICT is exempt (universalCrossCuttingCodes)

@@ -103,11 +103,30 @@ write) and must not regress to an entry-time-only timer.
 | Fired | `SCHEDULED_TRANSITION_FIRE` + `TRANSITION_MAKE` | Scheduler-origin marker alongside the ordinary transition-made event. |
 | Declined | `TRANSITION_NOT_MATCH_CRITERION` | Existing event, reused — no dedicated "declined" event. |
 | Expired | `SCHEDULED_TRANSITION_EXPIRE` | Delete-gated: only the worker whose `Delete` actually removed the row emits it. |
-| Cancelled | `SCHEDULED_TRANSITION_CANCEL` | Only when the entity genuinely left `sourceState`; a same-state loopback never cancels. |
+| Cancelled | `SCHEDULED_TRANSITION_CANCEL` | Two causes: the entity genuinely left `sourceState` (a same-state loopback never cancels), or the fire found the task obsolete — see below. |
 
 A guard-fail drop during a fire attempt (task already gone, entity already
 moved on, task re-armed to the future) is **silent** — no audit event — by
 design; it is not a distinct outcome from Cloud's point of view.
+
+An **obsolete** task — one whose transition the workflow selected for the
+entity does not declare as a scheduled, non-manual, enabled transition of
+`sourceState` — is deleted and recorded as `SCHEDULED_TRANSITION_CANCEL`.
+This is deliberately NOT silent: workflow selection is criterion-based and
+re-evaluated on every call, so an ordinary client write can re-bind an entity
+to a definition without that timer, and a scheduled transition is often a
+time-based control (auto-expire, escalate-if-not-approved). A vanished timer
+must be attributable. The silent guards above are self-healing race outcomes;
+this one is a lifecycle event.
+
+Workflow selection itself records `WORKFLOW_SKIP` / `WORKFLOW_FOUND` on the
+fire door, as on every other door. Resolution is ordered **after** the silent
+guards and after the expiry gate, so those events appear only on an attempt
+that genuinely reached a definition — an expired or silently-dropped task
+records no selection events. Expiry is decided from the durable row and the
+clock alone, never gated behind resolution: otherwise a task whose selection
+criterion cannot be evaluated (compute member down) would be unexpirable and
+re-dispatched indefinitely.
 
 ## 7. Multi-node correctness contract
 

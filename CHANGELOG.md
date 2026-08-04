@@ -32,8 +32,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   Where definitions share state names — the normal shape for a per-kind machine — that
   is always the *first* declared workflow, for every entity: the wrong guards,
   processors and target states, silently and fail-open. Entities admitted past guards
-  belonging to another kind, and transitions declared on one kind only answered **409**
-  for everything. Selection at creation was correct, which is why the binding looked
+  belonging to another kind, and a transition declared on one kind only was reported as
+  absent (**400 TRANSITION_NOT_FOUND**) for every entity. Selection at creation was correct, which is why the binding looked
   right in the creation audit. All four doors now resolve through the documented
   criterion rules on every call, and the `WORKFLOW_SKIP` / `WORKFLOW_FOUND` audit
   events — previously emitted only on creation — record which definition ran on each
@@ -43,8 +43,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   changes can re-bind to a different definition. If its current state is not declared
   there, the engine no longer falls through to a definition that happens to declare it:
   the transition is rejected with **400 WORKFLOW_FAILED**, a loopback settles as a
-  no-op, and an obsolete scheduled task is discarded. Prefer selection criteria that
-  stay true for an entity's whole lifetime.
+  no-op, and a scheduled task the selected workflow no longer declares as a scheduled
+  transition of that state is discarded and recorded as `SCHEDULED_TRANSITION_CANCEL`.
+  Prefer selection criteria that stay true for an entity's whole lifetime, and that read
+  fields a caller cannot rewrite in the same request — the criterion is evaluated
+  against the payload of the request being served, so where definitions differ in what
+  they permit, the selection field is a security control.
   ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
 
 - **`GET /entity/{entityId}/transitions` no longer answers from the wrong workflow when

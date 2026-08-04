@@ -432,7 +432,12 @@ Place a `null`-criterion (or otherwise unconditional) workflow last in the impor
 
 Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
 
-Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, a loopback settles as a no-op, and a pending scheduled task for a transition the selected workflow no longer declares is discarded. Give per-kind workflows criteria that stay true for the entity's whole lifetime — a criterion over a mutable field can strand entities mid-flow.
+Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, a loopback settles as a no-op, and a pending scheduled task the selected workflow no longer declares as a scheduled transition of that state is discarded and recorded as `SCHEDULED_TRANSITION_CANCEL`.
+
+Two consequences worth designing for:
+
+- **Select on fields the caller cannot rewrite.** The criterion is evaluated against the payload of the request being served, so a criterion over a client-writable field lets one request choose which definition's guards apply to itself. Where definitions differ in what they permit, select on immutable fields or on lifecycle metadata.
+- **Select on something that stays true for the entity's whole lifetime.** A criterion over a field that changes mid-flow can strand an entity in a state its new definition does not declare, and can silently retire a scheduled transition that was acting as a time-based control.
 
 Selection is audited: each skipped workflow records a `WORKFLOW_SKIP` event (with the criterion's rejection reason) and the chosen one a `WORKFLOW_FOUND` event, under the transaction driving the call. `GET /entity/{entityId}/transitions` is a pure read and records nothing.
 
@@ -524,7 +529,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 ## ERRORS
 
-- `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the current state's workflow
+- `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the current state's workflow
 - `errors.WORKFLOW_NOT_FOUND` — `404` — no workflows found for the model (export endpoint)
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`

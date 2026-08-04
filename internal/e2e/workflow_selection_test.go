@@ -222,3 +222,125 @@ func countEventTypes(t *testing.T, entityID string) map[string]int {
 	}
 	return counts
 }
+
+// TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor covers the
+// error cell the fail-closed change introduces: when a workflow's SELECTION
+// criterion cannot be evaluated, no door may answer from a different
+// definition. Before the fix, the transitions read silently returned the
+// default workflow's transitions — a wrong-but-available answer — while the
+// write doors already failed.
+//
+// The entity is created under a workflow with no criterion, then a second
+// import puts an unevaluable FUNCTION criterion in front of it, so selection
+// itself is what fails rather than anything about the entity.
+func TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor(t *testing.T) {
+	const model = "e2e-wfsel-failclosed"
+
+	const workable = `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "plain-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "VALIDATE", "manual": false}]},
+				"VALIDATE": {"transitions": [{"name": "check", "next": "CHECKED", "manual": true}]},
+				"CHECKED": {}
+			}
+		}]
+	}`
+	setupModelSampleWithWorkflow(t, model, wfSelectionSample, workable)
+	entityID := createEntityE2E(t, model, 1, `{"name":"Test","kind":"a","go":false}`)
+	if got := getEntityState(t, entityID); got != "VALIDATE" {
+		t.Fatalf("state after create = %q, want VALIDATE", got)
+	}
+
+	// Re-import the same states behind a selection criterion that dispatches
+	// to a compute function nothing serves, so resolution fails outright.
+	const unevaluable = `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "plain-wf", "initialState": "NONE", "active": true,
+			"criterion": {"type": "function", "function": {"name": "no-such-selector"}},
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "VALIDATE", "manual": false}]},
+				"VALIDATE": {"transitions": [{"name": "check", "next": "CHECKED", "manual": true}]},
+				"CHECKED": {}
+			}
+		}]
+	}`
+	if status, body := importWorkflowE2E(t, model, 1, unevaluable); status != http.StatusOK {
+		t.Fatalf("workflow re-import: expected 200, got %d: %s", status, body)
+	}
+
+	// Read door: must fail, not fall back to the default workflow's list.
+	resp := doAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s/transitions", entityID), "")
+	body := readBody(t, resp)
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("GET transitions returned 200 %s; an unevaluable selection criterion must fail the request, "+
+			"not answer from another workflow", body)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("GET transitions: status = %d, want 400 (same classification as the write doors): %s",
+			resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "WORKFLOW_FAILED") {
+		t.Errorf("GET transitions body missing WORKFLOW_FAILED: %s", body)
+	}
+
+	// Named-transition door: same condition, same classification.
+	resp = doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s/check", entityID),
+		`{"name":"Test","kind":"a","go":false}`)
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("PUT with transition: status = %d, want 400: %s", resp.StatusCode, body)
+	}
+
+	// Loopback door: a transition-less PUT must fail closed too.
+	resp = doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s", entityID),
+		`{"name":"Test","kind":"a","go":true}`)
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("loopback PUT: status = %d, want 400: %s", resp.StatusCode, body)
+	}
+
+	// Nothing may have moved.
+	if got := getEntityState(t, entityID); got != "VALIDATE" {
+		t.Errorf("state = %q, want VALIDATE (no door may advance the entity)", got)
+	}
+}
+
+// TestWorkflowSelection_FetchTransitionsAliasFailsClosed pins the
+// platform-api alias on the same contract — it is a second route onto the
+// same engine call and must not diverge on status.
+func TestWorkflowSelection_FetchTransitionsAliasFailsClosed(t *testing.T) {
+	const model = "e2e-wfsel-failclosed-alias"
+
+	const unevaluable = `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "plain-wf", "initialState": "NONE", "active": true,
+			"criterion": {"type": "function", "function": {"name": "no-such-selector"}},
+			"states": {"NONE": {}}
+		}]
+	}`
+	// Create first under a criterion-free workflow so the entity exists.
+	const workable = `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "plain-wf", "initialState": "NONE", "active": true,
+			"states": {"NONE": {}}
+		}]
+	}`
+	setupModelSampleWithWorkflow(t, model, wfSelectionSample, workable)
+	entityID := createEntityE2E(t, model, 1, `{"name":"Test","kind":"a","go":false}`)
+	if status, body := importWorkflowE2E(t, model, 1, unevaluable); status != http.StatusOK {
+		t.Fatalf("workflow re-import: expected 200, got %d: %s", status, body)
+	}
+
+	path := fmt.Sprintf("/api/platform-api/entity/fetch/transitions?entityClass=%s.1&entityId=%s", model, entityID)
+	resp := doAuth(t, http.MethodGet, path, "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("fetch-transitions alias: status = %d, want 400 (same as GET /entity/{id}/transitions): %s",
+			resp.StatusCode, body)
+	}
+}

@@ -15,6 +15,7 @@ see_also:
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSITION_NOT_FOUND
+  - errors.WORKFLOW_FAILED
   - errors.UNIQUE_VIOLATION
   - errors.INVALID_UNIQUE_KEY
   - messages
@@ -637,7 +638,8 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
 - `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
-- `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
+- `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the workflow
+- `errors.WORKFLOW_FAILED` — `400` — the workflow engine rejected the write: a transition criterion did not match, a processor failed, or the workflow selected for the entity does not declare its current state. Applies to create, a named transition, and a transition-less (loopback) update alike
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
 - Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
