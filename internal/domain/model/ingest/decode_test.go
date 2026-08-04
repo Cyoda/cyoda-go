@@ -1,4 +1,4 @@
-package entity
+package ingest
 
 import (
 	"encoding/json"
@@ -42,7 +42,7 @@ func TestDecodeJSONPreservingNumbers_RejectsTrailingContent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var v any
-			err := decodeJSONPreservingNumbers([]byte(tc.input), &v)
+			err := DecodeJSONPreservingNumbers([]byte(tc.input), &v)
 			if tc.wantErr && err == nil {
 				t.Fatalf("decode(%q) = nil error; want an error", tc.input)
 			}
@@ -59,7 +59,7 @@ func TestDecodeJSONPreservingNumbers_RejectsTrailingContent(t *testing.T) {
 func TestDecodeJSONPreservingNumbers_KeepsNumberPrecision(t *testing.T) {
 	const big = `{"n":123456789012345678901234567890.123456789}`
 	var v map[string]any
-	if err := decodeJSONPreservingNumbers([]byte(big), &v); err != nil {
+	if err := DecodeJSONPreservingNumbers([]byte(big), &v); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	n, ok := v["n"].(json.Number)

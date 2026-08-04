@@ -3,6 +3,8 @@ package entity
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
 
 // mergeMergePatch applies an RFC 7386 JSON Merge Patch (the already-parsed
@@ -11,7 +13,7 @@ import (
 func mergeMergePatch(existing json.RawMessage, patch any) (any, error) {
 	var target any
 	if len(existing) > 0 {
-		if err := decodeJSONPreservingNumbers(existing, &target); err != nil {
+		if err := ingest.DecodeJSONPreservingNumbers(existing, &target); err != nil {
 			return nil, fmt.Errorf("failed to decode stored entity data: %w", err)
 		}
 	}

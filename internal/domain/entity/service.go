@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -21,32 +20,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
-
-// decodeJSONPreservingNumbers is the precision-preserving counterpart to
-// json.Unmarshal: numeric leaves arrive as json.Number rather than float64,
-// so callers can choose Int64()/Float64()/string preservation. Mirrors
-// importer.ParseJSON's UseNumber() behavior.
-//
-// Like json.Unmarshal (and unlike a bare Decoder.Decode), data must hold
-// exactly one JSON value. Decode alone stops at the end of the first value and
-// silently ignores the rest, so a body such as `{"x":1}}}` would parse as
-// `{"x":1}` while the original bytes — still malformed — went on to be
-// persisted, turning a client input error into a 500 from storage.
-func decodeJSONPreservingNumbers(data []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("unexpected content after top-level JSON value")
-	}
-	return nil
-}
 
 // --- Input/Output types ---
 
@@ -243,7 +221,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	var parsedData any
 	switch input.Format {
 	case "JSON":
-		if err := decodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
+		if err := ingest.DecodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON")
 		}
 	case "XML":
@@ -260,12 +238,12 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
 	}
 
-	if err := rejectUnstorablePayload(bodyBytes); err != nil {
+	if err := ingest.RejectUnstorable(bodyBytes); err != nil {
 		return nil, err
 	}
 
 	// Validate or extend model schema
-	if err := h.validateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+	if err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 		return nil, classifyValidateOrExtendErr(err)
 	}
 
@@ -455,7 +433,7 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 
 	// Parse entity data to any for response
 	var data any
-	if err := decodeJSONPreservingNumbers(ent.Data, &data); err != nil {
+	if err := ingest.DecodeJSONPreservingNumbers(ent.Data, &data); err != nil {
 		return nil, common.Internal("failed to parse entity data", err)
 	}
 
@@ -1076,7 +1054,7 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 	result := make([]EntityEnvelope, 0, len(pageSlice))
 	for _, ent := range pageSlice {
 		var data any
-		if err := decodeJSONPreservingNumbers(ent.Data, &data); err != nil {
+		if err := ingest.DecodeJSONPreservingNumbers(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)
 		}
 
@@ -1147,16 +1125,16 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// Parse payload
 		var parsedData any
 		payloadBytes := []byte(item.Payload)
-		if err := decodeJSONPreservingNumbers(payloadBytes, &parsedData); err != nil {
+		if err := ingest.DecodeJSONPreservingNumbers(payloadBytes, &parsedData); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
 		}
-		if err := rejectUnstorablePayload(payloadBytes); err != nil {
-			return nil, prefixItemErr(err, i)
+		if err := ingest.RejectUnstorable(payloadBytes); err != nil {
+			return nil, ingest.PrefixItemErr(err, i)
 		}
 
 		// Validate or extend model schema
-		if err := h.validateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+		if err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
@@ -1358,7 +1336,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	var parsedData any
 	switch input.Format {
 	case "JSON":
-		if err := decodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
+		if err := ingest.DecodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON")
 		}
 	case "XML":
@@ -1375,7 +1353,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
 	}
 
-	if err := rejectUnstorablePayload(bodyBytes); err != nil {
+	if err := ingest.RejectUnstorable(bodyBytes); err != nil {
 		return nil, err
 	}
 
@@ -1431,12 +1409,12 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// Validate the (possibly merged) result. PATCH validates strictly and never
 	// extends the model; PUT may extend per the model's ChangeLevel.
 	if opts.strictValidate {
-		if vErr := h.validateStrict(desc, parsedData); vErr != nil {
+		if vErr := ingest.ValidateStrict(desc, parsedData); vErr != nil {
 			h.rollbackOwned(txCtx, txID, owned)
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	} else {
-		if vErr := h.validateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
+		if vErr := ingest.ValidateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
 			h.rollbackOwned(txCtx, txID, owned)
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
@@ -1701,12 +1679,12 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				fmt.Sprintf("item %d: missing id", i))
 		}
 		var data any
-		if err := decodeJSONPreservingNumbers([]byte(item.Payload), &data); err != nil {
+		if err := ingest.DecodeJSONPreservingNumbers([]byte(item.Payload), &data); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
 		}
-		if err := rejectUnstorablePayload([]byte(item.Payload)); err != nil {
-			return nil, prefixItemErr(err, i)
+		if err := ingest.RejectUnstorable([]byte(item.Payload)); err != nil {
+			return nil, ingest.PrefixItemErr(err, i)
 		}
 		parsed = append(parsed, parsedItem{
 			id:         item.EntityID,
@@ -1786,7 +1764,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
 		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
-		if err := h.validateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
+		if err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
 			h.rollbackOwned(currentCtx, currentTxID, owned)
 			return nil, classifyValidateOrExtendErr(err)
 		}

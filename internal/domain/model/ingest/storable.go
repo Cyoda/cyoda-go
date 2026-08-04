@@ -1,4 +1,4 @@
-package entity
+package ingest
 
 import (
 	"bytes"
@@ -34,7 +34,7 @@ const (
 	maxExponentMagnitude = 1 << 40
 )
 
-// rejectUnstorablePayload rejects an entity payload that no supported backend
+// RejectUnstorable rejects an entity payload that no supported backend
 // can persist, before it reaches a store.
 //
 // PostgreSQL's text and jsonb types cannot represent U+0000, an unpaired
@@ -53,7 +53,7 @@ const (
 // obvious fix — would silently store a replacement character the client never
 // sent, which is exactly the substituted-value outcome
 // .claude/rules/correctness-over-availability.md forbids.
-func rejectUnstorablePayload(raw []byte) error {
+func RejectUnstorable(raw []byte) error {
 	// Whole-document check first. Invalid UTF-8 has no meaningful JSON path —
 	// the bytes may not even parse as text — so it is reported against the
 	// document rather than a field.
@@ -328,9 +328,9 @@ func isJSONSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
-// prefixItemErr restates an operational error against the collection item it
+// PrefixItemErr restates an operational error against the collection item it
 // came from, so a batch rejection says which element was at fault.
-func prefixItemErr(err error, i int) error {
+func PrefixItemErr(err error, i int) error {
 	appErr, ok := err.(*common.AppError)
 	if !ok {
 		return err

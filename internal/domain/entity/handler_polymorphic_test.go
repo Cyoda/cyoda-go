@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -59,7 +60,7 @@ func TestClassifyValidateOrExtendErr_ChangeLevelViolation_StillGetsBadRequest(t 
 }
 
 // TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx — an error
-// wrapping errInternalSchema (codec/diff/store failures in validateOrExtend)
+// wrapping ingest.ErrInternalSchema (codec/diff/store failures in validateOrExtend)
 // classifies as 5xx regardless of its message text. This is the contract
 // that replaces the prior fragile string-matching classifier: if a future
 // refactor renames a wrap like "failed to compute schema delta" to
@@ -76,19 +77,19 @@ func TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx(t *testing.T) {
 				// A message deliberately NOT matching the prior string-
 				// matching patterns; would have been mis-routed to 4xx
 				// under the old classifier.
-				return fmt.Errorf("%w: schema codec: unmarshal: %w", errInternalSchema, fmt.Errorf("unexpected end of input"))
+				return fmt.Errorf("%w: schema codec: unmarshal: %w", ingest.ErrInternalSchema, fmt.Errorf("unexpected end of input"))
 			},
 		},
 		{
 			name: "plugin-layer extend failure wrapped with sentinel",
 			makeErr: func() error {
-				return fmt.Errorf("%w: failed to extend schema: %w", errInternalSchema, fmt.Errorf("pgx: connection refused"))
+				return fmt.Errorf("%w: failed to extend schema: %w", ingest.ErrInternalSchema, fmt.Errorf("pgx: connection refused"))
 			},
 		},
 		{
 			name: "diff failure wrapped with sentinel",
 			makeErr: func() error {
-				return fmt.Errorf("%w: failed to compute schema delta: %w", errInternalSchema, fmt.Errorf("unexpected node kind"))
+				return fmt.Errorf("%w: failed to compute schema delta: %w", ingest.ErrInternalSchema, fmt.Errorf("unexpected node kind"))
 			},
 		},
 	}
@@ -106,7 +107,7 @@ func TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx(t *testing.T) {
 }
 
 // TestClassifyValidateOrExtendErr_UntaggedError_Is4xx — an error NOT
-// wrapping either ErrPolymorphicSlot or errInternalSchema classifies as
+// wrapping either ErrPolymorphicSlot or ingest.ErrInternalSchema classifies as
 // 4xx BAD_REQUEST. Represents e.g. a change-level violation, a validation
 // failure, or an importer.Walk error from malformed user input — all
 // client-contract issues, not server faults.
@@ -132,11 +133,11 @@ func TestClassifyValidateOrExtendErr_UntaggedError_Is4xx(t *testing.T) {
 // Wires the cyoda-go response to Cloud's
 // FoundIncompatibleTypeWithEntityModelException dictionary class.
 func TestClassifyValidateOrExtendErr_IncompatibleType_GetsSpecificCode(t *testing.T) {
-	underlying := &incompatibleTypeError{
-		path:          "price",
-		expectedTypes: []schema.DataType{schema.Integer},
-		actualType:    schema.Double,
-		message:       "validation failed: price: value of type DOUBLE is not compatible with [INTEGER]",
+	underlying := &ingest.IncompatibleTypeError{
+		Path:          "price",
+		ExpectedTypes: []schema.DataType{schema.Integer},
+		ActualType:    schema.Double,
+		Message:       "validation failed: price: value of type DOUBLE is not compatible with [INTEGER]",
 	}
 
 	appErr := classifyValidateOrExtendErr(underlying)

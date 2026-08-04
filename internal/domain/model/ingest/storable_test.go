@@ -1,4 +1,4 @@
-package entity
+package ingest
 
 import (
 	"net/http"
@@ -16,7 +16,7 @@ import (
 // 500 with a support ticket on postgres and were silently accepted on memory
 // and sqlite.
 //
-// The guard reads RAW bytes deliberately — see rejectUnstorablePayload's doc
+// The guard reads RAW bytes deliberately — see RejectUnstorable's doc
 // comment. The "already-mangled" cases below are what make that necessary.
 func TestRejectUnstorablePayload(t *testing.T) {
 	cases := []struct {
@@ -66,7 +66,7 @@ func TestRejectUnstorablePayload(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := rejectUnstorablePayload([]byte(tc.payload))
+			err := RejectUnstorable([]byte(tc.payload))
 
 			if tc.wantPath == "" {
 				if err != nil {
@@ -110,7 +110,7 @@ func TestRejectUnstorablePayload_MalformedJSONIsNotOurJob(t *testing.T) {
 	// characters, so the decoder rejects the body before the guard sees it.
 	// The caller still gets a 400, just from the decoder's message.
 	for _, payload := range []string{`{"a":`, `not json`, ``, `{`, `[1,`, "{\"name\":\"a\x00b\"}"} {
-		if err := rejectUnstorablePayload([]byte(payload)); err != nil {
+		if err := RejectUnstorable([]byte(payload)); err != nil {
 			t.Errorf("payload %q: guard returned %v; malformed JSON is the decoder's rejection", payload, err)
 		}
 	}

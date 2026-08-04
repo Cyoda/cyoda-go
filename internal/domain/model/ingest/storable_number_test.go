@@ -1,4 +1,4 @@
-package entity
+package ingest
 
 import (
 	"strings"
@@ -99,7 +99,7 @@ func TestRejectUnstorablePayload_Numbers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := rejectUnstorablePayload([]byte(tc.payload))
+			err := RejectUnstorable([]byte(tc.payload))
 			if tc.wantPath == "" {
 				if err != nil {
 					t.Fatalf("payload %s rejected but is storable: %v", tc.payload, err)

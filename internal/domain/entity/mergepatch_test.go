@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
 
 func mustParse(t *testing.T, s string) any {
 	t.Helper()
 	var v any
-	if err := decodeJSONPreservingNumbers([]byte(s), &v); err != nil {
+	if err := ingest.DecodeJSONPreservingNumbers([]byte(s), &v); err != nil {
 		t.Fatalf("parse %q: %v", s, err)
 	}
 	return v
@@ -40,10 +42,10 @@ func TestApplyMergePatch_RFC7386_AppendixA(t *testing.T) {
 				t.Fatalf("marshal got: %v", err)
 			}
 			var gotN, wantN any
-			if err := decodeJSONPreservingNumbers(gotBytes, &gotN); err != nil {
+			if err := ingest.DecodeJSONPreservingNumbers(gotBytes, &gotN); err != nil {
 				t.Fatalf("decode got: %v", err)
 			}
-			if err := decodeJSONPreservingNumbers([]byte(tc.want), &wantN); err != nil {
+			if err := ingest.DecodeJSONPreservingNumbers([]byte(tc.want), &wantN); err != nil {
 				t.Fatalf("decode want: %v", err)
 			}
 			if !reflect.DeepEqual(gotN, wantN) {
