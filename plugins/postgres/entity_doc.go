@@ -107,8 +107,17 @@ func unmarshalEntityDoc(raw []byte) (*spi.Entity, error) {
 
 	delete(doc, "_meta")
 
+	// A document with no domain keys left after removing _meta is either a
+	// legitimate empty payload or a DELETED version that carries none. Those
+	// are different things and the difference is observable, so report the
+	// empty payload as `{}` and only a deleted version as no data at all.
+	//
+	// Reporting `{}` as no data was a defect: the consumer decodes Data
+	// directly, decoding a zero-length slice is io.EOF, and the entity — plus
+	// every list of the model containing it — then failed permanently with a
+	// 500. memory and sqlite always round-tripped `{}` as `{}`.
 	var data []byte
-	if len(doc) > 0 {
+	if len(doc) > 0 || !meta.Deleted {
 		var err error
 		data, err = json.Marshal(doc)
 		if err != nil {

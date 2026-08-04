@@ -6,6 +6,30 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **An empty entity payload no longer makes the entity — and its whole model's
+  listing — permanently unreadable on PostgreSQL.** `{}` was accepted with 200 and
+  then failed every subsequent read with **500 SERVER_ERROR**: not only `GET` of that
+  entity, but `GET /entity/{model}/{version}` for the entire model, because one
+  unreadable row failed the whole listing. Updating a healthy, readable entity to `{}`
+  bricked it the same way. The plugin merges its `_meta` block into the domain data,
+  so `{}` was stored as `{"_meta":…}`; on read `_meta` was removed and nothing
+  remained, leaving no data to decode. An empty payload now round-trips as `{}`, while
+  a DELETED version — which legitimately carries no domain data — still reports none.
+  The memory and sqlite stores were unaffected, so this was also a backend divergence.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **Unpaired UTF-16 surrogates and invalid UTF-8 in an entity payload are now
+  rejected with 400 on every backend.** Both are accepted by Go's JSON parser and
+  rejected by PostgreSQL text/jsonb, so they reached the store and came back as
+  **500 SERVER_ERROR** with a support ticket, while memory and sqlite accepted them —
+  the same divergence as the NUL case below. The guard reads the raw request bytes
+  rather than the decoded value, which is load-bearing: Go's decoder silently rewrites
+  both forms to U+FFFD, so validating the decoded value cannot see them, and
+  re-serialising it would store a replacement character the client never sent.
+  Correctly paired surrogates, literal emoji and a client-sent U+FFFD remain valid
+  payload content.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
 - **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
   backend.** `{"name":"a\u0000b"}` is valid JSON and passes schema validation, but
   PostgreSQL's text and jsonb types cannot represent U+0000 — so the write reached

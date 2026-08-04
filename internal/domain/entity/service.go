@@ -260,7 +260,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
 	}
 
-	if err := rejectUnstorablePayload(parsedData); err != nil {
+	if err := rejectUnstorablePayload(bodyBytes); err != nil {
 		return nil, err
 	}
 
@@ -1151,7 +1151,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
 		}
-		if err := rejectUnstorablePayload(parsedData); err != nil {
+		if err := rejectUnstorablePayload(payloadBytes); err != nil {
 			return nil, prefixItemErr(err, i)
 		}
 
@@ -1375,7 +1375,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
 	}
 
-	if err := rejectUnstorablePayload(parsedData); err != nil {
+	if err := rejectUnstorablePayload(bodyBytes); err != nil {
 		return nil, err
 	}
 
@@ -1705,7 +1705,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
 		}
-		if err := rejectUnstorablePayload(data); err != nil {
+		if err := rejectUnstorablePayload([]byte(item.Payload)); err != nil {
 			return nil, prefixItemErr(err, i)
 		}
 		parsed = append(parsed, parsedItem{

@@ -31,6 +31,13 @@ func setupNulModel(t *testing.T, model string) {
 // TestEntity_NulInPayload_400 covers every write path that accepts an entity
 // payload: single create, batch-array create, collection create, update, and
 // collection update.
+//
+// The two collection bodies use %q, not %s, and that is load-bearing: the
+// collection endpoints declare Payload as a string (a JSON-ENCODED document,
+// see internal/domain/entity/handler.go). Embedding a raw object instead makes
+// the outer array parse fail with "invalid JSON array" — still a 400, so the
+// assertion passes, but from the array parser rather than from the guard under
+// test. These two subtests shipped that way and were vacuous.
 func TestEntity_NulInPayload_400(t *testing.T) {
 	const model = "e2e-nul-payload"
 	setupNulModel(t, model)
@@ -57,7 +64,7 @@ func TestEntity_NulInPayload_400(t *testing.T) {
 		{
 			name: "create-collection", method: http.MethodPost,
 			path: "/api/entity/JSON",
-			body: fmt.Sprintf(`[{"model":{"name":%q,"version":1},"payload":%s}]`, model, nulPayload),
+			body: fmt.Sprintf(`[{"model":{"name":%q,"version":1},"payload":%q}]`, model, nulPayload),
 		},
 		{
 			name: "update", method: http.MethodPut,
@@ -67,7 +74,7 @@ func TestEntity_NulInPayload_400(t *testing.T) {
 		{
 			name: "update-collection", method: http.MethodPut,
 			path: "/api/entity/JSON",
-			body: fmt.Sprintf(`[{"id":%q,"payload":%s}]`, entityID, nulPayload),
+			body: fmt.Sprintf(`[{"id":%q,"payload":%q}]`, entityID, nulPayload),
 		},
 	}
 
