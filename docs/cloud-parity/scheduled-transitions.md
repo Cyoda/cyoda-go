@@ -119,6 +119,18 @@ time-based control (auto-expire, escalate-if-not-approved). A vanished timer
 must be attributable. The silent guards above are self-healing race outcomes;
 this one is a lifecycle event.
 
+Expiry takes precedence over this classification: a task that is both obsolete
+and past `TimeoutMs` + grace records `SCHEDULED_TRANSITION_EXPIRE`, because the
+expiry gate runs before the workflow is resolved. Which of the two an obsolete
+late task records therefore depends on scan timing; both delete the row.
+
+The cancellation is **lazy** — it happens when the task comes due, not at the
+write that re-bound the entity. `ReconcileForEntity` cancels only rows whose
+`SourceState` the entity has left, so a task naming the state the entity is
+still in survives the re-bind. Nothing wrong fires in the meantime (the fire
+door re-resolves and refuses), but the event lands at the scheduled time and is
+attributed to the system principal rather than to the causing write.
+
 Workflow selection itself records `WORKFLOW_SKIP` / `WORKFLOW_FOUND` on the
 fire door, as on every other door. Resolution is ordered **after** the silent
 guards and after the expiry gate, so those events appear only on an attempt

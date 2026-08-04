@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -27,6 +28,13 @@ func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, m
 
 	entity, err := entityStore.Get(ctx, entityID)
 	if err != nil {
+		if !errors.Is(err, spi.ErrNotFound) {
+			// A store outage is not "no such entity". Reporting 404 for it
+			// would be a wrong-but-available answer
+			// (.claude/rules/correctness-over-availability.md); surface it
+			// as a sanitized 5xx instead.
+			return nil, common.Internal("failed to read entity", err)
+		}
 		return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 			fmt.Sprintf("entity %s not found", entityID))
 	}

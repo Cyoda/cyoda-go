@@ -3,10 +3,13 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // Workflow-level selection is criterion-driven and applies on EVERY engine
@@ -672,6 +675,10 @@ func TestFireScheduled_ObsoleteTaskDiscardIsAudited(t *testing.T) {
 // task's source state — must stay silent. Resolving the workflow before
 // those guards would stamp WORKFLOW_SKIP / WORKFLOW_FOUND onto every one of
 // them.
+//
+// This guard already sat above resolution, so the test is a regression pin
+// rather than evidence for the expiry reorder; TestFireScheduled_ExpiresEven-
+// WhenWorkflowCannotBeResolved is what discriminates that.
 func TestFireScheduled_SilentGuardsRecordNoSelectionEvents(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
@@ -709,5 +716,111 @@ func TestFireScheduled_SilentGuardsRecordNoSelectionEvents(t *testing.T) {
 		if n := countAuditEvents(t, factory, ctx, "fire-silent-1", et); n != 0 {
 			t.Errorf("%s events = %d, want 0 — a silent guard must not record selection", et, n)
 		}
+	}
+}
+
+// --- Infra-failure classification during selection ---
+
+// errWorkflowStoreFactory makes WorkflowStore fail, modelling a genuine
+// store outage during workflow resolution. Every other capability delegates
+// so the rest of the engine still works.
+type errWorkflowStoreFactory struct {
+	spi.StoreFactory
+	err error
+}
+
+func (f *errWorkflowStoreFactory) WorkflowStore(context.Context) (spi.WorkflowStore, error) {
+	return nil, f.err
+}
+
+// TestResolveWorkflow_StoreOutageIsSanitizedInfraError asserts a workflow-store
+// outage during selection is reported as a server-side condition, not as a
+// client-attributable one. Callers classify a bare engine error as
+// 400 WORKFLOW_FAILED with err.Error() in the response body, which would put
+// raw store text (pgx messages, connection detail) in front of the caller —
+// the output-sanitization rule in .claude/rules/security.md.
+func TestResolveWorkflow_StoreOutageIsSanitizedInfraError(t *testing.T) {
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := base.NewTransactionManager(uuids)
+	storeErr := errors.New("pgx: connection refused to 10.0.0.7:5432")
+	engine := NewEngine(&errWorkflowStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "store-outage", ModelVersion: "1.0"}
+	entity := makeEntity("store-outage-1", modelRef, map[string]any{"kind": "a"})
+	entity.Meta.State = "VALIDATE"
+
+	_, err := engine.ManualTransition(ctx, entity, "check")
+	if err == nil {
+		t.Fatal("expected the store outage to fail the transition")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected a classified *common.AppError so the caller cannot emit it as a 4xx detail; got %T: %v", err, err)
+	}
+	if appErr.Status < 500 {
+		t.Errorf("status = %d, want 5xx (a store outage is not client-attributable)", appErr.Status)
+	}
+	if strings.Contains(appErr.Message, "connection refused") {
+		t.Errorf("client-facing message leaks store detail: %q", appErr.Message)
+	}
+	if !errors.Is(err, storeErr) {
+		t.Error("the underlying store error must stay in the chain for server-side logging")
+	}
+}
+
+// TestResolveWorkflow_QueryDoorStoreOutageIsSanitized is the read-door
+// counterpart: the transitions query must not answer, and must not hand the
+// caller raw store text either.
+func TestResolveWorkflow_QueryDoorStoreOutageIsSanitized(t *testing.T) {
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := base.NewTransactionManager(uuids)
+	storeErr := errors.New("pgx: connection refused to 10.0.0.7:5432")
+	engine := NewEngine(&errWorkflowStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "store-outage-query", ModelVersion: "1.0"}
+	entity := makeEntity("store-outage-q1", modelRef, map[string]any{"kind": "a"})
+	entity.Meta.State = "VALIDATE"
+
+	names, err := engine.GetAvailableTransitionsForEntity(ctx, entity)
+	if err == nil {
+		t.Fatalf("GetAvailableTransitionsForEntity returned %v; a store outage must fail the read", names)
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Status < 500 {
+		t.Fatalf("expected a 5xx *common.AppError; got %T: %v", err, err)
+	}
+}
+
+// TestEvaluateCriterion_TypingFailureIsMarkedInfra asserts the model-load
+// failure a type-directed criterion needs is tagged as infrastructure, so
+// callers map it to a sanitized 5xx rather than echoing store text in a
+// 400 body. The causal chain must survive for server-side logging.
+func TestEvaluateCriterion_TypingFailureIsMarkedInfra(t *testing.T) {
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := base.NewTransactionManager(uuids)
+	storeErr := errors.New("pgx: model store unreachable")
+	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	ref := spi.ModelRef{EntityName: "typing-infra", ModelVersion: "1.0"}
+	entity := makeEntity("typing-infra-1", ref, map[string]any{"age": 30})
+
+	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	if err == nil {
+		t.Fatal("expected the model-load failure to be surfaced")
+	}
+	if !errors.Is(err, ErrCriterionTypingInfra) {
+		t.Errorf("error must wrap ErrCriterionTypingInfra so callers can sanitize it; got: %v", err)
+	}
+	if !errors.Is(err, storeErr) {
+		t.Errorf("error must keep the store cause in the chain for logging; got: %v", err)
 	}
 }

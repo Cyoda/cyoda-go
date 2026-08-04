@@ -76,6 +76,13 @@ func (e *criterionNotMatchedError) Is(target error) bool {
 // caller's input, so callers map this to a sanitized 5xx instead of letting
 // raw store text reach a 4xx body — the same treatment
 // ErrProcessorOutputInfra and ErrCommitBeforeDispatchInfra already get.
+//
+// This deliberately covers "model not found" as well as a store outage: an
+// entity whose model has been deleted out from under it is a server-side
+// inconsistency, not something the caller's request got wrong. Detail is
+// still available to operators — the cause stays wrapped and is logged with
+// the ticket UUID — it just no longer ships in a 4xx body. Same call
+// ErrProcessorOutputInfra already makes for its missing-descriptor case.
 var ErrCriterionTypingInfra = errors.New("criterion typing failed")
 
 // scheduledReason is the human-readable cause emitted by both the audit
@@ -466,7 +473,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 // selectWorkflow iterates active workflows and returns the first whose criterion
 // matches the entity. Workflows without a criterion match unconditionally.
-func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string, logFallback bool) (*spi.WorkflowDefinition, error) {
+func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
 	for i := range workflows {
 		wf := &workflows[i]
 		if !wf.Active {
@@ -504,9 +511,7 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 	// default. Both channels (body warning + slog.Warn) fire.
 	if len(e.defaultWorkflows) > 0 {
 		common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
-		if logFallback {
-			e.logDefaultFallback(ctx, entity, "no_criterion_matched")
-		}
+		e.logDefaultFallback(ctx, entity, "no_criterion_matched")
 		defaultWF := &e.defaultWorkflows[0]
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
@@ -542,24 +547,27 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 // the entity as it is right now, which is what makes a data change able to
 // re-bind an entity to a different definition.
 func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
-	return e.resolveWorkflowWith(ctx, entity, auditStore, txID, true)
+	return e.resolveWorkflowWith(ctx, entity, auditStore, txID)
 }
 
-// resolveWorkflowForQuery is resolveWorkflow for read-only callers. It
-// records no audit events and emits no operator-facing default-substitution
-// log line: a query executes nothing, so nothing is being substituted for a
-// write, and the same misconfiguration is already logged on every door that
-// actually runs the entity. Without this, a client read loop against a
-// mis-modelled entity turns into one WARN per request.
+// resolveWorkflowForQuery is resolveWorkflow for read-only callers: it
+// discards the selection audit events, which belong to the transaction
+// executing the entity and have nothing to key to on a read.
 //
-// The client-facing warning (common.AddWarning) is still raised — that one
-// answers the caller's question about why they were given the default
-// workflow's transitions.
+// It deliberately does NOT suppress the operator-facing
+// default-substitution WARN. Emitting one per read is more log volume than
+// an execution path produces, and that was reason enough to consider
+// silencing it — but common.AddWarning cannot compensate here: the
+// diagnostics bag is installed only on the gRPC entry points
+// (internal/grpc/*), the transitions endpoints are HTTP-only, and
+// common.WriteJSON emits a bare array with no warnings field. Silencing the
+// log would leave a read that answered from the default workflow with no
+// signal on any channel at all.
 func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
-	return e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "", false)
+	return e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
 }
 
-func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string, logFallback bool) (*spi.WorkflowDefinition, error) {
+func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
 	// Store failures are server-side conditions, never attributable to the
 	// caller's input, so they are minted as sanitized 5xx AppErrors here
 	// rather than left as bare errors: callers classify a bare engine error
@@ -584,13 +592,11 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
 		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
-		if logFallback {
-			e.logDefaultFallback(ctx, entity, "no_workflows_imported")
-		}
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
 
-	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID, logFallback)
+	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
 }
 
 // discardedAuditStore is the audit sink used by read-only paths. Workflow
@@ -929,13 +935,14 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 //   - "no_criterion_matched":  workflows exist but none matched the entity
 //     (selectWorkflow tail).
 //
-// Read-only callers pass logFallback=false (see resolveWorkflowForQuery): a
-// query substitutes nothing, and logging per read would turn a client read
-// loop into a WARN stream.
+// Read paths log too (see resolveWorkflowForQuery): on the HTTP-only
+// transitions endpoints this line is the ONLY channel the substitution
+// surfaces on, since the diagnostics bag common.AddWarning writes to is
+// installed on the gRPC entry points only.
 //
-// The body-level warning via common.AddWarning is raised on every path, read
-// included, for client-facing surfacing; this log line is purely additive
-// for operational observability.
+// The body-level warning via common.AddWarning is raised on every path for
+// client-facing surfacing wherever a diagnostics bag exists; this log line
+// is purely additive for operational observability.
 func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
 	slog.WarnContext(ctx, "default workflow substituted",
 		slog.String("pkg", "workflow"),

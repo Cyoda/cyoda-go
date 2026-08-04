@@ -42,13 +42,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   **Integrators:** because selection is re-evaluated per call, an entity whose payload
   changes can re-bind to a different definition. If its current state is not declared
   there, the engine no longer falls through to a definition that happens to declare it:
-  the transition is rejected with **400 WORKFLOW_FAILED**, a loopback settles as a
-  no-op, and a scheduled task the selected workflow no longer declares as a scheduled
-  transition of that state is discarded and recorded as `SCHEDULED_TRANSITION_CANCEL`.
-  Prefer selection criteria that stay true for an entity's whole lifetime, and that read
-  fields a caller cannot rewrite in the same request — the criterion is evaluated
-  against the payload of the request being served, so where definitions differ in what
-  they permit, the selection field is a security control.
+  the transition is rejected with **400 WORKFLOW_FAILED** and a loopback settles as a
+  no-op. A scheduled task the newly selected workflow no longer declares is not
+  cancelled by that write — it is discarded when it next comes due, recorded as
+  `SCHEDULED_TRANSITION_CANCEL`. Prefer selection criteria that stay true for an
+  entity's whole lifetime, and that read fields a caller cannot rewrite in the same
+  request: the criterion is evaluated against the payload of the request being served,
+  so where definitions differ in what they permit, the selection field is a security
+  control.
   ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
 
 - **`GET /entity/{entityId}/transitions` no longer answers from the wrong workflow when

@@ -94,7 +94,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.TRANSACTION_EXPIRED` — `400` — not retryable — transaction token's `exp` claim is in the past
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable — cluster node that owns the open transaction is unreachable
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
-- `errors.TRANSITION_NOT_FOUND` — `404` — not retryable — requested workflow transition is not defined for the entity's current state
+- `errors.TRANSITION_NOT_FOUND` — `400` — not retryable — requested workflow transition is not defined for the entity's current state
 - `errors.TRUSTED_KEY_CAP_REACHED` — `400` — not retryable — Per-tenant trusted-key cap reached.
 - `errors.TRUSTED_KEY_NOT_FOUND` — `404` — not retryable — referenced trusted-key KID is not present in the registry (delete / invalidate / reactivate target missing)
 - `errors.TX_CONFLICT` — `409` — retryable — transaction aborted due to storage-level serialization conflict

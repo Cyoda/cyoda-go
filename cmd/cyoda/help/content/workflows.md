@@ -365,12 +365,17 @@ evaluation and of any other API call touching the entity.
   currently dispatchable from the caller's POV." The entity remains
   in the source state. To allow early firing, give the state an
   ordinary manual transition alongside the scheduled one.
-- **Audit trail.** Arming, firing, expiry, and cancellation (the
-  entity leaving the source state before the timer fires) each emit a
+- **Audit trail.** Arming, firing, expiry, and cancellation each emit a
   dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`
   (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`,
   `SCHEDULED_TRANSITION_CANCEL`. A loopback that re-arms the same state
-  emits only `ARM`, not `CANCEL`.
+  emits only `ARM`, not `CANCEL`. `CANCEL` has two causes: the entity left
+  the source state before the timer fired, or the task came due and the
+  workflow now selected for the entity does not declare it as a scheduled
+  transition of that state (see *Workflow-level selection*). A task that is
+  both obsolete and past its `timeoutMs` grace band records `EXPIRE`, not
+  `CANCEL` — expiry is decided from the stored task and the clock alone,
+  before the workflow is consulted.
 
 **One-shot vs. polling.** The criterion is evaluated once per fire —
 there is no built-in retry-until-true. Three shapes cover the common
@@ -432,7 +437,9 @@ Place a `null`-criterion (or otherwise unconditional) workflow last in the impor
 
 Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
 
-Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, a loopback settles as a no-op, and a pending scheduled task the selected workflow no longer declares as a scheduled transition of that state is discarded and recorded as `SCHEDULED_TRANSITION_CANCEL`.
+Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, and a loopback settles as a no-op.
+
+A pending scheduled task the newly selected workflow no longer declares as a scheduled transition of that state is **not** cancelled by the write that caused the re-bind: cancellation on re-arm only removes tasks for a state the entity has left, and this one names the state the entity is still in. The task is discarded when it next comes due — the fire door re-resolves the workflow, finds no such scheduled transition, deletes the row and records `SCHEDULED_TRANSITION_CANCEL`. Nothing wrong fires in the meantime, but a timer retired this way is reported at its scheduled time, not at the write, and is attributed to the system principal.
 
 Two consequences worth designing for:
 

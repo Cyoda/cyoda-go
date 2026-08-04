@@ -200,3 +200,51 @@ func TestClassifyWorkflowError_AuthContextUnavailableMapsTo5xx(t *testing.T) {
 		t.Errorf("client response missing ticket correlation field: %s", body)
 	}
 }
+
+// TestClassifyWorkflowError_CriterionTypingInfraMapsTo5xx is the companion
+// for the criterion-typing sentinel: the model store a type-directed
+// criterion needs being unavailable is a server-side condition, so it must
+// be sanitized rather than echoed into a 400 WORKFLOW_FAILED body carrying
+// raw store text.
+func TestClassifyWorkflowError_CriterionTypingInfraMapsTo5xx(t *testing.T) {
+	const innerSecret = "pgx: connection refused on host=db-master.internal"
+	prod := fmt.Errorf("%w: model order/1.0: %w",
+		wfengine.ErrCriterionTypingInfra, errors.New(innerSecret))
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Status < 500 {
+		t.Errorf("status = %d, want 5xx (a model-store outage is not client-attributable)", appErr.Status)
+	}
+	if strings.Contains(appErr.Message, innerSecret) {
+		t.Errorf("client-facing message leaks store detail: %q", appErr.Message)
+	}
+	if !errors.Is(appErr, prod) {
+		t.Error("the original error must stay wrapped for server-side logging")
+	}
+}
+
+// TestClassifyWorkflowError_NoMatchingMemberMapsTo503 pins the mapping the
+// transitions read doors depend on. GET /entity/{id}/transitions evaluates
+// workflow selection criteria, so a FUNCTION selection criterion whose tag
+// no compute member serves surfaces there exactly as it does on a write:
+// a retryable 503 NO_COMPUTE_MEMBER_FOR_TAG, never an opaque 500.
+//
+// Both transitions handlers classify through classifyWorkflowError for this
+// reason; the bare sentinel below is what the non-cluster dispatcher
+// returns (the cluster dispatcher pre-classifies it into the same AppError,
+// which passes through unchanged).
+func TestClassifyWorkflowError_NoMatchingMemberMapsTo503(t *testing.T) {
+	prod := fmt.Errorf("failed to evaluate workflow criterion for %q: %w",
+		"kind-a-wf", contract.ErrNoMatchingMember)
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeNoComputeMemberForTag {
+		t.Errorf("code = %q, want %s", appErr.Code, common.ErrCodeNoComputeMemberForTag)
+	}
+	if !appErr.Retryable {
+		t.Error("a missing compute member is a transient infra condition; want retryable")
+	}
+}

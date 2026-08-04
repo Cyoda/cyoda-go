@@ -206,8 +206,13 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			// The entity is gone (hard-deleted); the task is stale.
-			// Self-heal silently — no audit, nothing left to retry.
-			_, _ = sts.Delete(txCtx, task.ID)
+			// Self-heal silently — no audit, nothing left to retry. The
+			// delete's error is checked, not swallowed: committing after a
+			// failed delete would leave the row live for endless
+			// re-dispatch.
+			if _, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+				return OutcomeDropped, fmt.Errorf("failed to delete scheduled task for a deleted entity: %w", delErr)
+			}
 			committed = true
 			return OutcomeDropped, e.txMgr.Commit(ctx, txID)
 		}
@@ -217,8 +222,11 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		// The entity already left sourceState — transitioned out, or
 		// already fired by a racing worker. Silent drop, no audit (design
 		// §5.3 step 2; §8 Cancelled is reserved for the explicit-exit
-		// reconcile, not this guard).
-		_, _ = sts.Delete(txCtx, task.ID)
+		// reconcile, not this guard). The delete's error is checked for the
+		// same reason as the branch above.
+		if _, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+			return OutcomeDropped, fmt.Errorf("failed to delete scheduled task for an entity that moved on: %w", delErr)
+		}
 		committed = true
 		return OutcomeDropped, e.txMgr.Commit(ctx, txID)
 	}

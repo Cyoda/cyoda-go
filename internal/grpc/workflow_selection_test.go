@@ -188,6 +188,9 @@ func TestRPC_EntityTransition_UnevaluableSelectionCriterionFailsClosed(t *testin
 	if typed.Error == nil {
 		t.Fatal("expected the error field to be populated")
 	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("envelope code = %s, want CLIENT_ERROR", typed.Error.Code)
+	}
 	if !strings.Contains(typed.Error.Message, "WORKFLOW_FAILED") {
 		t.Errorf("expected WORKFLOW_FAILED in the envelope message, got %s", typed.Error.Message)
 	}

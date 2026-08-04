@@ -1621,7 +1621,8 @@ paths:
                 - REJECT
         "400":
           description: Bad request — invalid entityId, mutually exclusive parameters
-            supplied, or invalid format
+            supplied, invalid format, or the workflow selection criterion could not
+            be evaluated (WORKFLOW_FAILED)
           content:
             application/problem+json:
               schema:
@@ -1643,6 +1644,19 @@ paths:
                 title: Not Found
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
+                instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "503":
+          description: A `function` workflow selection criterion needs a compute member
+            for its tags and none is connected. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: "no calculation member registered for tags: selector-service"
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
         default:
           $ref: '#/components/responses/InternalServerError'
