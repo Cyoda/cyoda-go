@@ -82,6 +82,15 @@ func marshalEntityDoc(entity *spi.Entity, validTime, txTime, wallClockTime time.
 	if err := json.Unmarshal(entity.Data, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal entity data: %w", err)
 	}
+	// The JSON literal `null` unmarshals into a NIL map without error, and
+	// assigning into a nil map panics. That is reachable — a processor
+	// returning {"data":null} produces exactly these bytes — and the panic is
+	// only recovered several packages up, unwinding past the caller's
+	// non-deferred rollback, so the transaction is neither committed nor rolled
+	// back and its pooled connection is never returned. Fail cleanly instead.
+	if doc == nil {
+		return nil, fmt.Errorf("entity data must be a JSON object, got null")
+	}
 	doc["_meta"] = metaJSON
 	return json.Marshal(doc)
 }

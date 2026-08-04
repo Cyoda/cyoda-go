@@ -1,10 +1,10 @@
 package entity
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"unicode/utf8"
 
@@ -14,9 +14,24 @@ import (
 // Reasons a payload cannot be stored. Kept as distinct sentences so the
 // rejection tells the caller what to change.
 const (
-	reasonNul       = "contains a NUL character (U+0000), which cannot be stored"
-	reasonSurrogate = "contains an unpaired UTF-16 surrogate escape, which is not storable text"
-	reasonNotUTF8   = "is not valid UTF-8"
+	reasonNul          = "contains a NUL character (U+0000), which cannot be stored"
+	reasonSurrogate    = "contains an unpaired UTF-16 surrogate escape, which is not storable text"
+	reasonNotUTF8      = "is not valid UTF-8"
+	reasonDuplicateKey = "appears more than once in the same object, so different parts of the system would read different values for it"
+	reasonNumWeight    = "is a number with too many digits before the decimal point to be stored"
+	reasonNumScale     = "is a number with too many digits after the decimal point to be stored"
+)
+
+// Limits of PostgreSQL's numeric type, which jsonb parses every JSON number
+// into. Past either, the write fails inside the store rather than at the
+// boundary.
+const (
+	maxNumericWeightDigits = 131072
+	maxNumericScaleDigits  = 16383
+	// maxExponentMagnitude saturates exponent accumulation. Any exponent this
+	// large already breaches both limits, so clamping cannot change a verdict —
+	// it only stops a 20-digit exponent from overflowing the accumulator.
+	maxExponentMagnitude = 1 << 40
 )
 
 // rejectUnstorablePayload rejects an entity payload that no supported backend
@@ -65,13 +80,13 @@ func unstorableErr(path, reason string) error {
 }
 
 // findUnstorable walks the raw JSON structure, returning the path and reason of
-// the first unstorable string it finds. Object keys are visited in sorted order
-// so the reported path is deterministic.
+// the first unstorable content it finds. Object members are visited in document
+// order.
 //
 // Values are kept as json.RawMessage so each string is examined exactly as the
-// client wrote it. Object KEYS are the one exception — decoding an object hands
-// back keys as Go strings, already normalised — so a key is only checked for
-// NUL, which survives decoding. A surrogate in a key is not detectable here.
+// client wrote it. Object KEYS are the one exception — the decoder hands them
+// back as Go strings, already normalised — so a key is only checked for NUL,
+// which survives decoding. A surrogate in a key is not detectable here.
 func findUnstorable(raw json.RawMessage, path string) (string, string, bool) {
 	trimmed := trimJSONSpace(raw)
 	if len(trimmed) == 0 {
@@ -80,26 +95,43 @@ func findUnstorable(raw json.RawMessage, path string) (string, string, bool) {
 
 	switch trimmed[0] {
 	case '{':
-		var obj map[string]json.RawMessage
-		if json.Unmarshal(trimmed, &obj) != nil {
-			return "", "", false // malformed JSON is rejected by the decoder, not here
+		// Read members with a token decoder rather than into a map. A map would
+		// collapse duplicate names before they could be seen, and would lose
+		// document order; the decoder gives ordered members, each value still as
+		// raw bytes.
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		if _, err := dec.Token(); err != nil { // opening brace
+			return "", "", false
 		}
-		keys := make([]string, 0, len(obj))
-		for k := range obj {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			child := k
-			if path != "" {
-				child = path + "." + k
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return "", "", false // malformed JSON is the decoder's rejection, not ours
 			}
-			for _, r := range k {
+			key, ok := keyTok.(string)
+			if !ok {
+				return "", "", false
+			}
+			child := key
+			if path != "" {
+				child = path + "." + key
+			}
+			for _, r := range key {
 				if r == 0 {
 					return child, reasonNul, true
 				}
 			}
-			if p, reason, found := findUnstorable(obj[k], child); found {
+			if _, dup := seen[key]; dup {
+				return child, reasonDuplicateKey, true
+			}
+			seen[key] = struct{}{}
+
+			var val json.RawMessage
+			if err := dec.Decode(&val); err != nil {
+				return "", "", false
+			}
+			if p, reason, found := findUnstorable(val, child); found {
 				return p, reason, true
 			}
 		}
@@ -117,9 +149,105 @@ func findUnstorable(raw json.RawMessage, path string) (string, string, bool) {
 		if reason := checkJSONStringToken(trimmed); reason != "" {
 			return path, reason, true
 		}
+	default:
+		// A number token. true/false/null start with t/f/n, so a leading digit
+		// or minus sign is unambiguous.
+		if c := trimmed[0]; c == '-' || (c >= '0' && c <= '9') {
+			if reason := checkJSONNumberToken(trimmed); reason != "" {
+				return path, reason, true
+			}
+		}
 	}
 	return "", "", false
 }
+
+// checkJSONNumberToken reports whether a raw JSON number literal is outside the
+// range PostgreSQL's numeric type can hold.
+//
+// The check is on effective weight and scale rather than on the digits as
+// written, because the exponent moves both: 1.5e-16383 has a single fraction
+// digit and an in-range exponent yet still overflows the scale, and 12e131071
+// overflows the weight that 1e131071 does not. Leading zeros are not
+// significant, so 0.0001e131075 is really 1e131071 and fits.
+//
+// It is purely lexical and allocates nothing — materialising 1e1000000 would
+// mean building a million-digit value to decide it is too big.
+func checkJSONNumberToken(tok []byte) string {
+	i := 0
+	if i < len(tok) && (tok[i] == '-' || tok[i] == '+') {
+		i++
+	}
+	intStart := i
+	for i < len(tok) && isDigit(tok[i]) {
+		i++
+	}
+	intEnd := i
+
+	fracStart, fracEnd := i, i
+	if i < len(tok) && tok[i] == '.' {
+		i++
+		fracStart = i
+		for i < len(tok) && isDigit(tok[i]) {
+			i++
+		}
+		fracEnd = i
+	}
+
+	var exp int64
+	if i < len(tok) && (tok[i] == 'e' || tok[i] == 'E') {
+		i++
+		neg := false
+		if i < len(tok) && (tok[i] == '+' || tok[i] == '-') {
+			neg = tok[i] == '-'
+			i++
+		}
+		var v int64
+		for i < len(tok) && isDigit(tok[i]) {
+			if v <= maxExponentMagnitude {
+				v = v*10 + int64(tok[i]-'0')
+			}
+			i++
+		}
+		if v > maxExponentMagnitude {
+			v = maxExponentMagnitude
+		}
+		if neg {
+			v = -v
+		}
+		exp = v
+	}
+
+	intDigits := int64(intEnd - intStart)
+	fracDigits := int64(fracEnd - fracStart)
+
+	// Scale: digits that end up to the right of the point. Counted lexically,
+	// so trailing zeros bite — 1.00000000e-16383 really does overflow.
+	if fracDigits-exp > maxNumericScaleDigits {
+		return reasonNumScale
+	}
+
+	// Weight: digits to the left of the point, ignoring leading zeros. A zero
+	// coefficient has no weight at all however large the exponent.
+	leadingZeros, allZero := int64(0), true
+	for _, r := range [2][2]int{{intStart, intEnd}, {fracStart, fracEnd}} {
+		for j := r[0]; j < r[1]; j++ {
+			if tok[j] != '0' {
+				allZero = false
+				break
+			}
+			leadingZeros++
+		}
+		if !allZero {
+			break
+		}
+	}
+	if !allZero && intDigits-leadingZeros+exp > maxNumericWeightDigits {
+		return reasonNumWeight
+	}
+	return ""
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // checkJSONStringToken inspects a raw JSON string token (quotes included) for
 // content no backend can store. It walks escapes properly, so a literal

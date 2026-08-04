@@ -6,6 +6,38 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A payload that repeats a name within one object is now rejected with 400.**
+  A duplicated name was read as the *last* occurrence by schema validation, the `GET`
+  response and unique-key computation, and as the *first* by the workflow criterion
+  evaluator, search and grouped statistics — on the same bytes in the same request.
+  An entity created with `{"amount":"not-a-number","amount":5}` was reported by the API
+  as `amount=5` while a criterion `amount == 5` did not fire, leaving it in the wrong
+  workflow state with nothing logged. All three backends were affected, since the
+  criterion runs against the request bytes before any store normalisation. Names
+  repeated in sibling objects, across array elements or at different depths are
+  ordinary JSON and remain accepted. RFC 8259 permits rejecting duplicate names.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **A number outside PostgreSQL's `numeric` range is now rejected with 400 instead of
+  failing inside the store.** Beyond 131072 digits before the decimal point or 16383
+  after, the write returned **500 SERVER_ERROR** on postgres while memory and sqlite
+  accepted it. Only reachable on a field that inferred an unbounded numeric type. The
+  check is on the *effective* weight and scale, so `1.5e-16383` is rejected despite
+  having one fraction digit and an in-range exponent, while `0.0001e131075` is accepted
+  because leading zeros are not significant. It is purely lexical — deciding that
+  `1e1000000` is too large never builds a million-digit value.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
+- **A processor returning `{"data":null}` no longer panics and leaks a database
+  connection.** The literal `null` is non-empty, so it passed the empty-payload check
+  and then unmarshalled into a *nil map*, and assigning into a nil map panics. The
+  panic was recovered only by the HTTP middleware several packages up, unwinding past
+  the entity service's non-deferred rollback — so the transaction was neither committed
+  nor rolled back and its pooled connection was never returned. Repeated, that exhausts
+  the pool and the node stops serving. The plugin now returns a clean error, so the
+  normal error path runs and the transaction is released.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+
 - **An empty entity payload no longer makes the entity — and its whole model's
   listing — permanently unreadable on PostgreSQL.** `{}` was accepted with 200 and
   then failed every subsequent read with **500 SERVER_ERROR**: not only `GET` of that

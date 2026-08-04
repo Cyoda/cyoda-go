@@ -125,3 +125,101 @@ func RunEntityEmptyDocumentRoundTrips(t *testing.T, fixture BackendFixture) {
 		t.Error("list returned no entities although two empty documents were created")
 	}
 }
+
+// RunEntityNumberOutOfRangeRejected asserts every backend rejects a JSON number
+// that PostgreSQL's numeric type cannot hold, rather than one backend failing
+// inside the store while the others accept it.
+//
+// The model's sample matters: on a plain INTEGER field an over-range literal is
+// rejected earlier by type validation and never reaches storage, so the scenario
+// would pass for the wrong reason. A sample carrying a >64-bit literal makes the
+// field UNBOUND_INTEGER, which is the shape that actually reaches the store.
+func RunEntityNumberOutOfRangeRejected(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "entity-number-range-test"
+	const modelVersion = 1
+
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"x","big":1e400,"dec":1e-400,"status":"d"}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.ImportWorkflow(t, modelName, modelVersion, simpleWorkflowJSON); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
+
+	for _, tc := range []struct{ name, payload string }{
+		{"weight-over", `{"name":"x","big":1e131072,"dec":1,"status":"d"}`},
+		{"scale-over", `{"name":"x","big":1,"dec":1.5e-16383,"status":"d"}`},
+	} {
+		status, raw, err := c.CreateEntityRaw(t, modelName, modelVersion, tc.payload)
+		if err != nil {
+			t.Fatalf("%s: CreateEntityRaw: %v", tc.name, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Errorf("%s: status=%d, want 400 — a number no backend can store must be rejected at the boundary; body: %s",
+				tc.name, status, raw)
+		}
+	}
+
+	// At the limit the number is storable and must still be accepted.
+	okStatus, okRaw, err := c.CreateEntityRaw(t, modelName, modelVersion,
+		`{"name":"x","big":1e131071,"dec":1e-16383,"status":"d"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw (at limit): %v", err)
+	}
+	if okStatus != http.StatusOK {
+		t.Fatalf("number at the storable limit: status=%d, want 200; body: %s", okStatus, okRaw)
+	}
+}
+
+// RunEntityDuplicateKeysRejected asserts every backend rejects a payload that
+// repeats a name within one object.
+//
+// Left accepted, such a payload is read as the LAST occurrence by schema
+// validation and the GET response and as the FIRST by the criterion evaluator
+// and search, so an entity is reported as holding one value while its workflow
+// transition was decided on another. That happens on all three backends — the
+// criterion runs against the client bytes before any store normalisation — so
+// this is a correctness guard, not a storage-format guard.
+func RunEntityDuplicateKeysRejected(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "entity-duplicate-keys-test"
+	const modelVersion = 1
+
+	setupSimpleWorkflow(t, c, modelName, modelVersion)
+
+	status, raw, err := c.CreateEntityRaw(t, modelName, modelVersion,
+		`{"name":"x","amount":"not-a-number","amount":5,"status":"active"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("duplicate name: status=%d, want 400 — the value read depends on which subsystem reads it; body: %s",
+			status, raw)
+	}
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("decode problem detail %q: %v", raw, err)
+	}
+	if got, _ := pd.Properties["errorCode"].(string); got != "BAD_REQUEST" {
+		t.Errorf("errorCode=%q, want BAD_REQUEST; body: %s", got, raw)
+	}
+
+	// A name repeated in a DIFFERENT object is ordinary JSON and must be accepted.
+	okStatus, okRaw, err := c.CreateEntityRaw(t, modelName, modelVersion,
+		`{"name":"x","amount":5,"status":"active"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw (clean): %v", err)
+	}
+	if okStatus != http.StatusOK {
+		t.Fatalf("clean payload: status=%d, want 200; body: %s", okStatus, okRaw)
+	}
+}
