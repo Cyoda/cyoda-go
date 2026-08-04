@@ -50,7 +50,7 @@ func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, m
 //     that merely does not MATCH still resolves to the default workflow,
 //     which is selection working as documented, not a degradation.
 func (e *Engine) GetAvailableTransitionsForEntity(ctx context.Context, entity *spi.Entity) ([]string, error) {
-	selectedWF, err := e.resolveWorkflow(ctx, entity, discardedAuditStore{}, "")
+	selectedWF, err := e.resolveWorkflowForQuery(ctx, entity)
 	if err != nil {
 		return nil, err
 	}

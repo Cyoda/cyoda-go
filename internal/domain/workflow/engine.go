@@ -70,6 +70,14 @@ func (e *criterionNotMatchedError) Is(target error) bool {
 	return target == ErrCriterionNotMatched
 }
 
+// ErrCriterionTypingInfra marks a server-side failure while loading the
+// model schema a criterion needs to compare data leaves by their declared
+// types. The model store being unavailable is not attributable to the
+// caller's input, so callers map this to a sanitized 5xx instead of letting
+// raw store text reach a 4xx body — the same treatment
+// ErrProcessorOutputInfra and ErrCommitBeforeDispatchInfra already get.
+var ErrCriterionTypingInfra = errors.New("criterion typing failed")
+
 // scheduledReason is the human-readable cause emitted by both the audit
 // event Details and the wrapped error message when an explicit fire of a
 // scheduled transition is rejected: a scheduled transition fires
@@ -458,7 +466,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 // selectWorkflow iterates active workflows and returns the first whose criterion
 // matches the entity. Workflows without a criterion match unconditionally.
-func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string, logFallback bool) (*spi.WorkflowDefinition, error) {
 	for i := range workflows {
 		wf := &workflows[i]
 		if !wf.Active {
@@ -496,7 +504,9 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 	// default. Both channels (body warning + slog.Warn) fire.
 	if len(e.defaultWorkflows) > 0 {
 		common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
-		e.logDefaultFallback(ctx, entity, "no_criterion_matched")
+		if logFallback {
+			e.logDefaultFallback(ctx, entity, "no_criterion_matched")
+		}
 		defaultWF := &e.defaultWorkflows[0]
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
@@ -532,9 +542,34 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 // the entity as it is right now, which is what makes a data change able to
 // re-bind an entity to a different definition.
 func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+	return e.resolveWorkflowWith(ctx, entity, auditStore, txID, true)
+}
+
+// resolveWorkflowForQuery is resolveWorkflow for read-only callers. It
+// records no audit events and emits no operator-facing default-substitution
+// log line: a query executes nothing, so nothing is being substituted for a
+// write, and the same misconfiguration is already logged on every door that
+// actually runs the entity. Without this, a client read loop against a
+// mis-modelled entity turns into one WARN per request.
+//
+// The client-facing warning (common.AddWarning) is still raised — that one
+// answers the caller's question about why they were given the default
+// workflow's transitions.
+func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
+	return e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "", false)
+}
+
+func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string, logFallback bool) (*spi.WorkflowDefinition, error) {
+	// Store failures are server-side conditions, never attributable to the
+	// caller's input, so they are minted as sanitized 5xx AppErrors here
+	// rather than left as bare errors: callers classify a bare engine error
+	// as 400 WORKFLOW_FAILED with err.Error() in the body, which would put
+	// raw store text (pgx messages, connection detail) into a 4xx response.
+	// Same treatment the engine already gives its other infra failures
+	// (ErrCommitBeforeDispatchInfra, ErrProcessorOutputInfra).
 	wfStore, err := e.factory.WorkflowStore(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get workflow store: %w", err)
+		return nil, common.Internal("failed to access workflow store", err)
 	}
 
 	// Load workflows for model. A "not found" error is treated as empty.
@@ -542,18 +577,20 @@ func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditS
 	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
-		return nil, fmt.Errorf("failed to load workflows: %w", err)
+		return nil, common.Internal("failed to load workflows", err)
 	}
 
 	// No workflows defined → use embedded default. Body warning surfaces to
 	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
 		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
-		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
+		if logFallback {
+			e.logDefaultFallback(ctx, entity, "no_workflows_imported")
+		}
 		workflows = e.defaultWorkflows
 	}
 
-	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID, logFallback)
 }
 
 // discardedAuditStore is the audit sink used by read-only paths. Workflow
@@ -843,12 +880,12 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 			loaded = true
 			modelStore, err := e.factory.ModelStore(cc.ctx)
 			if err != nil {
-				loadErr = fmt.Errorf("criterion typing: model store unavailable: %w", err)
+				loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
 				return nil
 			}
 			f, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef)
 			if err != nil {
-				loadErr = fmt.Errorf("criterion typing: failed to load model %s/%s: %w",
+				loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
 					entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
 				return nil
 			}
@@ -884,16 +921,21 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 }
 
 // logDefaultFallback emits a single slog.Warn line whenever the engine
-// substitutes the embedded default workflow. The four call sites map to
-// two cause groups via the reason argument:
-//   - "no_workflows_imported": cold-path (Execute/ManualTransition/Loopback)
-//     with no stored workflows for the model — three call sites.
-//   - "no_criterion_matched":  workflows exist but no criterion matched the
-//     entity (selectWorkflow tail) — one call site.
+// substitutes the embedded default workflow on a door that actually runs the
+// entity. Two call sites, one per cause group, both in the shared resolution
+// path:
+//   - "no_workflows_imported": the model has no stored workflows
+//     (resolveWorkflowWith).
+//   - "no_criterion_matched":  workflows exist but none matched the entity
+//     (selectWorkflow tail).
 //
-// The body-level warning via common.AddWarning is retained at each call
-// site for client-facing surfacing; this log line is purely additive for
-// operational observability.
+// Read-only callers pass logFallback=false (see resolveWorkflowForQuery): a
+// query substitutes nothing, and logging per read would turn a client read
+// loop into a WARN stream.
+//
+// The body-level warning via common.AddWarning is raised on every path, read
+// included, for client-facing surfacing; this log line is purely additive
+// for operational observability.
 func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
 	slog.WarnContext(ctx, "default workflow substituted",
 		slog.String("pkg", "workflow"),

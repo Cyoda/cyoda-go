@@ -458,3 +458,256 @@ func TestManualTransition_CriterionErrorFailsClosed(t *testing.T) {
 		t.Errorf("state = %q, want VALIDATE (unchanged)", entity.Meta.State)
 	}
 }
+
+// --- Scheduler-door guards ---
+
+// fnCriterionWorkflow builds a workflow whose SELECTION criterion is a
+// FUNCTION with no external processing service configured, so resolution
+// always fails. Used to exercise the fire door when the workflow cannot be
+// resolved at all.
+func fnCriterionWorkflow(transitionName string, delayMs int64) spi.WorkflowDefinition {
+	return spi.WorkflowDefinition{
+		Version: "1.1", Name: "fn-select-wf", InitialState: "OPEN", Active: true,
+		Criterion: functionCriterion(),
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: transitionName, Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
+			}},
+			"CLOSED": {},
+		},
+	}
+}
+
+// TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved pins the ordering
+// of the grace-band gate against workflow resolution. Expiry is a pure
+// function of the durable row and the clock, so a task past
+// TimeoutMs+grace must expire even while its workflow criterion cannot be
+// evaluated. Resolving first made such a task unexpirable and
+// unreclaimable — re-dispatched by the coordinator every backoff interval
+// for as long as the compute member stayed down.
+func TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	const timeoutMs = int64(500)
+	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "fire-expire-unresolvable", ModelVersion: "1.0"}
+
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{fnCriterionWorkflow("AutoClose", delayMs)})
+	seedFireEntity(t, factory, ctx, "fire-expire-1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+
+	timeout := timeoutMs
+	id := taskID(testTenant, "fire-expire-1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, TimeoutMs: &timeout, EntityID: "fire-expire-1",
+		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+
+	// Well past TimeoutMs + the expiry grace band.
+	advance(delayMs + timeoutMs + defaultExpiryGraceMs + 1000)
+
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
+	if err != nil {
+		t.Fatalf("FireScheduledTransition: %v", err)
+	}
+	if outcome != OutcomeExpired {
+		t.Fatalf("outcome = %v, want Expired — expiry must not depend on resolving the workflow", outcome)
+	}
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("expected the expired task to be deleted; an unresolvable workflow must not make it immortal")
+	}
+}
+
+// TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry is the companion:
+// before expiry is due, an unresolvable workflow must NOT fire and must NOT
+// consume the task — it is left in place for the next scan (fail closed,
+// then retry).
+func TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "fire-retry-unresolvable", ModelVersion: "1.0"}
+
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{fnCriterionWorkflow("AutoClose", delayMs)})
+	seedFireEntity(t, factory, ctx, "fire-retry-1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+
+	id := taskID(testTenant, "fire-retry-1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "fire-retry-1",
+		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+	advance(delayMs)
+
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
+	if err == nil {
+		t.Fatal("expected the resolution failure to be surfaced")
+	}
+	if outcome != OutcomeDropped {
+		t.Errorf("outcome = %v, want Dropped", outcome)
+	}
+	if got := getEntityState(t, factory, ctx, "fire-retry-1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN (nothing may fire)", got)
+	}
+	if _, found := getTask(t, factory, ctx, id); !found {
+		t.Error("expected the task to survive for the next scan")
+	}
+}
+
+// TestFireScheduled_NeverFiresAManualTransition pins that the scheduler and
+// the arm side agree on what is fireable. reconcileScheduledTasks arms only
+// transitions that carry a Schedule and are neither manual nor disabled; the
+// fire door must apply the same test, or a task that outlives the definition
+// that armed it can drive a MANUAL transition — running its processors and
+// moving the entity with nobody having asked.
+//
+// Reachable through the ordinary API: kind-b-wf arms AutoClose; a write
+// re-binds the entity to kind-a-wf, where the same name is manual. Reconcile
+// does not cancel the task, because it only cancels rows whose SourceState
+// the entity has left — and here it has not moved.
+func TestFireScheduled_NeverFiresAManualTransition(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "fire-manual-guard", ModelVersion: "1.0"}
+
+	wfA := spi.WorkflowDefinition{
+		Version: "1.1", Name: "kind-a-wf", InitialState: "OPEN", Active: true,
+		Criterion: simpleCriterion("$.kind", "EQUALS", "a"),
+		States: map[string]spi.StateDefinition{
+			// Same NAME, but manual — the scheduler must never fire it.
+			"OPEN":     {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "A_CLOSED", Manual: true}}},
+			"A_CLOSED": {},
+		},
+	}
+	wfB := spi.WorkflowDefinition{
+		Version: "1.1", Name: "kind-b-wf", InitialState: "OPEN", Active: true,
+		Criterion: simpleCriterion("$.kind", "EQUALS", "b"),
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "B_CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
+			}},
+			"B_CLOSED": {},
+		},
+	}
+	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wfA, wfB})
+	// Armed under kind-b-wf, but the payload now selects kind-a-wf.
+	seedFireEntity(t, factory, ctx, "fire-manual-1", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "a"})
+
+	id := taskID(testTenant, "fire-manual-1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "fire-manual-1",
+		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+	advance(delayMs)
+
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
+	if err != nil {
+		t.Fatalf("FireScheduledTransition: %v", err)
+	}
+	if outcome != OutcomeDropped {
+		t.Fatalf("outcome = %v, want Dropped", outcome)
+	}
+	if got := getEntityState(t, factory, ctx, "fire-manual-1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN — the scheduler fired a manual transition", got)
+	}
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("expected the obsolete task to be deleted (self-heal)")
+	}
+}
+
+// TestFireScheduled_ObsoleteTaskDiscardIsAudited pins that a scheduled
+// transition vanishing because the entity re-bound to another definition is
+// attributable. A scheduled transition is often a time-based control
+// (auto-expire, escalate-if-not-approved); a client write that silently
+// deletes one must leave a trace.
+func TestFireScheduled_ObsoleteTaskDiscardIsAudited(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "fire-obsolete-audit", ModelVersion: "1.0"}
+
+	wfA := spi.WorkflowDefinition{
+		Version: "1.1", Name: "kind-a-wf", InitialState: "OPEN", Active: true,
+		Criterion: simpleCriterion("$.kind", "EQUALS", "a"),
+		States:    map[string]spi.StateDefinition{"OPEN": {}},
+	}
+	wfB := spi.WorkflowDefinition{
+		Version: "1.1", Name: "kind-b-wf", InitialState: "OPEN", Active: true,
+		Criterion: simpleCriterion("$.kind", "EQUALS", "b"),
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "B_CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
+			}},
+			"B_CLOSED": {},
+		},
+	}
+	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wfA, wfB})
+	seedFireEntity(t, factory, ctx, "fire-obsolete-1", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "a"})
+
+	id := taskID(testTenant, "fire-obsolete-1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "fire-obsolete-1",
+		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+	advance(delayMs)
+
+	if _, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant}); err != nil {
+		t.Fatalf("FireScheduledTransition: %v", err)
+	}
+	if n := countAuditEvents(t, factory, ctx, "fire-obsolete-1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 1 (the discarded timer must be attributable)", n)
+	}
+}
+
+// TestFireScheduled_SilentGuardsRecordNoSelectionEvents pins the fire door's
+// audit contract (docs/cloud-parity/scheduled-transitions.md §6): the guards
+// that resolve a task silently — here, the entity having already left the
+// task's source state — must stay silent. Resolving the workflow before
+// those guards would stamp WORKFLOW_SKIP / WORKFLOW_FOUND onto every one of
+// them.
+func TestFireScheduled_SilentGuardsRecordNoSelectionEvents(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "fire-silent-guard", ModelVersion: "1.0"}
+
+	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{
+		{
+			Version: "1.1", Name: "kind-a-wf", InitialState: "OPEN", Active: true,
+			Criterion: simpleCriterion("$.kind", "EQUALS", "a"),
+			States: map[string]spi.StateDefinition{
+				"OPEN": {Transitions: []spi.TransitionDefinition{
+					{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
+				}},
+				"CLOSED": {},
+			},
+		},
+	})
+	// The entity has already moved on — the task's SourceState no longer matches.
+	seedFireEntity(t, factory, ctx, "fire-silent-1", modelRef, "CLOSED", "seed-tx-1", map[string]any{"kind": "a"})
+
+	id := taskID(testTenant, "fire-silent-1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "fire-silent-1",
+		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+	advance(delayMs)
+
+	if _, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant}); err != nil {
+		t.Fatalf("FireScheduledTransition: %v", err)
+	}
+	for _, et := range []spi.StateMachineEventType{spi.SMEventWorkflowSkipped, spi.SMEventWorkflowFound} {
+		if n := countAuditEvents(t, factory, ctx, "fire-silent-1", et); n != 0 {
+			t.Errorf("%s events = %d, want 0 — a silent guard must not record selection", et, n)
+		}
+	}
+}
