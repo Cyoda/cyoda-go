@@ -281,3 +281,100 @@ func RunWorkflowManualTransition(t *testing.T, fixture BackendFixture) {
 		t.Errorf("expected data.tag=\"foo\" (tag-with-foo processor), got %v", got.Data["tag"])
 	}
 }
+
+// wfSelectionSample declares the fields the per-kind selection criteria read
+// by RunWorkflowSelectionAfterCreation. A locked model rejects undeclared
+// fields, so both must appear in the sample.
+const wfSelectionSample = `{"name":"Test","kind":"a","go":false}`
+
+// wfSelectionWorkflows imports two active workflows that declare THE SAME
+// STATE NAMES — the normal shape for a per-kind machine — distinguished only
+// by their `criterion`. kind-a-wf is declared first, so a resolver that picks
+// "the first active workflow declaring the entity's current state" returns it
+// for every entity regardless of kind. Each workflow's transitions land in
+// differently-named target states, so the observed state alone identifies
+// which definition ran. The criteria are inline predicates over the payload,
+// so no compute node is involved.
+const wfSelectionWorkflows = `{
+	"importMode": "REPLACE",
+	"workflows": [
+		{
+			"version": "1.1", "name": "kind-a-wf", "initialState": "NONE", "active": true,
+			"criterion": {"type": "simple", "jsonPath": "$.kind", "operatorType": "EQUALS", "value": "a"},
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "VALIDATE", "manual": false}]},
+				"VALIDATE": {"transitions": [
+					{"name": "check", "next": "A_CHECKED", "manual": true},
+					{"name": "a-advance", "next": "A_ADVANCED", "manual": false,
+						"criterion": {"type": "simple", "jsonPath": "$.go", "operatorType": "EQUALS", "value": true}}
+				]},
+				"A_CHECKED": {},
+				"A_ADVANCED": {}
+			}
+		},
+		{
+			"version": "1.1", "name": "kind-b-wf", "initialState": "NONE", "active": true,
+			"criterion": {"type": "simple", "jsonPath": "$.kind", "operatorType": "EQUALS", "value": "b"},
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "VALIDATE", "manual": false}]},
+				"VALIDATE": {"transitions": [
+					{"name": "check", "next": "B_CHECKED", "manual": true},
+					{"name": "b-advance", "next": "B_ADVANCED", "manual": false,
+						"criterion": {"type": "simple", "jsonPath": "$.go", "operatorType": "EQUALS", "value": true}}
+				]},
+				"B_CHECKED": {},
+				"B_ADVANCED": {}
+			}
+		}
+	]
+}`
+
+// RunWorkflowSelectionAfterCreation asserts that workflow-level selection is
+// applied on the post-creation doors too, not only on creation: a manual
+// transition and a loopback re-evaluation must both run the definition the
+// entity's criterion binds it to.
+//
+// RunWorkflowCriteriaSelectingWorkflow already covers selection at creation.
+// This is the backend-agnostic companion for the later doors — the engine
+// resolves the workflow the same way on every backend, so a divergence here
+// would be a backend bug, not a modelling choice.
+func RunWorkflowSelectionAfterCreation(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-wf-selection-doors"
+	const modelVersion = 1
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfSelectionSample, wfSelectionWorkflows)
+
+	// --- Manual transition ---
+	manualID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","kind":"b","go":false}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (manual): %v", err)
+	}
+	if err := c.UpdateEntity(t, manualID, "check", `{"name":"Test","kind":"b","go":false}`); err != nil {
+		t.Fatalf("UpdateEntity (check): %v", err)
+	}
+	got, err := c.GetEntity(t, manualID)
+	if err != nil {
+		t.Fatalf("GetEntity (manual): %v", err)
+	}
+	if got.Meta.State != "B_CHECKED" {
+		t.Errorf("state after manual transition = %s, want B_CHECKED (kind-b-wf selected by criterion)", got.Meta.State)
+	}
+
+	// --- Loopback (transition-less update) ---
+	loopbackID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","kind":"b","go":false}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (loopback): %v", err)
+	}
+	if err := c.UpdateEntityData(t, loopbackID, `{"name":"Test","kind":"b","go":true}`); err != nil {
+		t.Fatalf("UpdateEntityData (loopback): %v", err)
+	}
+	got, err = c.GetEntity(t, loopbackID)
+	if err != nil {
+		t.Fatalf("GetEntity (loopback): %v", err)
+	}
+	if got.Meta.State != "B_ADVANCED" {
+		t.Errorf("state after loopback = %s, want B_ADVANCED (kind-b-wf selected by criterion)", got.Meta.State)
+	}
+}

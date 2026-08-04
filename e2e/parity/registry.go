@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 225 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 226 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -133,8 +133,10 @@ var allTests = []NamedTest{
 	// fail-closed rather than the pre-fix silent empty-result degradation.
 	{"SearchScalarOnContainerPath400", RunSearchScalarOnContainerPath400},
 
-	// Phase 4b — workflow selection (Task 4b.7)
+	// Phase 4b — workflow selection (Task 4b.7). Selection applies on every
+	// engine door, so the post-creation doors are pinned alongside creation.
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},
+	{"WorkflowSelectionAfterCreation", RunWorkflowSelectionAfterCreation},
 
 	// Phase 4b — distributed-safety contracts (Tasks 4b.9-10)
 	{"ConcurrentConflictingUpdate", RunConcurrentConflictingUpdate},
