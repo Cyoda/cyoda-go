@@ -60,3 +60,57 @@ func TestRejectUnstorable_DeepNestingStillFindsContent(t *testing.T) {
 		}
 	}
 }
+
+// TestRejectUnstorable_CostIsIndependentOfDepth pins the second half of the
+// scaling property, which the depth-only test above cannot see.
+//
+// The first fix removed per-level subtree copying but left the path stack being
+// derived per node via append. At any depth where len == cap, that re-runs
+// growslice for EVERY sibling and copies the whole stack — reintroducing the
+// same O(size x depth) blowup, relocated. It was invisible to every test here
+// because they are all small, and it only bites at Go's slice-growth depths
+// (1, 2, 4, 8, 16, 35, 71, ... 6912, 8960).
+//
+// Measured on the version this guards against: a 7.8 MB well-formed payload
+// allocated 1.45 TB and took ~4 minutes — and was then ACCEPTED, so nothing
+// downstream cut it short.
+//
+// The property is that the same number of bytes costs about the same whether it
+// is flat or deeply nested. 8960 is chosen because it is one of the slice-growth
+// depths, i.e. the worst case.
+func TestRejectUnstorable_CostIsIndependentOfDepth(t *testing.T) {
+	const depth = 8960
+	const elems = 20000
+
+	flat := []byte("[" + strings.Repeat("1,", elems) + "1]")
+	nested := []byte(strings.Repeat("[", depth) + "[" + strings.Repeat("1,", elems) + "1]" +
+		strings.Repeat("]", depth))
+
+	measure := func(b []byte) (time.Duration, float64) {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		if err := RejectUnstorable(b); err != nil {
+			t.Fatalf("payload is storable, guard rejected it: %v", err)
+		}
+		d := time.Since(start)
+		runtime.ReadMemStats(&after)
+		return d, float64(after.TotalAlloc-before.TotalAlloc) / (1 << 20)
+	}
+
+	flatTime, flatMiB := measure(flat)
+	nestedTime, nestedMiB := measure(nested)
+	t.Logf("flat   %d bytes: %s, %.1f MiB", len(flat), flatTime, flatMiB)
+	t.Logf("nested %d bytes at depth %d: %s, %.1f MiB", len(nested), depth, nestedTime, nestedMiB)
+
+	// Generous factors: this catches a return to depth-multiplied cost, it does
+	// not police micro-timings.
+	if nestedMiB > flatMiB*8+16 {
+		t.Errorf("nesting multiplied allocation: flat %.1f MiB vs nested %.1f MiB — "+
+			"the path stack is being copied per sibling again", flatMiB, nestedMiB)
+	}
+	if nestedTime > flatTime*20+50*time.Millisecond {
+		t.Errorf("nesting multiplied CPU: flat %s vs nested %s", flatTime, nestedTime)
+	}
+}

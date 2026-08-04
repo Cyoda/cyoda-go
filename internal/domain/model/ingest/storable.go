@@ -94,16 +94,16 @@ func unstorableErr(path, reason string) error {
 // the first unstorable content it finds. Object members are visited in document
 // order.
 //
-// Values are kept as json.RawMessage so each string is examined exactly as the
-// client wrote it. Object KEYS are the one exception — the decoder hands them
-// back as Go strings, already normalised — so a key is only checked for NUL,
-// which survives decoding. A surrogate in a key is not detectable here.
+// Every string — object keys included — is examined as the client wrote it,
+// which is why the scan works on byte offsets rather than decoded values. The
+// decoded form of a key is used only for duplicate comparison and for the
+// reported path, never for judging its content.
 func findUnstorable(raw []byte, path string) (string, string, bool) {
-	var segs []pathSeg
+	st := make([]pathSeg, 0, 64)
 	if path != "" {
-		segs = append(segs, pathSeg{key: path})
+		st = append(st, pathSeg{key: path})
 	}
-	p, r, found, _ := scanValue(raw, 0, segs, 0)
+	p, r, found, _ := scanValue(raw, 0, &st, 0)
 	return p, r, found
 }
 
@@ -111,6 +111,14 @@ func findUnstorable(raw []byte, path string) (string, string, bool) {
 // than an accumulated string: building the string at every node would itself be
 // quadratic in depth, which is the cost this scanner exists to avoid. The string
 // is rendered only when something is actually rejected.
+//
+// The stack is threaded by POINTER and pushed/popped, not derived per node. An
+// earlier version passed `append(segs, seg)` to each child, which looks
+// harmless but re-runs growslice for every sibling whenever len == cap at that
+// depth — copying the whole path stack each time. That reintroduced the
+// O(size x depth) blowup this scanner was written to remove, just relocated
+// from the subtree into the path: a 7.8 MB well-formed payload allocated 1.45 TB
+// and took nearly four minutes, and was then accepted.
 type pathSeg struct {
 	key   string
 	idx   int
@@ -126,6 +134,10 @@ func renderPath(segs []pathSeg) string {
 		}
 		if b.Len() > 0 {
 			b.WriteByte('.')
+		}
+		if s.key == "" {
+			b.WriteString(`""`) // an empty name, not the document root
+			continue
 		}
 		b.WriteString(s.key)
 	}
@@ -149,7 +161,7 @@ const maxScanDepth = 10000
 // product of size and depth: the 10 MB body limit bounds only size.
 //
 // This version allocates only a per-object key set, and only for objects.
-func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool, int) {
+func scanValue(b []byte, i int, st *[]pathSeg, depth int) (string, string, bool, int) {
 	i = skipJSONSpace(b, i)
 	if i >= len(b) {
 		return "", "", false, i
@@ -163,6 +175,8 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 	case '{':
 		i++
 		seen := make(map[string]struct{})
+		*st = append(*st, pathSeg{})
+		defer func() { *st = (*st)[:len(*st)-1] }()
 		for {
 			i = skipJSONSpace(b, i)
 			if i >= len(b) {
@@ -188,14 +202,14 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 			if !kok {
 				return "", "", false, len(b)
 			}
-			child := append(segs, pathSeg{key: key})
+			(*st)[len(*st)-1] = pathSeg{key: key}
 			// The key's RAW bytes, so an unpaired surrogate or a NUL escape in a
 			// key is caught. Decoding the key first would normalise both away.
 			if reason := checkJSONStringToken(keyRaw); reason != "" {
-				return renderPath(child), reason, true, i
+				return renderPath(*st), reason, true, i
 			}
 			if _, dup := seen[key]; dup {
-				return renderPath(child), reasonDuplicateKey, true, i
+				return renderPath(*st), reasonDuplicateKey, true, i
 			}
 			seen[key] = struct{}{}
 
@@ -207,7 +221,7 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 			var p, r string
 			var found bool
 			before := i
-			p, r, found, i = scanValue(b, i, child, depth+1)
+			p, r, found, i = scanValue(b, i, st, depth+1)
 			if found {
 				return p, r, true, i
 			}
@@ -219,6 +233,8 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 	case '[':
 		i++
 		idx := 0
+		*st = append(*st, pathSeg{isIdx: true})
+		defer func() { *st = (*st)[:len(*st)-1] }()
 		for {
 			i = skipJSONSpace(b, i)
 			if i >= len(b) {
@@ -233,8 +249,9 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 			}
 			var p, r string
 			var found bool
+			(*st)[len(*st)-1] = pathSeg{idx: idx, isIdx: true}
 			before := i
-			p, r, found, i = scanValue(b, i, append(segs, pathSeg{idx: idx, isIdx: true}), depth+1)
+			p, r, found, i = scanValue(b, i, st, depth+1)
 			if found {
 				return p, r, true, i
 			}
@@ -250,7 +267,7 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 			return "", "", false, len(b)
 		}
 		if reason := checkJSONStringToken(b[i:end]); reason != "" {
-			return renderPath(segs), reason, true, end
+			return renderPath(*st), reason, true, end
 		}
 		return "", "", false, end
 
@@ -264,7 +281,7 @@ func scanValue(b []byte, i int, segs []pathSeg, depth int) (string, string, bool
 		}
 		if c := b[i]; c == '-' || (c >= '0' && c <= '9') {
 			if reason := checkJSONNumberToken(b[i:end]); reason != "" {
-				return renderPath(segs), reason, true, end
+				return renderPath(*st), reason, true, end
 			}
 		}
 		return "", "", false, end
@@ -373,6 +390,14 @@ func checkJSONNumberToken(tok []byte) string {
 		exp = v
 	}
 
+	// Only a syntactically complete JSON number gets a range verdict. A token
+	// like `1e1000000x` is a syntax error, and reporting it as "too many digits"
+	// would send the caller looking in the wrong place. The decoder rejects it
+	// a moment later with an accurate message.
+	if i != len(tok) || intEnd == intStart {
+		return ""
+	}
+
 	intDigits := int64(intEnd - intStart)
 	fracDigits := int64(fracEnd - fracStart)
 
@@ -473,18 +498,6 @@ func parseHex4(b []byte, off int) (rune, bool) {
 		return 0, false
 	}
 	return rune(v), true
-}
-
-// trimJSONSpace strips the whitespace JSON permits around a value.
-func trimJSONSpace(b []byte) []byte {
-	start, end := 0, len(b)
-	for start < end && isJSONSpace(b[start]) {
-		start++
-	}
-	for end > start && isJSONSpace(b[end-1]) {
-		end--
-	}
-	return b[start:end]
 }
 
 func isJSONSpace(c byte) bool {
