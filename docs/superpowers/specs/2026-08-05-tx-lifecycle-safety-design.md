@@ -55,7 +55,8 @@ Required properties:
 
 - **`beginScope` does not touch the joined gate.** The seven existing
   `defer releaseGate()` calls (`service.go:269`, `:652`, `:792`, `:916`, `:1179`,
-  `:1719`) stay exactly as they are. Folding the gate into the scope while
+  `:1370`, `:1719`) stay exactly as they are — and `defer scope.Release()` is
+  registered *before* them, so LIFO frees the gate first. Folding the gate into the scope while
   `Release` is a rollback no-op for joined calls would leave the gate permanently
   held — it is a non-reentrant mutex (`internal/txgate/txgate.go:43`), so every
   later joined callback on that txID would block forever.
@@ -75,9 +76,9 @@ Required properties:
   window; the ordering costs nothing and removes the case. While moving it, delete
   the dead `result != nil` guards at `:321`, `:1248`, `:1256` — the engine never
   returns `(nil, nil)`, and `:325` already dereferences unguarded (Gate 6).
-- **`Release` acquires the per-tx gate before rolling back.** Nine of the 40
+- **`Release` acquires the per-tx gate before rolling back.** Ten of the 40
   rollbacks run inside `h.gate.Acquire(...)` today (`service.go:356`, `:680`,
-  `:833`, `:1283`, `:1548`, `:1556`, `:1567`, `:1872`, `:1911`); the other 31 are
+  `:833`, `:1279`, `:1283`, `:1548`, `:1556`, `:1567`, `:1872`, `:1911`); the other 30 are
   already ungated, so for those `Release` is a strengthening. For the nine, the
   safety property that must survive is mutual exclusion on the `pgx.Tx`, and
   re-acquiring preserves it. What does *not* survive is failed-Save→rollback as one
@@ -103,14 +104,21 @@ Required properties:
   unconditionally — `FinalCtx` is `WithoutCancel`-wrapped only in the
   `startNewTxOnDispatch=false` case (`engine_result.go:25`).
 
-  The bound is real only on postgres. memory and sqlite take `tx.OpMu.Lock()` in
-  `Rollback` (`plugins/memory/txmanager.go:513`, `plugins/sqlite/txmanager.go:567`)
-  and `txgate.Registry.Acquire` (`txgate.go:30`) is a plain mutex — neither takes a
-  context, so on those backends the unwinding goroutine can still block on an
-  in-flight operation. Accepted: both waits are on operations that themselves
-  terminate, and giving `OpMu`/the gate context-aware acquisition is a wider change
-  to two plugins' concurrency model than this issue should carry. Stated here so it
-  is a known bound, not an assumed one.
+  **The 5s bound covers the rollback call, not the wait to reach it, on any
+  backend.** `Release` must first acquire the per-tx gate, and
+  `txgate.Registry.Acquire` (`internal/txgate/txgate.go:30`, `:43`) is a plain
+  `sync.Mutex` with no context — that is core code, so it applies to postgres too,
+  not just to memory and sqlite. Those two additionally take `tx.OpMu.Lock()` in
+  `Rollback` (`plugins/memory/txmanager.go:513`, `plugins/sqlite/txmanager.go:567`).
+
+  What actually bounds the wait is that the holder's work terminates: the gate is
+  never held across a dispatch (`txgate.Suspend`), and every in-flight operation it
+  can be waiting on is itself bounded — by `responseTimeoutMs` for a callout, by
+  §2's ceilings for a statement. So the total is bounded but not by the 5s context,
+  and rows 1 and 8 assert it on that basis. Making it a hard bound means giving
+  `Registry.Acquire` a context-aware variant and `OpMu` the same, which is a change
+  to the concurrency model of core plus two plugins — out of scope here (§8), and
+  stated so the guarantee is not read as stronger than it is.
 
 Flows converted: `CreateEntity`, `DeleteEntity`, `DeleteAllEntities`,
 `DeleteEntitiesConditional`, `CreateEntityCollection`, `updateEntityCore` (and
@@ -185,28 +193,56 @@ path true for the first time.
 `executeCommitBeforeDispatch` keeps its own guard as well, since it opens TX_post
 (`:333`, `:409`) and can panic before returning it to `executeProcessors`.
 
+The guard's `openTxID != entryTxID` test is sound because every early return in
+`attemptTransition` (`engine.go:628`, `:642`, `:648`, `:655`) and `fireTransition`
+(`:685`, `:702`, `:704`) returns the *input* ctx/txID — which is safe only because
+no segmentation can have occurred at those points. Processors run after criteria,
+so nothing has segmented yet. That is an invariant, not an accident: it is recorded
+here because reordering processors before criteria would break the guard silently.
+
+**Same-class defect fixed here.** `engine.go:772` builds the `criterionContext`
+with `ctx: currentCtx` but `txID: txID` — the cascade-*entry* txID. After a CBD
+segment that names a **committed** transaction, and it is the value handed to
+`DispatchCriteria` (`:869`) and on to the compute node as its join token, so a
+criterion callback attempting to join gets `ErrTxNotFound`. It is the same
+transaction-identity-versus-segment-identity confusion §1.2 and §1.3 exist to fix,
+in the same file, so it is fixed here rather than left for someone to rediscover.
+
 ### 1.4 Panic recovery on the doors that lack it
 
-Two entry points run transactional work with no recovery at all, so a panic kills
-the process rather than the request.
+The two doors differ in severity, and it is worth being precise about which.
 
-**gRPC.** `internal/grpc/server.go:69` installs auth and tx-route interceptors
-only, and grpc-go does not recover handler panics. Several operations are
-genuinely gRPC-only — `internal/grpc/model.go:85`, `:119`, `:156`, `:186`, `:202`,
-`:240` — so this is not merely a second door onto HTTP-reachable code. Add a
+**gRPC — a panic kills the process.** `internal/grpc/server.go:69` installs auth
+and tx-route interceptors only, and grpc-go does not recover handler panics; there
+is no equivalent of net/http's per-connection recover. Several operations are
+genuinely gRPC-only (`internal/grpc/model.go:85`, `:119`, `:156`, `:186`, `:202`,
+`:240`), so this is not merely a second door onto HTTP-reachable code. Add a
 recovery interceptor, unary and stream.
 
-**Peer scheduler RPC.** When `cfg.Cluster.Enabled`,
-`cluster.NewSchedulerRPCHandler(...).Register(...)` is registered directly on the
-outer mux (`app/app.go:747`, `:760`), outside `middleware.Recovery`, which wraps
-only the `/` catch-all (`:729`). A more specific ServeMux pattern wins, so those
-routes bypass recovery entirely — and the handler opens a transaction and runs a
-full fire plus cascade including compute-node callouts
-(`internal/cluster/scheduler_rpc.go:273` → `fire_scheduled.go:112`). A panic in a
-peer-dispatched scheduled fire therefore takes down a node, on the primary
-operating target, through a route any peer can reach.
-`clusterdispatch.NewDispatchHandler` (`:746`, `:759`) sits in the same position
-without a transaction. Wrap both in `middleware.Recovery`.
+**HTTP routes outside `middleware.Recovery` — a panic loses the contract, not the
+process.** `net/http` recovers handler panics itself (`server.go:1904`, "http:
+panic serving"), logs, and closes the connection. So these do not take a node down;
+what they lose is the project's own contract — no ProblemDetail 500 with a ticket,
+no `healthFlag` marking, and a connection dropped mid-response instead of an error
+body. Recovery wraps only the `/` catch-all (`app/app.go:729`), and a more specific
+ServeMux pattern wins, so these bypass it:
+
+- `cluster.NewSchedulerRPCHandler(...).Register(...)` (`app/app.go:747`, `:760`,
+  when `cfg.Cluster.Enabled`) — the significant one, because it opens a transaction
+  and runs a full fire plus cascade including compute-node callouts
+  (`internal/cluster/scheduler_rpc.go:273` → `fire_scheduled.go:112`), and any peer
+  can reach it.
+- `clusterdispatch.NewDispatchHandler` (`:746`, `:759`) — same position, no
+  transaction.
+- `GET /entity/{entityId}/transitions` (`:671`), `GET
+  /platform-api/entity/fetch/transitions` (`:672`), `POST
+  /entity/stats/{name}/{ver}/query` (`:718`) — read-only, and `txJoinMW` joins
+  rather than begins, so they leak nothing.
+
+All of them get wrapped. The read-only three were previously scoped out on the
+grounds that they leak nothing, which is true but is not the point: it is the same
+one-line fix on the same mux in the same change, and leaving three doors
+inconsistent with five others is exactly the debt Gate 6 exists to stop.
 
 Both recoveries mirror `internal/api/middleware/recovery.go`: log with stack, mark
 the health flag, return a generic internal error with a ticket UUID. Marking the
@@ -216,9 +252,9 @@ existing HTTP contract and is deliberately extended, not softened: a node that h
 panicked has unknown state, and restarting it is the correct response. §6 row 2's
 "still serving" assertion is about request handling, which continues.
 
-Recovery must not land without §1.2 and §1.3. On its own it would convert a
-process crash — which PostgreSQL cleans up by killing every session — into a
-silent connection leak.
+Recovery must not land without §1.2 and §1.3. On its own — on the gRPC door — it
+would convert a process crash, which PostgreSQL cleans up by killing every session,
+into a silent connection leak.
 
 ### 1.5 Corrections to the issue's framing
 
@@ -296,15 +332,31 @@ who need longer raise the ceiling.
 
 ### 2.1 Acquire-timeout scope
 
-Applied **only** at `TransactionManager.Begin`'s `pool.BeginTx`
-(`transaction_manager.go:79`) and `model_store.go:359`'s `pool.Begin`. Both return
-immediately, so the deadline bounds the acquire and does not leak into the
-returned handle.
+Applied at `TransactionManager.Begin`'s `pool.BeginTx` (`transaction_manager.go:79`)
+and `model_store.go:359`'s `pool.Begin`. Both return immediately, so the deadline
+bounds the acquire and does not leak into the returned handle.
 
-Both are also safe from nesting: `model_store.go:359` self-wraps only when there is
-no ambient transaction (`:355`) and already has `defer tx.Rollback` (`:364`). Its
-only reachable callers are `ValidateOrExtend`'s five entity/workflow call sites —
-model import does **not** reach it — so it adds no endpoint to §5's table.
+**Except when the engine is opening its next segment.** `executeCommitBeforeDispatch`
+opens TX_post through the same `Begin` (`engine_processors.go:333`, `:409`), and
+`:333` runs *after* the external dispatch has fired and its side effects are
+durable. Failing that acquire under pool pressure would leave the processor's side
+effect executed and the entity's post-dispatch state never applied — which CBD
+cannot compensate, and which is precisely the partial-application outcome §4
+rejects the reaper for. A segment continuation is not an admission-control point;
+admission control belongs at the door. The engine's segment `Begin` therefore
+passes a flag that skips the acquire deadline, and the same applies to
+`fire_scheduled.go:112` on the scheduler path, where failing a fire mid-flight is
+worse than waiting for a connection.
+
+`model_store.go:359` self-wraps only when there is no ambient transaction (`:355`)
+and already has `defer tx.Rollback` (`:364`), so it cannot nest. Its only reachable
+callers are `ValidateOrExtend`'s five entity/workflow call sites — model import does
+**not** reach it. Note its acquire failure surfaces as **500, not 503**:
+`validate.go:124` wraps the error in `ErrInternalSchema`, and
+`classifyValidateOrExtendErr` (`handler.go:203`) maps that to `common.Internal`.
+That is left as-is rather than threaded through the schema classifier — it is the
+schema-extension path reporting that it could not extend the schema, and the cause
+is in the log either way. §5's table is unaffected.
 
 It is **not** applied to `pool.Query` / `Exec` / `QueryRow` / `CopyFrom`. For
 `Query`, `pgxpool` holds the connection for the returned `pgx.Rows` under the same
@@ -336,9 +388,19 @@ wrong. The plugin owns the acquire context, so it returns an error satisfying
 interface{ StorageUnavailable() bool }
 ```
 
-which the domain layer type-asserts. No `cyoda-go-spi` change, so no coordinated
-cross-repo release; the commercial backend can opt in later by returning the same
-shape.
+matched with `errors.As`, not a type assertion — every `Begin` error is already
+wrapped by the time a classifier sees it. No `cyoda-go-spi` change, so no
+coordinated cross-repo release; the commercial backend can opt in later by
+returning the same shape.
+
+**Where the check goes.** `common.Internal(...)` fixes the status at 500, so the
+classification has to run *before* it at each site that wraps a `Begin` error:
+`service.go:264`, `:647`, `:787`, `:911`, `:1174`, `:1365`, `:1713`,
+`fire_scheduled.go:114`, and `engine_processors.go:335`, `:411`. A
+`classifyBeginErr(err)` helper replaces the bare `common.Internal("failed to begin
+transaction", err)` at all ten; `AppError.Unwrap` (`internal/common/errors.go:48`)
+means a later `errors.As` would still find the cause, but by then the status is
+already wrong.
 
 Two server-side aborts also need classifying, or they surface as opaque 500s:
 
@@ -390,12 +452,15 @@ during a rolling upgrade — an old node's in-flight write transaction is itself
 bounded by the ceilings in §2, so a bounded wait succeeds where a 30s one would
 abort a healthy upgrade.
 
-Applying it at `openDB` (`migrate.go:23`) covers every caller: `runMigrations` via
+Applying it at `openDB` (`migrate.go:24`) covers every caller: `runMigrations` via
 `plugin.go:50`, `checkSchemaCompat`'s own handle (`plugin.go:42`), and the
-test-only `migrateDown` (`migrate.go:232`). `RunMigrateWithDSN` — the `cyoda
+test-only `migrateDown` (`migrate.go:231`). `RunMigrateWithDSN` — the `cyoda
 migrate` subcommand — builds an independent pool (`migrate.go:88`) that inherits
 nothing from the app pool, though it *does* inherit any `RuntimeParams` embedded in
 the DSN, so it sets the same three explicitly.
+
+`pool.Config()` deep-copies `RuntimeParams` (`pgxpool/pool.go:711` →
+`pgconn/config.go:162`), so these overrides cannot leak back into the app pool.
 
 ### 3.2 Single migrator
 
@@ -409,36 +474,57 @@ The bound comes from the session `lock_timeout` in §3.1: advisory locks go thro
 PostgreSQL's regular lock manager, so it aborts the wait. A single-node install is
 unaffected because its lock is uncontended.
 
-A node whose lock wait times out re-runs `checkSchemaCompat`: if the schema is now
-current, it logs and proceeds; otherwise it exits with an actionable message for
-the supervisor to retry.
+A node whose lock wait times out fails startup with an actionable message and is
+restarted by its supervisor. No leader election, no second lock, no polling.
 
 The `lock_timeout`-aborts-an-advisory-lock-wait claim is load-bearing and will be
 proven by test, not taken from documentation.
 
 ### 3.3 Concurrent-boot dirty-flag false alarm
 
-golang-migrate sets `dirty=true` **before** each migration step and clears it
-after (`migrate.go:738`, `:750`), each in its own committed transaction. So while
-one node migrates, every other booting node reads `dirty=true` and
-`checkSchemaCompat` (`plugins/postgres/migrate.go:195`) exits with *"migration
-state is dirty — manual intervention required"* — a fatal false alarm on a
-completely normal concurrent boot, which invites an operator to hand-edit
-`schema_migrations` while a live migration is running.
+golang-migrate sets `dirty=true` **before** each migration step and clears it after
+(`migrate.go:738`, `:750`) in separate committed transactions, with the migration
+body itself running in a third (`pgx.go:283`) — that non-atomicity is what the flag
+is for. So while one node migrates, every other booting node reads `dirty=true`.
+`checkSchemaCompat` returns *"schema compat: database migration state is dirty at
+version %d — manual intervention required"* (`plugins/postgres/migrate.go:196`),
+and the caller exits (`plugin.go:45-48`, `cmd/cyoda/migrate.go:84-91`) — a fatal
+false alarm on a completely normal concurrent boot, inviting an operator to
+hand-edit `schema_migrations` while a live migration is running.
 
-The bug exists only because `checkSchemaCompat` (`plugin.go:42`) runs *before*
-`runMigrations` (`:50`) and reads `dirty` unserialised. So serialise it: take one
-**cyoda-owned session advisory lock**, on its own connection with `lock_timeout`
-set, around the whole `[checkSchemaCompat; runMigrations]` sequence. Under that
-lock, `dirty == true` unambiguously means a migration genuinely died, and stays
-fatal exactly as today.
+The bug exists only because `checkSchemaCompat` runs **before** `runMigrations`
+(`plugin.go:42` then `:50`) and therefore reads `dirty` outside any lock. **Swap
+the order when `AutoMigrate` is true**: run `runMigrations` first, then
+`checkSchemaCompat`.
 
-This is strictly nested outside golang-migrate's own lock, so there is no deadlock,
-and it avoids the alternative — recomputing golang-migrate's lock id via
-`database.GenerateAdvisoryLockId` and probing `pg_locks` — which would couple us to
-that function's hash, its argument order, and the driver's internal derivation of
-database/schema/table at `WithInstance` (`pgx.go:73`). One lock we own is less
-machinery and fewer things that can silently drift.
+That is the whole fix, and it needs no lock of our own. `m.Up()` takes
+golang-migrate's advisory lock *before* reading the dirty flag, so a follower
+blocks until the winner has finished and cleared it, then applies nothing and gets
+`ErrNoChange`. The subsequent compat check runs on a settled schema, where
+`dirty == true` unambiguously means a migration genuinely died and stays fatal
+exactly as today. `lock_timeout` from §3.1 bounds the wait.
+
+Running migrations before the compat check does not weaken the newer-than-code
+guard: `m.Up()` on a database ahead of the binary finds no migration to apply and
+returns `ErrNoChange`, and the compat check that follows still refuses to start.
+
+Because the fix is an ordering change inside the shared sequence, it covers
+`RunMigrateWithDSN` (`migrate.go:114-121`) identically — the `cyoda migrate`
+subcommand concurrent with a node boot no longer produces a false alarm either.
+That was not true of a lock scoped to `plugin.go`.
+
+With `AutoMigrate=false` the ordering is unchanged, because nothing is migrating
+from this binary. A dirty read in that window is accurate information — the schema
+really is mid-migration under someone else's control, and this node should not
+start.
+
+Rejected alternatives, recorded so they are not revisited: a second cyoda-owned
+advisory lock around the pair (more machinery, and its own "which connection holds
+it" question), and recomputing golang-migrate's lock id via
+`database.GenerateAdvisoryLockId` to probe `pg_locks` — that id is a 32-bit CRC
+over `schema\x00table\x00database` (`database/util.go:10-20`), so it couples us to
+the hash, its argument order, and the driver's internal name derivation
+(`pgx.go:75-108`), and it collides across unrelated databases on the same cluster.
 
 ### 3.4 Index migrations
 
@@ -472,8 +558,11 @@ The exposure that remains is the *next* index migration. Deliverables:
   runtime. Clause (a) passes `000001`'s indexes on their merits rather than by
   exemption; `000002_grouped_stats.up.sql:44` is the sole grandfathered entry.
 - **Recovery**: a failed `CREATE INDEX CONCURRENTLY` leaves an INVALID index and a
-  dirty version. Document the `DROP INDEX` + re-run procedure in the migration
-  help topic and reference it from the dirty-state error message.
+  dirty version. Document the `DROP INDEX` + re-run procedure in
+  `cmd/cyoda/help/content/cli/migrate.md` and point at it from the dirty-state
+  message, which is produced at `plugins/postgres/migrate.go:196` (the function
+  returns the error; the exit happens at `plugin.go:45-48` and
+  `cmd/cyoda/migrate.go:84-91`).
 
 ---
 
@@ -523,7 +612,8 @@ does not.
 
 ### 4.2 Removal list
 
-Code: `internal/cluster/lifecycle/` (both files), `App.TxLifecycle()`
+Code: `internal/cluster/lifecycle/` (both files), its import at `app/app.go:28`
+(a hard compile break if missed), `App.TxLifecycle()`
 (`app/app.go:822`), the `txLifecycle` field and its construction/wiring
 (`app/app.go:70`, `:440-444`), the reaper goroutine (`:459-477`) and `stopReaper`
 (`:72`, `:887-888`), the three `cluster.Config` fields
@@ -537,7 +627,10 @@ plus its import at `:11` — it constructs `lifecycle.NewManager` and asserts
 
 Config surface: `cmd/cyoda/help/config_registry.go:59-61`,
 `app/config_registry_binding_test.go:101-103`,
-`cmd/cyoda/help/content/config.md:91-93`, and
+`cmd/cyoda/help/content/config.md:91-93` plus the now-empty
+`### Search and transaction internals` heading at `:86`,
+`cmd/cyoda/help/config_registry_test.go:22` (`"tx": true` in the `validTopic`
+whitelist, dead once the three vars go), and
 `scripts/multi-node-docker/start-cluster.sh:418`, which emits
 `CYODA_TX_TTL: "60s"` into the generated compose file for every cluster node.
 
@@ -546,10 +639,13 @@ Config surface: `cmd/cyoda/help/config_registry.go:59-61`,
 These ship today and describe a capability that has never existed:
 
 - `docs/PRD.md:346` — "A background reaper goroutine periodically scans for
-  expired transactions and rolls them back."
+  expired transactions and rolls them back", under its own
+  `### Transaction Timeout and Reaper` heading at `:344`.
 - `docs/PRD.md:319` — the `ROLLBACK ◄──── timeout (TTL reaper)` state diagram.
 - `docs/ARCHITECTURE.md:365-380` — an entire section, "3.4 Transaction Lifecycle
-  Manager", with a struct listing.
+  Manager", with a struct listing. Deleting it orphans the unrelated CBD paragraph
+  at `:382` into §3.3, and breaks the live cross-references at `:566` and `:742`;
+  both need rehoming, not just removal.
 - `docs/ARCHITECTURE.md:123` — `lifecycle/ Transaction lifecycle manager (TTL,
   reaper, outcomes)` in the package tree.
 - `docs/ARCHITECTURE.md:1425-1426`, `:1428` — the three env vars as live knobs.
@@ -617,12 +713,13 @@ gRPC: the same failure surfaces in the envelope as `Success=false` with
 |---|---|---|---|---|---|
 | 1 | Panic in an owned write path rolls back; pool returns to baseline | — | postgres | — | — |
 | 2 | Repeated panics beyond pool size leave the node serving requests | — | postgres | — | — |
-| 3 | Panic in a joined callback does **not** roll back the owner's tx | ✔ | postgres | ✔ | — |
+| 3 | Panic in a joined callback does **not** roll back the owner's tx | ✔ | postgres | — | — |
 | 4 | Panic after engine segmentation rolls back TX_post, not the entry tx | ✔ | postgres | — | — |
-| 4a | **Non-panic** engine error after segmentation (criterion callout fails mid-cascade) rolls back TX_post | ✔ | postgres | ✔ | — |
+| 4a | **Non-panic** engine error after segmentation (criterion callout fails mid-cascade) rolls back TX_post | ✔ | postgres | — | — |
 | 4b | Every `executeCommitBeforeDispatch` `return nil, "", err` path rolls its segment back | ✔ | — | — | — |
+| 4c | Criterion dispatched after a CBD segment carries the *current* segment's txID, joinable by the callback | ✔ | postgres | — | — |
 | 5 | Committed-transaction behaviour unchanged (existing write suites) | ✔ | ✔ | ✔ | ✔ |
-| 5a | **Ordinary error paths still roll back** — one case per converted flow, asserting the tx is gone, not just the status code | ✔ | postgres | ✔ | — |
+| 5a | **Ordinary error paths still roll back** — one case per converted flow, asserting the tx is gone, not just the status code | ✔ | postgres | — | — |
 | 6 | Panicking write on memory/sqlite releases its tx state — no leaked buffer, `committedLog` prune floor advances | ✔ | — | — | — |
 | 7 | gRPC handler panic is recovered; process survives; tx rolled back | — | — | — | ✔ |
 | 7a | Peer scheduler-RPC panic is recovered; process survives; fire tx rolled back | — | postgres | — | — |
@@ -631,12 +728,16 @@ gRPC: the same failure surfaces in the envelope as `Success=false` with
 | 10 | Saturated pool: a **write** returns 503 within the acquire timeout rather than queueing | — | postgres | — | ✔ |
 | 11 | Caller-cancelled request is **not** mislabelled `STORAGE_UNAVAILABLE` | ✔ | postgres | — | — |
 | 11a | GUC values render in a form PostgreSQL accepts (bare ms integers, never `5m`) | ✔ | postgres | — | — |
+| 11c | Async search job aborted by `statement_timeout` records a FAILED job whose message names the ceiling | — | postgres | — | — |
+| 11d | Engine segment `Begin` is exempt from the acquire deadline — a saturated pool does not strand a fired CBD side effect | ✔ | — | — | — |
 | 11b | Deep cascade whose total callout time exceeds the idle ceiling still commits (per-gap, not cumulative) | — | postgres | — | — |
 | 12 | `statement_timeout` fires → SQLSTATE `57014` → 500 with a ticket, cause named in the log | ✔ | postgres | — | — |
 | 13 | `lock_timeout` aborts a `pg_advisory_lock` wait | ✔ | postgres | — | — |
 | 14 | Migration connection inherits neither `statement_timeout` nor `idle_in_transaction_session_timeout` from the app pool | ✔ | — | — | — |
-| 15 | Concurrent boot while another node migrates: waits instead of declaring dirty fatal, then proceeds once the schema is current | — | postgres | — | — |
-| 16 | Genuinely dirty schema with no lock holder still fails fast | ✔ | postgres | — | — |
+| 15 | Concurrent boot while another node migrates: waits on the migrate lock, then proceeds — never reports dirty | — | postgres | — | — |
+| 15a | `cyoda migrate` concurrent with a node boot: same, via the shared ordering | — | postgres | — | — |
+| 16 | Genuinely dirty schema (no concurrent migrator) still fails fast | ✔ | postgres | — | — |
+| 16a | Database newer than the binary still refuses to start, despite migrations now running first | ✔ | postgres | — | — |
 | 17 | Single-node install migrates itself | — | postgres | — | — |
 | 18 | Guard test rejects a new non-concurrent index on a hot table | ✔ | — | — | — |
 | 19 | `STORAGE_UNAVAILABLE` declared in OpenAPI on every write op | — | conformance | — | — |
@@ -650,6 +751,17 @@ gone.
 Scenarios 1, 2 and 10 are concurrency/fault tests: isolated single-backend e2e,
 never the shared parity suite, and they assert consistency (pool returns to
 baseline, one winner, no torn write) rather than a precise interleave.
+
+**No parity cells.** Every scenario here is single-backend, and that is forced by
+the harness rather than chosen: `BackendFixture` (`e2e/parity/fixture.go:17-48`)
+exposes only `BaseURL`, `GRPCEndpoint`, `NewTenant` and `ComputeTenant` — "no
+storage handle — verification is API-only", and the compute client is a separate
+subprocess reached over gRPC, so a parity scenario can neither inject an in-process
+panic nor observe whether a transaction is still open. Rows 3, 4a and 5a were
+originally marked for parity and are not implementable there. The behaviour they
+cover is core code that every backend shares, so the loss is coverage of *backend
+divergence in the guard*, which no backend can express: `Release` never reaches a
+plugin except through `Rollback`, whose contract is already parity-tested.
 
 **Fixture.** The shared e2e suite builds one `app.App` and one pool in `TestMain`
 with `CYODA_POSTGRES_MAX_CONNS=5` (`internal/e2e/e2e_test.go:106`, `:156`).
@@ -678,10 +790,15 @@ where it matters, with nothing compiled into the binary.
 - `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md`.
 - Migration guidance (CONCURRENT pattern, INVALID-index recovery) in
   `cmd/cyoda/help/content/cli/migrate.md`.
-- Note: nothing enforces `ConfigVars()` ↔ `parseConfig` parity for plugin vars, so
-  a var added to one and not the other passes CI silently. The four new vars are
-  added to both, and a parity test is added alongside them — the same class of
-  gap `TestErrCode_Parity` already closes for error codes (Gate 6).
+- Name-level parity is already enforced: `TestConfigAll_Complete`
+  (`cmd/cyoda/help/config_registry_test.go:73`) scans `cmd`, `app`, `plugins` and
+  `internal` for `CYODA_*` and diffs against the merged registry, so adding a var
+  to `parseConfig` alone fails CI. The real gap is **default-value** parity —
+  `plugin.go:19`'s `"25"` and `config.go:36`'s `25` are unbound literals, and root
+  vars get `TestRootConfigVars_MatchDefaults`
+  (`app/config_registry_binding_test.go:171`) while plugin vars get no equivalent.
+  A plugin-side counterpart is added alongside the four new vars (Gate 6), so a
+  documented default that drifts from the code fails rather than misinforms.
 - `CHANGELOG.md` needs a `### Breaking` section: three env vars are removed, and
   three ceilings that did not exist now apply by default. Per `COMPATIBILITY.md`
   that section, not the version digit, is what consumers are told to read.
@@ -696,15 +813,15 @@ where it matters, with nothing compiled into the binary.
   documenting the relationship, rather than by adding cross-layer validation
   between workflow import and storage-plugin config. A cap belongs with the gRPC
   hardening work.
-- Read-only routes registered outside `middleware.Recovery` (`app/app.go:671`,
-  `:672`, `:718`). They open no transaction, so a panic there leaks nothing —
-  unlike the peer scheduler-RPC route, which does and is therefore pulled into
-  scope in §1.4. The remaining inconsistency is left to the HTTP-hardening issue.
 - Request-level context deadlines (#32), which would bound pool acquisition on
-  read paths as well.
-- Context-aware acquisition for `tx.OpMu` and the txgate (see §1.2). Both would
-  make the rollback bound real on memory and sqlite, and both are changes to two
-  plugins' concurrency model rather than to transaction lifecycle.
+  read paths as well. Until then, non-transactional reads still queue unboundedly
+  on acquire — every statement through `store_factory.go:114`'s pool fallback and
+  the thirteen direct pool calls in `search_store.go`. §2.1's "net" claim is about
+  connection *release*, not about waiting.
+- Context-aware acquisition for `txgate.Registry.Acquire` and `tx.OpMu` (see
+  §1.2). Both would turn the rollback's bound from "terminates because the holder
+  terminates" into a hard deadline, and both are changes to the concurrency model
+  of core plus two plugins rather than to transaction lifecycle.
 - `fetchEntityTransitions` lacks the 503 that its documented alias
   `getEntityTransitions` declares (`api/openapi.yaml:1584`,
   `transitions_handler.go:117`). Pre-existing drift on the same surface, unrelated
