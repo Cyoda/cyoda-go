@@ -677,9 +677,25 @@ The exposure that remains is the *next* index migration. Deliverables:
   `ReapExpired` (`:467`) — a constructor, a setter that exists only to serve the
   reaper, and a loop over a map nothing can populate. `RecordOutcome`, `IsAlive`,
   `GetOutcome`, `ListByNode` and `Remove` have no callers at all.
-- The package arrived whole in `d1f6875`, "Initial import from cyoda-light-go"
-  (2026-04-14), and no commit in cyoda-go history ever added a production call to
-  `Register`. It was imported inert.
+- **It was never used here — there is no moment of disuse to find.** The package
+  arrived whole in `d1f6875` (2026-04-14), a root commit with no parents: "Initial
+  import from cyoda-light-go @ `ab90677`". It came in with all eight methods, a
+  test file, and `app.go` already constructing it, exposing `TxLifecycle()` and
+  running the reaper goroutine — and already with no caller of `Register`. How it
+  behaved in the prototype cannot be determined from this repository; that history
+  is not in the import and the source repo is not in the workspace.
+- **It then became more convincing rather than less, which is why the docs are
+  wrong in good faith.** At import, `ReapExpired` only expired map entries and
+  recorded outcomes; it never touched a transaction. `b665800` ("Plan 3: lift
+  memory + postgres into plugin modules") added the `txMgr` field,
+  `SetTransactionManager`, and the `tm.Rollback(ctx, txID)` loop — reconnecting a
+  reaper that had lost its reach into the TransactionManager when storage moved
+  into plugins, and moving the rollback outside the mutex "to avoid holding it
+  across network I/O". Careful work on a path that cannot execute. Afterwards the
+  code has a constructor, a TTL, a ticking goroutine and a rollback call: it reads
+  as a working backstop at every level a reader normally checks, which is how
+  `PRD.md`, `ARCHITECTURE.md` and issues #31/#32 came to describe it as one. The
+  single missing link is a call to `Register`, and no commit ever added it.
 - The reaper goroutine only starts when `cfg.Cluster.Enabled` (`app/app.go:445`),
   so single-node never had one at all.
 - Even if a transaction were registered, `ReapExpired` calls
