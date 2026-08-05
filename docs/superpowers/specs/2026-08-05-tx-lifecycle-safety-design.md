@@ -8,6 +8,29 @@ the application cannot dodge. Today none of that holds and there is no backstop
 underneath it. Four independent pieces of work, one slice because two of them
 would otherwise be written twice.
 
+## Status
+
+Design agreed. Reviewed by four independent fresh-context reviewers; every
+blocking finding is incorporated, and the file/line citations throughout were
+verified against the tree rather than carried from the issue. **Next step is
+`superpowers:writing-plans`, then TDD execution — not another review round.**
+
+Settled with the maintainer; do not re-open without new evidence:
+
+- Ceiling defaults **5m / 5m / 10s**, and migration `lock_timeout` **5m**.
+- `internal/cluster/lifecycle` and the three `CYODA_TX_*` vars are **deleted**,
+  not wired (§4).
+- Backward compatibility is **not** a constraint — the user base is
+  approximately zero. Pick the correct default and record it under `### Breaking`.
+  Do not build upgrade machinery for instances below schema version 2 (v0.7.x);
+  none exist (§3.4).
+- `docs/ARCHITECTURE.md` gets a full audit in this change (§4.4).
+
+Alternatives already rejected with reasons in-place — §1.2 (`Advance` cannot
+precede the error check), §2.1 (no acquire-deadline exemption; it would need an
+SPI change), §3.3 (no second advisory lock, no `pg_locks` probing), §4 (wiring the
+reaper), §6 (no parity cells — the harness cannot express them).
+
 ---
 
 ## 1. Deferred rollback (all backends)
