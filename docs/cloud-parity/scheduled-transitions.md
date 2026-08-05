@@ -103,11 +103,42 @@ write) and must not regress to an entry-time-only timer.
 | Fired | `SCHEDULED_TRANSITION_FIRE` + `TRANSITION_MAKE` | Scheduler-origin marker alongside the ordinary transition-made event. |
 | Declined | `TRANSITION_NOT_MATCH_CRITERION` | Existing event, reused — no dedicated "declined" event. |
 | Expired | `SCHEDULED_TRANSITION_EXPIRE` | Delete-gated: only the worker whose `Delete` actually removed the row emits it. |
-| Cancelled | `SCHEDULED_TRANSITION_CANCEL` | Only when the entity genuinely left `sourceState`; a same-state loopback never cancels. |
+| Cancelled | `SCHEDULED_TRANSITION_CANCEL` | Two causes: the entity genuinely left `sourceState` (a same-state loopback never cancels), or the fire found the task obsolete — see below. |
 
 A guard-fail drop during a fire attempt (task already gone, entity already
 moved on, task re-armed to the future) is **silent** — no audit event — by
 design; it is not a distinct outcome from Cloud's point of view.
+
+An **obsolete** task — one whose transition the workflow selected for the
+entity does not declare as a scheduled, non-manual, enabled transition of
+`sourceState` — is deleted and recorded as `SCHEDULED_TRANSITION_CANCEL`.
+This is deliberately NOT silent: workflow selection is criterion-based and
+re-evaluated on every call, so an ordinary client write can re-bind an entity
+to a definition without that timer, and a scheduled transition is often a
+time-based control (auto-expire, escalate-if-not-approved). A vanished timer
+must be attributable. The silent guards above are self-healing race outcomes;
+this one is a lifecycle event.
+
+Expiry takes precedence over this classification: a task that is both obsolete
+and past `TimeoutMs` + grace records `SCHEDULED_TRANSITION_EXPIRE`, because the
+expiry gate runs before the workflow is resolved. Which of the two an obsolete
+late task records therefore depends on scan timing; both delete the row.
+
+The cancellation is **lazy** — it happens when the task comes due, not at the
+write that re-bound the entity. `ReconcileForEntity` cancels only rows whose
+`SourceState` the entity has left, so a task naming the state the entity is
+still in survives the re-bind. Nothing wrong fires in the meantime (the fire
+door re-resolves and refuses), but the event lands at the scheduled time and is
+attributed to the system principal rather than to the causing write.
+
+Workflow selection itself records `WORKFLOW_SKIP` / `WORKFLOW_FOUND` on the
+fire door, as on every other door. Resolution is ordered **after** the silent
+guards and after the expiry gate, so those events appear only on an attempt
+that genuinely reached a definition — an expired or silently-dropped task
+records no selection events. Expiry is decided from the durable row and the
+clock alone, never gated behind resolution: otherwise a task whose selection
+criterion cannot be evaluated (compute member down) would be unexpirable and
+re-dispatched indefinitely.
 
 ## 7. Multi-node correctness contract
 

@@ -25,6 +25,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **On a model with several imported workflows, every operation after creation ran the
+  wrong workflow's definition.** A named transition, a loopback re-evaluation and a
+  scheduled transition firing all resolved the workflow by "the first active definition
+  that declares the entity's current state", ignoring the entity's selection criterion.
+  Where definitions share state names — the normal shape for a per-kind machine — that
+  is always the *first* declared workflow, for every entity: the wrong guards,
+  processors and target states, silently and fail-open. Entities admitted past guards
+  belonging to another kind, and a transition declared on one kind only was reported as
+  absent (**400 TRANSITION_NOT_FOUND**) for every entity. Selection at creation was correct, which is why the binding looked
+  right in the creation audit. All four doors now resolve through the documented
+  criterion rules on every call, and the `WORKFLOW_SKIP` / `WORKFLOW_FOUND` audit
+  events — previously emitted only on creation — record which definition ran on each
+  of them.
+
+  **Integrators:** because selection is re-evaluated per call, an entity whose payload
+  changes can re-bind to a different definition. If its current state is not declared
+  there, the engine no longer falls through to a definition that happens to declare it:
+  the transition is rejected with **400 WORKFLOW_FAILED** and a loopback settles as a
+  no-op. A scheduled task the newly selected workflow no longer declares is not
+  cancelled by that write — it is discarded when it next comes due, recorded as
+  `SCHEDULED_TRANSITION_CANCEL`. Prefer selection criteria that stay true for an
+  entity's whole lifetime, and that read fields a caller cannot rewrite in the same
+  request: the criterion is evaluated against the payload of the request being served,
+  so where definitions differ in what they permit, the selection field is a security
+  control.
+  ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
+
+- **`GET /entity/{entityId}/transitions` no longer answers from the wrong workflow when
+  a selection criterion cannot be evaluated, and no longer writes to the audit trail.**
+  A criterion that failed to evaluate — a `function` criterion with no compute member
+  for its tags, for instance — was swallowed and the *default* workflow's transitions
+  were returned instead: a wrong-but-available answer. It now fails the request. The
+  same read was also recording `WORKFLOW_SKIP` / `WORKFLOW_FOUND` events against an
+  empty transaction id, despite intending not to; it now records nothing. A criterion
+  that merely does not *match* still resolves to the default workflow, which is
+  selection working as documented.
+  ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
+
 - **A payload that repeats a name within one object is now rejected with 400.**
   A duplicated name was read as the *last* occurrence by schema validation, the `GET`
   response and unique-key computation, and as the *first* by the workflow criterion

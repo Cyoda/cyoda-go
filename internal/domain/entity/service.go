@@ -1975,6 +1975,8 @@ func classifyError(err error) *common.AppError {
 //   - ErrCommitBeforeDispatchInfra (Begin/Commit/Save plugin failure inside
 //     the engine's segment-boundary code) → sanitized 5xx via common.Internal,
 //     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
+//   - ErrCriterionTypingInfra (the model store a criterion needs for
+//     type-directed comparison is unavailable) → sanitized 5xx, same reason.
 //   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
 //     dispatch CloudEvent's Auth Context — no UserContext, unset/unrecognized
 //     principal Kind, or nil CloudEvent) → sanitized 5xx via common.Internal.
@@ -1994,6 +1996,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	}
 	if errors.Is(err, wfengine.ErrProcessorOutputInfra) {
 		return common.Internal("processor output check failed", err)
+	}
+	if errors.Is(err, wfengine.ErrCriterionTypingInfra) {
+		return common.Internal("criterion typing failed", err)
 	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)

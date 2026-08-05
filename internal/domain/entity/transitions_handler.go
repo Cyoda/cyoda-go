@@ -74,7 +74,15 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 
 	transitions, err := h.engine.GetAvailableTransitionsForEntity(r.Context(), entity)
 	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+		// classifyWorkflowError, not classifyError: this is a workflow-engine
+		// failure and must be reported exactly as the write doors report the
+		// identical condition. In particular an unresolvable compute member
+		// for a FUNCTION workflow criterion is a retryable 503
+		// NO_COMPUTE_MEMBER_FOR_TAG, not an opaque 500 — and classifyError
+		// would additionally have made the status depend on whether cluster
+		// mode is enabled, since only the cluster dispatcher pre-classifies
+		// that sentinel into an AppError.
+		common.WriteError(w, r, classifyWorkflowError(err))
 		return
 	}
 
@@ -106,7 +114,9 @@ func (h *Handler) HandleFetchTransitions(w http.ResponseWriter, r *http.Request)
 
 	transitions, err := h.engine.GetAvailableTransitions(r.Context(), entityID, modelRef)
 	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+		// Same classifier as HandleGetTransitions — this endpoint is an alias
+		// over the same engine call and must not diverge on status.
+		common.WriteError(w, r, classifyWorkflowError(err))
 		return
 	}
 

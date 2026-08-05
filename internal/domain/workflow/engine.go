@@ -70,6 +70,21 @@ func (e *criterionNotMatchedError) Is(target error) bool {
 	return target == ErrCriterionNotMatched
 }
 
+// ErrCriterionTypingInfra marks a server-side failure while loading the
+// model schema a criterion needs to compare data leaves by their declared
+// types. The model store being unavailable is not attributable to the
+// caller's input, so callers map this to a sanitized 5xx instead of letting
+// raw store text reach a 4xx body — the same treatment
+// ErrProcessorOutputInfra and ErrCommitBeforeDispatchInfra already get.
+//
+// This deliberately covers "model not found" as well as a store outage: an
+// entity whose model has been deleted out from under it is a server-side
+// inconsistency, not something the caller's request got wrong. Detail is
+// still available to operators — the cause stays wrapped and is logged with
+// the ticket UUID — it just no longer ships in a 4xx body. Same call
+// ErrProcessorOutputInfra already makes for its missing-descriptor case.
+var ErrCriterionTypingInfra = errors.New("criterion typing failed")
+
 // scheduledReason is the human-readable cause emitted by both the audit
 // event Details and the wrapped error message when an explicit fire of a
 // scheduled transition is rejected: a scheduled transition fires
@@ -228,10 +243,6 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	))
 	defer span.End()
 
-	wfStore, err := e.factory.WorkflowStore(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get workflow store: %w", err)
-	}
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
@@ -243,24 +254,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "State machine started", nil)
 
-	// Load workflows for model. A "not found" error is treated as empty.
-	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, spi.ErrNotFound) {
-		workflows = nil
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to load workflows: %w", err)
-	}
-
-	// No workflows defined → use embedded default. Body warning surfaces to
-	// the client; slog.Warn surfaces to operators.
-	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
-		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
-		workflows = e.defaultWorkflows
-	}
-
-	// Select matching workflow.
-	selectedWF, err := e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	selectedWF, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -341,10 +335,6 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	))
 	defer span.End()
 
-	wfStore, err := e.factory.WorkflowStore(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get workflow store: %w", err)
-	}
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
@@ -355,25 +345,13 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Manual transition started", nil)
 
-	// Load workflows, find the one whose states contain the entity's current state.
-	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, spi.ErrNotFound) {
-		workflows = nil
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to load workflows: %w", err)
-	}
-
-	// No workflows defined → use embedded default. Body warning surfaces to
-	// the client; slog.Warn surfaces to operators.
-	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
-		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
-		workflows = e.defaultWorkflows
-	}
-
-	wf := e.findWorkflowForState(workflows, entity.Meta.State)
-	if wf == nil {
-		return nil, fmt.Errorf("no workflow contains state %q for model %s", entity.Meta.State, entity.Meta.ModelRef)
+	// Select the workflow the entity's criterion binds it to. If the
+	// entity's current state is absent from that definition, attemptTransition
+	// below rejects the call — the engine never falls through to another
+	// definition that happens to declare the state.
+	wf, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	if err != nil {
+		return nil, err
 	}
 
 	currentCtx, currentTxID, err := e.attemptTransition(ctx, entity, wf, transitionName, auditStore, txID)
@@ -431,10 +409,6 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	))
 	defer span.End()
 
-	wfStore, err := e.factory.WorkflowStore(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get workflow store: %w", err)
-	}
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
@@ -445,27 +419,19 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Loopback started", nil)
 
-	// Load workflows, find the one whose states contain the entity's current state.
-	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, spi.ErrNotFound) {
-		workflows = nil
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to load workflows: %w", err)
+	wf, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	if err != nil {
+		return nil, err
 	}
 
-	// No workflows defined → use embedded default. Body warning surfaces to
-	// the client; slog.Warn surfaces to operators.
-	if len(workflows) == 0 {
-		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
-		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
-		workflows = e.defaultWorkflows
-	}
-
-	wf := e.findWorkflowForState(workflows, entity.Meta.State)
-	if wf == nil {
-		// Current state not in any workflow — stable, nothing to do.
+	if _, ok := wf.States[entity.Meta.State]; !ok {
+		// Current state not in the SELECTED workflow — stable, nothing to
+		// do. Another definition declaring the state is not a reason to
+		// cascade it: the entity is bound to the workflow its criterion
+		// selected.
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventForcedSuccess, "No workflow contains current state for loopback", nil)
+			spi.SMEventForcedSuccess,
+			fmt.Sprintf("Current state is not declared in the selected workflow %q — nothing to loop back", wf.Name), nil)
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
 		return &EngineResult{
@@ -557,19 +523,98 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 	return nil, fmt.Errorf("no matching workflow for model %s", entity.Meta.ModelRef)
 }
 
-// findWorkflowForState returns the first active workflow whose state map contains
-// the given state name.
-func (e *Engine) findWorkflowForState(workflows []spi.WorkflowDefinition, state string) *spi.WorkflowDefinition {
-	for i := range workflows {
-		wf := &workflows[i]
-		if !wf.Active {
-			continue
-		}
-		if _, ok := wf.States[state]; ok {
-			return wf
-		}
+// resolveWorkflow loads the model's workflow definitions and returns the one
+// that applies to entity, per the documented workflow-level selection rules
+// (`cyoda help workflows`): stored declaration order, active definitions
+// only, the first matching `criterion` wins, and the embedded default
+// workflow as the fallback when nothing matches.
+//
+// This is the ONLY workflow-resolution path in the engine. Every door goes
+// through it — creation (Execute), manual firing (ManualTransition),
+// re-evaluation (Loopback), the scheduler's fire door
+// (FireScheduledTransition) and the transitions query
+// (GetAvailableTransitionsForEntity) — so an entity always runs the
+// definition its own criterion selects, and the WORKFLOW_SKIP /
+// WORKFLOW_FOUND audit trail is recorded identically on all of them.
+//
+// Resolving instead by "the first active workflow that happens to declare
+// the entity's current state" cannot distinguish definitions that share
+// state names — the normal shape for a per-kind machine — and silently
+// binds every entity to the first declared workflow, running the wrong
+// guards, processors and target states.
+//
+// Selection is per call and never cached: the criterion is evaluated against
+// the entity as it is right now, which is what makes a data change able to
+// re-bind an entity to a different definition.
+func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+	return e.resolveWorkflowWith(ctx, entity, auditStore, txID)
+}
+
+// resolveWorkflowForQuery is resolveWorkflow for read-only callers: it
+// discards the selection audit events, which belong to the transaction
+// executing the entity and have nothing to key to on a read.
+//
+// It deliberately does NOT suppress the operator-facing
+// default-substitution WARN. Emitting one per read is more log volume than
+// an execution path produces, and that was reason enough to consider
+// silencing it — but common.AddWarning cannot compensate here: the
+// diagnostics bag is installed only on the gRPC entry points
+// (internal/grpc/*), the transitions endpoints are HTTP-only, and
+// common.WriteJSON emits a bare array with no warnings field. Silencing the
+// log would leave a read that answered from the default workflow with no
+// signal on any channel at all.
+func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
+	return e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
+}
+
+func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+	// Store failures are server-side conditions, never attributable to the
+	// caller's input, so they are minted as sanitized 5xx AppErrors here
+	// rather than left as bare errors: callers classify a bare engine error
+	// as 400 WORKFLOW_FAILED with err.Error() in the body, which would put
+	// raw store text (pgx messages, connection detail) into a 4xx response.
+	// Same treatment the engine already gives its other infra failures
+	// (ErrCommitBeforeDispatchInfra, ErrProcessorOutputInfra).
+	wfStore, err := e.factory.WorkflowStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access workflow store", err)
 	}
-	return nil
+
+	// Load workflows for model. A "not found" error is treated as empty.
+	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
+		workflows = nil
+	} else if err != nil {
+		return nil, common.Internal("failed to load workflows", err)
+	}
+
+	// No workflows defined → use embedded default. Body warning surfaces to
+	// the client; slog.Warn surfaces to operators.
+	if len(workflows) == 0 {
+		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
+		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
+		workflows = e.defaultWorkflows
+	}
+
+	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+}
+
+// discardedAuditStore is the audit sink used by read-only paths. Workflow
+// selection records WORKFLOW_SKIP / WORKFLOW_FOUND against the transaction
+// that is executing the entity; a query has no such transaction, so the
+// events would land keyed to an empty transaction ID and pollute the
+// entity's trail. Recording is discarded rather than skipped by a nil check
+// so resolveWorkflow keeps one unconditional code path.
+type discardedAuditStore struct{}
+
+func (discardedAuditStore) Record(context.Context, string, spi.StateMachineEvent) error { return nil }
+
+func (discardedAuditStore) GetEvents(context.Context, string) ([]spi.StateMachineEvent, error) {
+	return nil, nil
+}
+
+func (discardedAuditStore) GetEventsByTransaction(context.Context, string, string) ([]spi.StateMachineEvent, error) {
+	return nil, nil
 }
 
 // attemptTransition finds and fires a named transition from the entity's
@@ -841,12 +886,12 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 			loaded = true
 			modelStore, err := e.factory.ModelStore(cc.ctx)
 			if err != nil {
-				loadErr = fmt.Errorf("criterion typing: model store unavailable: %w", err)
+				loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
 				return nil
 			}
 			f, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef)
 			if err != nil {
-				loadErr = fmt.Errorf("criterion typing: failed to load model %s/%s: %w",
+				loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
 					entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
 				return nil
 			}
@@ -882,16 +927,22 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 }
 
 // logDefaultFallback emits a single slog.Warn line whenever the engine
-// substitutes the embedded default workflow. The four call sites map to
-// two cause groups via the reason argument:
-//   - "no_workflows_imported": cold-path (Execute/ManualTransition/Loopback)
-//     with no stored workflows for the model — three call sites.
-//   - "no_criterion_matched":  workflows exist but no criterion matched the
-//     entity (selectWorkflow tail) — one call site.
+// substitutes the embedded default workflow on a door that actually runs the
+// entity. Two call sites, one per cause group, both in the shared resolution
+// path:
+//   - "no_workflows_imported": the model has no stored workflows
+//     (resolveWorkflowWith).
+//   - "no_criterion_matched":  workflows exist but none matched the entity
+//     (selectWorkflow tail).
 //
-// The body-level warning via common.AddWarning is retained at each call
-// site for client-facing surfacing; this log line is purely additive for
-// operational observability.
+// Read paths log too (see resolveWorkflowForQuery): on the HTTP-only
+// transitions endpoints this line is the ONLY channel the substitution
+// surfaces on, since the diagnostics bag common.AddWarning writes to is
+// installed on the gRPC entry points only.
+//
+// The body-level warning via common.AddWarning is raised on every path for
+// client-facing surfacing wherever a diagnostics bag exists; this log line
+// is purely additive for operational observability.
 func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
 	slog.WarnContext(ctx, "default workflow substituted",
 		slog.String("pkg", "workflow"),

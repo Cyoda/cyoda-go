@@ -365,12 +365,17 @@ evaluation and of any other API call touching the entity.
   currently dispatchable from the caller's POV." The entity remains
   in the source state. To allow early firing, give the state an
   ordinary manual transition alongside the scheduled one.
-- **Audit trail.** Arming, firing, expiry, and cancellation (the
-  entity leaving the source state before the timer fires) each emit a
+- **Audit trail.** Arming, firing, expiry, and cancellation each emit a
   dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`
   (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`,
   `SCHEDULED_TRANSITION_CANCEL`. A loopback that re-arms the same state
-  emits only `ARM`, not `CANCEL`.
+  emits only `ARM`, not `CANCEL`. `CANCEL` has two causes: the entity left
+  the source state before the timer fired, or the task came due and the
+  workflow now selected for the entity does not declare it as a scheduled
+  transition of that state (see *Workflow-level selection*). A task that is
+  both obsolete and past its `timeoutMs` grace band records `EXPIRE`, not
+  `CANCEL` — expiry is decided from the stored task and the clock alone,
+  before the workflow is consulted.
 
 **One-shot vs. polling.** The criterion is evaluated once per fire —
 there is no built-in retry-until-true. Three shapes cover the common
@@ -420,7 +425,7 @@ A `null` criterion on a workflow means the workflow matches any entity. A `null`
 
 ### Workflow-level selection
 
-When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on every `Execute` / `ManualTransition` / `Loopback` (no caching across calls):
+When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on **every** door onto the engine, with no caching across calls: entity creation, a named transition, a loopback re-evaluation, a scheduled transition firing, and `GET /entity/{entityId}/transitions`:
 
 1. Iterate workflows in their stored declaration order. (Storage preserves the order from the most recent import; MERGE inserts new workflows at the tail.)
 2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
@@ -431,6 +436,17 @@ When a model has more than one imported workflow definition, the engine picks th
 Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
 
 Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
+
+Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, and a loopback settles as a no-op.
+
+A pending scheduled task the newly selected workflow no longer declares as a scheduled transition of that state is **not** cancelled by the write that caused the re-bind: cancellation on re-arm only removes tasks for a state the entity has left, and this one names the state the entity is still in. The task is discarded when it next comes due — the fire door re-resolves the workflow, finds no such scheduled transition, deletes the row and records `SCHEDULED_TRANSITION_CANCEL`. Nothing wrong fires in the meantime, but a timer retired this way is reported at its scheduled time, not at the write, and is attributed to the system principal.
+
+Two consequences worth designing for:
+
+- **Select on fields the caller cannot rewrite.** The criterion is evaluated against the payload of the request being served, so a criterion over a client-writable field lets one request choose which definition's guards apply to itself. Where definitions differ in what they permit, select on immutable fields or on lifecycle metadata.
+- **Select on something that stays true for the entity's whole lifetime.** A criterion over a field that changes mid-flow can strand an entity in a state its new definition does not declare, and can silently retire a scheduled transition that was acting as a time-based control.
+
+Selection is audited: each skipped workflow records a `WORKFLOW_SKIP` event (with the criterion's rejection reason) and the chosen one a `WORKFLOW_FOUND` event, under the transaction driving the call. `GET /entity/{entityId}/transitions` is a pure read and records nothing.
 
 ## IMPORT REQUEST
 
@@ -520,7 +536,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 ## ERRORS
 
-- `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the current state's workflow
+- `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the current state's workflow
 - `errors.WORKFLOW_NOT_FOUND` — `404` — no workflows found for the model (export endpoint)
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
