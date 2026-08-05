@@ -581,6 +581,9 @@ A value type that owns transaction lifecycle for the entity service's write flow
 - Create: `internal/domain/entity/txscope.go`
 - Create: `internal/domain/entity/txscope_test.go`
 - Modify: `internal/domain/entity/handler.go` (add `classifyBeginErr` / `storageUnavailable`; `rollbackOwned` stays until Task 4 removes its last caller)
+- Modify: `internal/common/error_codes.go` (add `ErrCodeStorageUnavailable`)
+- Create: `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md`
+- Modify: `cmd/cyoda/help/content/errors.md` (index topic)
 
 **Interfaces:**
 - Consumes: `common.RollbackContext` (Task 1).
@@ -784,7 +787,7 @@ Add the `fmt`, `net/http` and `internal/common` imports the last three tests nee
 Run: `go test ./internal/domain/entity/ -run 'TestTxScope|TestClassifyBeginErr' -v`
 Expected: FAIL — `undefined: txScope`, `undefined: classifyBeginErr`, `undefined: common.ErrCodeStorageUnavailable`.
 
-`ErrCodeStorageUnavailable` lands in Task 8. To keep this task self-contained, add the constant now in `internal/common/error_codes.go` beside `ErrCodeConflict` and let Task 8 add the help topic and OpenAPI declarations:
+Add the constant in `internal/common/error_codes.go` beside `ErrCodeConflict`:
 
 ```go
 	// ErrCodeStorageUnavailable is returned when the storage layer cannot supply
@@ -794,7 +797,48 @@ Expected: FAIL — `undefined: txScope`, `undefined: classifyBeginErr`, `undefin
 	ErrCodeStorageUnavailable = "STORAGE_UNAVAILABLE"
 ```
 
-Note: `TestErrCode_Parity` is a strict bijection and will now fail until Task 8 adds the help topic. That is expected and is why Task 8 is not optional.
+`TestErrCode_Parity` is a strict bijection, so the help topic lands in **this** task rather than in Task 8 — a task must not leave the suite red for a later task to fix. Create `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md` following `CONFLICT.md`'s structure exactly:
+
+```markdown
+---
+topic: errors.STORAGE_UNAVAILABLE
+title: "STORAGE_UNAVAILABLE — storage could not serve the request in time"
+stability: stable
+see_also:
+  - errors
+  - errors.CONFLICT
+  - config.database
+---
+
+# errors.STORAGE_UNAVAILABLE
+
+## NAME
+
+STORAGE_UNAVAILABLE — the storage layer could not supply a connection, or the transaction was reclaimed by the idle-in-transaction ceiling.
+
+## SYNOPSIS
+
+HTTP: `503` `Service Unavailable`. Retryable: `yes`.
+
+## DESCRIPTION
+
+Raised in two cases, both transient contention:
+
+- The connection pool could not supply a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`). Writes fail fast here rather than queueing behind a saturated pool.
+- An operation found its transaction already aborted because the connection sat idle inside it for longer than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (default `5m`). The usual cause is a workflow processor whose `responseTimeoutMs` exceeds that ceiling.
+
+Retryable. The same request may well succeed on a second attempt. Repeated occurrences mean the pool is undersized for the offered load, or a workflow holds transactions open across a callout longer than the ceiling allows.
+
+See `cyoda help config.database` for the pool and ceiling settings.
+
+## SEE ALSO
+
+- errors
+- errors.CONFLICT
+- config.database
+```
+
+Add the code to the `cmd/cyoda/help/content/errors.md` index topic in its alphabetical position. The env vars this topic names arrive in Task 9; the topic is written against the settled values from Global Constraints, so it needs no later revision.
 
 - [ ] **Step 3: Implement `txScope`**
 
@@ -972,14 +1016,15 @@ func classifyBeginErr(err error) *common.AppError {
 
 - [ ] **Step 5: Confirm the scope tests pass**
 
-Run: `go test ./internal/domain/entity/ -run 'TestTxScope|TestClassifyBeginErr' -v`
-Expected: PASS. `TestErrCode_Parity` in `cmd/cyoda/help` is expected to fail until Task 8 — do not run it here.
+Run: `go test ./internal/domain/entity/ -run 'TestTxScope|TestClassifyBeginErr' -v && go test ./cmd/cyoda/help/... -v`
+Expected: PASS both. `TestErrCode_Parity` is a strict bijection and must be green when this task ends — the suite is never left red for a later task to fix.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add internal/domain/entity/txscope.go internal/domain/entity/txscope_test.go \
-        internal/domain/entity/handler.go internal/common/error_codes.go
+        internal/domain/entity/handler.go internal/common/error_codes.go \
+        cmd/cyoda/help/content/errors/
 git commit -m "feat(entity): add txScope, the deferred transaction lifecycle owner"
 ```
 
@@ -1831,78 +1876,28 @@ The async-search goroutine, which runs unrecovered, gets the same treatment."
 
 ---
 
-## Task 8: `STORAGE_UNAVAILABLE` — help topic and OpenAPI declarations
+## Task 8: Declare the 503 in OpenAPI
 
-`503` becomes newly *reachable* on the entity write operations. The E2E validator runs `ValidateResponse` with `IncludeResponseStatus=true` (`internal/e2e/openapivalidator/validator.go:168`), so an undeclared 503 fails conformance. `TestErrCode_Parity` is a strict bijection, so the code added in Task 3 needs its help topic.
+`503` becomes newly *reachable* on the entity write operations. The E2E validator runs `ValidateResponse` with `IncludeResponseStatus=true` (`internal/e2e/openapivalidator/validator.go:168`), so an undeclared 503 fails conformance.
 
 No status code changes to any existing endpoint. No existing entry is modified; the added 503 is the only change to any operation's response set.
 
 **Files:**
-- Create: `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md`
 - Modify: `api/openapi.yaml` — nine operations
-- Modify: `cmd/cyoda/help/content/errors.md` (the index topic — add the new code beside its siblings)
 - Test: `internal/e2e/` conformance (already automatic)
 
 **Interfaces:**
-- Consumes: `common.ErrCodeStorageUnavailable` (Task 3).
+- Consumes: `common.ErrCodeStorageUnavailable` and its help topic (Task 3).
 - Produces: the declared 503 that Tasks 10–11 rely on for conformance.
 
-- [ ] **Step 1: Run the parity test to confirm it fails**
+- [ ] **Step 1: Confirm the current state fails conformance for an undeclared 503**
 
-Run: `go test ./cmd/cyoda/help/ -run TestErrCode_Parity -v`
-Expected: FAIL — `STORAGE_UNAVAILABLE` has no `errors/STORAGE_UNAVAILABLE.md`.
+Write a temporary conformance probe, or reason from `validator.go:168` and record it: with `IncludeResponseStatus=true`, a response whose status is absent from the operation's declared set fails validation. Tasks 10 and 11 return 503 from these operations, so without this task their E2E tests fail conformance rather than passing.
 
-- [ ] **Step 2: Write the help topic**
+Run: `go test ./internal/e2e/ -run Conformance -v`
+Expected: PASS today (nothing returns 503 yet). This task is what keeps it passing once Tasks 10–11 land — note that in the commit message rather than manufacturing a red state.
 
-Create `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md`, following `CONFLICT.md`'s structure exactly:
-
-```markdown
----
-topic: errors.STORAGE_UNAVAILABLE
-title: "STORAGE_UNAVAILABLE — storage could not serve the request in time"
-stability: stable
-see_also:
-  - errors
-  - errors.CONFLICT
-  - config.database
----
-
-# errors.STORAGE_UNAVAILABLE
-
-## NAME
-
-STORAGE_UNAVAILABLE — the storage layer could not supply a connection, or the transaction was reclaimed by the idle-in-transaction ceiling.
-
-## SYNOPSIS
-
-HTTP: `503` `Service Unavailable`. Retryable: `yes`.
-
-## DESCRIPTION
-
-Raised in two cases, both transient contention:
-
-- The connection pool could not supply a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`). Writes fail fast here rather than queueing behind a saturated pool.
-- An operation found its transaction already aborted because the connection sat idle inside it for longer than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (default `5m`). The usual cause is a workflow processor whose `responseTimeoutMs` exceeds that ceiling.
-
-Retryable. The same request may well succeed on a second attempt. Repeated occurrences mean the pool is undersized for the offered load, or a workflow holds transactions open across a callout longer than the ceiling allows.
-
-See `cyoda help config.database` for the pool and ceiling settings.
-
-## SEE ALSO
-
-- errors
-- errors.CONFLICT
-- config.database
-```
-
-Add the code to the `errors.md` index topic in its alphabetical position.
-
-- [ ] **Step 3: Confirm parity passes**
-
-Run: `go test ./cmd/cyoda/help/... -v`
-Expected: PASS.
-
-- [ ] **Step 4: Declare 503 on the nine write operations**
+- [ ] **Step 2: Declare 503 on the nine write operations**
 
 Add to each operation's `responses:` block in `api/openapi.yaml`, immediately before `default:`. Use the shape already present at `:1648`:
 
@@ -1939,16 +1934,20 @@ Every one also carries `default: InternalServerError` (500), unchanged.
 
 Do **not** touch `fetchEntityTransitions`, which lacks the 503 its documented alias `getEntityTransitions` declares (`api/openapi.yaml:1584`, `transitions_handler.go:117`). That is pre-existing drift, unrelated to this change's mechanism, and is recorded in the spec's out-of-scope list so it is not mistaken for something introduced here.
 
-- [ ] **Step 5: Regenerate and verify the spec still loads**
+- [ ] **Step 3: Regenerate and verify the spec still loads**
 
 Run: `go generate ./api/... 2>/dev/null; go build ./... && go test ./internal/e2e/ -run Conformance -v`
 Expected: PASS. The spec is embedded via `//go:embed` (`embedded-spec: false`), so no codegen change is expected from adding response entries — confirm `git status` shows only `api/openapi.yaml` and the help content.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/cyoda/help/content/errors/ api/openapi.yaml
-git commit -m "feat(api): declare STORAGE_UNAVAILABLE and its 503 on the write operations"
+git add api/openapi.yaml
+git commit -m "feat(api): declare 503 STORAGE_UNAVAILABLE on the entity write operations
+
+Reachable from the acquire timeout and the idle-in-transaction ceiling. The
+e2e validator runs ValidateResponse with IncludeResponseStatus=true, so an
+undeclared 503 fails conformance the moment those paths can return one."
 ```
 
 ---
