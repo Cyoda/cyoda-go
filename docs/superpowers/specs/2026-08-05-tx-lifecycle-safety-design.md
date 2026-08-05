@@ -790,6 +790,56 @@ names `lifecycle.Manager` as remediation R1 for this exact issue. That directory
 a historical record like `docs/plans/`, so it is not rewritten; the spec records
 the disposition so a future reader does not re-propose the wired reaper.
 
+### 4.4 `docs/ARCHITECTURE.md` — full audit
+
+The removal touches six places in this document, which is the wrong way to treat
+it. `ARCHITECTURE.md` is the reference a reader trusts to know what the system
+does; a stale claim there is worse than no claim, because it is acted on. So the
+whole document is audited in this change, not just the lifecycle references.
+
+**Scope.** All 14 sections, claim by claim, against the code. A claim that cannot
+be verified is **deleted**, not softened — an unverifiable assertion in a reference
+document is a liability, and the project's own stance is to fail closed.
+
+**Editing rule: current state only, present tense.** Describe the system as it is.
+No "previously X, now Y", no "this was changed", no migration notes. The delta
+belongs in `CHANGELOG.md`; the state belongs here. This applies to the lifecycle
+removal specifically — §3.4 and its references come out cleanly, with the DB-side
+ceilings described on their own terms rather than as a replacement for something.
+
+**Already known wrong** (each verified while writing this spec):
+
+- §3.4 "Transaction Lifecycle Manager" (`:365-380`) and the package-tree entry
+  (`:123`) — describe a component being deleted. Removing §3.4 orphans the CBD
+  paragraph at `:382` and breaks live cross-references at `:566` and `:742`.
+- `:1425-1426`, `:1428` — three env vars presented as live knobs; they are being
+  removed. (`:1427` is `CYODA_PROXY_TIMEOUT` and stays.)
+- `:1650-1651` — "Workflow chains that exceed TTL are reaped. Long-running
+  processors must complete within this window", plus the row advising that
+  `idle_in_transaction_session_timeout` should *exceed* the TTL. Both are false
+  today and inverted by §2, which makes the DB-side limit the authority.
+- DD-2 (`:1569`) — "The lifecycle manager provides TTL, registry, and
+  observability" is false. Its other premise, "PostgreSQL rolls back the
+  transaction automatically via idle timeout", is *also* false today (no such
+  timeout is set anywhere) and becomes true for the first time under §2. The
+  decision itself — fencing tokens not required — stands on the `pgx.Tx`
+  single-owner property alone; the rationale needs rewriting to say so.
+- §12 "Planned Features (Not Yet Implemented)" — at least three of six rows ship
+  today: batch `SaveResults` with `pgx.CopyFrom` (`search_store.go:113`), the
+  `cyoda-go-spi/spitest/` conformance harness (present in the pinned SPI), and
+  multi-node E2E tests with proxy routing (`e2e/parity/multinode/`). Every row is
+  re-verified. The section's framing — "items carried forward from the
+  `cyoda-light-go` predecessor repository" — is exactly the historical narrative
+  this document should not carry, and goes; a list of what the system does *not*
+  do is current-state information and stays.
+
+**§13 stays.** A design-decisions log records why the system is shaped as it is,
+which is current-state rationale, not a change narrative. What it must not do is
+justify a decision with a component that does not exist — hence the DD-2 rewrite.
+
+The audit runs as its own commit, separate from the lifecycle removal, so the
+mechanical deletion stays reviewable on its own.
+
 ---
 
 ## 5. Error and status codes
@@ -944,6 +994,8 @@ test-only package, with nothing compiled into the binary.
   (`app/config_registry_binding_test.go:171`) while plugin vars get no equivalent.
   A plugin-side counterpart is added alongside the four new vars (Gate 6), so a
   documented default that drifts from the code fails rather than misinforms.
+- `docs/ARCHITECTURE.md` full audit — see §4.4. Current state, present tense, no
+  change narrative; unverifiable claims deleted rather than softened.
 - `CHANGELOG.md` needs a `### Breaking` section: three env vars are removed, and
   three ceilings that did not exist now apply by default. Per `COMPATIBILITY.md`
   that section, not the version digit, is what consumers are told to read.
