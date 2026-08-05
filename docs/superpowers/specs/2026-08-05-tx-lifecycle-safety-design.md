@@ -280,13 +280,21 @@ names, so it can be recomputed and looked up in `pg_locks`).
 
 ### 3.4 Index migrations
 
-Migrations `000001`–`000006` are **not** modified. golang-migrate stores only
-`(version, dirty)` and never checksums applied migrations
-(`pgx.go:338`), so editing an applied file changes nothing on any database that
-has already run it, and a fresh install has no concurrent writers for a
-non-concurrent index to block.
+Migrations `000001`–`000006` are **not** modified.
 
-The exposure is the *next* index migration on a hot table. Deliverables:
+The one migration whose index could block live writers is `000002`, which adds
+`entities_state_idx` to `entities` — a table that already holds data by then, and
+whose writers a non-concurrent `CREATE INDEX` locks out for the duration of the
+build (SHARE conflicts with the ROW EXCLUSIVE every INSERT/UPDATE/DELETE holds).
+But `000002` only runs on a database below schema version 2, which means an
+instance last on v0.7.x; v0.8.1 is version 2, v0.8.2 is 3, v0.8.3 is 6. There are
+no such instances, so the case is not worth engineering for. Nothing else in
+`000003`–`000006` blocks a hot table: `000003` and `000004` create their own new
+tables, `000005` is functions only, and `000006` adds two defaulted columns to
+`scheduled_tasks`, needing only a brief AccessExclusive lock that
+`lock_timeout` now bounds.
+
+The exposure that remains is the *next* index migration. Deliverables:
 
 - **Pattern**: `CREATE INDEX CONCURRENTLY` alone in its own migration file. The
   driver sends the whole file through one `Exec` with `MultiStatementEnabled`
@@ -294,11 +302,12 @@ The exposure is the *next* index migration on a hot table. Deliverables:
   implicit transaction, in which `CREATE INDEX CONCURRENTLY` cannot run.
   `000002_grouped_stats.up.sql` is the proof: a function plus an index in one
   file.
-- **Guard test**: fails when a *new* migration creates a non-concurrent index on
-  `entities` or `entity_versions`. Existing files are grandfathered by an explicit
-  allow-list — `000001_initial_schema.up.sql:23`, `:41`, `:44` and
-  `000002_grouped_stats.up.sql:44` are all non-concurrent today and the test would
-  otherwise fail on day one.
+- **Guard test rule**: an index added to a table created in an *earlier* migration
+  must be `CONCURRENTLY`; an index created in the same migration as its own table
+  need not be, because that table is empty and unreachable by writers. This is the
+  property that actually distinguishes the dangerous case, and it passes
+  `000001`'s indexes on `entities`/`entity_versions` on their merits rather than by
+  exemption. `000002_grouped_stats.up.sql:44` is the sole grandfathered entry.
 - **Recovery**: a failed `CREATE INDEX CONCURRENTLY` leaves an INVALID index and a
   dirty version. Document the `DROP INDEX` + re-run procedure in the migration
   help topic and reference it from the dirty-state error message.
