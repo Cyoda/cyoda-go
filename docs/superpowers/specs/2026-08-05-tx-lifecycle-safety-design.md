@@ -670,12 +670,16 @@ The exposure that remains is the *next* index migration. Deliverables:
 
 ### 4.1 Evidence
 
+- **It is dead structurally, not merely unused.** `Register` is the only writer to
+  the `active` map, and it has zero callers. So `ReapExpired` cannot reap anything —
+  not "does not today", but cannot, for any input. Production reaches exactly three
+  methods: `NewManager` (`app/app.go:440`), `SetTransactionManager` (`:444`) and
+  `ReapExpired` (`:467`) — a constructor, a setter that exists only to serve the
+  reaper, and a loop over a map nothing can populate. `RecordOutcome`, `IsAlive`,
+  `GetOutcome`, `ListByNode` and `Remove` have no callers at all.
 - The package arrived whole in `d1f6875`, "Initial import from cyoda-light-go"
-  (2026-04-14). No commit in cyoda-go history ever added a production call to
-  `Register`, `RecordOutcome`, `IsAlive`, `GetOutcome`, `ListByNode` or `Remove`.
-  It was imported inert; `active` is permanently empty, so `ReapExpired` reaps
-  nothing. `SetTransactionManager` is the sole method with a production caller
-  (`app/app.go:444`), and it exists only to serve the reaper.
+  (2026-04-14), and no commit in cyoda-go history ever added a production call to
+  `Register`. It was imported inert.
 - The reaper goroutine only starts when `cfg.Cluster.Enabled` (`app/app.go:445`),
   so single-node never had one at all.
 - Even if a transaction were registered, `ReapExpired` calls
