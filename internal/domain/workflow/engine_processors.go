@@ -35,12 +35,13 @@ var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastruc
 // txID for client-correlation continuity, regardless of which segment commits
 // the event.
 //
-// On a fatal processor failure (SYNC / ASYNC_SAME_TX / COMMIT_BEFORE_DISPATCH)
-// AFTER the engine has segmented (currentTxID != txID), the engine rolls back
-// the current open segment before returning. The caller can no longer reach
-// the open TX (it only knows the original txID) — leaving it open would leak
-// the connection until postgres' idle-in-transaction timeout reclaimed it.
-func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) (context.Context, string, error) {
+// This function does not release segments on a failure return: it hands the
+// current (ctx, txID) back on every path, so the caller always knows which
+// segment is open and the entry-point guard in engine.go releases it — a guard
+// that also covers the criterion failures and store errors invisible from here.
+// The deferred guard below covers only the panic case, where no caller ever gets
+// that hand-back.
+func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) (retCtx context.Context, retTxID string, retErr error) {
 	if len(processors) == 0 {
 		return ctx, txID, nil
 	}
@@ -60,14 +61,22 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 	currentCtx := ctx
 	currentTxID := txID
 
+	// Panic-only guard (see rollbackSegment). A later processor in this pipeline
+	// can blow up while TX_post is live, before any caller has seen it.
+	defer func() {
+		if retCtx == nil {
+			e.rollbackSegment(currentCtx, currentTxID, txID)
+		}
+	}()
+
 	for _, proc := range processors {
 		// Execution-location axis. Rejection is fatal and self-contained:
 		// emit the per-processor SMEventStateProcessResult audit row
 		// explicitly (mirroring the post-dispatch emit lower in this loop),
-		// roll back any open segment, then return. The post-dispatch abort
-		// gate keys on proc.ExecutionMode and would silently swallow the
-		// rejection if proc.ExecutionMode == ExecutionModeAsyncNewTx, so the
-		// rejection must short-circuit the loop entirely.
+		// then return. The post-dispatch abort gate keys on
+		// proc.ExecutionMode and would silently swallow the rejection if
+		// proc.ExecutionMode == ExecutionModeAsyncNewTx, so the rejection
+		// must short-circuit the loop entirely.
 		if proc.Type == ProcessorTypeInternalized {
 			auditData := map[string]any{
 				"success": false,
@@ -76,7 +85,6 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventStateProcessResult,
 				fmt.Sprintf("Processor %q completed", proc.Name), auditData)
-			e.rollbackOpenSegmentOnFailure(currentCtx, currentTxID, txID, proc.Name)
 			return currentCtx, currentTxID, fmt.Errorf(
 				"processor %s failed: execution type %q is not yet implemented",
 				proc.Name, proc.Type)
@@ -132,30 +140,10 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 
 		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, failure kills the pipeline.
 		if procErr != nil && proc.ExecutionMode != ExecutionModeAsyncNewTx {
-			// If the engine has already segmented (txID advanced past the
-			// cascade-entry txID), the caller can't see the new TX — roll it
-			// back here to avoid leaking an idle TX.
-			e.rollbackOpenSegmentOnFailure(currentCtx, currentTxID, txID, proc.Name)
 			return currentCtx, currentTxID, fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
 		}
 	}
 	return currentCtx, currentTxID, nil
-}
-
-// rollbackOpenSegmentOnFailure rolls back currentTxID iff the engine has
-// segmented (currentTxID != entryTxID). The caller-side handler tracks the
-// original entryTxID and will roll that back via its own deferred-rollback
-// path; without this rollback the post-segment TX would leak until postgres'
-// idle-in-transaction timeout reclaimed it.
-func (e *Engine) rollbackOpenSegmentOnFailure(ctx context.Context, currentTxID, entryTxID, procName string) {
-	if e.txMgr == nil || currentTxID == entryTxID || currentTxID == "" {
-		return
-	}
-	if rbErr := e.txMgr.Rollback(ctx, currentTxID); rbErr != nil {
-		slog.Warn("failed to rollback engine-opened segment after processor failure",
-			"pkg", "workflow", "processor", procName,
-			"txID", currentTxID, "rollbackError", rbErr)
-	}
 }
 
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
@@ -250,6 +238,16 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // mutations for it (last-writer-wins inside TX_post's buffer).
 func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
 	tPre := txID
+	// This function opens TX_post and can panic before handing it to
+	// executeProcessors. Its own guard covers that window; the entry-point guard
+	// covers everything after the hand-off.
+	segCtx, segTxID := ctx, txID
+	segHandedOff := false
+	defer func() {
+		if !segHandedOff {
+			e.rollbackSegment(segCtx, segTxID, txID)
+		}
+	}()
 	// Staged here rather than assigned: in the startNewTxOnDispatch=false
 	// branch, ctx still carries the committed TX_pre at the point the result
 	// arrives, so a schema extension would run outside any transaction. Both
@@ -271,6 +269,11 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// =true: commit TX_pre, begin TX_post, dispatch with TX_post token,
 		// apply result in TX_post.
 		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed)
+		// Advance before checking err so the deferred rollback always targets the
+		// segment actually open. commitAndBeginNextSegment returns ("", nil, err)
+		// on failure, so segTxID becomes "" and rollbackSegment no-ops — correct,
+		// since no segment was opened.
+		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
 			// Reviewer S1 (#228): if the engine's first-segment flush rejected
 			// the caller's IfMatch precondition we have already recorded
@@ -289,7 +292,6 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if e.extProc != nil {
 			modified, dispatchErr := e.extProc.DispatchProcessor(newCtx, entity, proc, workflow, transition, newTxID)
 			if dispatchErr != nil {
-				_ = e.txMgr.Rollback(newCtx, newTxID)
 				return nil, "", dispatchErr
 			}
 			if modified != nil && modified.Data != nil {
@@ -329,8 +331,10 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			pending = modified.Data
 		}
 
-		// Begin TX_post.
+		// Begin TX_post. Advance before checking err, same reasoning as the
+		// startNewTx branch above.
 		newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
+		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
 			return nil, "", fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
@@ -338,7 +342,6 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 
 	if pending != nil {
 		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
-			_ = e.txMgr.Rollback(newCtx, newTxID)
 			return nil, "", applyErr
 		}
 	}
@@ -346,14 +349,13 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	// Apply result via CAS against tPre — works in both branches.
 	es, casErr := e.factory.EntityStore(newCtx)
 	if casErr != nil {
-		_ = e.txMgr.Rollback(newCtx, newTxID)
 		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
-		_ = e.txMgr.Rollback(newCtx, newTxID)
 		return nil, "", saveErr // ErrConflict bubbles through unchanged
 	}
 
+	segHandedOff = true
 	return newCtx, newTxID, nil
 }
 

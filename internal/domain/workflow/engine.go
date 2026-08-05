@@ -228,6 +228,32 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
+// rollbackSegment releases a transaction segment the engine opened and never
+// handed back to its caller. It is a no-op for the caller's own entry
+// transaction — that one is the caller's to commit or roll back.
+//
+// Two guard shapes call this. The entry points (Execute, ManualTransition,
+// Loopback) keep dedicated openCtx/openTxID locals and a handedOff flag, so they
+// release the segment on error returns as well as panics. The intermediate frames
+// (fireTransition, executeProcessors, cascadeAutomated) hand their segment back on
+// every normal return, so their guards fire only when a nil named ctx return says
+// the stack is unwinding through a panic. None of them recover: surviving a panic
+// is the request door's decision, not the engine's.
+//
+// Nil-safe on txMgr: segmentation implies a transaction manager, so this cannot
+// be nil in production, but the engine is constructed without one in unit tests.
+func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string) {
+	if e.txMgr == nil || openTxID == "" || openTxID == entryTxID {
+		return
+	}
+	rbCtx, cancel := common.RollbackContext(ctx)
+	defer cancel()
+	if err := e.txMgr.Rollback(rbCtx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
+		slog.Warn("failed to roll back engine-opened segment",
+			"pkg", "workflow", "txID", openTxID, "err", err)
+	}
+}
+
 // Execute runs the workflow engine for entity creation. It selects the matching
 // workflow, sets the initial state, optionally fires a named transition, and
 // cascades automated transitions.
@@ -250,6 +276,30 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 
 	txID := e.resolveAuditTxID(entity)
 
+	// The engine owns every segment it opens after entryTxID until it hands one
+	// back on the success return. openCtx/openTxID are dedicated locals, NOT the
+	// named returns: every failure path in executeCommitBeforeDispatch is
+	// `return nil, "", err`, so a guard reading a named newTxID return would see
+	// "" on exactly the paths that need it and skip the rollback.
+	//
+	// entryTxID is resolveAuditTxID's value, which equals the handler's
+	// transaction because every handler stamps Meta.TransactionID = txID before
+	// calling in. flushAndCommitSegment's Commit(ctx, txID) already relies on the
+	// same invariant.
+	//
+	// Invariant: attemptTransition and fireTransition return their INPUT ctx/txID on
+	// every early exit, so openTxID != entryTxID cannot be true unless a processor
+	// actually segmented. Processors run after criteria; reordering them would break
+	// this guard silently.
+	entryTxID := txID
+	openCtx, openTxID := ctx, txID
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			e.rollbackSegment(openCtx, openTxID, entryTxID)
+		}
+	}()
+
 	// Record STARTED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "State machine started", nil)
@@ -269,6 +319,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 		nCtx, nTxID, err := e.attemptTransition(currentCtx, entity, selectedWF, transitionName, auditStore, currentTxID)
 		currentCtx = nCtx
 		currentTxID = nTxID
+		openCtx, openTxID = currentCtx, currentTxID
 		if err != nil {
 			return nil, err
 		}
@@ -278,6 +329,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	nCtx, nTxID, err := e.cascadeAutomated(currentCtx, entity, selectedWF, auditStore, currentTxID)
 	currentCtx = nCtx
 	currentTxID = nTxID
+	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +348,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "State machine finished", map[string]any{"success": true})
 
+	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
 			State:   entity.Meta.State,
@@ -342,6 +395,17 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 
 	txID := e.resolveAuditTxID(entity)
 
+	// Same ownership guard as Execute — see the comment there for why these are
+	// dedicated locals and why openTxID != entryTxID is a sound segmentation test.
+	entryTxID := txID
+	openCtx, openTxID := ctx, txID
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			e.rollbackSegment(openCtx, openTxID, entryTxID)
+		}
+	}()
+
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Manual transition started", nil)
 
@@ -355,11 +419,13 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	}
 
 	currentCtx, currentTxID, err := e.attemptTransition(ctx, entity, wf, transitionName, auditStore, txID)
+	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
 	}
 
 	currentCtx, currentTxID, err = e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
+	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +439,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "Manual transition finished", map[string]any{"success": true})
 
+	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
 			State:   entity.Meta.State,
@@ -416,6 +483,16 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 	txID := e.resolveAuditTxID(entity)
 
+	// Same ownership guard as Execute — see the comment there.
+	entryTxID := txID
+	openCtx, openTxID := ctx, txID
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			e.rollbackSegment(openCtx, openTxID, entryTxID)
+		}
+	}()
+
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Loopback started", nil)
 
@@ -434,6 +511,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 			fmt.Sprintf("Current state is not declared in the selected workflow %q — nothing to loop back", wf.Name), nil)
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
+		handedOff = true
 		return &EngineResult{
 			ExecutionResult: &spi.ExecutionResult{
 				State:      entity.Meta.State,
@@ -447,6 +525,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	}
 
 	currentCtx, currentTxID, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
+	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
 	}
@@ -460,6 +539,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventFinished, "Loopback finished", map[string]any{"success": true})
 
+	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
 			State:   entity.Meta.State,
@@ -673,8 +753,17 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 // false or processor execution failed; in both cases entity.Meta.State is
 // left unchanged and err carries the same error attemptTransition has
 // always returned in that case.
-func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, bool, error) {
+func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retMatched bool, retErr error) {
 	transitionName := transition.Name
+
+	// Panic-only guard (see rollbackSegment). segCtx/segTxID track the segment
+	// this frame holds once processors have run.
+	segCtx, segTxID := ctx, txID
+	defer func() {
+		if retCtx == nil {
+			e.rollbackSegment(segCtx, segTxID, txID)
+		}
+	}()
 
 	// Evaluate transition criterion.
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
@@ -707,6 +796,9 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 
 	// Execute processors. May shift (ctx, txID) for COMMIT_BEFORE_DISPATCH.
 	newCtx, newTxID, err := e.executeProcessors(ctx, transition.Processors, entity, auditStore, wf.Name, transitionName, txID)
+	// Advance before checking err so the deferred rollback always targets the
+	// segment actually open.
+	segCtx, segTxID = newCtx, newTxID
 	if err != nil {
 		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
@@ -732,7 +824,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 // Returns the (possibly updated) ctx and txID — the cascade segment boundary
 // may shift these when a COMMIT_BEFORE_DISPATCH processor runs (spec §3, §4).
 // The cascade-entry txID is preserved for audit-event correlation (spec §8).
-func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, error) {
+func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retErr error) {
 	ctx, cascadeSpan := tracer.Start(ctx, "workflow.cascade", trace.WithAttributes(
 		observability.AttrWorkflowName.String(wf.Name),
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -741,6 +833,15 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 
 	currentCtx := ctx
 	currentTxID := txID
+
+	// Panic-only guard (see rollbackSegment). The loop can segment on any
+	// iteration and then fail — or blow up — several iterations later, all
+	// before the caller has seen the new txID.
+	defer func() {
+		if retCtx == nil {
+			e.rollbackSegment(currentCtx, currentTxID, txID)
+		}
+	}()
 
 	stateVisits := make(map[string]int)
 
