@@ -119,8 +119,8 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// its cascade commits the entry segment (TX_pre) and opens a new one
 	// (TX_post); every non-commit exit after that point must roll back the
 	// segment curTxID NOW names, not the (already-committed, rollback-is-a-
-	// no-op) entry txID — mirrors rollbackOwned(finalCtx, finalTxID) in
-	// internal/domain/entity/service.go.
+	// no-op) entry txID — the same cursor txScope.Advance maintains for the
+	// entity write flows (internal/domain/entity/txscope.go).
 	curCtx, curTxID := txCtx, txID
 	committed := false
 	defer func() {

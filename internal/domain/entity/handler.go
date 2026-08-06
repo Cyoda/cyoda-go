@@ -104,16 +104,6 @@ func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) erro
 	return h.txMgr.Commit(ctx, txID)
 }
 
-// rollbackOwned rolls the transaction back only when this request owns it. A
-// joined callback must never roll back the owner's tx — an error on the joined
-// path surfaces to the owner, which decides the tx's fate.
-func (h *Handler) rollbackOwned(ctx context.Context, txID string, owned bool) {
-	if !owned {
-		return
-	}
-	_ = h.txMgr.Rollback(ctx, txID)
-}
-
 // validateOrExtend validates parsedData against the model schema. When
 // changeLevel is set, it computes an additive schema delta via schema.Diff
 // and appends it to the model's extension log via ModelStore.ExtendSchema.

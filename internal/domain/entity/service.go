@@ -259,10 +259,15 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// (a routed compute-node callback — #287). A joined callback does not Begin
 	// and does not commit; the owner does. Its whole body is one gated critical
 	// section on the shared tx buffer (acquired below).
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -303,10 +308,12 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// txID. CreateEntity has no prior version, so no IfMatch is involved.
 	result, err := h.engine.Execute(txCtx, entity, "")
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID)
 		return nil, classifyWorkflowError(err)
 	}
+	// FIRST statement after the error check. It cannot go before it: the engine
+	// returns a nil EngineResult on every error path.
+	scope.Advance(result.FinalCtx, result.FinalTxID)
 
 	// If no workflow was found, engine returns forced success and entity state stays empty.
 	// Set a default state.
@@ -318,15 +325,20 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// client-supplied transition name (Execute(..., "")). From the caller's
 	// viewpoint this is a save without a named transition — the canonical
 	// marker for that is "loopback", not the literal "workflow" (issue #94).
-	if result != nil && result.StopReason == "" {
+	if result.StopReason == "" {
 		entity.Meta.TransitionForLatestSave = "loopback"
 	}
 
-	finalCtx, finalTxID := result.FinalCtx, result.FinalTxID
+	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
 
 	// A joined callback is a plain single-segment op; the engine must not have
 	// advanced the segment for a participating call. If it did, our gate/commit
-	// reasoning (owner commits finalTxID; callback joined txID) is broken.
+	// reasoning (owner commits finalTxID; callback joined txID) is broken. The
+	// scope has advanced onto the engine-opened segment, so Release returns it —
+	// that segment is nobody else's. The guard must stay AHEAD of the commit:
+	// Commit marks the scope done but no-ops for owned==false, so a
+	// joined+segmented call that reached one would leak the segment past
+	// Release's fail-closed handling.
 	if !owned && finalTxID != txID {
 		return nil, common.Internal("joined callback unexpectedly segmented transaction",
 			fmt.Errorf("entry txID %s advanced to %s on a joined call", txID, finalTxID))
@@ -338,7 +350,6 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// committed TX_pre and finalCtx/finalTxID address TX_post.
 	entityStore, err := h.factory.EntityStore(finalCtx)
 	if err != nil {
-		h.rollbackOwned(finalCtx, finalTxID, owned)
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
@@ -353,10 +364,9 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 			defer h.gate.Acquire(finalTxID)()
 		}
 		if _, err := entityStore.Save(finalCtx, entity); err != nil {
-			h.rollbackOwned(finalCtx, finalTxID, owned)
 			return common.Internal("failed to save entity", err)
 		}
-		if err := h.commitOwned(finalCtx, finalTxID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
 				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 			}
@@ -642,10 +652,15 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 // Returns the deleted entity's metadata for the response.
 func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEntityResult, error) {
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -654,14 +669,12 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
 	// Load entity before deleting to get ModelRef for response (adds to read set).
 	entity, err := entityStore.Get(txCtx, entityID)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
 		appErr.Props = map[string]any{
 			"entityId": entityID,
@@ -677,11 +690,10 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		}
 		// Soft delete within transaction.
 		if err := entityStore.Delete(txCtx, entityID); err != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			return common.Internal("failed to delete entity", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
-		if err := h.commitOwned(txCtx, txID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
 				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 			}
@@ -782,10 +794,15 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	}
 
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -794,7 +811,6 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
@@ -804,11 +820,9 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	// recreate flows depend on this).
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to access model store", err)
 	}
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(404, common.ErrCodeModelNotFound,
 				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
@@ -819,7 +833,6 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	// Get all entities before deleting (for verbose response and IDs).
 	entities, err := entityStore.GetAll(txCtx, ref)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to get entities", err)
 	}
 
@@ -830,11 +843,10 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 			defer h.gate.Acquire(txID)()
 		}
 		if err := entityStore.DeleteAll(txCtx, ref); err != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			return common.Internal("failed to delete entities", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
-		if err := h.commitOwned(txCtx, txID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
 				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 			}
@@ -906,10 +918,15 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		}, nil
 	}
 
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -918,11 +935,9 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to access model store", err)
 	}
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
 				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
@@ -932,7 +947,6 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
@@ -941,7 +955,6 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	// never silently capped regardless of match-set size.
 	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		// A classified 4xx from the selection search (scan budget exhausted,
 		// unknown field path, invalid condition) is the caller's error, not a
 		// server fault — common.Internal would bury it as a 500 + ticket.
@@ -976,7 +989,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 			}
 			result.RemovedCount++
 		}
-		if err := h.commitOwned(txCtx, txID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			// Do NOT roll back here — a failed commit has already aborted the
 			// tx. Mirrors DeleteAllEntities (service.go), which returns
 			// the AppError directly on this path without an extra rollback.
@@ -1169,10 +1182,15 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	// durable. This is a fundamental consequence of CBD and applies
 	// uniformly anywhere the engine segments; non-CBD batches retain the
 	// original all-or-nothing semantic.
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -1231,10 +1249,19 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// apply per item. Issue #227.
 		result, err := h.engine.Execute(currentCtx, entity, "")
 		if err != nil {
-			h.rollbackOwned(currentCtx, currentTxID, owned)
 			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
 			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
 		}
+		// Advance the loop's TX to whichever segment is now open. For
+		// non-segmenting cascades these are unchanged; for segmenting
+		// cascades the engine committed TX_pre and opened TX_post on
+		// FinalCtx — subsequent items must save against that new TX. The
+		// locals are re-read from the scope so the two can never drift.
+		//
+		// FIRST statement after the error check: the engine returns a nil
+		// EngineResult on every error path.
+		scope.Advance(result.FinalCtx, result.FinalTxID)
+		currentCtx, currentTxID = scope.Ctx(), scope.TxID()
 
 		// If no workflow was found, engine returns forced success and
 		// entity state stays empty — fall back to "CREATED" to match
@@ -1245,20 +1272,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 		// CREATE path runs without an explicit transition; canonical
 		// marker is "loopback" (issue #94), matching single CreateEntity.
-		if result != nil && result.StopReason == "" {
+		if result.StopReason == "" {
 			entity.Meta.TransitionForLatestSave = "loopback"
-		}
-
-		// Advance the loop's TX to whichever segment is now open. For
-		// non-segmenting cascades these are unchanged; for segmenting
-		// cascades the engine committed TX_pre and opened TX_post on
-		// FinalCtx — subsequent items must save against that new TX.
-		if result != nil {
-			currentCtx, currentTxID = result.FinalCtx, result.FinalTxID
 		}
 
 		// A joined callback is a plain single-segment op; a participating batch
 		// must not segment (the owner, not the callback, owns commit boundaries).
+		// The guard stays AHEAD of the commit — see CreateEntity's site.
 		if !owned && currentTxID != txID {
 			return nil, common.Internal("joined callback unexpectedly segmented transaction",
 				fmt.Errorf("item %d: entry txID %s advanced to %s on a joined call", i, txID, currentTxID))
@@ -1276,11 +1296,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			// the per-segment factory may bind storage handles to ctx.
 			finalEntityStore, err := h.factory.EntityStore(currentCtx)
 			if err != nil {
-				h.rollbackOwned(currentCtx, currentTxID, owned)
 				return common.Internal("failed to access entity store", err)
 			}
 			if _, err := finalEntityStore.Save(currentCtx, entity); err != nil {
-				h.rollbackOwned(currentCtx, currentTxID, owned)
 				return common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
 			}
 			return nil
@@ -1299,7 +1317,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		if owned {
 			defer h.gate.Acquire(currentTxID)()
 		}
-		if err := h.commitOwned(currentCtx, currentTxID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
 				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 			}
@@ -1360,10 +1378,15 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
 	// A joined callback does not Begin/commit; its whole body is one gated
 	// critical section on the shared tx buffer.
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -1373,20 +1396,17 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// Load existing entity within transaction (adds to read set).
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
 	existing, err := entityStore.Get(txCtx, input.EntityID)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found")
 	}
 
 	// Load model descriptor
 	desc, err := modelStore.Get(txCtx, existing.Meta.ModelRef)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, common.Internal("failed to load model for entity", err)
 	}
 
@@ -1395,13 +1415,11 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	if opts.merge != nil {
 		merged, mErr := opts.merge(existing.Data, parsedData)
 		if mErr != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid patch: "+mErr.Error())
 		}
 		parsedData = merged
 		bodyBytes, err = json.Marshal(parsedData)
 		if err != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			return nil, common.Internal("failed to serialize merged entity", err)
 		}
 	}
@@ -1410,12 +1428,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// extends the model; PUT may extend per the model's ChangeLevel.
 	if opts.strictValidate {
 		if vErr := ingest.ValidateStrict(desc, parsedData); vErr != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	} else {
 		if vErr := ingest.ValidateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	}
@@ -1425,7 +1441,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// here (422) inside the already-open transaction so the TX is rolled back.
 	txCtx, err = h.withUniqueKeys(txCtx, desc, bodyBytes)
 	if err != nil {
-		h.rollbackOwned(txCtx, txID, owned)
 		return nil, err
 	}
 
@@ -1470,7 +1485,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	if input.Transition == "" {
 		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
 		if lbErr != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
 			if errors.Is(lbErr, spi.ErrConflict) {
 				appErr := common.Operational(
@@ -1482,12 +1496,14 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			}
 			return nil, classifyWorkflowError(lbErr)
 		}
+		// FIRST statement after the error check: the engine returns a nil
+		// EngineResult on every error path.
+		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = "loopback"
 		engineResult = res
 	} else {
 		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
 		if mtErr != nil {
-			h.rollbackOwned(txCtx, txID, owned)
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
 			if errors.Is(mtErr, spi.ErrConflict) {
 				appErr := common.Operational(
@@ -1499,14 +1515,18 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			}
 			return nil, classifyWorkflowError(mtErr)
 		}
+		// FIRST statement after the error check: the engine returns a nil
+		// EngineResult on every error path.
+		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = input.Transition
 		engineResult = res
 	}
 
-	finalCtx, finalTxID := engineResult.FinalCtx, engineResult.FinalTxID
+	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
 
 	// A joined callback is a plain single-segment op; a participating update
 	// must not segment (the owner owns commit boundaries, not the callback).
+	// The guard stays AHEAD of the commit — see CreateEntity's site.
 	if !owned && finalTxID != txID {
 		return nil, common.Internal("joined callback unexpectedly segmented transaction",
 			fmt.Errorf("entry txID %s advanced to %s on a joined call", txID, finalTxID))
@@ -1514,7 +1534,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 
 	finalEntityStore, err := h.factory.EntityStore(finalCtx)
 	if err != nil {
-		h.rollbackOwned(finalCtx, finalTxID, owned)
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
@@ -1545,7 +1564,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 					// is not TX-bound the abort event is preserved as a
 					// pair with the entry events.
 					h.emitTransitionAborted(finalCtx, updated, txID, input.Transition, input.IfMatch)
-					h.rollbackOwned(finalCtx, finalTxID, owned)
 					appErr := common.Operational(
 						http.StatusPreconditionFailed,
 						common.ErrCodeEntityModified,
@@ -1553,7 +1571,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 					appErr.Props = map[string]any{"entityId": input.EntityID}
 					return appErr
 				}
-				h.rollbackOwned(finalCtx, finalTxID, owned)
 				return common.Internal("failed to save entity", err)
 			}
 		} else {
@@ -1564,7 +1581,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			// fail spuriously — Save lands the post-cascade state in TX_post's
 			// buffer and the segment's own intra-TX guards handle concurrency.
 			if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
-				h.rollbackOwned(finalCtx, finalTxID, owned)
 				return common.Internal("failed to save entity", err)
 			}
 		}
@@ -1573,7 +1589,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		// participating in a joined tx; the owner commits). For non-segmenting
 		// cascades this is the handler's original txID; for segmenting cascades
 		// this is TX_post (TX_pre was committed by the engine before the callout).
-		if err := h.commitOwned(finalCtx, finalTxID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
 				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 			}
@@ -1709,10 +1725,15 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	// durable. This is a fundamental consequence of CBD and applies
 	// uniformly anywhere the engine segments; non-CBD batches retain the
 	// original all-or-nothing semantic.
-	txID, txCtx, owned, err := h.beginOrJoin(ctx)
+	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to begin transaction", err)
+		return nil, classifyBeginErr(err)
 	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
+	// Release re-acquires it, and it is not reentrant.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 	if !owned {
 		var releaseGate func()
 		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
@@ -1729,20 +1750,17 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	for i, item := range parsed {
 		entityStore, err := h.factory.EntityStore(currentCtx)
 		if err != nil {
-			h.rollbackOwned(currentCtx, currentTxID, owned)
 			return nil, common.Internal("failed to access entity store", err)
 		}
 
 		existing, err := entityStore.Get(currentCtx, item.id)
 		if err != nil {
-			h.rollbackOwned(currentCtx, currentTxID, owned)
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 				fmt.Sprintf("item %d: entity %s not found", i, item.id))
 		}
 
 		desc, err := modelStore.Get(currentCtx, existing.Meta.ModelRef)
 		if err != nil {
-			h.rollbackOwned(currentCtx, currentTxID, owned)
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
 
@@ -1750,7 +1768,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// no extra model read is needed. Rolls back and fails the whole batch.
 		if len(desc.UniqueKeys) > 0 {
 			if _, err := spi.ComputeClaims(desc.UniqueKeys, item.bodyBytes); err != nil {
-				h.rollbackOwned(currentCtx, currentTxID, owned)
 				if errors.Is(err, spi.ErrPartialUniqueKey) {
 					return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey,
 						fmt.Sprintf("item %d: composite unique key incomplete", i))
@@ -1765,7 +1782,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
 		if err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
-			h.rollbackOwned(currentCtx, currentTxID, owned)
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
@@ -1825,10 +1841,19 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				})
 				continue
 			}
-			h.rollbackOwned(currentCtx, currentTxID, owned)
 			slog.Error("workflow execution failed", "error", engineErr.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
 			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, engineErr))
 		}
+		// Advance the loop's TX to whichever segment is now open. For
+		// non-segmenting cascades these are unchanged; for segmenting
+		// cascades the engine committed TX_pre and opened TX_post. The locals
+		// are re-read from the scope so the two can never drift.
+		//
+		// FIRST statement after the error check: the engine returns a nil
+		// EngineResult on every error path.
+		scope.Advance(engineResult.FinalCtx, engineResult.FinalTxID)
+		currentCtx, currentTxID = scope.Ctx(), scope.TxID()
+
 		if item.transition == "" {
 			updated.Meta.TransitionForLatestSave = "loopback"
 		} else {
@@ -1843,13 +1868,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// single-UpdateEntity routing post-#27.
 		segmented := engineResult.Segmented
 
-		// Advance the loop's TX to whichever segment is now open. For
-		// non-segmenting cascades these are unchanged; for segmenting
-		// cascades the engine committed TX_pre and opened TX_post.
-		currentCtx, currentTxID = engineResult.FinalCtx, engineResult.FinalTxID
-
 		// A joined callback is a plain single-segment op; a participating batch
 		// must not segment (the owner owns commit boundaries, not the callback).
+		// The guard stays AHEAD of the commit — see CreateEntity's site.
 		if !owned && currentTxID != txID {
 			return nil, common.Internal("joined callback unexpectedly segmented transaction",
 				fmt.Errorf("item %d: entry txID %s advanced to %s on a joined call", i, txID, currentTxID))
@@ -1869,7 +1890,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// Re-resolve the entity store on the now-current segment context.
 			finalEntityStore, err := h.factory.EntityStore(currentCtx)
 			if err != nil {
-				h.rollbackOwned(currentCtx, currentTxID, owned)
 				return nil, common.Internal("failed to access entity store", err)
 			}
 
@@ -1908,7 +1928,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 						ItemIndex: i,
 					}, nil
 				}
-				h.rollbackOwned(currentCtx, currentTxID, owned)
 				return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), saveErr)
 			}
 			return nil, nil
@@ -1935,7 +1954,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		if owned {
 			defer h.gate.Acquire(currentTxID)()
 		}
-		if err := h.commitOwned(currentCtx, currentTxID, owned); err != nil {
+		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
 				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 			}
