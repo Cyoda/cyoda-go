@@ -1437,93 +1437,141 @@ neither committed nor rolled back and its pooled connection never returned."
 
 ---
 
-## Task 5: Collection update isolates per item only when the engine did not segment
+## Task 5: Collection update isolates per item only when the conflict is isolable
 
-`UpdateEntityCollection`'s per-item isolation (`service.go:1817-1827`) treats any `spi.ErrConflict` from the engine as an If-Match precondition failure and `continue`s the loop, with no `segmented` check — unlike the handler-side isolation at `:1893-1905`, which does gate on it. But `executeCommitBeforeDispatch`'s apply-result CAS bubbles `ErrConflict` unwrapped (`engine_processors.go:352`) and is reachable on any CBD segment *after* TX_pre has committed. When that fires, `engineResult` is nil, so `currentCtx`/`currentTxID` are never advanced and every later item saves into a transaction that `flushAndCommitSegment` already committed.
+`UpdateEntityCollection`'s per-item isolation treats **any** `spi.ErrConflict` from the engine as an If-Match precondition failure and `continue`s the loop. Two different failures produce that error, and only one of them is isolable:
 
-Task 1's guard makes the orphaned segment's rollback certain, which would otherwise leave the loop writing into a closed transaction and losing those items silently.
+| Source | When | Isolable? |
+|---|---|---|
+| `flushAndCommitSegment`'s `CompareAndSave` (`engine_processors.go:384`, reached from `:286` and `:315`) | **Before** TX_pre commits and before any dispatch fires | **Yes** — nothing durable happened; the item fails its precondition and the batch continues |
+| `executeCommitBeforeDispatch`'s apply-result CAS (`engine_processors.go:354`) | **After** TX_pre committed and the external dispatch already fired | **No** — the segment is gone; the loop's cursor was never advanced, so every later item saves into a committed transaction and is silently lost behind a 200 |
+
+**The original plan gated this on `engineResult.Segmented`, which cannot work.** Every failure path in `executeCommitBeforeDispatch` is `return nil, "", err`, and every engine entry point turns that into `return nil, err` — so `engineResult` is nil for *both* rows above. A condition reading `engineResult != nil && !engineResult.Segmented` is false in both cases and aborts the batch on a cleanly-isolable precondition failure, breaking the documented first-segment-flush contract and its shipped E2E test (`TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch`).
+
+The engine must distinguish the two shapes, because only the engine knows which side of the commit it was on. Mark the post-commit site with a sentinel, mirroring `ErrCommitBeforeDispatchInfra` (`engine_processors.go:20`), which already exists in that file for exactly this purpose — letting a handler classify an error the engine raised.
+
+`errors.Join` keeps `errors.Is(err, spi.ErrConflict)` true, so `updateEntityCore`'s single-entity 412 mapping is unaffected. Only the collection loop's isolation branch consults the new sentinel.
 
 **Files:**
-- Modify: `internal/domain/entity/service.go:1809-1831`
+- Modify: `internal/domain/workflow/engine_processors.go` — declare `ErrPostSegmentConflict`; join it at the apply-result CAS (`:354`)
+- Modify: `internal/domain/entity/service.go` — `UpdateEntityCollection`'s engine-side isolation branch
+- Test: `internal/domain/workflow/engine_segment_guard_test.go` (extend)
 - Test: `internal/domain/entity/service_rollback_test.go` (extend)
 
 **Interfaces:**
-- Consumes: Task 1's guard, Task 4's converted flow.
-- Produces: no new symbols.
+- Consumes: Task 1's engine guard, Task 4's `txScope` conversion of this flow.
+- Produces: `var wfengine.ErrPostSegmentConflict error` — no later task consumes it.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
+
+Engine-side, in `internal/domain/workflow/engine_segment_guard_test.go`:
 
 ```go
-// TestUpdateCollection_EngineConflictAfterSegment_AbortsBatch: a CBD apply-result
-// CAS conflict arrives with a nil engineResult, so there is no segment to
-// continue into. Isolating it would leave every later item saving into a
-// transaction the engine already committed — losing them with a 200 response.
-func TestUpdateCollection_EngineConflictAfterSegment_AbortsBatch(t *testing.T) {
-	h, tracker := newTrackingHandler(t)
-	// Item 0: CBD processor whose apply-result CompareAndSave conflicts.
-	// Item 1: an ordinary update that must NOT be silently dropped.
-	items := twoItemBatchWithSegmentingConflictOnFirst(t)
+// TestCBD_ApplyResultConflict_CarriesPostSegmentMarker: the apply-result CAS runs
+// after TX_pre committed and after the dispatch fired, so a conflict there is not
+// something a caller can isolate and retry past. The marker is how the caller
+// tells it apart from a first-segment-flush precondition failure, which is.
+func TestCBD_ApplyResultConflict_CarriesPostSegmentMarker(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	h.failCompareAndSave(spi.ErrConflict) // the apply-result CAS, post-commit
 
-	_, err := h.UpdateEntityCollection(testCtx(t), items)
-	if err == nil {
-		t.Fatal("batch reported success while item 1 was written into a committed transaction")
+	_, err := h.engine.Execute(h.begin(t))
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("lost the conflict sentinel: %v", err)
 	}
-	if open := tracker.openTxIDs(); len(open) != 0 {
-		t.Fatalf("aborted batch leaked %v", open)
+	if !errors.Is(err, ErrPostSegmentConflict) {
+		t.Fatalf("post-commit conflict not marked; a caller cannot tell it from an isolable one: %v", err)
 	}
 }
 
-// TestUpdateCollection_NonSegmentingConflict_StillIsolates guards the behaviour
-// the fix must preserve: a first-segment-flush IfMatch rejection happens before
-// TX_pre commits and before any dispatch fires, so that item is isolated and the
-// batch continues.
-func TestUpdateCollection_NonSegmentingConflict_StillIsolates(t *testing.T) {
-	h, tracker := newTrackingHandler(t)
-	// Item 0 carries a stale IfMatch on a workflow with no CBD processor, so the
-	// engine never segments and the conflict is cleanly isolable.
-	// Item 1 is an ordinary update that must land.
-	items := twoItemBatchWithStaleIfMatchOnFirst(t)
+// TestCBD_FirstFlushConflict_HasNoPostSegmentMarker guards the other side. This
+// one IS isolable and must stay that way.
+func TestCBD_FirstFlushConflict_HasNoPostSegmentMarker(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	h.failFirstFlushCAS(spi.ErrConflict) // flushAndCommitSegment, pre-commit
 
-	res, err := h.UpdateEntityCollection(testCtx(t), items)
-	if err != nil {
-		t.Fatalf("batch aborted on an isolable per-item conflict: %v", err)
+	_, err := h.engine.Execute(h.begin(t))
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("lost the conflict sentinel: %v", err)
 	}
-	if len(res.Failed) != 1 || res.Failed[0].ItemIndex != 0 ||
-		res.Failed[0].Code != common.ErrCodeEntityModified {
-		t.Fatalf("item 0 was not isolated: %+v", res.Failed)
-	}
-	if len(res.EntityIDs) != 1 {
-		t.Fatalf("item 1 did not land: %v", res.EntityIDs)
-	}
-	if open := tracker.openTxIDs(); len(open) != 0 {
-		t.Fatalf("committed batch leaked %v", open)
+	if errors.Is(err, ErrPostSegmentConflict) {
+		t.Fatal("pre-commit precondition failure wrongly marked post-segment; the batch would abort instead of isolating the item")
 	}
 }
 ```
 
-- [ ] **Step 2: Run it and confirm it fails**
+Handler-side, in `internal/domain/entity/service_rollback_test.go` — the two from the original plan, retargeted:
 
-Run: `go test ./internal/domain/entity/ -run TestUpdateCollection_ -v`
-Expected: FAIL — `batch reported success while item 1 was written into a committed transaction`.
+```go
+// TestUpdateCollection_PostSegmentConflict_AbortsBatch: a post-commit apply-result
+// conflict leaves no segment to continue into, so isolating it would let every
+// later item save into a transaction the engine already committed — losing them
+// behind a 200.
+func TestUpdateCollection_PostSegmentConflict_AbortsBatch(t *testing.T) { ... }
 
-- [ ] **Step 3: Gate the isolation on `segmented`**
+// TestUpdateCollection_FirstFlushConflict_StillIsolates: the precondition failed
+// before TX_pre committed and before any dispatch fired. That item is cleanly
+// isolable and the batch continues — without this, the fix could be "abort on
+// every conflict", which would break per-item isolation entirely.
+func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) { ... }
+```
 
-`internal/domain/entity/service.go`, in the `if engineErr != nil` block:
+Both handler tests build a two-item batch: item 0 provokes the conflict, item 1 is an ordinary update that must be observably lost (abort case) or observably saved (isolate case).
+
+- [ ] **Step 2: Run them and confirm they fail**
+
+Run: `go test ./internal/domain/workflow/ -run 'TestCBD_.*Conflict' -v && go test ./internal/domain/entity/ -run TestUpdateCollection_ -v`
+Expected: the two engine tests FAIL on `undefined: ErrPostSegmentConflict`; `TestUpdateCollection_PostSegmentConflict_AbortsBatch` FAILS reporting the batch succeeded while item 1 was written into a committed transaction; `TestUpdateCollection_FirstFlushConflict_StillIsolates` PASSES already and must keep passing.
+
+- [ ] **Step 3: Declare and join the sentinel**
+
+In `internal/domain/workflow/engine_processors.go`, beside `ErrCommitBeforeDispatchInfra`:
+
+```go
+// ErrPostSegmentConflict marks a CAS conflict raised AFTER a
+// COMMIT_BEFORE_DISPATCH segment has committed and its external dispatch has
+// fired — the apply-result CAS below. It is not a precondition failure a caller
+// can isolate and skip past: the segment that would have carried the rest of the
+// work is gone, and the caller's cascade cursor was never advanced.
+//
+// A conflict from the FIRST-segment flush is deliberately left unmarked. That one
+// happens before any commit and before any dispatch, so it is cleanly isolable —
+// which is the whole distinction this sentinel exists to draw.
+//
+// Joined, not wrapped, so errors.Is(err, spi.ErrConflict) stays true and the
+// single-entity 412 mapping is unaffected.
+var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
+```
+
+At the apply-result CAS (`:354`):
+
+```go
+	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
+		return nil, "", errors.Join(ErrPostSegmentConflict, saveErr)
+	}
+```
+
+- [ ] **Step 4: Gate the handler's isolation on it**
+
+In `UpdateEntityCollection`'s `if engineErr != nil` block:
 
 ```go
 		if engineErr != nil {
-			// Per-item ENTITY_MODIFIED isolation applies ONLY when the engine did
-			// not segment. The engine's first-segment flush rejects a stale IfMatch
-			// before committing TX_pre and before any external dispatch fires, so
-			// that item is cleanly isolable.
+			// Per-item isolation applies only to a conflict the engine raised
+			// BEFORE committing a segment — a first-segment-flush precondition
+			// failure, which fires before any external dispatch and leaves
+			// nothing durable behind. That item is cleanly isolable and the
+			// batch continues.
 			//
-			// A CBD apply-result CAS conflict also surfaces as a bare ErrConflict,
-			// but it arrives AFTER TX_pre committed and with a nil engineResult —
-			// there is no segment to continue into, and every later item would save
-			// into a transaction the engine already committed. Mirrors the
-			// handler-side isolation below, which gates on segmented for the same
-			// reason.
-			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) && engineResult != nil && !engineResult.Segmented {
+			// A conflict marked ErrPostSegmentConflict arrived after TX_pre
+			// committed and the dispatch fired. There is no segment to continue
+			// into, and the loop's cursor was never advanced — isolating it
+			// would let every later item save into a committed transaction and
+			// be lost behind a 200.
+			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
+				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
@@ -1539,22 +1587,35 @@ Expected: FAIL — `batch reported success while item 1 was written into a commi
 		}
 ```
 
-`engineResult != nil` is the operative clause: the engine returns nil on every error, so this reduces to "abort", and it is written explicitly so the intent survives a future change that starts returning a result alongside an error.
+Leave the handler-side `applyHandlerCAS` isolation further down untouched — it already gates on `segmented`, which is meaningful there because a result exists on that path.
 
-- [ ] **Step 4: Confirm it passes**
+- [ ] **Step 5: Confirm all four pass, plus the shipped contract**
 
-Run: `go test ./internal/domain/entity/... -v`
+Run: `go test ./internal/domain/workflow/... ./internal/domain/entity/... -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+Then the E2E test this fix must not regress:
+
+Run: `go test ./internal/e2e/ -run TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch -v`
+Expected: PASS. It covers the first-segment-flush contract; a fix that aborts on every engine conflict breaks it.
+
+- [ ] **Step 6: Full suite**
+
+Run: `go test ./... -count=1`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add internal/domain/entity/
-git commit -m "fix(entity): abort a collection update when the engine segmented and conflicted
+git add internal/domain/workflow/ internal/domain/entity/
+git commit -m "fix(entity): abort a collection update only on a post-segment conflict
 
-A COMMIT_BEFORE_DISPATCH apply-result CAS conflict bubbles ErrConflict unwrapped
-after TX_pre has committed, with a nil result. Isolating it as an If-Match
-failure left every later item saving into a committed transaction."
+Two different failures surface as ErrConflict from the engine: a first-segment
+flush precondition failure, which happens before any commit or dispatch and is
+cleanly isolable, and an apply-result CAS conflict, which happens after TX_pre
+committed and leaves no segment to continue into. Isolating the second let every
+later item save into a committed transaction and vanish behind a 200. The engine
+marks it, because only the engine knows which side of the commit it was on."
 ```
 
 ---
