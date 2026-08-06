@@ -278,6 +278,39 @@ func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
 	}
 }
 
+// TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode — a per-item failure that
+// carries the storage layer's transient-unavailability marker is classified, not
+// unexplained. Flattening it to SERVER_ERROR + ticket tells the caller the item
+// is hopeless when in fact a retry in a moment is exactly the right move — and
+// it is the answer the same failure gets on every other door. The cause still
+// stays off the wire: common.StorageUnavailable holds it in WithCause, so the
+// message is client-safe by construction.
+func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
+	raw := fmt.Errorf("failed to mark entity deleted: %w",
+		&markedStorageOutage{detail: "acquire: host=db.internal user=cyoda: context deadline exceeded"})
+
+	msg := perIDDeleteError("e-1", raw)
+
+	if !strings.Contains(msg, common.ErrCodeStorageUnavailable) {
+		t.Errorf("a marked storage outage lost its domain code: %s", msg)
+	}
+	if strings.Contains(msg, "ticket") {
+		t.Errorf("a classified error minted a ticket it does not need: %s", msg)
+	}
+	for _, leak := range []string{"db.internal", "acquire", "deadline"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("per-id error leaks the storage cause (%q): %s", leak, msg)
+		}
+	}
+}
+
+// markedStorageOutage carries the storage layer's transient-unavailability
+// marker on a raw error, as a plugin does.
+type markedStorageOutage struct{ detail string }
+
+func (e *markedStorageOutage) Error() string          { return e.detail }
+func (*markedStorageOutage) StorageUnavailable() bool { return true }
+
 // TestPerIDDeleteError_KeepsDomainDetail — a not-found is the caller's own
 // business and carries no infrastructure detail, so it stays legible rather
 // than being flattened into a ticket.

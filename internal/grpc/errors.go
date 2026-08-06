@@ -53,6 +53,19 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 		message = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
 		return
 	}
+	// A raw error carrying the storage layer's transient-unavailability marker is
+	// NOT unclassified. Several service methods (the async-search family) return
+	// the marker on a raw error rather than a pre-classified AppError; the HTTP
+	// door recognises it via common.Internal and answers a retryable 503
+	// STORAGE_UNAVAILABLE. Classifying it here too keeps one outage on one service
+	// method from reading as "retry shortly" on one door and "your request is
+	// hopeless" on the other. Re-entering through the operational branch also
+	// keeps the cause in the log and out of the envelope, exactly as the HTTP door
+	// does. Every one of this file's envelopes funnels through here, so this is
+	// the only place the check belongs.
+	if appErr := common.StorageUnavailable(err); appErr != nil {
+		return buildErrorFields(appErr)
+	}
 	// Raw error — should not happen
 	ticket := uuid.New().String()
 	slog.Error("unclassified error", "ticket", ticket, "detail", err.Error())

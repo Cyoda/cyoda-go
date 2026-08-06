@@ -890,12 +890,21 @@ type DeleteResult struct {
 // the wire — and a storage failure's own text carries driver wording, the SQL
 // this layer wrapped it with, and a SQLSTATE. None of that is the caller's to
 // see. The same split the rest of the API uses applies per item: a domain error
-// keeps its detail, anything else is logged under a ticket and the caller gets
-// the ticket to quote.
+// keeps its detail and a classified storage outage keeps its code; anything else
+// is logged under a ticket and the caller gets the ticket to quote.
 func perIDDeleteError(entityID string, err error) string {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
 		return appErr.Message // client-safe by construction
+	}
+	// A raw error carrying the storage layer's transient-unavailability marker is
+	// classified, not unexplained: flattening it into a ticket would tell the
+	// caller this item is hopeless when a retry in a moment is the right move, and
+	// would differ from the answer the same failure gets on every other door. The
+	// cause still stays off the wire — StorageUnavailable holds it in WithCause,
+	// so Message is client-safe by construction.
+	if suErr := common.StorageUnavailable(err); suErr != nil {
+		return suErr.Message
 	}
 	if errors.Is(err, spi.ErrNotFound) {
 		return fmt.Sprintf("%s: entity id=%s not found", common.ErrCodeEntityNotFound, entityID)
