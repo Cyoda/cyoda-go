@@ -167,6 +167,17 @@ rollback certain, which would otherwise leave the loop writing into a closed
 transaction and losing those items silently. Isolation must therefore apply only
 when the engine did not segment.
 
+**The gate cannot read `EngineResult.Segmented`.** Both conflict shapes return a
+nil `EngineResult`, so on exactly the paths that need the flag there is no result to
+read it from. `Segmented` stays what it always was — the input to the handler's
+post-engine CAS choice — and the engine raises sentinels instead:
+`ErrPostSegmentConflict` wraps a conflict from the post-segment apply, and
+`ErrCommitBeforeDispatchInfra` wraps a failure of TX_pre's own commit, which is
+likewise a conflict raised past a live segment and abandons the transaction. The
+collection loop isolates an item only for an `spi.ErrConflict` carrying neither
+sentinel; either sentinel aborts the chunk. Both are chained with `%w: %w` rather
+than `errors.Join`, so the 4xx detail stays a single `CODE: message` line.
+
 ### 1.3 Engine-side guard
 
 The handler-side scope cannot cover the engine's segments, and not only because of
@@ -215,7 +226,21 @@ defer func() {
 
 `openCtx/openTxID` are advanced wherever the engine segments, and `handedOff` is
 set only where the segment is returned to the caller. The guard therefore covers
-the error paths above **and** panics, in one mechanism.
+the error paths above **and** panics from the entry frame, in one mechanism.
+
+**An entry-point guard does not cover a panic raised below the entry frame.**
+`Execute` advances `openCtx/openTxID` only *after* `cascadeAutomated` returns, so a
+panic inside the cascade unwinds past the assignment: the entry guard then names the
+entry transaction, its `openTxID != entryTxID` test is false, and the segment the
+cascade opened leaks. The assignment cannot move earlier — the engine's inner calls
+return a nil ctx on every error, so an early advance would target a transaction that
+was never opened. Three further guards therefore sit at the frames that hold a
+segment open while calling down: `cascadeAutomated` and `fireTransition`
+(`engine.go`) and `executeProcessors` (`engine_processors.go`). Each keys on its
+named `ctx` return being nil, which every ordinary return makes non-nil and only an
+unwinding panic leaves so — they are panic-only by construction, and the error paths
+stay with the entry guards. None of them recovers: surviving a panic is the request
+door's decision (§1.4), not the engine's.
 
 The locals are load-bearing: every failure path in `executeCommitBeforeDispatch`
 is `return nil, "", err` (`engine_processors.go:286`, `:293`, `:313`, `:326`,
@@ -230,7 +255,9 @@ result is fewer moving parts than today, not more, and it makes
 path true for the first time.
 
 `executeCommitBeforeDispatch` keeps its own guard as well, since it opens TX_post
-(`:333`, `:409`) and can panic before returning it to `executeProcessors`.
+(`:333`, `:409`) and can panic before returning it to `executeProcessors`. Its guard
+is the `handedOff` shape, not the nil-ctx shape: every one of its failure paths
+returns a nil ctx, so a nil-ctx test could not tell an error return from a panic.
 
 The guard is nil-safe on `e.txMgr`, mirroring `rollbackOpenSegmentOnFailure`'s
 check (`engine_processors.go:151`) — unreachable in production, since segmentation
@@ -303,7 +330,19 @@ the gRPC door, and inconsistent with the scheduler's own dispatch goroutine, whi
 recovers (`internal/scheduler/service.go:189-194`). It gets the same treatment.
 
 Both recoveries mirror `internal/api/middleware/recovery.go`: log with stack, mark
-the health flag, return a generic internal error with a ticket UUID. The
+the health flag, answer with a generic internal error carrying a ticket UUID. **The
+ticket has one mint site per door, not one shared one.** The HTTP middleware mints
+none of its own — it builds a Fatal `AppError` and hands it to `common.WriteError`,
+which mints the UUID, logs it and puts it in the ProblemDetail. The gRPC door has no
+equivalent downstream step, so its interceptor mints its own UUID and returns a
+`status.Error(codes.Internal, …)` carrying it — copying `buildErrorFields`' message
+format and `"ticket"` log field rather than calling it, since returning a bare
+`*common.AppError` would leave grpc-go falling back to `codes.Unknown`. The
+async-search goroutine has no caller to answer at all and records a `FAILED` job.
+The invariant across all of them is that the ticket in the log is the one the caller
+was given, or — for the goroutines — that the log holds the only copy.
+
+The
 scheduler's dispatch goroutine latches too, though it already recovered: its
 `Executor.Execute` runs a full fire plus cascade **in-process** whenever
 distribution picks this node (`internal/cluster/scheduler_rpc.go`
@@ -439,10 +478,26 @@ it is bounded by **nothing at all** today: the scan budget raising
 a ceiling and the worst fit for a shared one: a single knob would force operators
 to choose between fast-failing interactive writes and long analytical scans.
 
-The async-search path is pool-direct and separable (`search_store.go`), so it gets
-its own: `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`, default `30m`, applied as
-`SET LOCAL statement_timeout` on that path rather than as a second pool. The
-interactive ceiling stays at 5m.
+So it gets its own ceiling: `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`, default `30m`,
+applied as `SET LOCAL statement_timeout` on that path rather than as a second pool.
+The interactive ceiling stays at 5m.
+
+**The path is not separable by file.** `search_store.go` is the async-search *job
+record* store — `CreateJob`, `UpdateJobStatus`, `SaveResults`, `ReapExpired` and the
+rest. Those are pool-direct, deliberately, so the job record never joins the
+submitter's transaction; but none of them is the scan. The scan runs through exactly
+the same `entityStore.Search` an interactive search does, so there is no separate
+call site to attach a ceiling to.
+
+What separates them is a context marker. `AsyncScanContext` stamps the ceiling onto
+the background context the job goroutine runs on, the searcher reads it, and when it
+is present (and there is no ambient transaction) the search opens its own
+transaction, sets the tenant, applies `SET LOCAL statement_timeout` and rolls back —
+`SET LOCAL` so the raised ceiling dies with that transaction and cannot ride a
+pooled connection back to an interactive caller. It is a context value rather than a
+`SearchOptions` field precisely to avoid an SPI change (§2.2's reasoning applies
+here too). A scan that exceeds it is classified as a search-ceiling error and
+recorded on the job, distinct from an interactive `57014`.
 
 ### 2.1 Acquire-timeout scope
 
@@ -663,8 +718,18 @@ blocks until the winner has finished and cleared it, then applies nothing and ge
 exactly as today. `lock_timeout` from §3.1 bounds the wait.
 
 Running migrations before the compat check does not weaken the newer-than-code
-guard: `m.Up()` on a database ahead of the binary finds no migration to apply and
-returns `ErrNoChange`, and the compat check that follows still refuses to start.
+guard, but it does need a translation of its own. **`m.Up()` on a database ahead of
+the binary does not return `ErrNoChange`.** `readUp` calls `versionExists` for the
+current version before planning anything, and the embedded source has no such file,
+so what comes back is `no migration found for version N` wrapping `fs.ErrNotExist` —
+a planner complaint that would replace the actionable newer-than-binary refusal.
+`runMigrations` maps `fs.ErrNotExist` onto that refusal, but only after confirming
+the database version really is above the binary's maximum: a version *below* it
+means the embedded source has a gap, which is a packaging fault and must keep
+golang-migrate's own error rather than be excused into a start. The compat check
+that follows is the second, independent detector — it reads the version under
+golang-migrate's advisory lock, so a peer that begins a newer migration after
+`m.Up()` returns is still caught.
 
 **`ErrDirty` must be translated, or the actionable message becomes unreachable.**
 `m.Up()` locks, reads the version, and returns `ErrDirty` *before applying
@@ -942,6 +1007,17 @@ unchanged. The "declared today" column is extracted from `api/openapi.yaml` at
 HEAD; no existing entry is modified, and the added 503 is the only change to any
 operation's response set.
 
+**The entity writes are not the whole set.** The `StorageUnavailable` classification
+sits in `common.Internal`, which every handler already funnels its 5xx through, so
+*any* storage-backed operation answers 503 on an outage — the nine above are only
+where it is easiest to provoke. Declaring it on those nine alone would leave the
+rest failing conformance the first time a real outage hit them. `503` is therefore
+declared on every storage-backed operation (51 of them), through one shared
+`#/components/responses/ServiceUnavailable` rather than 51 inline blocks. The two
+operations that already had a bespoke 503 — the transitions reads, where a `function`
+selection criterion with no connected compute member is also a 503 — keep their own
+block with both causes described.
+
 gRPC: the same failure surfaces in the envelope as `Success=false` with
 `Error.Code = CLIENT_ERROR` and `Error.Retryable = true`. `Error.Code` is the
 envelope *class*, not the domain code — `buildErrorFields`
@@ -1109,8 +1185,7 @@ test-only package, with nothing compiled into the binary.
   §1.2). Both would turn the rollback's bound from "terminates because the holder
   terminates" into a hard deadline, and both are changes to the concurrency model
   of core plus two plugins rather than to transaction lifecycle.
-- `fetchEntityTransitions` lacks the 503 that its documented alias
-  `getEntityTransitions` declares (`api/openapi.yaml:1584`,
-  `transitions_handler.go:117`). Pre-existing drift on the same surface, unrelated
-  to this change's mechanism; flagged so it is not mistaken for something this
-  change introduced.
+
+Not on this list, though an earlier draft had it: `fetchEntityTransitions`'s missing
+503. It and `getEntityTransitions` are aliases onto one handler, so every 503
+reachable through one is reachable through the other; both declare it (§5).

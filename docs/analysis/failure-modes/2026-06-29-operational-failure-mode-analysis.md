@@ -304,6 +304,8 @@ Only **three small dots** are unconnected (confirmed in §3): (a) nothing ever c
 
 **So the assertion stands:** the remediation is genuinely small — wire `Register`/`RecordOutcome` into `Begin`/close, start the reaper unconditionally, give it a privileged system‑tenant rollback path, set the DB‑side timeouts as connection params, and add a `defer`‑rollback guard. The analysis below assumes exactly that.
 
+> **Superseded in part (tx‑lifecycle‑safety work).** The premise was right, but the remediation chosen was **not R1**: `lifecycle.Manager` and the three `CYODA_TX_*` variables were **deleted** rather than wired, since R2 and R3 together carry the whole bound and a TTL reaper adds a second, weaker one. R3 (a deferred release on every exit path, panics included) is now the application‑side guarantee and R2 the database‑side backstop; R4 shipped as `CYODA_POSTGRES_ACQUIRE_TIMEOUT` → `503 STORAGE_UNAVAILABLE`. Read R1 below as retired — §9's conclusions rest on R2+R3, which did ship. Rationale in `docs/superpowers/specs/2026-08-05-tx-lifecycle-safety-design.md` §4.
+
 ### 9.2 The remediation assumed (made precise)
 
 “Pool starvation remediated” is taken to mean all four of these — each realisable from existing building blocks:

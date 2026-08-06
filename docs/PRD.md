@@ -30,7 +30,7 @@ Scale envelope depends on the active storage plugin:
 - **`memory`** — single process, bounded by host RAM.
 - **`sqlite`** — single node, persistent; throughput bounded by local
   disk. No clustering.
-- **`postgres`** — small compute clusters (3–10 stateless Go nodes)
+- **`postgres`** — small compute clusters (2–20 stateless Go nodes)
   behind a load balancer, sharing a primary PostgreSQL. Active-active
   HA; any node serves any request. Write throughput bounded by the
   PostgreSQL primary.
@@ -606,7 +606,7 @@ gRPC calls authenticate via `Authorization` metadata. The same JWT validation ap
 
 ### Overview
 
-Cyoda-Go operates as a cluster of 3-10 stateless Go nodes behind a load balancer (nginx). Every node is identical — no leader election, no shard ownership. PostgreSQL is the single coordination layer.
+Cyoda-Go operates as a cluster of 2–20 stateless Go nodes behind a load balancer (nginx). Every node is identical — no leader election, no shard ownership. PostgreSQL is the single coordination layer.
 
 ### Node Discovery: Gossip (SWIM Protocol)
 
@@ -761,7 +761,7 @@ A running binary has exactly one active storage plugin. Per-store routing (mixin
 |--------|--------------|----------|
 | **memory** (default) | None — in-process Go maps | Rapid development, agent-driven application engineering, embedded/test usage. Single-node only; data is lost on restart. |
 | **sqlite** | None — WASM SQLite embedded in the binary | Persistent single-node storage for desktop, edge, and containerised single-node production. Single-process only (flock-guarded); no NFS. |
-| **postgres** | PostgreSQL 14+ | Production durability; single-node or multi-node clusters (3–10 nodes) behind a load balancer. All cluster state flows through PostgreSQL as the consistency authority. |
+| **postgres** | PostgreSQL 14+ | Production durability; single-node or multi-node clusters (2–20 nodes) behind a load balancer. All cluster state flows through PostgreSQL as the consistency authority. |
 
 ### Commercial Plugin (available from Cyoda)
 
@@ -855,10 +855,10 @@ own envelope (contact Cyoda).
 
 | Dimension | Sweet Spot | Upper Bound | Notes |
 |-----------|-----------|-------------|-------|
-| Cluster size | 3–5 nodes | 10–20 nodes | Beyond 10, gossip metadata grows and proxy hop probability increases |
+| Cluster size | 2–20 nodes (DD-4) | No enforced limit | The range is a judgement, not a derived bound. What rises with cluster size is the probability that a request lands on a node other than the transaction owner and has to be proxied |
 | Concurrent transactions | 50–250 | ~750 (3 nodes × 25 PG connections) | Bounded by PG connection pool × node count |
 | Entity volume | Up to millions per model | Bounded by PG storage | Version history grows monotonically (append-only, no compaction) |
-| Transaction duration | < 1 second (ideal) | 60 seconds (default TTL) | Each second of transaction duration consumes one PG connection |
+| Transaction duration | < 1 second (ideal) | 5 minutes idle between statements (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | Each second of transaction duration consumes one PG connection |
 | Write throughput | 50–200 entity creates/s per node | Bounded by PG primary throughput | Contention on same entities triggers SI+FCW conflicts + retries |
 | Compute processor latency | < 500 ms | 30s (default timeout) | Processor duration dominates transaction duration |
 

@@ -412,7 +412,7 @@ transitioned, FCW on that entity is the guard. No phantom can slip past.
 
 ## 8. Multi-node routing preserves the contract
 
-cyoda-go runs as a cluster (3–10 stateless nodes behind a load balancer
+cyoda-go runs as a cluster (2–20 stateless nodes behind a load balancer
 for the postgres plugin; other plugins have their own topologies). The
 per-node `TransactionManager` holds per-transaction state (read-set,
 write-set, postgres `pgx.Tx` handle) in the process memory of the node

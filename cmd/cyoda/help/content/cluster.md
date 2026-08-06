@@ -20,7 +20,7 @@ cluster — multi-node cyoda topology, peer discovery, and transaction routing.
 ## SYNOPSIS
 
 ```
-3–10 stateless cyoda nodes
+2–20 stateless cyoda nodes
        │
        ▼ load balancer (HTTP + gRPC)
        │

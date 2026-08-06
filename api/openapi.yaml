@@ -6757,6 +6757,22 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/platform-api/entity/fetch/transitions
+        "503":
+          description: Retryable. Either a `function` workflow selection criterion
+            needs a compute member for its tags and none is connected, or the storage
+            layer could not serve the request — no connection available within the
+            acquire timeout, the transaction was reclaimed by the idle-in-transaction
+            ceiling, or the connection was lost.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: "no calculation member registered for tags: selector-service"
+                instance: /api/platform-api/entity/fetch/transitions
         default:
           $ref: '#/components/responses/InternalServerError'
   /search/async/{entityName}/{modelVersion}:
