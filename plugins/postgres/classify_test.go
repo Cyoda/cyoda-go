@@ -457,6 +457,68 @@ func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
 	}
 }
 
+// TestCommitAfterSavepointRollback_StillReportsAConflict is the composite the
+// recorded abort cause could otherwise get wrong.
+//
+// ROLLBACK TO SAVEPOINT is legal in an aborted transaction and returns it to a
+// working state — the workflow engine relies on exactly that when a dispatch
+// inside a savepoint fails. If the cause recorded before that rollback survives
+// it, the NEXT abort is reported as the stale ceiling instead of as itself, and
+// a serialization conflict that earns a retryable 409 silently becomes a 500.
+//
+// The second abort here is a division by zero rather than a real concurrent
+// committer: both leave the transaction aborted, so Commit's probe returns 25P02
+// either way and the branch under test is identical — and it needs no second
+// connection racing this one.
+func TestCommitAfterSavepointRollback_StillReportsAConflict(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 300*time.Millisecond)
+
+	ctx := classifyTestCtx()
+	txID, txCtx, err := fx.tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	spID, err := fx.tm.Savepoint(ctx, txID)
+	if err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+
+	// Inside the savepoint: a statement the ceiling cancels, which aborts the
+	// transaction and records its cause.
+	var slept string
+	if err := fx.q.QueryRow(txCtx, "SELECT pg_sleep(3)").Scan(&slept); !isStatementTimeout(err) {
+		t.Fatalf("the savepoint-scoped statement did not hit the ceiling: %v", err)
+	}
+
+	// Undo it. The transaction is usable again from here.
+	if err := fx.tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
+		t.Fatalf("rollback to savepoint: %v", err)
+	}
+	var one int
+	if err := fx.q.QueryRow(txCtx, "SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("the transaction did not recover from the savepoint rollback: %v", err)
+	}
+
+	// A second, unrelated abort — the kind that IS a retryable conflict.
+	if err := fx.q.QueryRow(txCtx, "SELECT 1/0").Scan(&one); err == nil {
+		t.Fatal("division by zero succeeded")
+	}
+
+	commitErr := fx.tm.Commit(ctx, txID)
+	if commitErr == nil {
+		t.Fatal("an aborted transaction committed")
+	}
+	t.Logf("commit after a rolled-back ceiling and a later abort: %v", commitErr)
+
+	if isStatementTimeout(commitErr) {
+		t.Fatal("reported the ceiling from before the savepoint rollback, which that rollback undid")
+	}
+	if !errors.Is(commitErr, spi.ErrConflict) {
+		t.Fatalf("an abort that is a retryable conflict lost that mapping: %v", commitErr)
+	}
+}
+
 // TestCommitAfterSerializationFailure_IsStillAConflict is the control: the
 // ordinary reason a transaction is found aborted must keep its retryable 409.
 func TestCommitAfterSerializationFailure_IsStillAConflict(t *testing.T) {

@@ -62,7 +62,8 @@ func newTxState(tenantID spi.TenantID) *txState {
 // retry is a promise that cannot be kept.
 //
 // First writer wins: the first failure is the one that aborted the transaction,
-// and everything after it is a consequence.
+// and everything after it is a consequence. RestoreSavepoint clears the record,
+// because a savepoint rollback makes the transaction usable again.
 func (s *txState) RecordAbort(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -199,6 +200,17 @@ func (s *txState) HasSavepoint(id string) bool {
 // RestoreSavepoint restores readSet/writeSet to the snapshot captured at
 // PushSavepoint(id) and trims any savepoints pushed after id. The named
 // savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT).
+//
+// It also discards any recorded abort cause. ROLLBACK TO SAVEPOINT is legal in
+// an aborted transaction and returns it to a working state, so the reason it was
+// aborted is no longer true — and a cause left behind here would be reported by
+// Commit in place of whatever aborted the transaction NEXT, downgrading a
+// retryable conflict to a plain 500.
+//
+// This is the only path back from aborted to usable. Every other route either
+// cannot run on an aborted transaction (SAVEPOINT and RELEASE SAVEPOINT both
+// raise 25P02) or ends the transaction outright — Commit, Rollback and discardTx
+// all drop the txState via cleanupTx, and Begin allocates a fresh one.
 func (s *txState) RestoreSavepoint(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -222,6 +234,7 @@ func (s *txState) RestoreSavepoint(id string) error {
 		s.writeSet[k] = v
 	}
 	s.savepoints = s.savepoints[:idx+1]
+	s.abortCause = nil
 	return nil
 }
 

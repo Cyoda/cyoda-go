@@ -296,3 +296,46 @@ func TestReleaseSavepoint_Unknown(t *testing.T) {
 		t.Fatalf("expected ErrSavepointNotFound, got: %v", err)
 	}
 }
+
+// TestRestoreSavepoint_ClearsTheAbortCause — a savepoint rollback is what makes
+// an aborted PostgreSQL transaction usable again, so it also has to discard the
+// reason it was aborted.
+//
+// Left set, a ceiling recorded inside the savepoint outlives the rollback that
+// undid it, and the NEXT abort — a genuine serialization failure, say — is
+// reported as that stale ceiling instead of as the conflict it is. Commit reads
+// AbortCause unconditionally, so the retryable 409 a concurrent committer earns
+// would silently become a 500.
+func TestRestoreSavepoint_ClearsTheAbortCause(t *testing.T) {
+	s := newTxState("tenant-1")
+	s.PushSavepoint("sp-1")
+
+	s.RecordAbort(errors.New("canceling statement due to statement timeout (SQLSTATE 57014)"))
+	if s.AbortCause() == nil {
+		t.Fatal("test setup bug: the abort was not recorded")
+	}
+
+	if err := s.RestoreSavepoint("sp-1"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	if cause := s.AbortCause(); cause != nil {
+		t.Fatalf("the abort cause survived the rollback that made the transaction usable again: %v", cause)
+	}
+}
+
+// TestRestoreSavepoint_LeavesALaterAbortRecordable — clearing must not latch the
+// state closed: an abort after the rollback is a new one, and Commit needs it.
+func TestRestoreSavepoint_LeavesALaterAbortRecordable(t *testing.T) {
+	s := newTxState("tenant-1")
+	s.PushSavepoint("sp-1")
+	s.RecordAbort(errors.New("first"))
+	if err := s.RestoreSavepoint("sp-1"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	s.RecordAbort(errors.New("second"))
+	if cause := s.AbortCause(); cause == nil || cause.Error() != "second" {
+		t.Fatalf("AbortCause = %v, want the abort raised after the restore", cause)
+	}
+}
