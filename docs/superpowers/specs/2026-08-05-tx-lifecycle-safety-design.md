@@ -511,13 +511,26 @@ Applied at all three sites that open a transaction on the pool:
 and does not leak into the returned handle.
 
 **One classifier, shared, for all three.** They contend for the same connections,
-so they can fail for the same transient reason, and a caller must be told the
-same thing about it whichever one it reached. `classifyAcquireErr` is therefore
+so they can fail for the same transient reason. `classifyAcquireErr` is therefore
 package-level and every acquire goes through it. When only `Begin` classified, a
-saturated pool answered a retryable 503 through the write doors, a ticketed 500
-through the schema-extension path, and an unclassified job-record message through
-async search — three answers for one condition, and the two wrong ones were
-invisible because nothing tested them.
+saturated pool answered a retryable 503 through the write doors and a ticketed
+500 through the schema-extension path — two answers for one condition, and the
+wrong one was invisible because nothing tested it.
+
+The async-search scan is the third site and the one whose *user-visible* answer
+is unchanged: `jobFailureMessage` recognises only the search-ceiling marker and
+`*common.AppError`, and collapses everything else to a fixed string, so no
+unclassified text ever reached a job record — that is a deliberate Gate 3
+property of this branch, not a gap. What changes there is internal: the store's
+own error now carries the marker, which is what the plugin's contract is judged
+on and what a future caller of `Searcher.Search` outside the job path would read.
+
+It also has two transient shapes, not one. The deadline case is this plugin's own
+ceiling; the other is a torn socket, which carries no SQLSTATE because the
+session was gone before the server could answer. `classifyAcquireErr`'s
+non-deadline branch therefore runs `classifyError` rather than wrapping bare —
+without that, unifying the three sites would have *lost* the torn-socket case the
+searcher already had.
 
 **The deadline must be scoped to the acquire alone, inside the plugin.**
 `Begin` returns `spi.WithTransaction(ctx, …)` derived from its *input* context
@@ -526,7 +539,7 @@ invisible because nothing tested them.
 deadline and cancel it the moment `Begin` returns. The plugin builds a separate
 acquire-only context for `pool.BeginTx` (and for the `set_config` round-trip at
 `:87`) and returns the transaction context derived from the original. Same
-requirement at `model_store.go:359`. This is the single easiest thing in the whole
+requirement at `model_store.go:369`. This is the single easiest thing in the whole
 change to implement wrongly, and it fails in a way ordinary tests would not catch —
 so §6 row 11e asserts a transaction stays usable past the acquire timeout.
 
@@ -544,7 +557,7 @@ deadline is generous relative to this seam anyway: TX_pre's connection was retur
 by `flushAndCommitSegment` immediately before, so the segment `Begin` is contending
 for a connection the same goroutine just released.
 
-`model_store.go:359` self-wraps only when there is no ambient transaction (`:355`)
+`model_store.go:369` self-wraps only when there is no ambient transaction (`:361`)
 and already has `defer tx.Rollback` (`:364`), so it cannot nest. Its only reachable
 callers are `ValidateOrExtend`'s five entity/workflow call sites — model import does
 **not** reach it. Its acquire failure surfaces as **503, like every other acquire**,

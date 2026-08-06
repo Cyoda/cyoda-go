@@ -25,9 +25,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Opening a transaction now waits at most `CYODA_POSTGRES_ACQUIRE_TIMEOUT`
   (default `10s`) for a pooled connection** and then fails with **503
   `STORAGE_UNAVAILABLE`**, retryable, instead of queueing behind a saturated pool.
-  This covers all three paths that open a transaction — entity writes, the
-  schema extension an auto-evolving model performs, and the async-search scan —
-  so one saturated pool gets one answer rather than an answer per door.
+  This covers both client-facing paths that open a transaction: entity writes,
+  and the schema extension an auto-evolving model performs — which previously
+  reported the same saturated pool as a `500` with a ticket. (The async-search
+  scan is classified the same way now, but its job record already reported a
+  fixed message and is unchanged.)
 
 - **With `CYODA_POSTGRES_AUTO_MIGRATE=true`, migrations now run before the
   schema-compatibility check.** A node booting alongside a peer's in-flight migration

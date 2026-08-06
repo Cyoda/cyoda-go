@@ -17,6 +17,29 @@ package e2e_test
 //
 // Every test also asserts the other direction on the same running backend: an
 // entity id that genuinely is not there still answers 404 ENTITY_NOT_FOUND.
+//
+// WHAT EACH CELL PROVES — read this before treating a green run as proof of the
+// classification change.
+//
+// Only the transitions cell discriminates. Measured against the parent of the
+// fix: transitions FAILS (404), the other three PASS. The three write endpoints
+// open their transaction BEFORE the entity read, so on a one-connection pool
+// with the session killed, txMgr.Begin is the first thing to touch the pool and
+// dies first ("failed to begin transaction") — the read this file exists for is
+// never reached. The transitions listing takes no transaction, so its read is
+// the first pool touch and the changed line runs.
+//
+// Neither injector available here can land inside the Begin→read window:
+// sessionKiller and pgProxy.cut both take effect on the acquire. So for delete,
+// the single update and the collection update these cells assert the
+// endpoint-level contract — a dead pool is never reported as 404 — and NOT the
+// specific line this branch changed.
+//
+// The discriminating coverage for those three is
+// internal/domain/entity/entity_read_outage_test.go, which faults the entity
+// read alone, on the real handler, both directions per site. That is the test to
+// change if the classification changes; these are the ones that prove the door
+// behaves at the HTTP boundary on a real backend.
 
 import (
 	"fmt"
@@ -70,7 +93,12 @@ func assertGenuineMissStill404(t *testing.T, h *callbackHarness, method, path, b
 }
 
 // TestE2E_GetEntityTransitions_StorageFailureIsNotNotFound covers
-// getEntityTransitions. It is the sharpest of the four: its documented alias
+// getEntityTransitions, and is the one cell here that discriminates: this
+// endpoint opens no transaction, so its entity read is the first thing to touch
+// the dead pool and the changed classification runs. Verified red against the
+// parent of the fix (404 ENTITY_NOT_FOUND).
+//
+// It is also the sharpest case on its own terms: the documented alias
 // fetchEntityTransitions reads through a classifier that has always been
 // correct, so before the fix one storage outage produced two different answers
 // depending on which door the caller used.
@@ -90,6 +118,9 @@ func TestE2E_GetEntityTransitions_StorageFailureIsNotNotFound(t *testing.T) {
 // TestE2E_UpdateSingleEntity_StorageFailureIsNotNotFound covers the loopback
 // update, which runs updateEntityCore — the same read PATCH and the named
 // transition go through.
+//
+// Endpoint-level only: Begin fails before the read (see the file header). The
+// discriminating cell is TestUpdateEntity_StorageOutage_Returns503.
 func TestE2E_UpdateSingleEntity_StorageFailureIsNotNotFound(t *testing.T) {
 	h, _, entityID := entityReadFailureFixture(t)
 	k := newSessionKiller(t)
@@ -106,6 +137,9 @@ func TestE2E_UpdateSingleEntity_StorageFailureIsNotNotFound(t *testing.T) {
 // TestE2E_UpdateEntityCollection_StorageFailureIsNotNotFound covers the
 // per-item read inside the collection update, which aborts the chunk either way
 // — what changes is whether the caller is told to stop retrying.
+//
+// Endpoint-level only: Begin fails before the read (see the file header). The
+// discriminating cell is TestUpdateEntityCollection_StorageOutage_Returns503.
 func TestE2E_UpdateEntityCollection_StorageFailureIsNotNotFound(t *testing.T) {
 	h, _, entityID := entityReadFailureFixture(t)
 	k := newSessionKiller(t)
@@ -126,6 +160,9 @@ func TestE2E_UpdateEntityCollection_StorageFailureIsNotNotFound(t *testing.T) {
 // Unlike the other three this one is not repeatable — a delete that succeeds
 // makes every later attempt a genuine 404 — so it runs a single cycle on its own
 // entity, the same shape the trusted-key delete uses.
+//
+// Endpoint-level only: Begin fails before the read (see the file header). The
+// discriminating cell is TestDeleteEntity_StorageOutage_Returns503.
 func TestE2E_DeleteSingleEntity_StorageFailureIsNotNotFound(t *testing.T) {
 	h, model, warmID := entityReadFailureFixture(t)
 	victimID, status, body := h.CreateEntity(t, model, 1, lookupFailureSample)
