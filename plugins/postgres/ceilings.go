@@ -2,10 +2,17 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"strconv"
+	"syscall"
 	"time"
+
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // pgDurationMillis renders a Go duration in the form PostgreSQL's
@@ -110,3 +117,86 @@ func (e *acquireTimeoutError) Error() string {
 }
 func (e *acquireTimeoutError) Unwrap() error            { return e.cause }
 func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
+
+// idleInTxAbortError marks an operation that found its transaction already gone
+// — the shape idle_in_transaction_session_timeout produces when it reclaims a
+// transaction that sat idle past the ceiling. Transient contention, like pool
+// exhaustion: the transaction is lost, but the same request on a fresh one may
+// well succeed, so it carries the same StorageUnavailable marker.
+//
+// The message does not name the ceiling, because one of the two shapes below is
+// a bare torn socket that a network fault produces identically. Whenever the
+// server did say why, the wrapped cause carries its SQLSTATE, and classifyError
+// logs the setting by name.
+type idleInTxAbortError struct{ cause error }
+
+func (e *idleInTxAbortError) Error() string {
+	return "the transaction was reclaimed before the operation completed: " + e.cause.Error()
+}
+func (e *idleInTxAbortError) Unwrap() error            { return e.cause }
+func (e *idleInTxAbortError) StorageUnavailable() bool { return true }
+
+// isIdleInTxAbort reports whether err is PostgreSQL reclaiming a transaction
+// that sat idle past the ceiling.
+//
+// Two shapes, because 25P03 terminates the SESSION rather than merely aborting
+// the transaction: pgx may read the buffered ErrorResponse and surface a
+// PgError, or notice the connection is already gone and surface a transport
+// error. Both are checked — the torn-socket test comes second but is not
+// subordinate, since a chain can carry an unrelated PgError above a torn socket.
+func isIdleInTxAbort(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
+		return true
+	}
+	return isConnectionTorn(err)
+}
+
+// isStatementTimeout reports whether err is PostgreSQL cancelling a statement
+// that exceeded statement_timeout. Reachable on any statement and any endpoint,
+// including reads.
+func isStatementTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.QueryCanceled
+}
+
+// isConnectionTorn reports whether the session behind err went away underneath
+// the operation.
+//
+// The membership of this set was settled by observation against a live server,
+// not by reading the driver. With the ceiling at 300ms and a 2s idle gap, the
+// FIRST operation after the ceiling fires surfaces
+//
+//	*pgconn.PgError — "FATAL: terminating connection due to idle-in-transaction
+//	timeout (SQLSTATE 25P03)"
+//
+// and every operation after that surfaces
+//
+//	"failed to deallocate cached statement(s): conn closed"
+//
+// — pgx's own wrapping of pgconn.ErrConnClosed, because the driver has by then
+// closed the connection it read that fatal response on. Both shapes therefore
+// occur in one request: the entity write path issues several statements, so
+// which one reaches the handler depends on how far into the request the session
+// died. The remaining members are the transport faults that produce the same
+// condition without a server response to read, kept because a session
+// terminated mid-write can surface as any of them.
+//
+// A caller who went away is excluded deliberately: pgx reports a cancelled or
+// expired request context through the same call, and the server is not the
+// reason such a request failed — the same distinction classifyAcquireErr draws
+// for the acquire deadline.
+func isConnectionTorn(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, pgconn.ErrConnClosed) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var connErr *pgconn.ConnectError
+	return errors.As(err, &connErr)
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -219,7 +220,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		if err != nil {
 			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
-			return classifyError(fmt.Errorf("Commit: validate: %w", err))
+			return tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
 			tm.cleanupTx(txID)
@@ -261,7 +262,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// it back to the pool; ignore the rollback error (tx is already invalid).
 		_ = pgxTx.Rollback(ctx)
 		tm.cleanupTx(txID)
-		return classifyError(fmt.Errorf("Commit: %w", err))
+		return tm.classifyTxError(txID, fmt.Errorf("Commit: %w", err))
 	}
 
 	tm.cleanupTx(txID)
@@ -554,6 +555,14 @@ func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID 
 // Both sentinels stay reachable: spi.ErrConflict satisfies handler-level
 // errors.Is checks, and the original *pgconn.PgError stays in the chain so
 // observability and logging can type-assert via errors.As.
+//
+// The two connection ceilings are classified here too, and deliberately NOT
+// alike, because they differ in whether retrying helps:
+//   - idle_in_transaction_session_timeout (25P03, plus the torn-socket shape of
+//     the same event) → the storage-unavailable marker, i.e. a retryable 503.
+//   - statement_timeout (57014) → passed through unmarked, so it lands on the
+//     500-with-a-ticket path. Re-running a statement that just exceeded the
+//     ceiling will exceed it again; calling that retryable would be a lie.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
@@ -565,7 +574,56 @@ func classifyError(err error) error {
 			return fmt.Errorf("%w: %w", spi.ErrConflict, err)
 		case pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "unique_claims_uq":
 			return fmt.Errorf("%w: %w", spi.ErrUniqueViolation, err)
+		case pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout:
+			// The server said which ceiling fired, so the log can name it —
+			// the torn-socket shape below cannot.
+			slog.Warn("transaction reclaimed after exceeding the configured ceiling",
+				"pkg", "postgres", "setting", "idle_in_transaction_session_timeout", "err", err)
+			return &idleInTxAbortError{cause: err}
+		case pgErr.Code == pgerrcode.QueryCanceled:
+			// NOT retryable, and deliberately not marked so. The 500 this
+			// becomes carries a ticket; this log line is the whole user-visible
+			// benefit, turning an unexplained failure into a named cause.
+			slog.Warn("statement cancelled after exceeding the configured ceiling",
+				"pkg", "postgres", "setting", "statement_timeout", "err", err)
+			return err
 		}
 	}
+	// No server response to read: the session was already gone by the time pgx
+	// looked. Same event as 25P03 above, second face — see isConnectionTorn.
+	if isConnectionTorn(err) {
+		return &idleInTxAbortError{cause: err}
+	}
 	return err
+}
+
+// classifyTxError is classifyError for an error raised against a specific
+// transaction. When the session was reclaimed, that transaction no longer exists
+// server-side and Commit/Rollback will never run to tidy up after it — so the
+// pgx handle and the per-transaction bookkeeping are reclaimed here instead.
+func (tm *TransactionManager) classifyTxError(txID string, err error) error {
+	classified := classifyError(err)
+	if isIdleInTxAbort(classified) {
+		tm.discardTx(txID)
+	}
+	return classified
+}
+
+// discardTx releases a transaction whose session the server has already
+// terminated.
+//
+// The rollback cannot reach the server and is expected to fail; it is issued
+// because that is what hands the pooled connection back — pgxpool releases it
+// inside Rollback regardless of outcome. Dropping the registry entry without it
+// would leave pgxpool believing the connection is still checked out, so the pool
+// would shrink by one on every reclaimed transaction.
+//
+// It runs on a background context: the caller's may be the very one that just
+// expired, and a rollback on an expired context destroys the pooled connection
+// instead of returning it.
+func (tm *TransactionManager) discardTx(txID string) {
+	if pgxTx, ok := tm.registry.Lookup(txID); ok {
+		_ = pgxTx.Rollback(context.Background())
+	}
+	tm.cleanupTx(txID)
 }

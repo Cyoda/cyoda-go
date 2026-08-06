@@ -2052,7 +2052,7 @@ func classifyWorkflowError(err error) *common.AppError {
 	// COMMIT_BEFORE_DISPATCH's at-least-once contract — the segment boundary is
 	// where the caller opts into exactly that — and the alternative is worse: an
 	// opaque 500 for a condition that clears on its own in milliseconds.
-	if suErr := storageUnavailable(err); suErr != nil {
+	if suErr := common.StorageUnavailable(err); suErr != nil {
 		return suErr
 	}
 	if errors.Is(err, contract.ErrNoMatchingMember) {

@@ -35,6 +35,18 @@ var MigrateDownForTest = migrateDown
 // serialization/deadlock classification logic without requiring a live database.
 var ClassifyErrorForTest = classifyError
 
+// txResidue reports which pieces of per-transaction bookkeeping are still held
+// for txID: the pgx handle in the registry, the tenant, the origin and the
+// txState (which carries the read and write sets). All four must be gone once a
+// transaction has ended, however it ended.
+func (tm *TransactionManager) txResidue(txID string) (registry, tenant, origin, state bool) {
+	_, registry = tm.registry.Lookup(txID)
+	_, tenant = tm.lookupTenant(txID)
+	_, origin = tm.lookupOrigin(txID)
+	_, state = tm.lookupTxState(txID)
+	return
+}
+
 // HasTxState reports whether the given txID has an active txState entry.
 func HasTxState(tm *TransactionManager, txID string) bool {
 	tm.txStatesMu.RLock()

@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -37,9 +39,9 @@ const (
 // storageCeilingModel derives a per-test model name. Each test here stands up
 // its own app, but they all share the package's Postgres container, so a fixed
 // name would collide on the second import (MODEL_ALREADY_LOCKED).
-func storageCeilingModel(t *testing.T) string {
+func storageCeilingModel(t *testing.T, prefix string) string {
 	t.Helper()
-	return "pool-hold-" + strings.ToLower(strings.Map(func(r rune) rune {
+	return prefix + "-" + strings.ToLower(strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			return r
 		}
@@ -77,7 +79,7 @@ func newSaturatedPoolHarness(t *testing.T) *holdHarness {
 
 	hh := &holdHarness{
 		callbackHarness: h,
-		model:           storageCeilingModel(t),
+		model:           storageCeilingModel(t, "pool-hold"),
 		entered:         make(chan struct{}),
 		release:         make(chan struct{}),
 		done:            make(chan createEntityResult, 1),
@@ -208,6 +210,242 @@ func TestE2E_SaturatedPool_GRPCEnvelope(t *testing.T) {
 		t.Fatalf("queued for %v instead of failing fast", elapsed)
 	}
 	t.Logf("saturated-pool gRPC create failed after %v: %s", elapsed, env.Error.Message)
+}
+
+// --- the server-side ceilings ----------------------------------------------
+//
+// Both are transactions the DATABASE ends, and they are reported differently on
+// purpose. A transaction reclaimed by the idle ceiling is transient contention —
+// a retry on a fresh one may well succeed — so it is a retryable 503. A
+// statement cancelled by statement_timeout is not: re-running a statement that
+// just exceeded the ceiling will exceed it again, so it is a 500 with a ticket,
+// and the cause is named in the log rather than advertised to the caller.
+
+const (
+	// Small enough to fire inside a test, comfortably larger than every
+	// statement the harness's own boot and model import issue.
+	idleCeilingLimit = 1500 * time.Millisecond
+	stmtCeilingLimit = time.Second
+)
+
+// newReclaimedTxHarness builds a stack whose idle-in-transaction ceiling fires
+// during a single SYNC callout, and imports a model whose only transition runs
+// that callout. In-process dispatch is what makes the sleep happen on the
+// SERVER's request goroutine, with the transaction open and nothing written in
+// between — the one shape that lets the idle clock run out.
+func newReclaimedTxHarness(t *testing.T) (*callbackHarness, string) {
+	t.Helper()
+	svc := localproc.New()
+	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
+		// Read by the postgres plugin's own getenv at factory-open time, which
+		// happens inside app.New — i.e. after this mutator runs.
+		t.Setenv("CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT", idleCeilingLimit.String())
+		cfg.ExternalProcessing = svc
+		// The scan loop would keep tripping the same ceiling in the background
+		// and log failures unrelated to what is under test.
+		cfg.Scheduler.Enabled = false
+	})
+
+	model := storageCeilingModel(t, "idle-ceiling")
+	proc := model + "-sleeper"
+	registerSleeper(svc, proc, idleCeilingLimit+2*time.Second)
+	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, pgCeilingPipelineWF(model+"-wf", proc))
+	return h, model
+}
+
+// TestE2E_IdleInTxCeiling_Returns503 is coverage row 9 on the HTTP door. Without
+// the classification the same failure surfaces as an opaque 500, which tells the
+// caller nothing and — worse — tells them not to retry something that would
+// have worked.
+func TestE2E_IdleInTxCeiling_Returns503(t *testing.T) {
+	h, model := newReclaimedTxHarness(t)
+
+	entityID, status, body := h.CreateEntity(t, model, 1, storageCeilingSample)
+
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", status, body)
+	}
+	assertStorageUnavailableProblem(t, body)
+
+	// Nothing partially durable: the reclaimed transaction took its writes with
+	// it, so a retry starts from a clean slate rather than a half-written entity.
+	if entityID != "" {
+		if _, s := h.GetEntityState(t, entityID); s == http.StatusOK {
+			t.Fatalf("entity %s is readable after its transaction was reclaimed", entityID)
+		}
+	}
+	t.Logf("reclaimed transaction reported as 503: %s", body)
+}
+
+// TestE2E_IdleInTxCeiling_GRPCEnvelope is the same failure on the second entry
+// point. Over gRPC the envelope's code field is the generic class CLIENT_ERROR
+// and the domain code rides in the message — the established convention for this
+// surface, matching the saturated-pool case above.
+func TestE2E_IdleInTxCeiling_GRPCEnvelope(t *testing.T) {
+	h, model := newReclaimedTxHarness(t)
+
+	env, err := h.createEntityGRPC(model, 1, storageCeilingSample)
+	if err != nil {
+		t.Fatalf("gRPC create: %v", err)
+	}
+	if env.Success {
+		t.Fatal("create succeeded despite the transaction being reclaimed")
+	}
+	if env.Error == nil {
+		t.Fatal("failed gRPC create carried no error envelope")
+	}
+	if env.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("Error.Code = %q, want CLIENT_ERROR (the envelope class)", env.Error.Code)
+	}
+	if !strings.HasPrefix(env.Error.Message, "STORAGE_UNAVAILABLE:") {
+		t.Errorf("Error.Message = %q, want the STORAGE_UNAVAILABLE domain code", env.Error.Message)
+	}
+	if env.Error.Retryable == nil || !*env.Error.Retryable {
+		t.Errorf("Error.Retryable = %v, want true", env.Error.Retryable)
+	}
+	t.Logf("reclaimed transaction reported over gRPC as: %s", env.Error.Message)
+}
+
+// newStatementCeilingHarness builds a stack whose statement_timeout is short,
+// and a model with no callouts at all — the statement this ceiling cancels is
+// the entity write itself.
+func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string) {
+	t.Helper()
+	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
+		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
+		cfg.Scheduler.Enabled = false
+	})
+	model := storageCeilingModel(t, "stmt-ceiling")
+	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)
+	return h, model
+}
+
+// blockEntityWrites holds an EXCLUSIVE lock on the entities table from a
+// connection of the test's own, so the next entity write waits on it rather
+// than proceeding.
+//
+// A lock wait is the deterministic way to build a statement that exceeds
+// statement_timeout: the ceiling counts the whole statement, waiting included,
+// so the cancellation lands at a known moment instead of depending on how long
+// some scan happens to take on the machine running the test. It is also the
+// realistic cause — a maintenance operation holding a table lock is exactly what
+// puts ordinary writes over the ceiling in production.
+//
+// EXCLUSIVE conflicts with the ROW EXCLUSIVE the write's INSERT needs, but not
+// with the ACCESS SHARE plain reads take, so only the write blocks.
+func blockEntityWrites(t *testing.T) func() {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "stmt-ceiling-locker"))
+	if err != nil {
+		cancel()
+		t.Fatalf("open locker pool: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("begin locker transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "LOCK TABLE entities IN EXCLUSIVE MODE"); err != nil {
+		_ = tx.Rollback(ctx)
+		pool.Close()
+		cancel()
+		t.Fatalf("lock entities: %v", err)
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = tx.Rollback(ctx)
+			pool.Close()
+			cancel()
+		})
+	}
+}
+
+// TestE2E_StatementTimeout_Returns500WithTicket is coverage row 12 on the HTTP
+// door. 500, not 503 and not 409: the statement that was cancelled would be
+// cancelled again, so nothing here may advertise a retry. What the change buys
+// is the log line naming statement_timeout — the response itself stays the
+// deliberately opaque ticket.
+func TestE2E_StatementTimeout_Returns500WithTicket(t *testing.T) {
+	h, model := newStatementCeilingHarness(t)
+	release := blockEntityWrites(t)
+	defer release()
+
+	start := time.Now()
+	_, status, body := h.CreateEntity(t, model, 1, storageCeilingSample)
+	elapsed := time.Since(start)
+
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status = %d after %v, want 500 — re-running the statement would exceed the ceiling again; body: %s", status, elapsed, body)
+	}
+	assertCancelledStatementProblem(t, body)
+	t.Logf("cancelled statement reported as 500 after %v: %s", elapsed, body)
+}
+
+// assertCancelledStatementProblem checks the RFC 9457 body carries a ticket, is
+// NOT advertised as retryable, and leaks none of the driver's own text.
+func assertCancelledStatementProblem(t *testing.T, body string) {
+	t.Helper()
+	var pd struct {
+		Status int            `json:"status"`
+		Detail string         `json:"detail"`
+		Ticket string         `json:"ticket"`
+		Props  map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(body), &pd); err != nil {
+		t.Fatalf("problem detail is not JSON: %v; body: %s", err, body)
+	}
+	if pd.Ticket == "" {
+		t.Errorf("500 carried no ticket, so the log line naming the ceiling cannot be correlated: %s", body)
+	}
+	if retryable, ok := pd.Props["retryable"].(bool); ok && retryable {
+		t.Errorf("a cancelled statement was advertised as retryable: %s", body)
+	}
+	assertNoInternalDetail(t, body)
+}
+
+// assertNoInternalDetail fails if a client-facing body carries driver text, SQL,
+// SQLSTATEs or connection detail.
+func assertNoInternalDetail(t *testing.T, body string) {
+	t.Helper()
+	for _, leak := range []string{
+		"sqlstate", "canceling statement", "statement_timeout", "pgx", "pgconn",
+		"insert into", "postgres://", "password", "dbname=",
+	} {
+		if strings.Contains(strings.ToLower(body), leak) {
+			t.Errorf("client-facing body leaks internal detail (%q): %s", leak, body)
+		}
+	}
+}
+
+// TestE2E_StatementTimeout_GRPCEnvelope is row 12's second entry point.
+func TestE2E_StatementTimeout_GRPCEnvelope(t *testing.T) {
+	h, model := newStatementCeilingHarness(t)
+	release := blockEntityWrites(t)
+	defer release()
+
+	env, err := h.createEntityGRPC(model, 1, storageCeilingSample)
+	if err != nil {
+		t.Fatalf("gRPC create: %v", err)
+	}
+	if env.Success {
+		t.Fatal("create succeeded despite the statement being cancelled")
+	}
+	if env.Error == nil {
+		t.Fatal("failed gRPC create carried no error envelope")
+	}
+	if env.Error.Code != "SERVER_ERROR" {
+		t.Errorf("Error.Code = %q, want SERVER_ERROR", env.Error.Code)
+	}
+	if env.Error.Retryable != nil && *env.Error.Retryable {
+		t.Error("a cancelled statement was advertised as retryable over gRPC")
+	}
+	assertNoInternalDetail(t, env.Error.Message)
+	t.Logf("cancelled statement reported over gRPC as: %s", env.Error.Message)
 }
 
 // txEnvelope is the error-bearing subset of EntityTransactionResponse.

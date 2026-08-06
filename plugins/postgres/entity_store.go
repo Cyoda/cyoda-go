@@ -80,7 +80,10 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		tid, eid,
 		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion).Scan(&nextVersion, &isNew)
 	if err != nil {
-		return 0, fmt.Errorf("failed to upsert entity: %w", classifyError(err))
+		// Already classified: every statement this store issues goes through
+		// ctxQuerier, which is where classification lives. Re-classifying here
+		// would nest the wrapper a second time.
+		return 0, fmt.Errorf("failed to upsert entity: %w", err)
 	}
 
 	entity.Meta.Version = nextVersion

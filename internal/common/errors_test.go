@@ -396,6 +396,60 @@ func TestInternal_ConflictStillRetryable(t *testing.T) {
 	}
 }
 
+// stubUnavailable is a storage error carrying the transient-unavailability
+// marker. The marker is an interface by design — no package owns the type — so
+// a plugin opts in simply by returning this shape.
+type stubUnavailable struct{ error }
+
+func (stubUnavailable) StorageUnavailable() bool { return true }
+
+// TestInternal_StorageUnavailableBecomes503 — the marker has to be honoured on
+// the generic 500 funnel, not only at the transaction-Begin call sites. A
+// transaction the database reclaimed surfaces from whichever statement ran next,
+// and every one of those failures reaches the caller through Internal.
+func TestInternal_StorageUnavailableBecomes503(t *testing.T) {
+	cause := stubUnavailable{errors.New("the transaction was reclaimed: conn closed")}
+	e := common.Internal("failed to save entity", fmt.Errorf("failed to get DB timestamps: %w", cause))
+
+	if e.Status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", e.Status)
+	}
+	if e.Code != common.ErrCodeStorageUnavailable {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeStorageUnavailable)
+	}
+	if !e.Retryable {
+		t.Fatal("STORAGE_UNAVAILABLE must be retryable")
+	}
+	if e.Level != common.LevelOperational {
+		t.Fatalf("level = %v, want Operational — an Internal level would mint a ticket and hide the code", e.Level)
+	}
+	if e.Err == nil {
+		t.Fatal("the cause was dropped, leaving the 503 undiagnosable in the log")
+	}
+	if strings.Contains(e.Message, "conn closed") {
+		t.Fatalf("the client-facing message leaked infrastructure detail: %q", e.Message)
+	}
+}
+
+// TestInternal_StatementTimeoutStaysA500 is the other half of the ceiling split.
+// A cancelled statement carries no marker and no conflict sentinel, so it must
+// come out as a 500 with a ticket: re-running a statement that just exceeded the
+// ceiling will exceed it again, and calling that retryable would be a lie.
+func TestInternal_StatementTimeoutStaysA500(t *testing.T) {
+	e := common.Internal("failed to save entity",
+		errors.New("failed to upsert entity: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"))
+
+	if e.Status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", e.Status)
+	}
+	if e.Retryable {
+		t.Fatal("a cancelled statement was advertised as retryable")
+	}
+	if e.Level != common.LevelInternal {
+		t.Fatalf("level = %v, want Internal so the response carries a ticket", e.Level)
+	}
+}
+
 // TestOperational_NotRetryableByDefault pins that 4xx errors from the
 // primitive Operational constructor are non-retryable by default —
 // retryable is opt-in via AsRetryable(). A permanent business-logic

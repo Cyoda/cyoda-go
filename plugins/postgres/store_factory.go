@@ -123,12 +123,20 @@ func resolveTenant(ctx context.Context) (spi.TenantID, error) {
 // internally, with a connection-leak failure mode of its own — and it is
 // unnecessary: these statements are bounded server-side by statement_timeout,
 // so the connection returns within that ceiling regardless.
+//
+// A context that names a transaction the manager no longer holds gets a querier
+// that fails every statement, NOT the pool. The pool would run the statement
+// outside the transaction the caller believes it is in and commit it on its own
+// — a partial write nobody asked for. This is reachable whenever a transaction
+// ends under the caller: the idle ceiling reclaiming it, or a failed commit.
 func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 	if f.tm != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
-			if pgxTx, ok := f.tm.LookupTx(tx.ID); ok {
-				return pgxTx
+			pgxTx, ok := f.tm.LookupTx(tx.ID)
+			if !ok {
+				return deadTxQuerier{txID: tx.ID}
 			}
+			return pgxTx
 		}
 	}
 	return f.pool
@@ -137,6 +145,23 @@ func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 // querier returns the per-call-resolving Querier used by all stores.
 func (f *StoreFactory) querier() Querier {
 	return &ctxQuerier{factory: f}
+}
+
+// classifyFor classifies a statement error against whichever transaction the
+// call was made in. Statements issued on a live transaction go through the
+// transaction-scoped classifier, so a session the server has reclaimed also
+// reclaims the bookkeeping Commit/Rollback will now never reach; everything else
+// — the non-transactional pool path — gets the plain classification.
+func (f *StoreFactory) classifyFor(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if f.tm != nil {
+		if tx := spi.GetTransaction(ctx); tx != nil {
+			return f.tm.classifyTxError(tx.ID, err)
+		}
+	}
+	return classifyError(err)
 }
 
 func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {

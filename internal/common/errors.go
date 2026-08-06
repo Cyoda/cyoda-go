@@ -98,13 +98,47 @@ func Operational(status int, code string, message string) *AppError {
 	}
 }
 
+// StorageUnavailable returns a retryable 503 AppError when err carries the
+// storage layer's transient-unavailability marker, and nil when it does not.
+//
+// Matched with errors.As on an interface rather than a concrete type: the error
+// is already wrapped several times over by the time a classifier sees it, and
+// the marker is a plugin-side type this module must not import. A storage plugin
+// opts in by returning an error whose chain satisfies the interface — no SPI
+// change, so no coordinated cross-repo release.
+//
+// The cause rides along via WithCause so the log can say WHY storage was
+// unavailable. It stays out of the client-facing message deliberately: unlike a
+// domain 4xx, this detail is infrastructure — a pgx connection error carries
+// host, user and database (pgx redacts the password), which is operator
+// information, not caller information.
+func StorageUnavailable(err error) *AppError {
+	var su interface{ StorageUnavailable() bool }
+	if err != nil && errors.As(err, &su) && su.StorageUnavailable() {
+		return Operational(
+			http.StatusServiceUnavailable,
+			ErrCodeStorageUnavailable,
+			"storage is temporarily unavailable — retry",
+		).AsRetryable().WithCause(err)
+	}
+	return nil
+}
+
 // Internal creates a 500 error with internal detail from the wrapped error.
 //
 // If the wrapped error is (or wraps) spi.ErrConflict, the result is routed to
 // a retryable 409 instead — a serialization abort (40001/40P01) that fully
 // rolled back is retryable, not a server error. This keeps every call site
 // honest without forcing each to reason about pgx error codes.
+//
+// A transient storage outage is routed likewise, to a retryable 503. It is
+// checked first because it is the one condition here whose cause must not reach
+// the response body, and because a storage plugin's own marker is more specific
+// than any sentinel a wrapper below it might also carry.
 func Internal(message string, err error) *AppError {
+	if appErr := StorageUnavailable(err); appErr != nil {
+		return appErr
+	}
 	if err != nil && errors.Is(err, spi.ErrUniqueViolation) {
 		return Operational(http.StatusConflict, ErrCodeUniqueViolation, "a composite unique key constraint was violated")
 	}

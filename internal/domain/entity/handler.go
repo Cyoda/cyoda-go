@@ -146,38 +146,15 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 	return nil
 }
 
-// storageUnavailable returns a 503 AppError when err carries the storage
-// layer's transient-unavailability marker, or nil when it does not.
+// classifyBeginErr maps a transaction-Begin failure to a status code.
 //
-// Matched with errors.As on an interface rather than a concrete type: every
-// Begin error is already wrapped by the time a classifier sees it, and the
-// marker is a plugin-side type this module must not import. A storage plugin
-// opts in by returning an error whose chain satisfies the interface — no SPI
-// change, so no coordinated cross-repo release.
-//
-// The cause rides along via WithCause so WriteError can log WHY the pool
-// failed. It stays out of the client-facing message deliberately: unlike a
-// domain 4xx, this detail is infrastructure — a pgx connection error carries
-// host, user and database (pgx redacts the password), which is operator
-// information, not caller information.
-func storageUnavailable(err error) *common.AppError {
-	var su interface{ StorageUnavailable() bool }
-	if errors.As(err, &su) && su.StorageUnavailable() {
-		return common.Operational(
-			http.StatusServiceUnavailable,
-			common.ErrCodeStorageUnavailable,
-			"storage is temporarily unavailable — retry",
-		).AsRetryable().WithCause(err)
-	}
-	return nil
-}
-
-// classifyBeginErr maps a transaction-Begin failure to a status code. It must
-// run BEFORE common.Internal, which fixes the status at 500 — AppError.Unwrap
-// means a later errors.As would still find the cause, but by then the status is
-// already wrong.
+// common.Internal now recognises the storage-unavailability marker itself, so
+// this is no longer the only thing standing between a 503 and an opaque 500. It
+// is kept as the named entry point every Begin site calls, and because the
+// message it would otherwise pass — "failed to begin transaction" — is not what
+// a transient pool outage should be reported as.
 func classifyBeginErr(err error) *common.AppError {
-	if appErr := storageUnavailable(err); appErr != nil {
+	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return appErr
 	}
 	return common.Internal("failed to begin transaction", err)
