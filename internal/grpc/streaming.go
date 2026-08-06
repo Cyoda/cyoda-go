@@ -110,7 +110,18 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to create greet event: %v", err)
 	}
-	if err := stream.Send(greetCE); err != nil {
+	// Through Member.Send, never the raw stream: Register above has already
+	// published this member, so a dispatch can be routed to it before the greet
+	// lands. Two concurrent sends on one gRPC stream are unsupported and corrupt
+	// the HTTP/2 framing rather than failing cleanly. Member.Send's sendMu is
+	// what serialises them — the same reason the keep-alive goes through it.
+	member := s.registry.Get(memberID)
+	if member == nil {
+		// Unregistered between Register and here — the stream is already going
+		// away, so there is nothing to greet.
+		return status.Errorf(codes.Unavailable, "member %s disconnected before greet", memberID)
+	}
+	if err := member.Send(greetCE); err != nil {
 		slog.Error("failed to send greet", "pkg", "grpc", "memberId", memberID, "error", err)
 		return err
 	}
