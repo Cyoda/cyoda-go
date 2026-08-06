@@ -44,7 +44,7 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
 
-	compatDB := openDB(pool)
+	compatDB := openDB(pool, cfg.MigrateLockTimeout)
 	compatErr := checkSchemaCompat(ctx, compatDB, cfg.AutoMigrate)
 	_ = compatDB.Close()
 	if compatErr != nil {
@@ -52,7 +52,7 @@ func (p *plugin) NewFactory(
 		return nil, compatErr
 	}
 	if cfg.AutoMigrate {
-		if err := runMigrations(ctx, pool); err != nil {
+		if err := runMigrations(ctx, pool, cfg.MigrateLockTimeout); err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("postgres migrate: %w", err)
 		}

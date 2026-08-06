@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -19,16 +20,53 @@ import (
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
-// openDB creates an independent *sql.DB from the pool's config.
-func openDB(pool *pgxpool.Pool) *sql.DB {
-	return stdlib.OpenDB(*pool.Config().ConnConfig)
+// migrationRuntimeParams returns the connection settings a migration needs —
+// the inverse of the app pool's.
+//
+// Doing work for a long time is fine: a migration's DDL may legitimately run for
+// minutes, so the statement and idle-in-transaction ceilings are disabled
+// outright. WAITING is what must be bounded. lock_timeout caps both a DDL lock
+// wait and golang-migrate's pg_advisory_lock wait, which is otherwise unbounded
+// at the Go level because its Lock() uses context.Background().
+//
+// 5m rather than something tighter: a migration's own DDL lock waits are
+// legitimate during a rolling upgrade, and an old node's in-flight write
+// transaction is itself bounded by the app-pool ceilings — so a bounded wait
+// succeeds where a 30s one would abort a healthy upgrade.
+//
+// 0 is PostgreSQL's own convention for "no limit", and the values are rendered
+// as a bare integer count of milliseconds — never a Go duration string, which
+// PostgreSQL cannot parse. See pgDurationMillis.
+func migrationRuntimeParams(lockTimeout time.Duration) map[string]string {
+	return map[string]string{
+		"lock_timeout":                        pgDurationMillis(lockTimeout),
+		"statement_timeout":                   "0",
+		"idle_in_transaction_session_timeout": "0",
+	}
+}
+
+// openDB creates an independent *sql.DB from the pool's config, with the
+// migration settings applied.
+//
+// pool.Config() deep-copies RuntimeParams, so these overrides cannot leak back
+// into the app pool — asserted by TestOpenDB_DoesNotLeakIntoTheAppPool rather
+// than assumed.
+func openDB(pool *pgxpool.Pool, lockTimeout time.Duration) *sql.DB {
+	connCfg := *pool.Config().ConnConfig
+	if connCfg.RuntimeParams == nil {
+		connCfg.RuntimeParams = map[string]string{}
+	}
+	for k, v := range migrationRuntimeParams(lockTimeout) {
+		connCfg.RuntimeParams[k] = v
+	}
+	return stdlib.OpenDB(connCfg)
 }
 
 // runMigrations applies pending migrations. Uses m.GracefulStop to honor
 // context cancellation at migration-step boundaries (golang-migrate's
 // m.Up() itself takes no context).
-func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	db := openDB(pool)
+func runMigrations(ctx context.Context, pool *pgxpool.Pool, lockTimeout time.Duration) error {
+	db := openDB(pool, lockTimeout)
 	defer db.Close()
 
 	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
@@ -68,9 +106,12 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 }
 
-// Migrate preserves the existing exported API for test fixtures.
+// Migrate preserves the existing exported API for test fixtures. It applies the
+// shipped lock-timeout default: a fixture migrates a database nothing else is
+// touching, so its lock waits are uncontended and there is no second source of
+// truth to keep in step.
 func Migrate(pool *pgxpool.Pool) error {
-	return runMigrations(context.Background(), pool)
+	return runMigrations(context.Background(), pool, defaultMigrateLockTimeout)
 }
 
 // RunMigrateWithDSN is the entry point for the `cyoda migrate` subcommand.
@@ -90,6 +131,13 @@ func RunMigrateWithDSN(ctx context.Context, dsn string) error {
 		return fmt.Errorf("CYODA_POSTGRES_URL required for postgres migrations")
 	}
 
+	// Read the same way the plugin does, so the `cyoda migrate` subcommand and
+	// the server cannot disagree about the bound.
+	lockTimeout, _, err := envCeiling(os.Getenv, "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT", defaultMigrateLockTimeout)
+	if err != nil {
+		return fmt.Errorf("postgres migrate: %w", err)
+	}
+
 	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return fmt.Errorf("parse postgres DSN: %w", err)
@@ -98,6 +146,17 @@ func RunMigrateWithDSN(ctx context.Context, dsn string) error {
 	// no background health-check goroutines.
 	poolCfg.MaxConns = 2
 	poolCfg.MinConns = 0
+	// This pool inherits nothing from the app pool, but it does inherit
+	// RuntimeParams embedded in the DSN — so the migration settings are applied
+	// explicitly rather than relying on openDB alone. Without this, a
+	// statement_timeout an operator put in CYODA_POSTGRES_URL would still be in
+	// force on pool.Ping and on the pool's own statements.
+	if poolCfg.ConnConfig.RuntimeParams == nil {
+		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	for k, v := range migrationRuntimeParams(lockTimeout) {
+		poolCfg.ConnConfig.RuntimeParams[k] = v
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
@@ -111,14 +170,14 @@ func RunMigrateWithDSN(ctx context.Context, dsn string) error {
 
 	// Enforce the schema-compatibility contract before applying anything.
 	// autoMigrate=true here: we are the migration process.
-	compatDB := openDB(pool)
+	compatDB := openDB(pool, lockTimeout)
 	compatErr := checkSchemaCompat(ctx, compatDB, true)
 	_ = compatDB.Close()
 	if compatErr != nil {
 		return compatErr
 	}
 
-	return runMigrations(ctx, pool)
+	return runMigrations(ctx, pool, lockTimeout)
 }
 
 // dropSchema drops all application tables and the migration tracking table by
@@ -228,8 +287,8 @@ func maxMigrationVersion(src source.Driver) (uint, error) {
 
 // migrateDown rolls back all applied migrations. Intentionally unexported —
 // exposed to test code only through MigrateDownForTest in export_test.go.
-func migrateDown(pool *pgxpool.Pool) error {
-	db := openDB(pool)
+func migrateDown(pool *pgxpool.Pool, lockTimeout time.Duration) error {
+	db := openDB(pool, lockTimeout)
 	defer db.Close()
 
 	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})

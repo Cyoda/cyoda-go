@@ -28,8 +28,12 @@ func ValidateInChunksForTest(
 var DropSchemaForTest = dropSchema
 
 // MigrateDownForTest exposes migrateDown to test files via the export_test.go
-// idiom. Use only in tests; never in production code.
-var MigrateDownForTest = migrateDown
+// idiom, at the shipped lock-timeout default — a fixture rolls back a database
+// nothing else is touching, so its lock waits are uncontended. Use only in
+// tests; never in production code.
+func MigrateDownForTest(pool *pgxpool.Pool) error {
+	return migrateDown(pool, defaultMigrateLockTimeout)
+}
 
 // ClassifyErrorForTest exposes classifyError to allow unit-testing of the
 // serialization/deadlock classification logic without requiring a live database.

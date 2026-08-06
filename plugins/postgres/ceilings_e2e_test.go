@@ -258,7 +258,11 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 	if err != nil {
 		t.Fatalf("open seeding pool: %v", err)
 	}
-	defer pool.Close()
+	// Registered BEFORE the drop below so LIFO runs the drop first and closes
+	// the pool second. A defer here would instead close the pool when this
+	// helper returns, leaving the drop to run against a closed one — and its
+	// error is discarded, so the seeded rows would silently accumulate.
+	t.Cleanup(pool.Close)
 
 	if err := dropSchema(pool); err != nil {
 		t.Fatalf("reset schema: %v", err)
@@ -266,7 +270,11 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 	if err := Migrate(pool); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	t.Cleanup(func() { _ = dropSchema(pool) })
+	t.Cleanup(func() {
+		if err := dropSchema(pool); err != nil {
+			t.Errorf("drop seeded schema: %v", err)
+		}
+	})
 
 	store, err := newStoreFactoryWithConfig(pool, defaultStoreConfig()).EntityStore(searchCeilingCtx())
 	if err != nil {

@@ -110,7 +110,7 @@ func TestCheckSchemaCompat_SchemaMatches_Postgres(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := runMigrations(context.Background(), pool); err != nil {
+	if err := runMigrations(context.Background(), pool, defaultMigrateLockTimeout); err != nil {
 		t.Fatalf("runMigrations: %v", err)
 	}
 	// After migrations, DB is at max version — compat check should pass with
