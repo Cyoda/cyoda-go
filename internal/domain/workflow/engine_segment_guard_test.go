@@ -189,6 +189,37 @@ func TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack(t *testing.T) {
 	}
 }
 
+// TestEngine_CriterionAfterSegment_CarriesCurrentSegmentTxID: the txID handed to
+// a FUNCTION criterion is the compute node's join token. After a CBD segment the
+// cascade-entry txID names a COMMITTED transaction, so a callback joining on it
+// gets ErrTxNotFound.
+func TestEngine_CriterionAfterSegment_CarriesCurrentSegmentTxID(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+
+	var criterionTxID string
+	h.registerCriterion("gatekeeper", func(ctx context.Context, txID string) (bool, string, error) {
+		criterionTxID = txID
+		return true, "", nil
+	})
+
+	entryTxID, entryCtx := h.begin(t)
+	if _, err := h.engine.Execute(entryCtx, h.entity, ""); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	segmentTxID := h.lastSegmentTxID(t)
+	if segmentTxID == entryTxID {
+		t.Fatal("test did not segment; it proves nothing")
+	}
+	if criterionTxID == entryTxID {
+		t.Fatalf("criterion was handed the committed entry txID %s as its join token", entryTxID)
+	}
+	if criterionTxID != segmentTxID {
+		t.Fatalf("criterion join token = %s, want the open segment %s", criterionTxID, segmentTxID)
+	}
+}
+
 // --- harness ---
 
 // segmentGuardHarness builds an Engine over a real backend with a workflow
@@ -406,6 +437,16 @@ func (h *segmentGuardHarness) registerPanickingCriterion(name string) {
 	h.addGateTransition(name)
 	h.dispatchCriteria = func(context.Context, *spi.Entity, json.RawMessage, string, string, string, string, string) (bool, string, error) {
 		panic("criterion callout panicked: " + name)
+	}
+}
+
+// registerCriterion wires the CBD workflow's gate transition to a FUNCTION
+// criterion backed by fn, exposing exactly what DispatchCriteria receives
+// (ctx, txID) so a test can capture the join token the engine handed it.
+func (h *segmentGuardHarness) registerCriterion(name string, fn func(ctx context.Context, txID string) (bool, string, error)) {
+	h.addGateTransition(name)
+	h.dispatchCriteria = func(ctx context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, txID string) (bool, string, error) {
+		return fn(ctx, txID)
 	}
 }
 

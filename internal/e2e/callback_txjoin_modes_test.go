@@ -258,6 +258,93 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 	}
 }
 
+// TestCallback_CriterionAfterCBDSegment_JoinsTxPost proves the cascadeAutomated
+// counterpart to TestCallback_CBDPost_JoinsTxPost: a FUNCTION criterion
+// evaluated LATER in the same cascade — after a COMMIT_BEFORE_DISPATCH segment
+// has already committed TX_pre and opened TX_post — must receive TX_post, not
+// the cascade-entry txID, as its join token.
+//
+// By the time this criterion runs the entry txID names an already-committed
+// transaction; a callback that joins on it gets 404 TRANSACTION_NOT_FOUND
+// (internal/domain/txjoin.JoinFromToken) instead of participating in the
+// still-open segment. The criterion callback below treats a non-200 joined
+// create as a failure, which fails criterion evaluation and keeps the primary
+// in WAITING — the observable symptom of the bug this test guards against.
+func TestCallback_CriterionAfterCBDSegment_JoinsTxPost(t *testing.T) {
+	h := newCallbackHarness(t)
+
+	const primary = "cb-critseg-primary"
+	const secondary = "cb-critseg-secondary"
+	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
+
+	h.RegisterProc("cb-critseg-proc", func(rc *reqCtx) (map[string]any, error) {
+		// No apply-data needed; this processor exists only to commit TX_pre and
+		// open TX_post ahead of the criterion below.
+		return nil, nil
+	})
+
+	created := make(chan string, 1)
+	h.RegisterCriteria("cb-critseg-crit", func(rc *reqCtx) (bool, error) {
+		res, err := rc.CreateEntity(secondary, 1, `{"name":"joined-after-segment","amount":1,"status":"new"}`)
+		if err != nil {
+			return false, fmt.Errorf("callback create: %w", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("callback create: status=%d body=%s", res.StatusCode, res.Body)
+		}
+		created <- res.EntityID
+		return true, nil
+	})
+
+	primaryWF := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "critseg-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":    {"transitions": [{"name": "segment", "next": "WAITING", "manual": false,
+					"processors": [{"type": "calculator", "name": "cb-critseg-proc",
+						"executionMode": "COMMIT_BEFORE_DISPATCH",
+						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+				}]},
+				"WAITING": {"transitions": [{"name": "gate", "next": "ACTIVE", "manual": false,
+					"criterion": {"type": "function", "function": {"name": "cb-critseg-crit",
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}}
+				}]},
+				"ACTIVE": {}
+			}
+		}]
+	}`
+	h.SetupModelWithWorkflow(t, primary, primaryWF)
+
+	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if status != http.StatusOK {
+		t.Fatalf("create: expected 200, got %d: %s", status, body)
+	}
+
+	var secondaryID string
+	select {
+	case secondaryID = <-created:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: criterion callback did not run / did not create secondary entity")
+	}
+
+	// The cascade must have reached ACTIVE: if the criterion had been handed
+	// the committed entry txID as its join token, the joined create above
+	// would fail with 404 TRANSACTION_NOT_FOUND, criterion evaluation would
+	// error out, and the primary would be stuck in WAITING (or the create
+	// itself would have failed above).
+	if st, code := h.GetEntityState(t, primaryID); code != http.StatusOK || st != "ACTIVE" {
+		t.Fatalf("primary state = %q (http %d); want ACTIVE (criterion after the CBD segment did not receive TX_post as its join token)", st, code)
+	}
+
+	// The criterion's joined write committed atomically with TX_post.
+	if st, code := h.GetEntityState(t, secondaryID); code != http.StatusOK {
+		t.Fatalf("secondary GET: http %d; want 200 (criterion's joined write must be durable)", code)
+	} else if st != "STORED" {
+		t.Errorf("secondary state = %q; want STORED", st)
+	}
+}
+
 // TestCallback_CBDDefault_RunsStandalone proves the COMMIT_BEFORE_DISPATCH
 // default branch (startNewTxOnDispatch=false):
 //

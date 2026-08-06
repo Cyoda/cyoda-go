@@ -128,8 +128,7 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			// Best-effort: if curTxID's segment already committed further
 			// down (e.g. this fires before a later CBD-segment commit is
 			// reflected here), Rollback is a safe, ignored no-op (same
-			// pattern as rollbackOpenSegmentOnFailure elsewhere in this
-			// package).
+			// pattern as rollbackSegment elsewhere in this package).
 			_ = e.txMgr.Rollback(curCtx, curTxID)
 		}
 	}()

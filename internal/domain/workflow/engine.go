@@ -767,6 +767,9 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 
 	// Evaluate transition criterion.
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
+		// ctx/txID here are already correct: they are this function's own
+		// inputs, and nothing can have segmented yet — processors (the only
+		// thing that can open a new segment) run after the criterion below.
 		matched, reason, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
@@ -869,8 +872,14 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 
 			// Evaluate criterion.
 			if len(tr.Criterion) > 0 && string(tr.Criterion) != "null" {
+				// currentTxID, not txID: after a COMMIT_BEFORE_DISPATCH segment
+				// the cascade-entry txID names a committed transaction, and
+				// this value is the compute node's join token — a callback
+				// joining on it would get ErrTxNotFound. Audit correlation
+				// keeps using the entry txID; that is a separate concern from
+				// transaction identity.
 				matched, reason, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
-					ctx: currentCtx, txID: txID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
+					ctx: currentCtx, txID: currentTxID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
 				})
 				if err != nil {
 					return currentCtx, currentTxID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
