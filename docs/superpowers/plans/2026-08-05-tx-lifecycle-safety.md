@@ -1253,7 +1253,7 @@ Expected: PASS, including everything that passed at Step 2.
 
 - [ ] **Step 7: Write the E2E tests and the tiny-pool harness**
 
-Create `internal/e2e/tx_lifecycle_e2e_test.go`. Coverage rows 1, 2, 3, 4, 5a, 8a.
+Create `internal/e2e/tx_lifecycle_e2e_test.go`. Coverage rows 1, 2, 3, 4, 4a, 5a, 8a.
 
 The shared E2E suite builds one `app.App` and one pool in `TestMain` with `CYODA_POSTGRES_MAX_CONNS=5` (`e2e_test.go:106`, `:156`). These scenarios need their own app with a deliberately tiny pool: run against the shared one they cannot isolate, and Task 10's saturation test would stall the rest of the suite for a full acquire timeout. Reuse `newCallbackHarnessConfigured` (`callback_harness_test.go:175`) rather than inventing a second harness.
 
@@ -1352,6 +1352,43 @@ func TestE2E_RepeatedPanics_NodeKeepsServing(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("node stopped serving after repeated panics: %d", resp.StatusCode)
 	}
+}
+
+// TestE2E_PanicAfterSegmentation_RollsBackTXPost is coverage row 4's E2E half.
+// The unit half lives in the workflow package; this proves it end-to-end on a
+// real pool, where a leaked TX_post is observable as a connection that never
+// comes back.
+func TestE2E_PanicAfterSegmentation_RollsBackTXPost(t *testing.T) {
+	h := newTinyPoolHarness(t, 3)
+	// Workflow: a COMMIT_BEFORE_DISPATCH processor segments, then the next
+	// automated transition's criteria callback panics.
+	h.RegisterCriteria("boom", func(...) (bool, string, error) { panic("injected") })
+
+	before := acquiredConns(t)
+	resp := h.POST(t, "/api/entity/JSON/segmenting/1", body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 with a ticket", resp.StatusCode)
+	}
+	// TX_pre committed durably before the callout; TX_post must be gone.
+	waitFor(t, 5*time.Second, func() bool { return acquiredConns(t) == before })
+	assertEntityAtPreSegmentState(t, h) // the segment's work is visible, TX_post's is not
+}
+
+// TestE2E_CriterionCalloutFailsMidCascade_RollsBackTXPost is coverage row 4a's
+// E2E half — the non-panic case, which is the one reachable in ordinary
+// operation by a compute node being unavailable.
+func TestE2E_CriterionCalloutFailsMidCascade_RollsBackTXPost(t *testing.T) {
+	h := newTinyPoolHarness(t, 3)
+	h.RegisterCriteria("gatekeeper", func(...) (bool, string, error) {
+		return false, "", errors.New("compute node unavailable")
+	})
+
+	before := acquiredConns(t)
+	resp := h.POST(t, "/api/entity/JSON/segmenting/1", body)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("cascade reported success despite the criterion callout failing")
+	}
+	waitFor(t, 5*time.Second, func() bool { return acquiredConns(t) == before })
 }
 
 // TestE2E_ClientCancelledRequest_StillRollsBack is coverage row 8a's E2E half.
@@ -4178,8 +4215,8 @@ Confirm each row has a test that exists and passes. Run each named test and reco
 | 1 | Panic in an owned write path rolls back; pool returns to baseline | 4 |
 | 2 | Repeated panics beyond pool size leave the node serving | 4 |
 | 3 | Panic in a joined callback does not roll back the owner's tx | 3, 4 |
-| 4 | Panic after segmentation rolls back TX_post, not the entry tx | 1, 4 |
-| 4a | Non-panic engine error after segmentation rolls back TX_post | 1 |
+| 4 | Panic after segmentation rolls back TX_post, not the entry tx | 1 (unit), 4 (postgres e2e) |
+| 4a | Non-panic engine error after segmentation rolls back TX_post | 1 (unit), 4 (postgres e2e) |
 | 4b | Every `executeCommitBeforeDispatch` failure path rolls its segment back | 1 |
 | 4c | Criterion after a CBD segment carries the current segment's txID | 2 |
 | 5 | Committed-transaction behaviour unchanged | existing suites |
