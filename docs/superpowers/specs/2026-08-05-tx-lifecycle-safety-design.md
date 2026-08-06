@@ -175,8 +175,11 @@ post-engine CAS choice — and the engine raises sentinels instead:
 `ErrCommitBeforeDispatchInfra` wraps a failure of TX_pre's own commit, which is
 likewise a conflict raised past a live segment and abandons the transaction. The
 collection loop isolates an item only for an `spi.ErrConflict` carrying neither
-sentinel; either sentinel aborts the chunk. Both are chained with `%w: %w` rather
-than `errors.Join`, so the 4xx detail stays a single `CODE: message` line.
+sentinel; either sentinel aborts the chunk. The two are minted differently, and
+deliberately: `ErrPostSegmentConflict` chains with `%w: %w`, because it surfaces
+as a 4xx detail line that must stay a single `CODE: message`, while
+`ErrCommitBeforeDispatchInfra` uses `errors.Join` — it routes through
+`classifyWorkflowError` to a sanitized 5xx, so its text never reaches the client.
 
 ### 1.3 Engine-side guard
 
@@ -533,12 +536,14 @@ for a connection the same goroutine just released.
 `model_store.go:359` self-wraps only when there is no ambient transaction (`:355`)
 and already has `defer tx.Rollback` (`:364`), so it cannot nest. Its only reachable
 callers are `ValidateOrExtend`'s five entity/workflow call sites — model import does
-**not** reach it. Note its acquire failure surfaces as **500, not 503**:
-`validate.go:124` wraps the error in `ErrInternalSchema`, and
-`classifyValidateOrExtendErr` (`handler.go:203`) maps that to `common.Internal`.
-That is left as-is rather than threaded through the schema classifier — it is the
-schema-extension path reporting that it could not extend the schema, and the cause
-is in the log either way. §5's table is unaffected.
+**not** reach it. Its acquire failure surfaces as **503, like every other acquire**,
+and it needs no threading through the schema classifier to get there: `validate.go`
+tags the error `ErrInternalSchema` with a double `%w`, so the chain still carries the
+plugin's marker, and `classifyValidateOrExtendErr` routes `ErrInternalSchema` through
+`common.Internal`, which tests `StorageUnavailable` first. The `ErrInternalSchema`
+branch reads like an unconditional 500 and is not one — pinned by
+`TestClassifyValidateOrExtendErr_StorageOutage_Is503Retryable`, with the
+non-storage direction pinned alongside it.
 
 It is **not** applied to `pool.Query` / `Exec` / `QueryRow` / `CopyFrom`. For
 `Query`, `pgxpool` holds the connection for the returned `pgx.Rows` under the same
@@ -1011,12 +1016,33 @@ operation's response set.
 sits in `common.Internal`, which every handler already funnels its 5xx through, so
 *any* storage-backed operation answers 503 on an outage — the nine above are only
 where it is easiest to provoke. Declaring it on those nine alone would leave the
-rest failing conformance the first time a real outage hit them. `503` is therefore
-declared on every storage-backed operation (51 of them), through one shared
-`#/components/responses/ServiceUnavailable` rather than 51 inline blocks. The two
-operations that already had a bespoke 503 — the transitions reads, where a `function`
-selection criterion with no connected compute member is also a 503 — keep their own
-block with both causes described.
+declared contract silent about a status the other operations really return.
+
+`503` is therefore declared on every storage-backed operation: **52** of them, 50
+through the shared `#/components/responses/ServiceUnavailable` and 2 — the two
+transitions reads — with their own block, because those also answer 503 when a
+`function` selection criterion has no connected compute member, and the reader is
+owed both causes.
+
+**A 404 a storage outage can reach is the same defect in the other direction**, and
+the sweep belongs to this change: an operation that collapses any store error into a
+not-found result answers "it does not exist" during an outage — the substituted
+answer `.claude/rules/correctness-over-availability.md` forbids, and the one that
+stops a client retrying. Async-search status and results, trusted-key
+delete/invalidate/reactivate, the audit transaction lookup, and the entity read
+behind entity delete, the single update, the collection update and the transitions
+listing all did. Each now tests `spi.ErrNotFound` and routes everything else through
+`common.Internal`, so the declared 503 is reachable rather than decorative.
+
+The two transitions reads are an alias pair, `getEntityTransitions` and
+`fetchEntityTransitions`, onto one handler. They must not diverge on a declared
+status: the same storage outage is reachable through both, and a retryable 503 the
+server really returns belongs in the contract whichever door the caller used.
+(Undeclared, it would **not** have failed the e2e conformance validator on that
+route — `kin-openapi` falls back to `responses.Default()` before it consults
+`IncludeResponseStatus`, and 39 of the 87 operations carry a `default:` whose
+`ProblemDetail` schema a 503 body satisfies. Conformance is therefore not the
+argument for declaring it; the contract is.)
 
 gRPC: the same failure surfaces in the envelope as `Success=false` with
 `Error.Code = CLIENT_ERROR` and `Error.Retryable = true`. `Error.Code` is the

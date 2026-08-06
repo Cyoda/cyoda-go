@@ -38,8 +38,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   connection within the acquire timeout, when an operation finds its transaction
   already aborted by the idle-in-transaction ceiling, or when the database connection
   goes away underneath it. `503` is now declared on every storage-backed operation in
-  `api/openapi.yaml` — 51 operations behind one shared response component — because any
-  of them can meet a storage outage, not only the entity writes.
+  `api/openapi.yaml` — 52 of them, because any storage-backed operation can meet an
+  outage, not only the entity writes. Fifty share one response component; the two
+  transitions reads keep their own, since those also answer `503` when a `function`
+  selection criterion has no connected compute member.
   `cyoda help errors STORAGE_UNAVAILABLE`.
 
 - **Five PostgreSQL ceilings:** `CYODA_POSTGRES_STATEMENT_TIMEOUT` (`5m`),
@@ -112,10 +114,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   fired.
 
 - **A storage outage no longer answers `404 Not Found`.** Async-search status and
-  results, trusted-key delete/invalidate/reactivate, and the audit transaction lookup
-  collapsed any store error into a not-found result, so a database outage reported "it
-  does not exist" — a substituted answer that stops a client retrying. They now return
-  **503 `STORAGE_UNAVAILABLE`**, retryable; a genuine miss still returns `404`.
+  results, trusted-key delete/invalidate/reactivate, the audit transaction lookup, and
+  the entity read behind `DELETE /entity/{entityId}`, the single and collection
+  updates and `GET /entity/{entityId}/transitions` all collapsed any store error into
+  a not-found result, so a database outage reported "it does not exist" — a
+  substituted answer that stops a client retrying. They now return
+  **503 `STORAGE_UNAVAILABLE`**, retryable; an entity that genuinely is not there
+  still returns `404` with the code and detail it always had.
 
 - **The async-search results endpoint no longer interpolates a raw driver error into a
   `400` response body**, where it could carry connection detail. A job that is still

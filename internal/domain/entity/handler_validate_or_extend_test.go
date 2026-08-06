@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -236,5 +238,49 @@ func TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds(t *testing.
 	}
 	if ms.extendCalls != 1 {
 		t.Errorf("expected 1 ExtendSchema call for the new field; got %d", ms.extendCalls)
+	}
+}
+
+// schemaExtendOutageErr carries the storage layer's transient-unavailability
+// marker, the shape a plugin returns when the pool could not supply a connection.
+type schemaExtendOutageErr struct{}
+
+func (schemaExtendOutageErr) Error() string            { return "acquire timed out: postgres://u:p@db/cyoda" }
+func (schemaExtendOutageErr) StorageUnavailable() bool { return true }
+
+// A schema extension that failed because storage was unavailable is retryable,
+// and must be reported as such even though ingest tags it ErrInternalSchema on
+// the way out. The tag and the cause are chained with a double %w, so errors.As
+// still reaches the marker and common.Internal routes it to 503 rather than
+// burning a ticket on a transient outage.
+//
+// This is pinned because it is easy to read the ErrInternalSchema branch as an
+// unconditional 500 — the design doc did, until this test was written.
+func TestClassifyValidateOrExtendErr_StorageOutage_Is503Retryable(t *testing.T) {
+	err := fmt.Errorf("%w: failed to extend schema: %w", ingest.ErrInternalSchema, schemaExtendOutageErr{})
+
+	appErr := classifyValidateOrExtendErr(err)
+	if appErr.Status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; err: %v", appErr.Status, appErr)
+	}
+	if appErr.Code != common.ErrCodeStorageUnavailable {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeStorageUnavailable)
+	}
+	if !appErr.Retryable {
+		t.Errorf("503 is not advertised as retryable: %v", appErr)
+	}
+	if strings.Contains(appErr.Message, "postgres://") {
+		t.Errorf("client-facing message leaked the DSN: %s", appErr.Message)
+	}
+}
+
+// The other direction: a schema-processing failure with no storage marker keeps
+// the ticketed 500 it has always had.
+func TestClassifyValidateOrExtendErr_SchemaFailure_Still500(t *testing.T) {
+	err := fmt.Errorf("%w: failed to compute schema delta: %w", ingest.ErrInternalSchema, errors.New("bad delta"))
+
+	appErr := classifyValidateOrExtendErr(err)
+	if appErr.Status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; err: %v", appErr.Status, appErr)
 	}
 }
