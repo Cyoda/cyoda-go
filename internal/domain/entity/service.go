@@ -1830,7 +1830,14 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// event before returning ErrConflict (#228 reviewer S1) so the
 			// audit trail for this item is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
-			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) {
+			//
+			// A conflict marked ErrPostSegmentConflict is the other shape:
+			// it arrived after TX_pre committed and the dispatch fired.
+			// There is no segment to continue into, and the loop's cursor
+			// was never advanced — isolating it would let every later item
+			// save into a committed transaction and be lost.
+			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
+				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{

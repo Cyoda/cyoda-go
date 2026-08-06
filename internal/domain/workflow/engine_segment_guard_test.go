@@ -189,6 +189,55 @@ func TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack(t *testing.T) {
 	}
 }
 
+// TestCBD_ApplyResultConflict_CarriesPostSegmentMarker: the apply-result CAS runs
+// after TX_pre committed and after the dispatch fired, so a conflict there is not
+// something a caller can isolate and retry past. The marker is how the caller
+// tells it apart from a first-segment-flush precondition failure, which is.
+func TestCBD_ApplyResultConflict_CarriesPostSegmentMarker(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	h.failCompareAndSave() // the apply-result CAS, post-commit
+
+	err := h.fireSegment(t, "")
+	if err == nil {
+		t.Fatal("expected the apply-result CAS conflict to surface")
+	}
+	if got := h.casSites; len(got) != 1 || got[0] != casSiteApplyResult {
+		t.Fatalf("injection did not land on the apply-result CAS: sites = %v", got)
+	}
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("lost the conflict sentinel: %v", err)
+	}
+	if !errors.Is(err, ErrPostSegmentConflict) {
+		t.Fatalf("post-commit conflict not marked; a caller cannot tell it from an isolable one: %v", err)
+	}
+}
+
+// TestCBD_FirstFlushConflict_HasNoPostSegmentMarker guards the other side. This
+// one IS isolable and must stay that way.
+func TestCBD_FirstFlushConflict_HasNoPostSegmentMarker(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	h.failFirstFlushCAS(spi.ErrConflict) // flushAndCommitSegment, pre-commit
+
+	err := h.fireSegment(t, staleIfMatchTxID)
+	if err == nil {
+		t.Fatal("expected the first-segment flush conflict to surface")
+	}
+	if got := h.casSites; len(got) != 1 || got[0] != casSiteFirstFlush {
+		t.Fatalf("injection did not land on the first-segment flush: sites = %v", got)
+	}
+	if h.dispatched {
+		t.Fatal("the flush conflict was raised after the dispatch fired; the case proves nothing")
+	}
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("lost the conflict sentinel: %v", err)
+	}
+	if errors.Is(err, ErrPostSegmentConflict) {
+		t.Fatal("pre-commit precondition failure wrongly marked post-segment; the batch would abort instead of isolating the item")
+	}
+}
+
 // TestEngine_CriterionAfterSegment_CarriesCurrentSegmentTxID: the txID handed to
 // a FUNCTION criterion is the compute node's join token. After a CBD segment the
 // cascade-entry txID names a COMMITTED transaction, so a callback joining on it
@@ -249,6 +298,20 @@ type segmentGuardHarness struct {
 	entityStoreErr error
 	casErr         error
 
+	// flushCASErr fails the OTHER CompareAndSave a segmenting cascade makes —
+	// flushAndCommitSegment's, which runs before TX_pre commits. Armed up front
+	// rather than from the dispatch stub, because the flush happens first.
+	flushCASErr error
+
+	// dispatched records whether the CBD callout has fired. It is what separates
+	// the two CAS sites: everything before it is the first-segment flush,
+	// everything after it is the apply-result CAS.
+	dispatched bool
+
+	// casSites labels, in order, which site each CompareAndSave came from, so a
+	// test can prove its injection landed where it meant it to.
+	casSites []string
+
 	// panicOnAuditEvent, when set, makes the audit store panic on that event
 	// type — the cheapest way to blow up in a specific engine frame.
 	panicOnAuditEvent spi.StateMachineEventType
@@ -258,6 +321,7 @@ type segmentGuardHarness struct {
 type segmentGuardProc struct{ h *segmentGuardHarness }
 
 func (p *segmentGuardProc) DispatchProcessor(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (*spi.Entity, error) {
+	p.h.dispatched = true
 	if p.h.dispatchProcessor != nil {
 		return p.h.dispatchProcessor(ctx, entity, proc, workflow, transition, txID)
 	}
@@ -319,8 +383,25 @@ type hookedEntityStore struct {
 	h *segmentGuardHarness
 }
 
+// The two CompareAndSave sites a COMMIT_BEFORE_DISPATCH cascade reaches. They
+// sit on opposite sides of the callout, which is exactly why one is isolable and
+// the other is not: the flush runs before TX_pre commits, the apply-result CAS
+// after it committed and the dispatch fired.
+const (
+	casSiteFirstFlush  = "first-flush"
+	casSiteApplyResult = "apply-result"
+)
+
 func (s *hookedEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
-	if s.h.casErr != nil {
+	site := casSiteFirstFlush
+	if s.h.dispatched {
+		site = casSiteApplyResult
+	}
+	s.h.casSites = append(s.h.casSites, site)
+	if site == casSiteFirstFlush && s.h.flushCASErr != nil {
+		return 0, s.h.flushCASErr
+	}
+	if site == casSiteApplyResult && s.h.casErr != nil {
 		return 0, s.h.casErr
 	}
 	return s.EntityStore.CompareAndSave(ctx, entity, expectedTxID)
@@ -472,12 +553,41 @@ func (h *segmentGuardHarness) failEntityStoreLookup() {
 	}
 }
 
+// failCompareAndSave fails the apply-result CAS — the one
+// executeCommitBeforeDispatch makes after TX_pre committed and after the callout
+// returned. Armed from inside the dispatch stub so the pre-dispatch flush, which
+// goes through the same hook, is untouched.
 func (h *segmentGuardHarness) failCompareAndSave() {
 	h.dispatchProcessor = func(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
 		h.segmentTxIDs = append(h.segmentTxIDs, txID)
 		h.casErr = spi.ErrConflict
 		return nil, nil
 	}
+}
+
+// failFirstFlushCAS fails flushAndCommitSegment's CompareAndSave — the other
+// site, reached before TX_pre commits and before anything is dispatched. That
+// flush is only a CompareAndSave when the caller supplied an If-Match (spec
+// §4.1), so fireSegment must be handed a non-empty one for this to land.
+func (h *segmentGuardHarness) failFirstFlushCAS(failure error) {
+	h.flushCASErr = failure
+}
+
+// staleIfMatchTxID is an expected-txID no entity in these tests carries.
+const staleIfMatchTxID = "00000000-0000-4000-8000-000000000042"
+
+// fireSegment drives the segmenting cascade through ManualTransitionWithIfMatch —
+// the entry point UpdateEntityCollection uses — so the two conflict-shape tests
+// differ only in WHERE the CAS fails. A non-empty ifMatch turns the first-segment
+// flush into a CompareAndSave; with "" it stays a plain Save and the apply-result
+// CAS is the cascade's only one.
+func (h *segmentGuardHarness) fireSegment(t *testing.T, ifMatch string) error {
+	t.Helper()
+	h.makeSegmentTransitionManual()
+	_, entryCtx := h.begin(t)
+	h.entity.Meta.State = "A"
+	_, err := h.engine.ManualTransitionWithIfMatch(entryCtx, h.entity, "segment", ifMatch)
+	return err
 }
 
 // begin persists the configured workflow and model, opens the caller's entry

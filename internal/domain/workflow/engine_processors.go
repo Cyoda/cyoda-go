@@ -19,6 +19,20 @@ import (
 // are NOT wrapped — they remain client-attributable and stay 4xx.
 var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastructure failure")
 
+// ErrPostSegmentConflict marks a CAS conflict raised AFTER a
+// COMMIT_BEFORE_DISPATCH segment has committed and its external dispatch has
+// fired — the apply-result CAS below. It is not a precondition failure a caller
+// can isolate and skip past: the segment that would have carried the rest of the
+// work is gone, and the caller's cascade cursor was never advanced.
+//
+// A conflict from the FIRST-segment flush is deliberately left unmarked. That one
+// happens before any commit and before any dispatch, so it is cleanly isolable —
+// which is the whole distinction this sentinel exists to draw.
+//
+// Joined, not wrapped, so errors.Is(err, spi.ErrConflict) stays true and the
+// single-entity 412 mapping is unaffected.
+var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
+
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
 // ASYNC_NEW_TX runs within a savepoint (failures are non-fatal); SYNC and
@@ -352,7 +366,10 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
-		return nil, "", saveErr // ErrConflict bubbles through unchanged
+		// Marked, not wrapped: ErrConflict still bubbles through for the 412
+		// mapping, and the marker tells a batching caller this conflict landed
+		// on the far side of TX_pre's commit — see ErrPostSegmentConflict.
+		return nil, "", errors.Join(ErrPostSegmentConflict, saveErr)
 	}
 
 	segHandedOff = true
