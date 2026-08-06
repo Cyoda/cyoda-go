@@ -369,12 +369,13 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	tx, err := s.pool.Begin(acquireCtx)
 	cancelAcquire() // Begin has returned; the handle must not inherit the deadline
 	if err != nil {
-		// This surfaces as 500, not 503, and that is deliberate: ValidateOrExtend
-		// wraps the failure in ErrInternalSchema and the schema classifier maps
-		// that to an internal error. This is the schema-extension path reporting
-		// that it could not extend the schema, and the cause reaches the log
-		// either way — do not "fix" it into a 503.
-		return fmt.Errorf("failed to begin self-wrap tx for ExtendSchema(%s): %w", ref, err)
+		// Same classification as every other acquire in this plugin: a saturated
+		// pool is transient contention, so it carries the storage-unavailable
+		// marker and becomes a retryable 503, while a caller who gave up first
+		// does not. ValidateOrExtend's ErrInternalSchema tag chains with a double
+		// %w, so the marker survives it and the schema classifier honours it.
+		return classifyAcquireErr(ctx, acquireCtx,
+			fmt.Sprintf("failed to begin self-wrap tx for ExtendSchema(%s)", ref), err)
 	}
 	// Rollback is idempotent in pgx: no-op once Commit has landed.
 	defer func() { _ = tx.Rollback(ctx) }()

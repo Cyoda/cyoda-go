@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -165,4 +166,14 @@ func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID
 		ids = append(ids, e.Meta.ID)
 	}
 	return ids, rows.Err()
+}
+
+// NewStoreFactoryWithAcquireTimeoutForTest builds a factory whose stores carry a
+// custom connection-acquire deadline, so a test can observe pool saturation in
+// milliseconds instead of waiting out the shipped 10s default. Test-only; the
+// production path constructs its config through parseConfig.
+func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duration) *StoreFactory {
+	cfg := defaultStoreConfig()
+	cfg.AcquireTimeout = d
+	return newStoreFactoryWithConfig(pool, cfg)
 }

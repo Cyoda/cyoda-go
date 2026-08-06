@@ -123,7 +123,12 @@ func (s *entityStore) searchUnderOwnCeiling(ctx context.Context, ceiling time.Du
 	tx, err := s.pool.Begin(acquireCtx)
 	cancelAcquire()
 	if err != nil {
-		return nil, fmt.Errorf("begin async search scan: %w", classifyError(err))
+		// classifyAcquireErr, not classifyError: an acquire that timed out never
+		// reached the server, so there is no SQLSTATE and no torn socket for
+		// classifyError to recognise — it would fall through unmarked and the job
+		// record would say only "context deadline exceeded". This is the same
+		// saturated pool the write doors report as storage-unavailable.
+		return nil, classifyAcquireErr(ctx, acquireCtx, "begin async search scan", err)
 	}
 	// Rollback on a context derived WithoutCancel: on the cancellation path the
 	// caller's context may itself be the thing that expired, and a rollback on an

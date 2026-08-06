@@ -118,6 +118,26 @@ func (e *acquireTimeoutError) Error() string {
 func (e *acquireTimeoutError) Unwrap() error            { return e.cause }
 func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
 
+// classifyAcquireErr distinguishes "our acquire deadline expired" from "the
+// caller's request context expired". The pool surfaces a context error for both,
+// and reporting a client timeout as a retryable server 503 would be wrong — so
+// the caller's context is checked first, and only this plugin's own deadline
+// produces the storage-unavailable marker.
+//
+// It is package-level, and every acquire in this plugin goes through it, because
+// the three sites that open a transaction on the pool — TransactionManager.Begin,
+// ExtendSchema's self-wrap and the async-search scan's own-ceiling transaction —
+// contend for the same connections and must therefore say the same thing about
+// running out of them. When only Begin classified, a saturated pool answered a
+// retryable 503 through the write doors and a ticketed 500 through the
+// schema-extension path, for one condition.
+func classifyAcquireErr(callerCtx, acquireCtx context.Context, what string, err error) error {
+	if callerCtx.Err() == nil && errors.Is(acquireCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", what, &acquireTimeoutError{cause: err})
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
 // idleInTxAbortError marks an operation that found its transaction already gone
 // — the shape idle_in_transaction_session_timeout produces when it reclaims a
 // transaction that sat idle past the ceiling. Transient contention, like pool

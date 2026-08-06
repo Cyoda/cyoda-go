@@ -108,7 +108,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	pgxTx, err := tm.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
-		return "", nil, tm.classifyAcquireErr(ctx, acquireCtx, "failed to start transaction", err)
+		return "", nil, classifyAcquireErr(ctx, acquireCtx, "Begin: failed to start transaction", err)
 	}
 
 	// Set the current tenant for RLS policies. We use set_config(name, value, is_local)
@@ -119,7 +119,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		// the very thing that just expired, and a rollback on an expired context
 		// destroys the pooled connection instead of returning it.
 		_ = pgxTx.Rollback(context.WithoutCancel(ctx))
-		return "", nil, tm.classifyAcquireErr(ctx, acquireCtx, "failed to set tenant", err)
+		return "", nil, classifyAcquireErr(ctx, acquireCtx, "Begin: failed to set tenant", err)
 	}
 
 	tm.registry.Register(txID, pgxTx)
@@ -163,18 +163,6 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 // See newAcquireContext for why it must never reach the transaction handle.
 func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return newAcquireContext(ctx, tm.acquireTimeout)
-}
-
-// classifyAcquireErr distinguishes "our acquire deadline expired" from "the
-// caller's request context expired". pool.BeginTx surfaces a context error for
-// both, and reporting a client timeout as a retryable server 503 would be wrong
-// — so the caller's context is checked first, and only this plugin's own
-// deadline produces the storage-unavailable marker.
-func (tm *TransactionManager) classifyAcquireErr(callerCtx, acquireCtx context.Context, what string, err error) error {
-	if callerCtx.Err() == nil && errors.Is(acquireCtx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("Begin: %w", &acquireTimeoutError{cause: err})
-	}
-	return fmt.Errorf("Begin: %s: %w", what, err)
 }
 
 // Commit commits the transaction and records its submit time.

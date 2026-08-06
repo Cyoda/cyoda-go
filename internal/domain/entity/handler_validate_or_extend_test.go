@@ -254,8 +254,11 @@ func (schemaExtendOutageErr) StorageUnavailable() bool { return true }
 // still reaches the marker and common.Internal routes it to 503 rather than
 // burning a ticket on a transient outage.
 //
-// This is pinned because it is easy to read the ErrInternalSchema branch as an
-// unconditional 500 — the design doc did, until this test was written.
+// This is the domain half of a two-part contract, and only the half that lives
+// here. The plugin has to put the marker in the chain in the first place — see
+// plugins/postgres/self_wrap_acquire_test.go, which drives a real saturated pool
+// through ExtendSchema. Passing here says the tag does not swallow a marker that
+// is present; it does not say one is.
 func TestClassifyValidateOrExtendErr_StorageOutage_Is503Retryable(t *testing.T) {
 	err := fmt.Errorf("%w: failed to extend schema: %w", ingest.ErrInternalSchema, schemaExtendOutageErr{})
 
