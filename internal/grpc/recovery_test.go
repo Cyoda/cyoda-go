@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -11,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -72,6 +76,157 @@ func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 	if strings.Contains(err.Error(), "injected") {
 		t.Fatal("panic value leaked to the client")
 	}
+}
+
+// TestUnaryRecoveryInterceptor_ReturnsCodesInternal proves the client sees a
+// precise gRPC status code for a recovered panic, not the codes.Unknown
+// fallback grpc-go applies to any error that doesn't implement GRPCStatus().
+// Every other RPC-level failure in this package (entity.go, model.go,
+// search.go, streaming.go, interceptor.go) returns a proper status — a
+// recovered panic is the failure class that most needs one for monitoring and
+// retry dispatch.
+func TestUnaryRecoveryInterceptor_ReturnsCodesInternal(t *testing.T) {
+	var health atomic.Bool
+	health.Store(true)
+
+	interceptor := UnaryRecoveryInterceptor(&health)
+	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
+
+	_, err := interceptor(context.Background(), nil,
+		&googlegrpc.UnaryServerInfo{FullMethod: "/cyoda.CloudEventsService/Test"}, handler)
+
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected a gRPC status error, got %T: %v", err, err)
+	}
+	if st.Code() != codes.Internal {
+		t.Errorf("expected codes.Internal, got %v", st.Code())
+	}
+}
+
+// TestUnaryRecoveryInterceptor_TicketCorrelatesClientAndLog is the Critical
+// fix's covering test: recoverPanic must mint a ticket UUID, put it in the
+// client-visible message, and log it as a structured field on the same ERROR
+// line — so an operator handed a client-side ticket can grep the server log
+// for the matching one. Before this fix, no ticket existed anywhere: the
+// client saw the fixed string "SERVER_ERROR: internal server error" with no
+// correlation handle at all.
+func TestUnaryRecoveryInterceptor_TicketCorrelatesClientAndLog(t *testing.T) {
+	records := captureSlog(t)
+
+	var health atomic.Bool
+	health.Store(true)
+
+	interceptor := UnaryRecoveryInterceptor(&health)
+	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
+
+	_, err := interceptor(context.Background(), nil,
+		&googlegrpc.UnaryServerInfo{FullMethod: "/cyoda.CloudEventsService/Test"}, handler)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	// Client-visible ticket.
+	clientMsg := status.Convert(err).Message()
+	clientTicket := extractTicket(t, clientMsg)
+	if _, parseErr := uuid.Parse(clientTicket); parseErr != nil {
+		t.Fatalf("client-visible ticket %q is not a valid UUID: %v", clientTicket, parseErr)
+	}
+
+	// Logged ticket — the ERROR record recoverPanic emits.
+	rec := findRecord(t, records, "panic recovered")
+	loggedTicket, ok := rec.attrs["ticket"].(string)
+	if !ok || loggedTicket == "" {
+		t.Fatalf("expected a non-empty \"ticket\" attribute on the panic-recovered log line, attrs=%v", rec.attrs)
+	}
+
+	if clientTicket != loggedTicket {
+		t.Fatalf("client-visible ticket %q does not match logged ticket %q — correlation broken", clientTicket, loggedTicket)
+	}
+
+	// Gate 3: the panic value itself must still never reach the client.
+	if strings.Contains(clientMsg, "injected") {
+		t.Fatal("panic value leaked to the client")
+	}
+}
+
+// extractTicket pulls the UUID out of a "...[ticket: <uuid>]" formatted
+// message — the same format internal/grpc/errors.go's buildErrorFields and
+// internal/common/errors.go's WriteError already use for internal/fatal
+// errors, which recoverPanic now matches rather than inventing a new format.
+func extractTicket(t *testing.T, msg string) string {
+	t.Helper()
+	const marker = "[ticket: "
+	i := strings.Index(msg, marker)
+	if i == -1 {
+		t.Fatalf("no ticket marker in message %q", msg)
+	}
+	rest := msg[i+len(marker):]
+	j := strings.IndexByte(rest, ']')
+	if j == -1 {
+		t.Fatalf("unterminated ticket marker in message %q", msg)
+	}
+	return rest[:j]
+}
+
+// --- slog capture -----------------------------------------------------
+//
+// Mirrors internal/scheduler/executor_test.go's captureHandler/captureSlog:
+// a minimal slog.Handler that records every emitted record so a test can
+// assert on structured fields without depending on a specific handler's
+// text/JSON encoding. Duplicated rather than shared because the source is an
+// unexported test helper in a different package.
+
+type capturedLogRecord struct {
+	level slog.Level
+	msg   string
+	attrs map[string]any
+}
+
+type captureLogHandler struct {
+	mu      *sync.Mutex
+	records *[]capturedLogRecord
+}
+
+func (h *captureLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := map[string]any{}
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.records = append(*h.records, capturedLogRecord{level: r.Level, msg: r.Message, attrs: attrs})
+	return nil
+}
+
+func (h *captureLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureLogHandler) WithGroup(string) slog.Handler      { return h }
+
+// captureSlog swaps slog.Default with captureLogHandler for the duration of
+// the test, restoring the previous default handler on cleanup.
+func captureSlog(t *testing.T) *[]capturedLogRecord {
+	t.Helper()
+	records := &[]capturedLogRecord{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(&captureLogHandler{mu: &sync.Mutex{}, records: records}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return records
+}
+
+// findRecord returns the first captured record with the given message,
+// failing the test if none matches.
+func findRecord(t *testing.T, records *[]capturedLogRecord, msg string) capturedLogRecord {
+	t.Helper()
+	for _, r := range *records {
+		if r.msg == msg {
+			return r
+		}
+	}
+	t.Fatalf("no log record with message %q; got %d records", msg, len(*records))
+	return capturedLogRecord{}
 }
 
 // TestUnaryRecoveryInterceptor_NilHealthFlag proves the nil-healthFlag guard:
@@ -149,6 +304,16 @@ func TestServer_HandlerPanic_ProcessSurvives(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "boom") {
 		t.Fatal("panic value leaked to the client")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected a gRPC status error over the real connection, got %T: %v", err, err)
+	}
+	if st.Code() != codes.Internal {
+		t.Errorf("expected codes.Internal over the real connection, got %v", st.Code())
+	}
+	if _, parseErr := uuid.Parse(extractTicket(t, st.Message())); parseErr != nil {
+		t.Fatalf("client-visible message %q does not carry a valid correlation ticket: %v", st.Message(), parseErr)
 	}
 	if health.Load() {
 		t.Fatal("health flag not marked through the real server path")
