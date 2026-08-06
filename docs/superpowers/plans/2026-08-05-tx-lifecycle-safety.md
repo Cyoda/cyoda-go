@@ -4247,6 +4247,72 @@ git commit -m "docs: record the transaction lifecycle changes and the breaking c
 
 ---
 
+## Task 21: Declare `503` on every storage-backed operation
+
+Task 11 moved the `StorageUnavailable` classification into `common.Internal`, which is the right funnel — the domain layer cannot re-derive it per call site, and a read that hits a torn connection genuinely *is* transiently unavailable and retryable. The consequence is that `503` is now reachable from far more than the nine write operations Task 8 declared it on.
+
+Task 11's implementer enumerated the surface: **42** operations are implemented and storage-backed (entity 10, model 9, OIDC 7, search 5, messaging 4, trusted keys 4, workflow 2, audit 1). A further 12 are implemented but not storage-backed, and 23 are not routed (22 excluded via `exclude-tags`, one hard 501).
+
+Narrowing the classification back to write paths was considered and rejected: it would tell the opposite lie, reporting a retryable read failure as a non-retryable 500. `api/openapi.yaml` is the contract cyoda-go owns and Cloud follows, so it should say what the server does.
+
+There is no shared `components/responses` entry for 503 — only `Unauthorized`, `Forbidden`, `InternalServerError` and `NotImplemented` — so all ten existing declarations are inline ~14-line blocks. Adding one and collapsing those blocks makes the file **smaller**, not larger.
+
+**Files:**
+- Modify: `api/openapi.yaml` — add `components/responses/ServiceUnavailable`; replace the ten inline 503 blocks with `$ref`s; add `$ref`s to the 42 storage-backed operations
+
+**Interfaces:**
+- Consumes: Task 11's `common.Internal` classification.
+- Produces: nothing consumed by a later task.
+
+- [ ] **Step 1: Add the shared response component**
+
+```yaml
+    ServiceUnavailable:
+      description: The storage layer could not serve the request — no connection
+        available within the acquire timeout, the transaction was reclaimed by the
+        idle-in-transaction ceiling, or the connection was lost. Retryable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+          example:
+            type: about:blank
+            title: Service Unavailable
+            status: 503
+            detail: storage is temporarily unavailable — retry
+```
+
+- [ ] **Step 2: Collapse the ten existing inline blocks**
+
+Replace each with `"503": { $ref: "#/components/responses/ServiceUnavailable" }` in this file's local style.
+
+**Exception:** `getEntityTransitions`' existing 503 describes `NO_COMPUTE_MEMBER_FOR_TAG`, a different condition. Keep its inline block and widen its description to cover both causes, or give it both a `$ref` and its own text — do not silently replace a compute-member description with a storage one.
+
+- [ ] **Step 3: Declare it on the 42 storage-backed operations**
+
+Derive the list yourself rather than trusting the count: an operation qualifies if its handler can reach `common.Internal` with a `StorageUnavailable`-marked cause. Report your list and any disagreement with the 42.
+
+- [ ] **Step 4: Verify**
+
+```
+go build ./... && go test ./internal/e2e/ -run Conformance -count=1 && go test ./... -count=1
+```
+
+Confirm `git status` shows only `api/openapi.yaml`, and that the file is net **smaller**.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/openapi.yaml
+git commit -m "docs(api): declare 503 on every storage-backed operation
+
+The StorageUnavailable classification lives in common.Internal, so any
+storage-backed operation can return it — not only the entity writes. Adds a
+shared ServiceUnavailable response and collapses the inline blocks into it."
+```
+
+---
+
 ## Final verification
 
 Run before opening the PR, in this order. Do not claim completion until every one is green and you have seen the output.
@@ -4309,7 +4375,7 @@ Confirm each row has a test that exists and passes. Run each named test and reco
 | 16a | Database newer than the binary still refuses to start | 14 |
 | 17 | Single-node install migrates itself | 14 |
 | 18 | Guard test rejects a new non-concurrent index on a hot table | 15 |
-| 19 | `STORAGE_UNAVAILABLE` declared in OpenAPI on every write op | 8 |
+| 19 | `STORAGE_UNAVAILABLE` declared in OpenAPI on every write op | 8; widened to all storage-backed ops in 21 |
 
 - [ ] **Step 4: Race detector — once, here, not during iteration**
 
