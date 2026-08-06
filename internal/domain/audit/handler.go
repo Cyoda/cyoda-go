@@ -240,9 +240,14 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// A read that failed is not a transaction with nothing recorded against it:
+	// every backend reports the latter as an empty slice, which falls through to
+	// the 404 at the end of this handler. An error here is the store failing, so
+	// it routes to common.Internal — a storage outage then answers with a
+	// retryable 503 instead of telling the caller its workflow left no trace.
 	smEvents, err := smStore.GetEventsByTransaction(ctx, entityId.String(), transactionId.String())
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "no events found"))
+		common.WriteError(w, r, common.Internal("failed to get state machine events", err))
 		return
 	}
 

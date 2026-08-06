@@ -27,6 +27,31 @@ import (
 // can use errors.Is to branch (issue #93).
 var ErrSearchJobNotFound = errors.New("search job not found")
 
+// ErrSearchJobNotComplete is returned by GetAsyncResults when the job exists but
+// has not reached SUCCESSFUL. It is a client error — the caller asked too early
+// — and only stays one because it is distinguishable from a lookup failure.
+var ErrSearchJobNotComplete = errors.New("search job is not complete")
+
+// jobLookupErr preserves why an async-job lookup failed.
+//
+// A job that genuinely is not there keeps ErrSearchJobNotFound, which the
+// transports report as 404. Every other failure is returned with its cause
+// wrapped: a storage outage then reaches common.Internal still carrying the
+// storage-unavailability marker and is answered with a retryable 503. Collapsing
+// both into "not found" told a client during a database outage that its job did
+// not exist, so it stopped retrying — a substituted answer where the contract
+// requires a rejection.
+//
+// Every backend signals a genuine miss with spi.ErrNotFound in the chain, so the
+// discriminator is the sentinel rather than the absence of a marker: a scan or
+// deserialization failure is a server-side failure too, not a missing job.
+func jobLookupErr(jobID string, err error) error {
+	if errors.Is(err, spi.ErrNotFound) {
+		return fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+	}
+	return fmt.Errorf("failed to look up search job %s: %w", jobID, err)
+}
+
 // searchCeilingMessage is what a caller sees when their own async job exceeded
 // the backend's search statement ceiling. Fixed and non-revealing: GetJob serves
 // this string straight back, so a raw driver error here would put SQL, a
@@ -571,7 +596,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (SearchJobStatus, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
-		return SearchJobStatus{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+		return SearchJobStatus{}, jobLookupErr(jobID, err)
 	}
 
 	return SearchJobStatus{
@@ -594,11 +619,11 @@ type AsyncResultsPage struct {
 func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts ResultOptions) (AsyncResultsPage, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
-		return AsyncResultsPage{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+		return AsyncResultsPage{}, jobLookupErr(jobID, err)
 	}
 
 	if job.Status != "SUCCESSFUL" {
-		return AsyncResultsPage{}, fmt.Errorf("job %s is not complete (status: %s)", jobID, job.Status)
+		return AsyncResultsPage{}, fmt.Errorf("%w: %s (status: %s)", ErrSearchJobNotComplete, jobID, job.Status)
 	}
 
 	limit := opts.Limit
@@ -640,7 +665,7 @@ type CancelResult struct {
 func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelResult, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
-		return CancelResult{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+		return CancelResult{}, jobLookupErr(jobID, err)
 	}
 
 	if job.Status != "RUNNING" {

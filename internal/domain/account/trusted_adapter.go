@@ -24,6 +24,19 @@ func (h *Handler) requireTrustedKeyStore(w http.ResponseWriter, r *http.Request)
 	return true
 }
 
+// trustedKeyMutationError maps a Delete / Invalidate / Reactivate failure to a
+// response. A KID that is not registered for this tenant keeps 404
+// TRUSTED_KEY_NOT_FOUND; every other failure routes through common.Internal, so
+// a KV write that failed because storage was unavailable surfaces as a retryable
+// 503 with its cause logged rather than as "the key does not exist" — an answer
+// that reads as a completed lookup and stops the caller retrying.
+func trustedKeyMutationError(err error) *common.AppError {
+	if errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found")
+	}
+	return common.Internal("trusted-key store mutation failed", err)
+}
+
 func (h *Handler) gateTrustedKeyFeature(w http.ResponseWriter, r *http.Request) bool {
 	if !h.iam.TrustedKeyRegistrationEnabled {
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeFeatureDisabled, "trusted-key registration is disabled"))
@@ -204,7 +217,7 @@ func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Delete(tID, keyId); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
+		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -246,7 +259,7 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Invalidate(tID, keyId, grace); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
+		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -290,9 +303,12 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Reactivate(tID, keyId, validFrom, validTo); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found"))
+		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
+	// This read is served from the cache Reactivate just wrote, so it cannot
+	// fail for a storage reason — the storage classification that matters on
+	// this endpoint is the Reactivate above.
 	tk, err := h.trustedKeyStore.Get(tID, keyId)
 	if err != nil {
 		common.WriteError(w, r, common.Internal("trustedKeyStore.Get after Reactivate", err))
