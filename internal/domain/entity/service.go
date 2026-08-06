@@ -877,6 +877,28 @@ type DeleteResult struct {
 	IDs           []string
 }
 
+// perIDDeleteError renders one item's delete failure for DeleteResult.IDToError.
+//
+// That map is serialised into a 200 response body, so whatever goes in it is on
+// the wire — and a storage failure's own text carries driver wording, the SQL
+// this layer wrapped it with, and a SQLSTATE. None of that is the caller's to
+// see. The same split the rest of the API uses applies per item: a domain error
+// keeps its detail, anything else is logged under a ticket and the caller gets
+// the ticket to quote.
+func perIDDeleteError(entityID string, err error) string {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
+		return appErr.Message // client-safe by construction
+	}
+	if errors.Is(err, spi.ErrNotFound) {
+		return fmt.Sprintf("%s: entity id=%s not found", common.ErrCodeEntityNotFound, entityID)
+	}
+	ticket := uuid.New().String()
+	slog.Error("entity delete failed",
+		"pkg", "entity", "ticket", ticket, "entityId", entityID, "detail", err.Error())
+	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
+}
+
 // DeleteEntitiesConditional deletes entities of a model. An empty condBody
 // deletes all (backward-compatible). A present condBody is parsed and only
 // matching entities (as-at pointInTime, when supplied) are deleted — reusing
@@ -984,7 +1006,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 				result.IDs = append(result.IDs, id)
 			}
 			if err := entityStore.Delete(txCtx, id); err != nil {
-				result.IDToError[id] = err.Error()
+				result.IDToError[id] = perIDDeleteError(id, err)
 				continue
 			}
 			result.RemovedCount++

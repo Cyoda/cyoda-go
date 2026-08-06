@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -63,15 +62,28 @@ func (r *classifyingRow) Scan(dest ...any) error {
 	return r.classify(r.inner.Scan(dest...))
 }
 
+// deadTxError marks a statement issued against a transaction the manager no
+// longer holds.
+//
+// It carries the same StorageUnavailable marker — the transaction is gone
+// either way, so the work cannot complete and a retry on a fresh one may well
+// succeed — but it is a distinct type from idleInTxAbortError because the CAUSE
+// is unknown here. A registry miss follows a reclaimed session, a failed commit,
+// or a transaction that simply finished, and the operator log must not name one
+// of them.
+type deadTxError struct{ txID string }
+
+func (e *deadTxError) Error() string {
+	return "transaction " + e.txID + " is no longer active"
+}
+func (e *deadTxError) StorageUnavailable() bool { return true }
+
 // deadTxQuerier is what resolveRaw hands a store whose context names a
-// transaction the manager no longer holds. Every statement fails, and fails with
-// the storage-unavailable marker: the transaction is gone, so the work cannot be
-// completed correctly, and a retry on a fresh one may well succeed.
+// transaction the manager no longer holds. Every statement fails: falling back
+// to the pool would run it outside the transaction the caller believes it is in.
 type deadTxQuerier struct{ txID string }
 
-func (d deadTxQuerier) err() error {
-	return &idleInTxAbortError{cause: fmt.Errorf("transaction %s is no longer active", d.txID)}
-}
+func (d deadTxQuerier) err() error { return &deadTxError{txID: d.txID} }
 
 func (d deadTxQuerier) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, d.err()

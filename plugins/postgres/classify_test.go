@@ -171,6 +171,105 @@ func TestClassifyError_NamesTheCeilingThatFired(t *testing.T) {
 	}
 }
 
+// TestClassifyCommitError_TornSocketStaysNonRetryable — a torn socket raised by
+// the COMMIT itself is not proof the transaction is gone. If the backend
+// received the COMMIT and the connection died before its response, the
+// transaction COMMITTED; the outcome is in doubt. Entity ids are minted per
+// attempt, so a client honouring retryable=true would create a duplicate. Only
+// the server saying 25P03 proves nothing was applied.
+func TestClassifyCommitError_TornSocketStaysNonRetryable(t *testing.T) {
+	tm := NewTransactionManager(nil, newTestUUIDGenerator())
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"unexpected EOF", io.ErrUnexpectedEOF},
+		{"broken pipe", &net.OpError{Op: "write", Err: syscall.EPIPE}},
+		{"connection reset", &net.OpError{Op: "read", Err: syscall.ECONNRESET}},
+		{"driver closed the connection", pgconn.ErrConnClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tm.classifyCommitError("tx-1", fmt.Errorf("Commit: %w", tc.err))
+			if hasStorageUnavailableMarker(err) {
+				t.Fatalf("an in-doubt commit was advertised as retryable; a retry would double-apply it: %v", err)
+			}
+		})
+	}
+}
+
+// TestClassifyCommitError_ReclaimedTransactionIsStillRetryable — the shape that
+// DOES prove the transaction was reclaimed keeps its promotion, because nothing
+// was applied and a retry is genuinely safe.
+func TestClassifyCommitError_ReclaimedTransactionIsStillRetryable(t *testing.T) {
+	tm := NewTransactionManager(nil, newTestUUIDGenerator())
+
+	err := tm.classifyCommitError("tx-1", fmt.Errorf("Commit: %w",
+		&pgconn.PgError{Code: pgerrcode.IdleInTransactionSessionTimeout}))
+	if !hasStorageUnavailableMarker(err) {
+		t.Fatalf("a transaction the server said it reclaimed was not reported retryable: %v", err)
+	}
+}
+
+// TestClassifyCommitError_KeepsTheConflictMapping — the commit site still has to
+// recognise a serialization abort, which is the ordinary reason a COMMIT fails.
+func TestClassifyCommitError_KeepsTheConflictMapping(t *testing.T) {
+	tm := NewTransactionManager(nil, newTestUUIDGenerator())
+
+	err := tm.classifyCommitError("tx-1", fmt.Errorf("Commit: %w",
+		&pgconn.PgError{Code: pgerrcode.SerializationFailure}))
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("a serialization failure at commit lost its conflict sentinel: %v", err)
+	}
+}
+
+// TestIsConnectionTorn_ExcludesAFailedConnect — "could not establish a
+// connection" is a different condition from "the session went away underneath
+// this operation". It covers causes a retry never clears (bad password, pg_hba
+// rejection), and inside classifyTxError it would make discardTx roll back and
+// de-register a transaction that is perfectly alive.
+func TestIsConnectionTorn_ExcludesAFailedConnect(t *testing.T) {
+	err := fmt.Errorf("dial: %w", &pgconn.ConnectError{Config: &pgconn.Config{}})
+	if isConnectionTorn(err) {
+		t.Fatal("a failed connect was classified as a torn session")
+	}
+	if isIdleInTxAbort(err) {
+		t.Fatal("a failed connect was classified as an idle-in-transaction abort")
+	}
+}
+
+// TestIsIdleInTxAbort_RecognisesItsOwnType — the predicate and the marker it
+// mints must be each other's inverse, or a caller that classifies twice gets a
+// different answer the second time.
+func TestIsIdleInTxAbort_RecognisesItsOwnType(t *testing.T) {
+	minted := classifyError(&pgconn.PgError{Code: pgerrcode.IdleInTransactionSessionTimeout})
+	if !isIdleInTxAbort(minted) {
+		t.Fatalf("classifyError minted a marker its own predicate does not recognise: %#v", minted)
+	}
+	if !isIdleInTxAbort(fmt.Errorf("wrapped: %w", minted)) {
+		t.Fatal("the marker stops being recognised once wrapped")
+	}
+}
+
+// TestDeadTxError_DoesNotClaimTheCeilingReclaimedIt — a registry miss has
+// several possible causes (a reclaimed session, a failed commit, a transaction
+// already finished), and the operator log must not assert one of them. It still
+// carries the storage-unavailable marker: the transaction is gone either way.
+func TestDeadTxError_DoesNotClaimTheCeilingReclaimedIt(t *testing.T) {
+	err := deadTxQuerier{txID: "tx-1"}.err()
+
+	if !hasStorageUnavailableMarker(err) {
+		t.Fatal("a statement on a transaction that no longer exists was not reported storage-unavailable")
+	}
+	if strings.Contains(err.Error(), "reclaimed") {
+		t.Fatalf("the message asserts a cause it cannot know: %v", err)
+	}
+	var idle *idleInTxAbortError
+	if errors.As(err, &idle) {
+		t.Fatal("a registry miss reuses the idle-ceiling type, so the log blames a ceiling that may not have fired")
+	}
+}
+
 // --- live server -----------------------------------------------------------
 
 // abortFixture is a manager plus the store-facing querier, on a pool whose
@@ -185,6 +284,21 @@ func newAbortFixture(t *testing.T, idle time.Duration) *abortFixture {
 	t.Helper()
 	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": idle.String(),
+	}))
+	tm := NewTransactionManager(pool, newTestUUIDGenerator())
+	f := NewStoreFactory(pool)
+	f.setTransactionManager(tm)
+	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
+}
+
+// newStatementCeilingFixture is newAbortFixture for the other ceiling: a pool
+// whose statement_timeout is short enough to cancel a statement inside a test.
+// A zero ceiling disables it, for scenarios that abort the transaction some
+// other way.
+func newStatementCeilingFixture(t *testing.T, limit time.Duration) *abortFixture {
+	t.Helper()
+	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT": limit.String(),
 	}))
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
 	f := NewStoreFactory(pool)
@@ -295,6 +409,77 @@ func TestIdleInTxAbort_ClearsPerTransactionState(t *testing.T) {
 	if registry || tenant || origin || state {
 		t.Fatalf("per-transaction bookkeeping survived the abort: registry=%v tenant=%v origin=%v txState=%v",
 			registry, tenant, origin, state)
+	}
+}
+
+// TestCommitAfterStatementTimeout_IsNotAConflict is the whole point of the
+// split, at the one place it was still being undone.
+//
+// A cancelled statement leaves the PostgreSQL transaction aborted, so every
+// later statement — including Commit's own submit-time probe — comes back
+// 25P02 in_failed_sql_transaction, which says only "something earlier failed".
+// Reading that as a serialization conflict hands the caller a retryable 409 for
+// a statement that would be cancelled again. A caller that swallows a per-item
+// failure and commits anyway (DeleteEntitiesConditional does exactly that)
+// reaches this every time.
+func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 300*time.Millisecond)
+
+	ctx := classifyTestCtx()
+	txID, txCtx, err := fx.tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	var slept string
+	stmtErr := fx.q.QueryRow(txCtx, "SELECT pg_sleep(3)").Scan(&slept)
+	if stmtErr == nil {
+		t.Fatal("a 3s statement completed under a 300ms ceiling; nothing aborted the transaction")
+	}
+	if !isStatementTimeout(stmtErr) {
+		t.Fatalf("the statement did not fail with 57014, so this scenario proves nothing: %v", stmtErr)
+	}
+
+	commitErr := fx.tm.Commit(ctx, txID)
+	if commitErr == nil {
+		t.Fatal("a transaction aborted by the statement ceiling committed")
+	}
+	t.Logf("commit after a cancelled statement: %v", commitErr)
+
+	if errors.Is(commitErr, spi.ErrConflict) {
+		t.Fatal("reported as a retryable conflict; the client would retry a statement the ceiling cancels again")
+	}
+	if !isStatementTimeout(commitErr) {
+		t.Fatalf("the commit failure does not name the cancelled statement, so nothing downstream can explain it: %v", commitErr)
+	}
+	if hasStorageUnavailableMarker(commitErr) {
+		t.Fatal("reported as a transient storage outage, which is the same lie in another shape")
+	}
+}
+
+// TestCommitAfterSerializationFailure_IsStillAConflict is the control: the
+// ordinary reason a transaction is found aborted must keep its retryable 409.
+func TestCommitAfterSerializationFailure_IsStillAConflict(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 0) // no ceiling; the abort comes from bad SQL
+
+	ctx := classifyTestCtx()
+	txID, txCtx, err := fx.tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	// Any failed statement aborts the transaction; this one is not a ceiling.
+	var n int
+	if err := fx.q.QueryRow(txCtx, "SELECT 1/0").Scan(&n); err == nil {
+		t.Fatal("division by zero succeeded")
+	}
+
+	commitErr := fx.tm.Commit(ctx, txID)
+	if commitErr == nil {
+		t.Fatal("an aborted transaction committed")
+	}
+	if !errors.Is(commitErr, spi.ErrConflict) {
+		t.Fatalf("an aborted transaction with no ceiling involved lost its conflict mapping: %v", commitErr)
 	}
 }
 

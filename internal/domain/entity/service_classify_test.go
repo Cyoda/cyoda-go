@@ -1,8 +1,10 @@
 package entity
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -247,4 +249,55 @@ func TestClassifyWorkflowError_NoMatchingMemberMapsTo503(t *testing.T) {
 	if !appErr.Retryable {
 		t.Error("a missing compute member is a transient infra condition; want retryable")
 	}
+}
+
+// TestPerIDDeleteError_SanitizesStorageDetail — DeleteResult.IDToError is
+// serialised straight into a 200 body (handler.go's deleteResult map), so
+// whatever goes in it is on the wire. A storage failure's own text carries
+// driver wording, SQL wrap-context and a SQLSTATE, none of which a client may
+// see; the detail belongs in the log under a ticket the caller can quote.
+func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
+	buf := captureEntitySlog(t)
+
+	raw := errors.New("failed to mark entity deleted: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
+	msg := perIDDeleteError("e-1", raw)
+
+	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("per-id error leaks internal detail (%q): %s", leak, msg)
+		}
+	}
+	if !strings.Contains(msg, common.ErrCodeServerError) {
+		t.Errorf("per-id error carries no error code: %s", msg)
+	}
+	if !strings.Contains(msg, "ticket") {
+		t.Errorf("per-id error carries no ticket, so the logged detail cannot be correlated: %s", msg)
+	}
+	if logged := buf.String(); !strings.Contains(logged, "57014") {
+		t.Errorf("the detail was sanitized out of the response but never logged, so it is lost: %s", logged)
+	}
+}
+
+// TestPerIDDeleteError_KeepsDomainDetail — a not-found is the caller's own
+// business and carries no infrastructure detail, so it stays legible rather
+// than being flattened into a ticket.
+func TestPerIDDeleteError_KeepsDomainDetail(t *testing.T) {
+	msg := perIDDeleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
+	if !strings.Contains(msg, common.ErrCodeEntityNotFound) {
+		t.Errorf("a not-found lost its domain code: %s", msg)
+	}
+	if strings.Contains(msg, "ticket") {
+		t.Errorf("a domain error minted a ticket it does not need: %s", msg)
+	}
+}
+
+// captureEntitySlog redirects the default logger into a buffer for the duration
+// of the test, so a "the detail was logged, not returned" claim is checkable.
+func captureEntitySlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }

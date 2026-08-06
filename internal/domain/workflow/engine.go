@@ -1078,6 +1078,14 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 		// source makes the two incomparable whenever a clock is injected.
 		Timestamp: e.now(),
 	}
-	// Best-effort recording; audit failures should not break workflow execution.
-	_ = auditStore.Record(ctx, entityID, event)
+	// Best-effort recording; audit failures do not break workflow execution.
+	// Logged rather than dropped: on a backend whose audit store joins the
+	// transaction the entity write fails too and the loss is self-limiting, but
+	// on one that writes straight through the event is simply gone while the
+	// entity write commits — and a silently missing audit trail is the kind of
+	// thing that is only ever noticed long after it mattered.
+	if err := auditStore.Record(ctx, entityID, event); err != nil {
+		slog.Warn("state-machine audit event not recorded",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+	}
 }

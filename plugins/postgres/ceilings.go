@@ -144,7 +144,14 @@ func (e *idleInTxAbortError) StorageUnavailable() bool { return true }
 // PgError, or notice the connection is already gone and surface a transport
 // error. Both are checked — the torn-socket test comes second but is not
 // subordinate, since a chain can carry an unrelated PgError above a torn socket.
+// It also recognises the marker classifyError mints, so the predicate and that
+// marker are each other's inverse: classifying an already-classified error must
+// not change the answer.
 func isIdleInTxAbort(err error) bool {
+	var already *idleInTxAbortError
+	if errors.As(err, &already) {
+		return true
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
 		return true
@@ -182,21 +189,27 @@ func isStatementTimeout(err error) bool {
 // condition without a server response to read, kept because a session
 // terminated mid-write can surface as any of them.
 //
-// A caller who went away is excluded deliberately: pgx reports a cancelled or
-// expired request context through the same call, and the server is not the
-// reason such a request failed — the same distinction classifyAcquireErr draws
-// for the acquire deadline.
+// Two exclusions, both deliberate:
+//
+//   - A caller who went away. pgx reports a cancelled or expired request context
+//     through the same call, and the server is not the reason such a request
+//     failed — the distinction classifyAcquireErr draws for the acquire deadline.
+//   - *pgconn.ConnectError, which means a connection could not be ESTABLISHED,
+//     not that a live session went away. Its causes include ones no retry clears
+//     (a rejected password, a pg_hba rule), and treating it as a torn session
+//     would have discardTx roll back and de-register a transaction that is
+//     perfectly alive. A failed acquire is acquireTimeoutError's territory.
 func isConnectionTorn(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if errors.Is(err, pgconn.ErrConnClosed) ||
+	var connErr *pgconn.ConnectError
+	if errors.As(err, &connErr) {
+		return false
+	}
+	return errors.Is(err, pgconn.ErrConnClosed) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, syscall.ECONNRESET) {
-		return true
-	}
-	var connErr *pgconn.ConnectError
-	return errors.As(err, &connErr)
+		errors.Is(err, syscall.ECONNRESET)
 }

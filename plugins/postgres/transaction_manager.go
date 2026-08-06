@@ -247,6 +247,13 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		var pgErr *pgconn.PgError
 		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
 			_ = pgxTx.Rollback(context.Background())
+			// 25P02 says only "something earlier in this transaction failed".
+			// When that something was a ceiling, classifyTxError recorded it,
+			// and reporting the real cause is what keeps a cancelled statement
+			// off the retryable-conflict path — a retry would cancel again.
+			if cause := state.AbortCause(); cause != nil {
+				return fmt.Errorf("Commit: transaction aborted: %w", cause)
+			}
 			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
 		}
 		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
@@ -262,7 +269,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// it back to the pool; ignore the rollback error (tx is already invalid).
 		_ = pgxTx.Rollback(ctx)
 		tm.cleanupTx(txID)
-		return tm.classifyTxError(txID, fmt.Errorf("Commit: %w", err))
+		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
 
 	tm.cleanupTx(txID)
@@ -567,43 +574,92 @@ func classifyError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch {
-		case pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected:
-			return fmt.Errorf("%w: %w", spi.ErrConflict, err)
-		case pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "unique_claims_uq":
-			return fmt.Errorf("%w: %w", spi.ErrUniqueViolation, err)
-		case pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout:
-			// The server said which ceiling fired, so the log can name it —
-			// the torn-socket shape below cannot.
-			slog.Warn("transaction reclaimed after exceeding the configured ceiling",
-				"pkg", "postgres", "setting", "idle_in_transaction_session_timeout", "err", err)
-			return &idleInTxAbortError{cause: err}
-		case pgErr.Code == pgerrcode.QueryCanceled:
-			// NOT retryable, and deliberately not marked so. The 500 this
-			// becomes carries a ticket; this log line is the whole user-visible
-			// benefit, turning an unexplained failure into a named cause.
-			slog.Warn("statement cancelled after exceeding the configured ceiling",
-				"pkg", "postgres", "setting", "statement_timeout", "err", err)
-			return err
-		}
+	if classified, ok := classifySQLState(err); ok {
+		return classified
 	}
 	// No server response to read: the session was already gone by the time pgx
-	// looked. Same event as 25P03 above, second face — see isConnectionTorn.
+	// looked. Same event as 25P03, second face — see isConnectionTorn.
 	if isConnectionTorn(err) {
 		return &idleInTxAbortError{cause: err}
 	}
 	return err
 }
 
+// classifySQLState is the half of classification that depends only on what the
+// SERVER said. It is separated out because it is the only half that is safe
+// where the outcome of an in-flight statement is in doubt — see
+// classifyCommitError.
+//
+// Reports false when no branch matched, so callers can decide for themselves
+// what to make of an error the server never answered.
+func classifySQLState(err error) (error, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err, false
+	}
+	switch {
+	case pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected:
+		return fmt.Errorf("%w: %w", spi.ErrConflict, err), true
+	case pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "unique_claims_uq":
+		return fmt.Errorf("%w: %w", spi.ErrUniqueViolation, err), true
+	case pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout:
+		// The server said which ceiling fired, so the log can name it — the
+		// torn-socket shape cannot.
+		slog.Warn("transaction reclaimed after exceeding the configured ceiling",
+			"pkg", "postgres", "setting", "idle_in_transaction_session_timeout", "err", err)
+		return &idleInTxAbortError{cause: err}, true
+	case pgErr.Code == pgerrcode.QueryCanceled:
+		// NOT retryable, and deliberately not marked so. The 500 this becomes
+		// carries a ticket; this log line is the whole user-visible benefit,
+		// turning an unexplained failure into a named cause.
+		slog.Warn("statement cancelled after exceeding the configured ceiling",
+			"pkg", "postgres", "setting", "statement_timeout", "err", err)
+		return err, true
+	}
+	return err, false
+}
+
 // classifyTxError is classifyError for an error raised against a specific
 // transaction. When the session was reclaimed, that transaction no longer exists
 // server-side and Commit/Rollback will never run to tidy up after it — so the
 // pgx handle and the per-transaction bookkeeping are reclaimed here instead.
+//
+// It also records a cancelled statement on the txState. PostgreSQL answers every
+// later statement in an aborted transaction — Commit's own probe included — with
+// 25P02, which says only "something earlier failed"; without this the commit
+// would report the ceiling as a retryable conflict.
 func (tm *TransactionManager) classifyTxError(txID string, err error) error {
 	classified := classifyError(err)
 	if isIdleInTxAbort(classified) {
+		tm.discardTx(txID)
+		return classified
+	}
+	if isStatementTimeout(classified) {
+		if state, ok := tm.lookupTxState(txID); ok {
+			state.RecordAbort(classified)
+		}
+	}
+	return classified
+}
+
+// classifyCommitError classifies a failure of the COMMIT itself, where a torn
+// socket means something different from what it means anywhere else.
+//
+// If the backend received the COMMIT and the connection died before its response
+// arrived, the transaction COMMITTED. The outcome is in doubt, and a caller told
+// to retry would apply the work twice — entity ids are minted per attempt, so
+// the retry creates a duplicate rather than colliding. Only the server saying
+// 25P03 proves the transaction was reclaimed and nothing was applied.
+//
+// So this classifies on the server's response alone: every shape the server did
+// not answer keeps the non-retryable 500 it has always had.
+func (tm *TransactionManager) classifyCommitError(txID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	classified, _ := classifySQLState(err)
+	var pgErr *pgconn.PgError
+	if errors.As(classified, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
 		tm.discardTx(txID)
 	}
 	return classified

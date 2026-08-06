@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -308,8 +309,9 @@ func TestE2E_IdleInTxCeiling_GRPCEnvelope(t *testing.T) {
 
 // newStatementCeilingHarness builds a stack whose statement_timeout is short,
 // and a model with no callouts at all — the statement this ceiling cancels is
-// the entity write itself.
-func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string) {
+// the entity write itself. It returns the model plus one committed entity for
+// the scenarios below to contend on.
+func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string, string) {
 	t.Helper()
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
@@ -317,42 +319,54 @@ func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string) {
 	})
 	model := storageCeilingModel(t, "stmt-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)
-	return h, model
+
+	entityID, status, body := h.CreateEntity(t, model, 1, storageCeilingSample)
+	if status != http.StatusOK {
+		t.Fatalf("seed entity: %d %s", status, body)
+	}
+	return h, model, entityID
 }
 
-// blockEntityWrites holds an EXCLUSIVE lock on the entities table from a
-// connection of the test's own, so the next entity write waits on it rather
-// than proceeding.
+// holdRowLock takes and holds a row lock on ONE entity, from a connection of the
+// test's own, so a write to that entity waits on it rather than proceeding.
 //
 // A lock wait is the deterministic way to build a statement that exceeds
 // statement_timeout: the ceiling counts the whole statement, waiting included,
 // so the cancellation lands at a known moment instead of depending on how long
-// some scan happens to take on the machine running the test. It is also the
-// realistic cause — a maintenance operation holding a table lock is exactly what
-// puts ordinary writes over the ceiling in production.
+// some scan happens to take on the machine running the test. It is also a
+// realistic cause — contention on a hot row is exactly what puts an ordinary
+// write over the ceiling in production.
 //
-// EXCLUSIVE conflicts with the ROW EXCLUSIVE the write's INSERT needs, but not
-// with the ACCESS SHARE plain reads take, so only the write blocks.
-func blockEntityWrites(t *testing.T) func() {
+// It is a ROW lock, not a table lock, on purpose. Every test in this package
+// shares one PostgreSQL container, so `LOCK TABLE entities` would stall the
+// shared stack's own background loops — and any neighbour writing an entity —
+// for as long as it is held. This blocks exactly one row, which only the test
+// that seeded it ever touches.
+func holdRowLock(t *testing.T, entityID string) func() {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+
+	fail := func(format string, args ...any) {
+		cancel()
+		t.Fatalf(format, args...)
+	}
 
 	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "stmt-ceiling-locker"))
 	if err != nil {
-		cancel()
-		t.Fatalf("open locker pool: %v", err)
+		fail("open locker pool: %v", err)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		pool.Close()
-		cancel()
-		t.Fatalf("begin locker transaction: %v", err)
+		fail("begin locker transaction: %v", err)
 	}
-	if _, err := tx.Exec(ctx, "LOCK TABLE entities IN EXCLUSIVE MODE"); err != nil {
+
+	var locked string
+	if err := tx.QueryRow(ctx,
+		`SELECT entity_id FROM entities WHERE entity_id = $1 FOR UPDATE`, entityID).Scan(&locked); err != nil {
 		_ = tx.Rollback(ctx)
 		pool.Close()
-		cancel()
-		t.Fatalf("lock entities: %v", err)
+		fail("lock entity row %s: %v", entityID, err)
 	}
 
 	var once sync.Once
@@ -371,19 +385,50 @@ func blockEntityWrites(t *testing.T) func() {
 // is the log line naming statement_timeout — the response itself stays the
 // deliberately opaque ticket.
 func TestE2E_StatementTimeout_Returns500WithTicket(t *testing.T) {
-	h, model := newStatementCeilingHarness(t)
-	release := blockEntityWrites(t)
+	h, _, entityID := newStatementCeilingHarness(t)
+	release := holdRowLock(t, entityID)
 	defer release()
 
 	start := time.Now()
-	_, status, body := h.CreateEntity(t, model, 1, storageCeilingSample)
+	resp := h.DoAuth(t, http.MethodDelete, "/api/entity/"+entityID, "", "")
+	body := h.readBody(t, resp)
 	elapsed := time.Since(start)
 
-	if status != http.StatusInternalServerError {
-		t.Fatalf("status = %d after %v, want 500 — re-running the statement would exceed the ceiling again; body: %s", status, elapsed, body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d after %v, want 500 — re-running the statement would exceed the ceiling again; body: %s", resp.StatusCode, elapsed, body)
 	}
 	assertCancelledStatementProblem(t, body)
 	t.Logf("cancelled statement reported as 500 after %v: %s", elapsed, body)
+}
+
+// TestE2E_StatementTimeout_ConditionalDeleteIsNotAConflict is the endpoint that
+// makes the split matter most.
+//
+// DeleteEntitiesConditional records a per-id failure and carries on to commit.
+// The cancelled statement has already aborted the PostgreSQL transaction, so
+// that commit's own probe comes back 25P02 in_failed_sql_transaction — which,
+// read as a serialization conflict, hands the caller a RETRYABLE 409 for a
+// statement the ceiling would cancel on every attempt. It must not.
+//
+// The same response is where the per-id error text lands, so this is also where
+// driver text would reach the wire.
+func TestE2E_StatementTimeout_ConditionalDeleteIsNotAConflict(t *testing.T) {
+	h, model, entityID := newStatementCeilingHarness(t)
+	release := holdRowLock(t, entityID)
+	defer release()
+
+	cond := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"pool-hold"}`
+	resp := h.DoAuth(t, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), cond, "")
+	body := h.readBody(t, resp)
+
+	if resp.StatusCode == http.StatusConflict {
+		t.Fatalf("a cancelled statement was reported as a retryable conflict; the client would retry something the ceiling cancels again. body: %s", body)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", resp.StatusCode, body)
+	}
+	assertCancelledStatementProblem(t, body)
+	t.Logf("conditional delete over a cancelled statement reported as 500: %s", body)
 }
 
 // assertCancelledStatementProblem checks the RFC 9457 body carries a ticket, is
@@ -424,19 +469,19 @@ func assertNoInternalDetail(t *testing.T, body string) {
 
 // TestE2E_StatementTimeout_GRPCEnvelope is row 12's second entry point.
 func TestE2E_StatementTimeout_GRPCEnvelope(t *testing.T) {
-	h, model := newStatementCeilingHarness(t)
-	release := blockEntityWrites(t)
+	h, _, entityID := newStatementCeilingHarness(t)
+	release := holdRowLock(t, entityID)
 	defer release()
 
-	env, err := h.createEntityGRPC(model, 1, storageCeilingSample)
+	env, err := h.deleteEntityGRPC(entityID)
 	if err != nil {
-		t.Fatalf("gRPC create: %v", err)
+		t.Fatalf("gRPC delete: %v", err)
 	}
 	if env.Success {
-		t.Fatal("create succeeded despite the statement being cancelled")
+		t.Fatal("delete succeeded despite the statement being cancelled")
 	}
 	if env.Error == nil {
-		t.Fatal("failed gRPC create carried no error envelope")
+		t.Fatal("failed gRPC delete carried no error envelope")
 	}
 	if env.Error.Code != "SERVER_ERROR" {
 		t.Errorf("Error.Code = %q, want SERVER_ERROR", env.Error.Code)
@@ -472,6 +517,25 @@ func (h *callbackHarness) createEntityGRPC(model string, version int, payload st
 			"model": map[string]any{"name": model, "version": version},
 			"data":  data,
 		},
+	})
+	if err != nil {
+		return txEnvelope{}, err
+	}
+	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
+	if err != nil {
+		return txEnvelope{}, err
+	}
+	return parseTxEnvelope(respCE)
+}
+
+// deleteEntityGRPC issues an EntityDeleteRequest over the real gRPC entity API
+// (the member's connection), unjoined. EntityDeleteResponse carries the same
+// error envelope shape as EntityTransactionResponse, so txEnvelope reads both.
+func (h *callbackHarness) deleteEntityGRPC(entityID string) (txEnvelope, error) {
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityDeleteRequest, map[string]any{
+		"id":       "storage-ceiling-delete",
+		"entityId": entityID,
 	})
 	if err != nil {
 		return txEnvelope{}, err

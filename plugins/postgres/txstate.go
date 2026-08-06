@@ -32,6 +32,9 @@ type txState struct {
 	readSet    map[string]int64
 	writeSet   map[string]int64
 	savepoints []savepointEntry
+	// abortCause is the ceiling error that aborted this transaction
+	// server-side, when one did. See RecordAbort.
+	abortCause error
 }
 
 type savepointEntry struct {
@@ -46,6 +49,35 @@ func newTxState(tenantID spi.TenantID) *txState {
 		readSet:  make(map[string]int64),
 		writeSet: make(map[string]int64),
 	}
+}
+
+// RecordAbort remembers the error that aborted this transaction server-side.
+//
+// PostgreSQL answers every statement issued after an abort — Commit's own
+// submit-time probe included — with 25P02 in_failed_sql_transaction, which says
+// only "something earlier failed" and not what. Commit historically read that as
+// a serialization conflict and reported a retryable 409. That is right when a
+// concurrent committer caused the abort and wrong when a ceiling did: a
+// statement cancelled by statement_timeout would be cancelled again, so the
+// retry is a promise that cannot be kept.
+//
+// First writer wins: the first failure is the one that aborted the transaction,
+// and everything after it is a consequence.
+func (s *txState) RecordAbort(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.abortCause == nil {
+		s.abortCause = err
+	}
+}
+
+// AbortCause returns the error recorded by RecordAbort, or nil when nothing
+// recorded one — in which case Commit has no better information than 25P02 and
+// keeps its existing conflict mapping.
+func (s *txState) AbortCause() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.abortCause
 }
 
 // RecordRead records a read of the given entity at the given version.
