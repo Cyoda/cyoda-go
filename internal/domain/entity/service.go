@@ -263,8 +263,8 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
@@ -656,8 +656,8 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
@@ -798,8 +798,8 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
@@ -922,8 +922,8 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
@@ -1186,8 +1186,8 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
@@ -1382,8 +1382,8 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
@@ -1729,8 +1729,8 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first —
-	// Release re-acquires it, and it is not reentrant.
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()

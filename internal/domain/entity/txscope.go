@@ -26,12 +26,19 @@ import (
 //	...
 //	err := scope.Commit()
 //
-// beginScope deliberately does NOT touch the joined gate. Flows acquire it
-// themselves and register `defer releaseGate()` AFTER `defer scope.Release()`,
-// so LIFO frees the gate first. Folding the gate into the scope would leave it
-// permanently held on the joined path, where Release is a no-op — and it is a
-// non-reentrant mutex, so every later joined callback on that txID would block
-// forever.
+// beginScope deliberately does NOT touch the joined gate. Folding it in would
+// leave the gate permanently held on the joined path, where Release is a no-op —
+// and it is a non-reentrant mutex, so every later joined callback on that txID
+// would block forever.
+//
+// Flows therefore acquire it themselves and register `defer releaseGate()` AFTER
+// `defer scope.Release()`, so LIFO frees the gate before Release runs. That
+// ordering is lock-order hygiene, NOT a fix for a live deadlock: Release acquires
+// nothing on the joined-entry path (it returns early), and on the joined-segment
+// path it takes a DIFFERENT txID's gate, so reversing the two defers today merely
+// holds both at once. It becomes a self-deadlock the moment Release is hardened to
+// gate the entry transaction too — which is why the ordering is pinned by a test
+// rather than left to be rediscovered.
 type txScope struct {
 	h *Handler
 

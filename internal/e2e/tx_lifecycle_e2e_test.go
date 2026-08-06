@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -45,18 +46,55 @@ func newTinyPoolHarness(t *testing.T, maxConns int32) *callbackHarness {
 }
 
 // newTinyPoolHarnessConfigured is newTinyPoolHarness with an extra cfg mutator
-// applied after the pool sizing.
+// applied after the pool sizing. It also stamps a per-test application_name on
+// the harness pool's DSN so the pg_stat_activity probe can be scoped to this
+// harness's own backends — see harnessAppName.
 func newTinyPoolHarnessConfigured(t *testing.T, maxConns int32, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
+	baseURL := pgURLFromEnv(t)
 	return newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		// Read by the postgres plugin's own getenv at factory-open time, which
-		// happens inside app.New — i.e. after this mutator runs.
+		// happens inside app.New — i.e. after this mutator runs. pgxpool.ParseConfig
+		// forwards application_name as a PostgreSQL runtime parameter.
+		t.Setenv("CYODA_POSTGRES_URL", withAppName(t, baseURL, harnessAppName(t)))
 		t.Setenv("CYODA_POSTGRES_MAX_CONNS", strconv.Itoa(int(maxConns)))
 		t.Setenv("CYODA_POSTGRES_MIN_CONNS", "0")
 		if configure != nil {
 			configure(cfg)
 		}
 	})
+}
+
+// harnessAppName is the application_name this test's harness pool reports. It is
+// derived from the test name so the probe below and the harness agree without
+// threading a value through newTinyPoolHarness's signature (Tasks 10 and 11
+// consume that signature as published).
+func harnessAppName(t *testing.T) string {
+	t.Helper()
+	name := "txlife-" + strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, t.Name())
+	if len(name) > 63 { // PostgreSQL truncates application_name at NAMEDATALEN-1
+		name = name[:63]
+	}
+	return name
+}
+
+// withAppName returns dsn with application_name set to name, replacing any value
+// already present.
+func withAppName(t *testing.T, dsn, name string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse postgres URL: %v", err)
+	}
+	q := u.Query()
+	q.Set("application_name", name)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // newTinyPoolProcHarness is newTinyPoolHarness with an in-process dispatcher, so
@@ -71,14 +109,19 @@ func newTinyPoolProcHarness(t *testing.T, maxConns int32) (*callbackHarness, *lo
 	return h, svc
 }
 
-// idleInTransactionConns counts backends parked mid-transaction on the shared
-// test database. That state is precisely the signature of a transaction that was
-// neither committed nor rolled back and whose pooled connection never came back;
-// it is read from PostgreSQL rather than from a pgxpool Stat, which only ever
-// sees its own connections.
+// idleInTransactionConns counts THIS harness's backends parked mid-transaction.
+// That state is precisely the signature of a transaction that was neither
+// committed nor rolled back and whose pooled connection never came back.
+//
+// It is read from PostgreSQL (a pgxpool Stat only ever sees its own connections)
+// but scoped by application_name to the harness under test. Counting every
+// backend on the database would fold in the shared TestMain stack's scheduler and
+// reaper transactions, and any of those opening inside the poll window would make
+// a `<= before` assertion unreachable — a flake, not a finding. The observer pool
+// carries a distinct application_name so it can never count itself.
 func idleInTransactionConns(t *testing.T) int {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), pgURLFromEnv(t))
+	pool, err := pgxpool.New(context.Background(), withAppName(t, pgURLFromEnv(t), "txlife-observer"))
 	if err != nil {
 		t.Fatalf("open observer pool: %v", err)
 	}
@@ -87,14 +130,16 @@ func idleInTransactionConns(t *testing.T) int {
 	err = pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM pg_stat_activity
 		 WHERE datname = current_database()
-		   AND pid <> pg_backend_pid()
-		   AND state LIKE 'idle in transaction%'`).Scan(&n)
+		   AND application_name = $1
+		   AND state LIKE 'idle in transaction%'`, harnessAppName(t)).Scan(&n)
 	if err != nil {
 		t.Fatalf("read activity: %v", err)
 	}
 	return n
 }
 
+// pgURLFromEnv returns the base DSN TestMain published. Callers that need a
+// scoped one run it through withAppName.
 func pgURLFromEnv(t *testing.T) string {
 	t.Helper()
 	// TestMain sets CYODA_POSTGRES_URL for the whole run; App.StoreFactory() is
@@ -352,26 +397,60 @@ func TestE2E_ClientCancelledRequest_StillRollsBack(t *testing.T) {
 
 // --- coverage row 3: a failing joined callback leaves its owner's tx alone ---
 
+// txLifeAbsentEntityID is a well-formed UUID that names no entity, so the route's
+// UUID binding passes and the failure comes from the flow, not the edge.
+const txLifeAbsentEntityID = "00000000-0000-4000-8000-0000000004a3"
+
+// joinedCallbackOutcome is what the compute member records from inside the
+// processor, asserted on the test goroutine afterwards.
+type joinedCallbackOutcome struct {
+	deleteStatus int
+	createStatus int
+	createdID    string
+}
+
 // TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner is coverage row 3's E2E
 // half. It runs over the REAL gRPC dispatch path so the callback genuinely joins
 // the owner's transaction via the signed tx-token, and the joined write's own
-// deferred scope must decline to touch a transaction it does not own — the
-// owner, whose cascade continues afterwards, decides its fate.
+// deferred scope must decline to touch a transaction it does not own.
+//
+// The joined write is a DELETE of an absent id, chosen deliberately.
+// DeleteEntity's very first act is beginScope, so the 404 surfaces from
+// entityStore.Get with the joined scope live and `defer scope.Release()` armed —
+// the code path under test. A joined CREATE against an unregistered model would
+// NOT do: CreateEntity resolves and validates the model ~50 lines before
+// beginScope, so it returns 404 having constructed no scope at all, and the test
+// would pass against a Release that rolls back its owner unconditionally.
+//
+// Two consequences are asserted, and the second is the load-bearing one:
+// a SECOND joined write, issued after the failure, must still succeed and must
+// still be durable after the owner commits. That can only hold if the owner's
+// transaction survived the first callback intact.
 func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 	h := newCallbackHarness(t)
 
 	const primary = "txlife-owner"
-	var callbackStatus = make(chan int, 1)
+	const secondary = "txlife-owner-child"
+	outcome := make(chan joinedCallbackOutcome, 1)
 
 	h.RegisterProc("txlife-owner-proc", func(rc *reqCtx) (map[string]any, error) {
-		// A joined write against a model that was never registered: the joined
-		// request opens no transaction of its own, fails inside the flow, and
-		// must leave the owner's transaction exactly as it found it.
-		res, err := rc.CreateEntity("txlife-no-such-model", 1, txLifeSample)
+		var out joinedCallbackOutcome
+
+		del, err := rc.DeleteEntity(txLifeAbsentEntityID)
+		if err != nil {
+			return nil, fmt.Errorf("callback delete: %w", err)
+		}
+		out.deleteStatus = del.StatusCode
+
+		// The owner's transaction must still be open and still committable. This
+		// write lands in the same buffer and is read back below after the commit.
+		created, err := rc.CreateEntity(secondary, 1, txLifeSample)
 		if err != nil {
 			return nil, fmt.Errorf("callback create: %w", err)
 		}
-		callbackStatus <- res.StatusCode
+		out.createStatus, out.createdID = created.StatusCode, created.EntityID
+
+		outcome <- out
 		return nil, nil // the owner's cascade carries on regardless
 	})
 
@@ -389,19 +468,25 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 		}]
 	}`
 	h.setupModelSampleWithWorkflow(t, primary, txLifeSample, primaryWF)
+	h.setupModelSampleWithWorkflow(t, secondary, txLifeSample, workflowV1)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, txLifeSample)
 	if status != http.StatusOK {
 		t.Fatalf("owner create failed; a joined callback rolled back its owner's transaction: %d %s", status, body)
 	}
 
+	var out joinedCallbackOutcome
 	select {
-	case s := <-callbackStatus:
-		if s == http.StatusOK {
-			t.Fatalf("the joined callback was supposed to fail; it returned %d", s)
-		}
+	case out = <-outcome:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the processor's joined callback never completed")
+	}
+
+	if out.deleteStatus != http.StatusNotFound {
+		t.Fatalf("joined delete status = %d, want 404 from inside the flow; the test must fail AFTER beginScope", out.deleteStatus)
+	}
+	if out.createStatus != http.StatusOK {
+		t.Fatalf("the joined write after the failure returned %d; the failed callback took its owner's transaction down with it", out.createStatus)
 	}
 
 	// The owner committed: its entity is durable and reached its settled state.
@@ -411,5 +496,14 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 	}
 	if state != "ACTIVE" {
 		t.Fatalf("owner's entity state = %q, want ACTIVE", state)
+	}
+
+	// ...and so is the write the second joined callback buffered into it. A
+	// rollback by the first callback would have discarded this.
+	if out.createdID == "" {
+		t.Fatal("joined create returned no entity id")
+	}
+	if _, s := h.GetEntityState(t, out.createdID); s != http.StatusOK {
+		t.Fatalf("the joined callback's write is not durable after the owner committed: GET returned %d", s)
 	}
 }
