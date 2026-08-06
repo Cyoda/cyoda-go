@@ -41,11 +41,15 @@ func envCeiling(getenv func(string) string, key string, dflt time.Duration) (tim
 		return 0, false, fmt.Errorf("%s=%q must not be negative", key, v)
 	}
 	if d > 0 && d < time.Millisecond {
-		// Truncating to "0" would tell PostgreSQL "no limit" — the exact
-		// inversion of the operator's intent — so this is rejected rather than
-		// silently removing a ceiling.
+		// Rejected rather than accepted, and the wording covers every caller:
+		// the GUC ceilings are rendered as integer milliseconds, so a
+		// sub-millisecond value truncates to "0" and tells PostgreSQL "no
+		// limit" — the exact inversion of the operator's intent; and the
+		// Go-side acquire deadline, which has no PostgreSQL setting behind it,
+		// would be too short for any acquire to complete. Both outcomes are
+		// worse than saying no.
 		return 0, false, fmt.Errorf(
-			"%s=%q is below the 1ms resolution of the PostgreSQL setting it configures; "+
+			"%s=%q is below the 1ms resolution these limits are expressed in; "+
 				"use 0 to disable the limit explicitly, or a value of at least 1ms", key, v)
 	}
 	return d, true, nil

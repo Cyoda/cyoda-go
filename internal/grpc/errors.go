@@ -31,6 +31,19 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 				r := true
 				retryable = &r
 			}
+			// An operational error whose cause is INFRASTRUCTURE rather than
+			// domain (a storage failure, say) attaches that cause with
+			// WithCause and keeps it out of the client-facing message. The log
+			// is then its only breadcrumb — so it has to exist on this door
+			// too, not just on the HTTP one. Same message and field name as
+			// common.WriteError's operational branch, so the two entry points
+			// read alike in a log aggregator. Errors without a cause put their
+			// full detail in the message the client already has; logging those
+			// again would be noise on every bad request.
+			if appErr.Err != nil {
+				slog.Info("operational error", "pkg", "grpc",
+					"code", appErr.Code, "message", appErr.Message, "cause", appErr.Err.Error())
+			}
 			return
 		}
 		// Internal/Fatal — generate ticket

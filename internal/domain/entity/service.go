@@ -2044,6 +2044,14 @@ func classifyWorkflowError(err error) *common.AppError {
 	// Before the infra branches below: a segment Begin that could not acquire a
 	// connection is transient contention, not an unexplained engine failure, and
 	// ErrCommitBeforeDispatchInfra would otherwise claim it as a 500.
+	//
+	// This flips the retry flag for that case: non-retryable 500 before, retryable
+	// 503 now. On the TX_post path TX_pre has already committed and the external
+	// dispatch has already fired, so the client is being told to retry a request
+	// whose side effect executed. That is the correct trade under
+	// COMMIT_BEFORE_DISPATCH's at-least-once contract — the segment boundary is
+	// where the caller opts into exactly that — and the alternative is worse: an
+	// opaque 500 for a condition that clears on its own in milliseconds.
 	if suErr := storageUnavailable(err); suErr != nil {
 		return suErr
 	}

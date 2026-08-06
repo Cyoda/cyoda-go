@@ -897,7 +897,13 @@ HEAD; no existing entry is modified, and the added 503 is the only change to any
 operation's response set.
 
 gRPC: the same failure surfaces in the envelope as `Success=false` with
-`Error.Code = STORAGE_UNAVAILABLE`.
+`Error.Code = CLIENT_ERROR` and `Error.Retryable = true`. `Error.Code` is the
+envelope *class*, not the domain code — `buildErrorFields`
+(`internal/grpc/errors.go`) maps every operational `AppError` to `CLIENT_ERROR`
+and carries the domain code in `Error.Message`, here
+`STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry`. That is the
+established convention for this surface, so the gRPC assertion is on the message
+prefix plus the retryable flag, not on `Error.Code`.
 
 ---
 

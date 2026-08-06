@@ -50,6 +50,28 @@ func TestEnvCeiling_RejectsSubMillisecond(t *testing.T) {
 	}
 }
 
+// TestEnvCeiling_SubMillisecondMessageFitsEveryCaller — envCeiling backs both
+// the PostgreSQL GUC ceilings and CYODA_POSTGRES_ACQUIRE_TIMEOUT, which is a
+// Go-side pool deadline with no server setting behind it. This is shipped
+// operator-facing text, so it must not point the operator at a PostgreSQL
+// setting that does not exist for the var they actually set.
+func TestEnvCeiling_SubMillisecondMessageFitsEveryCaller(t *testing.T) {
+	env := func(string) string { return "500us" }
+	_, _, err := envCeiling(env, "CYODA_POSTGRES_ACQUIRE_TIMEOUT", defaultAcquireTimeout)
+	if err == nil {
+		t.Fatal("sub-millisecond acquire timeout accepted")
+	}
+	if strings.Contains(err.Error(), "PostgreSQL setting") {
+		t.Errorf("rejection text claims a PostgreSQL setting the acquire timeout does not have: %v", err)
+	}
+	// The actionable part must survive the rewording.
+	for _, want := range []string{"CYODA_POSTGRES_ACQUIRE_TIMEOUT", "500us", "0 to disable", "at least 1ms"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("rejection text lost %q: %v", want, err)
+		}
+	}
+}
+
 func TestEnvCeiling_ZeroDisablesExplicitly(t *testing.T) {
 	env := func(string) string { return "0" }
 	d, set, err := envCeiling(env, "CYODA_POSTGRES_STATEMENT_TIMEOUT", 5*time.Minute)
