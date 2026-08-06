@@ -142,9 +142,18 @@ func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 	return f.pool
 }
 
-// querier returns the per-call-resolving Querier used by all stores.
+// querier returns the per-call-resolving Querier used by every store whose
+// statements belong to the caller's transaction when there is one.
 func (f *StoreFactory) querier() Querier {
 	return &ctxQuerier{factory: f}
+}
+
+// poolQuerier returns the pool-pinned Querier — same classification, no
+// transaction resolution. Used by the async-search job store alone; see
+// poolQuerier's godoc for why that record must not join the caller's
+// transaction.
+func (f *StoreFactory) poolQuerier() Querier {
+	return poolQuerier{pool: f.pool}
 }
 
 // classifyFor classifies a statement error against whichever transaction the
@@ -226,7 +235,11 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	// AsyncSearchStore is a long-lived singleton — tenant is resolved per method call,
 	// not at construction. This allows app.go to obtain the store at startup with
 	// context.Background() (no tenant). ReapExpired also runs without tenant context.
-	return &asyncSearchStore{pool: f.pool, searchStatementTimeout: f.cfg.SearchStatementTimeout}, nil
+	return &asyncSearchStore{
+		q:                      f.poolQuerier(),
+		pool:                   f.pool,
+		searchStatementTimeout: f.cfg.SearchStatementTimeout,
+	}, nil
 }
 
 // ScheduledTaskStore returns a store backed by the context-resolving
