@@ -53,8 +53,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # -timeout is explicit rather than left to Go's implicit 10m per-binary
+      # default. internal/e2e stands up a PostgreSQL container and a full HTTP
+      # stack per harness, so it is minutes long by nature and the default left
+      # it under 2x headroom on a runner slower than a developer's machine. A
+      # binary that trips the default reports as a panic with a goroutine dump,
+      # which reads like a product defect rather than a budget being hit.
       - name: Run tests
-        run: go test ./... -v
+        run: go test ./... -v -timeout 30m
 
       # Race detector. Scoped via `make race` to exclude `internal/e2e` —
       # see Makefile and `.claude/rules/race-testing.md` for rationale.

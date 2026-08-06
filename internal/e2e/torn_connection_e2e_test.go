@@ -69,12 +69,10 @@ func (p *pgProxy) serve() {
 // cut tears every connection currently proxied and returns how many pairs it
 // tore. The pool notices on its next statement.
 //
-// SetLinger(0) makes the close send an RST rather than a FIN. A FIN leaves the
-// socket half-open: the peer's writes still succeed locally, so pgconn's Close
-// sends its Terminate message and then waits its full fifteen-second deadline
-// for a peer that will never close. An RST is also the truer fault — it is what
-// a killed server or a dropped link produces, and it is the shape isConnectionTorn
-// recognises.
+// SetLinger(0) makes the close send an RST rather than a FIN, because an RST is
+// the fault being modelled: it is what a killed server or a dropped link
+// produces, and it is the shape isConnectionTorn recognises. It does not avoid
+// the reconnect wait described on probeTorn — that is paid either way.
 func (p *pgProxy) cut() int {
 	p.mu.Lock()
 	conns := p.conns
@@ -115,12 +113,10 @@ func proxiedPGURL(t *testing.T, proxyAddr, appName string) string {
 	if err != nil {
 		t.Fatalf("parse postgres URL: %v", err)
 	}
-	upstream := u.Host
 	u.Host = proxyAddr
 	q := u.Query()
 	q.Set("application_name", appName)
 	u.RawQuery = q.Encode()
-	_ = upstream
 	return u.String()
 }
 
@@ -140,6 +136,11 @@ func newTornHarness(t *testing.T) *tornHarness {
 	proxy := newPGProxy(t, u.Host)
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_URL", proxiedPGURL(t, proxy.addr(), harnessAppName(t)))
+		// Exactly one slot. With a spare, the pool can hand the probe a connection
+		// it created after the cut instead of the torn one, and the injection stops
+		// being reliable — measured: the results probe returned 200 on all three
+		// cycles. A single slot means the connection the probe gets is the
+		// connection that was torn.
 		t.Setenv("CYODA_POSTGRES_MAX_CONNS", "1")
 		t.Setenv("CYODA_POSTGRES_MIN_CONNS", "0")
 		// The scan loop would reconnect the pool between the cut and the probe.
@@ -149,25 +150,61 @@ func newTornHarness(t *testing.T) *tornHarness {
 	return &tornHarness{callbackHarness: h, proxy: proxy}
 }
 
+// healJobID is a well-formed job UUID that belongs to no job — a warm-up that
+// needs no fixture, for a subtest whose own endpoint would not acquire.
+const healJobID = "00000000-0000-4000-8000-0000000000aa"
+
+// tornCall issues one request against the harness. It takes the *testing.T of
+// whichever subtest is running, so a failure is reported against that subtest
+// rather than against the parent from another goroutine.
+type tornCall func(t *testing.T) (int, string)
+
+func (h *tornHarness) get(path string) tornCall {
+	return func(t *testing.T) (int, string) {
+		t.Helper()
+		resp := h.DoAuth(t, http.MethodGet, path, "", "")
+		return resp.StatusCode, h.readBody(t, resp)
+	}
+}
+
+func (h *tornHarness) post(path, body string) tornCall {
+	return func(t *testing.T) (int, string) {
+		t.Helper()
+		resp := h.DoAuth(t, http.MethodPost, path, body, "")
+		return resp.StatusCode, h.readBody(t, resp)
+	}
+}
+
+func (h *tornHarness) do(method, path string) tornCall {
+	return func(t *testing.T) (int, string) {
+		t.Helper()
+		resp := h.DoAuth(t, method, path, "", "")
+		return resp.StatusCode, h.readBody(t, resp)
+	}
+}
+
 // probeTorn runs warm → cut → probe until it observes a failure, and asserts the
 // failure is the retryable 503 the marker mints. Cycles exist because pgx pings
 // a connection idle for more than a second and would transparently replace it;
 // the probe follows the cut by microseconds, so one cycle normally suffices.
-func probeTorn(t *testing.T, h *tornHarness, warm, probe func() (int, string)) {
+//
+// The first acquire after a cut costs ~15s: pgx destroys the torn connection
+// then, and pgconn.Close waits its own deadline for a peer that RST'd rather
+// than closing politely. It is inside the driver, not this stack — a
+// server-initiated close recovers in milliseconds — and it is fixed wall clock,
+// not load-dependent. It is paid, not hidden: moving it to a background
+// goroutine changes nothing against a single-connection pool (measured), and
+// widening the pool so it could overlap costs the injection its reliability.
+func probeTorn(t *testing.T, h *tornHarness, warm, probe tornCall) {
 	t.Helper()
 	for i := 0; i < 3; i++ {
-		// The warm-up after a previous cut can take ~15s: pgx destroys the torn
-		// connection on the next acquire, and pgconn.Close waits its own deadline
-		// for a peer that RST'd rather than closing politely. It is inside the
-		// driver, not this stack — a server-initiated close recovers in
-		// milliseconds — and it is paid at most once per cut.
-		if status, body := warm(); status >= 500 {
+		if status, body := warm(t); status >= 500 {
 			t.Fatalf("cycle %d: warm-up failed: %d %s", i, status, body)
 		}
 		if torn := h.proxy.cut(); torn == 0 {
 			t.Fatalf("cycle %d: no live connection to tear", i)
 		}
-		status, body := probe()
+		status, body := probe(t)
 		t.Logf("cycle %d: status=%d body=%s", i, status, body)
 		if status < 400 {
 			continue // the pool replaced the connection before the probe landed
@@ -212,25 +249,16 @@ func TestE2E_TornConnection_AsyncSearchLookups503(t *testing.T) {
 	h.setupModelSampleWithWorkflow(t, model, `{"name":"Alice","amount":1,"status":"new"}`, secondaryWorkflow)
 	jobID := settledJob(t, h.callbackHarness, model)
 
-	get := func(path string) func() (int, string) {
-		return func() (int, string) {
-			resp := h.DoAuth(t, http.MethodGet, path, "", "")
-			return resp.StatusCode, h.readBody(t, resp)
-		}
-	}
-	warm := get("/api/search/async/" + jobID + "/status")
+	warm := h.get("/api/search/async/" + jobID + "/status")
 
 	t.Run("status", func(t *testing.T) {
-		probeTorn(t, h, warm, get("/api/search/async/"+jobID+"/status"))
+		probeTorn(t, h, warm, h.get("/api/search/async/"+jobID+"/status"))
 	})
 	t.Run("results", func(t *testing.T) {
-		probeTorn(t, h, warm, get("/api/search/async/"+jobID))
+		probeTorn(t, h, warm, h.get("/api/search/async/"+jobID))
 	})
 	t.Run("cancel", func(t *testing.T) {
-		probeTorn(t, h, warm, func() (int, string) {
-			resp := h.DoAuth(t, http.MethodPut, "/api/search/async/"+jobID+"/cancel", "", "")
-			return resp.StatusCode, h.readBody(t, resp)
-		})
+		probeTorn(t, h, warm, h.do(http.MethodPut, "/api/search/async/"+jobID+"/cancel"))
 	})
 }
 
@@ -256,11 +284,7 @@ func TestE2E_TornConnection_AuditAndTrustedKeys503(t *testing.T) {
 	if txID == "" {
 		t.Fatal("no state-machine event carried a transaction id")
 	}
-	auditPath := fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID, txID)
-	auditCall := func() (int, string) {
-		resp := h.DoAuth(t, http.MethodGet, auditPath, "", "")
-		return resp.StatusCode, h.readBody(t, resp)
-	}
+	auditCall := h.get(fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID, txID))
 	t.Run("finishedEvent", func(t *testing.T) {
 		probeTorn(t, h, auditCall, auditCall)
 	})
@@ -269,28 +293,19 @@ func TestE2E_TornConnection_AuditAndTrustedKeys503(t *testing.T) {
 	registerTrustedTestKey(t, h.callbackHarness, kid)
 	base := "/api/oauth/keys/trusted/" + kid
 	reactivateBody := `{"validTo":"` + time.Now().Add(24*time.Hour).Format(time.RFC3339) + `"}`
-	post := func(path, body string) func() (int, string) {
-		return func() (int, string) {
-			resp := h.DoAuth(t, http.MethodPost, path, body, "")
-			return resp.StatusCode, h.readBody(t, resp)
-		}
-	}
 	t.Run("invalidate", func(t *testing.T) {
-		probeTorn(t, h, post(base+"/invalidate", ""), post(base+"/invalidate", ""))
+		probeTorn(t, h, h.post(base+"/invalidate", ""), h.post(base+"/invalidate", ""))
 	})
 	t.Run("reactivate", func(t *testing.T) {
-		probeTorn(t, h, post(base+"/reactivate", reactivateBody), post(base+"/reactivate", reactivateBody))
+		probeTorn(t, h, h.post(base+"/reactivate", reactivateBody), h.post(base+"/reactivate", reactivateBody))
 	})
 	t.Run("delete", func(t *testing.T) {
 		const deleteKid = "torn-trusted-delete"
 		registerTrustedTestKey(t, h.callbackHarness, deleteKid)
-		list := func() (int, string) {
-			resp := h.DoAuth(t, http.MethodGet, "/api/oauth/keys/trusted", "", "")
-			return resp.StatusCode, h.readBody(t, resp)
-		}
-		probeTorn(t, h, list, func() (int, string) {
-			resp := h.DoAuth(t, http.MethodDelete, "/api/oauth/keys/trusted/"+deleteKid, "", "")
-			return resp.StatusCode, h.readBody(t, resp)
-		})
+		// Listing trusted keys is served from the in-memory cache and would put
+		// nothing on the wire; the warm-up has to be a request that acquires.
+		probeTorn(t, h,
+			h.get("/api/search/async/"+healJobID+"/status"),
+			h.do(http.MethodDelete, "/api/oauth/keys/trusted/"+deleteKid))
 	})
 }
