@@ -19,14 +19,21 @@ var dottedInvocationPattern = regexp.MustCompile(`cyoda help [0-9A-Za-z_-]+\.[0-
 
 // crossReferencedArtefacts are the shipped files outside the help tree that also
 // tell a reader to run `cyoda help ...`. api/openapi.yaml is served to every API
-// client and rendered in generated docs; README.md is the project's front door.
-// A dead invocation in either costs more than one in a help topic, not less, so
-// the guard covers them under the same rule.
+// client and rendered in generated docs; api/generated.go carries the same prose
+// into every Go consumer's editor tooltips; README.md is the project's front
+// door. A dead invocation in any of them costs more than one in a help topic,
+// not less, so the guard covers them under the same rule.
+//
+// api/generated.go is included even though it is generated FROM openapi.yaml.
+// Generated output is still shipped output, and leaving it unscanned is exactly
+// how a spec fix reads as complete while the artefact every consumer actually
+// imports keeps the dead invocation until someone runs `go generate`.
 //
 // docs/superpowers/** is deliberately out of scope: plans and specs are
 // historical records of what was proposed at the time, not living documents.
 var crossReferencedArtefacts = []string{
 	"api/openapi.yaml",
+	"api/generated.go",
 	"README.md",
 }
 
