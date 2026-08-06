@@ -27,7 +27,7 @@ For product-level context, see the [PRD](PRD.md).
 9. [Configuration Reference](#9-configuration-reference)
 10. [Deployment Architecture](#10-deployment-architecture)
 11. [Observability](#11-observability)
-12. [Planned Features](#12-planned-features-not-yet-implemented)
+12. [Known Gaps](#12-known-gaps)
 13. [Design Decisions Log](#13-design-decisions-log)
 14. [Non-Functional Limits and Design Boundaries](#14-non-functional-limits-and-design-boundaries)
 
@@ -378,7 +378,14 @@ contract.
 | `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` | `30m` | Async search scans, which get their own higher ceiling |
 | `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` | `5m` | The lock wait during schema migration |
 
-Each is set on the server side, so PostgreSQL enforces it whether or not the application is still watching. A write that cannot get a connection within the acquire timeout fails with `503 STORAGE_UNAVAILABLE`, marked retryable; a statement or an idle transaction that exceeds its ceiling is aborted server-side and surfaces the same way.
+Each is set on the server side, so PostgreSQL enforces it whether or not the application is still watching.
+
+How an abort surfaces depends on whether retrying could plausibly work:
+
+- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** A write that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT`, and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed.
+- **Ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`, and an async scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie. The server log names the setting that fired, which is what turns an otherwise unexplained failure into a diagnosable one.
+
+See `cyoda help errors STORAGE_UNAVAILABLE` for the caller-facing statement of the split.
 
 **Processor timeouts must fit under the idle ceiling.** A `SYNC` or `ASYNC_SAME_TX` callout holds its transaction's connection idle for the whole dispatch, so a processor's `responseTimeoutMs` (default 30s) has to be shorter than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. It is not currently capped against it: a workflow may configure a callout longer than the ceiling, in which case PostgreSQL aborts the transaction mid-dispatch and the caller sees `503 STORAGE_UNAVAILABLE`. `COMMIT_BEFORE_DISPATCH` (§5.4) removes the constraint for a given processor by committing before the dispatch and holding no connection across it.
 
@@ -551,22 +558,19 @@ The proxy is near-transparent: the target node receives the original request inc
 | Target node dead | 503 | `TRANSACTION_NODE_UNAVAILABLE` |
 | Target node unreachable | 503 | `TRANSACTION_NODE_UNAVAILABLE` |
 
-The gRPC routing path returns `BAD_REQUEST` for an unparseable or unverifiable token rather than `UNAUTHORIZED`.
+gRPC applies the same mapping: `classifyRouteErr` in `internal/grpc/txroute_interceptor.go` yields `410 TRANSACTION_EXPIRED`, `401 UNAUTHORIZED` and `503 TRANSACTION_NODE_UNAVAILABLE` for the same conditions, rendered into the RPC's error envelope.
 
-**gRPC routing helpers:**
-
-For gRPC streams, the `proxy` package provides:
+**gRPC routing:**
 
 ```go
 // ExtractGRPCToken reads tx-token from gRPC incoming metadata.
 func ExtractGRPCToken(ctx context.Context) string
 
-// ResolveTarget determines whether a request should be proxied.
-// Returns: addr, shouldProxy, err
-func ResolveTarget(ctx, signer, registry, selfNodeID, tok) (string, bool, error)
+// ResolveNodeInfo determines whether a request should be proxied, and to whom.
+func ResolveNodeInfo(ctx, signer, registry, selfNodeID, tok) (contract.NodeInfo, bool, error)
 ```
 
-gRPC routing is not a transparent proxy -- the gRPC handler checks `ResolveTarget` and either serves locally or returns an error directing the client to retry against the target node.
+gRPC routing forwards rather than redirecting. A `txRouteInterceptor` — unary and stream — extracts the token, resolves the owning node, and either joins the transaction locally or re-issues the call to that node over a pooled gRPC connection. For unary RPCs the peer's response is returned to the client as the interceptor's own; for server-streaming RPCs `proxyStream` copies every response frame back onto the inbound stream verbatim. The client is not told to retry elsewhere and does not learn which node served it.
 
 **`COMMIT_BEFORE_DISPATCH` segment pinning.** A `COMMIT_BEFORE_DISPATCH` cascade pins **all segments to the home node** that opened `TX_pre`. `TX_post` is required to begin on the same node — this is enforced via the cluster's TX-token registry. Cross-node continuation is out of scope: a home-node crash mid-cascade leaves the entity durable in the pre-callout state and the in-flight orchestration lost (see §3.1); the client restarts with a fresh `Begin()` on a surviving node, which re-fires the cascade from the beginning.
 
@@ -823,7 +827,7 @@ The most dangerous moment. Node A sends COMMIT to PG. Three outcomes:
 2. **COMMIT never reaches PG:** PG never committed. Transaction is rolled back by PG once `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` elapses (§3.4). Node A tells client error. Correct.
 3. **Partition before COMMIT sent:** Node A detects dead connection, rolls back locally, tells client error. Correct.
 
-ISSUE: Case 1 is the classic **commit ambiguity**. Node A cannot distinguish cases 1 and 2. **Requires a commit marker/confirmation mechanism** (see [§12](#12-planned-features-not-yet-implemented)).
+ISSUE: Case 1 is the classic **commit ambiguity**. Node A cannot distinguish cases 1 and 2. **Requires a commit marker/confirmation mechanism** (see [§12](#12-known-gaps)).
 
 **L1 partitions at response (Node A <-> Client):**
 
@@ -884,7 +888,7 @@ Same shape as L5 + home-node-crash above: stranded entity, possible external sid
 | **Consistency** | All partition scenarios lead to rollback or clean commit. No split-brain possible because `pgx.Tx` is single-owner. PG `REPEATABLE READ` + commit-time read-set validation (SI+FCW, see §3.7) catches conflicting concurrent writes. | None (inherently safe) |
 | **Duplicate operations** | Client <-> Node A partition at any point can cause the client to retry, creating a second transaction for the same intent. Both may commit without conflicting. | Idempotency keys |
 | **Commit ambiguity** | L5 partition at COMMIT time: Node A cannot tell if PG committed or not. | Commit marker (write marker row before COMMIT; check on reconnect) |
-| **Timeout / liveness** | A dispatch to a dead compute node is bounded by the callout's `responseTimeoutMs` and, behind it, by `CYODA_POSTGRES_STATEMENT_TIMEOUT` / `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (§3.4). What is not bounded is the inbound request itself — no deadline is derived from it and propagated downstream. | Deadline propagation via context |
+| **Timeout / liveness** | A dispatch to a dead compute node is bounded by the callout's `responseTimeoutMs` and, behind it, by `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` — the connection is idle inside its transaction for the whole callout, not running a statement, so the statement ceiling does not apply (§3.4). What is not bounded is the inbound request itself — no deadline is derived from it and propagated downstream. | Deadline propagation via context |
 | **Resource exhaustion** | A transaction holds one PG connection for its lifetime; the idle-in-transaction ceiling caps that lifetime and a saturated pool fails fast with `503 STORAGE_UNAVAILABLE` after `CYODA_POSTGRES_ACQUIRE_TIMEOUT` rather than queueing (§3.4). | Covered by the DB-side ceilings |
 | **Observability** | No cluster-wide view of open transactions, their owners, or their age. Per-node transaction counts and durations are exported as `cyoda.tx.active` / `cyoda.tx.duration` when OTel is enabled (§11); PostgreSQL's `pg_stat_activity` is the cross-node view. | Cluster-wide transaction registry |
 
@@ -1201,7 +1205,7 @@ const (
 | Internal | 500 | Generic message + ticket UUID | ERROR with ticket + full detail |
 | Fatal | 500 | Generic message + ticket UUID | ERROR "FATAL" with ticket + full detail |
 
-Internal and Fatal are indistinguishable to the client — both yield a generic 500 and a ticket. They differ in the log line, and Fatal is what the panic-recovery paths mint when they also mark the node unhealthy (§3.4).
+Internal and Fatal are indistinguishable to the client — both yield a generic 500 and a ticket. They differ in the log line. The HTTP panic-recovery middleware mints a Fatal `AppError`; the gRPC interceptors mark the node unhealthy the same way but return `codes.Internal` with a ticket-bearing message directly, without going through `AppError` (§3.4).
 
 ### 8.2 RFC 9457 Problem Details
 
@@ -1510,12 +1514,12 @@ hot-path semantics warrant.
 
 **Runtime sampler control.** The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler` (requires `ROLE_ADMIN`), mirroring `/api/admin/log-level`. Operators can toggle between 100% sampling, probabilistic sampling, and off without restarting the service. The initial sampler honors the standard OTel env vars `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` at startup.
 
-**Known gaps:** trace context propagation through the search pipeline
-and external-processor gRPC/CloudEvents is incomplete.
+Trace context does not reach the search pipeline or outbound
+external-processor calls — see §12.
 
 ---
 
-## 12. Planned Features (Not Yet Implemented)
+## 12. Known Gaps
 
 Capabilities this document's design implies but the system does not provide. Each is a known gap, not an oversight.
 
@@ -1635,14 +1639,14 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 ### 14.1 Horizontal Scalability
 
-**Design boundary:** Cyoda-Go targets 3–10 node clusters. It is not limitlessly horizontally scalable.
+**Design boundary:** Cyoda-Go targets small clusters — the design point DD-4 states is 2–20 nodes. It is not limitlessly horizontally scalable.
 
 | Dimension | Scaling Behavior | Limit |
 |-----------|-----------------|-------|
-| **Node count** | Linear improvement in compute dispatch capacity (more nodes = more compute members). No improvement in write throughput — all writes go through PostgreSQL. | 10–20 nodes practical maximum. Beyond this, gossip metadata size grows (per-tenant tag sets × nodes), and the probability of proxy hops increases. |
+| **Node count** | Linear improvement in compute dispatch capacity (more nodes = more compute members). No improvement in write throughput — all writes go through PostgreSQL. | Gossip metadata is capped at memberlist's 512-byte `MetaMaxSize`, and per-tenant tag sets grow with node count; the probability of a proxy hop also rises with cluster size. |
 | **Write throughput** | Bounded by PostgreSQL `REPEATABLE READ` + application-layer SI+FCW validation (see §3.7). A transaction holds a `pgx.Tx` for its full duration, including external compute phases — except across a `COMMIT_BEFORE_DISPATCH` boundary, where the connection is released for the callout. | Single PG instance is the bottleneck. Connection pool default is 25 per node; with 10 nodes that's 250 concurrent PG connections. Long-held transactions reduce effective throughput. |
 | **Read throughput** | Scales with node count for non-transactional reads (entity queries, search). Each node can serve reads independently from PG. | Bounded by PG read capacity. Point-in-time queries require version table scans. |
-| **Compute throughput** | Scales with compute member count across the cluster. Each node can host multiple compute members. Cross-node dispatch adds one HTTP hop (~1ms intra-cluster). | Bounded by compute member availability per tag. If only one node has a member for a given tag, that node is the bottleneck for that tag. |
+| **Compute throughput** | Scales with compute member count across the cluster. Each node can host multiple compute members. Cross-node dispatch adds one HTTP hop. | Bounded by compute member availability per tag. If only one node has a member for a given tag, that node is the bottleneck for that tag. |
 
 **Contrast with Cyoda Cloud:** Cyoda Cloud uses a fully distributed storage layer with no single-node write bottleneck. The open-source cyoda-go binary trades unlimited write scalability for simpler operational requirements (a single primary PostgreSQL — or none at all, with the memory or sqlite plugins).
 
@@ -1660,20 +1664,19 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | **Dispatch forward timeout** | Default 30s (configurable) | Cross-node compute dispatch forwarding must complete within this window. |
 | **Compute member response timeout** | Per-processor `responseTimeoutMs` (default 30s) | If a compute member doesn't respond within this window, the dispatch fails and the transaction rolls back. Not validated against the idle-in-transaction ceiling — a value above it means PostgreSQL aborts the transaction first (§3.4). |
 
-**Expected bottleneck:** The dominant limit is long-running compute phases holding PG connections. A processor that takes 10 seconds holds one PG connection for 10+ seconds. With 25 connections and 10-second processors, a single node can sustain ~2.5 new transactions per second.
+**Expected bottleneck:** The dominant limit is long-running compute phases holding PG connections. A processor that runs for N seconds holds one connection for at least N seconds, so a node's concurrent-transaction ceiling is its pool size and its throughput is that ceiling divided by processor duration.
 
-**Mitigation: `COMMIT_BEFORE_DISPATCH`.** This is the **primary connection-pool-pressure mitigation** for slow processors (§5.4). The engine splits the cascade into two transactions around the processor: `TX_pre` flushes the pre-callout entity state and commits **before** dispatch, releasing the PG connection for the duration of the external compute. The processor runs outside any transaction. `TX_post` opens on the same node when the processor returns, reapplies the result via `CompareAndSave`, and commits. The PG connection hold time collapses from "full cascade duration" to "`TX_pre.Commit` time + `TX_post` apply-result time" — typically tens to low-hundreds of milliseconds regardless of processor wall-clock. For a 10-second processor: connection-hold time drops from ~10s to ~150ms, raising sustainable throughput per node from ~2.5 tx/s to ~80+ tx/s on the same pool. Trade-offs: cascade atomicity is broken at the segment boundary (entity becomes publicly observable in pre-callout state; engine cannot rollback if `TX_post` aborts); processor must be idempotent (retries re-dispatch); CAS conflict at segment continuation surfaces as `409 retryable`. See `docs/CONSISTENCY.md` §10 for the full author-facing contract. `ASYNC_NEW_TX` (savepoint mode) does **not** relieve connection-pool pressure — it still holds the parent connection through the processor; it only changes failure semantics (savepoint rollback vs. cascade abort). For slow external work, prefer `COMMIT_BEFORE_DISPATCH`.
+**Mitigation: `COMMIT_BEFORE_DISPATCH`.** This is the **primary connection-pool-pressure mitigation** for slow processors (§5.4). The engine splits the cascade into two transactions around the processor: `TX_pre` flushes the pre-callout entity state and commits **before** dispatch, releasing the PG connection for the duration of the external compute. The processor runs outside any transaction. `TX_post` opens on the same node when the processor returns, reapplies the result via `CompareAndSave`, and commits. The PG connection hold time collapses from "full cascade duration" to "`TX_pre.Commit` time + `TX_post` apply-result time", which is independent of processor wall-clock — so throughput stops scaling inversely with processor duration. Trade-offs: cascade atomicity is broken at the segment boundary (entity becomes publicly observable in pre-callout state; engine cannot rollback if `TX_post` aborts); processor must be idempotent (retries re-dispatch); CAS conflict at segment continuation surfaces as `409 retryable`. See `docs/CONSISTENCY.md` §10 for the full author-facing contract. `ASYNC_NEW_TX` (savepoint mode) does **not** relieve connection-pool pressure — it still holds the parent connection through the processor; it only changes failure semantics (savepoint rollback vs. cascade abort). For slow external work, prefer `COMMIT_BEFORE_DISPATCH`.
 
 ### 14.3 Data Volume Limits
 
-| Dimension | Practical Limit | Reason |
+| Dimension | Limit | Reason |
 |-----------|----------------|--------|
-| **Entity size** | ~10 MB per entity (HTTP body limit) | Entity data is stored as JSONB in PostgreSQL. Very large entities degrade query performance and increase replication lag. |
-| **Entities per model** | Millions (PostgreSQL) | Bounded by PG table size and query performance. Point-in-time queries scan `entity_versions` which grows with write volume. Indexing helps but doesn't eliminate the cost. |
-| **Entity version history** | Unbounded (append-only) | The `entity_versions` table grows monotonically. No built-in compaction or archival. Long-lived entities with frequent updates will accumulate large version histories. |
-| **Concurrent models** | Hundreds | Model metadata is small. No practical limit from the storage layer. |
-| **Search result sets** | Tens of thousands | Async search stores entity IDs (not data), so the results table is compact. But re-fetching entity data on read means page retrieval cost scales with page size × entity fetch cost. |
-| **In-memory mode** | Limited by process heap | Single-node standalone only (not multi-node compatible). All entities, versions, models, search results held in process memory. Intended for rapid development and agentic application engineering. Not for production data volumes. |
+| **Entity size** | 10 MB per request body | Enforced by the entity handler. Entity data is stored as JSONB in PostgreSQL; large entities degrade query performance and increase replication lag. |
+| **Entities per model** | Bounded by PostgreSQL | Point-in-time queries scan `entity_versions`, which grows with write volume. Indexing reduces but does not eliminate the cost. |
+| **Entity version history** | Unbounded (append-only) | The `entity_versions` table grows monotonically. No built-in compaction or archival. Long-lived entities with frequent updates accumulate large version histories. |
+| **Search result sets** | Bounded by re-fetch cost | Async search stores entity IDs, not data, so the results table stays compact. Entity data is re-fetched on read, so page retrieval cost scales with page size × entity fetch cost. |
+| **In-memory mode** | Process heap | Single-node standalone only (not multi-node compatible). All entities, versions, models and search results are held in process memory. Intended for rapid development and agentic application engineering, not production data volumes. |
 
 ### 14.4 Fault Tolerance and Reliability
 
@@ -1715,24 +1718,3 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | gRPC keep-alive interval | 10 seconds | Configurable | Shorter intervals detect compute member failure faster but increase network overhead. |
 | Dispatch poll interval | 200 ms | Hardcoded | Polls local gossip metadata (no network I/O). Low overhead. |
 | Dispatch wait timeout | 5 seconds | Configurable | Time to wait for a compute member when none is available for the required tag. |
-
-### 14.7 Performance Expectations
-
-These are order-of-magnitude expectations for a 3-node cluster with PostgreSQL on the same network:
-
-| Operation | Expected Latency | Throughput |
-|-----------|-----------------|------------|
-| Entity create (no workflow) | 5–20 ms | 50–200/s per node |
-| Entity create (with sync processor, local compute) | 50–500 ms (dominated by processor) | Bounded by processor speed |
-| Entity create (with sync processor, cross-node dispatch) | +1–5 ms over local | One HTTP hop for dispatch forward |
-| Entity create (with `COMMIT_BEFORE_DISPATCH` processor, e.g. 2s external compute) | ~2 s wall-clock; PG connection held ~50–100 ms in `TX_pre` + ~50 ms in `TX_post` (~150 ms cumulative) | Decoupled from processor duration. 10 concurrent such cascades consume ~10 × 150 ms = 1.5 connection-seconds, vs. ~10 × 2 s = 20 connection-seconds under SYNC. |
-| Entity read (current) | 1–5 ms | 200–1000/s per node |
-| Entity read (point-in-time) | 2–10 ms | Depends on version count |
-| Sync search (small result set) | 10–100 ms | Bounded by entity count × predicate cost |
-| Async search (large result set) | Seconds to minutes | Background, non-blocking |
-| Transaction commit (no conflicts) | 1–5 ms | PG-bound |
-| Transaction commit (with conflict) | Immediate error (40001) | Client retries |
-| Cross-node proxy hop (CRUD callback) | 1–3 ms intra-cluster | Transparent, adds to overall latency |
-| Gossip convergence (new member) | 1–3 seconds | Depends on cluster size |
-
-**Key insight for sizing:** The dominant factor in transaction latency is compute phase duration. If processors complete in 100ms, a 3-node cluster with 25 PG connections per node can sustain ~750 concurrent transactions, yielding ~7,500 transactions/second at 100ms each. If processors take 10 seconds in `SYNC` mode, the same cluster sustains ~75 concurrent transactions, yielding ~7.5 transactions/second. Under `COMMIT_BEFORE_DISPATCH` the same 10-second processor holds the PG connection only for the segment-boundary work (~150 ms cumulative), restoring per-node throughput to roughly the no-workflow baseline regardless of processor duration. Processor speed is the lever for `SYNC`; for `COMMIT_BEFORE_DISPATCH`, the lever is segment-boundary work duration.
