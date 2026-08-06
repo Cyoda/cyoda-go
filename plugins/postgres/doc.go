@@ -25,9 +25,15 @@
 //
 // Exceeding the acquire or idle-in-transaction ceiling is transient
 // contention and surfaces as a retryable 503 STORAGE_UNAVAILABLE.
-// Exceeding a statement ceiling is not: re-running the same work would
-// exceed it again, so it surfaces as a 500 with a ticket, and the server
-// log names the setting that fired.
+// Exceeding the statement ceiling is not: re-running the same work would
+// exceed it again, so it surfaces as a 500 with a ticket.
+//
+// The search ceiling is neither. It applies only to async-search scans
+// (see AsyncScanContext), which have no HTTP response to carry a status:
+// classifyScanError returns a searchCeilingError, and the domain records
+// the job FAILED with a fixed message that GetJob serves back verbatim.
+//
+// In every case the server log names the setting that fired.
 //
 // Not plugin-namespaced, but read here and advertised via ConfigVars():
 //

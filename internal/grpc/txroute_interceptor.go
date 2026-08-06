@@ -96,7 +96,7 @@ func (i *txRouteInterceptor) streamRoute(fullMethod string) (forward forwardStre
 	return nil, nil, false
 }
 
-// classifyRouteErr maps a proxy.ResolveTarget error onto the canonical
+// classifyRouteErr maps a proxy.ResolveNodeInfo error onto the canonical
 // operational codes (mirroring txjoin.JoinFromToken), so the envelope carries a
 // client-facing code rather than a generic server error. Registry-lookup and
 // unknown failures fall through unchanged and surface as SERVER_ERROR.
