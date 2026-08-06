@@ -62,10 +62,43 @@ func openDB(pool *pgxpool.Pool, lockTimeout time.Duration) *sql.DB {
 	return stdlib.OpenDB(connCfg)
 }
 
+// ensureSchema is the single startup schema sequence, shared by the plugin
+// factory and the `cyoda migrate` subcommand so the ordering guarantee holds for
+// both by construction.
+func ensureSchema(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool, lockTimeout time.Duration) error {
+	return ensureSchemaWith(ctx, pool, autoMigrate, lockTimeout, nil)
+}
+
+// ensureSchemaWith is ensureSchema with a test seam. afterMigratorBuilt, when
+// non-nil, runs at the analogous point in each phase: right after a migrator has
+// been constructed (which itself takes and releases golang-migrate's advisory
+// lock inside ensureVersionTable) and before that phase's first unlocked
+// observation of the schema. That gap is the entire concurrent-boot race window
+// and it cannot be reached from outside these functions. Production passes nil.
+func ensureSchemaWith(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool, lockTimeout time.Duration, afterMigratorBuilt func()) error {
+	db := openDB(pool, lockTimeout)
+	defer db.Close()
+	if err := checkSchemaCompatWith(ctx, db, autoMigrate, afterMigratorBuilt); err != nil {
+		return err
+	}
+	if autoMigrate {
+		if err := runMigrationsWith(ctx, pool, lockTimeout, afterMigratorBuilt); err != nil {
+			return fmt.Errorf("postgres migrate: %w", err)
+		}
+	}
+	return nil
+}
+
 // runMigrations applies pending migrations. Uses m.GracefulStop to honor
 // context cancellation at migration-step boundaries (golang-migrate's
 // m.Up() itself takes no context).
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, lockTimeout time.Duration) error {
+	return runMigrationsWith(ctx, pool, lockTimeout, nil)
+}
+
+// runMigrationsWith is runMigrations carrying ensureSchemaWith's test seam. See
+// ensureSchemaWith for what afterMigratorBuilt is for; production passes nil.
+func runMigrationsWith(ctx context.Context, pool *pgxpool.Pool, lockTimeout time.Duration, afterMigratorBuilt func()) error {
 	db := openDB(pool, lockTimeout)
 	defer db.Close()
 
@@ -82,6 +115,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, lockTimeout time.Dur
 	m, err := migrate.NewWithInstance("iofs", source, "pgx5", driver)
 	if err != nil {
 		return fmt.Errorf("create migrator: %w", err)
+	}
+	if afterMigratorBuilt != nil {
+		afterMigratorBuilt()
 	}
 
 	done := make(chan error, 1)
@@ -185,16 +221,10 @@ func RunMigrateWithDSN(ctx context.Context, dsn string) error {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 
-	// Enforce the schema-compatibility contract before applying anything.
+	// The same sequence the plugin factory runs, so the `cyoda migrate`
+	// subcommand and a booting server cannot disagree about it.
 	// autoMigrate=true here: we are the migration process.
-	compatDB := openDB(pool, lockTimeout)
-	compatErr := checkSchemaCompat(ctx, compatDB, true)
-	_ = compatDB.Close()
-	if compatErr != nil {
-		return compatErr
-	}
-
-	return runMigrations(ctx, pool, lockTimeout)
+	return ensureSchema(ctx, pool, true, lockTimeout)
 }
 
 // dropSchema drops all application tables and the migration tracking table by
@@ -240,6 +270,13 @@ func dropSchema(pool *pgxpool.Pool) error {
 //   - schema matches → proceed
 //   - dirty state → fatal, manual intervention required
 func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error {
+	return checkSchemaCompatWith(ctx, db, autoMigrate, nil)
+}
+
+// checkSchemaCompatWith is checkSchemaCompat carrying ensureSchemaWith's test
+// seam. See ensureSchemaWith for what afterMigratorBuilt is for; production
+// passes nil.
+func checkSchemaCompatWith(ctx context.Context, db *sql.DB, autoMigrate bool, afterMigratorBuilt func()) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("schema compat: context cancelled: %w", err)
 	}
@@ -254,6 +291,9 @@ func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error 
 	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
 	if err != nil {
 		return fmt.Errorf("schema compat: create migrator: %w", err)
+	}
+	if afterMigratorBuilt != nil {
+		afterMigratorBuilt()
 	}
 
 	maxVersion, err := maxMigrationVersion(src)

@@ -44,18 +44,9 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
 
-	compatDB := openDB(pool, cfg.MigrateLockTimeout)
-	compatErr := checkSchemaCompat(ctx, compatDB, cfg.AutoMigrate)
-	_ = compatDB.Close()
-	if compatErr != nil {
+	if err := ensureSchema(ctx, pool, cfg.AutoMigrate, cfg.MigrateLockTimeout); err != nil {
 		pool.Close()
-		return nil, compatErr
-	}
-	if cfg.AutoMigrate {
-		if err := runMigrations(ctx, pool, cfg.MigrateLockTimeout); err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("postgres migrate: %w", err)
-		}
+		return nil, err
 	}
 
 	factory := newStoreFactory(pool, cfg)
