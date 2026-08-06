@@ -675,6 +675,13 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	// Load entity before deleting to get ModelRef for response (adds to read set).
 	entity, err := entityStore.Get(txCtx, entityID)
 	if err != nil {
+		// Only a genuine miss is a 404. A store outage reported as "it does not
+		// exist" is a substituted answer that stops the caller retrying — see
+		// .claude/rules/correctness-over-availability.md — so anything else keeps
+		// its cause and routes to the retryable 503 / ticketed 500 classifier.
+		if !errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Internal("failed to read entity for delete", err)
+		}
 		appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
 		appErr.Props = map[string]any{
 			"entityId": entityID,
@@ -1423,6 +1430,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 
 	existing, err := entityStore.Get(txCtx, input.EntityID)
 	if err != nil {
+		// Same rule as DeleteEntity: a failed read is not an absent entity.
+		if !errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Internal("failed to read entity for update", err)
+		}
 		return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found")
 	}
 
@@ -1784,6 +1795,12 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 
 		existing, err := entityStore.Get(currentCtx, item.id)
 		if err != nil {
+			// Same rule as the single-entity update. A failed read aborts the
+			// chunk either way; what changes is what the caller is told, and a
+			// 404 tells them to stop retrying a transient outage.
+			if !errors.Is(err, spi.ErrNotFound) {
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to read entity for update", i), err)
+			}
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 				fmt.Sprintf("item %d: entity %s not found", i, item.id))
 		}
