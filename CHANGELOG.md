@@ -25,6 +25,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Opening a transaction now waits at most `CYODA_POSTGRES_ACQUIRE_TIMEOUT`
   (default `10s`) for a pooled connection** and then fails with **503
   `STORAGE_UNAVAILABLE`**, retryable, instead of queueing behind a saturated pool.
+  This covers all three paths that open a transaction — entity writes, the
+  schema extension an auto-evolving model performs, and the async-search scan —
+  so one saturated pool gets one answer rather than an answer per door.
 
 - **With `CYODA_POSTGRES_AUTO_MIGRATE=true`, migrations now run before the
   schema-compatibility check.** A node booting alongside a peer's in-flight migration
@@ -125,6 +128,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **The async-search results endpoint no longer interpolates a raw driver error into a
   `400` response body**, where it could carry connection detail. A job that is still
   running returns `400` naming its status; every other failure is classified.
+
+- **An async-search result page is no longer silently short when the store fails.**
+  An entity that could not be read while building the page was logged and skipped, so
+  a storage blip returned `200` with fewer results than `total` claimed and nothing to
+  distinguish it from a job that really matched that many. Only a result id whose
+  entity has genuinely been hard-deleted since the scan recorded it is still skipped;
+  any other read failure fails the page.
 
 - **On a model with several imported workflows, every operation after creation ran the
   wrong workflow's definition.** A named transition, a loopback re-evaluation and a

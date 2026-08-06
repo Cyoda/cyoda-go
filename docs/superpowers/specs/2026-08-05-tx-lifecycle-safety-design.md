@@ -504,9 +504,20 @@ recorded on the job, distinct from an interactive `57014`.
 
 ### 2.1 Acquire-timeout scope
 
-Applied at `TransactionManager.Begin`'s `pool.BeginTx` (`transaction_manager.go:79`)
-and `model_store.go:359`'s `pool.Begin`. Both return immediately, so the deadline
-bounds the acquire and does not leak into the returned handle.
+Applied at all three sites that open a transaction on the pool:
+`TransactionManager.Begin`'s `pool.BeginTx`, `ExtendSchema`'s self-wrap
+(`model_store.go`) and the async-search scan's own-ceiling transaction
+(`searcher.go`). All three return immediately, so the deadline bounds the acquire
+and does not leak into the returned handle.
+
+**One classifier, shared, for all three.** They contend for the same connections,
+so they can fail for the same transient reason, and a caller must be told the
+same thing about it whichever one it reached. `classifyAcquireErr` is therefore
+package-level and every acquire goes through it. When only `Begin` classified, a
+saturated pool answered a retryable 503 through the write doors, a ticketed 500
+through the schema-extension path, and an unclassified job-record message through
+async search — three answers for one condition, and the two wrong ones were
+invisible because nothing tested them.
 
 **The deadline must be scoped to the acquire alone, inside the plugin.**
 `Begin` returns `spi.WithTransaction(ctx, …)` derived from its *input* context
@@ -537,13 +548,23 @@ for a connection the same goroutine just released.
 and already has `defer tx.Rollback` (`:364`), so it cannot nest. Its only reachable
 callers are `ValidateOrExtend`'s five entity/workflow call sites — model import does
 **not** reach it. Its acquire failure surfaces as **503, like every other acquire**,
-and it needs no threading through the schema classifier to get there: `validate.go`
-tags the error `ErrInternalSchema` with a double `%w`, so the chain still carries the
-plugin's marker, and `classifyValidateOrExtendErr` routes `ErrInternalSchema` through
-`common.Internal`, which tests `StorageUnavailable` first. The `ErrInternalSchema`
-branch reads like an unconditional 500 and is not one — pinned by
-`TestClassifyValidateOrExtendErr_StorageOutage_Is503Retryable`, with the
-non-storage direction pinned alongside it.
+and that takes both halves of a chain that has to hold end to end:
+
+1. the plugin marks it — `classifyAcquireErr` at the self-wrap, which is what makes
+   the marker present at all; and
+2. the domain does not swallow the mark — `validate.go` tags with a double `%w`, so
+   `errors.As` still reaches through `ErrInternalSchema`, and
+   `classifyValidateOrExtendErr` routes to `common.Internal`, which tests
+   `StorageUnavailable` first.
+
+Both halves are pinned, and separately, because either alone is a plausible-looking
+proof of nothing: `TestExtendSchema_PoolSaturated_ReportsStorageUnavailable` drives a
+real saturated pool (`plugins/postgres`), and
+`TestClassifyValidateOrExtendErr_StorageOutage_Is503Retryable` drives the tag
+(`internal/domain/entity`). A test that synthesises a marker-bearing error and hands
+it to the domain proves only the second half — the `ErrInternalSchema` branch reads
+like an unconditional 500 and is not one — while saying nothing about whether a real
+acquire ever carries the marker.
 
 It is **not** applied to `pool.Query` / `Exec` / `QueryRow` / `CopyFrom`. For
 `Query`, `pgxpool` holds the connection for the returned `pgx.Rows` under the same
