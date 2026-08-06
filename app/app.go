@@ -25,7 +25,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
@@ -67,9 +66,7 @@ type App struct {
 	tokenSigner        *token.Signer
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
-	txLifecycle        *lifecycle.Manager
 	scheduler          *scheduler.Service
-	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
 	grpcStopOnce       sync.Once
 }
@@ -437,11 +434,6 @@ func New(cfg Config) *App {
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
 
 	// Cluster components
-	a.txLifecycle = lifecycle.NewManager(cfg.Cluster.OutcomeTTL)
-	// Wire the TM so the TTL reaper can roll back the underlying transaction
-	// when a cluster-level timeout fires; otherwise the plugin's physical
-	// handle is orphaned until the database's own idle timeout catches it.
-	a.txLifecycle.SetTransactionManager(a.transactionManager)
 	if cfg.Cluster.Enabled {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
@@ -455,26 +447,6 @@ func New(cfg Config) *App {
 		a.nodeRegistry = gossipReg
 
 		slog.Info("cluster mode enabled", "pkg", "cluster", "nodeID", cfg.Cluster.NodeID, "gossipAddr", cfg.Cluster.GossipAddr)
-
-		// Start TTL reaper goroutine with shutdown support
-		a.stopReaper = make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(cfg.Cluster.TxReapInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					reaped, err := a.txLifecycle.ReapExpired(context.Background())
-					if err != nil {
-						slog.Error("tx reaper error", "pkg", "cluster", "err", err)
-					} else if reaped > 0 {
-						slog.Info("reaped expired transactions", "pkg", "cluster", "count", reaped)
-					}
-				case <-a.stopReaper:
-					return
-				}
-			}
-		}()
 	} else {
 		a.nodeRegistry = registry.NewLocal("local", fmt.Sprintf("localhost:%d", cfg.HTTPPort))
 	}
@@ -825,7 +797,6 @@ func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServe
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
-func (a *App) TxLifecycle() *lifecycle.Manager              { return a.txLifecycle }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
 // Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
@@ -889,9 +860,6 @@ func (a *App) StopGRPC() {
 func (a *App) Shutdown() {
 	if a.stopSearchReaper != nil {
 		close(a.stopSearchReaper)
-	}
-	if a.stopReaper != nil {
-		close(a.stopReaper)
 	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()

@@ -97,11 +97,6 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_SEARCH_MAX_SORT_KEYS": strconv.Itoa(c.SearchMaxSortKeys),
 		"CYODA_STATS_GROUP_MAX":      strconv.Itoa(c.StatsGroupMax),
 
-		// --- tx ---
-		"CYODA_TX_TTL":           renderDuration(c.Cluster.TxTTL),
-		"CYODA_TX_REAP_INTERVAL": renderDuration(c.Cluster.TxReapInterval),
-		"CYODA_TX_OUTCOME_TTL":   renderDuration(c.Cluster.OutcomeTTL),
-
 		// --- cluster ---
 		"CYODA_CLUSTER_ENABLED":          strconv.FormatBool(c.Cluster.Enabled),
 		"CYODA_NODE_ID":                  c.Cluster.NodeID,

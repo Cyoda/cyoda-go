@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
@@ -97,33 +96,6 @@ func TestEndToEnd_NoToken_ServesLocally(t *testing.T) {
 
 	if result["served_by"] != "node-b-local" {
 		t.Errorf("served_by = %q, want %q", result["served_by"], "node-b-local")
-	}
-}
-
-func TestEndToEnd_LifecycleTracking(t *testing.T) {
-	mgr := lifecycle.NewManager(5 * time.Minute)
-	ctx := context.Background()
-
-	mgr.Register(ctx, "tx-1", "node-a", 100*time.Millisecond)
-
-	alive, nodeID, _ := mgr.IsAlive(ctx, "tx-1")
-	if !alive || nodeID != "node-a" {
-		t.Fatalf("expected alive on node-a, got alive=%v nodeID=%q", alive, nodeID)
-	}
-
-	time.Sleep(150 * time.Millisecond)
-
-	reaped, _ := mgr.ReapExpired(ctx)
-	if reaped != 1 {
-		t.Errorf("reaped = %d, want 1", reaped)
-	}
-
-	outcome, found := mgr.GetOutcome(ctx, "tx-1")
-	if !found {
-		t.Fatal("expected outcome to be recorded")
-	}
-	if outcome != lifecycle.OutcomeRolledBack {
-		t.Errorf("outcome = %v, want RolledBack", outcome)
 	}
 }
 

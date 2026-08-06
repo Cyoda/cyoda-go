@@ -55,11 +55,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEARCH_MAX_SORT_KEYS", Topic: "search", Type: "int", Default: "16", Description: "Maximum number of sort keys per search request; values <= 0 clamp to the default."},
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},
 
-	// --- tx ---
-	{Name: "CYODA_TX_TTL", Topic: "tx", Type: "duration", Default: "1m", Description: "Transaction TTL."},
-	{Name: "CYODA_TX_REAP_INTERVAL", Topic: "tx", Type: "duration", Default: "10s", Description: "Transaction reap interval."},
-	{Name: "CYODA_TX_OUTCOME_TTL", Topic: "tx", Type: "duration", Default: "5m", Description: "Transaction outcome TTL."},
-
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},
 	{Name: "CYODA_NODE_ID", Topic: "cluster", Type: "string", Default: "", Description: "Unique node identifier; required when CYODA_CLUSTER_ENABLED=true."},
