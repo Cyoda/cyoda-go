@@ -167,6 +167,51 @@ func isStatementTimeout(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.QueryCanceled
 }
 
+// searchScanCeilingKey marks a context as belonging to the async-search scan.
+// The value is the ceiling that scan runs under, minted by the AsyncSearchStore
+// — the component that owns both the setting and the workload.
+//
+// A context value rather than a SearchOptions field: the scan reaches the store
+// through the ordinary domain Search path, which has no async-specific
+// parameter, and adding one to spi.SearchOptions would be a cross-repo SPI
+// change for a detail exactly one backend acts on.
+type searchScanCeilingKey struct{}
+
+// withSearchScanCeiling marks ctx as the async-search scan's, running under d.
+func withSearchScanCeiling(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, searchScanCeilingKey{}, d)
+}
+
+// searchScanCeiling reports the ceiling this context's scan runs under, and
+// whether the context is an async-search scan's at all. A zero duration is a
+// real answer, not an absent one — it is PostgreSQL's own convention for "no
+// limit", so an operator who disables the search ceiling gets an unbounded scan
+// rather than silently inheriting the interactive one.
+func searchScanCeiling(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(searchScanCeilingKey{}).(time.Duration)
+	return d, ok
+}
+
+// searchCeilingError marks a scan cancelled by the async-search path's own
+// statement ceiling.
+//
+// It carries a marker method rather than a sentinel value so the domain can
+// recognise the condition with errors.As on a locally-declared interface — the
+// same shape as StorageUnavailable, and for the same reason: no cyoda-go-spi
+// change, so no coordinated cross-repo release, and any backend that bounds its
+// async scan can opt in by returning the same shape.
+//
+// Deliberately NOT the storage-unavailable marker. Re-running a scan that just
+// exceeded its ceiling will exceed it again, so nothing here may advertise a
+// retry.
+type searchCeilingError struct{ cause error }
+
+func (e *searchCeilingError) Error() string {
+	return "the async search exceeded the search statement ceiling: " + e.cause.Error()
+}
+func (e *searchCeilingError) Unwrap() error               { return e.cause }
+func (e *searchCeilingError) SearchCeilingExceeded() bool { return true }
+
 // isConnectionTorn reports whether the session behind err went away underneath
 // the operation.
 //

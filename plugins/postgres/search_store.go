@@ -18,6 +18,25 @@ import (
 // ReapExpired operates cross-tenant (no tenant context required).
 type asyncSearchStore struct {
 	pool *pgxpool.Pool
+
+	// searchStatementTimeout is the ceiling the SCAN an async job runs is
+	// bounded by — not any statement in this file, which are the ordinary
+	// job-record reads and writes and belong under the interactive ceiling like
+	// every other short statement.
+	searchStatementTimeout time.Duration
+}
+
+// AsyncScanContext marks ctx as belonging to an async-search scan, so the entity
+// store bounds that scan by this backend's own search ceiling instead of the
+// interactive one the pool carries.
+//
+// The domain calls this on the background context its job goroutine runs under,
+// discovering the method with a type assertion — async search is the one
+// workload whose purpose is to run long, and a single shared ceiling would force
+// operators to choose between fast-failing interactive writes and long
+// analytical scans.
+func (s *asyncSearchStore) AsyncScanContext(ctx context.Context) context.Context {
+	return withSearchScanCeiling(ctx, s.searchStatementTimeout)
 }
 
 func (s *asyncSearchStore) tenant(ctx context.Context) (spi.TenantID, error) {

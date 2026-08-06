@@ -2044,3 +2044,118 @@ func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// What the async job record says when the search failed
+// ---------------------------------------------------------------------------
+
+// ceilingErr is a storage-plugin error carrying the marker a backend sets when
+// the async-search scan exceeded that backend's own search ceiling. Declared
+// here as an ordinary error type because the marker is matched with errors.As
+// on an interface — no plugin import, and any backend can opt in.
+type ceilingErr struct{ cause error }
+
+func (e *ceilingErr) Error() string               { return "search query: " + e.cause.Error() }
+func (e *ceilingErr) Unwrap() error               { return e.cause }
+func (e *ceilingErr) SearchCeilingExceeded() bool { return true }
+
+// runFailingAsyncJob submits an async search whose execution fails with
+// searchErr and returns the persisted job record once the job is terminal.
+func runFailingAsyncJob(t *testing.T, searchErr error) *spi.SearchJob {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { _ = base.Close() })
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, searchErr
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if st.Status != "RUNNING" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	job, err := searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Status != "FAILED" {
+		t.Fatalf("job status = %q, want FAILED", job.Status)
+	}
+	return job
+}
+
+// TestAsyncSearchJob_SearchCeiling_RecordsFixedMessage — the job record is the
+// one place a failure message is persisted and served back, so the backend's
+// search ceiling firing must land there as a fixed, non-revealing string naming
+// the ceiling and nothing else. The driver's own text stays in the log.
+func TestAsyncSearchJob_SearchCeiling_RecordsFixedMessage(t *testing.T) {
+	job := runFailingAsyncJob(t, &ceilingErr{
+		cause: errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"),
+	})
+
+	if !strings.Contains(job.Error, "search statement ceiling") {
+		t.Fatalf("job error %q does not name the ceiling the caller hit", job.Error)
+	}
+	for _, leak := range []string{"pgx", "SELECT", "SQLSTATE", "57014", "statement timeout", "host=", "password"} {
+		if strings.Contains(job.Error, leak) {
+			t.Fatalf("job error leaked internals (%q): %s", leak, job.Error)
+		}
+	}
+}
+
+// TestAsyncSearchJob_StorageError_IsNotPersistedVerbatim — Gate 3. Anything the
+// storage layer says about ITSELF (SQL, SQLSTATEs, connection detail) is
+// operator information; the job record is caller-facing.
+func TestAsyncSearchJob_StorageError_IsNotPersistedVerbatim(t *testing.T) {
+	job := runFailingAsyncJob(t, fmt.Errorf("search query: %w",
+		errors.New(`ERROR: relation "entity_versions" does not exist (SQLSTATE 42P01), host=db.internal user=cyoda`)))
+
+	if job.Error == "" {
+		t.Fatal("a failed job recorded no message at all")
+	}
+	for _, leak := range []string{"SQLSTATE", "42P01", "entity_versions", "host=", "user="} {
+		if strings.Contains(job.Error, leak) {
+			t.Fatalf("job error leaked internals (%q): %s", leak, job.Error)
+		}
+	}
+}
+
+// TestAsyncSearchJob_ClientErrorIsPreservedVerbatim — the counterweight. A
+// classified 4xx is the caller's own mistake and its text is already
+// client-safe, so sanitizing must not flatten it into a generic message the
+// caller cannot act on.
+func TestAsyncSearchJob_ClientErrorIsPreservedVerbatim(t *testing.T) {
+	appErr := common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+		"invalid regex pattern in condition")
+	job := runFailingAsyncJob(t, appErr)
+
+	if job.Error != appErr.Error() {
+		t.Fatalf("job error = %q, want the classified client error %q", job.Error, appErr.Error())
+	}
+}

@@ -559,3 +559,203 @@ func parseTxEnvelope(ce *cepb.CloudEvent) (txEnvelope, error) {
 	}
 	return env, nil
 }
+
+// --- the async-search scan's own ceiling ------------------------------------
+//
+// Async search is the one workload whose purpose is to run long, so on postgres
+// it carries its own statement ceiling rather than sharing the interactive one:
+// a single knob would force operators to choose between fast-failing interactive
+// writes and long analytical scans. It is applied with SET LOCAL inside the
+// scan's own transaction, which is what keeps the two apart.
+
+const (
+	// Small enough that any real scan exceeds it, and the smallest value the
+	// plugin accepts at all (below 1ms a ceiling truncates to "disabled").
+	searchCeilingLimit = "1ms"
+
+	// Every async search is a point-in-time read — SubmitAsync stamps one — so
+	// the scan reads every version behind the model through the bi-temporal
+	// DISTINCT ON. These make that scan take milliseconds rather than
+	// microseconds, so "it exceeded 1ms" is not a claim about how fast the
+	// machine running the test is.
+	searchCeilingSeedVersions = 5000
+)
+
+// newSearchCeilingHarness builds a ONE-connection stack whose async-search
+// ceiling is 1ms, imports a model with no callouts, and seeds enough history
+// behind it that the scan is not instantaneous.
+//
+// One connection on purpose: the scenarios below assert that the ceiling the
+// scan applies does not survive on the connection it borrowed. With a larger
+// pool a later request could be handed a different connection and pass without
+// ever re-using the poisoned one.
+func newSearchCeilingHarness(t *testing.T) (*callbackHarness, string) {
+	t.Helper()
+	h := newTinyPoolHarnessConfigured(t, 1, func(cfg *app.Config) {
+		// Read by the postgres plugin's own getenv at factory-open time, which
+		// happens inside app.New — i.e. after this mutator runs.
+		t.Setenv("CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", searchCeilingLimit)
+		// The scan loop would queue behind the single connection for the whole
+		// test and log acquire failures unrelated to what is under test.
+		cfg.Scheduler.Enabled = false
+	})
+	model := storageCeilingModel(t, "search-ceiling")
+	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)
+
+	if _, status, body := h.CreateEntity(t, model, 1, storageCeilingSample); status != http.StatusOK {
+		t.Fatalf("seed entity: %d %s", status, body)
+	}
+	seedEntityVersions(t, model, searchCeilingSeedVersions)
+	return h, model
+}
+
+// seedEntityVersions copies the model's one committed version n times under
+// fresh entity ids, from a connection of the test's own.
+//
+// Rows, not locks. Every test in this package shares one PostgreSQL container,
+// so anything that blocked writes — a table lock, an ALTER — would stall the
+// shared stack and its neighbours for as long as it was held. These rows are
+// addressed only by this test's model name, and are removed again on cleanup.
+func seedEntityVersions(t *testing.T, model string, n int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "search-ceiling-seeder"))
+	if err != nil {
+		t.Fatalf("open seeding pool: %v", err)
+	}
+	defer pool.Close()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
+		                             valid_time, transaction_time, wall_clock_time, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
+		       valid_time, transaction_time, wall_clock_time,
+		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		FROM entity_versions, generate_series(1, $1) AS g
+		WHERE model_name = $2`, n, model); err != nil {
+		t.Fatalf("seed %d entity versions for %s: %v", n, model, err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer ccancel()
+		cpool, err := pgxpool.New(cctx, withAppName(t, pgURLFromEnv(t), "search-ceiling-cleaner"))
+		if err != nil {
+			return
+		}
+		defer cpool.Close()
+		_, _ = cpool.Exec(cctx, `DELETE FROM entity_versions WHERE model_name = $1`, model)
+	})
+}
+
+// submitAsyncSearchOn submits a match-all async search and returns the job id.
+func (h *callbackHarness) submitAsyncSearchOn(t *testing.T, model string) string {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/async/%s/1", model),
+		`{"type":"group","operator":"AND","conditions":[]}`, "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("submit async search: %d %s", resp.StatusCode, body)
+	}
+	jobID := strings.Trim(strings.TrimSpace(body), `"`)
+	if jobID == "" {
+		t.Fatal("submit async search returned an empty job id")
+	}
+	return jobID
+}
+
+// waitForAsyncTerminal polls the status endpoint until the job leaves RUNNING.
+func (h *callbackHarness) waitForAsyncTerminal(t *testing.T, jobID string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp := h.DoAuth(t, http.MethodGet, "/api/search/async/"+jobID+"/status", "", "")
+		body := h.readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("async search status: %d %s", resp.StatusCode, body)
+		}
+		var st map[string]any
+		if err := json.Unmarshal([]byte(body), &st); err != nil {
+			t.Fatalf("async search status is not JSON: %v; body: %s", err, body)
+		}
+		if s, _ := st["searchJobStatus"].(string); s != "RUNNING" {
+			return s
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("async search job %s never reached a terminal status within %v", jobID, timeout)
+	return ""
+}
+
+// persistedJobError reads the message recorded against the job — the string
+// GetJob serves back, and the only place an async failure is reported.
+func persistedJobError(t *testing.T, jobID string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "search-ceiling-reader"))
+	if err != nil {
+		t.Fatalf("open reader pool: %v", err)
+	}
+	defer pool.Close()
+	var msg string
+	if err := pool.QueryRow(ctx, `SELECT error FROM search_jobs WHERE id = $1`, jobID).Scan(&msg); err != nil {
+		t.Fatalf("read search job %s: %v", jobID, err)
+	}
+	return msg
+}
+
+// TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure — the persisted
+// job message is the one deliberate exception to output sanitization: the job is
+// the caller's own work, so it is told which ceiling it hit. That message is
+// fixed and names nothing else — a raw driver string here would put SQL, a
+// SQLSTATE and connection detail in a record GetJob serves straight back.
+func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
+	h, model := newSearchCeilingHarness(t)
+
+	jobID := h.submitAsyncSearchOn(t, model)
+	if status := h.waitForAsyncTerminal(t, jobID, 60*time.Second); status != "FAILED" {
+		t.Fatalf("async search status = %q, want FAILED — nothing bounded the scan", status)
+	}
+
+	msg := persistedJobError(t, jobID)
+	if !strings.Contains(msg, "search statement ceiling") {
+		t.Fatalf("job error %q does not name the ceiling the caller hit", msg)
+	}
+	for _, leak := range []string{"pgx", "SELECT", "SQLSTATE", "57014", "statement_timeout", "host=", "password"} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("job error leaked internals (%q): %s", leak, msg)
+		}
+	}
+	t.Logf("async search failed with the sanitized message: %s", msg)
+}
+
+// TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements guards the split.
+// SET LOCAL scopes the search ceiling to the scan's own transaction, so the
+// interactive ceiling the pool carries is untouched — the two knobs must not
+// collapse into one, or operators would have to choose between fast-failing
+// writes and long analytical scans.
+//
+// The pool here holds ONE connection, so the write and the interactive search
+// below run on the very connection the scan borrowed: had the ceiling been set
+// on the session rather than the transaction, they would die on it too.
+func TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements(t *testing.T) {
+	h, model := newSearchCeilingHarness(t)
+
+	jobID := h.submitAsyncSearchOn(t, model)
+	if status := h.waitForAsyncTerminal(t, jobID, 60*time.Second); status != "FAILED" {
+		t.Fatalf("async search status = %q, want FAILED — the 1ms search ceiling never reached the scan, so this scenario proves nothing", status)
+	}
+
+	if _, status, body := h.CreateEntity(t, model, 1, storageCeilingSample); status != http.StatusOK {
+		t.Fatalf("an ordinary write failed with %d after the scan ran; the search ceiling leaked onto the interactive path. body: %s", status, body)
+	}
+
+	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?pageSize=10", model),
+		`{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"pool-hold"}`, "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("an interactive search failed with %d after the scan ran; the search ceiling leaked onto the interactive path. body: %s", resp.StatusCode, body)
+	}
+}

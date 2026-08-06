@@ -18,6 +18,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 func skipIfNoLiveDB(t *testing.T) string {
@@ -208,4 +210,204 @@ func TestE2E_Ceilings_StatementTimeoutActuallyFires(t *testing.T) {
 		t.Errorf("SQLSTATE = %s (%s), want 57014 query_canceled", pgErr.Code, pgErr.Message)
 	}
 	t.Logf("long statement cancelled as expected: %v", err)
+}
+
+// --- the async-search scan's own ceiling ------------------------------------
+//
+// Async search is the one workload whose purpose is to run long, so it carries
+// its own statement ceiling instead of sharing the interactive one — a single
+// knob would force operators to choose between fast-failing interactive writes
+// and long analytical scans. The ceiling is applied with SET LOCAL inside the
+// scan's own transaction, so the two scenarios below are each other's mirror:
+// whichever of the two ceilings is the small one, only the matching workload
+// may die on it.
+
+const (
+	searchCeilingTenant = "search-ceiling-tenant"
+	searchCeilingModel  = "search-ceiling-model"
+
+	// searchCeilingSeedRows is not a stress figure — it is the margin that makes
+	// both scenarios deterministic. Every async search is a point-in-time read
+	// (SubmitAsync stamps one), so the scan reads every seeded version through
+	// the bi-temporal DISTINCT ON and takes tens of milliseconds. Both scenarios
+	// then compare that against 1ms on one side and 30s on the other, so neither
+	// outcome depends on how fast the machine running the test is.
+	searchCeilingSeedRows = 50000
+)
+
+// searchCeilingCtx is a tenant-carrying context for the scenarios below.
+func searchCeilingCtx() context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "search-ceiling-user",
+		Tenant: spi.Tenant{ID: searchCeilingTenant},
+	})
+}
+
+// seedSearchCeilingModel migrates a clean schema and puts searchCeilingSeedRows
+// entity versions behind one model. It runs on a plain pool so neither the
+// migration nor the seeding is subject to the ceilings a scenario configures.
+//
+// The versions are copies of one real Save, so the stored document is exactly
+// the shape the scanner expects rather than hand-written JSON that could drift.
+func seedSearchCeilingModel(t *testing.T, dsn string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open seeding pool: %v", err)
+	}
+	defer pool.Close()
+
+	if err := dropSchema(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	if err := Migrate(pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = dropSchema(pool) })
+
+	store, err := newStoreFactoryWithConfig(pool, defaultStoreConfig()).EntityStore(searchCeilingCtx())
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := store.Save(searchCeilingCtx(), &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:       "seed",
+			ModelRef: spi.ModelRef{EntityName: searchCeilingModel, ModelVersion: "1"},
+			State:    "NEW",
+		},
+		Data: []byte(`{"name":"Alice","city":"Berlin"}`),
+	}); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
+		                             valid_time, transaction_time, wall_clock_time, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
+		       valid_time, transaction_time, wall_clock_time,
+		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		FROM entity_versions, generate_series(1, $1) AS g
+		WHERE tenant_id = $2 AND entity_id = 'seed'`,
+		searchCeilingSeedRows, searchCeilingTenant); err != nil {
+		t.Fatalf("seed %d versions: %v", searchCeilingSeedRows, err)
+	}
+}
+
+// searchCeilingStores opens a pool under the given ceiling overrides and returns
+// the entity store the scan runs through plus the async-search store that marks
+// a context as belonging to that scan.
+func searchCeilingStores(t *testing.T, dsn string, overrides map[string]string) (spi.EntityStore, spi.AsyncSearchStore) {
+	t.Helper()
+	getenv := ceilingEnv(dsn, overrides)
+	cfg, err := parseConfig(getenv)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	pool := openCeilingPool(t, getenv)
+	f := newStoreFactoryWithConfig(pool, cfg)
+	es, err := f.EntityStore(searchCeilingCtx())
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ass, err := f.AsyncSearchStore(searchCeilingCtx())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	return es, ass
+}
+
+// searchCeilingScan runs the scan an async search job runs: a point-in-time read
+// over the seeded model, matching everything.
+func searchCeilingScan(t *testing.T, es spi.EntityStore, ctx context.Context) ([]*spi.Entity, error) {
+	t.Helper()
+	now := time.Now()
+	return es.(spi.Searcher).Search(ctx, spi.Filter{}, spi.SearchOptions{
+		ModelName:    searchCeilingModel,
+		ModelVersion: "1",
+		PointInTime:  &now,
+	})
+}
+
+// asyncScanMarker is the opt-in the domain uses: an AsyncSearchStore whose
+// backend bounds the async scan separately hands back a context the scan
+// recognises.
+type asyncScanMarker interface {
+	AsyncScanContext(ctx context.Context) context.Context
+}
+
+// TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot is the half
+// that matters most: with the interactive ceiling at 1ms, the async scan still
+// completes because SET LOCAL raised it to the search ceiling for that
+// transaction alone. Without the raise, the scan would die on the 1ms the pool
+// carries — which the unmarked control below proves it does.
+func TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot(t *testing.T) {
+	dsn := skipIfNoLiveDB(t)
+	seedSearchCeilingModel(t, dsn)
+
+	es, ass := searchCeilingStores(t, dsn, map[string]string{
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        "1ms",
+		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": "30s",
+	})
+	marker, ok := ass.(asyncScanMarker)
+	if !ok {
+		t.Fatal("the postgres AsyncSearchStore does not mark a context as an async scan")
+	}
+
+	got, err := searchCeilingScan(t, es, marker.AsyncScanContext(searchCeilingCtx()))
+	if err != nil {
+		t.Fatalf("the async scan died under the interactive ceiling: %v", err)
+	}
+	if len(got) != searchCeilingSeedRows+1 {
+		t.Fatalf("scan returned %d entities, want %d", len(got), searchCeilingSeedRows+1)
+	}
+
+	// The control. The same scan on an unmarked context gets the pool's
+	// interactive ceiling, so it is cancelled — which is what makes the pass
+	// above evidence of the raise rather than of a fast machine.
+	if _, err := searchCeilingScan(t, es, searchCeilingCtx()); err == nil {
+		t.Fatal("an unmarked scan completed under a 1ms interactive ceiling; the scenario above proves nothing")
+	} else if !isStatementTimeout(err) {
+		t.Fatalf("unmarked scan failed with %v, want the interactive ceiling's cancellation", err)
+	}
+}
+
+// TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse is the mirror: the small
+// ceiling is now the search one, so the scan dies on it while the pool's own
+// statements — the interactive path — are untouched. SET LOCAL is what keeps the
+// two apart; a plain SET would have poisoned the connection for everything that
+// borrowed it next.
+func TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse(t *testing.T) {
+	dsn := skipIfNoLiveDB(t)
+	seedSearchCeilingModel(t, dsn)
+
+	es, ass := searchCeilingStores(t, dsn, map[string]string{
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        "30s",
+		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": "1ms",
+	})
+	marker, ok := ass.(asyncScanMarker)
+	if !ok {
+		t.Fatal("the postgres AsyncSearchStore does not mark a context as an async scan")
+	}
+
+	_, err := searchCeilingScan(t, es, marker.AsyncScanContext(searchCeilingCtx()))
+	if err == nil {
+		t.Fatal("the async scan completed under a 1ms search ceiling; nothing bounded it")
+	}
+	var exceeded interface{ SearchCeilingExceeded() bool }
+	if !errors.As(err, &exceeded) || !exceeded.SearchCeilingExceeded() {
+		t.Fatalf("scan failed with %v, which the domain cannot recognise as the search ceiling firing", err)
+	}
+
+	// The interactive path is unaffected: the same store, on an unmarked
+	// context, runs the same scan to completion under the pool's 30s ceiling.
+	got, err := searchCeilingScan(t, es, searchCeilingCtx())
+	if err != nil {
+		t.Fatalf("the search ceiling leaked onto the interactive path: %v", err)
+	}
+	if len(got) != searchCeilingSeedRows+1 {
+		t.Fatalf("interactive scan returned %d entities, want %d", len(got), searchCeilingSeedRows+1)
+	}
 }

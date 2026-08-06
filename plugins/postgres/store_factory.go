@@ -169,7 +169,16 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{q: f.querier(), tenantID: tid, tm: f.tm}, nil
+	// pool and acquireTimeout are for the one path that needs a transaction of
+	// its own rather than the context-resolving querier: the async-search scan,
+	// which raises its ceiling with SET LOCAL. See searcher.go.
+	return &entityStore{
+		q:              f.querier(),
+		tenantID:       tid,
+		tm:             f.tm,
+		pool:           f.pool,
+		acquireTimeout: f.cfg.AcquireTimeout,
+	}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
@@ -217,7 +226,7 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	// AsyncSearchStore is a long-lived singleton — tenant is resolved per method call,
 	// not at construction. This allows app.go to obtain the store at startup with
 	// context.Background() (no tenant). ReapExpired also runs without tenant context.
-	return &asyncSearchStore{pool: f.pool}, nil
+	return &asyncSearchStore{pool: f.pool, searchStatementTimeout: f.cfg.SearchStatementTimeout}, nil
 }
 
 // ScheduledTaskStore returns a store backed by the context-resolving

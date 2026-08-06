@@ -27,6 +27,56 @@ import (
 // can use errors.Is to branch (issue #93).
 var ErrSearchJobNotFound = errors.New("search job not found")
 
+// searchCeilingMessage is what a caller sees when their own async job exceeded
+// the backend's search statement ceiling. Fixed and non-revealing: GetJob serves
+// this string straight back, so a raw driver error here would put SQL, a
+// SQLSTATE and connection detail in a caller-facing record. Which ceiling and
+// which setting stays in the log.
+const searchCeilingMessage = "search exceeded the search statement ceiling"
+
+// jobFailureFallback replaces any failure described in terms the caller has no
+// business seeing — a driver error, a recovered panic. That text is operator
+// information, and the job record is caller-facing.
+const jobFailureFallback = "search failed unexpectedly"
+
+// searchCeilingExceeded is the marker a backend attaches when the async-search
+// scan exceeded the ceiling that workload runs under. Matched with errors.As on
+// an interface rather than a sentinel value: the marker is a plugin-side type
+// this package must not import, and a backend opts in by returning the same
+// shape — no SPI change, so no coordinated cross-repo release. Mirrors
+// common.StorageUnavailable.
+type searchCeilingExceeded interface{ SearchCeilingExceeded() bool }
+
+// asyncScanScoper is implemented by an AsyncSearchStore whose backend bounds the
+// async-search scan separately from interactive statements. It hands back a
+// context the backend's own scan recognises. Backends without a separate ceiling
+// simply do not implement it.
+type asyncScanScoper interface {
+	AsyncScanContext(ctx context.Context) context.Context
+}
+
+// jobFailureMessage is what gets written into the job record when an async
+// search fails.
+//
+// The record is the only report a caller of the async API ever gets, and GetJob
+// serves it back verbatim, so it follows the same 4xx/5xx split as every other
+// response: a classified client error carries its own already-safe text, and
+// everything else — a storage failure, a driver error, an unclassified
+// wrapper — collapses to a fixed string with the detail left in the log.
+func jobFailureMessage(err error) string {
+	var ceiling searchCeilingExceeded
+	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		return searchCeilingMessage
+	}
+	// AppError.Error() returns the client-safe Message alone; Operational
+	// captures no internal detail and Internal keeps it in Detail, not Message.
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr.Error()
+	}
+	return jobFailureFallback
+}
+
 // SearchOptions controls search behavior.
 type SearchOptions struct {
 	PointInTime     *time.Time
@@ -431,6 +481,14 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// can proceed after the HTTP request completes.
 	bgCtx := spi.WithUserContext(context.Background(), uc)
 
+	// Async search is the one workload whose purpose is to run long. A backend
+	// that bounds it separately from its interactive statements marks the
+	// context here, so the scan below runs under that ceiling instead of the one
+	// sized for a user waiting on a response.
+	if scoper, ok := s.searchStore.(asyncScanScoper); ok {
+		bgCtx = scoper.AsyncScanContext(bgCtx)
+	}
+
 	go func() {
 		// A panic in Search (or anything it calls) runs on context.Background()
 		// with no HTTP handler above it to recover it — net/http's per-connection
@@ -448,7 +506,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 					"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
 					"stack", string(debug.Stack()))
 				if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0,
-					"search failed unexpectedly", time.Now(), 0); err != nil {
+					jobFailureFallback, time.Now(), 0); err != nil {
 					slog.Error("failed to update search job status after recovered panic", "pkg", "search", "jobID", jobID, "err", err)
 				}
 			}
@@ -470,9 +528,11 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		}
 
 		if searchErr != nil {
-			if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0, searchErr.Error(), finishTime, calcTimeMs); err != nil {
+			if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0, jobFailureMessage(searchErr), finishTime, calcTimeMs); err != nil {
 				slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
 			}
+			// Full detail stays server-side.
+			slog.Warn("async search job failed", "pkg", "search", "jobID", jobID, "err", searchErr)
 			return
 		}
 
@@ -483,7 +543,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 
 		if err := s.searchStore.SaveResults(bgCtx, jobID, ids); err != nil {
 			slog.Error("failed to save search results", "pkg", "search", "jobID", jobID, "err", err)
-			_ = s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0, err.Error(), finishTime, calcTimeMs)
+			_ = s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0, jobFailureMessage(err), finishTime, calcTimeMs)
 			return
 		}
 
