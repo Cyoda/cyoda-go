@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -162,6 +163,14 @@ type SearchService struct {
 	// all entry points (HTTP, gRPC, sync, async). Zero means use the
 	// built-in default of 16.
 	maxSortKeys int
+
+	// healthFlag is the process-wide node-health flag the HTTP and gRPC
+	// recovery paths latch false on a recovered panic. The async-search
+	// goroutine latches the same one: a panic there runs the same engine
+	// and store code, so it is the same evidence of unverified state.
+	// nil-safe — unit tests that do not care about node health leave it
+	// unset.
+	healthFlag *atomic.Bool
 }
 
 // NewSearchService creates a SearchService backed by the given store factory.
@@ -181,6 +190,15 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 // invalidates the (tenant, modelRef) bucket.
 func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchService {
 	s.pathCache = c
+	return s
+}
+
+// WithHealthFlag wires the node-health flag the async-search goroutine latches
+// false when it recovers a panic — the same flag the HTTP and gRPC recovery
+// paths hold, so any door reaching it takes the node out of service. Returns
+// the receiver for chaining after NewSearchService.
+func (s *SearchService) WithHealthFlag(f *atomic.Bool) *SearchService {
+	s.healthFlag = f
 	return s
 }
 
@@ -530,6 +548,14 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 				slog.Error("panic recovered in async search job", "pkg", "search",
 					"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
 					"stack", string(debug.Stack()))
+				// Same latch as the HTTP and gRPC doors: this goroutine runs
+				// the same engine and store code, so a panic here is the same
+				// evidence that the node's state is unverified. Nothing
+				// resets it — the node reports 503 on /health and /readyz and
+				// stops taking client traffic.
+				if s.healthFlag != nil {
+					s.healthFlag.Store(false)
+				}
 				if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0,
 					jobFailureFallback, time.Now(), 0); err != nil {
 					slog.Error("failed to update search job status after recovered panic", "pkg", "search", "jobID", jobID, "err", err)

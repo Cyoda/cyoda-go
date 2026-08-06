@@ -96,6 +96,11 @@ func New(cfg Config) *App {
 
 	a := &App{config: cfg}
 
+	// Created before anything that can latch it: the async-search goroutine
+	// is wired below, well ahead of the HTTP mux and the gRPC server.
+	a.healthFlag = &atomic.Bool{}
+	a.healthFlag.Store(true)
+
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
 	// cfg.StorageBackend is populated at config-construction time from the
@@ -414,7 +419,8 @@ func New(cfg Config) *App {
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
 		WithPathValidationCache(pathValidationCache).
-		WithMaxSortKeys(a.config.SearchMaxSortKeys)
+		WithMaxSortKeys(a.config.SearchMaxSortKeys).
+		WithHealthFlag(a.healthFlag)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
@@ -612,9 +618,6 @@ func New(cfg Config) *App {
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	a.healthFlag = &atomic.Bool{}
-	a.healthFlag.Store(true)
-
 	// Infrastructure routes (no auth, receives health flag)
 	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
 
@@ -777,15 +780,20 @@ func (a *App) Handler() http.Handler { return a.handler }
 // Two conditions fail it independently, and the returned reasons differ so
 // the admin handler's server-side log tells an operator which fired:
 //
-//   - Storage is not initialized. By the time New() returns, the plugin
-//     factory has successfully opened connections and applied migrations
-//     (per the existing startup sequence), so a non-nil storeFactory is a
-//     sufficient signal until the SPI gains a dedicated Ping method.
+//   - Storage is not initialized. A defensive guard rather than a live
+//     window: cmd/cyoda builds the admin listener from an App that New()
+//     has already returned, so a probe never observes it. It costs nothing
+//     and keeps the check honest for any other caller.
 //   - A panic was recovered on some door. The node's state is then
 //     unverified, so it must stop receiving traffic — fail closed. Nothing
-//     resets the flag, so the node stays out of service until it is
-//     replaced. Liveness is deliberately not affected: a deterministic
-//     panic would otherwise turn into a restart loop.
+//     resets the flag.
+//
+// What failing readiness achieves is bounded: Kubernetes drops the pod from
+// the client-facing Service, so new client connections stop. Peers resolve
+// each other through the gossip registry rather than the Service, so
+// forwarded work keeps arriving, and /livez is deliberately unaffected so a
+// deterministic panic does not become a restart loop. Replacing a drained
+// node is an operator action.
 func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1586,6 +1587,104 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 	if strings.Contains(job.Error, "injected panic") || strings.Contains(job.Error, "goroutine") {
 		t.Errorf("job error message leaks panic/internal detail: %q", job.Error)
 	}
+}
+
+// TestAsyncSearchJob_PanicMarksNodeUnhealthy holds the async-search goroutine
+// to the same contract as the two request doors: a recovered panic latches the
+// node's health flag false, so the node reports 503 on /health and /readyz and
+// stops taking client traffic. A panic here is exactly as much evidence of
+// unverified state as a panic in an HTTP or gRPC handler — it runs the same
+// engine and store code — so recording the job FAILED and carrying on would
+// leave the node serving from state nothing has checked.
+func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+			panic("injected panic in async search execution")
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+		WithHealthFlag(healthFlag)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
+		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
+	}, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	awaitJobSettled(t, svc, ctx, jobID, "FAILED")
+
+	if healthFlag.Load() {
+		t.Fatal("health flag still true after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
+	}
+}
+
+// TestAsyncSearchJob_SuccessLeavesNodeHealthy is the other direction: an async
+// job that completes normally must not touch the flag. Without it, a recover
+// handler that latched the flag unconditionally would still pass the test above.
+func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+		WithHealthFlag(healthFlag)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
+		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
+	}, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	awaitJobSettled(t, svc, ctx, jobID, "SUCCESSFUL")
+
+	if !healthFlag.Load() {
+		t.Fatal("health flag went false after a successful async search — the node took itself out of service for nothing")
+	}
+}
+
+// awaitJobSettled polls until the job leaves RUNNING and asserts the terminal
+// status, so the health-flag assertions above run against a finished goroutine.
+func awaitJobSettled(t *testing.T, svc *search.SearchService, ctx context.Context, jobID string, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if status.Status == "FAILED" || status.Status == "SUCCESSFUL" {
+			if status.Status != want {
+				t.Fatalf("job status = %q, want %q", status.Status, want)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job did not settle within the deadline; want %q", want)
 }
 
 // TestSearch_LimitExceedsMax verifies the service-layer defense-in-depth cap:

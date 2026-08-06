@@ -309,16 +309,35 @@ health flag means the first recovered panic on any door takes the node to
 node receives traffic, and originally nothing probed it: the shipped chart's
 liveness probe hits `/livez` (unconditional) and its readiness probe hits
 `/readyz`, which checked only the store factory. So `ReadinessCheck`
-(`app/app.go`) reads the flag as a second, independent failure condition — a
-recovered panic fails `/readyz` with `503` and the node is removed from its
-Service endpoints. Fail closed: a node whose state nothing has verified stops
-taking traffic.
+(`app/app.go`) reads the flag as a second, independent failure condition. Fail
+closed: a node whose state nothing has verified stops taking traffic.
 
-`/livez` is deliberately **not** wired to the flag. Draining is unconditionally
-right; restarting is not — a deterministic panic (a poisoned entity, a bad
-workflow definition) recurs on the next request and would turn a restart into a
-loop. Whether a recovered panic should also restart the node is a separate
-decision, left open. §6 row 2's "still serving" assertion is about request
+Be precise about how much that buys, because the shipped chart hardcodes
+`CYODA_CLUSTER_ENABLED=true` (`deploy/helm/cyoda/templates/configmap.yaml`), so
+every install is a cluster:
+
+- **Stopped.** New client connections through the `ClusterIP` Service. Readiness
+  at `periodSeconds: 5, failureThreshold: 3` drops the pod from its endpoints in
+  ~10-15s, and both the Gateway `HTTPRoute` and the `Ingress` route through that
+  Service.
+- **Not stopped.** Peer-forwarded work. Peers resolve each other from the gossip
+  registry, not the Service, so tx-affinity proxying
+  (`internal/cluster/proxy/http.go`), gRPC proxying, cluster dispatch and the
+  peer scheduler RPC all still arrive — and `RoundRobin.Pick`
+  (`internal/scheduler/distribution.go`) never reads `NodeInfo.Alive`, so the
+  node keeps its 1/N share of every scan and opens a transaction and runs a full
+  cascade for each. Established connections are not closed either.
+- **Not restarted.** `/livez` is deliberately not wired to the flag: a
+  deterministic panic (a poisoned entity, a bad workflow definition) recurs on
+  the next request and would turn a restart into a loop.
+
+Two questions are therefore left open for the maintainer, and the code states the
+current behaviour rather than pretending either is settled: whether a recovered
+panic should also fail liveness, and whether a tainted node should self-eject
+from gossip (the plumbing exists — `UpdateTags`, `Deregister` — and both the
+proxy and the scheduler RPC already have defined `!alive` behaviour, so this is a
+posture decision, not a design obstacle) or whether drain-plus-manual-replacement
+is the intended posture. §6 row 2's "still serving" assertion is about request
 handling, which continues.
 
 Recovery must not land without §1.2 and §1.3. On its own — on the gRPC door — it
@@ -934,7 +953,8 @@ prefix plus the retryable flag, not on `Error.Code`.
 | 6 | Panicking write on memory/sqlite releases its tx state — no leaked buffer, `committedLog` prune floor advances | ✔ | — | — | — |
 | 7 | gRPC handler panic is recovered; process survives; tx rolled back | — | — | — | ✔ |
 | 7a | Peer scheduler-RPC panic is recovered; process survives; fire tx rolled back | — | postgres | — | — |
-| 7b | A recovered panic fails readiness — `/readyz` 503, healthy node still 200, reason distinguishable from a storage fault, `/livez` unchanged | ✔ | — | — | — |
+| 7b | A recovered panic fails readiness — `/readyz` 503, healthy node still 200, reason distinguishable from a storage fault, `/livez` unchanged | ✔ | postgres | — | — |
+| 7c | A panic in the async-search goroutine latches the same flag; a successful job does not | ✔ | — | — | — |
 | 8 | `Release` holds the per-tx gate while rolling back | ✔ | — | — | — |
 | 8a | `Release` on a **cancelled** request context still rolls back — `WithoutCancel` keeps the `UserContext` `verifyTenant` needs | ✔ | postgres | — | — |
 | 8b | Joined call that unexpectedly segments rolls the engine-opened segment back despite `owned == false` (stubbed engine) | ✔ | — | — | — |
@@ -970,6 +990,13 @@ gone.
 Scenarios 1, 2 and 10 are concurrency/fault tests: isolated single-backend e2e,
 never the shared parity suite, and they assert consistency (pool returns to
 baseline, one winner, no torn write) rather than a precise interleave.
+
+Row 7b's e2e cell rides on 7a: the same real panic through the assembled handler,
+then `/readyz` 503 and `/livez` 200 on that node. Row 7c is unit-only by waiver —
+reaching the async-search goroutine's recover from e2e means panicking the store
+layer mid-scan, which needs the same in-process injection an e2e stack has no seam
+for; the unit test drives the production goroutine directly and 7b already proves
+the flag reaches `/readyz`.
 
 **No parity cells.** Every scenario here is single-backend, and that is forced by
 the harness rather than chosen: `BackendFixture` (`e2e/parity/fixture.go:17-48`)

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strconv"
@@ -34,6 +35,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/admin"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
@@ -710,5 +712,31 @@ func TestE2E_SchedulerRPCPanic_RecoveredAndRolledBack(t *testing.T) {
 	// And the node still serves — the recovered panic did not take it down.
 	if _, s, b := h.CreateEntity(t, model, 1, txLifeSample); s != http.StatusOK {
 		t.Fatalf("node could not serve after the recovered scheduler-RPC panic: %d %s", s, b)
+	}
+
+	// Coverage row 7b, through the production path this test already drove:
+	// a real HTTP request onto the assembled app handler, the handler-wide
+	// middleware.Recovery wrap, the app's own health flag, ReadinessCheck,
+	// and the real admin handler. Serving and being ready are different
+	// questions — the node answers requests (above) and is no longer ready
+	// to be sent new ones (here), because its state is unverified.
+	if err := h.app.ReadinessCheck(); err == nil {
+		t.Error("ReadinessCheck() = nil after a recovered panic — the node keeps taking client traffic with unverified state")
+	}
+	adminH := admin.NewHandler(admin.Options{Readiness: h.app.ReadinessCheck})
+	rec := httptest.NewRecorder()
+	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d after a recovered panic, want 503", rec.Code)
+	}
+	// Gate 3: the probe body stays generic.
+	if body := rec.Body.String(); strings.Contains(body, "panic") || strings.Contains(body, "injected") {
+		t.Errorf("/readyz body leaked internal state: %q", body)
+	}
+	// /livez is deliberately untouched: the node drains, it is not restarted.
+	rec = httptest.NewRecorder()
+	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("/livez = %d after a recovered panic, want 200 — liveness must not turn a deterministic panic into a restart loop", rec.Code)
 	}
 }

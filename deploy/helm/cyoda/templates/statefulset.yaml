@@ -116,7 +116,10 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           # /readyz fails on an uninitialised store factory or a recovered
-          # panic; 3 × 5s takes the pod out of the Service within ~15s.
+          # panic; 3 × 5s takes the pod out of the Service within ~15s, which
+          # stops new client connections only. Peers route through the gossip
+          # registry, not this Service, so a tainted node keeps receiving
+          # forwarded work until an operator deletes the pod.
           readinessProbe:
             httpGet:
               path: /readyz
