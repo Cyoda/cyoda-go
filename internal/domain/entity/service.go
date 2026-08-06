@@ -2016,6 +2016,9 @@ func classifyError(err error) *common.AppError {
 //   - An already-classified *common.AppError (matched via errors.As, so it is
 //     found even several layers deep behind %w-wrapping) passes through
 //     unchanged — the minted status/code/retryable flags are authoritative.
+//   - A storage-unavailable marker (the plugin could not get a connection for a
+//     segment Begin) → retryable 503 STORAGE_UNAVAILABLE. Checked before the
+//     infra branches, which would otherwise claim it as an opaque 500.
 //   - ErrNoMatchingMember (no calculation member registered for the
 //     processor/criterion's tags — a compute-infra condition, not a bad
 //     request) → retryable 503 NO_COMPUTE_MEMBER_FOR_TAG.
@@ -2037,6 +2040,12 @@ func classifyWorkflowError(err error) *common.AppError {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		return appErr
+	}
+	// Before the infra branches below: a segment Begin that could not acquire a
+	// connection is transient contention, not an unexplained engine failure, and
+	// ErrCommitBeforeDispatchInfra would otherwise claim it as a 500.
+	if suErr := storageUnavailable(err); suErr != nil {
+		return suErr
 	}
 	if errors.Is(err, contract.ErrNoMatchingMember) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag, err.Error()).AsRetryable()

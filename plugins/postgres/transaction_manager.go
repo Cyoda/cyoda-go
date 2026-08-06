@@ -47,19 +47,38 @@ type TransactionManager struct {
 	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
+	// acquireTimeout bounds Begin's wait for a pooled connection.
+	acquireTimeout time.Duration
+}
+
+// TransactionManagerOption configures a TransactionManager at construction.
+type TransactionManagerOption func(*TransactionManager)
+
+// WithAcquireTimeout bounds how long Begin waits for a pooled connection before
+// failing with the storage-unavailable marker. Zero disables the deadline,
+// matching the convention the GUC ceilings use. Production wiring passes
+// cfg.AcquireTimeout (CYODA_POSTGRES_ACQUIRE_TIMEOUT); without this option the
+// manager still gets the shipped default rather than an unbounded wait.
+func WithAcquireTimeout(d time.Duration) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.acquireTimeout = d }
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
-func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *TransactionManager {
-	return &TransactionManager{
-		pool:        pool,
-		registry:    newTxRegistry(),
-		uuids:       uuids,
-		submitTimes: make(map[string]time.Time),
-		tenants:     make(map[string]spi.TenantID),
-		origins:     make(map[string]spi.Principal),
-		txStates:    make(map[string]*txState),
+func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...TransactionManagerOption) *TransactionManager {
+	tm := &TransactionManager{
+		pool:           pool,
+		registry:       newTxRegistry(),
+		uuids:          uuids,
+		submitTimes:    make(map[string]time.Time),
+		tenants:        make(map[string]spi.TenantID),
+		origins:        make(map[string]spi.Principal),
+		txStates:       make(map[string]*txState),
+		acquireTimeout: defaultAcquireTimeout,
 	}
+	for _, apply := range opts {
+		apply(tm)
+	}
+	return tm
 }
 
 // Begin starts a new REPEATABLE READ transaction (snapshot isolation) and
@@ -76,17 +95,30 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	txID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 
-	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	// The deadline bounds the acquire ONLY. It must not reach the context this
+	// function returns: that one is derived from the caller's ctx below and
+	// carries the transaction for its whole life, so a deadline on it would
+	// cancel the transaction the moment the acquire window closed.
+	//
+	// pool.BeginTx and the set_config round-trip both return before the caller
+	// touches the transaction, so bounding them leaks nothing into the handle.
+	acquireCtx, cancelAcquire := tm.acquireContext(ctx)
+	defer cancelAcquire()
+
+	pgxTx, err := tm.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
-		return "", nil, fmt.Errorf("Begin: failed to start transaction: %w", err)
+		return "", nil, tm.classifyAcquireErr(ctx, acquireCtx, "failed to start transaction", err)
 	}
 
 	// Set the current tenant for RLS policies. We use set_config(name, value, is_local)
 	// rather than `SET LOCAL app.current_tenant = $1` because PostgreSQL's SET statement
 	// does not accept bound parameters under pgx's extended-query protocol.
-	if _, err := pgxTx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(tenantID)); err != nil {
-		_ = pgxTx.Rollback(ctx)
-		return "", nil, fmt.Errorf("Begin: failed to set tenant: %w", err)
+	if _, err := pgxTx.Exec(acquireCtx, "SELECT set_config('app.current_tenant', $1, true)", string(tenantID)); err != nil {
+		// The rollback runs on a context derived WithoutCancel: acquireCtx may be
+		// the very thing that just expired, and a rollback on an expired context
+		// destroys the pooled connection instead of returning it.
+		_ = pgxTx.Rollback(context.WithoutCancel(ctx))
+		return "", nil, tm.classifyAcquireErr(ctx, acquireCtx, "failed to set tenant", err)
 	}
 
 	tm.registry.Register(txID, pgxTx)
@@ -123,7 +155,25 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		Origin:   origin,
 	}
 
-	return txID, spi.WithTransaction(ctx, txSpiState), nil
+	return txID, spi.WithTransaction(ctx, txSpiState), nil // derived from the CALLER's ctx
+}
+
+// acquireContext returns the acquire-only deadline context for this manager.
+// See newAcquireContext for why it must never reach the transaction handle.
+func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return newAcquireContext(ctx, tm.acquireTimeout)
+}
+
+// classifyAcquireErr distinguishes "our acquire deadline expired" from "the
+// caller's request context expired". pool.BeginTx surfaces a context error for
+// both, and reporting a client timeout as a retryable server 503 would be wrong
+// — so the caller's context is checked first, and only this plugin's own
+// deadline produces the storage-unavailable marker.
+func (tm *TransactionManager) classifyAcquireErr(callerCtx, acquireCtx context.Context, what string, err error) error {
+	if callerCtx.Err() == nil && errors.Is(acquireCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("Begin: %w", &acquireTimeoutError{cause: err})
+	}
+	return fmt.Errorf("Begin: %s: %w", what, err)
 }
 
 // Commit commits the transaction and records its submit time.

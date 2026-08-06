@@ -20,7 +20,13 @@ type modelStore struct {
 	pool      *pgxpool.Pool // used by ExtendSchema to self-wrap a pgx.Tx when no ambient tx is in ctx
 	tenantID  spi.TenantID
 	applyFunc ApplyFunc // optional; required when the extension log is non-empty
-	cfg       config    // plugin config — read SchemaSavepointInterval from here
+	cfg       config    // plugin config — read SchemaSavepointInterval and AcquireTimeout from here
+}
+
+// acquireContext returns the acquire-only deadline context for ExtendSchema's
+// self-wrap. See newAcquireContext for why it must never reach the tx handle.
+func (s *modelStore) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return newAcquireContext(ctx, s.cfg.AcquireTimeout)
 }
 
 // modelDoc is the JSON representation stored in the doc JSONB column.
@@ -356,8 +362,18 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		return s.extendSchemaBody(ctx, s.q, ref, delta)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	// Same scoping rule as TransactionManager.Begin: the deadline bounds the
+	// acquire, and is cancelled the instant Begin returns so the transaction
+	// handle — which outlives this call — cannot inherit it.
+	acquireCtx, cancelAcquire := s.acquireContext(ctx)
+	tx, err := s.pool.Begin(acquireCtx)
+	cancelAcquire() // Begin has returned; the handle must not inherit the deadline
 	if err != nil {
+		// This surfaces as 500, not 503, and that is deliberate: ValidateOrExtend
+		// wraps the failure in ErrInternalSchema and the schema classifier maps
+		// that to an internal error. This is the schema-extension path reporting
+		// that it could not extend the schema, and the cause reaches the log
+		// either way — do not "fix" it into a 503.
 		return fmt.Errorf("failed to begin self-wrap tx for ExtendSchema(%s): %w", ref, err)
 	}
 	// Rollback is idempotent in pgx: no-op once Commit has landed.

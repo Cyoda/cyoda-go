@@ -224,8 +224,9 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		}
 		// Most operational errors put full domain detail in Message, which the
 		// client is entitled to see. The exception is one whose cause is
-		// infrastructure rather than domain — a storage failure that can carry
-		// the connection string — where the cause is attached via WithCause and
+		// infrastructure rather than domain — a storage failure carrying
+		// connection detail such as host, user and database (the password is
+		// redacted by the driver) — where the cause is attached via WithCause and
 		// kept out of the response. The log is then its only breadcrumb.
 		if appErr.Err != nil {
 			attrs = append(attrs, "cause", appErr.Err.Error())

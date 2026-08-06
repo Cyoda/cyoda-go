@@ -109,6 +109,9 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	}
 	ctx = spi.WithAmbientOrigin(ctx, seeded) // zero -> no seed -> origin falls through to the system UserContext
 
+	// A storage-unavailable Begin failure stays inspectable through the %w wrap,
+	// but there is no status to map it to here: this path answers to the
+	// scheduler, which logs the outcome and re-arms. No HTTP/gRPC surface.
 	txID, txCtx, err := e.txMgr.Begin(ctx)
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to begin scheduled-fire transaction: %w", err)

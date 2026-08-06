@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -72,3 +73,36 @@ func applyCeiling(params map[string]string, name string, d time.Duration, explic
 	}
 	params[name] = pgDurationMillis(d)
 }
+
+// newAcquireContext bounds a connection acquire — and ONLY the acquire.
+//
+// pgxpool.Config has no AcquireTimeout field, so the wait for a free pooled
+// connection is bounded Go-side. The caller must cancel the returned context as
+// soon as the acquiring call has returned: the context a transaction then lives
+// under is derived from the CALLER's context, never from this one. A deadline
+// that reached the transaction handle would cancel it the moment the acquire
+// window closed, killing every later operation on a perfectly healthy
+// transaction.
+//
+// A zero timeout disables the deadline, matching the convention the GUC ceilings
+// use.
+func newAcquireContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// acquireTimeoutError marks a failure caused by this plugin's own
+// connection-acquire deadline expiring: the pool could not supply a connection
+// in time. It carries the StorageUnavailable marker the application layer
+// matches with errors.As — an interface, not a concrete type, so no
+// cyoda-go-spi change and therefore no coordinated cross-repo release. Another
+// backend can opt in by returning the same shape.
+type acquireTimeoutError struct{ cause error }
+
+func (e *acquireTimeoutError) Error() string {
+	return "could not acquire a database connection within the configured timeout: " + e.cause.Error()
+}
+func (e *acquireTimeoutError) Unwrap() error            { return e.cause }
+func (e *acquireTimeoutError) StorageUnavailable() bool { return true }

@@ -157,8 +157,9 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 //
 // The cause rides along via WithCause so WriteError can log WHY the pool
 // failed. It stays out of the client-facing message deliberately: unlike a
-// domain 4xx, this detail is infrastructure and a pool error can carry the
-// connection string.
+// domain 4xx, this detail is infrastructure — a pgx connection error carries
+// host, user and database (pgx redacts the password), which is operator
+// information, not caller information.
 func storageUnavailable(err error) *common.AppError {
 	var su interface{ StorageUnavailable() bool }
 	if errors.As(err, &su) && su.StorageUnavailable() {

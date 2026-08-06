@@ -110,6 +110,19 @@ func resolveTenant(ctx context.Context) (spi.TenantID, error) {
 // never hold the result directly; they hold a ctxQuerier that re-resolves
 // on every call, so the choice tracks the call-time context rather than
 // the store-construction context.
+//
+// The acquire deadline is deliberately NOT applied to pool.Query / Exec /
+// QueryRow / CopyFrom. For Query, pgxpool holds the connection for the returned
+// pgx.Rows under the same context, so a deadline there would cap statement
+// execution and row iteration too — breaking search_store.go's CopyFrom of a
+// whole async-search result set and every non-transactional read routed through
+// this fallback. (Exec/QueryRow/CopyFrom release before returning, so the
+// objection is narrower for them, but splitting the rule by method would be a
+// trap for the next reader.) Bounding these properly means an explicit
+// Acquire/Release restructure that reimplements what pgxpool already does
+// internally, with a connection-leak failure mode of its own — and it is
+// unnecessary: these statements are bounded server-side by statement_timeout,
+// so the connection returns within that ceiling regardless.
 func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 	if f.tm != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
@@ -219,7 +232,7 @@ func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
 // for use within the package; external callers — including test packages —
 // should call this exported form.
 func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
-	tm := NewTransactionManager(f.pool, uuids)
+	tm := NewTransactionManager(f.pool, uuids, WithAcquireTimeout(f.cfg.AcquireTimeout))
 	f.setTransactionManager(tm)
 }
 
