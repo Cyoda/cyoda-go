@@ -48,13 +48,16 @@ func init() {
 //
 // HARNESS GAPS (documented for future strengthening, see PR description):
 //
-//   - Strict same-node assertion. Confirming "TX_pre and TX_post both
-//     registered on node 0 specifically" requires either an admin
-//     endpoint against the per-node txRegistry or a wired
-//     cluster-level TX lifecycle registry. internal/cluster/lifecycle.Manager
-//     is designed for exactly this but is not yet wired into the
-//     runtime — its Register/IsAlive surface needs to be invoked
-//     from the TransactionManager and exposed via an admin route.
+//   - Strict same-node assertion. Confirming "TX_pre and TX_post both ran
+//     on node 0 specifically" would need a queryable per-node transaction
+//     registry; no such node-identity handle exists — a transaction's home
+//     node lives only in its short-lived HMAC routing token, not in any
+//     registry the harness can inspect. The test instead relies on the
+//     observable pinning signature: exactly two distinct transactionIds
+//     in the version history (point 4 above), which only happens if both
+//     segments landed on the same node. A genuine cross-node hand-off
+//     would surface as `503 TRANSACTION_NODE_UNAVAILABLE` on the routing
+//     token, not a silently-migrated segment.
 //
 //   - Forwarded-dispatch variant (PUT to a non-home node). The natural
 //     stress test would target node 1 (no local compute member) and

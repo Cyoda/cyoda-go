@@ -316,7 +316,7 @@ BEGIN ──► READ/WRITE ──► COMMIT
   │                        │
   │         conflict ◄─────┘
   │            │
-  └──► ROLLBACK ◄──── timeout (TTL reaper)
+  └──► ROLLBACK ◄──── deferred release / DB ceiling
 ```
 
 1. **Begin** — Snapshot established. Each plugin captures its own snapshot primitive (committed-log watermark for memory/sqlite; PostgreSQL transaction snapshot under `REPEATABLE READ`).
@@ -341,9 +341,9 @@ postgres uses row-level locks plus a commit-time re-validation pass;
 the commercial cassandra plugin uses its proprietary coordinator —
 but the contract is the same. See `docs/CONSISTENCY.md` for depth.
 
-### Transaction Timeout and Reaper
+### Transaction Timeouts
 
-Transactions have a configurable TTL (default: 60 seconds, set via `CYODA_TX_TTL`). A background reaper goroutine periodically scans for expired transactions and rolls them back. For the PostgreSQL plugin, the TTL should align with the server-side `idle_in_transaction_session_timeout`.
+A transaction's lifetime is bounded on every exit path, including a panic. Each entity write flow opens its transaction inside a deferred scope that releases it — commits if the flow succeeded, rolls back otherwise — no matter how the flow returns; the workflow engine applies the same deferred-release discipline to the segments it opens for `COMMIT_BEFORE_DISPATCH` cascades. Underneath that application-side guarantee, the PostgreSQL plugin sets a server-side ceiling: `statement_timeout` bounds any single SQL statement and `idle_in_transaction_session_timeout` bounds a connection sitting idle inside an open transaction (both default to 5 minutes, via `CYODA_POSTGRES_STATEMENT_TIMEOUT` / `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`). A write that cannot acquire a pooled connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default 10s) fails `503 STORAGE_UNAVAILABLE`, retryable, rather than queuing indefinitely.
 
 ### Multi-Node Transaction Affinity
 

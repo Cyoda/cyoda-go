@@ -60,7 +60,7 @@ scopes. The scope determines what protects it.
 | **Model cache** (cluster broadcast invalidation) | Per-node | `modelcache.mu` (RWMutex); gossip-driven invalidation |
 | **Path-validation cache** | Per-node | `path_validation_cache.mu` (RWMutex) |
 | **Gossip member registry** | Per-node | `gossip.mu` + `gossipDelegate.subsMu` |
-| **Transaction lifecycle** (cluster `active`/`outcomes` maps) | Per-node | `lifecycle.Manager.mu` (RWMutex); TTL-evicted |
+| **Transaction lifetime bound** | Per-request (goroutine-local `defer`) | Deferred release on every exit path including a panic; backstopped by PostgreSQL `idle_in_transaction_session_timeout` / `statement_timeout` (see `docs/PRD.md` "Transaction Timeouts") |
 | **AEAD nonce-replay cache** | Per-node | `nonce_cache.mu`; bounded TTL eviction |
 | **HTTP `pgxpool.Pool`** (postgres only) | Per-node | Vendored pool internals |
 | **`UserContext`, `txCtx`** | Per-request | `context.Context` (immutable values) |
@@ -102,7 +102,6 @@ each non-entity store has its own RWMutex):
 for completeness):
 - `internal/cluster/modelcache/cache.go` — RWMutex on cache entries; Lock for invalidation, RLock for Get.
 - `internal/cluster/registry/gossip.go` — multiple mutexes: `mu` on node meta, `subsMu` on subscription map, plus the gossipDelegate's broadcast queue.
-- `internal/cluster/lifecycle/manager.go` — RWMutex on `active`/`outcomes` maps; TTL-evicted.
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
 - `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.
 - `internal/grpc/members.go` — multiple mutexes governing gRPC member streams.
