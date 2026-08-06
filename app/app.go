@@ -69,6 +69,12 @@ type App struct {
 	scheduler          *scheduler.Service
 	stopSearchReaper   chan struct{}
 	grpcStopOnce       sync.Once
+	// healthFlag starts true and is latched false by the first recovered
+	// panic on any door — the HTTP recovery middleware, the gRPC recovery
+	// interceptors, the async-search goroutine. Nothing resets it: a node
+	// that has panicked has state nothing has verified. Read by
+	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
+	healthFlag *atomic.Bool
 }
 
 func New(cfg Config) *App {
@@ -606,11 +612,11 @@ func New(cfg Config) *App {
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	a.healthFlag = &atomic.Bool{}
+	a.healthFlag.Store(true)
 
 	// Infrastructure routes (no auth, receives health flag)
-	internalapi.RegisterHealthRoutes(mux, healthFlag)
+	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
 
 	// Auth service route registration is split into two strict groups so
 	// nothing administrative leaks into the public surface (#34 item 1):
@@ -738,7 +744,7 @@ func New(cfg Config) *App {
 	// the peer scheduler RPC, cluster dispatch, health, discovery, help, the
 	// admin log-level routes and more — and would have excluded any route added
 	// later. One call site instead of a dozen, with no way to escape it.
-	a.handler = middleware.Recovery(healthFlag)(a.handler)
+	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
 
 	// Cluster routing middleware — outermost layer, before auth and recovery.
 	// The proxy forwards the original request including auth headers to the
@@ -756,7 +762,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, healthFlag)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag)
 
 	return a
 }
@@ -765,13 +771,28 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap. By the time New() returns, the plugin factory
-// has successfully opened connections and applied migrations (per the
-// existing startup sequence), so a non-nil storeFactory is a sufficient
-// readiness signal until the SPI gains a dedicated Ping method.
+// probe — keep it cheap; both conditions below are a pointer test and an
+// atomic load, and neither performs I/O.
+//
+// Two conditions fail it independently, and the returned reasons differ so
+// the admin handler's server-side log tells an operator which fired:
+//
+//   - Storage is not initialized. By the time New() returns, the plugin
+//     factory has successfully opened connections and applied migrations
+//     (per the existing startup sequence), so a non-nil storeFactory is a
+//     sufficient signal until the SPI gains a dedicated Ping method.
+//   - A panic was recovered on some door. The node's state is then
+//     unverified, so it must stop receiving traffic — fail closed. Nothing
+//     resets the flag, so the node stays out of service until it is
+//     replaced. Liveness is deliberately not affected: a deterministic
+//     panic would otherwise turn into a restart loop.
 func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
+	}
+	// nil only for an App not built by New(); New() always sets the flag.
+	if a.healthFlag != nil && !a.healthFlag.Load() {
+		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
 	return nil
 }

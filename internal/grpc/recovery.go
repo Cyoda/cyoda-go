@@ -22,11 +22,12 @@ import (
 //
 // Mirrors internal/api/middleware/recovery.go: log with stack, mark the health
 // flag, return a generic internal error carrying a ticket UUID as a proper
-// gRPC status (codes.Internal). Marking health means the first recovered
-// panic on any door takes the node to 503 DOWN permanently, which under a
-// liveness probe is a restart. That is the existing HTTP contract,
-// deliberately extended: a node that has panicked has unknown state, and
-// restarting it is the correct response.
+// gRPC status (codes.Internal). Marking health is permanent — nothing resets
+// the flag — and takes both GET /health and the admin /readyz to 503, so the
+// node is removed from its Service endpoints and stops receiving traffic. It
+// is not restarted: /livez stays unconditional so a deterministic panic does
+// not become a restart loop. A node that has panicked has unverified state,
+// and taking it out of service is the correct response.
 func UnaryRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (resp any, err error) {
 		defer func() {

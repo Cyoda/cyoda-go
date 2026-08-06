@@ -305,10 +305,21 @@ recovers (`internal/scheduler/service.go:189-194`). It gets the same treatment.
 Both recoveries mirror `internal/api/middleware/recovery.go`: log with stack, mark
 the health flag, return a generic internal error with a ticket UUID. Marking the
 health flag means the first recovered panic on any door takes the node to
-`503 DOWN` permanently, which under a liveness probe is a restart. That is the
-existing HTTP contract and is deliberately extended, not softened: a node that has
-panicked has unknown state, and restarting it is the correct response. §6 row 2's
-"still serving" assertion is about request handling, which continues.
+`503 DOWN` permanently. That flag has to reach something that decides whether the
+node receives traffic, and originally nothing probed it: the shipped chart's
+liveness probe hits `/livez` (unconditional) and its readiness probe hits
+`/readyz`, which checked only the store factory. So `ReadinessCheck`
+(`app/app.go`) reads the flag as a second, independent failure condition — a
+recovered panic fails `/readyz` with `503` and the node is removed from its
+Service endpoints. Fail closed: a node whose state nothing has verified stops
+taking traffic.
+
+`/livez` is deliberately **not** wired to the flag. Draining is unconditionally
+right; restarting is not — a deterministic panic (a poisoned entity, a bad
+workflow definition) recurs on the next request and would turn a restart into a
+loop. Whether a recovered panic should also restart the node is a separate
+decision, left open. §6 row 2's "still serving" assertion is about request
+handling, which continues.
 
 Recovery must not land without §1.2 and §1.3. On its own — on the gRPC door — it
 would convert a process crash, which PostgreSQL cleans up by killing every session,
@@ -923,6 +934,7 @@ prefix plus the retryable flag, not on `Error.Code`.
 | 6 | Panicking write on memory/sqlite releases its tx state — no leaked buffer, `committedLog` prune floor advances | ✔ | — | — | — |
 | 7 | gRPC handler panic is recovered; process survives; tx rolled back | — | — | — | ✔ |
 | 7a | Peer scheduler-RPC panic is recovered; process survives; fire tx rolled back | — | postgres | — | — |
+| 7b | A recovered panic fails readiness — `/readyz` 503, healthy node still 200, reason distinguishable from a storage fault, `/livez` unchanged | ✔ | — | — | — |
 | 8 | `Release` holds the per-tx gate while rolling back | ✔ | — | — | — |
 | 8a | `Release` on a **cancelled** request context still rolls back — `WithoutCancel` keeps the `UserContext` `verifyTenant` needs | ✔ | postgres | — | — |
 | 8b | Joined call that unexpectedly segments rolls the engine-opened segment back despite `owned == false` (stubbed engine) | ✔ | — | — | — |

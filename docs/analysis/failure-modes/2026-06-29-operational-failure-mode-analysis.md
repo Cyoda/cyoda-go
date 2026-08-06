@@ -168,7 +168,9 @@ If a compute node is **frozen but TCP‑alive** (GC/OOM thrash, host network bla
 
 **Net:** a recurring panic path (a nil‑deref deep in the engine, a bad response decode, an edge‑case input) hit by retrying clients **leaks one of 25 connections per occurrence, permanently**, until the process restarts — and orphaned row locks can block other writers meanwhile. (Several reviewers over‑claimed this for the *slow‑node* case; the verifiers correctly narrowed the **permanent** leak to the **panic** trigger, since the slow‑node case self‑heals at 30 s — see the downgraded `tx-no-timeout-or-reaper-2`, `resource-exhaustion-4`, `cluster-coordination-1`.)
 
-> **A latent twist (`api-boundary-health-1`, partial→Low):** that same recovery path latches `healthFlag` to `false` **forever** (only set `true` once at startup; a test even asserts “no auto‑recovery”). On `/health` this is permanent‑DOWN after one panic. It’s rated Low only because the shipped Helm/Docker probes target `/livez` and `/readyz` (which ignore the flag), not `/health` — so the self‑takedown does **not** fire in the default deployment. It will bite anyone who points an LB at `/health`.
+> **A latent twist (`api-boundary-health-1`, partial→Low):** that same recovery path latches `healthFlag` to `false` **forever** (only set `true` once at startup; a test even asserts “no auto‑recovery”). On `/health` this is permanent‑DOWN after one panic. It’s rated Low only because, at the time of this analysis, the shipped Helm/Docker probes targeted `/livez` and `/readyz`, which ignored the flag — so the self‑takedown did **not** fire in the default deployment.
+>
+> **Resolved (tx‑lifecycle‑safety work).** `/readyz` now reads the same flag, so a recovered panic drains the node out of its Service endpoints in the default deployment — which is the intent, not a latent hazard. `/livez` is deliberately left unconditional: the node is drained, not restarted, so a deterministic panic cannot become a restart loop.
 
 **Fix:** wrap every `Begin` in a `defer` that rolls back unless committed (idempotent guard), **and** set `idle_in_transaction_session_timeout`/`statement_timeout` as a database‑level backstop. Then either wire the reaper for real (with a privileged system‑tenant rollback path) or delete it so it stops implying protection it doesn’t provide.
 
@@ -415,7 +417,7 @@ All 54 candidate findings with their adversarial verdict and **verified** (post�
 | `cross-cutting-1` | unavailability | critical | **high** | 🟡 partial | Held REPEATABLE READ tx spans external dispatch over a 25-conn pool (bounded/self-healing at 30s) |
 | `api-boundary-grpc-recovery-1` | uncontrolled-breakdown | high | **medium** | 🟡 partial | No gRPC recovery interceptor (structural gap real; cited compute-message trigger is panic-safe) |
 | `api-boundary-cbd-partial-durability-1` | inconsistency | medium | **low** | 🟡 partial | COMMIT_BEFORE_DISPATCH leaves durable intermediate state on failure (opt-in; conflict is non-retryable) |
-| `api-boundary-health-1` | unavailability | high | **low** | 🟡 partial | One recovered panic latches /health DOWN forever (but shipped probes use /livez,/readyz) |
+| `api-boundary-health-1` | unavailability | high | **low** | 🟡 partial | One recovered panic latches /health DOWN forever; /readyz now reads the same flag, so the node drains (never restarts — /livez is unconditional) |
 | `cluster-coordination-4` | inconsistency | medium | **low** | 🟡 partial | Model-cache invalidation rides best-effort gossip (survives single-packet loss; 5-min lease) |
 | `cluster-coordination-5` | inconsistency | low | **low** | 🟡 partial | Tx-routing token never minted in production — proxy affinity primitive is inert dead code |
 | `cluster-coordination-6` | unavailability | medium | **low** | 🟡 partial | One shared secret for gossip/AEAD/token; rotation needs full downtime (fails loud, not split-brain) |

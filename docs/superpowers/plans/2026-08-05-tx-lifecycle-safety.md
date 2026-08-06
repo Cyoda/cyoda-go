@@ -3983,7 +3983,7 @@ Expected: the sites listed below, plus `docs/ARCHITECTURE.md` (Task 18) and `doc
 
 - [ ] **Step 4: Rewrite the operational playbook**
 
-`docs/analysis/failure-modes/…-playbook.md:59`. This is the actionable companion to the analysis document, so it must be correct even though its sibling is historical: replace the reaper instruction with the real recovery path — check the pool's connection count, confirm `idle_in_transaction_session_timeout` is set, and note that a node that has recovered a panic reports `503 DOWN` and is expected to be restarted by its supervisor.
+`docs/analysis/failure-modes/…-playbook.md:59`. This is the actionable companion to the analysis document, so it must be correct even though its sibling is historical: replace the reaper instruction with the real recovery path — check the pool's connection count, confirm `idle_in_transaction_session_timeout` is set, and note that a node that has recovered a panic reports `503 DOWN` on `/health` and `503` on `/readyz`, so it is drained out of its Service endpoints — it is not restarted, because `/livez` stays unconditional.
 
 - [ ] **Step 5: Fix the parity comment**
 
@@ -4207,7 +4207,7 @@ Three env vars are removed and three ceilings that did not exist now apply by de
 
 - `STORAGE_UNAVAILABLE` (`503`, retryable), declared on the entity write operations. `cyoda help errors.STORAGE_UNAVAILABLE`.
 - `CYODA_POSTGRES_STATEMENT_TIMEOUT` (`5m`), `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (`5m`), `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (`10s`), `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` (`5m`), `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` (`30m`). `cyoda help config.database`.
-- Panic recovery on the gRPC server, on every HTTP route (previously only the catch-all), and on the async-search goroutine. A recovered panic marks the node unhealthy, which reports `503 DOWN` and is expected to be restarted by its supervisor.
+- Panic recovery on the gRPC server, on every HTTP route (previously only the catch-all), and on the async-search goroutine. A recovered panic permanently marks the node unhealthy: `GET /health` reports `503 DOWN` and the admin `/readyz` reports `503`, so Kubernetes removes the pod from its Service endpoints and it stops receiving traffic. Its state is unverified, so this is deliberate. `/livez` is unchanged and the node is not restarted — a deterministic panic would otherwise become a restart loop; replace the node once you have read the panic ticket from its log.
 
 ### Fixed
 

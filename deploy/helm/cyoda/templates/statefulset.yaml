@@ -104,6 +104,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "cyoda.fullname" . }}-env
+          # /livez is unconditional: a node that recovered a panic still
+          # passes it, so it is drained by readiness rather than restarted
+          # into a loop on a deterministic panic.
           livenessProbe:
             httpGet:
               path: /livez
@@ -112,6 +115,8 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+          # /readyz fails on an uninitialised store factory or a recovered
+          # panic; 3 × 5s takes the pod out of the Service within ~15s.
           readinessProbe:
             httpGet:
               path: /readyz
