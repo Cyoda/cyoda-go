@@ -24,6 +24,7 @@ type scopeTxMgr struct {
 	rolledBack []string
 	committed  []string
 	rbCtxErr   []error
+	rbDeadline []time.Time
 	commitErr  error
 	onRollback func()
 
@@ -54,6 +55,8 @@ func (m *scopeTxMgr) Rollback(ctx context.Context, txID string) error {
 	defer m.mu.Unlock()
 	m.rolledBack = append(m.rolledBack, txID)
 	m.rbCtxErr = append(m.rbCtxErr, ctx.Err())
+	dl, _ := ctx.Deadline()
+	m.rbDeadline = append(m.rbDeadline, dl)
 	m.events = append(m.events, "rollback-end")
 	return nil
 }
@@ -102,6 +105,113 @@ func TestTxScope_JoinedRelease_RollsBackEngineOpenedSegment(t *testing.T) {
 	s.Release()
 	if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-post" {
 		t.Fatalf("engine-opened segment leaked on a joined call: %v", m.rolledBack)
+	}
+}
+
+// scopeCtxKey tags the contexts the Advance tests hand around, so a scope that
+// moved onto the wrong one is identifiable rather than merely non-nil.
+type scopeCtxKey struct{}
+
+// TestTxScope_Advance_IgnoresIncompleteSegment pins Advance's guard. An engine
+// result that names no complete segment must leave the scope on the one it
+// already holds.
+//
+// The empty-txID row is the load-bearing one and its failure mode is silent:
+// without the guard, Advance would set s.txID = "", Release's own txID == ""
+// early return would then decline to roll anything back, and the segment would
+// leak with no error anywhere — the exact bug class this scope exists to close.
+func TestTxScope_Advance_IgnoresIncompleteSegment(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		txID string
+	}{
+		{"nil ctx", nil, "tx-post"},
+		{"empty txID", context.WithValue(context.Background(), scopeCtxKey{}, "segment"), ""},
+		{"neither", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &scopeTxMgr{}
+			entryCtx := context.WithValue(context.Background(), scopeCtxKey{}, "entry")
+			s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: entryCtx, txID: "tx-1", owned: true}
+
+			s.Advance(tc.ctx, tc.txID)
+
+			if s.TxID() != "tx-1" {
+				t.Fatalf("txID = %q, want the prior segment %q", s.TxID(), "tx-1")
+			}
+			if s.Ctx() != entryCtx {
+				t.Fatalf("ctx moved off the prior segment: %v", s.Ctx().Value(scopeCtxKey{}))
+			}
+
+			// The consequence: the prior segment must still be releasable.
+			s.Release()
+			if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-1" {
+				t.Fatalf("prior segment leaked after an incomplete advance: %v", m.rolledBack)
+			}
+		})
+	}
+}
+
+// TestTxScope_ReleaseWithoutSegment_IsNoOp pins Release's txID == "" guard. An
+// empty txID names no segment, and txgate hands out a no-op gate for it, so a
+// rollback here would be both meaningless and ungated.
+func TestTxScope_ReleaseWithoutSegment_IsNoOp(t *testing.T) {
+	m := &scopeTxMgr{}
+	s := &txScope{h: newScopeHandler(m), entryTxID: "", ctx: context.Background(), txID: "", owned: true}
+	s.Release()
+	if len(m.rolledBack) != 0 {
+		t.Fatalf("rolled back a scope that names no segment: %d rollback(s) %q", len(m.rolledBack), m.rolledBack)
+	}
+}
+
+// TestTxScope_Release_GateWaitDoesNotConsumeRollbackBudget pins the ordering
+// common.RollbackContext documents: the budget "bounds the Rollback call
+// itself. It does NOT bound the wait to reach it". Deriving the deadline before
+// acquiring the gate would charge the queue against the rollback, and a rollback
+// handed an already-expired context fails — on postgres destroying the pooled
+// connection instead of returning it.
+//
+// Deterministic by construction, not by timing: the test stamps gateFreedAt
+// before it frees the gate, so a deadline derived AFTER the acquire is
+// necessarily at least a full budget past that stamp, while one derived before
+// the acquire is necessarily short by however long the gate was held.
+func TestTxScope_Release_GateWaitDoesNotConsumeRollbackBudget(t *testing.T) {
+	m := &scopeTxMgr{}
+	h := newScopeHandler(m)
+
+	// Read the budget off RollbackContext itself rather than restating it.
+	// Measuring it after the fact under-reports slightly, which only widens the
+	// margin in the passing direction.
+	probeCtx, probeCancel := common.RollbackContext(context.Background())
+	probeDeadline, _ := probeCtx.Deadline()
+	probeCancel()
+	budget := time.Until(probeDeadline)
+
+	s := &txScope{h: h, entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+
+	release := h.gate.Acquire("tx-1")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Release()
+	}()
+
+	// Wait until Release is provably parked on the gate — observed, not slept.
+	waitForGateContention(t, done)
+	// Hold it a little longer so a deadline derived before the acquire is
+	// unambiguously short, rather than short by a clock tick.
+	time.Sleep(50 * time.Millisecond)
+
+	gateFreedAt := time.Now()
+	release()
+	<-done
+
+	if len(m.rbDeadline) != 1 {
+		t.Fatalf("expected exactly one rollback, got %d", len(m.rbDeadline))
+	}
+	if got := m.rbDeadline[0].Sub(gateFreedAt); got < budget {
+		t.Fatalf("rollback budget consumed by the gate wait: %v left after the gate freed, want the full %v", got, budget)
 	}
 }
 
@@ -241,6 +351,15 @@ func TestClassifyBeginErr_StorageUnavailable(t *testing.T) {
 	if !appErr.Retryable {
 		t.Fatal("pool exhaustion is transient contention; it must advertise as retryable")
 	}
+	// The cause stays reachable so the server-side log records WHY the pool
+	// failed; a 503 with no breadcrumb is undiagnosable.
+	if !errors.Is(appErr, stubUnavailable{}) {
+		t.Fatal("classifier dropped the cause; the 503 leaves no server-side breadcrumb")
+	}
+	// ...but it never reaches the client. A pool error can carry the DSN.
+	if strings.Contains(appErr.Message, stubUnavailableDSN) {
+		t.Fatalf("client-facing message leaked the cause: %q", appErr.Message)
+	}
 }
 
 // TestClassifyBeginErr_OtherFailureStaysInternal is coverage row 11's unit half.
@@ -251,7 +370,12 @@ func TestClassifyBeginErr_OtherFailureStaysInternal(t *testing.T) {
 	}
 }
 
+// stubUnavailableDSN stands in for the kind of connection detail a real pool
+// error carries. Synthetic — it exists only so the leak assertion has something
+// recognisable to look for.
+const stubUnavailableDSN = "postgres://u:p@db/cyoda"
+
 type stubUnavailable struct{}
 
-func (stubUnavailable) Error() string            { return "acquire timed out" }
+func (stubUnavailable) Error() string            { return "acquire timed out: " + stubUnavailableDSN }
 func (stubUnavailable) StorageUnavailable() bool { return true }

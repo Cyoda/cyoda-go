@@ -108,9 +108,6 @@ func (s *txScope) Release() {
 		return
 	}
 
-	rbCtx, cancel := common.RollbackContext(s.ctx)
-	defer cancel()
-
 	// Acquire the per-tx gate so the rollback is mutually exclusive with any
 	// joined callback's access to the same transaction handle. No self-deadlock:
 	// every `defer h.gate.Acquire(...)()` site in this package is inside an IIFE,
@@ -123,6 +120,14 @@ func (s *txScope) Release() {
 	// strictly better than the alternative it replaces — a leaked transaction —
 	// and the joined caller's write was doomed either way once the owner failed.
 	defer s.h.gate.Acquire(s.txID)()
+
+	// Derive the budget only once the gate is held. RollbackContext bounds the
+	// Rollback call, not the queue in front of it; charging the gate wait
+	// against it would hand txMgr.Rollback an already-expired context, which on
+	// postgres fails the rollback and destroys the pooled connection instead of
+	// returning it — the outcome this scope exists to prevent.
+	rbCtx, cancel := common.RollbackContext(s.ctx)
+	defer cancel()
 
 	if err := s.h.txMgr.Rollback(rbCtx, s.txID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
 		slog.Warn("failed to roll back transaction", "pkg", "entity", "txID", s.txID, "err", err)

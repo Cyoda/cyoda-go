@@ -164,6 +164,11 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 // marker is a plugin-side type this module must not import. A storage plugin
 // opts in by returning an error whose chain satisfies the interface — no SPI
 // change, so no coordinated cross-repo release.
+//
+// The cause rides along via WithCause so WriteError can log WHY the pool
+// failed. It stays out of the client-facing message deliberately: unlike a
+// domain 4xx, this detail is infrastructure and a pool error can carry the
+// connection string.
 func storageUnavailable(err error) *common.AppError {
 	var su interface{ StorageUnavailable() bool }
 	if errors.As(err, &su) && su.StorageUnavailable() {
@@ -171,7 +176,7 @@ func storageUnavailable(err error) *common.AppError {
 			http.StatusServiceUnavailable,
 			common.ErrCodeStorageUnavailable,
 			"storage is temporarily unavailable — retry",
-		).AsRetryable()
+		).AsRetryable().WithCause(err)
 	}
 	return nil
 }

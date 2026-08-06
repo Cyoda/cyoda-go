@@ -1,9 +1,11 @@
 package common_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -154,6 +156,61 @@ func TestWriteErrorOperationalNoTicket(t *testing.T) {
 	if detail != "BAD_REQUEST: invalid input" {
 		t.Errorf("expected message as detail, got %q", detail)
 	}
+}
+
+// TestWriteError_OperationalOmitsCauseWhenAbsent keeps the log line unchanged
+// for the overwhelming majority of operational errors, which carry no cause.
+func TestWriteError_OperationalOmitsCauseWhenAbsent(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	common.WriteError(w, r, common.Operational(http.StatusBadRequest, "BAD_REQUEST", "invalid input"))
+
+	if strings.Contains(buf.String(), `"cause"`) {
+		t.Errorf("causeless operational error logged an empty cause: %s", buf.String())
+	}
+}
+
+// TestWriteError_OperationalLogsCause pins the only server-side breadcrumb an
+// operational error has. Most 4xx codes put full domain detail in the message,
+// but a 503 STORAGE_UNAVAILABLE deliberately keeps its cause out of the
+// response — a pool error can carry the connection string — so if the log drops
+// it too, the failure is undiagnosable. WithCause is the opt-in; log-only,
+// never the body.
+func TestWriteError_OperationalLogsCause(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	cause := errors.New("acquire timed out: postgres://u:p@db/cyoda")
+	appErr := common.Operational(
+		http.StatusServiceUnavailable,
+		common.ErrCodeStorageUnavailable,
+		"storage is temporarily unavailable — retry",
+	).AsRetryable().WithCause(cause)
+
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), "acquire timed out") {
+		t.Errorf("operational log dropped the cause, leaving the 503 undiagnosable: %s", buf.String())
+	}
+	if body := w.Body.String(); strings.Contains(body, "postgres://") {
+		t.Errorf("response body leaked the cause to the client: %s", body)
+	}
+}
+
+// captureSlog redirects the default logger into a buffer for the duration of
+// the test.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
 func TestWriteErrorFatalProducesTicketAndSanitizedDetail(t *testing.T) {
