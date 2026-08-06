@@ -3657,7 +3657,7 @@ Expected: PASS — including the four guard tests from Step 4, which must not ha
 
 The known dirty-postgres-migration flake in `TestMultiNode` is the symptom this fixes. Run it several times:
 
-Run: `go test ./internal/e2e/... -run MultiNode -count=5 -v`
+Run: `go test ./e2e/parity/postgres/... -run TestMultiNode -count=5 -v`
 Expected: PASS, five for five.
 
 - [ ] **Step 9: Commit**
@@ -3930,7 +3930,7 @@ Expected: PASS. The compile is the strongest signal here — a missed reference 
 
 - [ ] **Step 6: Confirm cluster behaviour is unchanged**
 
-Run: `go test ./internal/cluster/... -v && go test ./internal/e2e/... -run MultiNode -v`
+Run: `go test ./internal/cluster/... -v && go test ./e2e/parity/postgres/... -run TestMultiNode -v`
 Expected: PASS. Nothing is lost: the one capability forgone is a test's ability to assert *which* node holds a transaction (`e2e/parity/multinode/cbd_tx_pinning.go:54`), and that test already asserts the observable signature through version history.
 
 - [ ] **Step 7: Commit**
