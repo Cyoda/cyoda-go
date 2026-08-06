@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -283,4 +284,99 @@ func TestCancelAsyncSearch_UnknownJob_Still404(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())
 	}
 	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeSearchJobNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// Result-page hydration — a page that is short because the store failed is a
+// substituted answer, not a result
+// ---------------------------------------------------------------------------
+
+// resultIDsStore serves a SUCCESSFUL job plus a fixed result-ID list, so the
+// hydration loop is reachable.
+type resultIDsStore struct {
+	spi.AsyncSearchStore
+	ids []string
+}
+
+func (s *resultIDsStore) GetJob(_ context.Context, jobID string) (*spi.SearchJob, error) {
+	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids)}, nil
+}
+
+func (s *resultIDsStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([]string, int, error) {
+	return s.ids, len(s.ids), nil
+}
+
+// hydrateEntityStore answers GetAsAt per id: an id in errs fails with the mapped
+// error, anything else resolves.
+type hydrateEntityStore struct {
+	spi.EntityStore
+	errs map[string]error
+}
+
+func (s *hydrateEntityStore) GetAsAt(_ context.Context, id string, _ time.Time) (*spi.Entity, error) {
+	if err, ok := s.errs[id]; ok {
+		return nil, err
+	}
+	return &spi.Entity{Meta: spi.EntityMeta{ID: id}}, nil
+}
+
+type hydrateFactory struct {
+	spi.StoreFactory
+	store spi.EntityStore
+}
+
+func (f *hydrateFactory) EntityStore(context.Context) (spi.EntityStore, error) {
+	return f.store, nil
+}
+
+func hydrateService(ids []string, errs map[string]error) *search.SearchService {
+	return search.NewSearchService(
+		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids})
+}
+
+// A storage outage during hydration used to be logged and skipped, so the caller
+// got 200 with a page that is silently short and a `total` that disagrees with
+// it — the same substituted answer as a 404 for an outage, one layer down. It
+// must fail the page instead, with the marker intact so the door answers a
+// retryable 503.
+func TestGetAsyncResults_HydrationOutage_FailsThePage(t *testing.T) {
+	ctx := tenantCtx("tenant-1")
+	jobID := uuid.New().String()
+	ids := []string{"id-1", "id-2"}
+	svc := hydrateService(ids, map[string]error{"id-2": storageOutage("GetAsAt")})
+
+	page, err := svc.GetAsyncResults(ctx, jobID, search.ResultOptions{})
+	if err == nil {
+		t.Fatalf("a page short by a failed read was returned as success: %d of %d results",
+			len(page.Results), page.Total)
+	}
+	if common.StorageUnavailable(err) == nil {
+		t.Errorf("storage-unavailability marker did not survive hydration: %v", err)
+	}
+	if errors.Is(err, search.ErrSearchJobNotFound) {
+		t.Errorf("storage outage reported as a missing job: %v", err)
+	}
+}
+
+// The other direction, and the reason the skip exists: an id recorded at scan
+// time whose entity has since been hard-deleted is a genuine miss, not a
+// failure. It is skipped and the rest of the page is served, exactly as before.
+func TestGetAsyncResults_HardDeletedEntity_IsSkipped(t *testing.T) {
+	ctx := tenantCtx("tenant-1")
+	jobID := uuid.New().String()
+	ids := []string{"id-1", "id-2"}
+	svc := hydrateService(ids, map[string]error{
+		"id-2": fmt.Errorf("entity id-2: %w", spi.ErrNotFound),
+	})
+
+	page, err := svc.GetAsyncResults(ctx, jobID, search.ResultOptions{})
+	if err != nil {
+		t.Fatalf("a hard-deleted result id failed the page: %v", err)
+	}
+	if len(page.Results) != 1 || page.Results[0].Meta.ID != "id-1" {
+		t.Fatalf("results = %+v, want just id-1", page.Results)
+	}
+	if page.Total != len(ids) {
+		t.Errorf("total = %d, want %d — total counts recorded ids, not hydrated ones", page.Total, len(ids))
+	}
 }

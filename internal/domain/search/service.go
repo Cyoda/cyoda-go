@@ -675,17 +675,26 @@ func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts 
 		return AsyncResultsPage{}, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// An entity that cannot be read is skipped, so a page can come back short —
-	// and short with a 200, indistinguishable from a job whose results really
-	// were fewer. `total` still counts the recorded ids, so the page and the
-	// count disagree. That is the shipped contract for this endpoint and is not
-	// changed here; a caller comparing len(content) against page.size is the only
-	// one who can currently notice.
+	// A result id whose entity is genuinely gone — hard-deleted since the scan
+	// recorded it — is skipped, and the page comes back short by it while `total`
+	// still counts the recorded ids. That is the documented shape of this
+	// endpoint and is unchanged.
+	//
+	// A read that merely FAILED is not that. Skipping it too would answer 200
+	// with a page silently short by however many entities the store could not
+	// serve, which is a wrong-but-available result
+	// (.claude/rules/correctness-over-availability.md) and the same substituted
+	// answer as reporting an outage as not-found. It fails the page instead,
+	// carrying the cause so a storage outage reaches the door as a retryable 503.
 	var results []*spi.Entity
 	for _, id := range ids {
 		e, err := entityStore.GetAsAt(ctx, id, job.PointInTime)
 		if err != nil {
-			slog.Warn("failed to fetch entity for async result", "pkg", "search", "entityId", id, "err", err)
+			if !errors.Is(err, spi.ErrNotFound) {
+				return AsyncResultsPage{}, fmt.Errorf("failed to fetch entity %s for async result: %w", id, err)
+			}
+			slog.Warn("async result id has no entity — hard-deleted since the scan recorded it",
+				"pkg", "search", "entityId", id, "err", err)
 			continue
 		}
 		results = append(results, e)
