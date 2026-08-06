@@ -383,9 +383,10 @@ Each is set on the server side, so PostgreSQL enforces it whether or not the app
 How an abort surfaces depends on whether retrying could plausibly work:
 
 - **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** A write that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT`, and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed.
-- **Ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`, and an async scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie. The server log names the setting that fired, which is what turns an otherwise unexplained failure into a diagnosable one.
+- **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie.
+- **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` with a fixed message, and `GetJob` serves that back verbatim. No ticket is minted, because there is no response to attach one to.
 
-See `cyoda help errors STORAGE_UNAVAILABLE` for the caller-facing statement of the split.
+In all three cases the server log names the setting that fired, which is what turns an otherwise unexplained failure into a diagnosable one. See `cyoda help errors STORAGE_UNAVAILABLE` for the caller-facing statement of the retryable/non-retryable split.
 
 **Processor timeouts must fit under the idle ceiling.** A `SYNC` or `ASYNC_SAME_TX` callout holds its transaction's connection idle for the whole dispatch, so a processor's `responseTimeoutMs` (default 30s) has to be shorter than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. It is not currently capped against it: a workflow may configure a callout longer than the ceiling, in which case PostgreSQL aborts the transaction mid-dispatch and the caller sees `503 STORAGE_UNAVAILABLE`. `COMMIT_BEFORE_DISPATCH` (§5.4) removes the constraint for a given processor by committing before the dispatch and holding no connection across it.
 
@@ -947,12 +948,12 @@ A `WorkflowDefinition` contains:
 
 ### 5.2 Execution Modes
 
-Entry points into the engine, each taking a `context.Context` first and returning an `*EngineResult`:
+Entry points into the engine, each taking a `context.Context` first. The first three return an `*EngineResult`:
 
 1. **`Execute(ctx, entity, transitionName)`** -- Entity creation. Selects matching workflow, sets initial state, optionally fires a named transition, cascades automated transitions.
 2. **`ManualTransition(ctx, entity, transitionName)`** -- Fires a named transition on an existing entity, then cascades. `ManualTransitionWithIfMatch` adds an optimistic-concurrency precondition.
 3. **`Loopback(ctx, entity)`** -- Re-evaluates automated transitions from the current state without firing a specific transition. Used when entity data is updated by a processor callback and the workflow should re-check conditions. `LoopbackWithIfMatch` is the precondition-carrying form.
-4. **`FireScheduledTransition(ctx, ...)`** -- Fires a scheduled transition when its timer comes due, driven by the scheduler.
+4. **`FireScheduledTransition(ctx, task)`** -- Fires a scheduled transition when its timer comes due, driven by the scheduler. Returns a `ScheduledOutcome` rather than an `*EngineResult`, since the caller is the scheduler and not a request handler.
 
 `GetAvailableTransitions` / `GetAvailableTransitionsForEntity` are read-only queries over the same model.
 
@@ -1142,7 +1143,7 @@ When `CYODA_IAM_MODE=jwt` is active, tenants can register external Identity Prov
 | `expectedAudiences` | Audience values the token must carry (`aud` claim) |
 | `rolesClaim` | JWT claim name to extract roles from (overrides `CYODA_OIDC_ROLES_CLAIM` per-provider) |
 
-**JWKS caching and cache eviction.** Each node caches the JWKS response for a provider. When a provider record is updated, deleted, or reloaded via the REST API, the owning node evicts its local cache entry and broadcasts an invalidation message on the `oidc.providers` topic via `spi.ClusterBroadcaster` so all peer nodes evict their copy in the same fire-and-forget manner as the model-cache decorator (§4.1). A provider whose JWKS URL is unreachable at validation time is treated as an auth failure, not a 5xx.
+**JWKS caching and cache eviction.** Each node caches the JWKS response for a provider. When a provider record is updated, deleted, or reloaded via the REST API, the owning node evicts its local cache entry and broadcasts on the `oidc.providers` topic via `spi.ClusterBroadcaster`; peers that receive it evict their copy. The broadcast is best-effort and fire-and-forget, and unlike the model cache (§4.1) there is no TTL lease behind it — a peer that misses the message keeps serving its cached keys until the next explicit reload. A provider whose JWKS URL is unreachable at validation time is treated as an auth failure, not a 5xx.
 
 **REST API.** Seven endpoints under `/oauth/oidc/providers` implement the full lifecycle: register, list, update, invalidate (suspend without delete), reactivate, delete, and reload-cache. These endpoints require `ROLE_ADMIN` and are documented in the OpenAPI spec.
 
@@ -1643,7 +1644,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 | Dimension | Scaling Behavior | Limit |
 |-----------|-----------------|-------|
-| **Node count** | Linear improvement in compute dispatch capacity (more nodes = more compute members). No improvement in write throughput — all writes go through PostgreSQL. | Gossip metadata is capped at memberlist's 512-byte `MetaMaxSize`, and per-tenant tag sets grow with node count; the probability of a proxy hop also rises with cluster size. |
+| **Node count** | Linear improvement in compute dispatch capacity (more nodes = more compute members). No improvement in write throughput — all writes go through PostgreSQL. | No hard limit is enforced. The upper end of DD-4's range is a judgement, not a derived bound; what does rise with cluster size is the probability that a request lands on a node other than the transaction owner and has to be proxied. |
 | **Write throughput** | Bounded by PostgreSQL `REPEATABLE READ` + application-layer SI+FCW validation (see §3.7). A transaction holds a `pgx.Tx` for its full duration, including external compute phases — except across a `COMMIT_BEFORE_DISPATCH` boundary, where the connection is released for the callout. | Single PG instance is the bottleneck. Connection pool default is 25 per node; with 10 nodes that's 250 concurrent PG connections. Long-held transactions reduce effective throughput. |
 | **Read throughput** | Scales with node count for non-transactional reads (entity queries, search). Each node can serve reads independently from PG. | Bounded by PG read capacity. Point-in-time queries require version table scans. |
 | **Compute throughput** | Scales with compute member count across the cluster. Each node can host multiple compute members. Cross-node dispatch adds one HTTP hop. | Bounded by compute member availability per tag. If only one node has a member for a given tag, that node is the bottleneck for that tag. |
@@ -1656,7 +1657,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 | Constraint | Value | Consequence |
 |------------|-------|-------------|
-| **PG statement timeout** | Default 5m (`CYODA_POSTGRES_STATEMENT_TIMEOUT`) | PostgreSQL aborts any single statement that exceeds it. The abort surfaces as `503 STORAGE_UNAVAILABLE`, retryable. |
+| **PG statement timeout** | Default 5m (`CYODA_POSTGRES_STATEMENT_TIMEOUT`) | PostgreSQL aborts any single statement that exceeds it. The abort is **not** retryable — re-running the statement would exceed the same ceiling — so it surfaces as a `500` with a ticket, not a `503` (§3.4). |
 | **PG idle-in-transaction timeout** | Default 5m (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | PostgreSQL aborts a transaction whose connection sits idle past it — which is what a transaction waiting on an external callout is doing. This is the authoritative bound on transaction lifetime; a processor's `responseTimeoutMs` must fit under it. |
 | **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | A write that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. |
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
