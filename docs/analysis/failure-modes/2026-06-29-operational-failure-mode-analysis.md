@@ -285,10 +285,12 @@ The findings cluster, so a small number of changes neutralise most of the risk. 
 
 ### 9.1 The premise is correct: the backstops exist, the dots aren’t connected
 
-The machinery for bounding transaction lifetime is **already in the codebase and is explicitly designed for this purpose** — it is simply not wired into the runtime:
+> **Superseded in part (tx‑lifecycle‑safety work) — read this first.** The premise below was right, but the remediation chosen was **not R1**: `lifecycle.Manager` and the three `CYODA_TX_*` variables were **deleted** rather than wired, since R2 and R3 together carry the whole bound and a TTL reaper adds a second, weaker one. So this section's inventory describes the tree **as it was**: those three variables no longer exist, and neither does `lifecycle.Manager`. R3 (a deferred release on every exit path, panics included) is now the application‑side guarantee and R2 the database‑side backstop; R4 shipped as `CYODA_POSTGRES_ACQUIRE_TIMEOUT` → `503 STORAGE_UNAVAILABLE`. Read R1 below as retired — §9's conclusions rest on R2+R3, which did ship. Rationale in `docs/superpowers/specs/2026-08-05-tx-lifecycle-safety-design.md` §4.
 
-* The config surface exists: `CYODA_TX_TTL` (default **60s**), `CYODA_TX_REAP_INTERVAL` (10s), `CYODA_TX_OUTCOME_TTL` (5m) are all defined (`app/config.go:243-246`).
-* `lifecycle.Manager` is constructed and bound to the TransactionManager **unconditionally**, with a comment stating the exact intent:
+The machinery for bounding transaction lifetime was **already in the codebase and explicitly designed for this purpose** — it was simply not wired into the runtime:
+
+* The config surface existed: `CYODA_TX_TTL` (default **60s**), `CYODA_TX_REAP_INTERVAL` (10s), `CYODA_TX_OUTCOME_TTL` (5m) were all defined (`app/config.go:243-246`). All three have since been deleted.
+* `lifecycle.Manager` was constructed and bound to the TransactionManager **unconditionally**, with a comment stating the exact intent:
   ```go
   // app/app.go:418-422
   a.txLifecycle = lifecycle.NewManager(cfg.Cluster.OutcomeTTL)
@@ -303,8 +305,6 @@ The machinery for bounding transaction lifetime is **already in the codebase and
 Only **three small dots** are unconnected (confirmed in §3): (a) nothing ever calls `Manager.Register`/`RecordOutcome`, so the reaper’s `active` map is always empty; (b) the reaper goroutine only starts `if cfg.Cluster.Enabled` (`app.go:423`), so single‑node — the default — has no reaper at all; (c) the reaper’s `tm.Rollback(context.Background(), …)` is rejected by the `#199` tenant gate (`transaction_manager.go:425`) because a background context carries no `UserContext`. The repo’s own comment concedes the subsystem “is not yet wired into the runtime” (`e2e/parity/multinode/cbd_tx_pinning.go:54`).
 
 **So the assertion stands:** the remediation is genuinely small — wire `Register`/`RecordOutcome` into `Begin`/close, start the reaper unconditionally, give it a privileged system‑tenant rollback path, set the DB‑side timeouts as connection params, and add a `defer`‑rollback guard. The analysis below assumes exactly that.
-
-> **Superseded in part (tx‑lifecycle‑safety work).** The premise was right, but the remediation chosen was **not R1**: `lifecycle.Manager` and the three `CYODA_TX_*` variables were **deleted** rather than wired, since R2 and R3 together carry the whole bound and a TTL reaper adds a second, weaker one. R3 (a deferred release on every exit path, panics included) is now the application‑side guarantee and R2 the database‑side backstop; R4 shipped as `CYODA_POSTGRES_ACQUIRE_TIMEOUT` → `503 STORAGE_UNAVAILABLE`. Read R1 below as retired — §9's conclusions rest on R2+R3, which did ship. Rationale in `docs/superpowers/specs/2026-08-05-tx-lifecycle-safety-design.md` §4.
 
 ### 9.2 The remediation assumed (made precise)
 

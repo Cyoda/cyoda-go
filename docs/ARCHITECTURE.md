@@ -380,7 +380,7 @@ What the flag actually stops, and what it does not:
 
 `/readyz` fails for two independent reasons — storage not initialised, or a recovered panic — and reports which in the server-side log while answering the probe generically.
 
-**Database-side ceilings** (postgres plugin, §9):
+**Storage ceilings** (postgres plugin, §9):
 
 | Ceiling | Default | Bounds |
 |---|---|---|
@@ -390,7 +390,7 @@ What the flag actually stops, and what it does not:
 | `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` | `30m` | Async search scans, which get their own higher ceiling |
 | `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` | `5m` | The lock wait during schema migration |
 
-Each is set on the server side, so PostgreSQL enforces it whether or not the application is still watching.
+Four of the five are set on the server side, so PostgreSQL enforces them whether or not the application is still watching. `CYODA_POSTGRES_ACQUIRE_TIMEOUT` is the exception: `pgxpool.Config` has no acquire-timeout field, so that deadline is applied Go-side by the pool.
 
 How an abort surfaces depends on whether retrying could plausibly work:
 
@@ -1109,12 +1109,14 @@ Full RS256 JWT authentication with JWKS discovery and M2M client support.
 |-----------|---------|
 | `AuthService` | Wires all auth components, exposes HTTP handlers |
 | `InMemoryKeyStore` | Manages RSA key pairs (active signing key + rotated keys) |
-| `TrustedKeyStore` | Interface for trusted external public keys (in-memory or KV-backed) |
+| `TrustedKeyStore` | Interface for trusted external public keys (in-memory, or KV-backed over a per-node cache) |
 | `InMemoryM2MClientStore` | Machine-to-machine client credentials |
 | `JWKSHandler` | `GET /.well-known/jwks.json` -- standard JWKS endpoint |
 | `NewTokenHandler` | `POST /oauth/token` -- issues JWTs (client_credentials, OBO exchange) |
 | `JWKSValidator` | Validates JWTs against a `KeySource`: `NewLocalKeySource` in-process by default (no HTTP fetch), or `NewHTTPJWKSSource` (TLS 1.3 pinned, JSON content-type validated) for external-IdP wiring |
 | `DelegatingAuthenticator` | Implements `contract.AuthenticationService`, delegates to validator |
+
+`KVTrustedKeyStore`'s cache is populated once, at construction, and is not propagated between nodes: a key registered on node A stays invisible to node B until B restarts, so in a cluster the same token can verify on one node and be rejected on another.
 
 **Deterministic KID derivation:**
 
@@ -1398,7 +1400,7 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_OIDC_REQUIRE_HTTPS` | `true` | Reject OIDC provider URLs that do not use `https://`. Disable only in isolated test environments. |
 | `CYODA_OIDC_CONNECT_TIMEOUT_MS` | `5000` | TCP connection timeout (ms) for JWKS discovery and fetch requests. |
 | `CYODA_OIDC_SOCKET_TIMEOUT_MS` | `5000` | Socket read timeout (ms) for JWKS responses. |
-| `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` | `3000` | Timeout (ms) to acquire a connection from the HTTP client pool for OIDC requests. |
+| `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` | `5000` | Timeout (ms) to acquire a connection from the HTTP client pool for OIDC requests. |
 | `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` | `false` | Allow OIDC provider URLs that resolve to private/loopback/link-local addresses. When `false`, registering such a URL returns `400 OIDC_SSRF_BLOCKED`. |
 | `CYODA_OIDC_ROLES_CLAIM` | `roles` | Default JWT claim name to extract roles from for externally-issued tokens. Overridable per-provider at registration time. |
 

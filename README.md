@@ -157,7 +157,7 @@ curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
   }'
 ```
 
-**Configuration:** see `cyoda help config.auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
+**Configuration:** see `cyoda help config auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
 
 ## Composite unique keys
 
@@ -210,7 +210,7 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 ## Scheduled transitions
 
-A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config.scheduler` for the full topic.
+A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config scheduler` for the full topic.
 
 | Env var | Default | Effect |
 |---------|---------|--------|

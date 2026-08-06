@@ -1899,8 +1899,12 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     ErrConflict while abandoning the transaction. The engine's
 			//     wrapping preserves errors.Is(err, spi.ErrConflict), so the
 			//     conflict alone cannot tell the two apart — and this one is
-			//     the operator's problem, not a precondition the caller can
-			//     fix, so it belongs on the sanitized 5xx path.
+			//     not a per-item precondition the caller can fix, so it fails
+			//     the whole request instead of being isolated. It leaves here
+			//     via classifyWorkflowError → common.Internal, whose
+			//     spi.ErrConflict branch answers a retryable 409 (asserted by
+			//     service_classify_test.go): the segment boundary aborted, so
+			//     a fresh attempt is the right advice.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.

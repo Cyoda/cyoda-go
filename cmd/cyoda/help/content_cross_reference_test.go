@@ -2,6 +2,8 @@ package help
 
 import (
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,16 +12,37 @@ import (
 
 // dottedInvocationPattern matches a cross-reference written as
 // `cyoda help <a>.<b>`. The topic tree is addressed by path segments, so the
-// dotted form is not a shorter spelling of anything — it exits 2 with "no such
-// topic". A topic ID may legitimately contain a dot (topic: cli.migrate); it is
-// only the invocation that must be spelled with a space.
+// dotted form is not a shorter spelling of anything — it exits non-zero with
+// "no such topic". A topic ID may legitimately contain a dot (topic: cli.migrate);
+// it is only the invocation that must be spelled with a space.
 var dottedInvocationPattern = regexp.MustCompile(`cyoda help [0-9A-Za-z_-]+\.[0-9A-Za-z_.-]+`)
 
-// TestHelpContent_CrossReferencesUseAWorkingInvocation — a cross-reference in
-// shipped help is a command an operator will type. If it exits 2, the topic has
-// sent them nowhere, which is worse than not having offered a pointer at all.
+// crossReferencedArtefacts are the shipped files outside the help tree that also
+// tell a reader to run `cyoda help ...`. api/openapi.yaml is served to every API
+// client and rendered in generated docs; README.md is the project's front door.
+// A dead invocation in either costs more than one in a help topic, not less, so
+// the guard covers them under the same rule.
+//
+// docs/superpowers/** is deliberately out of scope: plans and specs are
+// historical records of what was proposed at the time, not living documents.
+var crossReferencedArtefacts = []string{
+	"api/openapi.yaml",
+	"README.md",
+}
+
+// TestHelpContent_CrossReferencesUseAWorkingInvocation — a cross-reference in a
+// shipped artefact is a command an operator will type. If it exits non-zero, the
+// pointer has sent them nowhere, which is worse than not having offered one.
 func TestHelpContent_CrossReferencesUseAWorkingInvocation(t *testing.T) {
 	var offenders []string
+
+	scan := func(name string, body []byte) {
+		for i, line := range strings.Split(string(body), "\n") {
+			if m := dottedInvocationPattern.FindString(line); m != "" {
+				offenders = append(offenders, name+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(m))
+			}
+		}
+	}
 
 	err := fs.WalkDir(embeddedContent, "content", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -32,20 +55,25 @@ func TestHelpContent_CrossReferencesUseAWorkingInvocation(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for i, line := range strings.Split(string(data), "\n") {
-			if m := dottedInvocationPattern.FindString(line); m != "" {
-				offenders = append(offenders, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(m))
-			}
-		}
+		scan(path, data)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walking embedded help content: %v", err)
 	}
 
+	root := repoRoot(t)
+	for _, rel := range crossReferencedArtefacts {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v", rel, err)
+		}
+		scan(rel, data)
+	}
+
 	if len(offenders) > 0 {
 		t.Fatalf("help topics are addressed by path segments — `cyoda help a b`, not `cyoda help a.b`, "+
-			"which exits 2 with \"no such topic\":\n%s", strings.Join(offenders, "\n"))
+			"which exits non-zero with \"no such topic\":\n%s", strings.Join(offenders, "\n"))
 	}
 }
 

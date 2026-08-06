@@ -15,7 +15,9 @@
 //	CYODA_POSTGRES_MAX_CONN_IDLE_TIME default 5m
 //	CYODA_POSTGRES_AUTO_MIGRATE       default true  (runs embedded SQL migrations at startup)
 //
-// Ceilings, each applied server-side and each accepting 0 to disable:
+// Ceilings, each accepting 0 to disable. All but the acquire timeout are
+// applied server-side; pgxpool.Config has no acquire-timeout field, so that
+// one is a Go-side pool deadline:
 //
 //	CYODA_POSTGRES_STATEMENT_TIMEOUT        default 5m   max run time for one statement
 //	CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT       default 5m   max idle time inside an open transaction

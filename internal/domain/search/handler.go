@@ -298,9 +298,12 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 		// acquiring the entity store — is a server-side failure: jobLookupError
 		// keeps a genuine miss at 404 and routes the rest through common.Internal,
 		// which answers a storage outage with a retryable 503 and keeps the
-		// driver's text out of the body. A failure reading an individual entity
-		// does NOT reach here: the service logs and skips it, so the page can come
-		// back short with a 200 — see GetAsyncResults.
+		// driver's text out of the body. A failed read of an individual result
+		// entity reaches here too: only a genuine ErrNotFound is skipped (the
+		// entity was hard-deleted since the scan recorded it), and any other read
+		// failure fails the whole page rather than answering 200 with a page
+		// silently short by however many entities the store could not serve — see
+		// GetAsyncResults.
 		if errors.Is(err, ErrSearchJobNotComplete) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
 			return

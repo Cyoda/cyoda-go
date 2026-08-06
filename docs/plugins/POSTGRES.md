@@ -165,13 +165,17 @@ Workflows live in `kv_store` under a dedicated namespace.
 **Migrations:** SQL migrations ship embedded in the binary via
 `//go:embed migrations/*.sql` and are applied on startup by
 `golang-migrate` when `CYODA_POSTGRES_AUTO_MIGRATE=true` (the
-default). Schema compatibility is verified at startup before any
-migration runs: if the database schema is newer than the binary's
-embedded migrations, the binary refuses to start rather than risk
-running against an incompatible schema. Dirty migration state is
-surfaced as a fatal error requiring manual intervention. A dedicated
-`cyoda migrate` subcommand (`RunMigrateWithDSN`) is available for
-operators who prefer to apply migrations out-of-band.
+default). Migrations run **first**; the schema-compatibility check then
+runs against a settled schema (`ensureSchemaWith`). A node booting
+alongside a peer's in-flight migration therefore waits for it rather
+than reading the dirty flag outside any lock and exiting. A database
+newer than the binary's embedded migrations is still refused — that
+check reads the version under golang-migrate's own advisory lock — and
+a schema left genuinely dirty by a failed migration is still a fatal
+error requiring manual intervention. With
+`CYODA_POSTGRES_AUTO_MIGRATE=false` the compatibility check is the only
+phase. A dedicated `cyoda migrate` subcommand (`RunMigrateWithDSN`) is
+available for operators who prefer to apply migrations out-of-band.
 
 ## Configuration (env vars)
 
@@ -186,6 +190,21 @@ are rendered in the binary's `--help`.
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | `pgxpool.Pool` minimum (warm) connections. |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Idle connection reap threshold (Go duration syntax). |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup. When `false`, the binary refuses to start if the database schema is older than the code. |
+| `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement. Server-side, carried in the connection startup packet. |
+| `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | Maximum time a connection may sit idle inside an open transaction. Server-side, carried in the connection startup packet. Must clear the longest legitimate idle gap — a compute-node callout bounded by `responseTimeoutMs` (default `30s`). |
+| `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | Deadline on the wait for a free pooled connection, after which the request fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server — `pgxpool.Config` has no acquire-timeout field. |
+| `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` | `30m` | Statement ceiling for async search scans, which legitimately run far longer than an interactive statement. Applied server-side as `SET LOCAL` in the scan's own transaction. |
+| `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` | `5m` | Maximum lock wait on the migration connection. That connection disables the two statement ceilings above, so a long index build is not cancelled mid-flight; what stays bounded is waiting. |
+
+The five ceilings each take a Go duration (`30s`, `5m`, `1h`); `0`
+disables that limit. They are the only vars here that reject a
+malformed value instead of falling back to the default — a
+silently-defaulted ceiling is a silently removed safety limit.
+`CYODA_POSTGRES_STATEMENT_TIMEOUT` and `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`
+may also be set in `CYODA_POSTGRES_URL`; a value there is left alone
+unless the environment variable is also set, in which case the
+environment variable wins and the override is logged at WARN. See
+`cyoda help config database` and `cyoda help errors STORAGE_UNAVAILABLE`.
 
 ### Managed-platform notes
 

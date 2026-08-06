@@ -8,6 +8,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // ScheduledOutcome reports how FireScheduledTransition resolved a single
@@ -132,7 +133,19 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			// down (e.g. this fires before a later CBD-segment commit is
 			// reflected here), Rollback is a safe, ignored no-op (same
 			// pattern as rollbackSegment elsewhere in this package).
-			_ = e.txMgr.Rollback(curCtx, curTxID)
+			//
+			// common.RollbackContext for the same reason every other rollback
+			// site uses it: the caller's values without the caller's
+			// cancellation, under the shared 5s budget. Both callers of this
+			// path derive from scheduler.SystemUserContext on
+			// context.Background(), so the cancelled-context hazard is not
+			// reachable here — but a rollback that runs on an unbounded context
+			// is one dependency change away from hanging the scan loop, and one
+			// spelling for "how a rollback is issued" is worth more than the
+			// argument for an exception.
+			rbCtx, cancel := common.RollbackContext(curCtx)
+			defer cancel()
+			_ = e.txMgr.Rollback(rbCtx, curTxID)
 		}
 	}()
 
