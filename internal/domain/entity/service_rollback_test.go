@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -301,11 +303,83 @@ func TestUpdateCollection_PostSegmentConflict_AbortsBatch(t *testing.T) {
 	if n := dispatched.Load(); n != 1 {
 		t.Fatalf("callout fired %d time(s), want 1; the cascade never reached the apply-result CAS", n)
 	}
-	if err == nil {
-		t.Fatalf("batch reported success (%+v) after a conflict on the far side of a committed segment", res)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("batch returned %v (res %+v), want an AppError; a conflict on the far side of a committed segment aborts the call", err, res)
+	}
+	// Pinned, because the pre-fix symptom was ALSO an error — a sanitized 500
+	// SERVER_ERROR raised when the terminal commit re-committed an already-
+	// committed txID, arriving only after item 1 had been executed and silently
+	// discarded. 400 WORKFLOW_FAILED reports the item that actually failed.
+	//
+	// Not 412: that asserts nothing happened, but TX_pre committed and the
+	// callout fired. Not 409-retryable: a retry re-fires a non-idempotent
+	// external callout.
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeWorkflowFailed {
+		t.Fatalf("batch returned %d %s, want 400 %s", appErr.Status, appErr.Code, common.ErrCodeWorkflowFailed)
+	}
+	// A 4xx carries its domain detail as one `CODE: message` line. This is the
+	// only error in the package whose text reaches a response body verbatim
+	// rather than through a sanitized 5xx, so the sentinel must be chained onto
+	// the conflict, not joined beside it.
+	if strings.Contains(appErr.Message, "\n") {
+		t.Fatalf("4xx detail must be a single line, got %q", appErr.Message)
 	}
 	if n := touched.Load(); n != 0 {
 		t.Fatalf("item 1 ran %d time(s) after the segment committed; its write could only be lost", n)
+	}
+	if got := hn.committedName(t, plainID); got != "before" {
+		t.Fatalf("item 1 committed as %q; an aborted batch must leave it untouched", got)
+	}
+}
+
+// TestUpdateCollection_SegmentCommitConflict_AbortsBatch covers the third way a
+// segmenting item can surface spi.ErrConflict: TX_pre's own commit failing a
+// read-set/serialization check because somebody else committed first. Both stock
+// backends report that as ErrConflict (memory bare, postgres wrapped) and abandon
+// the transaction, and the engine wraps it with ErrCommitBeforeDispatchInfra —
+// which PRESERVES errors.Is(err, spi.ErrConflict). An isolation branch keyed on
+// the conflict alone therefore reads a dead transaction as a client precondition
+// failure and keeps writing later items into it.
+func TestUpdateCollection_SegmentCommitConflict_AbortsBatch(t *testing.T) {
+	hn := newTrackingHandler(t)
+	dispatched := hn.registerManualSegmentingWorkflow(t, rollbackSegmentModel)
+	touched := hn.registerCountedTouchWorkflow(t, rollbackModel)
+
+	segID := hn.createEntityIn(t, rollbackSegmentModel, `{"name":"seg"}`)
+	plainID := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
+
+	// Current, so the flush's own CompareAndSave accepts it and the failure
+	// under test is the commit that follows — not the precondition.
+	current := hn.committedEntity(t, segID).Meta.TransactionID
+	hn.failSegmentCommit(fmt.Errorf("%w: Commit: read set validation failed", spi.ErrConflict))
+
+	res, err := hn.h.UpdateEntityCollection(hn.ctx, []UpdateCollectionItem{
+		{EntityID: segID, Transition: "segment", IfMatch: current, Payload: json.RawMessage(`{"name":"seg-updated"}`)},
+		{EntityID: plainID, Transition: "touch", Payload: json.RawMessage(`{"name":"after"}`)},
+	})
+
+	if n := dispatched.Load(); n != 0 {
+		t.Fatalf("callout fired %d time(s); the segment commit was supposed to fail before it", n)
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("batch returned %v (res %+v), want an AppError; a failed segment commit leaves no transaction to continue in", err, res)
+	}
+	// 409 retryable, not 412 and not the item-level 400: the segment boundary
+	// commits BEFORE it dispatches, so a commit that fails leaves nothing durable
+	// and fires no callout — the assertion above pins that. Retrying the whole
+	// batch is therefore safe, which is exactly what common.Internal concludes
+	// from an ErrConflict-bearing cause. The post-segment case must NOT reach this
+	// classification: there the callout already fired and a retry would re-fire it.
+	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeConflict {
+		t.Fatalf("batch returned %d %s, want %d %s", appErr.Status, appErr.Code, http.StatusConflict, common.ErrCodeConflict)
+	}
+	if !appErr.Retryable {
+		t.Fatal("a batch whose segment commit failed before dispatching is a no-op; it must be retryable")
+	}
+	if n := touched.Load(); n != 0 {
+		t.Fatalf("item 1 ran %d time(s) after TX_pre's commit failed; its write could only be lost", n)
 	}
 	if got := hn.committedName(t, plainID); got != "before" {
 		t.Fatalf("item 1 committed as %q; an aborted batch must leave it untouched", got)
@@ -412,8 +486,50 @@ type trackingTxMgr struct {
 	rolledBack []string
 	events     []string
 
+	// Commit-failure injection — see failCommitOf.
+	commitErr      error
+	failCommitTxID string
+
 	onBegin    func(txID string)
 	onRollback func(txID string)
+}
+
+// failCommitOf makes the commit of one named transaction fail with err.
+//
+// Targeted by txID rather than by position ("the next Begin", "the next Commit")
+// because the handler wires an async search service that begins and commits
+// transactions on its own schedule: a positional injection is consumed by
+// whichever committer happens to run first, and the test then silently measures
+// something else. Callers arm it from inside the flow, where the txID is known.
+//
+// The transaction is rolled back before the error surfaces, because that is what
+// both stock backends leave behind when their own commit conflicts (memory evicts
+// it from m.active, postgres rolls the pgx tx back). Without it a later item
+// writing into the "committed" transaction would quietly succeed, and the test
+// would prove the opposite of its point.
+func (m *trackingTxMgr) failCommitOf(txID string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.commitErr = err
+	m.failCommitTxID = txID
+}
+
+func (m *trackingTxMgr) Commit(ctx context.Context, txID string) error {
+	m.mu.Lock()
+	failure := m.commitErr
+	armed := m.failCommitTxID != "" && m.failCommitTxID == txID
+	if armed {
+		m.failCommitTxID = ""
+		m.commitErr = nil
+	}
+	m.mu.Unlock()
+	if !armed {
+		return m.TransactionManager.Commit(ctx, txID)
+	}
+	// Through the wrapped manager so the cleanup never pollutes the rolledBack
+	// ledger the assertions read.
+	_ = m.TransactionManager.Rollback(ctx, txID)
+	return failure
 }
 
 func (m *trackingTxMgr) Begin(ctx context.Context) (string, context.Context, error) {
@@ -514,6 +630,12 @@ func (f *armedFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 type casHookFactory struct {
 	spi.StoreFactory
 	armed atomic.Bool
+
+	// onCompareAndSave, when set, is called with the transaction each CAS runs
+	// in. The first CAS a segmenting cascade makes is the first-segment flush,
+	// immediately before that transaction is committed — which is the only place
+	// a test can name TX_pre before it goes.
+	onCompareAndSave func(txID string)
 }
 
 func (f *casHookFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -530,6 +652,11 @@ type casHookEntityStore struct {
 }
 
 func (s *casHookEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	if s.f.onCompareAndSave != nil {
+		if tx := spi.GetTransaction(ctx); tx != nil {
+			s.f.onCompareAndSave(tx.ID)
+		}
+	}
 	if s.f.armed.Load() {
 		return 0, spi.ErrConflict
 	}
@@ -754,6 +881,16 @@ func (hn *rollbackHarness) failApplyResultCAS() {
 			return prev(ctx, e, proc, workflow, transition, txID)
 		}
 		return nil, nil
+	}
+}
+
+// failSegmentCommit makes TX_pre's own commit fail with err — the segment
+// boundary's Commit, not its CAS. Armed from inside the first-segment flush's
+// CompareAndSave, the call immediately before that commit, so it names exactly
+// the transaction the engine is about to close.
+func (hn *rollbackHarness) failSegmentCommit(err error) {
+	hn.engineCAS.onCompareAndSave = func(txID string) {
+		hn.tracker.failCommitOf(txID, err)
 	}
 }
 

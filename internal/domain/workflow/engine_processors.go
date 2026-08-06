@@ -29,8 +29,9 @@ var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastruc
 // happens before any commit and before any dispatch, so it is cleanly isolable —
 // which is the whole distinction this sentinel exists to draw.
 //
-// Joined, not wrapped, so errors.Is(err, spi.ErrConflict) stays true and the
-// single-entity 412 mapping is unaffected.
+// Chained alongside the conflict, never in place of it, so
+// errors.Is(err, spi.ErrConflict) stays true and the single-entity 412 mapping is
+// unaffected.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 
 // executeProcessors runs each processor in the transition's processor pipeline
@@ -366,10 +367,13 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
-		// Marked, not wrapped: ErrConflict still bubbles through for the 412
-		// mapping, and the marker tells a batching caller this conflict landed
-		// on the far side of TX_pre's commit — see ErrPostSegmentConflict.
-		return nil, "", errors.Join(ErrPostSegmentConflict, saveErr)
+		// Both sentinels stay matchable — ErrConflict for the 412 mapping,
+		// ErrPostSegmentConflict to tell a batching caller this landed on the far
+		// side of TX_pre's commit. Chained rather than errors.Join'd because this
+		// text reaches a 4xx response body verbatim, and a 4xx detail is one
+		// `CODE: message` line (see .claude/rules/error-handling.md); Join would
+		// put a newline through the middle of it.
+		return nil, "", fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
 	}
 
 	segHandedOff = true

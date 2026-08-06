@@ -1657,6 +1657,13 @@ func (h *Handler) PatchEntity(ctx context.Context, input PatchEntityInput) (*Ent
 //     to a per-chunk Failed slice; the chunk still commits its remaining
 //     successful items. Other per-item failures still roll the chunk back.
 //     Issue #228.
+//   - Isolation covers only a conflict raised while the chunk's transaction is
+//     still usable: a handler-side CompareAndSave, or a COMMIT_BEFORE_DISPATCH
+//     first-segment flush, which runs before TX_pre commits and before any
+//     external dispatch. A conflict raised once that transaction is gone —
+//     the post-dispatch apply-result CAS, or TX_pre's own commit failing —
+//     aborts the chunk instead. Both reach here as spi.ErrConflict, so the
+//     conflict alone cannot separate them; the engine's sentinels do.
 //
 // Returning from this function:
 //
@@ -1831,13 +1838,27 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// audit trail for this item is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
 			//
-			// A conflict marked ErrPostSegmentConflict is the other shape:
-			// it arrived after TX_pre committed and the dispatch fired.
-			// There is no segment to continue into, and the loop's cursor
-			// was never advanced — isolating it would let every later item
-			// save into a committed transaction and be lost.
+			// Two other shapes reach here as spi.ErrConflict and must NOT be
+			// isolated, because in both the transaction this loop would carry
+			// on in is already gone:
+			//
+			//   - ErrPostSegmentConflict: the apply-result CAS, raised after
+			//     TX_pre committed and the dispatch fired. No segment is left
+			//     to continue into and the cursor was never advanced.
+			//   - ErrCommitBeforeDispatchInfra: a segment-boundary
+			//     infrastructure failure. TX_pre's own commit can fail a
+			//     read-set check and both stock backends report that as
+			//     ErrConflict while abandoning the transaction. The engine's
+			//     wrapping preserves errors.Is(err, spi.ErrConflict), so the
+			//     conflict alone cannot tell the two apart — and this one is
+			//     the operator's problem, not a precondition the caller can
+			//     fix, so it belongs on the sanitized 5xx path.
+			//
+			// Either way, isolating would let every later item write into a
+			// dead transaction and be lost.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
-				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) {
+				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
+				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
