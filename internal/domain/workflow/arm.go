@@ -205,17 +205,19 @@ type expiredSchedule struct {
 // does any further tx-buffer work — because the callout can re-enter with a
 // descendant callback joined on the same txID (same H3 rationale as
 // evaluateCriterion's FUNCTION-criterion dispatch and
-// executeSyncProcessor). Unlike evaluateCriterion, resume is NOT deferred:
-// reconcileScheduledTasks writes the tx buffer (ReconcileForEntity) after
-// every transition in the loop has been resolved, so the gate must already
-// be held again by the time this call returns, not merely by the time the
-// whole loop unwinds.
+// executeSyncProcessor). resume is both deferred AND called explicitly, as at
+// every other Suspend site: the explicit call re-acquires before returning, so
+// reconcileScheduledTasks's later buffer write (ReconcileForEntity) is gated;
+// the deferred call covers the path where the dispatch panics, so the caller's
+// own deferred gate release never unlocks an unheld mutex — a runtime fatal no
+// recover() can catch. resume is sync.Once-guarded, so having both is free.
 func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
 	if e.extProc == nil {
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
 	}
 
 	resume := txgate.Suspend(ctx)
+	defer resume()
 	res, derr := e.extProc.DispatchFunction(ctx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
 	resume() // BEFORE any tx-buffer write — see doc comment above.
 	if derr != nil {
