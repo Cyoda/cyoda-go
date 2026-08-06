@@ -1,23 +1,36 @@
 package postgres
 
-// migrate_concurrency_test.go — the migration connection's own settings.
+// migrate_concurrency_test.go — the migration connection's own settings, and
+// the startup schema sequence two nodes booting at once share.
 //
 // A migration is the inverse workload to a request: its DDL may legitimately run
 // for a long time, so the ceilings that bound a request would kill it. What a
 // migration must still not do is WAIT without bound, which is what lock_timeout
 // covers — both for its own DDL locks and for golang-migrate's advisory lock.
+//
+// The ensureSchema tests below cover the other half: what a node sees when it
+// boots alongside a peer that is mid-migration.
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/google/uuid"
 	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+
+	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 )
 
 // newPoolWithCeilings opens a pool carrying the given app-pool ceilings — the
@@ -308,4 +321,333 @@ func TestLockTimeout_AbortsAnAdvisoryLockWait(t *testing.T) {
 		t.Fatalf("waited %v; the timeout did not apply", elapsed)
 	}
 	t.Logf("advisory lock wait aborted after %v with SQLSTATE %s (%s)", elapsed, pgErr.Code, pgErr.Message)
+}
+
+// --- the startup schema sequence --------------------------------------------
+//
+// These exercise ensureSchema, which both the plugin factory and the
+// `cyoda migrate` subcommand run. Each takes a database of its own rather than
+// the shared test schema: they stamp schema_migrations into states — dirty,
+// ahead of this binary — that any other test running against the same database
+// would trip over.
+
+// freshDatabase creates an empty database on the test server and returns its
+// DSN. A database rather than a schema because golang-migrate derives its
+// advisory lock id from the database name, so two of these are genuinely
+// independent migration domains.
+func freshDatabase(t *testing.T) string {
+	t.Helper()
+	base := skipIfNoLiveDB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, base)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(admin.Close)
+
+	name := "cyoda_boot_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer dropCancel()
+		if _, err := admin.Exec(dropCtx, "DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
+			t.Errorf("drop %s: %v", name, err)
+		}
+	})
+
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+	}
+	u.Path = "/" + name
+	return u.String()
+}
+
+// openPool opens a pool on dsn sized for a boot sequence — ensureSchema opens
+// two independent *sql.DB handles off it — with the background health check
+// disabled so Close cannot race it.
+func openPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.MaxConns, cfg.MinConns = 6, 0
+	cfg.HealthCheckPeriod = 24 * time.Hour
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("open pool on %s: %v", dsn, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// openStdlibDB opens a database/sql handle on dsn — what golang-migrate's
+// WithInstance takes. Opening is lazy, so this connects nothing yet and is safe
+// to call before handing the handle to another goroutine.
+func openStdlibDB(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	return stdlib.OpenDB(*cfg.ConnConfig)
+}
+
+// headVersion is the highest migration this binary embeds.
+func headVersion(t *testing.T) int {
+	t.Helper()
+	src, err := iofs.New(migrationFS, "migrations")
+	if err != nil {
+		t.Fatalf("open embedded migrations: %v", err)
+	}
+	v, err := maxMigrationVersion(src)
+	if err != nil {
+		t.Fatalf("scan embedded migrations: %v", err)
+	}
+	return int(v)
+}
+
+// migrateToHead brings dsn's database up to date, so a test starts from the
+// state a running cluster is normally in.
+func migrateToHead(t *testing.T, dsn string) {
+	t.Helper()
+	if err := runMigrations(context.Background(), openPool(t, dsn), defaultMigrateLockTimeout); err != nil {
+		t.Fatalf("migrate %s to head: %v", dsn, err)
+	}
+}
+
+// stampVersion overwrites schema_migrations, which is how a test reaches a
+// state — dirty, or ahead of this binary — without a migration that produces it.
+func stampVersion(t *testing.T, dsn string, version int, dirty bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openPool(t, dsn)
+	if _, err := pool.Exec(ctx,
+		`CREATE TABLE IF NOT EXISTS schema_migrations (version bigint NOT NULL PRIMARY KEY, dirty boolean NOT NULL)`); err != nil {
+		t.Fatalf("ensure schema_migrations: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations`); err != nil {
+		t.Fatalf("clear schema_migrations: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO schema_migrations (version, dirty) VALUES ($1, $2)`, version, dirty); err != nil {
+		t.Fatalf("stamp version %d dirty=%v: %v", version, dirty, err)
+	}
+}
+
+// stampDirty leaves the schema looking like a migration died part-way.
+func stampDirty(t *testing.T, dsn string, version int) {
+	t.Helper()
+	stampVersion(t, dsn, version, true)
+}
+
+// schemaState reads back what schema_migrations records.
+func schemaState(t *testing.T, dsn string) (int, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var version int
+	var dirty bool
+	if err := openPool(t, dsn).QueryRow(ctx,
+		`SELECT version, dirty FROM schema_migrations`).Scan(&version, &dirty); err != nil {
+		t.Fatalf("read schema_migrations: %v", err)
+	}
+	return version, dirty
+}
+
+// transientMigratingPeer models the peer whose in-flight migration the booting
+// node used to false-alarm on: it takes golang-migrate's advisory lock and
+// stamps dirty exactly as golang-migrate does before a step, holds both for
+// `hold`, then clears and releases.
+//
+// It uses the driver's own Lock/SetVersion rather than recomputing the lock id,
+// which would couple the test to a 32-bit CRC over an internally-derived name.
+func transientMigratingPeer(t *testing.T, dsn string, version int, hold time.Duration) (started <-chan struct{}, done <-chan struct{}) {
+	t.Helper()
+	db := openStdlibDB(t, dsn)
+	ready, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		defer func() { _ = db.Close() }()
+		drv, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
+		if err != nil {
+			t.Error(err)
+			close(ready)
+			return
+		}
+		defer func() { _ = drv.Close() }()
+		if err := drv.Lock(); err != nil {
+			t.Error(err)
+			close(ready)
+			return
+		}
+		_ = drv.SetVersion(version, true)
+		close(ready)
+		time.Sleep(hold)
+		_ = drv.SetVersion(version, false)
+		_ = drv.Unlock()
+	}()
+	return ready, finished
+}
+
+// TestEnsureSchema_ConcurrentMigratorIsNotReportedAsDirty is the race itself.
+//
+// The seam fires after this node has built its migrator (advisory lock taken and
+// released inside ensureVersionTable) and before its first unlocked look at the
+// schema — the exact window the race lives in. "Boot two nodes concurrently"
+// without the seam passes whatever the ordering is, because WithInstance's own
+// lock serialises them, so it would prove nothing.
+func TestEnsureSchema_ConcurrentMigratorIsNotReportedAsDirty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	migrateToHead(t, dsn)
+
+	var once sync.Once
+	var peerDone <-chan struct{}
+	seam := func() {
+		once.Do(func() {
+			var ready <-chan struct{}
+			ready, peerDone = transientMigratingPeer(t, dsn, headVersion(t), 500*time.Millisecond)
+			<-ready // the peer now holds the lock and has stamped dirty
+		})
+	}
+
+	err := ensureSchemaWith(context.Background(), openPool(t, dsn), true, 5*time.Minute, seam)
+	if peerDone != nil {
+		<-peerDone
+	}
+	if err != nil {
+		t.Fatalf("a peer's in-flight migration was reported as a fatal dirty schema: %v", err)
+	}
+}
+
+// TestEnsureSchema_GenuinelyDirtySchemaStillFailsFast — no concurrent migrator:
+// the flag means a migration really died.
+func TestEnsureSchema_GenuinelyDirtySchemaStillFailsFast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	migrateToHead(t, dsn)
+	stampDirty(t, dsn, headVersion(t))
+
+	err := ensureSchema(context.Background(), openPool(t, dsn), true, 5*time.Minute)
+	if err == nil {
+		t.Fatal("a genuinely dirty schema was allowed to start")
+	}
+	t.Logf("dirty schema refused with: %v", err)
+	// The actionable message, not golang-migrate's bare "Dirty database version
+	// N. Fix and force version." With migrations first, m.Up() reports dirty
+	// before applying anything, so this is where an operator now meets it — and
+	// the pointer to the recovery procedure must survive the reorder.
+	if !strings.Contains(err.Error(), "manual intervention required") ||
+		!strings.Contains(err.Error(), "cyoda help cli migrate") {
+		t.Fatalf("message lost its guidance: %v", err)
+	}
+	// And it arrived by the migration route, not the compat check. That is the
+	// whole point of translating ErrDirty: with migrations first the compat
+	// check never runs here, so without the translation this guidance would be
+	// unreachable on the auto-migrate path.
+	if !strings.HasPrefix(err.Error(), "postgres migrate: ") {
+		t.Fatalf("expected m.Up()'s own dirty verdict, translated; got %v", err)
+	}
+}
+
+// TestEnsureSchema_DatabaseNewerThanBinaryStillRefuses — running migrations
+// first must not weaken the newer-than-code guard.
+func TestEnsureSchema_DatabaseNewerThanBinaryStillRefuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	migrateToHead(t, dsn)
+	stampVersion(t, dsn, headVersion(t)+5, false)
+
+	err := ensureSchema(context.Background(), openPool(t, dsn), true, 5*time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "newer than this binary") {
+		t.Fatalf("started against a database newer than the binary: %v", err)
+	}
+}
+
+// TestEnsureSchema_SingleNodeMigratesItself — the uncontended case must stay
+// boring.
+func TestEnsureSchema_SingleNodeMigratesItself(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	if err := ensureSchema(context.Background(), openPool(t, dsn), true, 5*time.Minute); err != nil {
+		t.Fatalf("single-node install failed to migrate itself: %v", err)
+	}
+	if v, dirty := schemaState(t, dsn); v != headVersion(t) || dirty {
+		t.Fatalf("schema state = (%d, dirty=%v)", v, dirty)
+	}
+}
+
+// TestRunMigrateWithDSN_ConcurrentWithNodeBoot — both entry points go through
+// ensureSchema, so the CLI inherits the same ordering. This asserts that
+// behaviourally rather than by inspection.
+func TestRunMigrateWithDSN_ConcurrentWithNodeBoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	pool := openPool(t, dsn)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errs[0] = RunMigrateWithDSN(context.Background(), dsn) }()
+	go func() {
+		defer wg.Done()
+		errs[1] = ensureSchema(context.Background(), pool, true, 5*time.Minute)
+	}()
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("participant %d failed: %v", i, err)
+		}
+	}
+}
+
+// TestEnsureSchema_BoundedLockWaitSaysWhatHappened — lock_timeout bounds the
+// wait a booting node does behind a peer's migration, so a migration that
+// legitimately outruns it turns a slow-but-successful concurrent boot into a
+// startup failure. That is the intended trade: a bounded, logged failure a
+// supervisor retries beats an unbounded stall, and a node that cannot establish
+// a settled schema must not start. What it must not be is inscrutable —
+// golang-migrate reports it as a bare cancelled `pg_advisory_lock`.
+func TestEnsureSchema_BoundedLockWaitSaysWhatHappened(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	migrateToHead(t, dsn)
+
+	started, peerDone := transientMigratingPeer(t, dsn, headVersion(t), 3*time.Second)
+	<-started // the peer holds the migration lock
+
+	err := ensureSchema(context.Background(), openPool(t, dsn), true, 300*time.Millisecond)
+	<-peerDone
+	if err == nil {
+		t.Fatal("started while a peer held the migration lock")
+	}
+	t.Logf("bounded lock wait refused with: %v", err)
+	for _, want := range []string{
+		"waiting for the schema-migration lock",
+		"CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message does not mention %q: %v", want, err)
+		}
+	}
 }

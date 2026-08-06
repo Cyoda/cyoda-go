@@ -6,13 +6,16 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -76,17 +79,99 @@ func ensureSchema(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool, loc
 // observation of the schema. That gap is the entire concurrent-boot race window
 // and it cannot be reached from outside these functions. Production passes nil.
 func ensureSchemaWith(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool, lockTimeout time.Duration, afterMigratorBuilt func()) error {
-	db := openDB(pool, lockTimeout)
-	defer db.Close()
-	if err := checkSchemaCompatWith(ctx, db, autoMigrate, afterMigratorBuilt); err != nil {
-		return err
-	}
+	// Migrations FIRST when this binary is the one migrating.
+	//
+	// m.Up() takes golang-migrate's advisory lock before reading the dirty flag,
+	// so a node booting alongside a peer that is mid-migration blocks until that
+	// peer has finished and cleared it, then applies nothing and gets
+	// ErrNoChange. Once m.Up() returns, the schema is settled: any peer that
+	// would stamp dirty must first acquire the same lock, and can only do so
+	// before or after this whole call — and if after, it finds nothing to apply.
+	//
+	// Reading the flag first, as the sequence used to, reads it outside any lock
+	// and reports a peer's in-progress migration as a fatal dirty schema,
+	// inviting an operator to hand-edit schema_migrations mid-migration.
+	//
+	// With autoMigrate=false the ordering is moot — nothing here migrates — and a
+	// dirty read is accurate information about a migration running under someone
+	// else's control, which this node must not start against.
 	if autoMigrate {
 		if err := runMigrationsWith(ctx, pool, lockTimeout, afterMigratorBuilt); err != nil {
-			return fmt.Errorf("postgres migrate: %w", err)
+			return fmt.Errorf("postgres migrate: %w", migrationLockWaitError(err, lockTimeout))
 		}
 	}
-	return nil
+
+	// The compat check now runs on a settled schema. dirty == true here
+	// unambiguously means a migration genuinely died, and stays fatal.
+	//
+	// Running migrations first does not weaken the newer-than-code guard:
+	// golang-migrate refuses to plan from a version its own source has no
+	// migration for, which runMigrationsWith restates as the same refusal this
+	// check produces.
+	db := openDB(pool, lockTimeout)
+	defer db.Close()
+	return migrationLockWaitError(checkSchemaCompatWith(ctx, db, autoMigrate, afterMigratorBuilt), lockTimeout)
+}
+
+// migrationLockWaitError restates a migration-lock wait that lock_timeout
+// aborted, and returns every other error untouched.
+//
+// Both phases take golang-migrate's advisory lock, so a peer whose migration
+// outruns the bound aborts this node's wait and it refuses to start — the
+// intended trade, since a node that cannot establish a settled schema must not
+// serve against it. golang-migrate reports that as a bare cancelled
+// `pg_advisory_lock`, which names neither the cause nor the remedy.
+//
+// Matched on the SQLSTATE rather than with errors.As because golang-migrate's
+// database.Error keeps its cause in a plain field and implements no Unwrap, so
+// the typed *pgconn.PgError is unreachable. The SQLSTATE is a wire constant.
+func migrationLockWaitError(err error, lockTimeout time.Duration) error {
+	if err == nil || !strings.Contains(err.Error(), "SQLSTATE "+pgerrcode.LockNotAvailable) {
+		return err
+	}
+	return fmt.Errorf(
+		"timed out after %s waiting for the schema-migration lock: another node or `cyoda migrate` "+
+			"is migrating this database. This node will not start against an unsettled schema — retry, "+
+			"or raise CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT: %w", lockTimeout, err)
+}
+
+// dirtySchemaError is the operator-facing message for a schema left mid-
+// migration. Both routes into that state — golang-migrate's own pre-flight check
+// inside m.Up(), and the compat check's version read — produce this exact text,
+// so the recovery procedure is reachable from either. Without the translation,
+// running migrations first would leave an operator with golang-migrate's bare
+// "Dirty database version N. Fix and force version.", which says nothing about
+// the INVALID index a failed CREATE INDEX CONCURRENTLY leaves behind.
+func dirtySchemaError(version int) error {
+	return fmt.Errorf(
+		"database migration state is dirty at version %d — manual intervention required; "+
+			"run `cyoda help cli migrate` for the recovery procedure", version)
+}
+
+// schemaNewerThanBinaryError is the operator-facing refusal for a database
+// migrated past what this binary knows how to run. Shared for the same reason
+// dirtySchemaError is: the compat check and the migrator each detect the
+// condition on their own, and an operator must meet one message, not two.
+func schemaNewerThanBinaryError(dbVersion, maxVersion uint) error {
+	return fmt.Errorf(
+		"database schema version %d is newer than this binary's max migration version %d — "+
+			"refusing to start to avoid data corruption", dbVersion, maxVersion)
+}
+
+// newerThanBinaryError returns the refusal when m's database is recorded at a
+// version past the highest migration src embeds, and nil in every other case —
+// including when the version cannot be established, where the caller's original
+// error is the more honest thing to report.
+func newerThanBinaryError(m *migrate.Migrate, src source.Driver) error {
+	maxVersion, err := maxMigrationVersion(src)
+	if err != nil {
+		return nil
+	}
+	dbVersion, _, err := m.Version()
+	if err != nil || dbVersion <= maxVersion {
+		return nil
+	}
+	return schemaNewerThanBinaryError(dbVersion, maxVersion)
 }
 
 // runMigrations applies pending migrations. Uses m.GracefulStop to honor
@@ -107,12 +192,12 @@ func runMigrationsWith(ctx context.Context, pool *pgxpool.Pool, lockTimeout time
 		return fmt.Errorf("create migration driver: %w", err)
 	}
 
-	source, err := iofs.New(migrationFS, "migrations")
+	src, err := iofs.New(migrationFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("open embedded migrations: %w", err)
 	}
 
-	m, err := migrate.NewWithInstance("iofs", source, "pgx5", driver)
+	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
 	if err != nil {
 		return fmt.Errorf("create migrator: %w", err)
 	}
@@ -123,8 +208,26 @@ func runMigrationsWith(ctx context.Context, pool *pgxpool.Pool, lockTimeout time
 	done := make(chan error, 1)
 	go func() {
 		err := m.Up()
-		if errors.Is(err, migrate.ErrNoChange) {
+		var dirty migrate.ErrDirty
+		switch {
+		case errors.Is(err, migrate.ErrNoChange):
 			err = nil
+		case errors.As(err, &dirty):
+			err = dirtySchemaError(dirty.Version)
+		case errors.Is(err, fs.ErrNotExist):
+			// golang-migrate refuses to plan from a version its own source has
+			// no migration for, and says only "no migration found for version
+			// N". That is what an older binary meets when it boots against a
+			// schema a newer one has already migrated, so restate it as the
+			// compatibility refusal an operator can act on.
+			//
+			// Only when the database really is ahead: a version BELOW this
+			// binary's max means the embedded source has a gap, which is a
+			// packaging fault that must keep its own error rather than be
+			// excused into a start.
+			if newer := newerThanBinaryError(m, src); newer != nil {
+				err = newer
+			}
 		}
 		done <- err
 	}()
@@ -183,9 +286,8 @@ func migratePoolConfig(dsn string, lockTimeout time.Duration) (*pgxpool.Config, 
 }
 
 // RunMigrateWithDSN is the entry point for the `cyoda migrate` subcommand.
-// It opens a connection pool from dsn, enforces the schema-compatibility
-// contract (refuses when DB is newer than code), applies any pending
-// migrations, and closes the pool before returning. The caller supplies
+// It opens a connection pool from dsn, runs the same ensureSchema sequence a
+// booting node runs, and closes the pool before returning. The caller supplies
 // a context for timeout/cancellation control.
 //
 // Returns a descriptive error when:
@@ -193,6 +295,7 @@ func migratePoolConfig(dsn string, lockTimeout time.Duration) (*pgxpool.Config, 
 //   - the pool cannot be opened or pinged
 //   - the schema is newer than this binary's embedded migrations
 //   - the migration state is dirty (manual intervention required)
+//   - the wait for the migration lock exceeds CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT
 //   - any migration step fails
 func RunMigrateWithDSN(ctx context.Context, dsn string) error {
 	if dsn == "" {
@@ -266,9 +369,13 @@ func dropSchema(pool *pgxpool.Pool) error {
 // checkSchemaCompat enforces the schema-compatibility contract on startup:
 //   - schema newer than code → fatal, regardless of autoMigrate
 //   - schema older than code, autoMigrate=false → fatal
-//   - schema older than code, autoMigrate=true → caller proceeds with runMigrations
+//   - schema older than code, autoMigrate=true → proceed
 //   - schema matches → proceed
 //   - dirty state → fatal, manual intervention required
+//
+// On the ensureSchema path this runs AFTER migrations, so the older-than-code
+// and dirty branches are reached only when a migration silently did nothing —
+// they are the backstop, not the normal route.
 func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error {
 	return checkSchemaCompatWith(ctx, db, autoMigrate, nil)
 }
@@ -309,12 +416,12 @@ func checkSchemaCompatWith(ctx context.Context, db *sql.DB, autoMigrate bool, af
 		return fmt.Errorf("schema compat: read DB version: %w", err)
 	}
 	if dirty {
-		return fmt.Errorf("schema compat: database migration state is dirty at version %d — manual intervention required", dbVersion)
+		return fmt.Errorf("schema compat: %w", dirtySchemaError(int(dbVersion)))
 	}
 
 	switch {
 	case dbVersion > maxVersion:
-		return fmt.Errorf("schema compat: database schema version %d is newer than this binary's max migration version %d — refusing to start to avoid data corruption", dbVersion, maxVersion)
+		return fmt.Errorf("schema compat: %w", schemaNewerThanBinaryError(dbVersion, maxVersion))
 	case dbVersion < maxVersion && !autoMigrate:
 		return fmt.Errorf("schema compat: database schema version %d is older than code (%d) and CYODA_POSTGRES_AUTO_MIGRATE=false — set CYODA_POSTGRES_AUTO_MIGRATE=true and restart, or apply migrations out-of-band", dbVersion, maxVersion)
 	}
