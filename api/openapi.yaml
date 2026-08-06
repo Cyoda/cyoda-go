@@ -1432,6 +1432,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}/changes:
@@ -2021,6 +2035,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}:
@@ -2227,6 +2255,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -2428,6 +2470,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}:
@@ -2609,6 +2665,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -2752,6 +2822,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
@@ -2945,6 +3029,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -3098,6 +3196,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityName}/{modelVersion}:
@@ -3319,6 +3431,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Storage could not supply a connection within the acquire
+            timeout, or the transaction was reclaimed by the idle-in-transaction
+            ceiling. Retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: storage is temporarily unavailable — retry
+                instance: /api/entity/JSON/order/1
         default:
           $ref: '#/components/responses/InternalServerError'
   /message:
