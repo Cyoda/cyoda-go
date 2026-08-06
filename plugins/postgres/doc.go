@@ -15,6 +15,24 @@
 //	CYODA_POSTGRES_MAX_CONN_IDLE_TIME default 5m
 //	CYODA_POSTGRES_AUTO_MIGRATE       default true  (runs embedded SQL migrations at startup)
 //
+// Ceilings, each applied server-side and each accepting 0 to disable:
+//
+//	CYODA_POSTGRES_STATEMENT_TIMEOUT        default 5m   max run time for one statement
+//	CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT       default 5m   max idle time inside an open transaction
+//	CYODA_POSTGRES_ACQUIRE_TIMEOUT          default 10s  max wait for a free pooled connection
+//	CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT default 30m  statement ceiling for async search scans
+//	CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT     default 5m   max lock wait during schema migration
+//
+// Exceeding the acquire or idle-in-transaction ceiling is transient
+// contention and surfaces as a retryable 503 STORAGE_UNAVAILABLE.
+// Exceeding a statement ceiling is not: re-running the same work would
+// exceed it again, so it surfaces as a 500 with a ticket, and the server
+// log names the setting that fired.
+//
+// Not plugin-namespaced, but read here and advertised via ConfigVars():
+//
+//	CYODA_SCHEMA_SAVEPOINT_INTERVAL   default 64  rows per savepoint when folding schema extensions
+//
 // # Migrations and context cancellation
 //
 // NewFactory receives a startup context with a deadline. The embedded
