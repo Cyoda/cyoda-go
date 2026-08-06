@@ -303,9 +303,25 @@ the gRPC door, and inconsistent with the scheduler's own dispatch goroutine, whi
 recovers (`internal/scheduler/service.go:189-194`). It gets the same treatment.
 
 Both recoveries mirror `internal/api/middleware/recovery.go`: log with stack, mark
-the health flag, return a generic internal error with a ticket UUID. Marking the
-health flag means the first recovered panic on any door takes the node to
-`503 DOWN` permanently. That flag has to reach something that decides whether the
+the health flag, return a generic internal error with a ticket UUID. The
+scheduler's dispatch goroutine latches too, though it already recovered: its
+`Executor.Execute` runs a full fire plus cascade **in-process** whenever
+distribution picks this node (`internal/cluster/scheduler_rpc.go`
+`ClusterExecutor.Execute`, `target == selfID`), so leaving it unlatched would make
+withdrawal depend on which node `Pick` chose — the identical panicking fire takes
+the node out of service when the pick is a peer (it arrives over the HTTP door) and
+leaves it serving when the pick is self.
+
+The criterion for latching is what the recovered code was doing, not where it
+entered from: engine or store work on the application's behalf leaves state nothing
+has verified. Recoveries that wrap notification callbacks — the member-registry
+`onChange` fan-out (`internal/grpc/members.go`) and the OIDC broadcast handler and
+its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on
+its own metric) — hold no transaction and self-heal on the next event, so they log
+and do not latch.
+
+Marking the health flag means the first recovered panic at any of the four latching
+sites takes the node to `503 DOWN` permanently. That flag has to reach something that decides whether the
 node receives traffic, and originally nothing probed it: the shipped chart's
 liveness probe hits `/livez` (unconditional) and its readiness probe hits
 `/readyz`, which checked only the store factory. So `ReadinessCheck`
@@ -955,6 +971,8 @@ prefix plus the retryable flag, not on `Error.Code`.
 | 7a | Peer scheduler-RPC panic is recovered; process survives; fire tx rolled back | — | postgres | — | — |
 | 7b | A recovered panic fails readiness — `/readyz` 503, healthy node still 200, reason distinguishable from a storage fault, `/livez` unchanged | ✔ | postgres | — | — |
 | 7c | A panic in the async-search goroutine latches the same flag; a successful job does not | ✔ | — | — | — |
+| 7d | A panic in the scheduler's dispatch goroutine latches the same flag; a normal dispatch does not | ✔ | — | — | — |
+| 7e | `app.New` hands its own flag to every latching site — a dropped wiring line fails | ✔ | — | — | — |
 | 8 | `Release` holds the per-tx gate while rolling back | ✔ | — | — | — |
 | 8a | `Release` on a **cancelled** request context still rolls back — `WithoutCancel` keeps the `UserContext` `verifyTenant` needs | ✔ | postgres | — | — |
 | 8b | Joined call that unexpectedly segments rolls the engine-opened segment back despite `owned == false` (stubbed engine) | ✔ | — | — | — |
@@ -992,11 +1010,15 @@ never the shared parity suite, and they assert consistency (pool returns to
 baseline, one winner, no torn write) rather than a precise interleave.
 
 Row 7b's e2e cell rides on 7a: the same real panic through the assembled handler,
-then `/readyz` 503 and `/livez` 200 on that node. Row 7c is unit-only by waiver —
-reaching the async-search goroutine's recover from e2e means panicking the store
-layer mid-scan, which needs the same in-process injection an e2e stack has no seam
-for; the unit test drives the production goroutine directly and 7b already proves
-the flag reaches `/readyz`.
+then `/readyz` 503 and `/livez` 200 on that node. Rows 7c, 7d and 7e are unit-only
+by waiver — reaching the async-search or dispatch goroutine's recover from e2e
+means panicking the store layer mid-scan or mid-fire, which needs in-process
+injection an e2e stack has no seam for, and 7e is a wiring assertion with no
+runtime surface at all. Each drives the production goroutine directly, and 7b
+already proves the flag reaches `/readyz`. 7e is the row that keeps the other two
+honest: both sites take the flag through a silent seam (a chained option, a struct
+field), and a dropped wiring line compiles and passes everything else — which is
+how the async-search site came to be missing it.
 
 **No parity cells.** Every scenario here is single-backend, and that is forced by
 the harness rather than chosen: `BackendFixture` (`e2e/parity/fixture.go:17-48`)

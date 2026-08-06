@@ -70,10 +70,13 @@ type App struct {
 	stopSearchReaper   chan struct{}
 	grpcStopOnce       sync.Once
 	// healthFlag starts true and is latched false by the first recovered
-	// panic on any door — the HTTP recovery middleware, the gRPC recovery
-	// interceptors, the async-search goroutine. Nothing resets it: a node
-	// that has panicked has state nothing has verified. Read by
-	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
+	// panic at any of the four sites that run engine or store work: the HTTP
+	// recovery middleware, the gRPC recovery interceptors, the async-search
+	// goroutine and the scheduler's dispatch goroutine. Notification-callback
+	// recoveries (member-registry onChange, OIDC broadcast) deliberately do
+	// not. Nothing resets it: a node that has panicked has state nothing has
+	// verified. Read by RegisterHealthRoutes (GET /health) and by
+	// ReadinessCheck (/readyz).
 	healthFlag *atomic.Bool
 }
 
@@ -575,6 +578,7 @@ func New(cfg Config) *App {
 			Clock:        schedClock,
 			Executor:     clusterExecutor,
 			SelfID:       a.selfNodeID,
+			HealthFlag:   a.healthFlag,
 		},
 	)
 	a.scheduler.Start()

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -108,6 +109,52 @@ func TestReadinessCheck_UsesTheSameFlagTheRequestDoorsMark(t *testing.T) {
 	}
 	if body["status"] != "DOWN" {
 		t.Fatalf("/health status = %q, want DOWN", body["status"])
+	}
+}
+
+// TestNew_HealthFlagReachesEveryPanicRecoverySite pins the wiring itself.
+// Both of these sites take the flag through a silent seam — a chained option
+// on the search service, a struct field on the scheduler's Deps — so dropping
+// the line compiles, every other test still passes, and the site quietly stops
+// taking the node out of service. That is exactly how the async-search site
+// came to be missing it. The HTTP door is pinned behaviourally instead, by
+// TestReadinessCheck_UsesTheSameFlagTheRequestDoorsMark.
+//
+// Reflection is the only way to compare identity across a package boundary
+// here: the fields are unexported, and exporting them purely for a test would
+// widen production API. Pointer() is legal on an unexported field (unlike
+// Interface()), and a renamed field fails loudly on IsValid rather than
+// silently passing.
+func TestNew_HealthFlagReachesEveryPanicRecoverySite(t *testing.T) {
+	a := readinessTestApp(t)
+	want := reflect.ValueOf(a.healthFlag).Pointer()
+
+	for _, site := range []struct {
+		name   string
+		holder any
+		field  string
+	}{
+		{"async-search goroutine", a.SearchService(), "healthFlag"},
+		{"scheduler dispatch goroutine", a.scheduler, "deps"},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			v := reflect.ValueOf(site.holder).Elem().FieldByName(site.field)
+			if !v.IsValid() {
+				t.Fatalf("field %q not found — the wiring assertion needs updating", site.field)
+			}
+			if site.field == "deps" {
+				v = v.FieldByName("HealthFlag")
+				if !v.IsValid() {
+					t.Fatal("Deps.HealthFlag not found — the wiring assertion needs updating")
+				}
+			}
+			if v.IsNil() {
+				t.Fatalf("%s did not receive a health flag — a panic there leaves the node serving with unverified state", site.name)
+			}
+			if got := v.Pointer(); got != want {
+				t.Fatalf("%s holds a different flag than the app's — readiness will never see its panics", site.name)
+			}
+		})
 	}
 }
 

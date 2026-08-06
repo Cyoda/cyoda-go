@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -70,6 +71,14 @@ type Deps struct {
 	Executor Executor
 	// SelfID is this node's NodeID, as it appears in Registry.List results.
 	SelfID string
+	// HealthFlag is the process-wide node-health flag the HTTP and gRPC
+	// recovery paths latch false on a recovered panic. The dispatch
+	// goroutine latches the same one: Execute runs a full fire plus cascade
+	// in-process whenever Distribution picks this node, so a panic there is
+	// the same evidence of unverified state as one arriving over a request
+	// door. Without it, whether a node withdraws would depend on which node
+	// Pick chose. nil-safe — unit tests that do not care leave it unset.
+	HealthFlag *atomic.Bool
 }
 
 // Service is the coordinator-only scan loop: on each tick it checks whether
@@ -190,6 +199,15 @@ func (s *Service) tick() {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("scheduled task dispatch panicked", "pkg", "scheduler", "taskId", task.ID, "panic", r)
+					// Same latch as the request doors and the async-search
+					// goroutine: Execute runs a full fire plus cascade
+					// in-process when the pick is this node, so the node's
+					// state is now unverified. Without it, an identical
+					// panicking fire would take the node out of service only
+					// when the pick happened to be a peer.
+					if s.deps.HealthFlag != nil {
+						s.deps.HealthFlag.Store(false)
+					}
 				}
 			}()
 			s.deps.Executor.Execute(ctx, task, target)
