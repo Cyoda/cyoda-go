@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -431,6 +432,27 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	bgCtx := spi.WithUserContext(context.Background(), uc)
 
 	go func() {
+		// A panic in Search (or anything it calls) runs on context.Background()
+		// with no HTTP handler above it to recover it — net/http's per-connection
+		// recover has nothing to do with this goroutine. Left unrecovered, it
+		// takes the whole process down, the same class of gap the gRPC and HTTP
+		// mux doors had. Mirrors the scheduler's own dispatch goroutine
+		// (internal/scheduler/service.go), which already recovers: log the full
+		// panic detail (value + stack) and record the job FAILED with a
+		// non-revealing message — a job left RUNNING forever after its
+		// goroutine died would be its own defect (Gate 3: no panic value or
+		// stack leaves the log).
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("panic recovered in async search job", "pkg", "search",
+					"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
+					"stack", string(debug.Stack()))
+				if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0,
+					"search failed unexpectedly", time.Now(), 0); err != nil {
+					slog.Error("failed to update search job status after recovered panic", "pkg", "search", "jobID", jobID, "err", err)
+				}
+			}
+		}()
 		start := time.Now()
 		results, searchErr := s.Search(bgCtx, modelRef, cond, opts)
 		elapsed := time.Since(start)

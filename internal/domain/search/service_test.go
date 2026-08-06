@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1512,6 +1513,78 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	}
 	if status.Status != "SUCCESSFUL" {
 		t.Fatalf("expected SUCCESSFUL, got %s", status.Status)
+	}
+}
+
+// TestAsyncSearchJob_PanicIsRecovered is coverage for Task 7 (tx-lifecycle
+// safety): the async search job goroutine runs on context.Background() with
+// no HTTP handler above it to recover a panic — net/http's per-connection
+// recover has nothing to do with a background goroutine, so an unrecovered
+// panic here takes the whole process down (the search analogue of the
+// scheduler's own dispatch goroutine, which already recovers). searchFn
+// panics to simulate a store-layer panic reaching the job; if the
+// goroutine's own recover did not exist or did not fire, this test binary
+// would already be gone rather than reaching the FAILED assertion below.
+func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+			panic("injected panic in async search execution")
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status search.SearchJobStatus
+	for time.Now().Before(deadline) {
+		status, err = svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if status.Status == "FAILED" || status.Status == "SUCCESSFUL" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Status != "FAILED" {
+		t.Fatalf("expected FAILED after a panicking search, got %q (a job stuck RUNNING means the goroutine died without recording the failure)", status.Status)
+	}
+
+	// Gate 3 (output sanitization): the persisted failure record must not
+	// leak the panic value or stack — only the generic message the recover
+	// handler writes. Full detail belongs in the log, not the job record.
+	job, err := searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Error == "" {
+		t.Error("expected a non-empty job error message")
+	}
+	if strings.Contains(job.Error, "injected panic") || strings.Contains(job.Error, "goroutine") {
+		t.Errorf("job error message leaks panic/internal detail: %q", job.Error)
 	}
 }
 

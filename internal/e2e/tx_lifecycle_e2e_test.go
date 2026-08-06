@@ -16,10 +16,12 @@ package e2e_test
 // criterion is what reaches the handler intact.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,6 +34,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 )
 
@@ -505,5 +509,206 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 	}
 	if _, s := h.GetEntityState(t, out.createdID); s != http.StatusOK {
 		t.Fatalf("the joined callback's write is not durable after the owner committed: GET returned %d", s)
+	}
+}
+
+// --- coverage row 7a: a panic on the peer scheduler RPC door is recovered --
+
+// clusterHMACSecret32 is this test's fixed cluster shared secret. Exactly 32
+// bytes to satisfy both dispatch.NewAEADPeerAuth (requires >= 32) and
+// memberlist's AES key-size requirement (16/24/32 only, nothing else). The
+// value is arbitrary; what matters is the length and that both the signer
+// (this test) and the verifier (the harness node) use the same bytes.
+var clusterHMACSecret32 = bytes.Repeat([]byte{0xA5}, 32)
+
+// schedulerTaskPathForTest mirrors the unexported schedulerTaskPath constant
+// in internal/cluster/scheduler_rpc.go. Duplicated rather than exported
+// across the package boundary for a one-line route string — the same
+// precedent that file's own ensureScheme helper already sets.
+const schedulerTaskPathForTest = "/internal/dispatch/scheduled-task"
+
+// newClusterHarness builds the callback harness (real Postgres, the
+// package's shared TestMain container, default — not tiny — pool sizing)
+// with cluster mode on for a single node: a "cluster of one". No peer ever
+// joins; the gossip agent binds an OS-assigned local port purely to satisfy
+// app.New's cluster wiring, which is what makes the peer scheduler RPC route
+// exist on the mux at all — it is registered only when cfg.Cluster.Enabled.
+// The scan loop is disabled so this test's own signed RPC call — standing in
+// for a peer's authenticated dispatch — is the only thing that can ever fire
+// the armed task; nothing races it.
+func newClusterHarness(t *testing.T) (*callbackHarness, *localproc.LocalProcessingService) {
+	t.Helper()
+	svc := localproc.New()
+	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
+		cfg.ExternalProcessing = svc
+		cfg.Scheduler.Enabled = false
+		cfg.Cluster.Enabled = true
+		cfg.Cluster.NodeID = harnessAppName(t)
+		cfg.Cluster.GossipAddr = "127.0.0.1:0" // OS-assigned; no seeds configured, so this node forms a cluster of one
+		cfg.Cluster.HMACSecret = clusterHMACSecret32
+	})
+	return h, svc
+}
+
+// txLifeSchedDelayMs is the delay this file's scheduled-fire tests arm with.
+// FireScheduledTransition re-checks ScheduledTime <= now on every call — the
+// "re-armed to the future" guard (design §5.3 step 3) — so a task cannot be
+// fired early no matter who calls it (scan loop or a direct peer RPC); the
+// delay must actually elapse first. Small and constant so callers just sleep
+// past it before firing.
+const txLifeSchedDelayMs = 200
+
+// txLifeSchedGateWF is txLifeGateWF's scheduled counterpart: the automated
+// transition carries BOTH a Schedule (so entity creation arms a durable
+// ScheduledTask) and a FUNCTION criterion (so firing it dispatches through
+// localproc.DispatchCriteria — the unrecovered callout entry point this
+// file's header comment describes). The harness's scan loop is disabled, so
+// nothing but a caller's own deliberate RPC ever fires the task, however long
+// after txLifeSchedDelayMs elapses that happens.
+func txLifeSchedGateWF(name, criterion string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":   {"transitions": [{"name": "gate", "next": "ACTIVE", "manual": false,
+					"schedule": {"delayMs": %d},
+					"criterion": {"type":"function","function":{"name":%q}}}]},
+				"ACTIVE": {}
+			}
+		}]
+	}`, name, txLifeSchedDelayMs, criterion)
+}
+
+// findScheduledTask locates the ScheduledTask a create armed for entityID.
+// Scans via the public ScheduledTaskStore contract rather than recomputing
+// the store's internal deterministic task-ID formula (a private
+// implementation detail of package workflow), so this test depends only on
+// documented behavior: ScanDue is cross-tenant and returns every task whose
+// ScheduledTime is due by the given instant.
+func findScheduledTask(t *testing.T, factory spi.StoreFactory, entityID string) spi.ScheduledTask {
+	t.Helper()
+	sts, err := factory.ScheduledTaskStore(context.Background())
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	// Pushed two hours out so this read-only lookup finds the row regardless
+	// of how long txLifeSchedDelayMs's short delay has had to elapse.
+	due := time.Now().Add(2 * time.Hour).UnixMilli()
+	tasks, err := sts.ScanDue(context.Background(), due, 500)
+	if err != nil {
+		t.Fatalf("ScanDue: %v", err)
+	}
+	for _, task := range tasks {
+		if task.EntityID == entityID {
+			return task
+		}
+	}
+	t.Fatalf("no scheduled task found for entity %s among %d due tasks", entityID, len(tasks))
+	return spi.ScheduledTask{}
+}
+
+// postSchedulerRPC signs task the way a peer would — dispatch.NewAEADPeerAuth
+// over the same shared secret the harness node verifies against — and POSTs
+// it to the harness's peer scheduler RPC door. Returns the raw response
+// (rather than routing through cluster.SchedulerRPCClient, which folds a
+// non-2xx response and a transport-level connection drop into the same
+// generic error) so the caller can tell "the server replied 500" apart from
+// "the connection was dropped" — precisely the distinction this test exists
+// to draw.
+func postSchedulerRPC(t *testing.T, h *callbackHarness, task spi.ScheduledTask) (*http.Response, error) {
+	t.Helper()
+	auth, err := dispatch.NewAEADPeerAuth(clusterHMACSecret32, 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewAEADPeerAuth: %v", err)
+	}
+	plain, err := json.Marshal(cluster.SchedulerTaskRequest{Task: task})
+	if err != nil {
+		t.Fatalf("marshal SchedulerTaskRequest: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, h.baseURL+schedulerTaskPathForTest, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	wire, err := auth.Sign(req, plain)
+	if err != nil {
+		t.Fatalf("sign request: %v", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(wire))
+	req.ContentLength = int64(len(wire))
+	return http.DefaultClient.Do(req)
+}
+
+// TestE2E_SchedulerRPCPanic_RecoveredAndRolledBack is coverage row 7a. The
+// peer scheduler RPC opens a transaction and runs a full fire plus cascade
+// including compute-node callouts, and is reachable by any peer — but until
+// this task it was registered at a pattern more specific than "/", so it
+// escaped middleware.Recovery entirely (app/app.go wrapped only the "/"
+// catch-all, and every more-specific pattern wins over that in Go's
+// http.ServeMux). Pre-fix, net/http's own per-connection recover still keeps
+// the panic from taking the node down, but it drops the connection instead
+// of returning the project's usual ProblemDetail-with-ticket 500 — this test
+// tells the two apart, and also proves the fire's own transaction rolled
+// back rather than partially committing.
+func TestE2E_SchedulerRPCPanic_RecoveredAndRolledBack(t *testing.T) {
+	h, svc := newClusterHarness(t)
+	svc.RegisterCriteria("txlife-sched-rpc-boom", func(context.Context, *spi.Entity, json.RawMessage) (bool, error) {
+		panic("injected panic in scheduled-transition criterion callout")
+	})
+
+	const model = "txlife-sched-rpc-panic"
+	h.setupModelSampleWithWorkflow(t, model, txLifeSample, txLifeSchedGateWF(model+"-wf", "txlife-sched-rpc-boom"))
+
+	entityID, status, body := h.CreateEntity(t, model, 1, txLifeSample)
+	if status != http.StatusOK {
+		t.Fatalf("create entity: %d %s", status, body)
+	}
+
+	task := findScheduledTask(t, h.app.StoreFactory(), entityID)
+
+	// FireScheduledTransition re-checks ScheduledTime <= now itself (design
+	// §5.3 step 3, "re-armed to the future") regardless of who calls it, so
+	// the delay must actually elapse before this RPC can reach the
+	// criterion — otherwise the fire is silently dropped (no error, no
+	// criterion dispatch) rather than reaching the panic this test injects.
+	time.Sleep(2 * txLifeSchedDelayMs * time.Millisecond)
+
+	resp, err := postSchedulerRPC(t, h, task)
+	if err != nil {
+		t.Fatalf("scheduler RPC request failed: %v (want a ProblemDetail 500 with a ticket, not a dropped connection)", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want a ProblemDetail 500 with a ticket; body: %s", resp.StatusCode, respBody)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+		t.Fatalf("content-type = %q; the connection was dropped instead of an error body", ct)
+	}
+	var pd struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(respBody, &pd); err != nil {
+		t.Fatalf("decode ProblemDetail: %v; body: %s", err, respBody)
+	}
+	if pd.Ticket == "" {
+		t.Errorf("expected a non-empty ticket in the ProblemDetail body: %s", respBody)
+	}
+
+	// Rolled back: the fire's transaction must not have partially committed
+	// the transition despite the mid-cascade panic.
+	state, s := h.GetEntityState(t, entityID)
+	if s != http.StatusOK {
+		t.Fatalf("entity not readable after the recovered panic: %d", s)
+	}
+	if state != "NONE" {
+		t.Fatalf("entity state = %q, want NONE (unchanged) — the panicking fire committed partially instead of rolling back", state)
+	}
+
+	// And the node still serves — the recovered panic did not take it down.
+	if _, s, b := h.CreateEntity(t, model, 1, txLifeSample); s != http.StatusOK {
+		t.Fatalf("node could not serve after the recovered scheduler-RPC panic: %d %s", s, b)
 	}
 }

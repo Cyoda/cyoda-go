@@ -717,8 +717,9 @@ func New(cfg Config) *App {
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
 	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
 
-	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
-	// wildcard-conflict panics in overlapping /model/… paths.
+	// Generated API routes (with auth) — uses chi to avoid ServeMux
+	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
+	// applied once, below, to the fully assembled handler.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
 		BaseRouter:       internalapi.NewChiMux(),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
@@ -726,9 +727,7 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}
-	mux.Handle("/", middleware.Recovery(healthFlag)(
-		middleware.Auth(a.authService)(txJoinMW(apiHandler)),
-	))
+	mux.Handle("/", middleware.Auth(a.authService)(txJoinMW(apiHandler)))
 
 	// Context path — wrap all routes under configurable prefix
 	contextPath := strings.TrimRight(cfg.ContextPath, "/")
@@ -761,6 +760,13 @@ func New(cfg Config) *App {
 		}
 		a.handler = mux
 	}
+
+	// Recovery wraps the fully assembled mux rather than the "/" catch-all.
+	// Every pattern more specific than "/" wins over it, which silently excluded
+	// the peer scheduler RPC, cluster dispatch, health, discovery, help, the
+	// admin log-level routes and more — and would have excluded any route added
+	// later. One call site instead of a dozen, with no way to escape it.
+	a.handler = middleware.Recovery(healthFlag)(a.handler)
 
 	// Cluster routing middleware — outermost layer, before auth and recovery.
 	// The proxy forwards the original request including auth headers to the
