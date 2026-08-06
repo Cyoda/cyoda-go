@@ -156,6 +156,37 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 	return nil
 }
 
+// storageUnavailable returns a 503 AppError when err carries the storage
+// layer's transient-unavailability marker, or nil when it does not.
+//
+// Matched with errors.As on an interface rather than a concrete type: every
+// Begin error is already wrapped by the time a classifier sees it, and the
+// marker is a plugin-side type this module must not import. A storage plugin
+// opts in by returning an error whose chain satisfies the interface — no SPI
+// change, so no coordinated cross-repo release.
+func storageUnavailable(err error) *common.AppError {
+	var su interface{ StorageUnavailable() bool }
+	if errors.As(err, &su) && su.StorageUnavailable() {
+		return common.Operational(
+			http.StatusServiceUnavailable,
+			common.ErrCodeStorageUnavailable,
+			"storage is temporarily unavailable — retry",
+		).AsRetryable()
+	}
+	return nil
+}
+
+// classifyBeginErr maps a transaction-Begin failure to a status code. It must
+// run BEFORE common.Internal, which fixes the status at 500 — AppError.Unwrap
+// means a later errors.As would still find the cause, but by then the status is
+// already wrong.
+func classifyBeginErr(err error) *common.AppError {
+	if appErr := storageUnavailable(err); appErr != nil {
+		return appErr
+	}
+	return common.Internal("failed to begin transaction", err)
+}
+
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
 //

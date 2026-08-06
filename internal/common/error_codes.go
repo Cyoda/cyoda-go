@@ -14,8 +14,13 @@ const (
 	ErrCodeWorkflowFailed                   = "WORKFLOW_FAILED"
 	ErrCodeWorkflowSchemaVersionUnsupported = "WORKFLOW_SCHEMA_VERSION_UNSUPPORTED"
 	ErrCodeConflict                         = "CONFLICT"
-	ErrCodeEpochMismatch                    = "EPOCH_MISMATCH"
-	ErrCodeBadRequest                       = "BAD_REQUEST"
+	// ErrCodeStorageUnavailable is returned when the storage layer cannot supply
+	// a connection within its acquire deadline, or when an operation finds its
+	// transaction aborted by the idle-in-transaction ceiling. Transient
+	// contention — the same request may well succeed on a second attempt.
+	ErrCodeStorageUnavailable = "STORAGE_UNAVAILABLE"
+	ErrCodeEpochMismatch      = "EPOCH_MISMATCH"
+	ErrCodeBadRequest         = "BAD_REQUEST"
 	// ErrCodeIncompatibleType is returned when an entity payload's leaf
 	// value type is not assignable to the schema's declared DataType for
 	// that field (e.g. submitting "abc" or 13.111 against an INTEGER
