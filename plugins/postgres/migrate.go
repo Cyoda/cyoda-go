@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -84,17 +85,20 @@ func ensureSchemaWith(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool,
 	// m.Up() takes golang-migrate's advisory lock before reading the dirty flag,
 	// so a node booting alongside a peer that is mid-migration blocks until that
 	// peer has finished and cleared it, then applies nothing and gets
-	// ErrNoChange. Once m.Up() returns, the schema is settled: any peer that
-	// would stamp dirty must first acquire the same lock, and can only do so
-	// before or after this whole call — and if after, it finds nothing to apply.
+	// ErrNoChange. Once m.Up() returns, the schema is settled as far as every
+	// peer on THIS binary is concerned: such a peer has nothing left to apply.
 	//
 	// Reading the flag first, as the sequence used to, reads it outside any lock
 	// and reports a peer's in-progress migration as a fatal dirty schema,
 	// inviting an operator to hand-edit schema_migrations mid-migration.
 	//
-	// With autoMigrate=false the ordering is moot — nothing here migrates — and a
-	// dirty read is accurate information about a migration running under someone
-	// else's control, which this node must not start against.
+	// The ordering alone does NOT close the window against a NEWER binary, which
+	// carries a migration this one does not embed and can therefore still start
+	// one after m.Up() returns. That is closed separately, by the compat check
+	// reading the version under the same lock — see versionUnderMigrationLock.
+	//
+	// With autoMigrate=false nothing here migrates, so the compat check is the
+	// only phase and that locked read is the whole guarantee.
 	if autoMigrate {
 		if err := runMigrationsWith(ctx, pool, lockTimeout, afterMigratorBuilt); err != nil {
 			return fmt.Errorf("postgres migrate: %w", migrationLockWaitError(err, lockTimeout))
@@ -113,21 +117,30 @@ func ensureSchemaWith(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool,
 	return migrationLockWaitError(checkSchemaCompatWith(ctx, db, autoMigrate, afterMigratorBuilt), lockTimeout)
 }
 
-// migrationLockWaitError restates a migration-lock wait that lock_timeout
-// aborted, and returns every other error untouched.
+// migrationLockWaitError restates a lock wait that lock_timeout aborted, and
+// returns every other error untouched.
 //
-// Both phases take golang-migrate's advisory lock, so a peer whose migration
-// outruns the bound aborts this node's wait and it refuses to start — the
-// intended trade, since a node that cannot establish a settled schema must not
-// serve against it. golang-migrate reports that as a bare cancelled
-// `pg_advisory_lock`, which names neither the cause nor the remedy.
+// Two different waits abort with the same SQLSTATE and need different answers.
+// One is golang-migrate's advisory lock, held by a peer that is migrating: this
+// node refuses to start, which is the intended trade, since a node that cannot
+// establish a settled schema must not serve against it. The other is an ordinary
+// table lock a migration's own DDL needs, held by some unrelated transaction —
+// no peer is migrating, and saying one is sends an operator looking for a node
+// that does not exist. The failing query tells them apart.
 //
 // Matched on the SQLSTATE rather than with errors.As because golang-migrate's
 // database.Error keeps its cause in a plain field and implements no Unwrap, so
-// the typed *pgconn.PgError is unreachable. The SQLSTATE is a wire constant.
+// the typed *pgconn.PgError is unreachable. The SQLSTATE is a wire constant, and
+// database.Error renders the query it was running alongside it.
 func migrationLockWaitError(err error, lockTimeout time.Duration) error {
 	if err == nil || !strings.Contains(err.Error(), "SQLSTATE "+pgerrcode.LockNotAvailable) {
 		return err
+	}
+	if !strings.Contains(err.Error(), "pg_advisory_lock") {
+		return fmt.Errorf(
+			"a migration timed out after %s waiting for a table lock — another transaction holds an "+
+				"object it alters. Retry once that transaction ends, or raise "+
+				"CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT: %w", lockTimeout, err)
 	}
 	return fmt.Errorf(
 		"timed out after %s waiting for the schema-migration lock: another node or `cyoda migrate` "+
@@ -239,7 +252,9 @@ func runMigrationsWith(ctx context.Context, pool *pgxpool.Pool, lockTimeout time
 		default:
 		}
 		<-done // wait for the goroutine to exit so we don't leak it
-		return fmt.Errorf("postgres migrate: %w", ctx.Err())
+		// Names what was interrupted, not the phase — ensureSchemaWith already
+		// prepends that, and saying it twice reads as a bug in the wrapping.
+		return fmt.Errorf("cancelled between migration steps: %w", ctx.Err())
 	case err := <-done:
 		return err
 	}
@@ -373,9 +388,13 @@ func dropSchema(pool *pgxpool.Pool) error {
 //   - schema matches → proceed
 //   - dirty state → fatal, manual intervention required
 //
-// On the ensureSchema path this runs AFTER migrations, so the older-than-code
-// and dirty branches are reached only when a migration silently did nothing —
-// they are the backstop, not the normal route.
+// With autoMigrate=false this is the only phase ensureSchema runs, and every
+// branch above is a normal route. With autoMigrate=true it runs after the
+// migrations, so the older-than-code and dirty branches are then a backstop
+// against a migration that silently did nothing.
+//
+// The version is read under golang-migrate's advisory lock either way — see
+// versionUnderMigrationLock for why that matters even after migrating.
 func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error {
 	return checkSchemaCompatWith(ctx, db, autoMigrate, nil)
 }
@@ -408,7 +427,7 @@ func checkSchemaCompatWith(ctx context.Context, db *sql.DB, autoMigrate bool, af
 		return fmt.Errorf("schema compat: scan embedded migrations: %w", err)
 	}
 
-	dbVersion, dirty, err := m.Version()
+	dbVersion, dirty, err := versionUnderMigrationLock(driver, m)
 	switch {
 	case errors.Is(err, migrate.ErrNilVersion):
 		dbVersion = 0 // fresh database — treat as older-than-code
@@ -426,6 +445,37 @@ func checkSchemaCompatWith(ctx context.Context, db *sql.DB, autoMigrate bool, af
 		return fmt.Errorf("schema compat: database schema version %d is older than code (%d) and CYODA_POSTGRES_AUTO_MIGRATE=false — set CYODA_POSTGRES_AUTO_MIGRATE=true and restart, or apply migrations out-of-band", dbVersion, maxVersion)
 	}
 	return nil
+}
+
+// versionUnderMigrationLock reads the recorded schema version while holding
+// golang-migrate's own advisory lock — the same lock every migrator takes
+// before it stamps dirty, not a second lock of ours.
+//
+// Reading it unlocked catches a peer mid-step and reports that peer's live
+// migration as a schema needing manual repair, which is the false alarm that
+// invites an operator to hand-edit schema_migrations while the migration is
+// still running. Running migrations first settles the schema against a peer on
+// THIS binary — once m.Up() returns, such a peer has nothing left to apply — but
+// a newer binary carries a migration this one does not embed and can start one
+// inside this window, which is what an old node restarting during a mixed-binary
+// rolling upgrade meets. So this read closes its own window rather than relying
+// on the ordering.
+//
+// The wait is bounded by lock_timeout on this connection. A node that cannot
+// establish a settled schema does not start.
+func versionUnderMigrationLock(driver database.Driver, m *migrate.Migrate) (version uint, dirty bool, err error) {
+	if err := driver.Lock(); err != nil {
+		return 0, false, fmt.Errorf("take migration lock: %w", err)
+	}
+	defer func() {
+		// Replaces rather than joins: a failed unlock means this connection's
+		// lock state is unknown, and that must not be masked by a version read
+		// the caller would otherwise treat as benign (ErrNilVersion).
+		if unlockErr := driver.Unlock(); unlockErr != nil {
+			err = fmt.Errorf("release migration lock: %w (version read: %v)", unlockErr, err)
+		}
+	}()
+	return m.Version()
 }
 
 // maxMigrationVersion walks the embedded migration source and returns

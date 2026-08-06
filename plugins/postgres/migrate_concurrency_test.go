@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgerrcode"
@@ -649,5 +650,188 @@ func TestEnsureSchema_BoundedLockWaitSaysWhatHappened(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message does not mention %q: %v", want, err)
 		}
+	}
+}
+
+// seamOnCall returns a seam that fires fn on the nth migrator ensureSchemaWith
+// builds — 1 is the migration phase's, 2 the compatibility check's. The phases
+// take the advisory lock independently, so each has a window of its own and a
+// test has to say which one it is aiming at.
+func seamOnCall(n int, fn func()) func() {
+	var calls int
+	return func() {
+		calls++
+		if calls == n {
+			fn()
+		}
+	}
+}
+
+// TestEnsureSchema_NewerPeerMigratingIsNotReportedAsDirty is the compatibility
+// phase's half of the same race.
+//
+// Running migrations first settles the schema against every peer running THIS
+// binary — after m.Up() returns, a same-version peer has nothing left to apply.
+// A NEWER binary does: it carries a migration this one does not embed. So it can
+// still take the lock and stamp dirty inside the compat phase's own unlocked
+// window, and an old node restarting during a mixed-binary rolling upgrade meets
+// it. The verdict must be the accurate refusal — the schema is ahead of this
+// binary — and never the dirty alarm that tells an operator to go and repair a
+// migration which is at that moment running normally on another node.
+func TestEnsureSchema_NewerPeerMigratingIsNotReportedAsDirty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	migrateToHead(t, dsn)
+
+	var peerDone <-chan struct{}
+	seam := seamOnCall(2, func() {
+		var ready <-chan struct{}
+		ready, peerDone = transientMigratingPeer(t, dsn, headVersion(t)+1, 500*time.Millisecond)
+		<-ready // the peer holds the lock and has stamped dirty at head+1
+	})
+
+	err := ensureSchemaWith(context.Background(), openPool(t, dsn), true, 5*time.Minute, seam)
+	if peerDone != nil {
+		<-peerDone
+	}
+	if err == nil {
+		t.Fatal("started against a schema a newer binary had migrated past")
+	}
+	t.Logf("newer peer mid-migration refused with: %v", err)
+	if strings.Contains(err.Error(), "manual intervention required") {
+		t.Fatalf("a newer peer's in-flight migration was reported as a schema needing manual repair: %v", err)
+	}
+	if !strings.Contains(err.Error(), "newer than this binary") {
+		t.Fatalf("want the newer-than-binary refusal, got: %v", err)
+	}
+}
+
+// TestEnsureSchema_CompatCheckWaitsOutAPeersMigration is the autoMigrate=false
+// path, where the compatibility check is the only phase and therefore the only
+// thing holding the line.
+//
+// The ordering swap does nothing here — nothing in this binary migrates — so
+// this window is closed only by reading the version under the same lock a
+// migrator takes. With the read locked, a peer's in-flight migration is waited
+// out and the settled schema it leaves behind is accepted.
+func TestEnsureSchema_CompatCheckWaitsOutAPeersMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	migrateToHead(t, dsn)
+
+	var peerDone <-chan struct{}
+	seam := seamOnCall(1, func() {
+		var ready <-chan struct{}
+		ready, peerDone = transientMigratingPeer(t, dsn, headVersion(t), 500*time.Millisecond)
+		<-ready
+	})
+
+	err := ensureSchemaWith(context.Background(), openPool(t, dsn), false, 5*time.Minute, seam)
+	if peerDone != nil {
+		<-peerDone
+	}
+	if err != nil {
+		t.Fatalf("a peer's in-flight migration was reported as a fatal dirty schema: %v", err)
+	}
+}
+
+// lockTimeoutFrom builds the error golang-migrate produces when lock_timeout
+// aborts the given statement — a database.Error carrying the query it was
+// running and the server's 55P03 underneath, exactly as the pgx driver wraps it.
+// Built from the real types so the classifier is pinned against golang-migrate's
+// actual rendering rather than a guess at it.
+func lockTimeoutFrom(what, query string) error {
+	return &database.Error{
+		Err:   what,
+		Query: []byte(query),
+		OrigErr: &pgconn.PgError{
+			Severity: "ERROR",
+			Code:     pgerrcode.LockNotAvailable,
+			Message:  "canceling statement due to lock timeout",
+		},
+	}
+}
+
+// TestMigrationLockWaitError_NamesWhichLockTimedOut — both waits abort with
+// SQLSTATE 55P03, so the SQLSTATE alone cannot tell them apart. One is a peer
+// holding the migration lock; the other is an ordinary transaction holding a
+// table this migration's DDL needs. Reporting the second as the first tells an
+// operator to go and look for a migrating node that does not exist.
+func TestMigrationLockWaitError_NamesWhichLockTimedOut(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantSubstr []string
+		notSubstr  []string
+	}{
+		{
+			name:       "advisory lock held by a peer migrator",
+			err:        lockTimeoutFrom("try lock failed", "SELECT pg_advisory_lock($1)"),
+			wantSubstr: []string{"waiting for the schema-migration lock", "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT"},
+		},
+		{
+			name:       "table lock held by a long reader",
+			err:        lockTimeoutFrom("migration failed", "CREATE INDEX CONCURRENTLY idx ON entities (tenant_id)"),
+			wantSubstr: []string{"waiting for a table lock", "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT"},
+			notSubstr:  []string{"schema-migration lock", "is migrating this database"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := migrationLockWaitError(tc.err, 5*time.Minute)
+			for _, want := range tc.wantSubstr {
+				if !strings.Contains(got.Error(), want) {
+					t.Errorf("message does not mention %q: %v", want, got)
+				}
+			}
+			for _, unwanted := range tc.notSubstr {
+				if strings.Contains(got.Error(), unwanted) {
+					t.Errorf("message wrongly claims %q: %v", unwanted, got)
+				}
+			}
+			if !errors.Is(got, tc.err) {
+				t.Errorf("translation dropped the cause: %v", got)
+			}
+		})
+	}
+}
+
+// TestMigrationLockWaitError_LeavesEverythingElseAlone — only a lock wait is
+// restated; every other failure keeps its own error.
+func TestMigrationLockWaitError_LeavesEverythingElseAlone(t *testing.T) {
+	if got := migrationLockWaitError(nil, time.Minute); got != nil {
+		t.Errorf("nil became %v", got)
+	}
+	other := errors.New("relation \"entities\" does not exist (SQLSTATE 42P01)")
+	if got := migrationLockWaitError(other, time.Minute); got != other {
+		t.Errorf("unrelated error was rewritten to %v", got)
+	}
+}
+
+// TestEnsureSchema_CancelledContextSaysItOnce — runMigrations and ensureSchema
+// each used to prepend "postgres migrate: ", so a cancelled boot reported
+// "postgres migrate: postgres migrate: context canceled". The inner wrap is the
+// one with something to say; the outer one names the phase.
+func TestEnsureSchema_CancelledContextSaysItOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a live PostgreSQL")
+	}
+	dsn := freshDatabase(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := ensureSchema(ctx, openPool(t, dsn), true, 5*time.Minute)
+	if err == nil {
+		t.Fatal("a cancelled context still completed the boot sequence")
+	}
+	t.Logf("cancelled boot reported: %v", err)
+	if n := strings.Count(err.Error(), "postgres migrate: "); n != 1 {
+		t.Errorf("phase named %d times, want once: %v", n, err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancellation is not recoverable from the error: %v", err)
 	}
 }
