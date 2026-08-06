@@ -95,8 +95,15 @@ func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error 
 	case err != nil:
 		return fmt.Errorf("schema compat: read DB version: %w", err)
 	}
+	// This refusal and the newer-than-binary one below are kept word for word in
+	// step with the postgres plugin's dirtySchemaError and
+	// schemaNewerThanBinaryError. An operator reads the refusal, not the plugin
+	// that produced it, and the recovery procedure the pointer names covers this
+	// backend as well — clearing the dirty flag is not something to be
+	// reverse-engineered from a bare statement of the condition.
 	if dirty {
-		return fmt.Errorf("schema compat: database migration state is dirty at version %d — manual intervention required", dbVersion)
+		return fmt.Errorf("schema compat: database migration state is dirty at version %d — "+
+			"manual intervention required; run `cyoda help cli migrate` for the recovery procedure", dbVersion)
 	}
 
 	switch {

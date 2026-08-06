@@ -226,14 +226,76 @@ const (
 	searchCeilingTenant = "search-ceiling-tenant"
 	searchCeilingModel  = "search-ceiling-model"
 
-	// searchCeilingSeedRows is not a stress figure — it is the margin that makes
-	// both scenarios deterministic. Every async search is a point-in-time read
-	// (SubmitAsync stamps one), so the scan reads every seeded version through
-	// the bi-temporal DISTINCT ON and takes tens of milliseconds. Both scenarios
-	// then compare that against 1ms on one side and 30s on the other, so neither
-	// outcome depends on how fast the machine running the test is.
+	// searchCeilingSeedRows is not a stress figure — it is what gives the scan a
+	// cost the two ceilings can be placed either side of. Every async search is a
+	// point-in-time read (SubmitAsync stamps one), so the scan reads every seeded
+	// version through the bi-temporal DISTINCT ON and takes hundreds of
+	// milliseconds. How many hundreds is a property of the machine, which is why
+	// the scenario needing a ceiling below the scan measures instead of assuming —
+	// see searchCeilingInteractiveFor.
 	searchCeilingSeedRows = 50000
+
+	// searchCeilingGenerous is the "not this one" side of each pairing below:
+	// large enough that the ceiling under test is unambiguously the one that
+	// fired, even on a machine slow enough to take seconds over the seeded scan.
+	searchCeilingGenerous = "60s"
+
+	// searchCeilingPreambleFloor is the smallest interactive ceiling these
+	// scenarios may use. The async scan's transaction opens with a BEGIN and a
+	// set_config binding the tenant, and both run BEFORE the SET LOCAL that
+	// raises the ceiling — so the interactive ceiling bounds the scan's own
+	// preamble as well as the scan. Measured against a live server with every
+	// core saturated: at 1ms about a quarter of those preambles are cancelled,
+	// at 25ms roughly one in three hundred, and at 50ms and above none. The
+	// floor keeps a margin over that, so a failure in these scenarios is the
+	// scan's to have and never the preamble's.
+	searchCeilingPreambleFloor = 100 * time.Millisecond
 )
+
+// searchCeilingInteractiveFor derives the interactive ceiling the scenario below
+// runs under from what the seeded scan actually costs on this machine.
+//
+// A constant cannot do this job. The value has to sit above the cost of the
+// scan's preamble — two trivial round trips, but ones whose cost is a property
+// of how loaded the machine is — and below the cost of the scan, which is a
+// property of how fast it is. The two are far apart, but not at an address a
+// constant can name: a 1ms ceiling sits below the preamble, and the scenario
+// then failed in its own setup under load while reporting it as the scan's
+// failure.
+//
+// So: time the scan with both ceilings out of the way and take the faster of two
+// runs. The first scan after seeding is the slow one, and calibrating on it
+// would leave the ceiling too high for the runs that follow. A quarter of the
+// settled figure is the ceiling; if that leaves less than a threefold margin
+// under the scan, the seed no longer discriminates on this machine and the
+// scenario says so rather than pretending to prove something.
+func searchCeilingInteractiveFor(t *testing.T, dsn string) time.Duration {
+	t.Helper()
+	es, _ := searchCeilingStores(t, dsn, map[string]string{
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        searchCeilingGenerous,
+		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": searchCeilingGenerous,
+	})
+
+	var scan time.Duration
+	for i := 0; i < 2; i++ {
+		start := time.Now()
+		if _, err := searchCeilingScan(t, es, searchCeilingCtx()); err != nil {
+			t.Fatalf("calibration scan: %v", err)
+		}
+		if d := time.Since(start); i == 0 || d < scan {
+			scan = d
+		}
+	}
+
+	ceiling := max(searchCeilingPreambleFloor, scan/4).Round(time.Millisecond)
+	if scan < 3*ceiling {
+		t.Fatalf("the seeded scan settles at %v, which leaves no ceiling both clear of the scan's "+
+			"preamble (at least %v) and far enough below the scan to stop it; raise "+
+			"searchCeilingSeedRows until it does", scan, searchCeilingPreambleFloor)
+	}
+	t.Logf("calibrated: seeded scan settles at %v, interactive ceiling %v", scan, ceiling)
+	return ceiling
+}
 
 // searchCeilingCtx is a tenant-carrying context for the scenarios below.
 func searchCeilingCtx() context.Context {
@@ -347,17 +409,18 @@ type asyncScanMarker interface {
 }
 
 // TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot is the half
-// that matters most: with the interactive ceiling at 1ms, the async scan still
-// completes because SET LOCAL raised it to the search ceiling for that
-// transaction alone. Without the raise, the scan would die on the 1ms the pool
-// carries — which the unmarked control below proves it does.
+// that matters most: with the interactive ceiling set below what the scan needs,
+// the async scan still completes because SET LOCAL raised it to the search
+// ceiling for that transaction alone. Without the raise, the scan would die on
+// the ceiling the pool carries — which the unmarked control below proves it does.
 func TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot(t *testing.T) {
 	dsn := skipIfNoLiveDB(t)
 	seedSearchCeilingModel(t, dsn)
 
+	interactive := searchCeilingInteractiveFor(t, dsn)
 	es, ass := searchCeilingStores(t, dsn, map[string]string{
-		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        "1ms",
-		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": "30s",
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        interactive.String(),
+		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": searchCeilingGenerous,
 	})
 	marker, ok := ass.(asyncScanMarker)
 	if !ok {
@@ -376,7 +439,7 @@ func TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot(t *testing
 	// interactive ceiling, so it is cancelled — which is what makes the pass
 	// above evidence of the raise rather than of a fast machine.
 	if _, err := searchCeilingScan(t, es, searchCeilingCtx()); err == nil {
-		t.Fatal("an unmarked scan completed under a 1ms interactive ceiling; the scenario above proves nothing")
+		t.Fatalf("an unmarked scan completed under a %v interactive ceiling; the scenario above proves nothing", interactive)
 	} else if !isStatementTimeout(err) {
 		t.Fatalf("unmarked scan failed with %v, want the interactive ceiling's cancellation", err)
 	}
@@ -391,8 +454,11 @@ func TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse(t *testing.T) {
 	dsn := skipIfNoLiveDB(t)
 	seedSearchCeilingModel(t, dsn)
 
+	// The 1ms is safe on this side: the scan's preamble runs under the generous
+	// interactive ceiling, and the search ceiling only takes effect from the
+	// SET LOCAL onwards — so the scan itself is the first statement it bounds.
 	es, ass := searchCeilingStores(t, dsn, map[string]string{
-		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        "30s",
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        searchCeilingGenerous,
 		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": "1ms",
 	})
 	marker, ok := ass.(asyncScanMarker)
@@ -410,7 +476,7 @@ func TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse(t *testing.T) {
 	}
 
 	// The interactive path is unaffected: the same store, on an unmarked
-	// context, runs the same scan to completion under the pool's 30s ceiling.
+	// context, runs the same scan to completion under the pool's generous ceiling.
 	got, err := searchCeilingScan(t, es, searchCeilingCtx())
 	if err != nil {
 		t.Fatalf("the search ceiling leaked onto the interactive path: %v", err)

@@ -30,7 +30,7 @@ Retryable. The same request may well succeed on a second attempt. Repeated occur
 
 A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT` is **not** reported here. Re-running it would exceed the same ceiling again, so it is a `500` with a ticket rather than a retryable `503`; the server log names the setting that fired.
 
-See `cyoda help config.database` for the pool and ceiling settings.
+See `cyoda help config database` for the pool and ceiling settings.
 
 ## SEE ALSO
 

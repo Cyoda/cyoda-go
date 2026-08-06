@@ -84,7 +84,7 @@ in `CYODA_POSTGRES_URL` (`?statement_timeout=...`). A value there is left alone 
 environment variable is also set, in which case the environment variable wins and the
 override is logged at WARN.
 
-See `cyoda help errors.STORAGE_UNAVAILABLE` for what a client sees when a ceiling fires.
+See `cyoda help errors STORAGE_UNAVAILABLE` for what a client sees when a ceiling fires.
 
 ### Memory backend
 

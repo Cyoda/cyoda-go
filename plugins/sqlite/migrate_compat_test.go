@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,49 @@ func TestCheckSchemaCompat_DirtyState(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when migration state is dirty")
 	}
+}
+
+// TestCheckSchemaCompat_RefusalsCarryTheSameGuidanceAsPostgres — an operator
+// meets a refusal to start without first deciding which storage plugin wrote
+// it, so both plugins say the same thing. The dirty message in particular has
+// to carry the pointer to the recovery procedure: clearing the flag is not
+// something to be reverse-engineered from a bare statement of the condition,
+// and the procedure the topic documents covers this backend too.
+func TestCheckSchemaCompat_RefusalsCarryTheSameGuidanceAsPostgres(t *testing.T) {
+	t.Run("dirty", func(t *testing.T) {
+		db := openMemorySQLiteForCompat(t)
+		writeMigrationVersion(t, db, 1, true /* dirty */)
+		err := checkSchemaCompat(context.Background(), db, true)
+		if err == nil {
+			t.Fatal("expected a refusal on a dirty schema")
+		}
+		for _, want := range []string{
+			"database migration state is dirty at version 1",
+			"manual intervention required",
+			"cyoda help cli migrate",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal %q is missing %q", err, want)
+			}
+		}
+	})
+
+	t.Run("newer than binary", func(t *testing.T) {
+		db := openMemorySQLiteForCompat(t)
+		writeMigrationVersion(t, db, 999, false)
+		err := checkSchemaCompat(context.Background(), db, true)
+		if err == nil {
+			t.Fatal("expected a refusal on a schema newer than the binary")
+		}
+		for _, want := range []string{
+			"database schema version 999 is newer than this binary's max migration version",
+			"refusing to start to avoid data corruption",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal %q is missing %q", err, want)
+			}
+		}
+	})
 }
 
 func TestCheckSchemaCompat_SchemaMatches(t *testing.T) {
