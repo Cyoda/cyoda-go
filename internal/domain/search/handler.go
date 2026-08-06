@@ -293,10 +293,13 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		// Asking for results before the job finished is a client error, and the
 		// status it is in is domain detail the caller is entitled to. Every other
-		// failure — the job lookup, the result-ID read, the entity store — is a
-		// server-side failure: jobLookupError keeps a genuine miss at 404 and
-		// routes the rest through common.Internal, which answers a storage outage
-		// with a retryable 503 and keeps the driver's text out of the body.
+		// failure that reaches here — the job lookup, the result-ID read, and
+		// acquiring the entity store — is a server-side failure: jobLookupError
+		// keeps a genuine miss at 404 and routes the rest through common.Internal,
+		// which answers a storage outage with a retryable 503 and keeps the
+		// driver's text out of the body. A failure reading an individual entity
+		// does NOT reach here: the service logs and skips it, so the page can come
+		// back short with a 200 — see GetAsyncResults.
 		if errors.Is(err, ErrSearchJobNotComplete) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
 			return

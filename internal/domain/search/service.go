@@ -633,6 +633,14 @@ func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts 
 
 	ids, total, err := s.searchStore.GetResultIDs(ctx, jobID, opts.Offset, limit)
 	if err != nil {
+		// The job was there a moment ago, so this is either a store failure or a
+		// job reaped in the window between the two reads. No backend tags the
+		// latter on this call, so ask the one that does. Only an affirmative miss
+		// answers 404: a store that is merely failing cannot confirm one, and the
+		// cause is returned intact instead of a not-found inferred from it.
+		if _, getErr := s.searchStore.GetJob(ctx, jobID); errors.Is(getErr, spi.ErrNotFound) {
+			return AsyncResultsPage{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+		}
 		return AsyncResultsPage{}, fmt.Errorf("failed to get result IDs: %w", err)
 	}
 
@@ -641,6 +649,12 @@ func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts 
 		return AsyncResultsPage{}, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
+	// An entity that cannot be read is skipped, so a page can come back short —
+	// and short with a 200, indistinguishable from a job whose results really
+	// were fewer. `total` still counts the recorded ids, so the page and the
+	// count disagree. That is the shipped contract for this endpoint and is not
+	// changed here; a caller comparing len(content) against page.size is the only
+	// one who can currently notice.
 	var results []*spi.Entity
 	for _, id := range ids {
 		e, err := entityStore.GetAsAt(ctx, id, job.PointInTime)

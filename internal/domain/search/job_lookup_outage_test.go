@@ -51,9 +51,19 @@ type stubSearchStore struct {
 	job          *spi.SearchJob
 	getJobErr    error
 	resultIDsErr error
+
+	// vanishAfterFirstGet models the job disappearing between the two store
+	// calls GetAsyncResults makes — an expiry reap or a concurrent cancel
+	// landing in the window.
+	vanishAfterFirstGet bool
+	getJobCalls         int
 }
 
-func (s *stubSearchStore) GetJob(_ context.Context, _ string) (*spi.SearchJob, error) {
+func (s *stubSearchStore) GetJob(_ context.Context, jobID string) (*spi.SearchJob, error) {
+	s.getJobCalls++
+	if s.vanishAfterFirstGet && s.getJobCalls > 1 {
+		return nil, jobMiss(jobID)
+	}
 	if s.job != nil {
 		return s.job, nil
 	}
@@ -196,6 +206,37 @@ func TestGetAsyncSearchResults_StorageOutage_Returns503(t *testing.T) {
 // separate storage round-trip and had its own swallow: the handler interpolated
 // whatever came back into a 400 body.
 func TestGetAsyncSearchResults_ResultIDsStorageOutage_Returns503(t *testing.T) {
+	jobID := uuid.New()
+	store := &stubSearchStore{
+		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		resultIDsErr: storageOutage("GetResultIDs"),
+	}
+	w := callResults(t, stubService(store), jobID)
+	expectRetryable503(t, w.Result(), w.Body.String())
+}
+
+// A job can be reaped between the status read and the result-ID read. No
+// backend tags that miss, so the only honest way to tell it from a store
+// failure is to ask the one call that does tag — and only an affirmative miss
+// may answer 404.
+func TestGetAsyncSearchResults_JobVanishesMidRead_Returns404(t *testing.T) {
+	jobID := uuid.New()
+	store := &stubSearchStore{
+		job:                 &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		resultIDsErr:        fmt.Errorf("search job %q not found", jobID),
+		vanishAfterFirstGet: true,
+	}
+	w := callResults(t, stubService(store), jobID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeSearchJobNotFound)
+}
+
+// The inverse, and the reason the re-read must not be a guess: when the store
+// is failing rather than the job being gone, the re-read cannot confirm a miss,
+// so the answer stays a retryable 503 — never a 404 inferred from a failure.
+func TestGetAsyncSearchResults_StoreDownDuringResultIDs_StaysRetryable(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
 		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
