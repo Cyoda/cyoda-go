@@ -53,6 +53,31 @@ Used when `CYODA_STORAGE_BACKEND=postgres`.
 
 The prefix `CYODA_POSTGRES_` is used to namespace all PostgreSQL configuration variables.
 
+#### Ceilings
+
+Every PostgreSQL connection is opened with these limits in place. Each accepts a Go
+duration (`30s`, `5m`, `1h`); `0` disables that limit. A malformed value fails startup
+rather than falling back to the default — a silently-defaulted ceiling is a silently
+removed safety limit.
+
+- `CYODA_POSTGRES_STATEMENT_TIMEOUT` — maximum run time for a single SQL statement (default: `5m`)
+- `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` — maximum time a connection may sit idle inside an open transaction (default: `5m`)
+- `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — maximum wait for a free pooled connection before the request fails with `503 STORAGE_UNAVAILABLE` (default: `10s`)
+- `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` — maximum lock wait during schema migration (default: `5m`)
+- `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` — statement ceiling for async search scans, which legitimately run far longer than an interactive statement (default: `30m`)
+
+`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` reclaims a transaction nothing is driving any more.
+It must clear the longest legitimate idle gap, which is a compute-node callout bounded by
+`responseTimeoutMs` (default `30s`) — set it below that and healthy work is killed
+mid-flight. It applies per gap, not per transaction: a cascade writes between callouts,
+which restarts the clock, so a long cascade need only keep each gap under the ceiling.
+
+The first two can also be set in `CYODA_POSTGRES_URL` (`?statement_timeout=...`). A value
+there is left alone unless the environment variable is also set, in which case the
+environment variable wins and the override is logged at WARN.
+
+See `cyoda help errors.STORAGE_UNAVAILABLE` for what a client sees when a ceiling fires.
+
 ### Memory backend
 
 Used when `CYODA_STORAGE_BACKEND=memory`. No additional configuration needed. Data is

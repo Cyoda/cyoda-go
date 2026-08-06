@@ -1,0 +1,74 @@
+package postgres
+
+import (
+	"fmt"
+	"log/slog"
+	"strconv"
+	"time"
+)
+
+// pgDurationMillis renders a Go duration in the form PostgreSQL's
+// statement_timeout / idle_in_transaction_session_timeout / lock_timeout GUCs
+// accept in the startup packet: a bare integer count of milliseconds, which is
+// their default unit.
+//
+// Nothing may pass a Go duration through verbatim. PostgreSQL's units are
+// us/ms/s/min/h/d — "m" is not among them — and Go renders five minutes as
+// "5m0s", which is invalid twice over. A malformed value here fails pool.Ping at
+// boot for every deployment, so a test asserts the rendered form.
+func pgDurationMillis(d time.Duration) string {
+	return strconv.FormatInt(d.Milliseconds(), 10)
+}
+
+// envCeiling parses a PostgreSQL-ceiling env var. It reports whether the
+// operator set it explicitly, which applyCeiling needs in order to decide
+// against a value supplied in the DSN.
+//
+// Unlike the envInt/envDuration/envBool helpers next door, a malformed value is
+// an error rather than a silent fall back to the default: a silently-defaulted
+// ceiling is a silently-removed safety limit.
+func envCeiling(getenv func(string) string, key string, dflt time.Duration) (time.Duration, bool, error) {
+	v := getenv(key)
+	if v == "" {
+		return dflt, false, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s=%q is not a valid duration: %w", key, v, err)
+	}
+	if d < 0 {
+		return 0, false, fmt.Errorf("%s=%q must not be negative", key, v)
+	}
+	if d > 0 && d < time.Millisecond {
+		// Truncating to "0" would tell PostgreSQL "no limit" — the exact
+		// inversion of the operator's intent — so this is rejected rather than
+		// silently removing a ceiling.
+		return 0, false, fmt.Errorf(
+			"%s=%q is below the 1ms resolution of the PostgreSQL setting it configures; "+
+				"use 0 to disable the limit explicitly, or a value of at least 1ms", key, v)
+	}
+	return d, true, nil
+}
+
+// applyCeiling writes a ceiling into the pool's startup RuntimeParams.
+//
+// pgxpool.ParseConfig folds unrecognised DSN keys into RuntimeParams, so a value
+// the operator set in CYODA_POSTGRES_URL is already present here. Since these
+// settings now have non-zero defaults, writing unconditionally would let a
+// default nobody set override a value somebody did. So: an explicitly set env
+// var always wins (and says so when it is overriding), a DSN-only value is left
+// alone, and the default applies when neither is present.
+//
+// The warning names the setting and the two rendered values only — never the
+// connection string, which carries credentials.
+func applyCeiling(params map[string]string, name string, d time.Duration, explicit bool) {
+	dsnValue, inDSN := params[name]
+	if inDSN && !explicit {
+		return
+	}
+	if inDSN && explicit {
+		slog.Warn("overriding a PostgreSQL setting supplied in CYODA_POSTGRES_URL with the environment variable",
+			"pkg", "postgres", "setting", name, "dsnValue", dsnValue, "envValue", pgDurationMillis(d))
+	}
+	params[name] = pgDurationMillis(d)
+}

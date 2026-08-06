@@ -52,6 +52,13 @@ func defaultStoreConfig() config {
 		MaxConns:                25,
 		MinConns:                5,
 		SchemaSavepointInterval: 64,
+		// A zero ceiling reads as "disabled" to every consumer of these fields,
+		// so the baseline carries the shipped defaults rather than zero values.
+		StatementTimeout:       defaultStatementTimeout,
+		IdleInTxTimeout:        defaultIdleInTxTimeout,
+		AcquireTimeout:         defaultAcquireTimeout,
+		MigrateLockTimeout:     defaultMigrateLockTimeout,
+		SearchStatementTimeout: defaultSearchStatementTimeout,
 	}
 }
 
