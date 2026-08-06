@@ -286,8 +286,10 @@ func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
 // stays off the wire: common.StorageUnavailable holds it in WithCause, so the
 // message is client-safe by construction.
 func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
-	raw := fmt.Errorf("failed to mark entity deleted: %w",
-		&markedStorageOutage{detail: "acquire: host=db.internal user=cyoda: context deadline exceeded"})
+	buf := captureEntitySlog(t)
+
+	const cause = "acquire: host=db.internal user=cyoda: context deadline exceeded"
+	raw := fmt.Errorf("failed to mark entity deleted: %w", &markedStorageOutage{detail: cause})
 
 	msg := perIDDeleteError("e-1", raw)
 
@@ -301,6 +303,24 @@ func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
 		if strings.Contains(msg, leak) {
 			t.Errorf("per-id error leaks the storage cause (%q): %s", leak, msg)
 		}
+	}
+
+	// The classified branch returns before this function's ticketed
+	// slog.Error, and the caller does not log either — so without a
+	// breadcrumb here, WHY storage was unavailable is recorded nowhere. The
+	// usual rescue is that the same outage also fails scope.Commit(), which
+	// logs; that is not guaranteed. Same message and field name as
+	// common.WriteError's operational branch, so the two read alike in an
+	// aggregator.
+	logged := buf.String()
+	if !strings.Contains(logged, cause) {
+		t.Errorf("the storage cause was kept out of the response but never logged, so it is lost: %s", logged)
+	}
+	if !strings.Contains(logged, "operational error") {
+		t.Errorf("the breadcrumb does not use the shared operational-error message: %s", logged)
+	}
+	if !strings.Contains(logged, "e-1") {
+		t.Errorf("the breadcrumb does not name the entity it belongs to: %s", logged)
 	}
 }
 

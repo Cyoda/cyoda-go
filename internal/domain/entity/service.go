@@ -903,7 +903,17 @@ func perIDDeleteError(entityID string, err error) string {
 	// would differ from the answer the same failure gets on every other door. The
 	// cause still stays off the wire — StorageUnavailable holds it in WithCause,
 	// so Message is client-safe by construction.
+	//
+	// Which makes the log its ONLY breadcrumb, and this branch returns before the
+	// ticketed slog.Error below. The caller (DeleteEntitiesConditional) does not
+	// log a per-item failure either, so without this line WHY storage was
+	// unavailable is recorded nowhere. Usually the same outage also fails
+	// scope.Commit(), which logs — but that is a coincidence of timing, not a
+	// guarantee. Same message and field name as common.WriteError's operational
+	// branch and the gRPC door's, so all three read alike in an aggregator.
 	if suErr := common.StorageUnavailable(err); suErr != nil {
+		slog.Info("operational error", "pkg", "entity", "entityId", entityID,
+			"code", suErr.Code, "message", suErr.Message, "cause", err.Error())
 		return suErr.Message
 	}
 	if errors.Is(err, spi.ErrNotFound) {
