@@ -4216,6 +4216,8 @@ Three env vars are removed and three ceilings that did not exist now apply by de
 - A criterion evaluated after a `COMMIT_BEFORE_DISPATCH` segment receives that segment's transaction id rather than the committed cascade-entry id, so a compute node's callback can join it.
 - A collection update whose engine conflicted after segmenting aborts the batch instead of isolating the item and writing every later item into an already-committed transaction.
 - `statement_timeout` (SQLSTATE `57014`) and `idle_in_transaction_session_timeout` (SQLSTATE `25P03`) are classified rather than surfacing as unexplained errors, and a `25P03` abort releases the per-transaction bookkeeping the killed session left behind.
+- A storage outage no longer answers `404 Not Found`. Async-search status and results, trusted-key delete/invalidate/reactivate, and the audit transaction lookup collapsed any store error into a not-found result, so a database outage reported "it does not exist" — a substituted answer that stops a client retrying. They now return `503 STORAGE_UNAVAILABLE`, retryable, while a genuine not-found still returns `404`.
+- The async-search results endpoint no longer interpolates the raw driver error into a `400` response body, which could include connection detail. A job that is still running returns `400` with a fixed message; anything else is classified.
 ```
 
 No issue numbers anywhere in this file's shipped text.
@@ -4228,7 +4230,23 @@ This change makes **no** `cyoda-go-spi` change — deliberately. The `StorageUna
 
 If the SPI pin, chart `version:`/`appVersion:`, or out-of-tree pin guidance are untouched, say so in the entry rather than leaving the reader to infer it.
 
-- [ ] **Step 3: Check the rest of Gate 4**
+- [ ] **Step 3: Reconcile the cluster-size range across documents**
+
+The `ARCHITECTURE.md` audit found three mutually inconsistent ranges and harmonised on DD-4's `2–20`, stated as a judgement rather than a derived bound. `docs/PRD.md:33`, `:764`, `:858` and `docs/CONSISTENCY.md:415` still carry the old `3–10` / `10–20`. The repo was uniformly wrong before and is inconsistent now, so this change made it worse — reconcile them on `2–20`.
+
+- [ ] **Step 4: Correct the spec's own mechanism claims**
+
+Five claims in `docs/superpowers/specs/2026-08-05-tx-lifecycle-safety-design.md` were disproven during implementation. One (§5's gRPC envelope) was already corrected in-tree. Fix the rest, since the spec is the merge-time checklist:
+
+- **§1.3** — a single entry-point guard does not cover panics raised below the entry frame. `Execute` assigns its trackers only after `cascadeAutomated` returns, so a panic inside the cascade unwinds past the assignment. Three additional panic-only guards, keyed on a nil named `ctx` return, were required.
+- **§1.2** — the collection-isolation fix cannot gate on `EngineResult.Segmented`: both conflict shapes return a nil result. An engine-side sentinel (`ErrPostSegmentConflict`) was required.
+- **§1.4** — the ticket-UUID claim held for HTTP, where `WriteError` mints it, but not for the gRPC door, which has no equivalent downstream step. The interceptor mints its own.
+- **§2** — the async-search path is not "pool-direct and separable (`search_store.go`)". That file is job-record CRUD; the scan runs through the same `entityStore.Search` an interactive search does. An `AsyncScanContext` marker was required to tell them apart.
+- **§3.3** — `m.Up()` on a database ahead of the binary does **not** return `ErrNoChange`; `readUp` calls `versionExists` first, so it returns `no migration found for version N`. Without translation the newer-than-binary refusal would have been replaced by a planner complaint.
+
+Present tense, current state. These are corrections to what the design says the mechanism is, not a changelog of the implementation.
+
+- [ ] **Step 5: Check the rest of Gate 4**
 
 Run:
 ```bash
@@ -4238,10 +4256,11 @@ Expected: no hits outside `CHANGELOG.md`, which documents the removal.
 
 Confirm `README.md`'s configuration reference lists the five new vars if it enumerates `CYODA_POSTGRES_*` at all.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add CHANGELOG.md COMPATIBILITY.md README.md
+git add CHANGELOG.md COMPATIBILITY.md README.md docs/PRD.md docs/CONSISTENCY.md \
+        docs/superpowers/specs/2026-08-05-tx-lifecycle-safety-design.md
 git commit -m "docs: record the transaction lifecycle changes and the breaking config removals"
 ```
 
