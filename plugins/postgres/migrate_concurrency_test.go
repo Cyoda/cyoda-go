@@ -114,27 +114,152 @@ func TestMigrationRuntimeParams_DoNotInheritAppCeilings(t *testing.T) {
 	}
 }
 
+// backendPID identifies the server-side session behind a connection, which is
+// how a test tells a genuinely new connection from a pooled one handed back.
+func backendPID(t *testing.T, conn *pgxpool.Conn) int {
+	t.Helper()
+	var pid int
+	if err := conn.QueryRow(context.Background(), "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatalf("pg_backend_pid: %v", err)
+	}
+	return pid
+}
+
 // TestOpenDB_DoesNotLeakIntoTheAppPool: pool.Config() deep-copies RuntimeParams
 // (pgxpool/pool.go:202 -> pgx/conn.go:58 -> pgconn/config.go:156), so the
 // migration overrides cannot travel back into the pool serving requests.
 // Asserted rather than assumed — openDB mutates a map reached through the pool,
 // and if any link in that chain shared it instead of copying it, every app
-// connection opened afterwards would silently lose its ceilings.
+// connection opened AFTERWARDS would silently lose its ceilings.
+//
+// "Afterwards" is the whole difficulty, and the reason this test holds a
+// connection open. RuntimeParams shape a connection's STARTUP packet and are
+// never re-applied to a live session, and newPool Ping()s during construction,
+// so the pool already holds an idle connection older than any call to openDB. A
+// plain Acquire() here would be handed that one back and would report the app
+// ceiling whether or not the pool's config had been corrupted — passing
+// identically in both worlds and catching nothing. So the pre-existing
+// connection is checked out and HELD, forcing the pool (MaxConns 2) to open a
+// second one whose startup packet is built from the config as it stands after
+// openDB ran. The backend PIDs are compared to prove that is what happened.
 func TestOpenDB_DoesNotLeakIntoTheAppPool(t *testing.T) {
 	pool := newPoolWithCeilings(t, 5*time.Minute, 5*time.Minute)
+	ctx := context.Background()
+
+	held, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire the pool's existing connection: %v", err)
+	}
+	defer held.Release()
+	heldPID := backendPID(t, held)
+
 	_ = openDB(pool, 5*time.Minute)
 
-	conn, err := pool.Acquire(context.Background())
+	fresh, err := pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("acquire: %v", err)
+		t.Fatalf("acquire a connection opened after openDB: %v", err)
 	}
-	defer conn.Release()
+	defer fresh.Release()
+	freshPID := backendPID(t, fresh)
+	if freshPID == heldPID {
+		t.Fatalf("the pool handed back backend %d again; this session predates openDB, "+
+			"so its settings say nothing about whether openDB corrupted the pool config", freshPID)
+	}
+	t.Logf("held backend %d, opened backend %d after openDB", heldPID, freshPID)
+
 	var got string
-	if err := conn.QueryRow(context.Background(), "SHOW statement_timeout").Scan(&got); err != nil {
+	if err := fresh.QueryRow(ctx, "SHOW statement_timeout").Scan(&got); err != nil {
 		t.Fatalf("SHOW: %v", err)
 	}
 	if normalizePgTime(got) == "0" {
-		t.Fatal("migration override leaked into the app pool; the app ceiling is gone")
+		t.Fatalf("migration override leaked into the app pool: a connection opened after openDB "+
+			"reports statement_timeout = %q; every later app connection has lost its ceiling", got)
+	}
+}
+
+// --- the `cyoda migrate` subcommand's own pool --------------------------------
+//
+// RunMigrateWithDSN builds a pool from the DSN alone, so it inherits nothing
+// from the app pool — but pgxpool.ParseConfig folds unrecognised DSN keys into
+// RuntimeParams, so a ceiling the operator put in CYODA_POSTGRES_URL arrives on
+// that pool anyway and would bound the migration's DDL just as surely.
+
+// TestE2E_MigratePoolConfig_OverridesACeilingFromTheDSN is the deterministic
+// half: the exact config RunMigrateWithDSN builds, materialised into a live
+// connection, with a hostile ceiling in the DSN.
+func TestE2E_MigratePoolConfig_OverridesACeilingFromTheDSN(t *testing.T) {
+	dsn := dsnWithParam(t, skipIfNoLiveDB(t), "statement_timeout", "1s")
+	poolCfg, err := migratePoolConfig(dsn, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("migratePoolConfig: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		t.Fatalf("open the migrate subcommand's pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	for setting, want := range map[string]string{
+		"statement_timeout":                   "0",
+		"idle_in_transaction_session_timeout": "0",
+		"lock_timeout":                        "300000",
+	} {
+		var got string
+		if err := pool.QueryRow(ctx, "SHOW "+setting).Scan(&got); err != nil {
+			t.Fatalf("SHOW %s: %v", setting, err)
+		}
+		t.Logf("migrate subcommand connection: SHOW %s = %q", setting, got)
+		if normalizePgTime(got) != want {
+			t.Errorf("%s = %q, want %q — the DSN's value survived onto the migration connection", setting, got, want)
+		}
+	}
+}
+
+// TestE2E_RunMigrateWithDSN_CompletesWithACeilingInTheDSN drives the whole
+// subcommand end to end against a live server — the first coverage it has had
+// at all — with a 1ms statement ceiling in the DSN.
+//
+// It is a smoke test, NOT the proof that the DSN's ceiling is overridden, and
+// the distinction was established by mutation rather than assumed: stripping the
+// explicit RuntimeParams out of migratePoolConfig leaves this test passing. The
+// reason is that openDB builds the migration handle from pool.Config() and
+// overlays the same settings itself, so the DDL path stays protected either way.
+// What migratePoolConfig governs is the statements the POOL issues directly —
+// today just pool.Ping, which clears 1ms comfortably. That is defence in depth
+// against a future statement being added on the pool, and the assertion carrying
+// the discriminating power is TestE2E_MigratePoolConfig_OverridesACeilingFromTheDSN
+// above, which does fail under that mutation.
+func TestE2E_RunMigrateWithDSN_CompletesWithACeilingInTheDSN(t *testing.T) {
+	plain := skipIfNoLiveDB(t)
+	dsn := dsnWithParam(t, plain, "statement_timeout", "1ms")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// A clean slate, so the run below really applies every migration rather than
+	// short-circuiting on ErrNoChange and proving nothing.
+	resetPool, err := pgxpool.New(ctx, plain)
+	if err != nil {
+		t.Fatalf("open reset pool: %v", err)
+	}
+	t.Cleanup(resetPool.Close)
+	if err := dropSchema(resetPool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+
+	if err := RunMigrateWithDSN(ctx, dsn); err != nil {
+		t.Fatalf("RunMigrateWithDSN under a 1ms statement ceiling in the DSN: %v", err)
+	}
+
+	// The schema is now at this binary's max version: a compatibility check that
+	// refuses to auto-migrate passes only when nothing is pending.
+	db := openDB(resetPool, defaultMigrateLockTimeout)
+	defer db.Close()
+	if err := checkSchemaCompat(ctx, db, false); err != nil {
+		t.Fatalf("after RunMigrateWithDSN the schema is not at max version: %v", err)
 	}
 }
 

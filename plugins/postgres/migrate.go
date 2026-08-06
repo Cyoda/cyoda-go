@@ -114,6 +114,38 @@ func Migrate(pool *pgxpool.Pool) error {
 	return runMigrations(context.Background(), pool, defaultMigrateLockTimeout)
 }
 
+// migratePoolConfig builds the pool config the `cyoda migrate` subcommand runs
+// on: minimal, because the process is short-lived, and carrying the migration
+// settings explicitly.
+//
+// Explicitly, because this pool inherits nothing from the app pool but DOES
+// inherit RuntimeParams embedded in the DSN — pgxpool.ParseConfig folds
+// unrecognised keys there. Relying on openDB alone would leave a
+// statement_timeout an operator put in CYODA_POSTGRES_URL in force on
+// pool.Ping and on the pool's own statements, bounding the migration's DDL by
+// the back door.
+//
+// A separate function so a test can assert the settings on a live connection
+// without driving the whole subcommand.
+func migratePoolConfig(dsn string, lockTimeout time.Duration) (*pgxpool.Config, error) {
+	poolCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse postgres DSN: %w", err)
+	}
+	// Minimal pool for a short-lived migrate process: no idle connections,
+	// no background health-check goroutines.
+	poolCfg.MaxConns = 2
+	poolCfg.MinConns = 0
+
+	if poolCfg.ConnConfig.RuntimeParams == nil {
+		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	for k, v := range migrationRuntimeParams(lockTimeout) {
+		poolCfg.ConnConfig.RuntimeParams[k] = v
+	}
+	return poolCfg, nil
+}
+
 // RunMigrateWithDSN is the entry point for the `cyoda migrate` subcommand.
 // It opens a connection pool from dsn, enforces the schema-compatibility
 // contract (refuses when DB is newer than code), applies any pending
@@ -138,24 +170,9 @@ func RunMigrateWithDSN(ctx context.Context, dsn string) error {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 
-	poolCfg, err := pgxpool.ParseConfig(dsn)
+	poolCfg, err := migratePoolConfig(dsn, lockTimeout)
 	if err != nil {
-		return fmt.Errorf("parse postgres DSN: %w", err)
-	}
-	// Minimal pool for a short-lived migrate process: no idle connections,
-	// no background health-check goroutines.
-	poolCfg.MaxConns = 2
-	poolCfg.MinConns = 0
-	// This pool inherits nothing from the app pool, but it does inherit
-	// RuntimeParams embedded in the DSN — so the migration settings are applied
-	// explicitly rather than relying on openDB alone. Without this, a
-	// statement_timeout an operator put in CYODA_POSTGRES_URL would still be in
-	// force on pool.Ping and on the pool's own statements.
-	if poolCfg.ConnConfig.RuntimeParams == nil {
-		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
-	}
-	for k, v := range migrationRuntimeParams(lockTimeout) {
-		poolCfg.ConnConfig.RuntimeParams[k] = v
+		return err
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
