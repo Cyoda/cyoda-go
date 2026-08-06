@@ -131,11 +131,19 @@ func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
 // running out of them. When only Begin classified, a saturated pool answered a
 // retryable 503 through the write doors and a ticketed 500 through the
 // schema-extension path, for one condition.
+// An acquire fails for two transient reasons, not one, so the non-deadline
+// branch is not a bare wrap: it runs classifyError, the same classifier every
+// other statement in this plugin runs. A socket torn out from under pgx while it
+// opens the transaction carries no SQLSTATE — the session was gone before the
+// server could send one — and would otherwise degrade to a ticketed 500 for a
+// condition a retry clears. classifyError leaves context errors alone
+// (isConnectionTorn excludes them), so a caller that cancelled still never reads
+// as a server-side outage.
 func classifyAcquireErr(callerCtx, acquireCtx context.Context, what string, err error) error {
 	if callerCtx.Err() == nil && errors.Is(acquireCtx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%s: %w", what, &acquireTimeoutError{cause: err})
 	}
-	return fmt.Errorf("%s: %w", what, err)
+	return fmt.Errorf("%s: %w", what, classifyError(err))
 }
 
 // idleInTxAbortError marks an operation that found its transaction already gone

@@ -123,11 +123,15 @@ func (s *entityStore) searchUnderOwnCeiling(ctx context.Context, ceiling time.Du
 	tx, err := s.pool.Begin(acquireCtx)
 	cancelAcquire()
 	if err != nil {
-		// classifyAcquireErr, not classifyError: an acquire that timed out never
-		// reached the server, so there is no SQLSTATE and no torn socket for
-		// classifyError to recognise — it would fall through unmarked and the job
-		// record would say only "context deadline exceeded". This is the same
-		// saturated pool the write doors report as storage-unavailable.
+		// classifyAcquireErr rather than classifyError alone: an acquire that hit
+		// this plugin's own deadline never reached the server, so it carries no
+		// SQLSTATE and no torn socket for classifyError to recognise, and would
+		// fall through unmarked. classifyAcquireErr adds that case and runs
+		// classifyError for the rest, so the torn-socket shape keeps its marker
+		// too. The caller-visible job record is unchanged either way —
+		// jobFailureMessage collapses anything it does not recognise to a fixed
+		// string — but the classification is what the store's own contract is
+		// judged on, and it now matches the other two acquires.
 		return nil, classifyAcquireErr(ctx, acquireCtx, "begin async search scan", err)
 	}
 	// Rollback on a context derived WithoutCancel: on the cancellation path the

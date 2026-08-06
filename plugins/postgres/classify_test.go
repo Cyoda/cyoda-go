@@ -569,3 +569,54 @@ func TestIdleInTxAbort_ReturnsThePooledConnection(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestClassifyAcquireErr_TornSocketKeepsItsMarker — an acquire fails for two
+// transient reasons, not one. The deadline case is this plugin's own ceiling
+// expiring; the other is the socket being torn out from under pgx while it
+// opens the transaction, which carries no SQLSTATE because the session was gone
+// before the server could send one.
+//
+// Both must reach the caller marked, or the second silently degrades to a
+// ticketed 500 for a condition a retry clears. The non-deadline branch therefore
+// runs the same classifier every other statement in this plugin runs.
+func TestClassifyAcquireErr_TornSocketKeepsItsMarker(t *testing.T) {
+	// A caller context that is fine and an acquire context that never expired:
+	// this is the "not our deadline" branch.
+	callerCtx := context.Background()
+	acquireCtx, cancel := context.WithCancel(callerCtx)
+	defer cancel()
+
+	err := classifyAcquireErr(callerCtx, acquireCtx, "begin", fmt.Errorf("write: %w", pgconn.ErrConnClosed))
+	if !hasStorageUnavailableMarker(err) {
+		t.Fatalf("a torn socket during acquire lost its storage-unavailable marker: %v", err)
+	}
+}
+
+// The server-reported half of the same event: 25P03 arrives as a PgError when
+// PostgreSQL manages to answer before the session goes.
+func TestClassifyAcquireErr_IdleInTxAbortKeepsItsMarker(t *testing.T) {
+	callerCtx := context.Background()
+	acquireCtx, cancel := context.WithCancel(callerCtx)
+	defer cancel()
+
+	err := classifyAcquireErr(callerCtx, acquireCtx, "begin",
+		&pgconn.PgError{Code: pgerrcode.IdleInTransactionSessionTimeout})
+	if !hasStorageUnavailableMarker(err) {
+		t.Fatalf("a server-reported idle-in-transaction abort during acquire lost its marker: %v", err)
+	}
+}
+
+// The other direction, and the reason the branch cannot simply mark everything:
+// a caller that cancelled is not a server-side outage, and classifyError leaves
+// context errors alone precisely so this stays true.
+func TestClassifyAcquireErr_CallerCancelledStaysUnmarked(t *testing.T) {
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	cancelCaller()
+	acquireCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := classifyAcquireErr(callerCtx, acquireCtx, "begin", context.Canceled)
+	if hasStorageUnavailableMarker(err) {
+		t.Fatalf("a cancelled caller was reported as a server-side outage: %v", err)
+	}
+}
