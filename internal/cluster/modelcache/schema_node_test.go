@@ -7,6 +7,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -162,4 +163,82 @@ func TestSchemaNode_UnparseableSchemaErrorIsStable(t *testing.T) {
 	if err2 == nil || err1.Error() != err2.Error() {
 		t.Errorf("unstable error across calls: %v vs %v", err1, err2)
 	}
+}
+
+// Gate 3 requires every data path to be verified for tenant isolation, and the
+// derived parse is a new one. The entry is keyed by (tenant, ref), so two
+// tenants holding different schemas for the same ModelRef must never see each
+// other's parse.
+func TestSchemaNode_TenantIsolation(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+
+	rootA := schema.NewObjectNode()
+	rootA.SetChild("alpha", schema.NewLeafNode(schema.String))
+	bytesA, err := schema.Marshal(rootA)
+	if err != nil {
+		t.Fatalf("marshal A: %v", err)
+	}
+	rootB := schema.NewObjectNode()
+	rootB.SetChild("beta", schema.NewLeafNode(schema.Integer))
+	bytesB, err := schema.Marshal(rootB)
+	if err != nil {
+		t.Fatalf("marshal B: %v", err)
+	}
+
+	// One inner store that answers per tenant, so the only thing separating the
+	// two results is the cache key.
+	inner := &perTenantStore{schemas: map[string][]byte{
+		"tenant-a": bytesA,
+		"tenant-b": bytesB,
+	}, ref: ref}
+	c := modelcache.New(inner, nil, &manualClock{now: time.Now()}, time.Minute)
+
+	ctxA := withTenantContext(context.Background(), "tenant-a")
+	ctxB := withTenantContext(context.Background(), "tenant-b")
+
+	nodeA, err := c.SchemaNode(ctxA, ref)
+	if err != nil {
+		t.Fatalf("SchemaNode A: %v", err)
+	}
+	nodeB, err := c.SchemaNode(ctxB, ref)
+	if err != nil {
+		t.Fatalf("SchemaNode B: %v", err)
+	}
+
+	if _, ok := nodeA.FieldsMap()["$.alpha"]; !ok {
+		t.Errorf("tenant-a got the wrong schema: %v", nodeA.FieldsMap())
+	}
+	if _, ok := nodeB.FieldsMap()["$.beta"]; !ok {
+		t.Errorf("tenant-b got the wrong schema: %v", nodeB.FieldsMap())
+	}
+	if _, leaked := nodeA.FieldsMap()["$.beta"]; leaked {
+		t.Error("tenant-a was served tenant-b's parsed schema")
+	}
+	if _, leaked := nodeB.FieldsMap()["$.alpha"]; leaked {
+		t.Error("tenant-b was served tenant-a's parsed schema")
+	}
+
+	// Re-read both from cache; the separation must survive a cache hit.
+	againA, _ := c.SchemaNode(ctxA, ref)
+	againB, _ := c.SchemaNode(ctxB, ref)
+	if againA != nodeA || againB != nodeB {
+		t.Error("cached parse was not reused per tenant")
+	}
+	if againA == againB {
+		t.Error("both tenants received the same parsed node")
+	}
+}
+
+type perTenantStore struct {
+	spi.ModelStore
+	schemas map[string][]byte
+	ref     spi.ModelRef
+}
+
+func (s *perTenantStore) Get(ctx context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+	return &spi.ModelDescriptor{
+		Ref:    s.ref,
+		State:  spi.ModelLocked,
+		Schema: s.schemas[common.TenantFromContext(ctx)],
+	}, nil
 }
