@@ -369,6 +369,40 @@ func freshDatabase(t *testing.T) string {
 	return u.String()
 }
 
+// dsnDatabase returns just the database name from dsn, for failure messages.
+//
+// A DSN must never reach test output whole: url.URL.String() reproduces the
+// `user:password@` it was parsed from, so a CYODA_TEST_DB_URL pointing at a
+// shared server would put its credentials in a CI log. The database name is the
+// only part a failure message needs — which of the throwaway databases these
+// tests create was involved — and it carries nothing secret.
+func dsnDatabase(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "<unparseable dsn>"
+	}
+	return strings.TrimPrefix(u.Path, "/")
+}
+
+// TestDSNDatabase_KeepsCredentialsOutOfTestOutput pins the one property the
+// helper exists for. It is cheap to reintroduce the leak by "helpfully" printing
+// the whole DSN in a failure message, and CI logs are where that would surface.
+func TestDSNDatabase_KeepsCredentialsOutOfTestOutput(t *testing.T) {
+	const dsn = "postgres://cyoda:sup3rs3cret@db.internal:5432/cyoda_boot_abc?sslmode=disable"
+	got := dsnDatabase(dsn)
+	if got != "cyoda_boot_abc" {
+		t.Errorf("dsnDatabase = %q, want the bare database name", got)
+	}
+	for _, leak := range []string{"sup3rs3cret", "cyoda:", "db.internal", "@"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("dsnDatabase leaks %q: %s", leak, got)
+		}
+	}
+	if got := dsnDatabase("://not a url"); strings.Contains(got, "not a url") {
+		t.Errorf("an unparseable DSN was echoed back verbatim: %s", got)
+	}
+}
+
 // openPool opens a pool on dsn sized for a boot sequence — ensureSchema opens
 // two independent *sql.DB handles off it — with the background health check
 // disabled so Close cannot race it.
@@ -382,7 +416,7 @@ func openPool(t *testing.T, dsn string) *pgxpool.Pool {
 	cfg.HealthCheckPeriod = 24 * time.Hour
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
-		t.Fatalf("open pool on %s: %v", dsn, err)
+		t.Fatalf("open pool on %s: %v", dsnDatabase(dsn), err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
@@ -419,7 +453,7 @@ func headVersion(t *testing.T) int {
 func migrateToHead(t *testing.T, dsn string) {
 	t.Helper()
 	if err := runMigrations(context.Background(), openPool(t, dsn), defaultMigrateLockTimeout); err != nil {
-		t.Fatalf("migrate %s to head: %v", dsn, err)
+		t.Fatalf("migrate %s to head: %v", dsnDatabase(dsn), err)
 	}
 }
 
