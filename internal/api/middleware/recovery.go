@@ -7,6 +7,8 @@ import (
 	"runtime/debug"
 	"sync/atomic"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -29,8 +31,19 @@ func Recovery(healthFlag *atomic.Bool) func(http.Handler) http.Handler {
 				if rec := recover(); rec != nil {
 					stack := string(debug.Stack())
 					err := fmt.Errorf("panic: %v", rec)
-					slog.Error("panic recovered", "pkg", "middleware", "err", err, "stack", stack)
-					appErr := common.Fatal("internal server error", err)
+					// Minted here, not left to WriteError, so the ONLY line
+					// carrying the panic value and stack is the one an operator
+					// reaches from the client-visible ticket. The Detail
+					// overwrite below is what keeps the panic value out of a
+					// verbose-mode response, and it also strips the FATAL line
+					// of anything worth finding — so without this the ticket
+					// names a line that says nothing. Matches
+					// internal/grpc/recovery.go, which already logs the two
+					// together.
+					ticket := uuid.New().String()
+					slog.Error("panic recovered", "pkg", "middleware",
+						"ticket", ticket, "err", err, "stack", stack)
+					appErr := common.Fatal("internal server error", err).WithTicket(ticket)
 					appErr.Detail = "panic recovered; check server logs for details"
 					healthFlag.Store(false)
 					common.WriteError(w, r, appErr)

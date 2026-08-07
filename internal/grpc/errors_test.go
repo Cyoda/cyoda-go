@@ -67,3 +67,23 @@ func TestBuildErrorFields_OperationalWithoutCauseLogsNothing(t *testing.T) {
 		t.Errorf("a causeless operational error logged %q at %v", r.msg, r.level)
 	}
 }
+
+// TestBuildErrorFields_HonoursAPinnedTicket — an AppError may arrive with its
+// ticket already pinned, because the caller has already logged the full detail
+// under it (the panic recovery middlewares do exactly this). Minting a second
+// one here would hand the client an identifier that names no log line, and would
+// leave the pinned field silently meaning nothing on this door while meaning
+// something on the HTTP one.
+func TestBuildErrorFields_HonoursAPinnedTicket(t *testing.T) {
+	const pinned = "11111111-2222-4333-8444-555555555555"
+	appErr := common.Internal("something broke", errors.New("detail for the log")).WithTicket(pinned)
+
+	code, message, _ := buildErrorFields(appErr)
+
+	if code != "SERVER_ERROR" {
+		t.Errorf("code = %q, want SERVER_ERROR", code)
+	}
+	if !strings.Contains(message, pinned) {
+		t.Errorf("message = %q, want the pinned ticket %s — a fresh one names no log line", message, pinned)
+	}
+}

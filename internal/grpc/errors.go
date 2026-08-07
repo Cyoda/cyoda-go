@@ -46,8 +46,13 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 			}
 			return
 		}
-		// Internal/Fatal — generate ticket
-		ticket := uuid.New().String()
+		// Internal/Fatal — reuse the caller's pinned ticket when it has one
+		// (it has already logged the detail under it; a second one would name
+		// nothing), otherwise mint.
+		ticket := appErr.Ticket
+		if ticket == "" {
+			ticket = uuid.New().String()
+		}
 		slog.Error("internal error", "ticket", ticket, "code", appErr.Code, "detail", appErr.Detail)
 		code = "SERVER_ERROR"
 		message = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)

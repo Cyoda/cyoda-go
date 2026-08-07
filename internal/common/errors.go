@@ -41,6 +41,12 @@ type AppError struct {
 	Err       error          // wrapped original error
 	Props     map[string]any // optional structured properties for ProblemDetail
 	Retryable bool
+	// Ticket, when set, is the correlation UUID the response carries instead of
+	// a freshly minted one. Set it when the caller has ALREADY logged the full
+	// detail under a ticket of its own — the panic recovery middlewares do —
+	// so the client-visible ticket and that log line are the same identifier.
+	// Empty is the normal case: the writer mints one.
+	Ticket string
 }
 
 func (e *AppError) Error() string { return e.Message }
@@ -83,6 +89,24 @@ func (e *AppError) AsRetryable() *AppError {
 func (e *AppError) WithCause(err error) *AppError {
 	e.Err = err
 	return e
+}
+
+// WithTicket pins the correlation UUID the response will carry, for callers
+// that have already logged the full detail under it. Without this the writer
+// mints its own, and the identifier the client is handed names no log line —
+// which is the whole point of a ticket. Mutates the receiver, like AsRetryable
+// and WithCause; call only on a just-constructed error.
+func (e *AppError) WithTicket(ticket string) *AppError {
+	e.Ticket = ticket
+	return e
+}
+
+// ticketOr returns the pinned ticket, or a fresh one when none was pinned.
+func (e *AppError) ticketOr() string {
+	if e.Ticket != "" {
+		return e.Ticket
+	}
+	return uuid.New().String()
 }
 
 // Operational creates a client error (4xx). No internal detail is captured.
@@ -269,7 +293,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		pd.Detail = appErr.Message
 
 	case LevelInternal:
-		ticket := uuid.New().String()
+		ticket := appErr.ticketOr()
 		// SECURITY NOTE: appErr.Detail may contain secrets (connection strings,
 		// credentials) once real persistence is added. Review before deploying
 		// with external datastores.
@@ -287,7 +311,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		}
 
 	case LevelFatal:
-		ticket := uuid.New().String()
+		ticket := appErr.ticketOr()
 		// SECURITY NOTE: appErr.Detail may contain secrets (connection strings,
 		// credentials) once real persistence is added. Review before deploying
 		// with external datastores.
