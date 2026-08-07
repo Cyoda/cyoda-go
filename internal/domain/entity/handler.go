@@ -118,10 +118,17 @@ func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) erro
 // a peer's ExtendSchema. Other validation failures surface directly.
 // Stores that don't implement RefreshAndGet (no caching layer) skip
 // the refresh and return the original errors. See spec §4.3.
+//
+// Both model-store reads are marked with ingest.ErrInternalSchema on failure.
+// Callers classify this function's errors with classifyValidateOrExtendErr,
+// whose catch-all is a 400 BAD_REQUEST carrying err.Error() verbatim: unmarked,
+// a store outage would be reported to the caller as a fault in THEIR payload,
+// with the driver's own text and SQLSTATE in the response body. Neither read
+// can fail for a reason the caller caused, so both are 5xx-with-a-ticket.
 func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, data any) error {
 	desc, err := modelStore.Get(ctx, ref)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: load model %s/%s: %w", ingest.ErrInternalSchema, ref.EntityName, ref.ModelVersion, err)
 	}
 	errs := ingest.ValidateDescriptor(desc, data)
 	if errs == nil {
@@ -138,7 +145,7 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 	}
 	freshDesc, rErr := refresher.RefreshAndGet(ctx, ref)
 	if rErr != nil {
-		return rErr
+		return fmt.Errorf("%w: refresh model %s/%s: %w", ingest.ErrInternalSchema, ref.EntityName, ref.ModelVersion, rErr)
 	}
 	if errs2 := ingest.ValidateDescriptor(freshDesc, data); errs2 != nil {
 		return ingest.ValidationErrorsToError(errs2)
@@ -173,6 +180,13 @@ func classifyBeginErr(err error) *common.AppError {
 //   - ingest.ErrInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
 //   - anything else           → 4xx BAD_REQUEST (change-level violation,
 //     other validation failure, malformed walk input)
+//
+// The catch-all puts err.Error() in the response body verbatim — a 4xx carries
+// full domain detail by contract. That makes it a leak the moment a feeder
+// hands it something infrastructural, so every feeder marks its store failures
+// with ErrInternalSchema: validateOrExtend does, and so does ValidateWithRefresh
+// (a ready-to-use wrapper with no production call site yet — the marking is what
+// lets it be wired to a door without re-opening the hole).
 func classifyValidateOrExtendErr(err error) *common.AppError {
 	// Pass-through: validateOrExtend may return a *common.AppError directly
 	// for pre-classified operational errors (e.g. unique-key widening guard).
