@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -18,6 +19,15 @@ type entityStore struct {
 	q        Querier
 	tenantID spi.TenantID
 	tm       *TransactionManager
+
+	// pool and acquireTimeout serve exactly one path: the async-search scan,
+	// which runs in a transaction of its own so it can raise its statement
+	// ceiling with SET LOCAL (searcher.go). Every other statement goes through
+	// q, which resolves the active transaction or the pool per call. Both are
+	// zero on the test-only construction in export_test.go, which never takes
+	// that path.
+	pool           *pgxpool.Pool
+	acquireTimeout time.Duration
 }
 
 // SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
@@ -80,7 +90,10 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		tid, eid,
 		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion).Scan(&nextVersion, &isNew)
 	if err != nil {
-		return 0, fmt.Errorf("failed to upsert entity: %w", classifyError(err))
+		// Already classified: every statement this store issues goes through
+		// ctxQuerier, which is where classification lives. Re-classifying here
+		// would nest the wrapper a second time.
+		return 0, fmt.Errorf("failed to upsert entity: %w", err)
 	}
 
 	entity.Meta.Version = nextVersion

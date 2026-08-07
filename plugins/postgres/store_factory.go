@@ -52,6 +52,13 @@ func defaultStoreConfig() config {
 		MaxConns:                25,
 		MinConns:                5,
 		SchemaSavepointInterval: 64,
+		// A zero ceiling reads as "disabled" to every consumer of these fields,
+		// so the baseline carries the shipped defaults rather than zero values.
+		StatementTimeout:       defaultStatementTimeout,
+		IdleInTxTimeout:        defaultIdleInTxTimeout,
+		AcquireTimeout:         defaultAcquireTimeout,
+		MigrateLockTimeout:     defaultMigrateLockTimeout,
+		SearchStatementTimeout: defaultSearchStatementTimeout,
 	}
 }
 
@@ -103,20 +110,67 @@ func resolveTenant(ctx context.Context) (spi.TenantID, error) {
 // never hold the result directly; they hold a ctxQuerier that re-resolves
 // on every call, so the choice tracks the call-time context rather than
 // the store-construction context.
+//
+// The acquire deadline is deliberately NOT applied to pool.Query / Exec /
+// QueryRow / CopyFrom. For Query, pgxpool holds the connection for the returned
+// pgx.Rows under the same context, so a deadline there would cap statement
+// execution and row iteration too — breaking search_store.go's CopyFrom of a
+// whole async-search result set and every non-transactional read routed through
+// this fallback. (Exec/QueryRow/CopyFrom release before returning, so the
+// objection is narrower for them, but splitting the rule by method would be a
+// trap for the next reader.) Bounding these properly means an explicit
+// Acquire/Release restructure that reimplements what pgxpool already does
+// internally, with a connection-leak failure mode of its own — and it is
+// unnecessary: these statements are bounded server-side by statement_timeout,
+// so the connection returns within that ceiling regardless.
+//
+// A context that names a transaction the manager no longer holds gets a querier
+// that fails every statement, NOT the pool. The pool would run the statement
+// outside the transaction the caller believes it is in and commit it on its own
+// — a partial write nobody asked for. This is reachable whenever a transaction
+// ends under the caller: the idle ceiling reclaiming it, or a failed commit.
 func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 	if f.tm != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
-			if pgxTx, ok := f.tm.LookupTx(tx.ID); ok {
-				return pgxTx
+			pgxTx, ok := f.tm.LookupTx(tx.ID)
+			if !ok {
+				return deadTxQuerier{txID: tx.ID}
 			}
+			return pgxTx
 		}
 	}
 	return f.pool
 }
 
-// querier returns the per-call-resolving Querier used by all stores.
+// querier returns the per-call-resolving Querier used by every store whose
+// statements belong to the caller's transaction when there is one.
 func (f *StoreFactory) querier() Querier {
 	return &ctxQuerier{factory: f}
+}
+
+// poolQuerier returns the pool-pinned Querier — same classification, no
+// transaction resolution. Used by the async-search job store alone; see
+// poolQuerier's godoc for why that record must not join the caller's
+// transaction.
+func (f *StoreFactory) poolQuerier() Querier {
+	return poolQuerier{pool: f.pool}
+}
+
+// classifyFor classifies a statement error against whichever transaction the
+// call was made in. Statements issued on a live transaction go through the
+// transaction-scoped classifier, so a session the server has reclaimed also
+// reclaims the bookkeeping Commit/Rollback will now never reach; everything else
+// — the non-transactional pool path — gets the plain classification.
+func (f *StoreFactory) classifyFor(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if f.tm != nil {
+		if tx := spi.GetTransaction(ctx); tx != nil {
+			return f.tm.classifyTxError(tx.ID, err)
+		}
+	}
+	return classifyError(err)
 }
 
 func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -124,7 +178,16 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{q: f.querier(), tenantID: tid, tm: f.tm}, nil
+	// pool and acquireTimeout are for the one path that needs a transaction of
+	// its own rather than the context-resolving querier: the async-search scan,
+	// which raises its ceiling with SET LOCAL. See searcher.go.
+	return &entityStore{
+		q:              f.querier(),
+		tenantID:       tid,
+		tm:             f.tm,
+		pool:           f.pool,
+		acquireTimeout: f.cfg.AcquireTimeout,
+	}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
@@ -172,7 +235,11 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	// AsyncSearchStore is a long-lived singleton — tenant is resolved per method call,
 	// not at construction. This allows app.go to obtain the store at startup with
 	// context.Background() (no tenant). ReapExpired also runs without tenant context.
-	return &asyncSearchStore{pool: f.pool}, nil
+	return &asyncSearchStore{
+		q:                      f.poolQuerier(),
+		pool:                   f.pool,
+		searchStatementTimeout: f.cfg.SearchStatementTimeout,
+	}, nil
 }
 
 // ScheduledTaskStore returns a store backed by the context-resolving
@@ -212,7 +279,7 @@ func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
 // for use within the package; external callers — including test packages —
 // should call this exported form.
 func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
-	tm := NewTransactionManager(f.pool, uuids)
+	tm := NewTransactionManager(f.pool, uuids, WithAcquireTimeout(f.cfg.AcquireTimeout))
 	f.setTransactionManager(tm)
 }
 

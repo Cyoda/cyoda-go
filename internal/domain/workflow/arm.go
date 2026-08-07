@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -41,6 +42,25 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 	}
 	return false
 }
+
+// ErrScheduledTaskInfra marks a server-side failure in the settle-time
+// arm/cancel pass: the scheduled-task store could not be resolved, or its
+// reconcile write failed. Neither is attributable to the caller's input, so
+// callers map it to a sanitized 5xx with a ticket rather than echoing the
+// store's own text — driver wording, table and constraint names, a SQLSTATE —
+// into a 4xx WORKFLOW_FAILED body.
+//
+// The same treatment, and the same reason, as ErrProcessorOutputInfra,
+// ErrCriterionTypingInfra and ErrCommitBeforeDispatchInfra. It is its own
+// sentinel rather than a reuse of one of those because the reconcile is not a
+// segment boundary and shares none of their recovery semantics; the entity
+// service's classifier lists all four side by side.
+//
+// Deliberately NOT applied to a Schedule.Function callout failure: that is a
+// compute-node condition with its own established mappings (503
+// NO_COMPUTE_MEMBER_FOR_TAG, or a 4xx naming the function), and burying it
+// under a generic ticket would lose the actionable answer.
+var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 
 // reconcileScheduledTasks brings the entity's pending ScheduledTask rows in
 // line with its current state: it arms every non-manual, non-disabled
@@ -143,7 +163,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 
 	sts, err := e.factory.ScheduledTaskStore(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get scheduled task store: %w", err)
+		return fmt.Errorf("failed to get scheduled task store: %w", errors.Join(ErrScheduledTaskInfra, err))
 	}
 
 	cancelled, err := sts.ReconcileForEntity(ctx, spi.ReconcileRequest{
@@ -154,7 +174,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		Cancel:       cancelIDs,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
+		return fmt.Errorf("failed to reconcile scheduled tasks: %w", errors.Join(ErrScheduledTaskInfra, err))
 	}
 
 	for _, a := range arm {
@@ -205,17 +225,19 @@ type expiredSchedule struct {
 // does any further tx-buffer work — because the callout can re-enter with a
 // descendant callback joined on the same txID (same H3 rationale as
 // evaluateCriterion's FUNCTION-criterion dispatch and
-// executeSyncProcessor). Unlike evaluateCriterion, resume is NOT deferred:
-// reconcileScheduledTasks writes the tx buffer (ReconcileForEntity) after
-// every transition in the loop has been resolved, so the gate must already
-// be held again by the time this call returns, not merely by the time the
-// whole loop unwinds.
+// executeSyncProcessor). resume is both deferred AND called explicitly, as at
+// every other Suspend site: the explicit call re-acquires before returning, so
+// reconcileScheduledTasks's later buffer write (ReconcileForEntity) is gated;
+// the deferred call covers the path where the dispatch panics, so the caller's
+// own deferred gate release never unlocks an unheld mutex — a runtime fatal no
+// recover() can catch. resume is sync.Once-guarded, so having both is free.
 func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
 	if e.extProc == nil {
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
 	}
 
 	resume := txgate.Suspend(ctx)
+	defer resume()
 	res, derr := e.extProc.DispatchFunction(ctx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
 	resume() // BEFORE any tx-buffer write — see doc comment above.
 	if derr != nil {

@@ -25,7 +25,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
@@ -67,11 +66,18 @@ type App struct {
 	tokenSigner        *token.Signer
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
-	txLifecycle        *lifecycle.Manager
 	scheduler          *scheduler.Service
-	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
 	grpcStopOnce       sync.Once
+	// healthFlag starts true and is latched false by the first recovered
+	// panic at any of the four sites that run engine or store work: the HTTP
+	// recovery middleware, the gRPC recovery interceptors, the async-search
+	// goroutine and the scheduler's dispatch goroutine. Notification-callback
+	// recoveries (member-registry onChange, OIDC broadcast) deliberately do
+	// not. Nothing resets it: a node that has panicked has state nothing has
+	// verified. Read by RegisterHealthRoutes (GET /health) and by
+	// ReadinessCheck (/readyz).
+	healthFlag *atomic.Bool
 }
 
 func New(cfg Config) *App {
@@ -92,6 +98,11 @@ func New(cfg Config) *App {
 	}
 
 	a := &App{config: cfg}
+
+	// Created before anything that can latch it: the async-search goroutine
+	// is wired below, well ahead of the HTTP mux and the gRPC server.
+	a.healthFlag = &atomic.Bool{}
+	a.healthFlag.Store(true)
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
@@ -411,7 +422,8 @@ func New(cfg Config) *App {
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
 		WithPathValidationCache(pathValidationCache).
-		WithMaxSortKeys(a.config.SearchMaxSortKeys)
+		WithMaxSortKeys(a.config.SearchMaxSortKeys).
+		WithHealthFlag(a.healthFlag)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
@@ -437,11 +449,6 @@ func New(cfg Config) *App {
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
 
 	// Cluster components
-	a.txLifecycle = lifecycle.NewManager(cfg.Cluster.OutcomeTTL)
-	// Wire the TM so the TTL reaper can roll back the underlying transaction
-	// when a cluster-level timeout fires; otherwise the plugin's physical
-	// handle is orphaned until the database's own idle timeout catches it.
-	a.txLifecycle.SetTransactionManager(a.transactionManager)
 	if cfg.Cluster.Enabled {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
@@ -455,26 +462,6 @@ func New(cfg Config) *App {
 		a.nodeRegistry = gossipReg
 
 		slog.Info("cluster mode enabled", "pkg", "cluster", "nodeID", cfg.Cluster.NodeID, "gossipAddr", cfg.Cluster.GossipAddr)
-
-		// Start TTL reaper goroutine with shutdown support
-		a.stopReaper = make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(cfg.Cluster.TxReapInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					reaped, err := a.txLifecycle.ReapExpired(context.Background())
-					if err != nil {
-						slog.Error("tx reaper error", "pkg", "cluster", "err", err)
-					} else if reaped > 0 {
-						slog.Info("reaped expired transactions", "pkg", "cluster", "count", reaped)
-					}
-				case <-a.stopReaper:
-					return
-				}
-			}
-		}()
 	} else {
 		a.nodeRegistry = registry.NewLocal("local", fmt.Sprintf("localhost:%d", cfg.HTTPPort))
 	}
@@ -591,6 +578,7 @@ func New(cfg Config) *App {
 			Clock:        schedClock,
 			Executor:     clusterExecutor,
 			SelfID:       a.selfNodeID,
+			HealthFlag:   a.healthFlag,
 		},
 	)
 	a.scheduler.Start()
@@ -634,11 +622,8 @@ func New(cfg Config) *App {
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
-
 	// Infrastructure routes (no auth, receives health flag)
-	internalapi.RegisterHealthRoutes(mux, healthFlag)
+	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
 
 	// Auth service route registration is split into two strict groups so
 	// nothing administrative leaks into the public surface (#34 item 1):
@@ -717,8 +702,9 @@ func New(cfg Config) *App {
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
 	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
 
-	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
-	// wildcard-conflict panics in overlapping /model/… paths.
+	// Generated API routes (with auth) — uses chi to avoid ServeMux
+	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
+	// applied once, below, to the fully assembled handler.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
 		BaseRouter:       internalapi.NewChiMux(),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
@@ -726,9 +712,7 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}
-	mux.Handle("/", middleware.Recovery(healthFlag)(
-		middleware.Auth(a.authService)(txJoinMW(apiHandler)),
-	))
+	mux.Handle("/", middleware.Auth(a.authService)(txJoinMW(apiHandler)))
 
 	// Context path — wrap all routes under configurable prefix
 	contextPath := strings.TrimRight(cfg.ContextPath, "/")
@@ -762,6 +746,13 @@ func New(cfg Config) *App {
 		a.handler = mux
 	}
 
+	// Recovery wraps the fully assembled mux rather than the "/" catch-all.
+	// Every pattern more specific than "/" wins over it, which silently excluded
+	// the peer scheduler RPC, cluster dispatch, health, discovery, help, the
+	// admin log-level routes and more — and would have excluded any route added
+	// later. One call site instead of a dozen, with no way to escape it.
+	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
+
 	// Cluster routing middleware — outermost layer, before auth and recovery.
 	// The proxy forwards the original request including auth headers to the
 	// target node, where auth is applied locally.
@@ -778,7 +769,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag)
 
 	return a
 }
@@ -787,13 +778,33 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap. By the time New() returns, the plugin factory
-// has successfully opened connections and applied migrations (per the
-// existing startup sequence), so a non-nil storeFactory is a sufficient
-// readiness signal until the SPI gains a dedicated Ping method.
+// probe — keep it cheap; both conditions below are a pointer test and an
+// atomic load, and neither performs I/O.
+//
+// Two conditions fail it independently, and the returned reasons differ so
+// the admin handler's server-side log tells an operator which fired:
+//
+//   - Storage is not initialized. A defensive guard rather than a live
+//     window: cmd/cyoda builds the admin listener from an App that New()
+//     has already returned, so a probe never observes it. It costs nothing
+//     and keeps the check honest for any other caller.
+//   - A panic was recovered on some door. The node's state is then
+//     unverified, so it must stop receiving traffic — fail closed. Nothing
+//     resets the flag.
+//
+// What failing readiness achieves is bounded: Kubernetes drops the pod from
+// the client-facing Service, so new client connections stop. Peers resolve
+// each other through the gossip registry rather than the Service, so
+// forwarded work keeps arriving, and /livez is deliberately unaffected so a
+// deterministic panic does not become a restart loop. Replacing a drained
+// node is an operator action.
 func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
+	}
+	// nil only for an App not built by New(); New() always sets the flag.
+	if a.healthFlag != nil && !a.healthFlag.Load() {
+		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
 	return nil
 }
@@ -819,7 +830,6 @@ func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServe
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
-func (a *App) TxLifecycle() *lifecycle.Manager              { return a.txLifecycle }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
 // Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
@@ -883,9 +893,6 @@ func (a *App) StopGRPC() {
 func (a *App) Shutdown() {
 	if a.stopSearchReaper != nil {
 		close(a.stopSearchReaper)
-	}
-	if a.stopReaper != nil {
-		close(a.stopReaper)
 	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()

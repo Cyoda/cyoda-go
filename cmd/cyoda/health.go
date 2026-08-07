@@ -9,7 +9,8 @@ import (
 
 // runHealth implements 'cyoda health': GET /readyz on the admin listener,
 // exit 0 on 200, 1 otherwise. Primary consumer is the compose-level
-// healthcheck; the Helm chart's readinessProbe invokes the same subcommand.
+// healthcheck; the Helm chart's readinessProbe hits the same endpoint over
+// httpGet rather than through this subcommand.
 //
 // The 2-second client timeout is load-bearing. A deadlocked readiness
 // handler looks exactly like "server accepts connection then hangs" to

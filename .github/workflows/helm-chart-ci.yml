@@ -403,9 +403,10 @@ jobs:
       - name: Scale to 3 replicas and verify all pods become Ready
         run: |
           # Scale up and assert all three pods reach Ready. Readiness
-          # probes /readyz which checks the storage factory is
-          # initialised — so 3 Ready pods ≡ 3 working storage paths
-          # + gossip-started nodes with memberlist listeners up.
+          # probes /readyz, which checks the storage factory is
+          # initialised and that no panic has been recovered — so 3
+          # Ready pods ≡ 3 working storage paths + gossip-started nodes
+          # with memberlist listeners up, none of them panic-tainted.
           #
           # A stronger "all three pods see each other as cluster peers"
           # assertion would require a cluster-members HTTP endpoint we

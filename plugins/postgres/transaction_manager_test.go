@@ -13,9 +13,35 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool) {
+// txManagerOptions configures the fixture below. The zero value is the fixture
+// default: a five-connection pool and the plugin's own default acquire timeout.
+type txManagerOptions struct {
+	maxConns       int32
+	acquireTimeout time.Duration
+	acquireSet     bool
+}
+
+type txManagerOption func(*txManagerOptions)
+
+// withMaxConns sizes the fixture pool. A one-connection pool is how the
+// acquire tests make "no connection available" reachable without racing.
+func withMaxConns(n int32) txManagerOption {
+	return func(o *txManagerOptions) { o.maxConns = n }
+}
+
+// withAcquireTimeout overrides the manager's connection-acquire deadline, so a
+// test can observe saturation in milliseconds rather than the shipped default.
+func withAcquireTimeout(d time.Duration) txManagerOption {
+	return func(o *txManagerOptions) { o.acquireTimeout, o.acquireSet = d, true }
+}
+
+func newTestTxManager(t *testing.T, opts ...txManagerOption) (*postgres.TransactionManager, *pgxpool.Pool) {
 	t.Helper()
-	pool := newTestPool(t)
+	o := txManagerOptions{maxConns: 5}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	pool := newTestPoolSized(t, o.maxConns)
 	if err := postgres.DropSchemaForTest(pool); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
@@ -25,7 +51,11 @@ func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 
 	uuids := newTestUUIDGenerator()
-	tm := postgres.NewTransactionManager(pool, uuids)
+	var tmOpts []postgres.TransactionManagerOption
+	if o.acquireSet {
+		tmOpts = append(tmOpts, postgres.WithAcquireTimeout(o.acquireTimeout))
+	}
+	tm := postgres.NewTransactionManager(pool, uuids, tmOpts...)
 	return tm, pool
 }
 

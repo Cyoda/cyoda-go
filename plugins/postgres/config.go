@@ -21,7 +21,39 @@ type config struct {
 	MaxConnIdleTime         time.Duration
 	AutoMigrate             bool
 	SchemaSavepointInterval int // default 64; read from CYODA_SCHEMA_SAVEPOINT_INTERVAL; min 1
+
+	// StatementTimeout caps a single SQL statement. IdleInTxTimeout caps how
+	// long a connection may sit inside an open transaction doing nothing — the
+	// one that plugs an abandoned transaction, which is idle by definition. Each
+	// *Set field records whether the operator set the var explicitly; see
+	// applyCeiling.
+	StatementTimeout    time.Duration
+	StatementTimeoutSet bool
+	IdleInTxTimeout     time.Duration
+	IdleInTxTimeoutSet  bool
+
+	// AcquireTimeout bounds the wait for a free pooled connection. It is a
+	// Go-side deadline rather than a fourth GUC because pgxpool.Config has no
+	// AcquireTimeout field.
+	AcquireTimeout time.Duration
+
+	// MigrateLockTimeout bounds a migration's lock waits; SearchStatementTimeout
+	// is the async-search path's own statement ceiling.
+	MigrateLockTimeout     time.Duration
+	SearchStatementTimeout time.Duration
 }
+
+// Ceiling defaults. Named here rather than inline so parseConfig,
+// defaultStoreConfig and DBConfig.toInternal cannot drift apart — and because
+// the same values are quoted in the config.database and STORAGE_UNAVAILABLE
+// help topics.
+const (
+	defaultStatementTimeout       = 5 * time.Minute
+	defaultIdleInTxTimeout        = 5 * time.Minute
+	defaultAcquireTimeout         = 10 * time.Second
+	defaultMigrateLockTimeout     = 5 * time.Minute
+	defaultSearchStatementTimeout = 30 * time.Minute
+)
 
 // parseConfig reads CYODA_POSTGRES_* env vars via the injected getenv.
 // For CYODA_POSTGRES_URL, the _FILE suffix pattern is supported: if
@@ -41,6 +73,24 @@ func parseConfig(getenv func(string) string) (config, error) {
 	}
 	if cfg.URL == "" {
 		return cfg, fmt.Errorf("CYODA_POSTGRES_URL is required")
+	}
+
+	// The ceilings below are the only vars here that reject a malformed value
+	// instead of falling back to the default — see envCeiling.
+	if cfg.StatementTimeout, cfg.StatementTimeoutSet, err = envCeiling(getenv, "CYODA_POSTGRES_STATEMENT_TIMEOUT", defaultStatementTimeout); err != nil {
+		return config{}, err
+	}
+	if cfg.IdleInTxTimeout, cfg.IdleInTxTimeoutSet, err = envCeiling(getenv, "CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT", defaultIdleInTxTimeout); err != nil {
+		return config{}, err
+	}
+	if cfg.AcquireTimeout, _, err = envCeiling(getenv, "CYODA_POSTGRES_ACQUIRE_TIMEOUT", defaultAcquireTimeout); err != nil {
+		return config{}, err
+	}
+	if cfg.MigrateLockTimeout, _, err = envCeiling(getenv, "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT", defaultMigrateLockTimeout); err != nil {
+		return config{}, err
+	}
+	if cfg.SearchStatementTimeout, _, err = envCeiling(getenv, "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", defaultSearchStatementTimeout); err != nil {
+		return config{}, err
 	}
 	return cfg, nil
 }
@@ -136,6 +186,15 @@ func newPool(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
 	poolCfg.MinConns = cfg.MinConns
 	poolCfg.MaxConnIdleTime = cfg.MaxConnIdleTime
 
+	// Carried in the connection startup packet, so every connection this pool
+	// opens is bounded from its first statement — no AfterConnect round-trip,
+	// and no window in which a fresh connection is unbounded.
+	if poolCfg.ConnConfig.RuntimeParams == nil {
+		poolCfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	applyCeiling(poolCfg.ConnConfig.RuntimeParams, "statement_timeout", cfg.StatementTimeout, cfg.StatementTimeoutSet)
+	applyCeiling(poolCfg.ConnConfig.RuntimeParams, "idle_in_transaction_session_timeout", cfg.IdleInTxTimeout, cfg.IdleInTxTimeoutSet)
+
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pgx pool: %w", err)
@@ -173,6 +232,14 @@ func (d DBConfig) toInternal() config {
 		URL: d.URL, MaxConns: d.MaxConns, MinConns: d.MinConns,
 		MaxConnIdleTime: idle, AutoMigrate: d.AutoMigrate,
 		SchemaSavepointInterval: interval,
+		// Fixtures inherit the shipped ceilings rather than zero values, so a
+		// fixture-built pool connects the way a deployment does. Zero would read
+		// as "disabled" to PostgreSQL — testing a configuration nothing ships.
+		StatementTimeout:       defaultStatementTimeout,
+		IdleInTxTimeout:        defaultIdleInTxTimeout,
+		AcquireTimeout:         defaultAcquireTimeout,
+		MigrateLockTimeout:     defaultMigrateLockTimeout,
+		SearchStatementTimeout: defaultSearchStatementTimeout,
 	}
 }
 

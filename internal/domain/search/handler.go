@@ -31,8 +31,9 @@ const (
 )
 
 // jobLookupError maps a service-level error to a handler response. Job-not-
-// found is reported as 404 + SEARCH_JOB_NOT_FOUND (issue #93); any other
-// lookup error is treated as an internal failure.
+// found is reported as 404 + SEARCH_JOB_NOT_FOUND; any other lookup error is
+// treated as an internal failure, which routes a storage outage to a retryable
+// 503 and everything else to a 500 with a ticket.
 func jobLookupError(err error) *common.AppError {
 	if errors.Is(err, ErrSearchJobNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
@@ -291,11 +292,23 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 
 	page, err := h.searchSvc.GetAsyncResults(r.Context(), jobId.String(), opts)
 	if err != nil {
-		if errors.Is(err, ErrSearchJobNotFound) {
-			common.WriteError(w, r, jobLookupError(err))
+		// Asking for results before the job finished is a client error, and the
+		// status it is in is domain detail the caller is entitled to. Every other
+		// failure that reaches here — the job lookup, the result-ID read, and
+		// acquiring the entity store — is a server-side failure: jobLookupError
+		// keeps a genuine miss at 404 and routes the rest through common.Internal,
+		// which answers a storage outage with a retryable 503 and keeps the
+		// driver's text out of the body. A failed read of an individual result
+		// entity reaches here too: only a genuine ErrNotFound is skipped (the
+		// entity was hard-deleted since the scan recorded it), and any other read
+		// failure fails the whole page rather than answering 200 with a page
+		// silently short by however many entities the store could not serve — see
+		// GetAsyncResults.
+		if errors.Is(err, ErrSearchJobNotComplete) {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
 			return
 		}
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
+		common.WriteError(w, r, jobLookupError(err))
 		return
 	}
 

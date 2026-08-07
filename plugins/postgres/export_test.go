@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,12 +29,28 @@ func ValidateInChunksForTest(
 var DropSchemaForTest = dropSchema
 
 // MigrateDownForTest exposes migrateDown to test files via the export_test.go
-// idiom. Use only in tests; never in production code.
-var MigrateDownForTest = migrateDown
+// idiom, at the shipped lock-timeout default — a fixture rolls back a database
+// nothing else is touching, so its lock waits are uncontended. Use only in
+// tests; never in production code.
+func MigrateDownForTest(pool *pgxpool.Pool) error {
+	return migrateDown(pool, defaultMigrateLockTimeout)
+}
 
 // ClassifyErrorForTest exposes classifyError to allow unit-testing of the
 // serialization/deadlock classification logic without requiring a live database.
 var ClassifyErrorForTest = classifyError
+
+// txResidue reports which pieces of per-transaction bookkeeping are still held
+// for txID: the pgx handle in the registry, the tenant, the origin and the
+// txState (which carries the read and write sets). All four must be gone once a
+// transaction has ended, however it ended.
+func (tm *TransactionManager) txResidue(txID string) (registry, tenant, origin, state bool) {
+	_, registry = tm.registry.Lookup(txID)
+	_, tenant = tm.lookupTenant(txID)
+	_, origin = tm.lookupOrigin(txID)
+	_, state = tm.lookupTxState(txID)
+	return
+}
 
 // HasTxState reports whether the given txID has an active txState entry.
 func HasTxState(tm *TransactionManager, txID string) bool {
@@ -149,4 +166,14 @@ func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID
 		ids = append(ids, e.Meta.ID)
 	}
 	return ids, rows.Err()
+}
+
+// NewStoreFactoryWithAcquireTimeoutForTest builds a factory whose stores carry a
+// custom connection-acquire deadline, so a test can observe pool saturation in
+// milliseconds instead of waiting out the shipped 10s default. Test-only; the
+// production path constructs its config through parseConfig.
+func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duration) *StoreFactory {
+	cfg := defaultStoreConfig()
+	cfg.AcquireTimeout = d
+	return newStoreFactoryWithConfig(pool, cfg)
 }

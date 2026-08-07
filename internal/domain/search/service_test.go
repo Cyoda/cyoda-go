@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1515,6 +1517,176 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	}
 }
 
+// TestAsyncSearchJob_PanicIsRecovered is coverage for Task 7 (tx-lifecycle
+// safety): the async search job goroutine runs on context.Background() with
+// no HTTP handler above it to recover a panic — net/http's per-connection
+// recover has nothing to do with a background goroutine, so an unrecovered
+// panic here takes the whole process down (the search analogue of the
+// scheduler's own dispatch goroutine, which already recovers). searchFn
+// panics to simulate a store-layer panic reaching the job; if the
+// goroutine's own recover did not exist or did not fire, this test binary
+// would already be gone rather than reaching the FAILED assertion below.
+func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+			panic("injected panic in async search execution")
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status search.SearchJobStatus
+	for time.Now().Before(deadline) {
+		status, err = svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if status.Status == "FAILED" || status.Status == "SUCCESSFUL" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Status != "FAILED" {
+		t.Fatalf("expected FAILED after a panicking search, got %q (a job stuck RUNNING means the goroutine died without recording the failure)", status.Status)
+	}
+
+	// Gate 3 (output sanitization): the persisted failure record must not
+	// leak the panic value or stack — only the generic message the recover
+	// handler writes. Full detail belongs in the log, not the job record.
+	job, err := searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Error == "" {
+		t.Error("expected a non-empty job error message")
+	}
+	if strings.Contains(job.Error, "injected panic") || strings.Contains(job.Error, "goroutine") {
+		t.Errorf("job error message leaks panic/internal detail: %q", job.Error)
+	}
+}
+
+// TestAsyncSearchJob_PanicMarksNodeUnhealthy holds the async-search goroutine
+// to the same contract as the two request doors: a recovered panic latches the
+// node's health flag false, so the node reports 503 on /health and /readyz and
+// stops taking client traffic. A panic here is exactly as much evidence of
+// unverified state as a panic in an HTTP or gRPC handler — it runs the same
+// engine and store code — so recording the job FAILED and carrying on would
+// leave the node serving from state nothing has checked.
+func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+			panic("injected panic in async search execution")
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+		WithHealthFlag(healthFlag)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
+		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
+	}, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	awaitJobSettled(t, svc, ctx, jobID, "FAILED")
+
+	if healthFlag.Load() {
+		t.Fatal("health flag still true after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
+	}
+}
+
+// TestAsyncSearchJob_SuccessLeavesNodeHealthy is the other direction: an async
+// job that completes normally must not touch the flag. Without it, a recover
+// handler that latched the flag unconditionally would still pass the test above.
+func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+		WithHealthFlag(healthFlag)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
+		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
+	}, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	awaitJobSettled(t, svc, ctx, jobID, "SUCCESSFUL")
+
+	if !healthFlag.Load() {
+		t.Fatal("health flag went false after a successful async search — the node took itself out of service for nothing")
+	}
+}
+
+// awaitJobSettled polls until the job leaves RUNNING and asserts the terminal
+// status, so the health-flag assertions above run against a finished goroutine.
+func awaitJobSettled(t *testing.T, svc *search.SearchService, ctx context.Context, jobID string, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if status.Status == "FAILED" || status.Status == "SUCCESSFUL" {
+			if status.Status != want {
+				t.Fatalf("job status = %q, want %q", status.Status, want)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job did not settle within the deadline; want %q", want)
+}
+
 // TestSearch_LimitExceedsMax verifies the service-layer defense-in-depth cap:
 // limit > MaxPageSize is rejected with a 400 BAD_REQUEST AppError before any
 // store access, and the unbounded case (limit < 0) is NOT rejected.
@@ -1969,5 +2141,120 @@ func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 	}
 	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
 		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// What the async job record says when the search failed
+// ---------------------------------------------------------------------------
+
+// ceilingErr is a storage-plugin error carrying the marker a backend sets when
+// the async-search scan exceeded that backend's own search ceiling. Declared
+// here as an ordinary error type because the marker is matched with errors.As
+// on an interface — no plugin import, and any backend can opt in.
+type ceilingErr struct{ cause error }
+
+func (e *ceilingErr) Error() string               { return "search query: " + e.cause.Error() }
+func (e *ceilingErr) Unwrap() error               { return e.cause }
+func (e *ceilingErr) SearchCeilingExceeded() bool { return true }
+
+// runFailingAsyncJob submits an async search whose execution fails with
+// searchErr and returns the persisted job record once the job is terminal.
+func runFailingAsyncJob(t *testing.T, searchErr error) *spi.SearchJob {
+	t.Helper()
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { _ = base.Close() })
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+			return nil, searchErr
+		},
+	}
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if st.Status != "RUNNING" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	job, err := searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Status != "FAILED" {
+		t.Fatalf("job status = %q, want FAILED", job.Status)
+	}
+	return job
+}
+
+// TestAsyncSearchJob_SearchCeiling_RecordsFixedMessage — the job record is the
+// one place a failure message is persisted and served back, so the backend's
+// search ceiling firing must land there as a fixed, non-revealing string naming
+// the ceiling and nothing else. The driver's own text stays in the log.
+func TestAsyncSearchJob_SearchCeiling_RecordsFixedMessage(t *testing.T) {
+	job := runFailingAsyncJob(t, &ceilingErr{
+		cause: errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"),
+	})
+
+	if !strings.Contains(job.Error, "search statement ceiling") {
+		t.Fatalf("job error %q does not name the ceiling the caller hit", job.Error)
+	}
+	for _, leak := range []string{"pgx", "SELECT", "SQLSTATE", "57014", "statement timeout", "host=", "password"} {
+		if strings.Contains(job.Error, leak) {
+			t.Fatalf("job error leaked internals (%q): %s", leak, job.Error)
+		}
+	}
+}
+
+// TestAsyncSearchJob_StorageError_IsNotPersistedVerbatim — Gate 3. Anything the
+// storage layer says about ITSELF (SQL, SQLSTATEs, connection detail) is
+// operator information; the job record is caller-facing.
+func TestAsyncSearchJob_StorageError_IsNotPersistedVerbatim(t *testing.T) {
+	job := runFailingAsyncJob(t, fmt.Errorf("search query: %w",
+		errors.New(`ERROR: relation "entity_versions" does not exist (SQLSTATE 42P01), host=db.internal user=cyoda`)))
+
+	if job.Error == "" {
+		t.Fatal("a failed job recorded no message at all")
+	}
+	for _, leak := range []string{"SQLSTATE", "42P01", "entity_versions", "host=", "user="} {
+		if strings.Contains(job.Error, leak) {
+			t.Fatalf("job error leaked internals (%q): %s", leak, job.Error)
+		}
+	}
+}
+
+// TestAsyncSearchJob_ClientErrorIsPreservedVerbatim — the counterweight. A
+// classified 4xx is the caller's own mistake and its text is already
+// client-safe, so sanitizing must not flatten it into a generic message the
+// caller cannot act on.
+func TestAsyncSearchJob_ClientErrorIsPreservedVerbatim(t *testing.T) {
+	appErr := common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+		"invalid regex pattern in condition")
+	job := runFailingAsyncJob(t, appErr)
+
+	if job.Error != appErr.Error() {
+		t.Fatalf("job error = %q, want the classified client error %q", job.Error, appErr.Error())
 	}
 }

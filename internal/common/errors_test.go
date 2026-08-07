@@ -1,9 +1,11 @@
 package common_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -154,6 +156,61 @@ func TestWriteErrorOperationalNoTicket(t *testing.T) {
 	if detail != "BAD_REQUEST: invalid input" {
 		t.Errorf("expected message as detail, got %q", detail)
 	}
+}
+
+// TestWriteError_OperationalOmitsCauseWhenAbsent keeps the log line unchanged
+// for the overwhelming majority of operational errors, which carry no cause.
+func TestWriteError_OperationalOmitsCauseWhenAbsent(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	common.WriteError(w, r, common.Operational(http.StatusBadRequest, "BAD_REQUEST", "invalid input"))
+
+	if strings.Contains(buf.String(), `"cause"`) {
+		t.Errorf("causeless operational error logged an empty cause: %s", buf.String())
+	}
+}
+
+// TestWriteError_OperationalLogsCause pins the only server-side breadcrumb an
+// operational error has. Most 4xx codes put full domain detail in the message,
+// but a 503 STORAGE_UNAVAILABLE deliberately keeps its cause out of the
+// response — a pool error can carry the connection string — so if the log drops
+// it too, the failure is undiagnosable. WithCause is the opt-in; log-only,
+// never the body.
+func TestWriteError_OperationalLogsCause(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	cause := errors.New("acquire timed out: postgres://u:p@db/cyoda")
+	appErr := common.Operational(
+		http.StatusServiceUnavailable,
+		common.ErrCodeStorageUnavailable,
+		"storage is temporarily unavailable — retry",
+	).AsRetryable().WithCause(cause)
+
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), "acquire timed out") {
+		t.Errorf("operational log dropped the cause, leaving the 503 undiagnosable: %s", buf.String())
+	}
+	if body := w.Body.String(); strings.Contains(body, "postgres://") {
+		t.Errorf("response body leaked the cause to the client: %s", body)
+	}
+}
+
+// captureSlog redirects the default logger into a buffer for the duration of
+// the test.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
 func TestWriteErrorFatalProducesTicketAndSanitizedDetail(t *testing.T) {
@@ -336,6 +393,60 @@ func TestInternal_ConflictStillRetryable(t *testing.T) {
 	}
 	if !e.Retryable {
 		t.Fatal("ErrConflict must remain retryable")
+	}
+}
+
+// stubUnavailable is a storage error carrying the transient-unavailability
+// marker. The marker is an interface by design — no package owns the type — so
+// a plugin opts in simply by returning this shape.
+type stubUnavailable struct{ error }
+
+func (stubUnavailable) StorageUnavailable() bool { return true }
+
+// TestInternal_StorageUnavailableBecomes503 — the marker has to be honoured on
+// the generic 500 funnel, not only at the transaction-Begin call sites. A
+// transaction the database reclaimed surfaces from whichever statement ran next,
+// and every one of those failures reaches the caller through Internal.
+func TestInternal_StorageUnavailableBecomes503(t *testing.T) {
+	cause := stubUnavailable{errors.New("the transaction was reclaimed: conn closed")}
+	e := common.Internal("failed to save entity", fmt.Errorf("failed to get DB timestamps: %w", cause))
+
+	if e.Status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", e.Status)
+	}
+	if e.Code != common.ErrCodeStorageUnavailable {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeStorageUnavailable)
+	}
+	if !e.Retryable {
+		t.Fatal("STORAGE_UNAVAILABLE must be retryable")
+	}
+	if e.Level != common.LevelOperational {
+		t.Fatalf("level = %v, want Operational — an Internal level would mint a ticket and hide the code", e.Level)
+	}
+	if e.Err == nil {
+		t.Fatal("the cause was dropped, leaving the 503 undiagnosable in the log")
+	}
+	if strings.Contains(e.Message, "conn closed") {
+		t.Fatalf("the client-facing message leaked infrastructure detail: %q", e.Message)
+	}
+}
+
+// TestInternal_StatementTimeoutStaysA500 is the other half of the ceiling split.
+// A cancelled statement carries no marker and no conflict sentinel, so it must
+// come out as a 500 with a ticket: re-running a statement that just exceeded the
+// ceiling will exceed it again, and calling that retryable would be a lie.
+func TestInternal_StatementTimeoutStaysA500(t *testing.T) {
+	e := common.Internal("failed to save entity",
+		errors.New("failed to upsert entity: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"))
+
+	if e.Status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", e.Status)
+	}
+	if e.Retryable {
+		t.Fatal("a cancelled statement was advertised as retryable")
+	}
+	if e.Level != common.LevelInternal {
+		t.Fatalf("level = %v, want Internal so the response carries a ticket", e.Level)
 	}
 }
 

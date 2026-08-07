@@ -31,14 +31,45 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 				r := true
 				retryable = &r
 			}
+			// An operational error whose cause is INFRASTRUCTURE rather than
+			// domain (a storage failure, say) attaches that cause with
+			// WithCause and keeps it out of the client-facing message. The log
+			// is then its only breadcrumb — so it has to exist on this door
+			// too, not just on the HTTP one. Same message and field name as
+			// common.WriteError's operational branch, so the two entry points
+			// read alike in a log aggregator. Errors without a cause put their
+			// full detail in the message the client already has; logging those
+			// again would be noise on every bad request.
+			if appErr.Err != nil {
+				slog.Info("operational error", "pkg", "grpc",
+					"code", appErr.Code, "message", appErr.Message, "cause", appErr.Err.Error())
+			}
 			return
 		}
-		// Internal/Fatal — generate ticket
-		ticket := uuid.New().String()
+		// Internal/Fatal — reuse the caller's pinned ticket when it has one
+		// (it has already logged the detail under it; a second one would name
+		// nothing), otherwise mint.
+		ticket := appErr.Ticket
+		if ticket == "" {
+			ticket = uuid.New().String()
+		}
 		slog.Error("internal error", "ticket", ticket, "code", appErr.Code, "detail", appErr.Detail)
 		code = "SERVER_ERROR"
 		message = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
 		return
+	}
+	// A raw error carrying the storage layer's transient-unavailability marker is
+	// NOT unclassified. Several service methods (the async-search family) return
+	// the marker on a raw error rather than a pre-classified AppError; the HTTP
+	// door recognises it via common.Internal and answers a retryable 503
+	// STORAGE_UNAVAILABLE. Classifying it here too keeps one outage on one service
+	// method from reading as "retry shortly" on one door and "your request is
+	// hopeless" on the other. Re-entering through the operational branch also
+	// keeps the cause in the log and out of the envelope, exactly as the HTTP door
+	// does. Every one of this file's envelopes funnels through here, so this is
+	// the only place the check belongs.
+	if appErr := common.StorageUnavailable(err); appErr != nil {
+		return buildErrorFields(appErr)
 	}
 	// Raw error — should not happen
 	ticket := uuid.New().String()

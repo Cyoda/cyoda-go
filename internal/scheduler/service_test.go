@@ -511,3 +511,92 @@ func TestService_DeadWorkerRedispatchAfterBackoffElapses(t *testing.T) {
 		t.Errorf("re-dispatched task ID = %q, want dead-worker-task", seen[1].ID)
 	}
 }
+
+// panickingExecutor panics on Execute, signalling first so the test can wait
+// for the dispatch goroutine to have entered (and therefore left, via its
+// recover) before asserting.
+type panickingExecutor struct{ entered chan struct{} }
+
+func (e *panickingExecutor) Execute(context.Context, spi.ScheduledTask, string) {
+	close(e.entered)
+	panic("injected panic in scheduled-task dispatch")
+}
+
+// TestService_DispatchPanicMarksNodeUnhealthy holds the scan-loop dispatch
+// goroutine to the same contract as the request doors and the async-search
+// goroutine. It matters more than it looks: ClusterExecutor.Execute fires
+// in-process when Distribution picks this node, so without the latch the same
+// panicking scheduled fire takes the node out of service when round-robin
+// picks a peer (it arrives over the HTTP door, which recovers and latches) and
+// leaves it serving when round-robin picks self. Whether a node withdraws
+// would depend on which node Pick happened to choose.
+func TestService_DispatchPanicMarksNodeUnhealthy(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	clock := newFakeClock(time.UnixMilli(10_000))
+	armTestTask(t, factory, "boom-task", 9_000)
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+
+	exec := &panickingExecutor{entered: make(chan struct{})}
+	svc := NewService(Config{
+		Enabled: true, ScanInterval: time.Hour, RedispatchBackoff: 5 * time.Minute, BatchSize: 10,
+	}, Deps{
+		Store:        factory,
+		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
+		Coordinator:  LowestLiveNodeID{},
+		Distribution: Self{},
+		Clock:        clock,
+		Executor:     exec,
+		SelfID:       "n1",
+		HealthFlag:   healthFlag,
+	})
+
+	svc.tick()
+	select {
+	case <-exec.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch goroutine never ran")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for healthFlag.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if healthFlag.Load() {
+		t.Fatal("health flag still true after a recovered panic in the dispatch goroutine — the node keeps taking traffic with unverified state")
+	}
+}
+
+// TestService_NormalDispatchLeavesNodeHealthy is the other direction: a task
+// that fires without panicking must not touch the flag. Without it, a latch
+// placed outside the recover block would still pass the test above.
+func TestService_NormalDispatchLeavesNodeHealthy(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	clock := newFakeClock(time.UnixMilli(10_000))
+	armTestTask(t, factory, "ok-task", 9_000)
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+
+	exec := newCapturingExecutor()
+	svc := NewService(Config{
+		Enabled: true, ScanInterval: time.Hour, RedispatchBackoff: 5 * time.Minute, BatchSize: 10,
+	}, Deps{
+		Store:        factory,
+		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
+		Coordinator:  LowestLiveNodeID{},
+		Distribution: Self{},
+		Clock:        clock,
+		Executor:     exec,
+		SelfID:       "n1",
+		HealthFlag:   healthFlag,
+	})
+
+	svc.tick()
+	exec.waitForDispatches(t, 1, 2*time.Second)
+
+	if !healthFlag.Load() {
+		t.Fatal("health flag went false after a normal dispatch — the node took itself out of service for nothing")
+	}
+}

@@ -17,7 +17,33 @@ import (
 // the store to be obtained at app startup with context.Background().
 // ReapExpired operates cross-tenant (no tenant context required).
 type asyncSearchStore struct {
+	// q is the pool-pinned funnel: every statement here is classified, and none
+	// of them joins a transaction the caller may be holding. See poolQuerier for
+	// why the job record must stay independent of the submitting transaction.
+	q Querier
+
+	// pool is kept for the one operation Querier does not carry, SaveResults'
+	// CopyFrom.
 	pool *pgxpool.Pool
+
+	// searchStatementTimeout is the ceiling the SCAN an async job runs is
+	// bounded by — not any statement in this file, which are the ordinary
+	// job-record reads and writes and belong under the interactive ceiling like
+	// every other short statement.
+	searchStatementTimeout time.Duration
+}
+
+// AsyncScanContext marks ctx as belonging to an async-search scan, so the entity
+// store bounds that scan by this backend's own search ceiling instead of the
+// interactive one the pool carries.
+//
+// The domain calls this on the background context its job goroutine runs under,
+// discovering the method with a type assertion — async search is the one
+// workload whose purpose is to run long, and a single shared ceiling would force
+// operators to choose between fast-failing interactive writes and long
+// analytical scans.
+func (s *asyncSearchStore) AsyncScanContext(ctx context.Context) context.Context {
+	return withSearchScanCeiling(ctx, s.searchStatementTimeout)
 }
 
 func (s *asyncSearchStore) tenant(ctx context.Context) (spi.TenantID, error) {
@@ -37,7 +63,7 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 		return err
 	}
 	// Enforce context tenant — never trust the struct field.
-	_, err = s.pool.Exec(ctx,
+	_, err = s.q.Exec(ctx,
 		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		job.ID, string(tid), job.Status,
@@ -56,7 +82,7 @@ func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 	if err != nil {
 		return nil, err
 	}
-	row := s.pool.QueryRow(ctx,
+	row := s.q.QueryRow(ctx,
 		`SELECT id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms
 		 FROM search_jobs WHERE id = $1 AND tenant_id = $2`,
 		jobID, string(tid))
@@ -68,7 +94,7 @@ func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, st
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx,
+	tag, err := s.q.Exec(ctx,
 		`UPDATE search_jobs SET status = $1, result_count = $2, error = $3, finished_at = $4, calc_ms = $5
 		 WHERE id = $6 AND tenant_id = $7`,
 		status, resultCount, errMsg, finishTime, calcTimeMs,
@@ -90,7 +116,7 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, entity
 
 	// Verify job belongs to this tenant.
 	var exists bool
-	err = s.pool.QueryRow(ctx,
+	err = s.q.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE id = $1 AND tenant_id = $2)`,
 		jobID, string(tid)).Scan(&exists)
 	if err != nil {
@@ -110,12 +136,15 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, entity
 		rows[i] = []any{jobID, string(tid), i, eid}
 	}
 
+	// CopyFrom is not on Querier, so this is the one statement in the file that
+	// classifies at the call site rather than inside the funnel. Same
+	// classification, applied by hand.
 	_, err = s.pool.CopyFrom(ctx,
 		pgx.Identifier{"search_job_results"},
 		[]string{"job_id", "tenant_id", "seq", "entity_id"},
 		pgx.CopyFromRows(rows))
 	if err != nil {
-		return fmt.Errorf("failed to save results for job %s: %w", jobID, err)
+		return fmt.Errorf("failed to save results for job %s: %w", jobID, classifyError(err))
 	}
 	return nil
 }
@@ -128,7 +157,7 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 
 	// Verify job exists and belongs to this tenant.
 	var exists bool
-	err = s.pool.QueryRow(ctx,
+	err = s.q.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE id = $1 AND tenant_id = $2)`,
 		jobID, string(tid)).Scan(&exists)
 	if err != nil {
@@ -140,7 +169,7 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 
 	// Get total count.
 	var total int
-	err = s.pool.QueryRow(ctx,
+	err = s.q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM search_job_results WHERE job_id = $1 AND tenant_id = $2`,
 		jobID, string(tid)).Scan(&total)
 	if err != nil {
@@ -148,7 +177,7 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 	}
 
 	// Get paginated results.
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.q.Query(ctx,
 		`SELECT entity_id FROM search_job_results WHERE job_id = $1 AND tenant_id = $2 ORDER BY seq OFFSET $3 LIMIT $4`,
 		jobID, string(tid), offset, limit)
 	if err != nil {
@@ -180,7 +209,7 @@ func (s *asyncSearchStore) DeleteJob(ctx context.Context, jobID string) error {
 		return err
 	}
 	// CASCADE on search_job_results handles cleanup.
-	_, err = s.pool.Exec(ctx,
+	_, err = s.q.Exec(ctx,
 		`DELETE FROM search_jobs WHERE id = $1 AND tenant_id = $2`,
 		jobID, string(tid))
 	if err != nil {
@@ -199,7 +228,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 	}
 
 	// Conditionally update: only transition to CANCELLED if currently RUNNING.
-	tag, err := s.pool.Exec(ctx,
+	tag, err := s.q.Exec(ctx,
 		`UPDATE search_jobs SET status = 'CANCELLED'
 		 WHERE id = $1 AND tenant_id = $2 AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
 		jobID, string(tid))
@@ -215,7 +244,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 	// No rows affected: either the job is already terminal (idempotent → nil)
 	// or the job does not exist (→ ErrNotFound). Check existence.
 	var exists bool
-	err = s.pool.QueryRow(ctx,
+	err = s.q.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE id = $1 AND tenant_id = $2)`,
 		jobID, string(tid)).Scan(&exists)
 	if err != nil {
@@ -231,7 +260,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (int, error) {
 	// ReapExpired runs cross-tenant — no tenant context required.
 	cutoff := time.Now().UTC().Add(-ttl)
-	tag, err := s.pool.Exec(ctx,
+	tag, err := s.q.Exec(ctx,
 		`DELETE FROM search_jobs WHERE status != 'RUNNING' AND finished_at IS NOT NULL AND finished_at < $1`,
 		cutoff)
 	if err != nil {

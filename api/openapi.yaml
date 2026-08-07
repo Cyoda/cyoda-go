@@ -480,6 +480,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /audit/entity/{entityId}/workflow/{transactionId}/finished:
@@ -542,6 +544,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /clients:
@@ -862,6 +866,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/stats/states:
@@ -949,6 +955,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/stats/states/{entityName}/{modelVersion}:
@@ -1050,6 +1058,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/stats/{entityName}/{modelVersion}:
@@ -1118,6 +1128,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/stats/{entityName}/{modelVersion}/query:
@@ -1255,6 +1267,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -1366,6 +1380,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     delete:
@@ -1432,6 +1448,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}/changes:
@@ -1559,6 +1577,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}/transitions:
@@ -1646,8 +1666,11 @@ paths:
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
         "503":
-          description: A `function` workflow selection criterion needs a compute member
-            for its tags and none is connected. Retryable.
+          description: Retryable. Either a `function` workflow selection criterion
+            needs a compute member for its tags and none is connected, or the storage
+            layer could not serve the request — no connection available within the
+            acquire timeout, the transaction was reclaimed by the idle-in-transaction
+            ceiling, or the connection was lost.
           content:
             application/problem+json:
               schema:
@@ -1844,6 +1867,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     delete:
@@ -2021,6 +2046,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}:
@@ -2227,6 +2254,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -2428,6 +2457,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}:
@@ -2609,6 +2640,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -2752,6 +2785,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
@@ -2945,6 +2980,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -3098,6 +3135,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityName}/{modelVersion}:
@@ -3319,6 +3358,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /message:
@@ -3410,6 +3451,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /message/new/{subject}:
@@ -3604,6 +3647,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /message/{messageId}:
@@ -3701,6 +3746,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     delete:
@@ -3769,6 +3816,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/:
@@ -3819,6 +3868,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/export/{converter}/{entityName}/{modelVersion}:
@@ -3988,6 +4039,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}:
@@ -4137,6 +4190,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/validate/{entityName}/{modelVersion}:
@@ -4191,6 +4246,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -4283,6 +4340,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/changeLevel/{changeLevel}:
@@ -4418,6 +4477,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/lock:
@@ -4512,6 +4573,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/unlock:
@@ -4612,6 +4675,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/unique-keys:
@@ -4747,6 +4812,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/workflow/export:
@@ -4795,6 +4862,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -4862,6 +4931,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -5331,6 +5402,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -5393,6 +5466,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -5463,6 +5538,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -5545,6 +5622,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/oidc/providers:
@@ -5595,6 +5674,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
     post:
@@ -5672,6 +5753,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -5740,6 +5823,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -5807,6 +5892,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
     patch:
@@ -5911,6 +5998,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -5981,6 +6070,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -6059,6 +6150,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/token:
@@ -6664,6 +6757,22 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/platform-api/entity/fetch/transitions
+        "503":
+          description: Retryable. Either a `function` workflow selection criterion
+            needs a compute member for its tags and none is connected, or the storage
+            layer could not serve the request — no connection available within the
+            acquire timeout, the transaction was reclaimed by the idle-in-transaction
+            ceiling, or the connection was lost.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: "no calculation member registered for tags: selector-service"
+                instance: /api/platform-api/entity/fetch/transitions
         default:
           $ref: '#/components/responses/InternalServerError'
   /search/async/{entityName}/{modelVersion}:
@@ -6850,6 +6959,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -6921,6 +7032,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -6967,6 +7080,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -7023,6 +7138,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -7181,6 +7298,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -10006,7 +10125,7 @@ components:
             `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
             Explicit fires of a scheduled transition by name return HTTP 400
             `TRANSITION_NOT_FOUND` — it is not manually fireable. See
-            `cyoda help workflows` (authoring) and `cyoda help config.scheduler`
+            `cyoda help workflows` (authoring) and `cyoda help config scheduler`
             (runtime tuning).
         criterion:
           oneOf:
@@ -11533,6 +11652,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetail'
+    ServiceUnavailable:
+      description: The storage layer could not serve the request — no connection
+        available within the acquire timeout, the transaction was reclaimed by the
+        idle-in-transaction ceiling, or the connection was lost. Retryable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Service Unavailable
+            status: 503
+            detail: storage is temporarily unavailable — retry
   securitySchemes:
     basicAuth:
       type: http

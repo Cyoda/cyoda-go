@@ -638,3 +638,120 @@ func TestUpdateCollection_IfMatch_AbsentRegression(t *testing.T) {
 		t.Errorf("item 2 update did not land: %v", data)
 	}
 }
+
+// --- Test 9: CBD apply-result conflict aborts the whole chunk ---
+//
+// The mirror image of Test 5, and the reason a batch cannot treat every
+// spi.ErrConflict from the engine as an isolable precondition failure.
+//
+// Here the ifMatch is CURRENT, so the first-segment flush accepts it, TX_pre
+// commits, and the callout fires. The callout then commits an out-of-band write
+// to the same entity, so the engine's apply-result CompareAndSave — which runs
+// against TX_pre and only after the dispatch returns — conflicts. By that point
+// the segment is durable and the external effect has happened: there is nothing
+// to continue the chunk in, and the loop's cursor still names the committed
+// transaction. Isolating this item would write every later item into that dead
+// transaction. The whole call must fail instead.
+//
+// Deterministic, not racy: RegisterProcessor runs the closure synchronously
+// inside the dispatch, and with startNewTxOnDispatch unset that dispatch runs
+// outside any transaction, after the commit.
+func TestUpdateCollection_IfMatch_CBDPostSegmentConflictAbortsChunk(t *testing.T) {
+	const model = "e2e-upd-ifmatch-cbd-post"
+
+	var dispatchCount atomic.Int32
+	// Written only inside the closure, read only after the batch call returns,
+	// which cannot overlap: the dispatch is synchronous within that call.
+	var sideWriteStatus int
+	var sideWriteErr error
+	var targetID string
+
+	procSvc.RegisterProcessor("upd-coll-cbd-post-counted", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
+		dispatchCount.Add(1)
+		// An ordinary committed update from somebody else, landing between
+		// TX_pre's commit and the apply-result CAS. doAuthRaw, not doAuth: this
+		// runs on the server's goroutine and must not call t.Fatalf.
+		resp, err := doAuthRaw(context.Background(), http.MethodPut,
+			"/api/entity/JSON/"+targetID,
+			`{"name":"X_CONCURRENT","amount":7,"status":"other"}`)
+		if err != nil {
+			sideWriteErr = err
+			return entity, nil
+		}
+		defer func() { _ = resp.Body.Close() }()
+		sideWriteStatus = resp.StatusCode
+		return entity, nil
+	})
+	defer procSvc.Reset()
+
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "upd-coll-cbd-post-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
+				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
+					"processors": [{"type": "calculator", "name": "upd-coll-cbd-post-counted",
+						"executionMode": "COMMIT_BEFORE_DISPATCH",
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
+				}]},
+				"APPROVED": {}
+			}
+		}]
+	}`
+	setupModelWithWorkflow(t, model, wf)
+
+	id1 := createEntityE2E(t, model, 1, `{"name":"X","amount":1,"status":"new"}`)
+	id2 := createEntityE2E(t, model, 1, `{"name":"Y","amount":2,"status":"new"}`)
+	targetID = id1
+	// CURRENT, so the flush accepts it and the failure lands past the commit.
+	current := getEntityTxID(t, id1)
+
+	body := fmt.Sprintf(
+		`[{"id":"%s","payload":"{\"name\":\"X_UPD\",\"amount\":99,\"status\":\"upd\"}","transition":"approve","ifMatch":"%s"},`+
+			`{"id":"%s","payload":"{\"name\":\"Y_UPD\",\"amount\":98,\"status\":\"upd\"}"}]`,
+		id1, current, id2)
+	resp := doAuth(t, http.MethodPut, "/api/entity/JSON", body)
+	rbody := readBody(t, resp)
+
+	// Preconditions for the assertions below: the callout really did fire (so
+	// the conflict is on the far side of the commit), and the out-of-band write
+	// really did commit (so the CAS has something to conflict with).
+	if sideWriteErr != nil {
+		t.Fatalf("out-of-band write from the callout failed: %v", sideWriteErr)
+	}
+	if sideWriteStatus != http.StatusOK {
+		t.Fatalf("out-of-band write returned %d, want 200; the apply-result CAS would not conflict", sideWriteStatus)
+	}
+	if c := dispatchCount.Load(); c != 1 {
+		t.Fatalf("CBD dispatch fired %d time(s), want 1; the cascade never reached the apply-result CAS", c)
+	}
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — a conflict past a committed segment aborts the chunk, it is not per-item isolable; body: %s",
+			resp.StatusCode, rbody)
+	}
+	assertErrorCode(t, rbody, "WORKFLOW_FAILED")
+
+	// A 4xx detail is one `CODE: message` line.
+	var pd struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(rbody), &pd); err != nil {
+		t.Fatalf("parse problem detail: %v; body: %s", err, rbody)
+	}
+	if strings.Contains(pd.Detail, "\n") {
+		t.Errorf("4xx detail must be a single line, got %q", pd.Detail)
+	}
+
+	// The later item must not be persisted. It cannot be: the only transaction
+	// left to write it into was already committed.
+	if data := getEntityData(t, id2, ""); data["name"] != "Y" {
+		t.Errorf("later item was persisted after the chunk aborted: %v", data)
+	}
+	// The segment IS durable, which is exactly why the chunk cannot be
+	// isolated-and-continued: TX_pre's commit and the callout's write both stand.
+	if data := getEntityData(t, id1, ""); data["name"] != "X_CONCURRENT" {
+		t.Errorf("segmenting item = %v; want the out-of-band write to stand (TX_pre committed, the callout fired)", data)
+	}
+}

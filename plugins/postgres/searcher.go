@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -29,7 +31,8 @@ var _ spi.Searcher = (*entityStore)(nil)
 // No scan budget (unlike sqlite): the production engine streams in SQL order
 // and bounds memory via the limit+1 probe / early-raise above. An unbounded
 // request with a residual is O(n) memory — the same profile as the in-memory
-// fallback it replaces.
+// fallback it replaces. Time is bounded server-side by statement_timeout, and
+// on the async-search scan by that workload's own ceiling — see searchCommitted.
 //
 // Transaction awareness (read-your-own-writes). Unlike the memory and sqlite
 // backends — which stage a transaction's writes in an in-process buffer
@@ -83,14 +86,108 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	return results, nil
 }
 
-// searchCommitted runs the committed pushdown: plan the filter, push the
+// searchCommitted routes the committed pushdown to the querier it should run
+// through, which is the context-resolving one for every search except the
+// async-search scan.
+//
+// That scan gets a transaction of its own so it can raise its statement ceiling
+// (searchUnderOwnCeiling). The two conditions are both required: the context
+// must be one the AsyncSearchStore marked, AND there must be no transaction
+// already active — opening a second transaction under a caller who is already in
+// one would run the scan outside the transaction whose writes it is supposed to
+// see, losing read-your-own-writes and holding a second pooled connection. An
+// async job never runs in a transaction, so this is a guard, not a branch the
+// production path takes.
+func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if ceiling, ok := searchScanCeiling(ctx); ok && s.pool != nil && spi.GetTransaction(ctx) == nil {
+		return s.searchUnderOwnCeiling(ctx, ceiling, filter, opts)
+	}
+	return s.runSearch(ctx, s.q, filter, opts)
+}
+
+// searchUnderOwnCeiling runs the scan in a transaction whose first statement
+// replaces the interactive statement ceiling with the async-search one.
+//
+// SET LOCAL, never SET: the ceiling has to die with the transaction. A session
+// SET would ride the pooled connection back into the pool and cap — or uncap —
+// every interactive statement that borrowed it next.
+//
+// The transaction is read-only in effect and always rolled back: there is
+// nothing to commit, and a rollback returns the connection just as cleanly.
+func (s *entityStore) searchUnderOwnCeiling(ctx context.Context, ceiling time.Duration, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	// Acquire-only deadline, cancelled the moment Begin has returned — see
+	// newAcquireContext. A deadline that reached the transaction handle would
+	// cancel the scan when the acquire window closed, which is the opposite of
+	// giving it room to run.
+	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+	tx, err := s.pool.Begin(acquireCtx)
+	cancelAcquire()
+	if err != nil {
+		// classifyAcquireErr rather than classifyError alone: an acquire that hit
+		// this plugin's own deadline never reached the server, so it carries no
+		// SQLSTATE and no torn socket for classifyError to recognise, and would
+		// fall through unmarked. classifyAcquireErr adds that case and runs
+		// classifyError for the rest, so the torn-socket shape keeps its marker
+		// too. The caller-visible job record is unchanged either way —
+		// jobFailureMessage collapses anything it does not recognise to a fixed
+		// string — but the classification is what the store's own contract is
+		// judged on, and it now matches the other two acquires.
+		return nil, classifyAcquireErr(ctx, acquireCtx, "begin async search scan", err)
+	}
+	// Rollback on a context derived WithoutCancel: on the cancellation path the
+	// caller's context may itself be the thing that expired, and a rollback on an
+	// expired context destroys the pooled connection instead of returning it.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The tenant RLS policies read, matching what TransactionManager.Begin does
+	// for every other transaction this plugin opens. set_config rather than SET
+	// LOCAL because PostgreSQL's SET takes no bound parameters.
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+		return nil, fmt.Errorf("set tenant for async search scan: %w", classifyError(err))
+	}
+
+	// pgDurationMillis, never a Go duration string: PostgreSQL's time units are
+	// us/ms/s/min/h/d — "m" is not among them — and Go renders 30 minutes as
+	// "30m0s", which is invalid twice over.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = "+pgDurationMillis(ceiling)); err != nil {
+		return nil, fmt.Errorf("set search statement ceiling: %w", classifyError(err))
+	}
+
+	results, err := s.runSearch(ctx, tx, filter, opts)
+	if err != nil {
+		return nil, s.classifyScanError(err)
+	}
+	return results, nil
+}
+
+// classifyScanError names the async-search ceiling when it is what fired, and
+// otherwise classifies the error the way every other statement in this plugin is
+// classified.
+//
+// The ceiling is checked first and does NOT fall through to classifySQLState:
+// that branch logs statement_timeout by name, which would be the wrong setting
+// here and would send an operator to the wrong knob.
+func (s *entityStore) classifyScanError(err error) error {
+	if isStatementTimeout(err) {
+		// NOT retryable, and deliberately not marked so: a scan re-run after
+		// exceeding its ceiling exceeds it again. Naming the setting is the whole
+		// operational benefit — the caller's own job record says only that a
+		// ceiling was hit.
+		slog.Warn("async search scan cancelled after exceeding the configured ceiling",
+			"pkg", "postgres", "setting", "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", "err", err)
+		return &searchCeilingError{cause: err}
+	}
+	return classifyError(err)
+}
+
+// runSearch runs the committed pushdown through q: plan the filter, push the
 // pushable portion to SQL, and — when there is no residual — push the
 // limit+1 probe described on Search above. When there is a residual, rows
 // are streamed and post-filtered in Go with no paging: Search raises the
-// moment the running count exceeds the bound. Executed through the context-
-// resolving Querier, so inside a transaction it observes the tx's own writes
+// moment the running count exceeds the bound. With the context-resolving
+// Querier, inside a transaction it observes the tx's own writes
 // (read-your-own-writes) natively; outside a transaction it reads committed data.
-func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	// Zero-value Filter means "match all" — skip planQuery (it would treat the
 	// empty Op as non-pushable and install the zero filter as a residual).
 	var plan sqlPlan
@@ -116,7 +213,7 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 		baseArgs = append(baseArgs, opts.Limit+1)
 	}
 
-	rows, err := s.q.Query(ctx, baseQuery, baseArgs...)
+	rows, err := q.Query(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("search query: %w", err)
 	}

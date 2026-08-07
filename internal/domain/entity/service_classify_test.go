@@ -1,8 +1,10 @@
 package entity
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -223,6 +225,52 @@ func TestClassifyWorkflowError_CriterionTypingInfraMapsTo5xx(t *testing.T) {
 	}
 }
 
+// TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx — every save of an
+// entity whose workflow carries a schedule re-arms it, so the scheduled-task
+// store is on the ordinary write path, not a corner of it. A store failure
+// there is never attributable to the caller's input; unclassified it reaches
+// the catch-all, which puts the driver's own text into a 400 WORKFLOW_FAILED
+// body. This asserts the whole chain: classification, the message, and the
+// bytes a client actually receives.
+func TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx(t *testing.T) {
+	const innerSecret = "ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"
+	// Mirror the production wrapping shape: arm.go joins the sentinel with the
+	// store cause, and engine.go wraps that again on the way out.
+	inner := errors.Join(wfengine.ErrScheduledTaskInfra, errors.New(innerSecret))
+	prod := fmt.Errorf("failed to reconcile scheduled tasks: %w", inner)
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (a scheduled-task store outage is not client-attributable)", appErr.Status)
+	}
+	if appErr.Level != common.LevelInternal {
+		t.Errorf("level = %v, want LevelInternal so the response carries a ticket", appErr.Level)
+	}
+	if appErr.Code != common.ErrCodeServerError {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeServerError)
+	}
+	if !errors.Is(appErr, prod) {
+		t.Error("the original error must stay wrapped for server-side logging")
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/entity/JSON/e-1/next", nil)
+	common.WriteError(rr, req, appErr)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("client response: expected HTTP 500, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{"SQLSTATE", "57014", "statement timeout", "canceling statement"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("client response leaks internal detail (%q): %s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "ticket") {
+		t.Errorf("client response missing ticket correlation field: %s", body)
+	}
+}
+
 // TestClassifyWorkflowError_NoMatchingMemberMapsTo503 pins the mapping the
 // transitions read doors depend on. GET /entity/{id}/transitions evaluates
 // workflow selection criteria, so a FUNCTION selection criterion whose tag
@@ -247,4 +295,108 @@ func TestClassifyWorkflowError_NoMatchingMemberMapsTo503(t *testing.T) {
 	if !appErr.Retryable {
 		t.Error("a missing compute member is a transient infra condition; want retryable")
 	}
+}
+
+// TestPerIDDeleteError_SanitizesStorageDetail — DeleteResult.IDToError is
+// serialised straight into a 200 body (handler.go's deleteResult map), so
+// whatever goes in it is on the wire. A storage failure's own text carries
+// driver wording, SQL wrap-context and a SQLSTATE, none of which a client may
+// see; the detail belongs in the log under a ticket the caller can quote.
+func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
+	buf := captureEntitySlog(t)
+
+	raw := errors.New("failed to mark entity deleted: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
+	msg := perIDDeleteError("e-1", raw)
+
+	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("per-id error leaks internal detail (%q): %s", leak, msg)
+		}
+	}
+	if !strings.Contains(msg, common.ErrCodeServerError) {
+		t.Errorf("per-id error carries no error code: %s", msg)
+	}
+	if !strings.Contains(msg, "ticket") {
+		t.Errorf("per-id error carries no ticket, so the logged detail cannot be correlated: %s", msg)
+	}
+	if logged := buf.String(); !strings.Contains(logged, "57014") {
+		t.Errorf("the detail was sanitized out of the response but never logged, so it is lost: %s", logged)
+	}
+}
+
+// TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode — a per-item failure that
+// carries the storage layer's transient-unavailability marker is classified, not
+// unexplained. Flattening it to SERVER_ERROR + ticket tells the caller the item
+// is hopeless when in fact a retry in a moment is exactly the right move — and
+// it is the answer the same failure gets on every other door. The cause still
+// stays off the wire: common.StorageUnavailable holds it in WithCause, so the
+// message is client-safe by construction.
+func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
+	buf := captureEntitySlog(t)
+
+	const cause = "acquire: host=db.internal user=cyoda: context deadline exceeded"
+	raw := fmt.Errorf("failed to mark entity deleted: %w", &markedStorageOutage{detail: cause})
+
+	msg := perIDDeleteError("e-1", raw)
+
+	if !strings.Contains(msg, common.ErrCodeStorageUnavailable) {
+		t.Errorf("a marked storage outage lost its domain code: %s", msg)
+	}
+	if strings.Contains(msg, "ticket") {
+		t.Errorf("a classified error minted a ticket it does not need: %s", msg)
+	}
+	for _, leak := range []string{"db.internal", "acquire", "deadline"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("per-id error leaks the storage cause (%q): %s", leak, msg)
+		}
+	}
+
+	// The classified branch returns before this function's ticketed
+	// slog.Error, and the caller does not log either — so without a
+	// breadcrumb here, WHY storage was unavailable is recorded nowhere. The
+	// usual rescue is that the same outage also fails scope.Commit(), which
+	// logs; that is not guaranteed. Same message and field name as
+	// common.WriteError's operational branch, so the two read alike in an
+	// aggregator.
+	logged := buf.String()
+	if !strings.Contains(logged, cause) {
+		t.Errorf("the storage cause was kept out of the response but never logged, so it is lost: %s", logged)
+	}
+	if !strings.Contains(logged, "operational error") {
+		t.Errorf("the breadcrumb does not use the shared operational-error message: %s", logged)
+	}
+	if !strings.Contains(logged, "e-1") {
+		t.Errorf("the breadcrumb does not name the entity it belongs to: %s", logged)
+	}
+}
+
+// markedStorageOutage carries the storage layer's transient-unavailability
+// marker on a raw error, as a plugin does.
+type markedStorageOutage struct{ detail string }
+
+func (e *markedStorageOutage) Error() string          { return e.detail }
+func (*markedStorageOutage) StorageUnavailable() bool { return true }
+
+// TestPerIDDeleteError_KeepsDomainDetail — a not-found is the caller's own
+// business and carries no infrastructure detail, so it stays legible rather
+// than being flattened into a ticket.
+func TestPerIDDeleteError_KeepsDomainDetail(t *testing.T) {
+	msg := perIDDeleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
+	if !strings.Contains(msg, common.ErrCodeEntityNotFound) {
+		t.Errorf("a not-found lost its domain code: %s", msg)
+	}
+	if strings.Contains(msg, "ticket") {
+		t.Errorf("a domain error minted a ticket it does not need: %s", msg)
+	}
+}
+
+// captureEntitySlog redirects the default logger into a buffer for the duration
+// of the test, so a "the detail was logged, not returned" claim is checkable.
+func captureEntitySlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }

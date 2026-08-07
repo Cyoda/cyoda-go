@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -503,5 +504,106 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	}
 	if !sawArm {
 		t.Error("expected a SCHEDULED_TRANSITION_ARM audit event for REVIEW's schedule")
+	}
+}
+
+// --- Scheduled-task store failures must be marked as infrastructure ---
+
+// failingReconcileTaskStore delegates everything except ReconcileForEntity,
+// which always fails. Models the store call the settle-time arm/cancel pass
+// makes on every save.
+type failingReconcileTaskStore struct {
+	spi.ScheduledTaskStore
+	err error
+}
+
+func (s *failingReconcileTaskStore) ReconcileForEntity(context.Context, spi.ReconcileRequest) ([]spi.ScheduledTask, error) {
+	return nil, s.err
+}
+
+// failingReconcileTaskFactory fails either the store lookup itself or the
+// reconcile write, depending on which field is set.
+type failingReconcileTaskFactory struct {
+	spi.StoreFactory
+	reconcileErr error
+	lookupErr    error
+}
+
+func (f *failingReconcileTaskFactory) ScheduledTaskStore(ctx context.Context) (spi.ScheduledTaskStore, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
+	real, err := f.StoreFactory.ScheduledTaskStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &failingReconcileTaskStore{ScheduledTaskStore: real, err: f.reconcileErr}, nil
+}
+
+// TestReconcile_StoreFailureIsMarkedInfra — the settle-time arm/cancel pass
+// touches the scheduled-task store on EVERY save of an entity whose workflow
+// carries a schedule. A store failure there is a server-side condition that can
+// never be attributed to the caller's input, so it must carry an infrastructure
+// marker: without one it reaches the entity service's catch-all, which mints a
+// 400 WORKFLOW_FAILED whose detail is the raw error text — driver wording and a
+// SQLSTATE, straight onto the wire.
+func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	// The exact shape a cancelled statement produces, and exactly what must
+	// never reach a client.
+	storeErr := errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
+
+	cases := []struct {
+		name string
+		wrap func(spi.StoreFactory) spi.StoreFactory
+	}{
+		{"reconcile write", func(base spi.StoreFactory) spi.StoreFactory {
+			return &failingReconcileTaskFactory{StoreFactory: base, reconcileErr: storeErr}
+		}},
+		{"store lookup", func(base spi.StoreFactory) spi.StoreFactory {
+			return &failingReconcileTaskFactory{StoreFactory: base, lookupErr: storeErr}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := memory.NewStoreFactory()
+			t.Cleanup(func() { base.Close() })
+			uuids := common.NewTestUUIDGenerator()
+			txMgr := base.NewTransactionManager(uuids)
+			engine := NewEngine(tc.wrap(base), uuids, txMgr, WithScheduledClock(fixedClock(nowMs)))
+
+			ctx := ctxWithTenant(testTenant)
+			modelRef := spi.ModelRef{EntityName: "sched-infra", ModelVersion: "1.0"}
+			saveWorkflow(t, base, ctx, modelRef, []spi.WorkflowDefinition{{
+				Version: "1.1", Name: "SchedInfraWF", InitialState: "OPEN", Active: true,
+				States: map[string]spi.StateDefinition{
+					"OPEN": {Transitions: []spi.TransitionDefinition{
+						{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}},
+					}},
+					"CLOSED": {},
+				},
+			}})
+
+			txID, txCtx, err := txMgr.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			t.Cleanup(func() { _ = txMgr.Rollback(ctx, txID) })
+
+			entity := makeEntity("sched-infra-1", modelRef, map[string]any{})
+			entity.Meta.TransactionID = txID
+
+			_, err = engine.Execute(txCtx, entity, "")
+			if err == nil {
+				t.Fatal("expected the scheduled-task store failure to surface")
+			}
+			if !errors.Is(err, ErrScheduledTaskInfra) {
+				t.Errorf("error must wrap ErrScheduledTaskInfra so callers can sanitize it; got: %v", err)
+			}
+			if !errors.Is(err, storeErr) {
+				t.Errorf("error must keep the store cause in the chain for logging; got: %v", err)
+			}
+		})
 	}
 }

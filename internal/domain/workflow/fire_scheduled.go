@@ -8,6 +8,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // ScheduledOutcome reports how FireScheduledTransition resolved a single
@@ -109,6 +110,9 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	}
 	ctx = spi.WithAmbientOrigin(ctx, seeded) // zero -> no seed -> origin falls through to the system UserContext
 
+	// A storage-unavailable Begin failure stays inspectable through the %w wrap,
+	// but there is no status to map it to here: this path answers to the
+	// scheduler, which logs the outcome and re-arms. No HTTP/gRPC surface.
 	txID, txCtx, err := e.txMgr.Begin(ctx)
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to begin scheduled-fire transaction: %w", err)
@@ -119,8 +123,8 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// its cascade commits the entry segment (TX_pre) and opens a new one
 	// (TX_post); every non-commit exit after that point must roll back the
 	// segment curTxID NOW names, not the (already-committed, rollback-is-a-
-	// no-op) entry txID — mirrors rollbackOwned(finalCtx, finalTxID) in
-	// internal/domain/entity/service.go.
+	// no-op) entry txID — the same cursor txScope.Advance maintains for the
+	// entity write flows (internal/domain/entity/txscope.go).
 	curCtx, curTxID := txCtx, txID
 	committed := false
 	defer func() {
@@ -128,9 +132,20 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			// Best-effort: if curTxID's segment already committed further
 			// down (e.g. this fires before a later CBD-segment commit is
 			// reflected here), Rollback is a safe, ignored no-op (same
-			// pattern as rollbackOpenSegmentOnFailure elsewhere in this
-			// package).
-			_ = e.txMgr.Rollback(curCtx, curTxID)
+			// pattern as rollbackSegment elsewhere in this package).
+			//
+			// common.RollbackContext for the same reason every other rollback
+			// site uses it: the caller's values without the caller's
+			// cancellation, under the shared 5s budget. Both callers of this
+			// path derive from scheduler.SystemUserContext on
+			// context.Background(), so the cancelled-context hazard is not
+			// reachable here — but a rollback that runs on an unbounded context
+			// is one dependency change away from hanging the scan loop, and one
+			// spelling for "how a rollback is issued" is worth more than the
+			// argument for an exception.
+			rbCtx, cancel := common.RollbackContext(curCtx)
+			defer cancel()
+			_ = e.txMgr.Rollback(rbCtx, curTxID)
 		}
 	}()
 

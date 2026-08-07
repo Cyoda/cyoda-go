@@ -4,6 +4,73 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Breaking
+
+- **`CYODA_TX_TTL`, `CYODA_TX_REAP_INTERVAL` and `CYODA_TX_OUTCOME_TTL` are removed.**
+  They configured a transaction reaper that never ran — nothing ever registered a
+  transaction with it — so the TTL they advertised was never enforced. The reaper and
+  its package are deleted; setting the variables now has no effect. A transaction's
+  lifetime is bounded instead by a deferred rollback on every exit path, plus the
+  PostgreSQL ceilings below.
+
+- **PostgreSQL connections now carry `statement_timeout` and
+  `idle_in_transaction_session_timeout`, both defaulting to `5m`.** A statement that
+  runs longer, or a connection that sits idle inside an open transaction longer, is
+  aborted by the server. Set `CYODA_POSTGRES_STATEMENT_TIMEOUT=0` or
+  `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT=0` to disable either. A workflow processor whose
+  `responseTimeoutMs` exceeds the idle ceiling has its transaction aborted; the default
+  `responseTimeoutMs` of 30s sits well under it. The idle ceiling applies per gap, not
+  per transaction, so a long cascade that writes between callouts is unaffected.
+
+- **Opening a transaction now waits at most `CYODA_POSTGRES_ACQUIRE_TIMEOUT`
+  (default `10s`) for a pooled connection** and then fails with **503
+  `STORAGE_UNAVAILABLE`**, retryable, instead of queueing behind a saturated pool.
+  This covers both client-facing paths that open a transaction: entity writes,
+  and the schema extension an auto-evolving model performs — which previously
+  reported the same saturated pool as a `500` with a ticket. (The async-search
+  scan is classified the same way now, but its job record already reported a
+  fixed message and is unchanged.)
+
+- **With `CYODA_POSTGRES_AUTO_MIGRATE=true`, migrations now run before the
+  schema-compatibility check.** A node booting alongside a peer's in-flight migration
+  waits for it rather than exiting with a dirty-schema error. A schema genuinely left
+  dirty by a failed migration still refuses to start, with the same actionable message,
+  and a database newer than the binary is still refused.
+
+### Added
+
+- **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
+  connection within the acquire timeout, when an operation finds its transaction
+  already aborted by the idle-in-transaction ceiling, or when the database connection
+  goes away underneath it. `503` is now declared on every storage-backed operation in
+  `api/openapi.yaml` — 52 of them, because any storage-backed operation can meet an
+  outage, not only the entity writes. Fifty share one response component; the two
+  transitions reads keep their own, since those also answer `503` when a `function`
+  selection criterion has no connected compute member.
+  `cyoda help errors STORAGE_UNAVAILABLE`.
+
+- **Five PostgreSQL ceilings:** `CYODA_POSTGRES_STATEMENT_TIMEOUT` (`5m`),
+  `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (`5m`), `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (`10s`),
+  `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` (`5m`) and
+  `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` (`30m`). Each takes a Go duration; `0`
+  disables that limit, and a malformed value fails startup rather than silently
+  falling back to the default. `cyoda help config database`.
+
+- **Panic recovery on the gRPC server (unary and stream) and on every HTTP route**,
+  which previously covered only the `/` catch-all — so a gRPC panic killed the process
+  and an HTTP panic on any specific route dropped the connection with no ProblemDetail
+  and no ticket. A recovered panic at any of the four sites that run engine or store
+  work — the two request doors, the async-search goroutine and the scheduler's dispatch
+  goroutine — permanently marks the node unhealthy: `GET /health` reports `503 DOWN`
+  and the admin `/readyz` reports `503`, so Kubernetes drops the pod from its Service
+  and new client connections stop within ~10-15s. The node's state is unverified, so
+  withdrawing it is deliberate. Know the bound, though: peer-forwarded work keeps
+  arriving — peers address each other through the gossip registry rather than the
+  Service, and scheduler distribution does not read node liveness — established
+  connections stay open, and nothing restarts the node, since `/livez` is unchanged
+  (a deterministic panic would otherwise become a restart loop). Read the ticket from
+  the node's log and replace the pod.
+
 ### Changed
 
 - **A workflow processor's returned data is now governed by the model, exactly as a
@@ -24,6 +91,52 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
 ### Fixed
+
+- **An entity write now releases its transaction on every exit path, including a
+  panic.** Previously a panic between begin and commit left the transaction neither
+  committed nor rolled back, with its pooled connection never returned; repeated, that
+  exhausts the pool and the node stops serving.
+
+- **The workflow engine releases the segments it opens itself.** A `FUNCTION` criterion
+  callout failing mid-cascade left the post-segment transaction open with no panic
+  involved — an ordinary compute-node failure was enough. On memory and sqlite, which
+  have no database-side ceiling underneath, that leak was permanent.
+
+- **A criterion evaluated after a `COMMIT_BEFORE_DISPATCH` segment now receives that
+  segment's transaction id** rather than the already-committed cascade-entry id, so a
+  compute node's callback can join it instead of being told the transaction is gone.
+
+- **A collection update whose engine conflicted past a committed segment now aborts the
+  batch.** It was treating that conflict as a per-item If-Match failure, isolating the
+  item and writing every later item into an already-committed transaction — losing them
+  with a 200 response.
+
+- **`statement_timeout` (SQLSTATE `57014`) and `idle_in_transaction_session_timeout`
+  (SQLSTATE `25P03`) are classified** rather than surfacing as unexplained errors, and a
+  `25P03` abort releases the per-transaction bookkeeping the killed session left behind.
+  A statement cancelled by the ceiling is a `500` with a ticket, not a retryable `503` —
+  re-running it would exceed the same ceiling again — and the log names the setting that
+  fired.
+
+- **A storage outage no longer answers `404 Not Found`.** Async-search status and
+  results, trusted-key delete/invalidate/reactivate, the audit transaction lookup, and
+  the entity read behind `DELETE /entity/{entityId}`, the single and collection
+  updates and `GET /entity/{entityId}/transitions` all collapsed any store error into
+  a not-found result, so a database outage reported "it does not exist" — a
+  substituted answer that stops a client retrying. They now return
+  **503 `STORAGE_UNAVAILABLE`**, retryable; an entity that genuinely is not there
+  still returns `404` with the code and detail it always had.
+
+- **The async-search results endpoint no longer interpolates a raw driver error into a
+  `400` response body**, where it could carry connection detail. A job that is still
+  running returns `400` naming its status; every other failure is classified.
+
+- **An async-search result page is no longer silently short when the store fails.**
+  An entity that could not be read while building the page was logged and skipped, so
+  a storage blip returned `200` with fewer results than `total` claimed and nothing to
+  distinguish it from a job that really matched that many. Only a result id whose
+  entity has genuinely been hard-deleted since the scan recorded it is still skipped;
+  any other read failure fails the page.
 
 - **On a model with several imported workflows, every operation after creation ran the
   wrong workflow's definition.** A named transition, a loopback re-evaluation and a

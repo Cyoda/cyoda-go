@@ -329,7 +329,7 @@ func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	if err := s.kv.Delete(s.ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid)); err != nil {
 		return fmt.Errorf("failed to delete trusted key from KV store: %w", err)
@@ -346,7 +346,7 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk
@@ -380,7 +380,7 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk

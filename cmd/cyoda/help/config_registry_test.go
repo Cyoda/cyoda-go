@@ -19,7 +19,7 @@ func TestRootConfigVars_WellFormed(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	validTopic := map[string]bool{
-		"server": true, "admin": true, "search": true, "tx": true,
+		"server": true, "admin": true, "search": true,
 		"cluster": true, "auth": true, "cors": true, "grpc": true,
 		"scheduler": true,
 	}

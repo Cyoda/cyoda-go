@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"net"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -43,6 +44,9 @@ type Server struct {
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
 // peer-address SSRF guard on the gRPC forward path (symmetric with the
 // dispatch forwarder and HTTP proxy).
+// healthFlag is the same flag the HTTP Recovery middleware stores into — a
+// panic recovered on either door marks the node unhealthy. May be nil in
+// tests that don't care about health-flag observation.
 func NewServer(
 	authSvc contract.AuthenticationService,
 	registry *MemberRegistry,
@@ -56,18 +60,28 @@ func NewServer(
 	otelEnabled bool,
 	localGRPCPort int,
 	allowLoopback bool,
+	healthFlag *atomic.Bool,
 ) *Server {
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
 		opts = append(opts, googlegrpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
-	// Auth runs first so the tx-route interceptor sees the authenticated
+	// Recovery runs first so it also covers a panic inside auth or tx-routing.
+	// Auth runs second so the tx-route interceptor sees the authenticated
 	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
-	// second, joining the referenced transaction or forwarding to its owner.
+	// third, joining the referenced transaction or forwarding to its owner.
 	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort, allowLoopback)
 	opts = append(opts,
-		googlegrpc.ChainUnaryInterceptor(UnaryAuthInterceptor(authSvc), txRoute.unary()),
-		googlegrpc.ChainStreamInterceptor(StreamAuthInterceptor(authSvc), txRoute.stream()),
+		googlegrpc.ChainUnaryInterceptor(
+			UnaryRecoveryInterceptor(healthFlag),
+			UnaryAuthInterceptor(authSvc),
+			txRoute.unary(),
+		),
+		googlegrpc.ChainStreamInterceptor(
+			StreamRecoveryInterceptor(healthFlag),
+			StreamAuthInterceptor(authSvc),
+			txRoute.stream(),
+		),
 	)
 	grpcServer := googlegrpc.NewServer(opts...)
 	svc := &CloudEventsServiceImpl{

@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -67,6 +68,16 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 		entity, err = entityStore.Get(r.Context(), entityID)
 	}
 	if err != nil {
+		// A store outage is not "no such entity". Answering 404 for it is a
+		// wrong-but-available answer that reads as a completed lookup and stops
+		// the caller retrying (.claude/rules/correctness-over-availability.md).
+		// The platform-api alias onto this same read classifies it correctly
+		// (workflow.GetAvailableTransitions) and the two must not diverge; both
+		// declare the retryable 503 in api/openapi.yaml.
+		if !errors.Is(err, spi.ErrNotFound) {
+			common.WriteError(w, r, common.Internal("failed to read entity", err))
+			return
+		}
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 			fmt.Sprintf("entity %s not found", entityID)))
 		return

@@ -2978,7 +2978,7 @@ type TransitionDefinitionDto struct {
 	// `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
 	// Explicit fires of a scheduled transition by name return HTTP 400
 	// `TRANSITION_NOT_FOUND` — it is not manually fireable. See
-	// `cyoda help workflows` (authoring) and `cyoda help config.scheduler`
+	// `cyoda help workflows` (authoring) and `cyoda help config scheduler`
 	// (runtime tuning).
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
 }
@@ -3254,6 +3254,9 @@ type InternalServerError = ProblemDetail
 
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
+
+// ServiceUnavailable defines model for ServiceUnavailable.
+type ServiceUnavailable = ProblemDetail
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ProblemDetail
