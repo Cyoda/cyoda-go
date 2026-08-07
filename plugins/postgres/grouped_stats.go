@@ -439,8 +439,10 @@ func aggregateExprToSQL(a spi.AggregateExpr) (string, error) {
 // else, since memory and sqlite hold domain data and meta apart. Meta stays
 // reachable through Source: SourceMeta, which reads entity.Meta. The domain
 // bytes are unaffected: unmarshalEntityDoc decodes into json.RawMessage values
-// and re-marshals them verbatim, so only key order can differ, which no path
-// lookup observes.
+// and re-emits them verbatim, so numbers survive byte-for-byte and strings stay
+// semantically identical. Only document-level framing differs — key order,
+// whitespace, and HTML escaping of < > & U+2028 U+2029 inside string literals —
+// none of which a path lookup or the kernel's stored.String() observes.
 func evalPostFilter(f spi.Filter, entity *spi.Entity) (bool, error) {
 	return spi.MatchFilter(f, entity.Data, entity.Meta), nil
 }

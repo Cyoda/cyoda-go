@@ -129,6 +129,9 @@ func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 // the type-directed kernel compares temporal data fields temporally rather than
 // lexically. Returns (nil, nil) when the model has no schema bound; genuine
 // store errors propagate for the caller to surface (fail closed).
+//
+// The returned map may be owned by the model-descriptor cache and shared with
+// every other reader holding the same lease. It is read-only — do not mutate it.
 func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
 	return loadFieldsMap(ctx, store, ref)
 }

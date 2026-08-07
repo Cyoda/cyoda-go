@@ -81,7 +81,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The parsed form is held on the descriptor cache entry, so it is dropped by the same
   invalidation and lease the bytes already follow.
 
-
 - **A workflow processor's returned data is now governed by the model, exactly as a
   client's write is.** Previously a processor could write anything at all: content no
   backend could store (returning **500**), or fields the model does not declare —
@@ -131,7 +130,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   spells "match everything" as an empty `AND`, which already worked — so this is storage
   contract conformance rather than a user-visible fix, and it matters to anything driving
   the storage interface directly.
-
 
 - **An entity write now releases its transaction on every exit path, including a
   panic.** Previously a panic between begin and commit left the transaction neither
