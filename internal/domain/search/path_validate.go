@@ -184,6 +184,19 @@ func refreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRe
 	if err != nil {
 		return nil, true, err
 	}
+	// RefreshAndGet repopulates the cache entry, parsed node included, so read
+	// the parse back rather than re-deriving it from the bytes we just caused
+	// to be cached — that reparse is exactly what the cache exists to remove.
+	if p, ok := store.(schemaNodeProvider); ok {
+		node, nerr := p.SchemaNode(ctx, ref)
+		if nerr != nil {
+			return nil, true, nerr
+		}
+		if node == nil {
+			return nil, true, nil
+		}
+		return node.FieldsMap(), true, nil
+	}
 	fm, err := fieldsFromDescriptor(desc)
 	if err != nil {
 		return nil, true, err
