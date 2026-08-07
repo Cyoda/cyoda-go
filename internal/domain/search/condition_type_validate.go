@@ -81,7 +81,12 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 }
 
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
-	fd, ok := fm[c.JsonPath]
+	// FieldsMap keys carry the "$." prefix; a condition may legitimately omit it
+	// and still name a known field. Looking it up raw made the type check silently
+	// skip such a leaf, so an operand that should be rejected 400
+	// CONDITION_TYPE_MISMATCH was accepted and evaluated to an empty page instead.
+	key := normalisePath(c.JsonPath)
+	fd, ok := fm[key]
 	if !ok {
 		// Not a leaf. In a schema'd model (non-empty FieldsMap), a path that is
 		// a KNOWN CONTAINER — a strict prefix of one or more leaf paths, but not
@@ -94,7 +99,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// never reaches this branch. A genuinely-unknown (non-container) path
 		// carries no type constraint here; the separate field-path validation
 		// pass classifies it.
-		if len(fm) > 0 && carriesScalarOperand(mapOperator(c.OperatorType)) && isKnownContainerPath(c.JsonPath, fm) {
+		if len(fm) > 0 && carriesScalarOperand(mapOperator(c.OperatorType)) && isKnownContainerPath(key, fm) {
 			return fmt.Errorf("field %q is a container with substructure and cannot be compared to a scalar; navigate to a leaf sub-path: %w",
 				c.JsonPath, errInvalidFieldPath)
 		}
