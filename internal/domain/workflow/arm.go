@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -41,6 +42,25 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 	}
 	return false
 }
+
+// ErrScheduledTaskInfra marks a server-side failure in the settle-time
+// arm/cancel pass: the scheduled-task store could not be resolved, or its
+// reconcile write failed. Neither is attributable to the caller's input, so
+// callers map it to a sanitized 5xx with a ticket rather than echoing the
+// store's own text — driver wording, table and constraint names, a SQLSTATE —
+// into a 4xx WORKFLOW_FAILED body.
+//
+// The same treatment, and the same reason, as ErrProcessorOutputInfra,
+// ErrCriterionTypingInfra and ErrCommitBeforeDispatchInfra. It is its own
+// sentinel rather than a reuse of one of those because the reconcile is not a
+// segment boundary and shares none of their recovery semantics; the entity
+// service's classifier lists all four side by side.
+//
+// Deliberately NOT applied to a Schedule.Function callout failure: that is a
+// compute-node condition with its own established mappings (503
+// NO_COMPUTE_MEMBER_FOR_TAG, or a 4xx naming the function), and burying it
+// under a generic ticket would lose the actionable answer.
+var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 
 // reconcileScheduledTasks brings the entity's pending ScheduledTask rows in
 // line with its current state: it arms every non-manual, non-disabled
@@ -143,7 +163,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 
 	sts, err := e.factory.ScheduledTaskStore(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get scheduled task store: %w", err)
+		return fmt.Errorf("failed to get scheduled task store: %w", errors.Join(ErrScheduledTaskInfra, err))
 	}
 
 	cancelled, err := sts.ReconcileForEntity(ctx, spi.ReconcileRequest{
@@ -154,7 +174,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		Cancel:       cancelIDs,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to reconcile scheduled tasks: %w", err)
+		return fmt.Errorf("failed to reconcile scheduled tasks: %w", errors.Join(ErrScheduledTaskInfra, err))
 	}
 
 	for _, a := range arm {

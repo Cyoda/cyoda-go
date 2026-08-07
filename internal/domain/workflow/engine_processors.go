@@ -34,6 +34,30 @@ var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastruc
 // unaffected.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 
+// clientAttributableStoreErr reports whether a store error is an outcome the
+// caller can act on — a stale precondition, a unique-key clash — as opposed to
+// an infrastructure failure that merely surfaced through the same call.
+//
+// It is a deliberate allow-list rather than an "is this pgx?" heuristic,
+// because the consequence of guessing wrong runs one way only: an unrecognised
+// error reaches the entity service's catch-all, which mints a 400
+// WORKFLOW_FAILED whose detail is the raw text — driver wording, table,
+// constraint and index names, a SQLSTATE. The three sentinels below are exactly
+// the ones that classifier (and common.Internal underneath it) maps to a
+// specific status; anything else has no client-facing meaning to preserve.
+//
+// The list is what keeps the segment-boundary CAS sites honest in BOTH
+// directions: marking an infrastructure failure is required (it is the leak),
+// and marking a caller's stale If-Match is forbidden — UpdateEntityCollection
+// excludes ErrCommitBeforeDispatchInfra from per-item isolation, so a
+// mis-marked precondition failure would abort the whole request and take its
+// successful siblings with it.
+func clientAttributableStoreErr(err error) bool {
+	return errors.Is(err, spi.ErrConflict) ||
+		errors.Is(err, spi.ErrUniqueViolation) ||
+		errors.Is(err, spi.ErrPartialUniqueKey)
+}
+
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
 // ASYNC_NEW_TX runs within a savepoint (failures are non-fatal); SYNC and
@@ -367,6 +391,16 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
+		if !clientAttributableStoreErr(saveErr) {
+			// Not a conflict at all — the store failed. Marked infra so the text
+			// takes the sanitized-5xx path instead of the 4xx body below.
+			// ErrPostSegmentConflict is dropped: the marker exists to say "a
+			// CONFLICT landed past the commit", and the infra marker already
+			// carries the only consequence a caller acts on (do not isolate this
+			// item — the transaction it would continue in is gone).
+			return nil, "", fmt.Errorf("commit-before-dispatch: apply result after dispatch: %w",
+				errors.Join(ErrCommitBeforeDispatchInfra, saveErr))
+		}
 		// Both sentinels stay matchable — ErrConflict for the 412 mapping,
 		// ErrPostSegmentConflict to tell a batching caller this landed on the far
 		// side of TX_pre's commit. Chained rather than errors.Join'd because this
@@ -389,13 +423,15 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 //
 // When applyIfMatch is true the flush uses CompareAndSave with expectedTxID,
 // applying the caller's If-Match precondition (spec §4.1) before TX_pre
-// commits and before any external dispatch fires. CAS failures (incl.
-// spi.ErrConflict) bubble unwrapped so the handler maps them to 412.
+// commits and before any external dispatch fires. Client-attributable CAS
+// failures (spi.ErrConflict and the unique-key sentinels) bubble unwrapped so
+// the handler maps them to 412 / 409 / 422; the CAS's OTHER failure mode — the
+// store itself — is marked infra like every other one below.
 //
-// Infrastructure failures (EntityStore lookup, plain Save, Commit) are
-// wrapped with ErrCommitBeforeDispatchInfra so classifyWorkflowError routes
-// them to a sanitized 5xx with ticket UUID instead of leaking internal text
-// via 4xx WORKFLOW_FAILED.
+// Infrastructure failures (EntityStore lookup, CAS store failure, plain Save,
+// Commit) are wrapped with ErrCommitBeforeDispatchInfra so
+// classifyWorkflowError routes them to a sanitized 5xx with ticket UUID
+// instead of leaking internal text via 4xx WORKFLOW_FAILED.
 func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) error {
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
@@ -403,7 +439,11 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}
 	if applyIfMatch {
 		if _, err := es.CompareAndSave(ctx, entity, expectedTxID); err != nil {
-			return err // ErrConflict / domain errors bubble unwrapped
+			if clientAttributableStoreErr(err) {
+				return err // ErrConflict / unique-key outcomes bubble unwrapped
+			}
+			return fmt.Errorf("commit-before-dispatch: apply If-Match precondition: %w",
+				errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 	} else {
 		if _, err := es.Save(ctx, entity); err != nil {

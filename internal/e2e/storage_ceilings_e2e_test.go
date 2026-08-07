@@ -344,6 +344,24 @@ func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string, string)
 // that seeded it ever touches.
 func holdRowLock(t *testing.T, entityID string) func() {
 	t.Helper()
+	return holdRowLockOn(t, `SELECT entity_id FROM entities WHERE entity_id = $1 FOR UPDATE`, entityID)
+}
+
+// holdScheduledTaskRowLock is holdRowLock aimed at the OTHER table an entity
+// write touches. The settle-time arm/cancel pass re-arms via an upsert keyed on
+// the task's deterministic id, so locking the row the seed create armed makes
+// the next save's re-arm wait — the same deterministic route past
+// statement_timeout, on a statement the engine issues rather than the handler.
+func holdScheduledTaskRowLock(t *testing.T, entityID string) func() {
+	t.Helper()
+	return holdRowLockOn(t, `SELECT id FROM scheduled_tasks WHERE entity_id = $1 FOR UPDATE`, entityID)
+}
+
+// holdRowLockOn is the shared body: open a connection of the test's own, run
+// query (which must select exactly one row FOR UPDATE) and hold the transaction
+// open until the returned func releases it.
+func holdRowLockOn(t *testing.T, query, entityID string) func() {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 
 	fail := func(format string, args ...any) {
@@ -362,11 +380,10 @@ func holdRowLock(t *testing.T, entityID string) func() {
 	}
 
 	var locked string
-	if err := tx.QueryRow(ctx,
-		`SELECT entity_id FROM entities WHERE entity_id = $1 FOR UPDATE`, entityID).Scan(&locked); err != nil {
+	if err := tx.QueryRow(ctx, query, entityID).Scan(&locked); err != nil {
 		_ = tx.Rollback(ctx)
 		pool.Close()
-		fail("lock entity row %s: %v", entityID, err)
+		fail("lock row for entity %s (%s): %v", entityID, query, err)
 	}
 
 	var once sync.Once
@@ -399,6 +416,124 @@ func TestE2E_StatementTimeout_Returns500WithTicket(t *testing.T) {
 	}
 	assertCancelledStatementProblem(t, body)
 	t.Logf("cancelled statement reported as 500 after %v: %s", elapsed, body)
+}
+
+// --- The same ceiling, reached from inside the workflow engine --------------
+//
+// The two scenarios above cancel a statement the entity handler issues, and the
+// handler classifies its own store errors. The engine's are different: an
+// unclassified engine error reaches the entity service's catch-all, which mints
+// a 400 WORKFLOW_FAILED whose detail is the raw error text. Below is the door
+// that reaches the engine's own store calls.
+
+// storageCeilingUpdate is a second payload, so the update under test is a real
+// write rather than a no-op.
+const storageCeilingUpdate = `{"name":"pool-hold","amount":2,"status":"held"}`
+
+// scheduledCeilingWF carries a Schedule far enough out that nothing ever fires
+// it. The Schedule is the whole point: the engine's settle-time arm/cancel pass
+// writes to the scheduled-task store on EVERY save of an entity on this
+// workflow, which puts that store — and its failures — on the ordinary write
+// path rather than in a corner of it.
+func scheduledCeilingWF(name string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": %q, "initialState": "Open", "active": true,
+			"states": {
+				"Open":   {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": 3600000}}]},
+				"Closed": {}
+			}
+		}]
+	}`, name)
+}
+
+// newScheduledReArmCeilingHarness is newStatementCeilingHarness with a scheduled
+// workflow, plus one committed entity whose ScheduledTask row the scenarios
+// below contend on.
+func newScheduledReArmCeilingHarness(t *testing.T) (*callbackHarness, string, string) {
+	t.Helper()
+	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
+		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
+		// Otherwise the scan loop fires (or contends on) the very task these
+		// scenarios lock.
+		cfg.Scheduler.Enabled = false
+	})
+	model := storageCeilingModel(t, "sched-rearm-ceiling")
+	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, scheduledCeilingWF(model+"-wf"))
+
+	entityID, status, body := h.CreateEntity(t, model, 1, storageCeilingSample)
+	if status != http.StatusOK {
+		t.Fatalf("seed entity: %d %s", status, body)
+	}
+	return h, model, entityID
+}
+
+// TestE2E_StatementTimeout_ScheduledReArm_IsNotAClientError — a cancelled
+// statement inside the engine's re-arm is a server-side condition. Reported as
+// 400 WORKFLOW_FAILED it is wrong twice over: it blames the caller for an
+// outage they did not cause, and — because a 4xx detail is full domain detail
+// by contract — it puts the driver's own text, table names and SQLSTATE in the
+// response body.
+func TestE2E_StatementTimeout_ScheduledReArm_IsNotAClientError(t *testing.T) {
+	h, _, entityID := newScheduledReArmCeilingHarness(t)
+	release := holdScheduledTaskRowLock(t, entityID)
+	defer release()
+
+	start := time.Now()
+	resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+entityID, storageCeilingUpdate, "")
+	body := h.readBody(t, resp)
+	elapsed := time.Since(start)
+
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatalf("a cancelled statement in the engine was blamed on the caller after %v; body: %s", elapsed, body)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d after %v, want 500 — re-running the statement would exceed the ceiling again; body: %s",
+			resp.StatusCode, elapsed, body)
+	}
+	assertCancelledStatementProblem(t, body)
+	// The engine names the store it was writing to; a client has no business
+	// knowing which tables back a scheduled transition.
+	for _, leak := range []string{"scheduled_tasks", "reconcile"} {
+		if strings.Contains(strings.ToLower(body), leak) {
+			t.Errorf("client-facing body leaks engine/storage internals (%q): %s", leak, body)
+		}
+	}
+	t.Logf("cancelled re-arm reported as 500 after %v: %s", elapsed, body)
+}
+
+// TestE2E_StatementTimeout_ScheduledReArm_GRPCEnvelope is the second entry
+// point. Over gRPC a 4xx would put the same raw text in Error.Message, which is
+// the only place the failure is described at all.
+func TestE2E_StatementTimeout_ScheduledReArm_GRPCEnvelope(t *testing.T) {
+	h, _, entityID := newScheduledReArmCeilingHarness(t)
+	release := holdScheduledTaskRowLock(t, entityID)
+	defer release()
+
+	env, err := h.updateEntityGRPC(entityID, storageCeilingUpdate)
+	if err != nil {
+		t.Fatalf("gRPC update: %v", err)
+	}
+	if env.Success {
+		t.Fatal("update succeeded despite the re-arm statement being cancelled")
+	}
+	if env.Error == nil {
+		t.Fatal("failed gRPC update carried no error envelope")
+	}
+	if env.Error.Retryable != nil && *env.Error.Retryable {
+		t.Errorf("a cancelled statement was advertised as retryable: %+v", env.Error)
+	}
+	if !strings.Contains(env.Error.Message, "ticket") {
+		t.Errorf("Error.Message = %q, want the generic ticket message", env.Error.Message)
+	}
+	for _, leak := range []string{"sqlstate", "57014", "canceling statement", "statement_timeout", "scheduled_tasks", "pgx"} {
+		if strings.Contains(strings.ToLower(env.Error.Message), leak) {
+			t.Errorf("gRPC envelope leaks internal detail (%q): %s", leak, env.Error.Message)
+		}
+	}
+	t.Logf("cancelled re-arm reported over gRPC as: %s", env.Error.Message)
 }
 
 // TestE2E_StatementTimeout_ConditionalDeleteIsNotAConflict is the endpoint that
@@ -516,6 +651,33 @@ func (h *callbackHarness) createEntityGRPC(model string, version int, payload st
 		"payload": map[string]any{
 			"model": map[string]any{"name": model, "version": version},
 			"data":  data,
+		},
+	})
+	if err != nil {
+		return txEnvelope{}, err
+	}
+	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
+	if err != nil {
+		return txEnvelope{}, err
+	}
+	return parseTxEnvelope(respCE)
+}
+
+// updateEntityGRPC issues an EntityUpdateRequest over the real gRPC entity API
+// (the member's connection), unjoined, with no transition — a loopback update,
+// the gRPC twin of PUT /api/entity/{format}/{entityId}.
+func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope, error) {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return txEnvelope{}, err
+	}
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityUpdateRequest, map[string]any{
+		"id":         "storage-ceiling-update",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"entityId": entityID,
+			"data":     data,
 		},
 	})
 	if err != nil {

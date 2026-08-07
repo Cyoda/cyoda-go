@@ -225,6 +225,52 @@ func TestClassifyWorkflowError_CriterionTypingInfraMapsTo5xx(t *testing.T) {
 	}
 }
 
+// TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx — every save of an
+// entity whose workflow carries a schedule re-arms it, so the scheduled-task
+// store is on the ordinary write path, not a corner of it. A store failure
+// there is never attributable to the caller's input; unclassified it reaches
+// the catch-all, which puts the driver's own text into a 400 WORKFLOW_FAILED
+// body. This asserts the whole chain: classification, the message, and the
+// bytes a client actually receives.
+func TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx(t *testing.T) {
+	const innerSecret = "ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"
+	// Mirror the production wrapping shape: arm.go joins the sentinel with the
+	// store cause, and engine.go wraps that again on the way out.
+	inner := errors.Join(wfengine.ErrScheduledTaskInfra, errors.New(innerSecret))
+	prod := fmt.Errorf("failed to reconcile scheduled tasks: %w", inner)
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (a scheduled-task store outage is not client-attributable)", appErr.Status)
+	}
+	if appErr.Level != common.LevelInternal {
+		t.Errorf("level = %v, want LevelInternal so the response carries a ticket", appErr.Level)
+	}
+	if appErr.Code != common.ErrCodeServerError {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeServerError)
+	}
+	if !errors.Is(appErr, prod) {
+		t.Error("the original error must stay wrapped for server-side logging")
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/entity/JSON/e-1/next", nil)
+	common.WriteError(rr, req, appErr)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("client response: expected HTTP 500, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{"SQLSTATE", "57014", "statement timeout", "canceling statement"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("client response leaks internal detail (%q): %s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "ticket") {
+		t.Errorf("client response missing ticket correlation field: %s", body)
+	}
+}
+
 // TestClassifyWorkflowError_NoMatchingMemberMapsTo503 pins the mapping the
 // transitions read doors depend on. GET /entity/{id}/transitions evaluates
 // workflow selection criteria, so a FUNCTION selection criterion whose tag

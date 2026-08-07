@@ -236,6 +236,90 @@ func TestCBD_FirstFlushConflict_HasNoPostSegmentMarker(t *testing.T) {
 	if errors.Is(err, ErrPostSegmentConflict) {
 		t.Fatal("pre-commit precondition failure wrongly marked post-segment; the batch would abort instead of isolating the item")
 	}
+	// The infra marker is the OTHER thing UpdateEntityCollection excludes from
+	// per-item isolation (service.go's engineErr branch). Marking a precondition
+	// failure with it would turn an isolable ENTITY_MODIFIED item into a
+	// request-wide failure that takes its successful siblings with it.
+	if errors.Is(err, ErrCommitBeforeDispatchInfra) {
+		t.Fatal("a caller's stale If-Match was marked as infrastructure; the batch would abort instead of isolating the item")
+	}
+}
+
+// --- Segment-boundary CAS failures that are NOT the caller's business ---
+
+// TestCBD_FirstFlushStoreFailure_IsMarkedInfra — the first-segment flush's
+// CompareAndSave fails for two very different reasons. One is the caller's
+// stale If-Match (above). The other is the store itself: a cancelled statement,
+// a missing relation, a saturated pool. Those carry driver wording and a
+// SQLSTATE, and an unmarked engine error lands on the entity service's
+// catch-all, which mints a 400 WORKFLOW_FAILED whose detail is that text
+// verbatim. Mark them so they take the sanitized-5xx-with-a-ticket path the
+// engine's other infrastructure failures already take.
+func TestCBD_FirstFlushStoreFailure_IsMarkedInfra(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	storeErr := errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
+	h.failFirstFlushCAS(storeErr)
+
+	err := h.fireSegment(t, staleIfMatchTxID)
+	if err == nil {
+		t.Fatal("expected the flush store failure to surface")
+	}
+	if got := h.casSites; len(got) != 1 || got[0] != casSiteFirstFlush {
+		t.Fatalf("injection did not land on the first-segment flush: sites = %v", got)
+	}
+	if !errors.Is(err, ErrCommitBeforeDispatchInfra) {
+		t.Errorf("store failure not marked infra; its text would reach a 400 body: %v", err)
+	}
+	if !errors.Is(err, storeErr) {
+		t.Errorf("store cause dropped from the chain, so the server-side log loses it: %v", err)
+	}
+}
+
+// TestCBD_FirstFlushUniqueViolation_StaysDomainAttributable — a composite
+// unique-key clash raised by the same CompareAndSave IS the caller's business
+// and has its own 409 mapping. Marking it as infrastructure would bury a
+// precise, actionable answer under a generic ticket.
+func TestCBD_FirstFlushUniqueViolation_StaysDomainAttributable(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	h.failFirstFlushCAS(fmt.Errorf("claim key: %w", spi.ErrUniqueViolation))
+
+	err := h.fireSegment(t, staleIfMatchTxID)
+	if err == nil {
+		t.Fatal("expected the unique-key violation to surface")
+	}
+	if !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Fatalf("lost the unique-violation sentinel: %v", err)
+	}
+	if errors.Is(err, ErrCommitBeforeDispatchInfra) {
+		t.Errorf("a unique-key violation was marked as infrastructure: %v", err)
+	}
+}
+
+// TestCBD_ApplyResultStoreFailure_IsMarkedInfra is the same split on the far
+// side of the callout. The apply-result CAS chains ErrPostSegmentConflict, whose
+// text reaches a 4xx body verbatim — so a raw store error there leaks exactly as
+// the flush's does.
+func TestCBD_ApplyResultStoreFailure_IsMarkedInfra(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	storeErr := errors.New("ERROR: relation \"entities\" does not exist (SQLSTATE 42P01)")
+	h.failCompareAndSaveWith(storeErr)
+
+	err := h.fireSegment(t, "")
+	if err == nil {
+		t.Fatal("expected the apply-result store failure to surface")
+	}
+	if got := h.casSites; len(got) != 1 || got[0] != casSiteApplyResult {
+		t.Fatalf("injection did not land on the apply-result CAS: sites = %v", got)
+	}
+	if !errors.Is(err, ErrCommitBeforeDispatchInfra) {
+		t.Errorf("store failure not marked infra; its text would reach a 400 body: %v", err)
+	}
+	if !errors.Is(err, storeErr) {
+		t.Errorf("store cause dropped from the chain, so the server-side log loses it: %v", err)
+	}
 }
 
 // TestEngine_CriterionAfterSegment_CarriesCurrentSegmentTxID: the txID handed to
@@ -558,9 +642,16 @@ func (h *segmentGuardHarness) failEntityStoreLookup() {
 // returned. Armed from inside the dispatch stub so the pre-dispatch flush, which
 // goes through the same hook, is untouched.
 func (h *segmentGuardHarness) failCompareAndSave() {
+	h.failCompareAndSaveWith(spi.ErrConflict)
+}
+
+// failCompareAndSaveWith is failCompareAndSave with the injected failure chosen
+// by the caller, so a test can distinguish the conflict the caller owns from an
+// infrastructure failure that only looks like one from the outside.
+func (h *segmentGuardHarness) failCompareAndSaveWith(failure error) {
 	h.dispatchProcessor = func(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
 		h.segmentTxIDs = append(h.segmentTxIDs, txID)
-		h.casErr = spi.ErrConflict
+		h.casErr = failure
 		return nil, nil
 	}
 }
