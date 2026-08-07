@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 226 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 229 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -125,6 +125,15 @@ var allTests = []NamedTest{
 	{"SearchTemporalCreationDate", RunSearchTemporalCreationDate},
 	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
+
+	// Path-key resolution (PR #490). A field path spelled with and without
+	// the "$." prefix names the same field, and the storage layer's own
+	// _meta block is not addressable as entity data. Both were
+	// backend-visible before the fix, so both belong here rather than in a
+	// single-backend test.
+	{"SearchPrefixlessPathResolvesDeclaredType", RunSearchPrefixlessPathResolvesDeclaredType},
+	{"SearchPrefixlessPathTypeMismatch400", RunSearchPrefixlessPathTypeMismatch400},
+	{"SearchMetaBlockNotMatchableAsDataPath", RunSearchMetaBlockNotMatchableAsDataPath},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
 	// Type-directed contract: a scalar comparison on a PURE-container path (a
