@@ -64,7 +64,14 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 // (spi.ErrScanBudgetExhausted) first, regardless of how few matches were
 // found.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	plan := planQuery(filter)
+	// Zero-value Filter means "match all". Skip planQuery — it would treat the
+	// empty Op as non-pushable and install the zero filter as a residual, which
+	// costs LIMIT pushdown and arms the scan budget on a query with nothing to
+	// post-filter. Mirrors the guard in the postgres plugin.
+	var plan sqlPlan
+	if filter.Op != "" {
+		plan = planQuery(filter)
+	}
 
 	var baseQuery string
 	var baseArgs []any
@@ -211,7 +218,14 @@ func sortEntitiesByOrder(rows []*spi.Entity, order []spi.OrderSpec) {
 // the sql.DB query — identical to Save/GetAll/getAllTx in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
-	plan := planQuery(filter)
+	// Zero-value Filter means "match all". Skip planQuery — it would treat the
+	// empty Op as non-pushable and install the zero filter as a residual, which
+	// costs LIMIT pushdown and arms the scan budget on a query with nothing to
+	// post-filter. Mirrors the guard in the postgres plugin.
+	var plan sqlPlan
+	if filter.Op != "" {
+		plan = planQuery(filter)
+	}
 
 	// Committed candidate SQL: snapshot at tx.SnapshotTime, ORDER BY, no LIMIT.
 	baseQuery, baseArgs := s.searchSnapshotBase(opts, timeToMicro(tx.SnapshotTime))
