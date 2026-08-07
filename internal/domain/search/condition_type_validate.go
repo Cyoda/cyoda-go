@@ -313,6 +313,14 @@ func operandElements(v any) []any {
 // has already confirmed the model exists by the time this runs, so in the
 // normal case the node is present.
 func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+	// Reuse the store's cached parse when it has one; see loadFieldsMap.
+	if p, ok := store.(schemaNodeProvider); ok {
+		node, err := p.SchemaNode(ctx, ref)
+		if err != nil {
+			return nil
+		}
+		return node
+	}
 	desc, err := store.Get(ctx, ref)
 	if err != nil || desc == nil || len(desc.Schema) == 0 {
 		return nil

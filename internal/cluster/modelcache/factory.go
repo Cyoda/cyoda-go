@@ -6,6 +6,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // CachingStoreFactory wraps an spi.StoreFactory so that ModelStore(ctx)
@@ -126,6 +127,27 @@ func (s *requestScopedStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.Mo
 	}
 	s.cache.store(key, desc)
 	return desc, nil
+}
+
+// SchemaNode returns ref's parsed model schema, derived once per cache entry
+// and reused for that entry's lifetime. Mirrors Get: read through the shared
+// cache, otherwise fetch from this request's inner store and populate.
+//
+// An UNLOCKED descriptor is not cached, so its parse is produced fresh and not
+// retained — same rule its bytes follow.
+func (s *requestScopedStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
+	if e, ok := s.cache.lookupEntry(key); ok {
+		return e.node, e.nodeErr
+	}
+	desc, err := s.Get(ctx, ref) // populates the shared entry when LOCKED
+	if err != nil {
+		return nil, err
+	}
+	if e, ok := s.cache.lookupEntry(key); ok {
+		return e.node, e.nodeErr
+	}
+	return parseSchemaNode(desc)
 }
 
 // RefreshAndGet forces a cache miss, collapses concurrent callers via

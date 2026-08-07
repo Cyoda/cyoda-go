@@ -140,11 +140,33 @@ func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // propagate so the caller can log and skip validation rather than
 // mistakenly reject the search.
 func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+	// Prefer the cached derived parse when the store offers one. Rebuilding it
+	// per call is 80-99% of a criterion evaluation and scales with schema size;
+	// FieldsMap() off an already-parsed node is effectively free. Stores that
+	// do not implement the interface (tests, plain in-memory stores) keep the
+	// original behaviour.
+	if p, ok := store.(schemaNodeProvider); ok {
+		node, err := p.SchemaNode(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		if node == nil {
+			return nil, nil
+		}
+		return node.FieldsMap(), nil
+	}
 	desc, err := store.Get(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	return fieldsFromDescriptor(desc)
+}
+
+// schemaNodeProvider is the optional capability a caching model store exposes to
+// hand back the schema it has already parsed, instead of the bytes to parse
+// again. Same optional-interface shape as the RefreshAndGet probe below.
+type schemaNodeProvider interface {
+	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
 
 // refreshFieldsMap forces a cache refresh via RefreshAndGet (when the
