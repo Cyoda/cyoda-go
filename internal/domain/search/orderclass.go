@@ -14,9 +14,7 @@ import (
 // and the field is unsortable. Temporal data subtypes classify as
 // OrderTemporal here so data-temporal comparisons route to the residual /
 // temporal-aware pushdown — see sortKindForData for why the SORT path differs.
-func classifyType(types []schema.DataType) (spi.OrderKind, error) {
-	return classifyTypesFold(types, nil)
-}
+func classifyType(types []schema.DataType) (spi.OrderKind, error) { return spi.ClassifyType(types) }
 
 // sortKindForData returns the ORDER-BY sort class for a SourceData leaf. It
 // mirrors classifyType but folds temporal subtypes onto OrderText, decoupling
@@ -52,33 +50,7 @@ func foldTemporalToText(k spi.OrderKind) spi.OrderKind {
 // (optionally) folded; all folded classes must agree, else the field has no
 // deterministic order and is unsortable.
 func classifyTypesFold(types []schema.DataType, fold func(spi.OrderKind) spi.OrderKind) (spi.OrderKind, error) {
-	var (
-		have bool
-		kind spi.OrderKind
-	)
-	for _, t := range types {
-		if t == schema.Null {
-			continue
-		}
-		k, err := scalarClass(t)
-		if err != nil {
-			return 0, err
-		}
-		if fold != nil {
-			k = fold(k)
-		}
-		if !have {
-			kind, have = k, true
-			continue
-		}
-		if k != kind {
-			return 0, fmt.Errorf("field has mixed ordering classes and cannot be sorted")
-		}
-	}
-	if !have {
-		return 0, fmt.Errorf("field has no sortable scalar type")
-	}
-	return kind, nil
+	return spi.ClassifyTypesFold(types, fold)
 }
 
 func scalarClass(t schema.DataType) (spi.OrderKind, error) {
@@ -105,40 +77,15 @@ func scalarClass(t schema.DataType) (spi.OrderKind, error) {
 	}
 }
 
-type metaField struct {
-	Source spi.FieldSource
-	Path   string
-	Kind   spi.OrderKind
-}
+// metaField is an alias for [spi.MetaField]. The vocabulary itself lives in the
+// SPI — see spi.ResolveMetaField — so this package, the condition translator
+// and the storage plugins cannot disagree about which meta names exist or how
+// they order.
+type metaField = spi.MetaField
 
-// sortableMetaFields is the closed set of meta sort keys (canonical client
-// names from the result envelope). The plugins map these to physical storage.
-var sortableMetaFields = map[string]metaField{
-	"state":                   {Source: spi.SourceMeta, Path: "state", Kind: spi.OrderText},
-	"creationDate":            {Source: spi.SourceMeta, Path: "creationDate", Kind: spi.OrderTemporal},
-	"lastUpdateTime":          {Source: spi.SourceMeta, Path: "lastUpdateTime", Kind: spi.OrderTemporal},
-	"transitionForLatestSave": {Source: spi.SourceMeta, Path: "transitionForLatestSave", Kind: spi.OrderText},
-	"transactionId":           {Source: spi.SourceMeta, Path: "transactionId", Kind: spi.OrderText},
-	"id":                      {Source: spi.SourceMeta, Path: "id", Kind: spi.OrderText},
-}
+func resolveMetaField(name string) (metaField, bool) { return spi.ResolveMetaField(name) }
 
-// resolveMetaField looks up name in sortableMetaFields. The map-key lookup is
-// what enforces "no nested meta paths": a dotted name (e.g. "a.b") is simply
-// not a key in the map and returns ok=false.
-func resolveMetaField(name string) (metaField, bool) {
-	mf, ok := sortableMetaFields[name]
-	return mf, ok
-}
-
-// isTemporalMetaField reports whether the given (already-canonicalized) meta
-// field name is classified as temporal in sortableMetaFields — the single
-// source of truth for the meta vocabulary. Callers translating or validating
-// lifecycle conditions derive temporal routing from this lookup rather than
-// maintaining a separate hardcoded field set.
-func isTemporalMetaField(field string) bool {
-	mf, ok := resolveMetaField(field)
-	return ok && mf.Kind == spi.OrderTemporal
-}
+func isTemporalMetaField(field string) bool { return spi.IsTemporalMetaField(field) }
 
 // isKnownMetaFilterField reports whether name is a valid meta filter field:
 // either a sortableMetaFields key, or the "previousTransition" alias that

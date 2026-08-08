@@ -190,7 +190,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
-		f, terr := search.ConditionToFilter(parsedCond, fields)
+		f, terr := spi.ConditionToFilter(parsedCond, fields)
 		if terr != nil {
 			pushable = false
 		} else {

@@ -4,12 +4,14 @@ import (
 	"reflect"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
 // TestMetaVocabulary_EvaluatorMatchesAllowlist pins the invariant
 // workflow/validate.go's doc comment asserts but nothing enforced: the meta
-// vocabulary this package validates against (sortableMetaFields, plus the
+// vocabulary this package validates against (spi.MetaFieldNames, plus the
 // previousTransition alias) is exactly the vocabulary match.matchLifecycle
 // evaluates. internal/match cannot import this package — the reverse import
 // already exists — so the evaluator keeps a hand-written second copy of the
@@ -22,7 +24,7 @@ import (
 //     API boundary as an unknown meta filter field.
 func TestMetaVocabulary_EvaluatorMatchesAllowlist(t *testing.T) {
 	allowed := map[string]bool{"previousTransition": true}
-	for name := range sortableMetaFields {
+	for _, name := range spi.MetaFieldNames() {
 		allowed[name] = true
 	}
 	want := commontest.SortedKeys(allowed)

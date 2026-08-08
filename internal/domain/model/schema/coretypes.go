@@ -11,6 +11,13 @@ import spi "github.com/cyoda-platform/cyoda-go-spi"
 // DataType and its members.
 type DataType = spi.DataType
 
+// FieldDescriptor is an alias for [spi.FieldDescriptor], for the same reason
+// DataType is: the search leaf-comparison kernel and spi.ConditionToFilter both
+// consume it, and a storage plugin that self-executes a search must be able to
+// build one. Aliasing rather than redeclaring means there is one definition —
+// two structurally identical copies drift, and this one already did.
+type FieldDescriptor = spi.FieldDescriptor
+
 const (
 	Integer        = spi.Integer
 	Long           = spi.Long

@@ -69,20 +69,7 @@ func addPath(raw string, seen map[string]struct{}, out *[]string) {
 // that already lead with "$." pass through untouched. Inputs that omit
 // the dollar prefix get one prepended. Empty paths return "" so the
 // caller can drop them.
-func normalisePath(raw string) string {
-	p := strings.TrimSpace(raw)
-	if p == "" {
-		return ""
-	}
-	switch {
-	case strings.HasPrefix(p, "$."):
-		return p
-	case strings.HasPrefix(p, "$"):
-		return p
-	default:
-		return "$." + p
-	}
-}
+func normalisePath(raw string) string { return spi.NormalisePath(raw) }
 
 // findUnknownPaths returns the subset of paths absent from the supplied
 // FieldsMap. Paths whose direct key is missing are also probed with a

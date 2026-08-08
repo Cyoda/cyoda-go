@@ -99,7 +99,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// never reaches this branch. A genuinely-unknown (non-container) path
 		// carries no type constraint here; the separate field-path validation
 		// pass classifies it.
-		if len(fm) > 0 && carriesScalarOperand(mapOperator(c.OperatorType)) && isKnownContainerPath(key, fm) {
+		if len(fm) > 0 && carriesScalarOperand(spi.MapOperator(c.OperatorType)) && isKnownContainerPath(key, fm) {
 			return fmt.Errorf("field %q is a container with substructure and cannot be compared to a scalar; navigate to a leaf sub-path: %w",
 				c.JsonPath, errInvalidFieldPath)
 		}
@@ -121,7 +121,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	// Only the comparison/range family constrains the operand's type. String
 	// operators and the null-presence tests parse any operand — they evaluate
 	// to a (non-)match, never a type error (spec §6, parse-based).
-	if !isParseConstrainedOp(mapOperator(c.OperatorType)) {
+	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
 		return nil
 	}
 
@@ -285,7 +285,7 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	}
 	// String operators and null-presence tests on a temporal meta field parse
 	// any operand and are accepted (eval decides a non-match) — spec §6.
-	if !isParseConstrainedOp(mapOperator(c.OperatorType)) {
+	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
 		return nil
 	}
 	for i, elem := range operandElements(c.Value) {
