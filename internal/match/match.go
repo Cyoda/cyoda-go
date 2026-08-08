@@ -73,6 +73,21 @@ func convertJSONPath(jsonPath string) string {
 	return path
 }
 
+// fieldMapKey normalises a condition's jsonPath to the form every caller's
+// FieldsMap is keyed by: "$."-prefixed. A prefix-less path is accepted
+// everywhere else in the stack, so looking it up raw silently resolves to no
+// declared type — and a type-directed comparison with no declared type expands
+// into nothing and never matches, making the leaf false for every entity.
+// arrayElementFieldPath already normalised for array conditions; simple leaves
+// went without.
+func fieldMapKey(raw string) string {
+	p := strings.TrimSpace(raw)
+	if p == "" || strings.HasPrefix(p, "$") {
+		return p
+	}
+	return "$." + p
+}
+
 // arrayElementFieldPath returns the FieldsMap key that addresses an
 // ArrayCondition's element type. ArrayCondition names a container path
 // ("$.tags"); the model records the element type under the same path with a
@@ -99,7 +114,7 @@ func matchSimple(c *predicate.SimpleCondition, data []byte, fieldTypes FieldType
 
 	var declared []spi.DataType
 	if fieldTypes != nil {
-		declared = fieldTypes(c.JsonPath)
+		declared = fieldTypes(fieldMapKey(c.JsonPath))
 	}
 
 	// If the path produced an array result (from # wildcard), check if ANY

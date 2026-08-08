@@ -47,14 +47,22 @@ func simpleToFilter(c *predicate.SimpleCondition, fields map[string]schema.Field
 		return spi.Filter{}, err
 	}
 	op := mapOperator(c.OperatorType)
+	// FieldsMap keys are always "$."-prefixed. A condition may legitimately
+	// omit the prefix, and validateConditionPaths normalises before checking,
+	// so such a path reaches here as a known field. Look it up the same way, or
+	// it misses the map, Declared comes back empty, and a type-directed
+	// comparison leaf expands into nothing — a field that exists and holds
+	// matching data answers with an empty page. arrayToFilter already
+	// normalises via arrayElementPath; this is the arm that did not.
+	key := normalisePath(c.JsonPath)
 	return spi.Filter{
 		Op:       op,
 		Path:     stripped,
 		Source:   spi.SourceData,
 		Value:    c.Value,
 		Values:   betweenValues(op, c.Value),
-		Coercion: dataCoercion(c.JsonPath, fields),
-		Declared: fields[c.JsonPath].Types,
+		Coercion: dataCoercion(key, fields),
+		Declared: fields[key].Types,
 	}, nil
 }
 

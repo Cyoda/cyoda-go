@@ -169,7 +169,7 @@ func (it *postgresIter) Next() bool {
 			return false
 		}
 		if it.postFilter != nil {
-			ok, ferr := evalPostFilter(*it.postFilter, e, doc)
+			ok, ferr := evalPostFilter(*it.postFilter, e)
 			if ferr != nil {
 				it.err = fmt.Errorf("post-filter evaluation: %w", ferr)
 				return false
@@ -432,6 +432,17 @@ func aggregateExprToSQL(a spi.AggregateExpr) (string, error) {
 // entity in Go. Delegates to spi.MatchFilter, the canonical cross-backend
 // evaluator that sqlite's post-filter and the memory plugin also use — see
 // that function's doc for why the two must never diverge.
-func evalPostFilter(f spi.Filter, entity *spi.Entity, doc []byte) (bool, error) {
-	return spi.MatchFilter(f, doc, entity.Meta), nil
+//
+// It is given entity.Data, not the raw JSONB document. The stored document
+// carries a "_meta" block this plugin merges in (marshalEntityDoc); passing it
+// would make storage-layer meta a matchable SourceData path here and nowhere
+// else, since memory and sqlite hold domain data and meta apart. Meta stays
+// reachable through Source: SourceMeta, which reads entity.Meta. The domain
+// bytes are unaffected: unmarshalEntityDoc decodes into json.RawMessage values
+// and re-emits them verbatim, so numbers survive byte-for-byte and strings stay
+// semantically identical. Only document-level framing differs — key order,
+// whitespace, and HTML escaping of < > & U+2028 U+2029 inside string literals —
+// none of which a path lookup or the kernel's stored.String() observes.
+func evalPostFilter(f spi.Filter, entity *spi.Entity) (bool, error) {
+	return spi.MatchFilter(f, entity.Data, entity.Meta), nil
 }

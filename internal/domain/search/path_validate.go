@@ -129,6 +129,9 @@ func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 // the type-directed kernel compares temporal data fields temporally rather than
 // lexically. Returns (nil, nil) when the model has no schema bound; genuine
 // store errors propagate for the caller to surface (fail closed).
+//
+// The returned map may be owned by the model-descriptor cache and shared with
+// every other reader holding the same lease. It is read-only — do not mutate it.
 func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
 	return loadFieldsMap(ctx, store, ref)
 }
@@ -140,11 +143,33 @@ func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // propagate so the caller can log and skip validation rather than
 // mistakenly reject the search.
 func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+	// Prefer the cached derived parse when the store offers one. Rebuilding it
+	// per call is 80-99% of a criterion evaluation and scales with schema size;
+	// FieldsMap() off an already-parsed node is effectively free. Stores that
+	// do not implement the interface (tests, plain in-memory stores) keep the
+	// original behaviour.
+	if p, ok := store.(schemaNodeProvider); ok {
+		node, err := p.SchemaNode(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		if node == nil {
+			return nil, nil
+		}
+		return node.FieldsMap(), nil
+	}
 	desc, err := store.Get(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	return fieldsFromDescriptor(desc)
+}
+
+// schemaNodeProvider is the optional capability a caching model store exposes to
+// hand back the schema it has already parsed, instead of the bytes to parse
+// again. Same optional-interface shape as the RefreshAndGet probe below.
+type schemaNodeProvider interface {
+	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
 
 // refreshFieldsMap forces a cache refresh via RefreshAndGet (when the
@@ -161,6 +186,19 @@ func refreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRe
 	desc, err := refresher.RefreshAndGet(ctx, ref)
 	if err != nil {
 		return nil, true, err
+	}
+	// RefreshAndGet repopulates the cache entry, parsed node included, so read
+	// the parse back rather than re-deriving it from the bytes we just caused
+	// to be cached — that reparse is exactly what the cache exists to remove.
+	if p, ok := store.(schemaNodeProvider); ok {
+		node, nerr := p.SchemaNode(ctx, ref)
+		if nerr != nil {
+			return nil, true, nerr
+		}
+		if node == nil {
+			return nil, true, nil
+		}
+		return node.FieldsMap(), true, nil
 	}
 	fm, err := fieldsFromDescriptor(desc)
 	if err != nil {

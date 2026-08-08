@@ -73,6 +73,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **A model's parsed schema is now cached alongside its descriptor.** Evaluating a
+  workflow criterion against a data field re-read the stored schema and rebuilt the
+  whole field map on every evaluation — per transition, and per step of a cascade.
+  Measured, that was 80–99% of the evaluation, scaling with schema size: on a
+  1000-field model, 1.84 ms and 12,400 allocations per evaluation, now 12 µs and 91.
+  The parsed form is held on the descriptor cache entry, so it is dropped by the same
+  invalidation and lease the bytes already follow.
+
 - **A workflow processor's returned data is now governed by the model, exactly as a
   client's write is.** Previously a processor could write anything at all: content no
   backend could store (returning **500**), or fields the model does not declare —
@@ -91,6 +99,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
 ### Fixed
+
+- **Sorting by a `$.`-prefixed field path over gRPC now works.** Sort-key resolution
+  prepended `$.` by hand, which is not idempotent. The HTTP layer strips the prefix
+  before resolving, so HTTP was unaffected; gRPC passes the client's path through
+  verbatim, so `orderBy` on `$.city` was looked up as `$.$.city` and returned **400
+  `INVALID_FIELD_PATH`** for a field that exists. The two transports now answer the same
+  request identically.
+
+- **A field path written without the `$.` prefix now resolves its declared type.**
+  `city` and `$.city` are both accepted and both pass field-path validation, but only
+  the prefixed form resolved against the model schema. The unprefixed form came back
+  with no declared type, and a type-directed comparison with no declared type matches
+  nothing — so `city EQUALS "Berlin"` returned **200 with an empty page** on a model
+  whose `$.city` holds `Berlin`. In a workflow criterion the same defect made the leaf
+  evaluate false for **every** entity, so the transition silently never fired.
+  Declared-temporal fields reached this way were also compared as text rather than as
+  timestamps, and the type-soundness check skipped such a leaf entirely, so an operand
+  that should have been rejected `400 CONDITION_TYPE_MISMATCH` was accepted and
+  answered with an empty page. A genuinely unknown path still resolves to no declared
+  type, which is the intended degrade-to-no-match.
+
+- **PostgreSQL's in-Go residual filter no longer sees the internal `_meta` block.**
+  Postgres stores an entity as one document with the domain data and a storage-level
+  `_meta` block side by side, and the Go-side evaluator was handed the un-stripped
+  document, so a condition naming a data path under `_meta` matched there and on no
+  other backend. It now receives the same domain data every other backend passes.
+  Entity state, creation date and the other metadata remain searchable the supported
+  way, which is unaffected. **This does not yet close the surface**: for `IS_NULL`
+  and `NOT_NULL` the query is answered entirely in SQL with no Go re-check, and the
+  SQL still resolves a data path against the merged document. That remainder is
+  tracked separately.
+
+- **SQLite treats a zero-value filter as "match all", like the other backends.** It was
+  installed as a residual post-filter instead, which disabled `LIMIT` pushdown and armed
+  `CYODA_SQLITE_SEARCH_SCAN_LIMIT`. No cyoda-go request reaches this — every route
+  spells "match everything" as an empty `AND`, which already worked — so this is storage
+  contract conformance rather than a user-visible fix, and it matters to anything driving
+  the storage interface directly.
 
 - **An entity write now releases its transaction on every exit path, including a
   panic.** Previously a panic between begin and commit left the transaction neither

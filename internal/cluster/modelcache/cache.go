@@ -9,6 +9,7 @@ package modelcache
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // Clock abstracts time.Now so tests can drive expiry deterministically.
@@ -63,6 +65,35 @@ type cacheKey struct {
 type cacheEntry struct {
 	desc      *spi.ModelDescriptor
 	expiresAt time.Time
+
+	// node is desc.Schema parsed, derived once when the entry is built and
+	// discarded with it. Deriving it is the dominant cost of evaluating a
+	// workflow criterion — the raw bytes were already cached here, the parse
+	// was not, so every evaluation rebuilt the whole field tree. Holding it on
+	// the entry means it inherits this entry's eviction and lease, so there is
+	// exactly one thing to invalidate and no way for a parse to outlive the
+	// bytes it came from.
+	//
+	// nodeErr is the parse failure, retained so a broken schema reports the
+	// same error every time without re-parsing to rediscover it. A descriptor
+	// with no schema bound yields (nil, nil) — "no type constraints", not an
+	// error, matching the callers this replaces.
+	node    *schema.ModelNode
+	nodeErr error
+}
+
+// parseSchemaNode derives the parsed schema for desc. The (nil, nil) result for
+// an absent or unbound schema, and the error wording, match what the search
+// package's fieldsFromDescriptor produced when it did this per call.
+func parseSchemaNode(desc *spi.ModelDescriptor) (*schema.ModelNode, error) {
+	if desc == nil || len(desc.Schema) == 0 {
+		return nil, nil
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal model schema: %w", err)
+	}
+	return node, nil
 }
 
 // New constructs a CachingModelStore.
@@ -221,12 +252,51 @@ func (c *CachingModelStore) lookup(key cacheKey) *spi.ModelDescriptor {
 }
 
 func (c *CachingModelStore) store(key cacheKey, desc *spi.ModelDescriptor) {
+	// Derived outside the lock: parsing is the expensive part and depends only
+	// on desc, so holding the write lock across it would serialise every reader
+	// behind an unrelated model's parse.
+	node, nodeErr := parseSchemaNode(desc)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = cacheEntry{
 		desc:      desc,
 		expiresAt: c.clock.Now().Add(c.jitteredLeaseLocked()),
+		node:      node,
+		nodeErr:   nodeErr,
 	}
+}
+
+// lookupEntry returns the live entry for key, or ok=false when absent or past
+// its lease. Mirrors lookup, which returns only the descriptor.
+func (c *CachingModelStore) lookupEntry(key cacheKey) (cacheEntry, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok || c.clock.Now().After(e.expiresAt) {
+		return cacheEntry{}, false
+	}
+	return e, true
+}
+
+// SchemaNode returns ref's parsed model schema, derived once per cache entry
+// and reused for that entry's lifetime. Returns (nil, nil) when the descriptor
+// has no schema bound.
+//
+// An UNLOCKED descriptor is never cached — its schema can still change — so its
+// parse is produced fresh and not retained, exactly as its bytes are not.
+func (c *CachingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
+	if e, ok := c.lookupEntry(key); ok {
+		return e.node, e.nodeErr
+	}
+	desc, err := c.Get(ctx, ref) // populates the entry when LOCKED
+	if err != nil {
+		return nil, err
+	}
+	if e, ok := c.lookupEntry(key); ok {
+		return e.node, e.nodeErr
+	}
+	return parseSchemaNode(desc)
 }
 
 func (c *CachingModelStore) evict(key cacheKey) {

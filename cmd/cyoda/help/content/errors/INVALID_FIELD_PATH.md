@@ -21,7 +21,7 @@ HTTP: `400` `Bad Request`. Retryable: `no` (unless the model schema is then exte
 
 ## DESCRIPTION
 
-Before executing a search, the server validates that every data-field path referenced by the condition (e.g. `$.price`, `$.profile.email`) resolves against the target model's locked schema. Lifecycle paths (`state`, `previousTransition`, etc.) and meta paths (`$._meta.*`) bypass this check.
+Before executing a search, the server validates that every data-field path referenced by the condition (e.g. `$.price`, `$.profile.email`) resolves against the target model's locked schema. Lifecycle paths (`state`, `previousTransition`, etc.) bypass this check.
 
 A path that is a **pure container** — a known structural interior with substructure (an object with child fields) but no scalar observation of its own — is also rejected this way when compared with a scalar operator: a container has no scalar value to compare against, so the client must navigate to a leaf sub-path. `IS_NULL`/`NOT_NULL` are exempt (they test presence, not a value) and remain valid on a container path. A path observed as **both** an object and a bare scalar across different entities is not a pure container — it is searchable via its scalar type, and the object-valued entities remain reachable through their child leaves.
 
