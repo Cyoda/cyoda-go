@@ -115,13 +115,13 @@ func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.
 		wantIDs = []string{}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("RYW parity mismatch: Search=%v, GetAll+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("RYW parity mismatch: Search=%v, GetAll+Prepare/Match=%v", gotIDs, wantIDs)
 	}
 	return gotIDs
 }
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create + update + delete
-// inside a tx must be reflected in Search identically to GetAll+MatchFilter.
+// inside a tx must be reflected in Search identically to GetAll+spi.Prepare(filter).Match.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e1": `{"city":"Berlin"}`,
@@ -210,7 +210,7 @@ func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 
 // TestSearchTx_PositiveSupersession: an in-tx update must supersede the
 // committed snapshot — the entity moves out of its old predicate bucket and
-// into the new one, identically to GetAll+MatchFilter.
+// into the new one, identically to GetAll+spi.Prepare(filter).Match.
 func TestSearchTx_PositiveSupersession(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e2": `{"city":"Munich"}`,
@@ -482,7 +482,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		gotIDs = []string{}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("PIT parity mismatch: Search=%v, GetAllAsAt+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("PIT parity mismatch: Search=%v, GetAllAsAt+Prepare/Match=%v", gotIDs, wantIDs)
 	}
 
 	// No read-set recorded for a PIT search, even with TrackingRead=true:

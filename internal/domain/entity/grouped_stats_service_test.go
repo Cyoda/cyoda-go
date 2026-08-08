@@ -47,6 +47,28 @@ func (i *fakeIter) Entity() *spi.Entity { return i.rows[i.idx-1] }
 func (i *fakeIter) Err() error          { return i.err }
 func (i *fakeIter) Close() error        { return nil }
 
+// fakeFilteringIterable is a spi.Iterable-only store whose Iterate actually
+// applies the filter it's handed (via spi.Prepare(flt).Match), unlike
+// fakeIterable above which records the filter but returns every row
+// regardless. It exists to give
+// TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming a store that
+// behaves like a real backend, where the pushdown filter — not a re-applied
+// residual — is what excludes non-matching rows.
+type fakeFilteringIterable struct {
+	entities []*spi.Entity
+}
+
+func (f *fakeFilteringIterable) Iterate(_ context.Context, _ spi.ModelRef, flt spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
+	pf := spi.Prepare(flt)
+	rows := make([]*spi.Entity, 0, len(f.entities))
+	for _, e := range f.entities {
+		if pf.Match(e.Data, e.Meta) {
+			rows = append(rows, e)
+		}
+	}
+	return &fakeIter{rows: rows}, nil
+}
+
 // fakeAggregator satisfies only spi.GroupedAggregator (and embeds an Iterable
 // when tests want both capabilities).
 type fakeAggregator struct {
@@ -348,6 +370,59 @@ func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *te
 	}
 	if len(buckets) != 1 || buckets[0].Count != 1 {
 		t.Fatalf("buckets = %+v, want one bucket count=1 (residual excluded the second row)", buckets)
+	}
+}
+
+// TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming guards the
+// symmetry between the two "!pushable && parsedCond != nil" guards in
+// tallyStreaming (grouped_stats_service.go): the one that builds the residual
+// match.Prepared, and the one in the per-row loop that applies it. They must
+// stay exactly in sync. If the loop guard ever fires while pushable is true —
+// diverging from the guard that (correctly) left the residual unbuilt — every
+// row is matched against the zero-value match.Prepared, which never matches
+// anything, silently emptying every bucket while returning no error.
+//
+// No other test exercises "pushable filter AND non-nil condition" against a
+// store that actually enforces the filter it's given:
+// TestQueryGroupedStats_StreamingWithFilterPushdown uses a store that ignores
+// its filter argument and rows that all match anyway, so it can't distinguish
+// a correctly-skipped residual from a wrongly-applied one that happens to
+// still match everything. This test's fakeFilteringIterable filters for real
+// and mixes matching with non-matching rows, so a broken guard produces an
+// observably wrong (empty) result instead of coincidentally passing.
+func TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "EQUALS",
+		"value": "red"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"blue"}`)},
+	}
+	iter := &fakeFilteringIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	// The pushdown Filter's Declared type comes from fields: an EQUALS leaf
+	// with no declared type degrades to non-match in the shared kernel (the
+	// same rule TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual
+	// relies on for its residual), so fakeFilteringIterable's own
+	// spi.Prepare(flt).Match needs it too or every row — matching or not —
+	// would be excluded regardless of any residual guard.
+	fields := map[string]schema.FieldDescriptor{
+		"$.color": {Path: "$.color", Types: []spi.DataType{spi.String}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 2 {
+		t.Fatalf("buckets = %+v, want one bucket count=2 (the two pushdown-filtered red rows, not silently emptied by a wrongly re-applied residual)", buckets)
 	}
 }
 

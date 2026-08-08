@@ -409,8 +409,8 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 // filtering to the shared spi.Prepare/PreparedFilter.Match temporal kernel: a
 // filter with Coercion: CoerceTemporal on the canonical meta path
 // "creationDate" must be evaluated chronologically, not lexically/string-wise.
-// This is the regression guard for the memory plugin's local msMatchFilter
-// evaluator, which had no Coercion handling and no "creationDate" case at all
+// This is the regression guard for the memory plugin's prepared-filter
+// evaluation, which previously had no Coercion handling and no "creationDate" case at all
 // in its meta vocabulary (only storage-key names like entity_id/state/version)
 // — so this filter either silently no-matched everything or (if it happened
 // to fall back to string comparison) compared instants lexically instead of

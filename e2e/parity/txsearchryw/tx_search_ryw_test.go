@@ -411,7 +411,7 @@ func runNullsLastOrder(t *testing.T, b backend) {
 
 // runInTxPIT covers invariant 8: an in-tx Search with PointInTime BEFORE the
 // tx's writes returns the committed-as-at snapshot only — buffered creates and
-// buffered updates are excluded — identical to GetAllAsAt(pit)+MatchFilter and
+// buffered updates are excluded — identical to GetAllAsAt(pit)+spi.Prepare(filter).Match and
 // identical across backends. The boundary is read back from the store rather
 // than taken from the test process's clock, so it works uniformly on all three
 // backends without backend-specific time surgery.

@@ -86,8 +86,9 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 		meta spi.EntityMeta
 	}{
 		// --- Issue 1: numeric ordering on stringly-typed numeric data ---
-		// Sqlite returns false (byte-lex "100" vs "42" → "1" < "4"); MatchFilter
-		// must agree. Before the fix MatchFilter parsed strings → returned true.
+		// Sqlite returns false (byte-lex "100" vs "42" → "1" < "4"); the prepared
+		// kernel (spi.Prepare + PreparedFilter.Match) must agree. Before the fix
+		// the (now-deleted) fused evaluator parsed strings → returned true.
 		{
 			name: "Gt-on-stringly-numeric",
 			f:    spi.Filter{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 42},

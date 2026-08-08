@@ -900,6 +900,43 @@ func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
 	}
 }
 
+// TestSearchFallsBackWhenNotSearcher_NilConditionMatchesAll pins the
+// fallback's explicit nil-condition guard: a nil predicate.Condition means
+// "no filter" and must return every entity, the same answer the pre-split
+// per-row evaluator gave (it never faulted on a nil condition — it only ever
+// ran once a row reached it, and a nil condition never produced a per-row
+// fault). Without the guard, match.Prepare(nil, ...) has no case for a nil
+// predicate.Condition (every concrete variant of the sum type is a non-nil
+// struct) and reports "unknown condition type: <nil>", turning this into a
+// 500 instead of the pre-split 200-with-everything.
+func TestSearchFallsBackWhenNotSearcher_NilConditionMatchesAll(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+	saveEntity(t, ctx, base, ref, "e2", []byte(`{"name":"Bob"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	nonSearcher := &nonSearcherEntityStore{EntityStore: realStore}
+	factory := &nonSearcherFactory{StoreFactory: base, entityStore: nonSearcher}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	results, err := svc.Search(ctx, ref, nil, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search with nil condition: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected both entities back for a nil (match-all) condition, got %d: %v", len(results), results)
+	}
+}
+
 // TestSearchDelegatesToSearcherInTransaction verifies the de-guarded
 // contract (Task 13): a plugin Searcher is now tx-aware (read-your-own-writes)
 // on every OSS backend, so Search delegates to it even with an active

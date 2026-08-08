@@ -1,7 +1,6 @@
 package match_test
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -218,5 +217,3 @@ func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
 		t.Error("Match() = true for an empty array, want false")
 	}
 }
-
-var _ = errors.Is // retained for the error-identity assertions added in Task 9

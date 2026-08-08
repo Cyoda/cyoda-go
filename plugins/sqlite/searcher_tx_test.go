@@ -99,7 +99,7 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create, an update that
 // changes a matching entity to no longer match, and a delete must all be
-// reflected in Search exactly as GetAll + MatchFilter sees them.
+// reflected in Search exactly as GetAll + spi.Prepare(filter).Match sees them.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// Committed baseline (from setup): e1=Berlin, e3=Berlin match cityBerlin.
@@ -533,8 +533,8 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		t.Errorf("committed e1 must be present, got %v", gotIDs)
 	}
 
-	// Must equal GetAllAsAt(pit) + MatchFilter exactly (the committed-pushdown
-	// contract; no overlay dimension participates).
+	// Must equal GetAllAsAt(pit) + spi.Prepare(filter).Match exactly (the
+	// committed-pushdown contract; no overlay dimension participates).
 	wantAll, err := store.GetAllAsAt(ctx, ref, pit)
 	if err != nil {
 		t.Fatalf("GetAllAsAt: %v", err)
@@ -547,11 +547,11 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		}
 	}
 	if len(gotIDs) != len(wantIDs) {
-		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+MatchFilter %v", gotIDs, wantIDs)
+		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+Prepare/Match %v", gotIDs, wantIDs)
 	}
 	for id := range wantIDs {
 		if !gotIDs[id] {
-			t.Errorf("expected id %s from GetAllAsAt+MatchFilter, missing from Search(PIT) %v", id, gotIDs)
+			t.Errorf("expected id %s from GetAllAsAt+Prepare/Match, missing from Search(PIT) %v", id, gotIDs)
 		}
 	}
 
