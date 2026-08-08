@@ -228,7 +228,8 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 }
 
 // tallyStreaming implements the spec §4 streaming branch: iterate, apply
-// any unpushable residual via match.Match, group, accumulate, materialize.
+// any unpushable residual via a prepared match.Prepared, group, accumulate,
+// materialize.
 func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
 	it spi.Iterable,
@@ -249,8 +250,21 @@ func (s *GroupedStatsService) tallyStreaming(
 		}
 		return nil
 	}
+	// Prepared once, only when there is actually a residual to apply. The
+	// guard mirrors the one in the loop below exactly: preparing an unused
+	// condition would resolve declared types for a query that never evaluates
+	// it.
+	var residual match.Prepared
+	if !pushable && parsedCond != nil {
+		p, err := match.Prepare(parsedCond, fieldTypes)
+		if err != nil {
+			return nil, err
+		}
+		residual = p
+	}
+
 	// D15: if the filter wasn't pushable, pass zero-value to the iterator
-	// (match-all) and re-apply match.Match inside the loop. Otherwise
+	// (match-all) and re-apply the residual inside the loop. Otherwise
 	// trust the plugin to apply pushFilter itself.
 	iterFilter := pushFilter
 	if !pushable {
@@ -269,14 +283,8 @@ func (s *GroupedStatsService) tallyStreaming(
 
 		// Residual predicate evaluation: only when the original condition
 		// was not pushable and we therefore need to filter per entity.
-		if !pushable && parsedCond != nil {
-			ok, mErr := match.Match(parsedCond, e.Data, e.Meta, fieldTypes)
-			if mErr != nil {
-				return nil, mErr
-			}
-			if !ok {
-				continue
-			}
+		if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
+			continue
 		}
 
 		keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)

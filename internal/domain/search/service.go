@@ -379,13 +379,17 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil
 	}
 
+	// Prepared once for the whole scan. Everything the leaf evaluator can fault
+	// on is a structural property of the condition, so it surfaces here rather
+	// than on whichever row happens to reach it first.
+	prepared, prepErr := match.Prepare(cond, fieldTypes)
+	if prepErr != nil {
+		return nil, fmt.Errorf("predicate match failed: %w", prepErr)
+	}
+
 	var matches []*spi.Entity
 	for _, e := range entities {
-		ok, matchErr := match.Match(cond, e.Data, e.Meta, fieldTypes)
-		if matchErr != nil {
-			return nil, fmt.Errorf("predicate match failed: %w", matchErr)
-		}
-		if ok {
+		if prepared.Match(e.Data, e.Meta) {
 			matches = append(matches, e)
 		}
 	}
