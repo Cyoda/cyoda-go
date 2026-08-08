@@ -2842,12 +2842,27 @@ Expected: clean. Any `undefined: match.Match` is a call site Tasks 8–10 missed
 
 `internal/match/match.go:291` and the two SPI-side citations of `MatchFilterSqliteEvaluateFilterParity` — that parity scenario does not exist and never did. The real test is `TestPrepared_SqliteParity_Smoke` (renamed in Task 10). Fix the cyoda-go one here; the SPI ones are Task 12.
 
-- [ ] **Step 4: Verify no stale reference survives**
+- [ ] **Step 4: Sweep every comment naming the deleted API**
+
+The four `opMatchesPattern` comments are not the whole set. `spi.MatchFilter` is named in
+roughly 35 comments across the three plugin modules and two domain files — all of which
+point at a function that stops existing one task later. They are load-bearing prose:
+several explain the pushdown soundness contract by naming the kernel that re-checks
+candidates, and a reader who greps for the name will find nothing.
 
 ```bash
-grep -rn 'opMatchesPattern\|MatchFilterSqliteEvaluateFilterParity' --include='*.go' . | grep -v 'docs/'
+grep -rn 'spi\.MatchFilter\|match\.MatchFilter\|EvalLeafString\|opMatchesPattern\|MatchFilterSqliteEvaluateFilterParity' \
+  --include='*.go' . | grep -v frozen
 ```
-Expected: no output.
+
+Rewrite each hit to name what actually evaluates now — `spi.Prepare` / `PreparedFilter.Match`
+for the kernel, `ExpandLeaf` + `EvalLeaf` for the leaf primitives. Do not mechanically
+substitute the identifier: several of these sentences describe *when* evaluation happens,
+and the prepare/execute split changed that. Read each one.
+
+Expected afterwards: hits only in `internal/match/match.go` and `internal/match/operators.go`
+(the functions being deleted in this task), plus the two frozen equivalence references,
+which are deliberate copies and must keep naming the old shapes.
 
 - [ ] **Step 5: Run the root module and commit**
 
