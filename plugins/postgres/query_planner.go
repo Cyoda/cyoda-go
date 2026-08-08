@@ -29,6 +29,16 @@ type sqlPlan struct {
 	where      string
 	args       []any
 	postFilter *spi.Filter
+	// preparedPostFilter is postFilter compiled for per-row evaluation. It is
+	// non-nil EXACTLY when postFilter is non-nil.
+	//
+	// postFilter itself stays a *spi.Filter and stays the field the planner's
+	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown,
+	// native GROUP BY and the scan budget. A zero spi.PreparedFilter means
+	// match-all, not absent, so replacing the field outright — or pairing a
+	// value with a bool — would put that invariant back in play at every
+	// consumer. Row loops read this field; planner decisions read postFilter.
+	preparedPostFilter *spi.PreparedFilter
 }
 
 // leafExact reports whether a pushed leaf's SQL matches the kernel bit-for-bit.
@@ -84,6 +94,12 @@ func planQuery(filter spi.Filter) sqlPlan {
 	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
 		full := filter
 		plan.postFilter = &full
+	}
+	// Single population point, so the nil-ness invariant cannot drift between
+	// the branches above.
+	if plan.postFilter != nil {
+		p := spi.Prepare(*plan.postFilter)
+		plan.preparedPostFilter = &p
 	}
 	return plan
 }

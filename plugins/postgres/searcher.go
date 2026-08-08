@@ -217,7 +217,7 @@ func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filte
 	if err != nil {
 		return nil, fmt.Errorf("search query: %w", err)
 	}
-	it := &postgresIter{ctx: ctx, rows: rows, postFilter: plan.postFilter}
+	it := &postgresIter{ctx: ctx, rows: rows, preparedPostFilter: plan.preparedPostFilter}
 	defer it.Close()
 
 	var results []*spi.Entity

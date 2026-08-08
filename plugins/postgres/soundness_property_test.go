@@ -124,8 +124,9 @@ func fUnary(op spi.FilterOp, path string) spi.Filter {
 // algorithm (no SQL, no narrowing).
 func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
 	out := map[string]bool{}
+	pf := spi.Prepare(f)
 	for _, e := range corpus {
-		if spi.MatchFilter(f, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			out[e.Meta.ID] = true
 		}
 	}
@@ -300,7 +301,7 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 
 	filter := spi.Filter{Op: spi.FilterEndsWith, Source: spi.SourceData, Path: "name", Value: "get"}
 
-	oracle := spi.MatchFilter(filter, []byte(`{"name":"Widget"}`), spi.EntityMeta{})
+	oracle := spi.Prepare(filter).Match([]byte(`{"name":"Widget"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match ENDS_WITH 'get' against 'Widget'")
 	}
@@ -334,7 +335,7 @@ func TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.
 
 	filter := spi.Filter{Op: spi.FilterLike, Source: spi.SourceData, Path: "desc", Value: "foo%baz"}
 
-	oracle := spi.MatchFilter(filter, []byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
+	oracle := spi.Prepare(filter).Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}

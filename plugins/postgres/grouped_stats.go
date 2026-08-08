@@ -87,9 +87,9 @@ func (s *entityStore) Iterate(
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}
 	return &postgresIter{
-		ctx:        ctx,
-		rows:       rows,
-		postFilter: plan.postFilter,
+		ctx:                ctx,
+		rows:               rows,
+		preparedPostFilter: plan.preparedPostFilter,
 	}, nil
 }
 
@@ -136,9 +136,9 @@ func shiftPlaceholders(s string, offset int) string {
 // before yielding each row. Err() is sticky; Close() is idempotent;
 // ctx cancellation is observed.
 type postgresIter struct {
-	ctx        context.Context
-	rows       pgx.Rows
-	postFilter *spi.Filter
+	ctx                context.Context
+	rows               pgx.Rows
+	preparedPostFilter *spi.PreparedFilter
 
 	cur    *spi.Entity
 	err    error
@@ -168,15 +168,8 @@ func (it *postgresIter) Next() bool {
 			it.err = fmt.Errorf("unmarshal iterate row: %w", err)
 			return false
 		}
-		if it.postFilter != nil {
-			ok, ferr := evalPostFilter(*it.postFilter, e)
-			if ferr != nil {
-				it.err = fmt.Errorf("post-filter evaluation: %w", ferr)
-				return false
-			}
-			if !ok {
-				continue
-			}
+		if it.preparedPostFilter != nil && !evalPostFilter(*it.preparedPostFilter, e) {
+			continue
 		}
 		it.cur = e
 		return true
@@ -428,10 +421,10 @@ func aggregateExprToSQL(a spi.AggregateExpr) (string, error) {
 
 // ---------- Post-filter evaluator (residual application) ----------
 
-// evalPostFilter evaluates a residual Filter subtree against a decoded
-// entity in Go. Delegates to spi.MatchFilter, the canonical cross-backend
-// evaluator that sqlite's post-filter and the memory plugin also use — see
-// that function's doc for why the two must never diverge.
+// evalPostFilter evaluates an already-prepared residual filter against a
+// decoded entity in Go. It takes a prepared filter so the operand parse, type
+// bucketing and regex compilation happen once per query at the plan site rather
+// than once per row here.
 //
 // It is given entity.Data, not the raw JSONB document. The stored document
 // carries a "_meta" block this plugin merges in (marshalEntityDoc); passing it
@@ -443,6 +436,6 @@ func aggregateExprToSQL(a spi.AggregateExpr) (string, error) {
 // semantically identical. Only document-level framing differs — key order,
 // whitespace, and HTML escaping of < > & U+2028 U+2029 inside string literals —
 // none of which a path lookup or the kernel's stored.String() observes.
-func evalPostFilter(f spi.Filter, entity *spi.Entity) (bool, error) {
-	return spi.MatchFilter(f, entity.Data, entity.Meta), nil
+func evalPostFilter(p spi.PreparedFilter, entity *spi.Entity) bool {
+	return p.Match(entity.Data, entity.Meta)
 }
