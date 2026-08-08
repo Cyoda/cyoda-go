@@ -182,6 +182,18 @@ func prepareLifecycle(c *predicate.LifecycleCondition) (prepNode, error) {
 		// temporal field admits only comparison, range and null operators, and
 		// anything else is a never-match leaf rather than an error. It must
 		// never lexically substring-match the formatted RFC3339 rendering.
+		//
+		// KNOWN DIVERGENCE, deliberately not resolved here. The Filter-side
+		// evaluator has no such guard: a text or pattern operator on a temporal
+		// meta field reaches its string branch there and matches against the
+		// RFC3339 rendering, so the same request answers differently depending
+		// on whether the query pushes down.
+		//
+		// Do NOT resolve this by aligning either evaluator. A text or pattern
+		// operator on a temporal field is not a supported predicate, and the
+		// resolution is to refuse it at the shared validation boundary, which
+		// makes both evaluators' behaviour unreachable. Aligning here would
+		// specify semantics for a predicate that is being withdrawn.
 		if !isTemporalOperator(c.OperatorType) {
 			return prepNode{kind: prepNever}, nil
 		}
