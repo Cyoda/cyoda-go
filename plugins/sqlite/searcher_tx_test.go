@@ -68,8 +68,9 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 	}
 	wantIDs := make(map[string]bool)
 	wantData := make(map[string]string)
+	pf := spi.Prepare(filter)
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs[e.Meta.ID] = true
 			wantData[e.Meta.ID] = string(e.Data)
 		}
@@ -538,8 +539,9 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		t.Fatalf("GetAllAsAt: %v", err)
 	}
 	wantIDs := map[string]bool{}
+	pfBerlin := spi.Prepare(cityBerlin)
 	for _, e := range wantAll {
-		if spi.MatchFilter(cityBerlin, e.Data, e.Meta) {
+		if pfBerlin.Match(e.Data, e.Meta) {
 			wantIDs[e.Meta.ID] = true
 		}
 	}

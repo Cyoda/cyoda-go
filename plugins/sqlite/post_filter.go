@@ -5,19 +5,22 @@ import (
 )
 
 // EvaluateFilter is a public wrapper around evaluateFilter exposed so that
-// cross-module parity tests (e.g. against internal/match.MatchFilter) can
-// pin the contract that grouped-stats / streaming-tally must produce the
-// same boolean as the sqlite post-filter step for any (filter, entity)
-// tuple. NOT intended for hot-path use by other code — call sites within
-// this plugin should keep using evaluateFilter directly.
-func EvaluateFilter(f spi.Filter, entity *spi.Entity) (bool, error) {
-	return evaluateFilter(f, entity)
+// cross-module parity tests (against internal/match.Prepare) can pin the
+// contract that grouped-stats / streaming-tally must produce the same boolean
+// as the sqlite post-filter step for any (filter, entity) tuple. NOT intended
+// for hot-path use by other code — call sites within this plugin should keep
+// using evaluateFilter directly.
+func EvaluateFilter(p spi.PreparedFilter, entity *spi.Entity) bool {
+	return evaluateFilter(p, entity)
 }
 
-// evaluateFilter evaluates a spi.Filter against an entity's data in Go.
-// This is used for post-filtering residual (non-pushable) predicates.
-// Delegates to spi.MatchFilter, the canonical cross-backend evaluator — see
-// that function's doc for why the two must never diverge.
-func evaluateFilter(f spi.Filter, entity *spi.Entity) (bool, error) {
-	return spi.MatchFilter(f, entity.Data, entity.Meta), nil
+// evaluateFilter evaluates an already-prepared filter against an entity's data
+// in Go, for residual (non-pushable) predicates. It takes a prepared filter
+// rather than a spi.Filter so the operand parse, type bucketing and regex
+// compilation happen once per query at the plan site, not once per row here.
+//
+// Delegates to the canonical cross-backend kernel — see spi.Prepare for why
+// this plugin must never grow an evaluator of its own.
+func evaluateFilter(p spi.PreparedFilter, entity *spi.Entity) bool {
+	return p.Match(entity.Data, entity.Meta)
 }

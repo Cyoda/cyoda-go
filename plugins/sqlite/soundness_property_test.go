@@ -262,8 +262,9 @@ var soundnessConditions = []struct {
 // algorithm (no SQL, no narrowing).
 func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
 	out := map[string]bool{}
+	pf := spi.Prepare(f)
 	for _, e := range corpus {
-		if spi.MatchFilter(f, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			out[e.Meta.ID] = true
 		}
 	}
@@ -390,7 +391,7 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 
 	// Kernel oracle: the string field holds "30", the operand normalizes to the
 	// text "30" -> a match.
-	if !spi.MatchFilter(filter, []byte(`{"code":"30"}`), spi.EntityMeta{}) {
+	if !spi.Prepare(filter).Match([]byte(`{"code":"30"}`), spi.EntityMeta{}) {
 		t.Fatalf("test setup invalid: kernel must match STRING \"30\" against numeric-looking operand 30")
 	}
 
@@ -428,7 +429,7 @@ func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T)
 
 	filter := spi.Filter{Op: spi.FilterLike, Source: spi.SourceData, Path: "desc", Value: "foo%baz"}
 
-	oracle := spi.MatchFilter(filter, []byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
+	oracle := spi.Prepare(filter).Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}
