@@ -2336,7 +2336,9 @@ Expected: FAIL — `plan.preparedPostFilter undefined`.
 
 - [ ] **Step 3: Add the field, populate it, convert `evalPostFilter`**
 
-Add `preparedPostFilter *spi.PreparedFilter` to `sqlPlan` with the same doc comment as sqlite's (the two structs are deliberately mirror images — parity tests depend on it). Populate at `planQuery`'s single return with the identical block.
+Add `preparedPostFilter *spi.PreparedFilter` to `sqlPlan`, mirroring sqlite's **field** — name, type, shape and population point — since that is what keeps the two planners legible as twins and what parity depends on. Populate at `planQuery`'s single return with the identical block.
+
+**The prose is not mirrored where the backends differ.** sqlite's comment names the scan budget among the things `postFilter`'s nil-ness gates; postgres has none (`searcher.go:30-35`). Postgres's copy states what it actually gates: `LIMIT` pushdown (`searcher.go:211`), native `GROUP BY` (`grouped_stats.go:223`), and the collection-loop shape (`searcher.go:226`).
 
 Convert `evalPostFilter`, preserving its existing doc paragraph about being given `entity.Data` rather than the raw JSONB document — that reasoning is unrelated to this change and still load-bearing:
 
