@@ -1604,7 +1604,32 @@ Refs #30"
 
 ## Task 4: cyoda-go — the merge gate for `match.Prepare`
 
-Same shape as Task 2: a frozen copy of the old evaluator versus the prepared one, over a randomised corpus of well-formed conditions.
+Same shape as Task 2: a frozen copy of the old evaluator versus the prepared one, over a randomised corpus.
+
+**The generator is mode-driven and feeds two separate tests.** `genValid` emits only
+conditions both evaluators accept; `genInvalid` emits conditions carrying exactly one
+structural fault. Do not mix the two in one corpus — a randomly-seeded fault makes
+coverage a lottery and makes a failure ambiguous about which property broke.
+
+The gate has two jobs, and one corpus cannot do both:
+
+- **Answer equivalence** needs well-formed conditions. It asserts the two evaluators
+  return the same boolean, and neither can error — so it `t.Fatalf`s on any error
+  rather than carrying a `continue` that quietly swallows one.
+- **Fault reporting** needs malformed conditions. It asserts `Prepare` reports exactly
+  the fault the condition carries, wherever that fault sits: standalone, first in an
+  AND, second in an AND whose first child is false (the short-circuit-hides-it case),
+  and nested two groups deep. Position must not change the outcome, which is the point
+  of varying it.
+
+Its reference is the **bare faulty leaf**, not the wrapped condition. A fault behind an
+always-false branch is legitimately unreachable for every document, so asserting the
+row-walk reaches it would fail on correct code; comparing against the bare leaf
+decouples the assertion from reachability.
+
+An earlier draft of this task asked for one corpus that was well-formed *and* exercised
+the fault path. Those cannot both hold — structural errors only come from malformed
+input — so the fault check was unreachable dead code that looked rigorous and never ran.
 
 **Files:**
 - Create: `internal/match/prepared_equivalence_test.go` (package `match` — the reference needs `applyOperator`, `matchSimple` and friends while they still exist, and must keep working after Task 11 deletes them)
