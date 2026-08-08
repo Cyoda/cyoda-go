@@ -47,7 +47,7 @@ predicates — operator catalog and evaluation semantics for the `Condition` DSL
 
 ## TYPE-DIRECTED COMPARISON
 
-A condition's operand is compared against the target field's **declared type(s)** (a leaf may carry more than one, e.g. a field seen as both an integer and a string across entities). The operand is treated as a string and parse-tested against every declared type — a numeric-looking string operand (`"30"`) and a JSON number operand (`30`) are parsed identically and are **treated the same**. There is no cross-type coincidental matching: an operand that parses as a number only compares against numerically-stored values; an operand that parses only as a string compares against string-stored values. Numbers compare precisely (arbitrary-precision, not `float64` — correct beyond 2^53). Comparing against `MATCHES_PATTERN`/`LIKE` and string ops evaluate against textual stored values only; a string op against a non-textual stored value is a non-match, not an error.
+A condition's operand is compared against the target field's **declared type(s)** (a leaf may carry more than one, e.g. a field seen as both an integer and a string across entities). The operand is treated as a string and parse-tested against every declared type — a numeric-looking string operand (`"30"`) and a JSON number operand (`30`) are parsed identically and are **treated the same**. There is no cross-type coincidental matching: an operand that parses as a number only compares against numerically-stored values; an operand that parses only as a string compares against string-stored values. Numbers compare precisely (arbitrary-precision, not `float64` — correct beyond 2^53). String and pattern operators apply to text fields only.
 
 ## NULL SEMANTICS
 
@@ -70,11 +70,9 @@ A missing (absent) or JSON-`null` leaf **never matches any binary operator — i
 
 Validation is **parse-based**, evaluated at request time against the target model:
 
-- `400 CONDITION_TYPE_MISMATCH` — the operand parses into **none** of the field's declared types (comparison and range operators only; string operators and unary presence tests carry no operand-type constraint and are always accepted).
+- `400 CONDITION_TYPE_MISMATCH` — the operand parses into **none** of the field's declared types, or the operator does not apply to the field's type: string and pattern operators require a text field; ordering and range operators require an ordered type (number, text, timestamp). `IS_NULL`/`NOT_NULL` carry no operand-type constraint.
 - `400 INVALID_FIELD_PATH` — the field path is unknown to the model, **or** it names a pure-container (object) path: a scalar operator cannot compare against structure — navigate to a scalar leaf sub-path instead. (A path observed as both an object and a scalar across entities remains searchable via its scalar type — see `cyoda help search`.) `IS_NULL`/`NOT_NULL` are exempt from the container-path rejection since they test presence, not a value.
 - `400 INVALID_CONDITION` — the operand is `null` on a binary/range operator, a range operator's value is not a two-element array, or the operand is an object/complex value.
-
-There is no operator-versus-field-type rejection: `CONTAINS` on a numeric field or `GREATER_THAN` on a boolean field are accepted requests — they parse and simply evaluate to a (non-)match.
 
 ## SEE ALSO
 
