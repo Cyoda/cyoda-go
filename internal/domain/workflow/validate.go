@@ -271,15 +271,16 @@ func walkCriterion(cond predicate.Condition, location string) error {
 // — fmt.Sprintf("%v", value) — but compiles it bare (regexp.Compile(pattern)),
 // not anchored the way the kernel's ExpandLeaf does (cyoda-go-spi
 // eval_leaf.go: regexp.Compile(anchor(pattern)), i.e. `\A(?:pattern)\z`). The
-// two are NOT guaranteed to agree: the anchor wrapper's own parentheses can
-// rebalance a pattern whose parens are unmatched on their own (e.g. ")|("
-// fails bare but succeeds once wrapped), so a narrow class of malformed
-// patterns is rejected here even though the kernel would compile — and
-// evaluate — them. This is a known, deliberately unresolved skew; closing it
-// by making either side mirror the other's compile call is acceptance-policy
-// work owned at the shared validation boundary, alongside the
-// temporal-comparison divergence and unvalidated LIKE semantics — not
-// something to fix here.
+// two compile calls are NOT guaranteed to agree, and the skew runs both
+// ways — see the accept/reject-skew note on ValidateRegexPatterns in
+// internal/domain/search/regex_validate.go for the full explanation and
+// examples (reject-though-valid: ")|("; accept-then-fail: "\Q"). The
+// resolution is decided there too: the validator side — this function
+// included — should adopt the kernel's anchored form, since anchoring is the
+// correct semantics and every evaluator already applies it; but the wrapper
+// is unexported in cyoda-go-spi, so it isn't done here. Don't hand-roll the
+// wrapper in this package to close the gap — that would duplicate a grammar
+// that must not drift from the kernel's.
 func compileMatchesPattern(operatorType string, value any, location string) error {
 	if operatorType != "MATCHES_PATTERN" {
 		return nil
