@@ -848,7 +848,7 @@ func TestPrepare_EquivalentToFrozenMatchFilter(t *testing.T) {
 // TestPrepare_MatchIsRepeatable pins that a prepared filter gives the same
 // answer on every call — no state is consumed by evaluation.
 func TestPrepare_MatchIsRepeatable(t *testing.T) {
-	r := rand.New(rand.NewSource(0xREPEA7))
+	r := rand.New(rand.NewSource(0xBEEFED))
 	for i := 0; i < 2000; i++ {
 		f := genFilter(r, 3)
 		data := []byte(genDocs[r.Intn(len(genDocs))])
@@ -889,10 +889,35 @@ Expected: PASS. 200,000 cases run in a few seconds.
 
 - [ ] **Step 4: Widen the corpus once, as a one-off confidence run**
 
-```bash
-go test ./... -run 'TestPrepare_EquivalentToFrozenMatchFilter' -count=10 -v
+The seed is fixed, so `-count=10` re-runs the **identical** corpus and explores
+nothing new. Make the corpus size and seed overridable so a widened run is real
+and reproducible, defaulting to the committed 200,000-case gate:
+
+```go
+// Corpus size and seed are overridable so a one-off widened exploration is
+// reproducible. The committed defaults ARE the standing gate; -count alone
+// widens nothing, because a fixed seed regenerates the same corpus.
+func equivCases() int  { return envInt("SPI_EQUIV_CASES", 200000) }
+func equivSeed() int64 { return int64(envInt("SPI_EQUIV_SEED", 0x30C0DE)) }
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 ```
-Expected: PASS (2,000,000 cases). Do not commit `-count=10` into CI — the committed default of 200,000 is the standing gate.
+
+Then run genuinely distinct corpora:
+
+```bash
+for s in 1 2 3 4 5; do
+  SPI_EQUIV_SEED=$s SPI_EQUIV_CASES=400000 go test . -run 'TestPrepare_EquivalentToFrozenMatchFilter' || break
+done
+```
+Expected: PASS, 2,000,000 distinct cases across five seeds. Do not commit a raised default.
 
 - [ ] **Step 5: Commit**
 
@@ -1796,8 +1821,14 @@ Expected: PASS.
 
 - [ ] **Step 4: One-off widened run, then commit**
 
+Use the same env-var override Task 2 introduced (`MATCH_EQUIV_CASES` /
+`MATCH_EQUIV_SEED`, defaults 200000 / 0x30C0DE), so the widened run explores
+genuinely distinct corpora rather than re-running one:
+
 ```bash
-go test ./internal/match/... -run 'TestPrepare_EquivalentToFrozenMatch' -count=10
+for s in 1 2 3 4 5; do
+  MATCH_EQUIV_SEED=$s MATCH_EQUIV_CASES=400000 go test ./internal/match/ -run 'TestPrepare_EquivalentToFrozenMatch' || break
+done
 go vet ./internal/match/...
 git add internal/match/prepared_equivalence_test.go
 git commit -m "test(search): merge gate — match.Prepare/Match must equal the frozen pre-split evaluator
@@ -3441,11 +3472,16 @@ Expected: no output. Hits containing `frozen` are the two equivalence references
 - [ ] **Step 5: Confirm both merge gates still pass at width**
 
 ```bash
-go test ./internal/match/ -run 'TestPrepare_EquivalentToFrozenMatch' -count=5
-(cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi/.worktrees/feat-30-prepared-filter && \
-  go test . -run 'TestPrepare_EquivalentToFrozenMatchFilter' -count=5)
+for s in 11 12 13 14 15; do
+  MATCH_EQUIV_SEED=$s MATCH_EQUIV_CASES=400000 go test ./internal/match/ -run 'TestPrepare_EquivalentToFrozenMatch' || break
+done
+cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi/.worktrees/feat-30-prepared-filter
+for s in 11 12 13 14 15; do
+  SPI_EQUIV_SEED=$s SPI_EQUIV_CASES=400000 go test . -run 'TestPrepare_EquivalentToFrozenMatchFilter' || break
+done
 ```
-Expected: PASS, 1,000,000 cases each.
+Expected: PASS, 2,000,000 DISTINCT cases each side — distinct seeds, not `-count`,
+which regenerates the same corpus.
 
 - [ ] **Step 6: Dispatch the fresh-context code review**
 
