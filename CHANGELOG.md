@@ -73,6 +73,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **The search-condition translator now lives in `cyoda-go-spi`.** `ConditionToFilter`
+  and the model-schema read core behind it move out of cyoda-go into the SPI, and
+  cyoda-go deletes its own copy rather than keeping one. The reason is a storage
+  backend that runs its own searches: it cannot reach the shared leaf-comparison
+  kernel without the translator, so it ends up shipping a second evaluator that
+  answers the same query differently. Two copies of this code already existed briefly
+  and drifted within days, which is why this lands as a move. No behaviour changes for
+  callers of the HTTP or gRPC API. Requires a coordinated release: the SPI tags first,
+  then cyoda-go's pins follow.
+
 - **A model's parsed schema is now cached alongside its descriptor.** Evaluating a
   workflow criterion against a data field re-read the stored schema and rebuilt the
   whole field map on every evaluation — per transition, and per step of a cascade.
