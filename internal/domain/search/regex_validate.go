@@ -22,11 +22,18 @@ import (
 // layer, makes every backend (memory/sqlite/postgres) reject identically
 // with 400 INVALID_CONDITION, before any store or plugin code runs.
 //
-// The compile call MUST mirror the kernel's own pattern derivation, so
-// validation accepts exactly the patterns evaluation can run (no accept/reject
-// skew). The kernel anchors the pattern and compiles it inside ExpandLeaf
-// (cyoda-go-spi eval_leaf.go); this validator must apply the same anchoring to
-// the same input.
+// This validator compiles the pattern bare (regexp.Compile(pattern)); the
+// kernel compiles it anchored — regexp.Compile(anchor(pattern)), i.e.
+// `\A(?:pattern)\z` — inside ExpandLeaf (cyoda-go-spi eval_leaf.go). The two
+// compile calls are NOT guaranteed to agree: the anchor wrapper's own
+// parentheses can rebalance a pattern whose parens are unmatched on their
+// own (e.g. ")|(" fails regexp.Compile bare but succeeds once wrapped), so a
+// narrow class of malformed patterns is rejected here even though the kernel
+// would compile — and evaluate — them. This is a known, deliberately
+// unresolved skew, not a bug this validator or ExpandLeaf should be changed
+// to close by mirroring the other's compile call: which side wins is
+// acceptance-policy work owned at the shared validation boundary, alongside
+// the temporal-comparison divergence and unvalidated LIKE semantics.
 func ValidateRegexPatterns(cond predicate.Condition) error {
 	return walkRegexPatterns(cond, 0)
 }
@@ -63,10 +70,12 @@ func walkRegexPatterns(cond predicate.Condition, depth int) error {
 	}
 }
 
-// compileRegexPattern mirrors the kernel's pattern derivation and compile
-// call: fmt.Sprintf("%v", value) then regexp.Compile. The returned error is
-// regexp.Compile's own (e.g. "error parsing regexp: ...") so callers can
-// format it into their own message without double-wrapping.
+// compileRegexPattern derives the pattern the same way the kernel does —
+// fmt.Sprintf("%v", value) — but compiles it bare, not anchored the way
+// ExpandLeaf does; see the accept/reject-skew note on ValidateRegexPatterns
+// above. The returned error is regexp.Compile's own (e.g. "error parsing
+// regexp: ...") so callers can format it into their own message without
+// double-wrapping.
 func compileRegexPattern(value any) error {
 	pattern := fmt.Sprintf("%v", value)
 	_, err := regexp.Compile(pattern)

@@ -15,10 +15,10 @@ var _ spi.Searcher = (*EntityStore)(nil)
 // the same result set that GetAll + spi.Prepare(filter).Match would for the
 // same transaction state, but filters/orders/bounds with the canonical SPI
 // helpers (spi.Prepare/PreparedFilter.Match, spi.LessByOrder,
-// spi.MergeBounded) so every backend agrees. Search is bounded-or-fail: opts.Limit > 0 caps the
-// matched set, and a matched set larger than the limit is
-// spi.ErrSearchResultLimitExceeded, never a truncated prefix. opts.Limit <= 0
-// is unbounded.
+// spi.MergeBounded) so every backend agrees. Search is bounded-or-fail:
+// opts.Limit > 0 caps the matched set, and a matched set larger than the
+// limit is spi.ErrSearchResultLimitExceeded, never a truncated prefix.
+// opts.Limit <= 0 is unbounded.
 //
 // Three branches:
 //   - non-tx: iterate the current committed model (or the PIT snapshot when

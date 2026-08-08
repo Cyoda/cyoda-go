@@ -14,13 +14,14 @@ import (
 //
 // SQL-pushdown soundness contract: the pushed SQL WHERE is a best-effort
 // NARROWING — the kernel (spi.Prepare/PreparedFilter.Match, re-run over the
-// candidates the SQL returns) is authoritative. The invariant is that the pushed SQL returns a
-// SUPERSET of the kernel's matches (it never misses one). A leaf is EXACT when
-// its SQL matches the kernel bit-for-bit (only IsNull/NotNull — see leafExact);
-// every other pushed leaf is at best a SOUND SUPERSET (SQLite storage-class /
-// text comparison can over-select relative to the precise bignum/temporal
-// kernel, so the kernel must re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path
-// (gated on postFilter == nil) is allowed ONLY when the whole plan is exact.
+// candidates the SQL returns) is authoritative. The invariant is that the
+// pushed SQL returns a SUPERSET of the kernel's matches (it never misses
+// one). A leaf is EXACT when its SQL matches the kernel bit-for-bit (only
+// IsNull/NotNull — see leafExact); every other pushed leaf is at best a
+// SOUND SUPERSET (SQLite storage-class / text comparison can over-select
+// relative to the precise bignum/temporal kernel, so the kernel must
+// re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter ==
+// nil) is allowed ONLY when the whole plan is exact.
 type sqlPlan struct {
 	where      string
 	args       []any

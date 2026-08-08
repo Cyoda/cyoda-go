@@ -17,13 +17,13 @@ import (
 // Mirrors plugins/sqlite/soundness_property_test.go's contract exactly: the
 // SQL WHERE fragment planQuery produces must return a SUPERSET of
 // spi.Prepare/PreparedFilter.Match's true matches (never under-select); the
-// postFilter kernel re-check then narrows that candidate set back down to the
-// exact result.
-// See that file's doc comment for the full rationale (superset assertion +
-// "backend result == memory backend result" equality proxy, and why temporal
-// PUSH-soundness coverage uses SourceMeta "creationDate" rather than a
-// SourceData path — a data temporal comparison is routed to the residual by
-// isLeafPushable, so it never exercises a pushed WHERE fragment).
+// postFilter kernel re-check then narrows that candidate set back down to
+// the exact result. See that file's doc comment for the full rationale
+// (superset assertion + "backend result == memory backend result" equality
+// proxy, and why temporal PUSH-soundness coverage uses SourceMeta
+// "creationDate" rather than a SourceData path — a data temporal comparison
+// is routed to the residual by isLeafPushable, so it never exercises a
+// pushed WHERE fragment).
 //
 // Determinism note: unlike sqlite (which has an injectable Clock —
 // sqlite.TestClock — for exact-instant control), postgres stamps

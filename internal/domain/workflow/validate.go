@@ -267,11 +267,19 @@ func walkCriterion(cond predicate.Condition, location string) error {
 
 // compileMatchesPattern compiles value as a regex the same way
 // internal/domain/search/regex_validate.go's compileRegexPattern does for ad
-// hoc search conditions: the compile call MUST mirror the kernel's own
-// pattern derivation, so validation accepts exactly the patterns evaluation
-// can run (no accept/reject skew). The kernel anchors the pattern and
-// compiles it inside ExpandLeaf (cyoda-go-spi eval_leaf.go); this validator
-// must apply the same anchoring to the same input.
+// hoc search conditions: it derives the pattern the same way the kernel does
+// — fmt.Sprintf("%v", value) — but compiles it bare (regexp.Compile(pattern)),
+// not anchored the way the kernel's ExpandLeaf does (cyoda-go-spi
+// eval_leaf.go: regexp.Compile(anchor(pattern)), i.e. `\A(?:pattern)\z`). The
+// two are NOT guaranteed to agree: the anchor wrapper's own parentheses can
+// rebalance a pattern whose parens are unmatched on their own (e.g. ")|("
+// fails bare but succeeds once wrapped), so a narrow class of malformed
+// patterns is rejected here even though the kernel would compile — and
+// evaluate — them. This is a known, deliberately unresolved skew; closing it
+// by making either side mirror the other's compile call is acceptance-policy
+// work owned at the shared validation boundary, alongside the
+// temporal-comparison divergence and unvalidated LIKE semantics — not
+// something to fix here.
 func compileMatchesPattern(operatorType string, value any, location string) error {
 	if operatorType != "MATCHES_PATTERN" {
 		return nil

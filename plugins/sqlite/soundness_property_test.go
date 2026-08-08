@@ -16,24 +16,24 @@ import (
 //
 // The contract under test (query_planner.go's doc comment on sqlPlan): the
 // SQL WHERE fragment planQuery produces is a best-effort NARROWING that must
-// return a SUPERSET of spi.Prepare/PreparedFilter.Match's true matches (never
-// under-select);
-// the kernel re-check (postFilter, applied inside Search/Iterate) then
-// narrows that candidate set back down to the exact result. This file proves
-// the invariant holds, isolated to the sqlite backend, over a fixed corpus
-// and a fixed (deterministic — no randomness) condition table covering
-// eq/ne/ordering/between/contains/like/isnull across numeric, string,
-// temporal, and polymorphic (multi-Declared-type) fields.
+// return a SUPERSET of spi.Prepare/PreparedFilter.Match's true matches
+// (never under-select); the kernel re-check (postFilter, applied inside
+// Search/Iterate) then narrows that candidate set back down to the exact
+// result. This file proves the invariant holds, isolated to the sqlite
+// backend, over a fixed corpus and a fixed (deterministic — no randomness)
+// condition table covering eq/ne/ordering/between/contains/like/isnull
+// across numeric, string, temporal, and polymorphic (multi-Declared-type)
+// fields.
 //
 // Two assertions per condition:
 //  1. candidateIDs (the raw SQL WHERE result, BEFORE any Go-side re-check,
 //     via sqlite.SearchCandidateIDsForTest) ⊇ oracleIDs (the kernel's true
 //     matches, computed directly via spi.Prepare/PreparedFilter.Match over
 //     the corpus — this is exactly what the memory backend's Iterate/Search
-//     does, since memory has no SQL layer at all: plugins/memory/grouped_stats.go
-//     and searcher.go both call spi.Prepare(filter).Match per entity,
-//     uncached, unnarrowed). No false negatives survive to the re-check
-//     stage.
+//     does, since memory has no SQL layer at all:
+//     plugins/memory/grouped_stats.go and searcher.go both call
+//     spi.Prepare(filter).Match per entity, uncached, unnarrowed). No false
+//     negatives survive to the re-check stage.
 //  2. store.Search(...) (the FULL pipeline: WHERE narrowing + postFilter
 //     kernel re-check) == oracleIDs exactly. This is the "backend result ==
 //     memory backend result" equality proxy the task calls out as the

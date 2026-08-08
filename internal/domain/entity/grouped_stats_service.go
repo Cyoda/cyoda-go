@@ -412,10 +412,13 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 }
 
 // stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
-// preserves for the wire-shape group-key. Plugins (memory's match.Prepare,
-// sqlite/postgres's validateJSONPath) all expect bare dotted-identifier
-// paths. A path without the prefix is returned unchanged so the helper
-// is idempotent — re-applying it is safe.
+// preserves for the wire-shape group-key. Plugins (memory's own gjsonPath
+// helper in plugins/memory/grouped_stats.go, sqlite/postgres's
+// validateJSONPath) all expect bare dotted-identifier paths — plugins/memory
+// is a separate Go module with no dependency on the root module, so it
+// cannot import internal/match at all; its group-by path handling is
+// entirely local. A path without the prefix is returned unchanged so the
+// helper is idempotent — re-applying it is safe.
 func stripJSONPathPrefix(p string) string {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
 		return p[2:]
