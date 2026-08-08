@@ -15,7 +15,7 @@ import (
 // fails to compile.
 //
 // This closes a fail-open regression: the plugin residual filter evaluators
-// delegate to the error-free spi.MatchFilter contract, so a malformed
+// delegate to the error-free spi.PreparedFilter.Match kernel, so a malformed
 // pattern that reaches the matcher no longer surfaces an error — it
 // silently returns under-inclusive (or, for sqlite/postgres, previously an
 // opaque 500) results. Rejecting here, in the backend-independent domain

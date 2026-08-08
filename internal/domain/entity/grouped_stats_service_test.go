@@ -505,8 +505,8 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 // TestQueryGroupedStats_MalformedRegexRejected is a regression test for a
 // fail-open bug: the plugin residual filter evaluators
 // (plugins/sqlite/post_filter.go evaluateFilter, plugins/postgres/grouped_stats.go
-// evalPostFilter) delegate to the error-free spi.MatchFilter, which returns
-// false (non-match) rather than erroring on a malformed MATCHES_PATTERN
+// evalPostFilter) delegate to the error-free spi.PreparedFilter.Match kernel,
+// which returns false (non-match) rather than erroring on a malformed MATCHES_PATTERN
 // regex. Without upstream validation this silently under-includes buckets
 // instead of rejecting the request. QueryGroupedStats must reject a
 // malformed regex before dispatching to any backend, the same way the

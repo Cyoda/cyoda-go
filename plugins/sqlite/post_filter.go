@@ -5,7 +5,7 @@ import (
 )
 
 // EvaluateFilter is a public wrapper around evaluateFilter exposed so that
-// cross-module parity tests (against internal/match.MatchFilter) can pin the
+// cross-module parity tests (against spi.PreparedFilter.Match) can pin the
 // contract that grouped-stats / streaming-tally must produce the same boolean
 // as the sqlite post-filter step for any (filter, entity) tuple. NOT intended
 // for hot-path use by other code — call sites within this plugin should keep

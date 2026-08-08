@@ -1,7 +1,7 @@
 package match_test
 
 // Cross-module parity smoke test: pins the contract that
-// internal/match.MatchFilter and plugins/sqlite.EvaluateFilter agree on
+// plugins/sqlite.EvaluateFilter and spi.PreparedFilter.Match agree on
 // the same (filter, data, meta) tuple. Drift between the two means
 // grouped-stats / streaming-tally / Iterate results would silently
 // disagree across backends.
@@ -17,7 +17,7 @@ package match_test
 //     nested, SourceState, SourceMeta) so a future refactor in either
 //     evaluator can't silently break the simple cases either.
 //
-// The test file lives in the root module (next to MatchFilter) and
+// The test file lives in the root module (next to internal/match) and
 // imports plugins/sqlite via its public EvaluateFilter wrapper. The
 // sqlite plugin is a separate Go module — internal/match cannot import
 // it directly, but a _test.go file may, because root module tests can
@@ -29,7 +29,6 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -42,7 +41,7 @@ func mustParityJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestMatchFilter_SqliteParity_Smoke(t *testing.T) {
+func TestPrepared_SqliteParity_Smoke(t *testing.T) {
 	// A shared meta used across SourceMeta cases.
 	meta := spi.EntityMeta{
 		ID:               "ent-1",
@@ -318,11 +317,14 @@ func TestMatchFilter_SqliteParity_Smoke(t *testing.T) {
 			}
 			ent := &spi.Entity{Meta: tc.meta, Data: data}
 
-			sqliteRes := sqlite.EvaluateFilter(spi.Prepare(tc.f), ent)
-			matchRes := match.MatchFilter(tc.f, data, tc.meta)
+			// Both sides prepared, mirroring production: the plugin prepares
+			// at its plan site, the domain evaluator at its query site.
+			prepared := spi.Prepare(tc.f)
+			sqliteRes := sqlite.EvaluateFilter(prepared, ent)
+			kernelRes := prepared.Match(data, tc.meta)
 
-			if sqliteRes != matchRes {
-				t.Fatalf("PARITY DRIFT: sqlite=%v match=%v\n  filter=%+v", sqliteRes, matchRes, tc.f)
+			if sqliteRes != kernelRes {
+				t.Fatalf("PARITY DRIFT: sqlite=%v kernel=%v\n  filter=%+v", sqliteRes, kernelRes, tc.f)
 			}
 		})
 	}

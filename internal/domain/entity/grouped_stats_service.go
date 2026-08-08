@@ -131,8 +131,9 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 
 	// Reject a malformed MATCHES_PATTERN regex before any backend runs.
 	// Every plugin's residual filter evaluator (sqlite's evaluateFilter,
-	// postgres's evalPostFilter) delegates to the error-free spi.MatchFilter,
-	// which returns false (non-match) rather than erroring on a bad pattern
+	// postgres's evalPostFilter) delegates to the error-free
+	// spi.PreparedFilter.Match kernel, which returns false (non-match)
+	// rather than erroring on a bad pattern
 	// — so an unvalidated malformed regex would silently under-include
 	// buckets instead of failing the request. Validating here, in the
 	// backend-independent domain layer, makes every backend reject
