@@ -286,7 +286,30 @@ var genEqDocs = []string{
 	`{"laureates":[{"motivation":"for war"},{"motivation":"for peace"}]}`,
 }
 
-func genCondition(r *rand.Rand, depth int) predicate.Condition {
+// genMode selects which corpus genCondition builds. The two are generated,
+// asserted and env-tunable completely separately — no probabilistic mixing —
+// because they need different assertions: a genValid tree is never allowed to
+// error on EITHER evaluator, while a genInvalid tree always carries exactly
+// one structural fault that Prepare must report.
+type genMode int
+
+const (
+	// genValid conditions are the only shapes either evaluator can answer
+	// without erroring. This is the pre-split corpus's generation logic,
+	// unchanged: for genValid the RNG draw sequence is identical to before
+	// this mode parameter was introduced.
+	genValid genMode = iota
+	// genInvalid conditions are a single bare fault leaf (see genFaultLeaf).
+	// Wrapping the fault at a varied position is a separate step performed
+	// by genFaultCase, not by genCondition itself.
+	genInvalid
+)
+
+func genCondition(r *rand.Rand, depth int, mode genMode) predicate.Condition {
+	if mode == genInvalid {
+		return genFaultLeaf(r)
+	}
+
 	if depth <= 0 || r.Intn(3) == 0 {
 		switch r.Intn(3) {
 		case 0:
@@ -314,7 +337,7 @@ func genCondition(r *rand.Rand, depth int) predicate.Condition {
 	}
 	g := &predicate.GroupCondition{Operator: op}
 	for i := 0; i < r.Intn(4); i++ {
-		g.Conditions = append(g.Conditions, genCondition(r, depth-1))
+		g.Conditions = append(g.Conditions, genCondition(r, depth-1, mode))
 	}
 	return g
 }
@@ -334,58 +357,44 @@ func envInt(key string, def int) int {
 	return def
 }
 
+// equivMetas is the fixed set of entity metas both equivalence tests draw
+// from.
+var equivMetas = []spi.EntityMeta{
+	{ID: "ent-1", State: "active", TransactionID: "tx-1", TransitionForLatestSave: "approve",
+		CreationDate:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastModifiedDate: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)},
+	{ID: "ent-2", State: ""},
+	{},
+}
+
 // TestPrepare_EquivalentToFrozenMatch is the merge gate for the predicate
-// evaluator. Exact agreement on every well-formed condition.
+// evaluator: exact answer agreement on every well-formed condition.
 //
-// Where the frozen reference ERRORS, Prepare must error too — that is the
-// declared change made testable: the error moves from evaluation time to
-// preparation time, but a condition that could error on SOME row must not
-// become silently clean, and one that never errored must not start.
+// The generator emits only conditions neither evaluator can error on —
+// structural faults are a deterministic corpus of their own, covered by
+// TestPrepare_ReportsExactlyTheFrozenFault — so an error from EITHER side
+// here is a generator bug or a real defect, never a case to skip.
 func TestPrepare_EquivalentToFrozenMatch(t *testing.T) {
 	cases := equivCases()
 	r := rand.New(rand.NewSource(equivSeed()))
 
-	metas := []spi.EntityMeta{
-		{ID: "ent-1", State: "active", TransactionID: "tx-1", TransitionForLatestSave: "approve",
-			CreationDate:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-			LastModifiedDate: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)},
-		{ID: "ent-2", State: ""},
-		{},
-	}
-
 	for i := 0; i < cases; i++ {
-		cond := genCondition(r, 3)
+		cond := genCondition(r, 3, genValid)
 		data := []byte(genEqDocs[r.Intn(len(genEqDocs))])
-		meta := metas[r.Intn(len(metas))]
+		meta := equivMetas[r.Intn(len(equivMetas))]
 		types := genFieldTypeSets[r.Intn(len(genFieldTypeSets))]
 		fieldTypes := func(string) []spi.DataType { return types }
 
 		wantMatch, wantErr := frozenMatch(cond, data, meta, fieldTypes)
-		prepared, prepErr := Prepare(cond, fieldTypes)
-
 		if wantErr != nil {
-			// The frozen evaluator reached the fault on THIS row. Prepare must
-			// have reported it from the condition's shape.
-			if prepErr == nil {
-				t.Fatalf("case %d: frozen errored %q but Prepare succeeded\n  cond=%#v\n  data=%s",
-					i, wantErr, cond, data)
-			}
-			if prepErr.Error() != wantErr.Error() {
-				t.Fatalf("case %d: error text moved: frozen=%q prepared=%q", i, wantErr, prepErr)
-			}
-			continue
+			t.Fatalf("case %d: frozen evaluator errored on a well-formed condition: %v\n  cond=%#v\n  data=%s",
+				i, wantErr, cond, data)
 		}
 
+		prepared, prepErr := Prepare(cond, fieldTypes)
 		if prepErr != nil {
-			// Prepare found a fault the frozen walk did not REACH on this row.
-			// That is the declared change — but only for a condition that
-			// genuinely carries the fault, so re-run the frozen walk over every
-			// document and require at least one to surface the same error.
-			if !frozenErrorsOnSomeDoc(cond, meta, fieldTypes, prepErr) {
-				t.Fatalf("case %d: Prepare errored %q but no document makes the frozen evaluator raise it\n  cond=%#v",
-					i, prepErr, cond)
-			}
-			continue
+			t.Fatalf("case %d: Prepare errored on a well-formed condition: %v\n  cond=%#v",
+				i, prepErr, cond)
 		}
 
 		if got := prepared.Match(data, meta); got != wantMatch {
@@ -395,15 +404,164 @@ func TestPrepare_EquivalentToFrozenMatch(t *testing.T) {
 	}
 }
 
-// frozenErrorsOnSomeDoc reports whether the frozen evaluator raises want for
-// at least one document in the corpus — i.e. whether the fault Prepare
-// reported is genuinely carried by the condition rather than invented.
-func frozenErrorsOnSomeDoc(cond predicate.Condition, meta spi.EntityMeta, fieldTypes FieldTypes, want error) bool {
-	for _, d := range genEqDocs {
-		if _, err := frozenMatch(cond, []byte(d), meta, fieldTypes); err != nil &&
-			err.Error() == want.Error() {
-			return true
+// --- invalid corpus: one structural fault per case ------------------------
+//
+// genValid never produces a condition either evaluator can error on, so the
+// "Prepare reports a genuine fault, not an invented one" property needs its
+// own deterministic corpus: every case here carries EXACTLY one of the five
+// structural faults, at a position varied across four wrapper shapes.
+
+// genFaultKind enumerates the five structural faults a condition tree can
+// carry — one per error-returning default/error branch shared by frozenMatch
+// and Prepare.
+type genFaultKind int
+
+const (
+	faultFunction genFaultKind = iota
+	faultUnknownType
+	faultUnknownLifecycleField
+	faultBadGroupOperator
+	faultUnsupportedOperator
+	numFaultKinds
+)
+
+// genUnknownCondition implements predicate.Condition without being one of the
+// four kinds Match/Prepare's type switches recognise — the "unknown condition
+// type" fault.
+type genUnknownCondition struct{}
+
+func (genUnknownCondition) Type() string { return "unknown" }
+
+// genFaultLeaf returns a single bare condition carrying exactly one
+// structural fault. The path/field/operator names are chosen so the fault
+// fires independently of which document or meta the case is later paired
+// with — every fault is a property of the condition's own shape, never of a
+// row.
+func genFaultLeaf(r *rand.Rand) predicate.Condition {
+	switch genFaultKind(r.Intn(int(numFaultKinds))) {
+	case faultFunction:
+		return &predicate.FunctionCondition{}
+	case faultUnknownType:
+		return genUnknownCondition{}
+	case faultUnknownLifecycleField:
+		return &predicate.LifecycleCondition{
+			Field:        "not-a-real-lifecycle-field",
+			OperatorType: genOperators[r.Intn(len(genOperators))],
+			Value:        genValues[r.Intn(len(genValues))],
+		}
+	case faultBadGroupOperator:
+		return &predicate.GroupCondition{Operator: "XOR"}
+	default: // faultUnsupportedOperator
+		return &predicate.SimpleCondition{
+			JsonPath:     "$.not_a_real_field_marker",
+			OperatorType: "NOT_A_REAL_OPERATOR",
+			Value:        genValues[r.Intn(len(genValues))],
 		}
 	}
-	return false
+}
+
+// genAlwaysFalseCondition is a well-formed leaf guaranteed false for every
+// meta in equivMetas, independent of document data. It is the AND-first-child
+// used to build the position that hides a fault from a short-circuiting
+// row-walk.
+func genAlwaysFalseCondition() predicate.Condition {
+	return &predicate.LifecycleCondition{
+		Field: "state", OperatorType: "EQUALS", Value: "\x00never-a-real-state\x00",
+	}
+}
+
+// genFaultPosition enumerates the wrapper shapes a fault leaf is placed at.
+// Position must not change the outcome — Prepare must report the fault
+// wherever it sits — and that is exactly what varying it proves.
+type genFaultPosition int
+
+const (
+	posStandalone genFaultPosition = iota
+	posFirstOfAnd
+	posSecondOfAndFirstFalse
+	posNestedTwoDeep
+	numFaultPositions
+)
+
+// faultCase pairs a condition tree carrying exactly one structural fault with
+// the bare fault leaf itself. The test asserts Prepare's error text against
+// the bare leaf, not against whatever a lazy row-walk happens to reach in the
+// wrapped form — see posSecondOfAndFirstFalse for why that distinction
+// matters.
+type faultCase struct {
+	wrapped predicate.Condition
+	fault   predicate.Condition
+}
+
+func genFaultCase(r *rand.Rand) faultCase {
+	fault := genFaultLeaf(r)
+	switch genFaultPosition(r.Intn(int(numFaultPositions))) {
+	case posStandalone:
+		return faultCase{wrapped: fault, fault: fault}
+
+	case posFirstOfAnd:
+		return faultCase{
+			wrapped: &predicate.GroupCondition{Operator: "AND",
+				Conditions: []predicate.Condition{fault, genAlwaysFalseCondition()}},
+			fault: fault,
+		}
+
+	case posSecondOfAndFirstFalse:
+		// The first child is false for every meta this test uses, so a
+		// short-circuiting row-walk (the frozen evaluator) NEVER reaches
+		// fault, for any document. Prepare's eager, non-short-circuiting walk
+		// must still report it — this is the case that makes "some document
+		// reaches it" the wrong property to assert.
+		return faultCase{
+			wrapped: &predicate.GroupCondition{Operator: "AND",
+				Conditions: []predicate.Condition{genAlwaysFalseCondition(), fault}},
+			fault: fault,
+		}
+
+	default: // posNestedTwoDeep
+		return faultCase{
+			wrapped: &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{
+				&predicate.GroupCondition{Operator: "OR", Conditions: []predicate.Condition{fault}},
+			}},
+			fault: fault,
+		}
+	}
+}
+
+// The invalid corpus has only 5 fault kinds x 4 positions to explore, so a
+// few thousand cases is ample — it does not need the 200k-case budget the
+// valid corpus does. Overridable for the same reason as MATCH_EQUIV_CASES.
+func invalidEquivCases() int  { return envInt("MATCH_EQUIV_INVALID_CASES", 5000) }
+func invalidEquivSeed() int64 { return int64(envInt("MATCH_EQUIV_INVALID_SEED", 0xFA07)) }
+
+// TestPrepare_ReportsExactlyTheFrozenFault is the merge gate's other half: on
+// a condition that carries a genuine structural fault, Prepare's eager,
+// non-short-circuiting walk must report exactly the fault the frozen
+// evaluator raises for the BARE fault leaf — regardless of where in the tree
+// the fault sits, and regardless of whether a lazy row-walk would ever reach
+// it for any document.
+func TestPrepare_ReportsExactlyTheFrozenFault(t *testing.T) {
+	cases := invalidEquivCases()
+	r := rand.New(rand.NewSource(invalidEquivSeed()))
+
+	for i := 0; i < cases; i++ {
+		fc := genFaultCase(r)
+		doc := []byte(genEqDocs[r.Intn(len(genEqDocs))])
+		meta := equivMetas[r.Intn(len(equivMetas))]
+		fieldTypes := func(string) []spi.DataType { return nil }
+
+		_, wantErr := frozenMatch(fc.fault, doc, meta, fieldTypes)
+		if wantErr == nil {
+			t.Fatalf("case %d: bare fault leaf did not error on the frozen evaluator\n  fault=%#v", i, fc.fault)
+		}
+
+		_, prepErr := Prepare(fc.wrapped, fieldTypes)
+		if prepErr == nil {
+			t.Fatalf("case %d: Prepare accepted a condition carrying a structural fault\n  wrapped=%#v", i, fc.wrapped)
+		}
+		if prepErr.Error() != wantErr.Error() {
+			t.Fatalf("case %d: fault text moved: frozen(bare fault)=%q prepared(wrapped)=%q\n  wrapped=%#v",
+				i, wantErr, prepErr, fc.wrapped)
+		}
+	}
 }
