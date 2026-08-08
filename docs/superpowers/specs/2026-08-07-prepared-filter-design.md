@@ -3,18 +3,6 @@
 Design spec for cyoda-go-spi#30. Spans `cyoda-go-spi` and `cyoda-go`; the
 commercial Cassandra backend follows as a third step.
 
-> **Stale citations, deliberately not rewritten.** After this was written, the
-> condition translator moved out of `internal/domain/search/filter_translate.go`
-> into the SPI as `spi.ConditionToFilter` (cyoda-go#492 / cyoda-go-spi#28), taking
-> the meta vocabulary, type classification and path normalisation with it. Every
-> reference below to `filter_translate.go`, `orderclass.go`'s classification
-> helpers or `path_validate.go`'s `normalisePath` now resolves in
-> `cyoda-go-spi/condition_filter.go` and `order_class.go` instead. The *behaviour*
-> described is unchanged — the move reconciled the two copies rather than altering
-> either — but the file:line anchors are dead. Re-anchor them when this document is
-> next worked on rather than trusting them.
-
-
 ## 1. Problem
 
 Query-invariant work runs once per candidate entity instead of once per query.
@@ -36,7 +24,7 @@ defect.
 
 The worst-affected path is not the pushdown one. A condition on an
 array-wildcard path (`$.laureates[*].motivation`) has no `Filter` representation —
-`stripDollarDot` (`internal/domain/search/filter_translate.go:220-239`) rejects any
+`stripDollarDot` (cyoda-go-spi `condition_filter.go:340-359`) rejects any
 character outside `[A-Za-z0-9_.-]` — so `ConditionToFilter` fails and `search/service.go` falls back
 to `GetAll` + `match.Match` per row: a full model scan with a compile on every
 entity.
@@ -225,7 +213,8 @@ than the error list suggests:
 | unknown group operator (`match.go:251`) | **reachable, fallback path only** | **reachable** — nothing inspects `GroupCondition.Operator` |
 | unsupported operator name (`operators.go:33`) | rejected 400 at boundary (`validateConditionAtDepth`) | **reachable** — import checks patterns only (`validate.go:248-249`) |
 
-`isKnownMetaFilterField` (`orderclass.go:143-152`) is the closed meta vocabulary
+`isKnownMetaFilterField` (`internal/domain/search/orderclass.go:93-99`, over the SPI's
+vocabulary via `spi.ResolveMetaField`) is the closed meta vocabulary
 and is exactly the set `match.matchLifecycle` handles, so the third row cannot
 drift.
 
@@ -233,7 +222,7 @@ drift.
 lifecycle field and unknown group operator on the fallback paths. The first is
 already a 400 and never reaches the evaluator. The second is genuinely a 500
 today (`search/service.go:386`; `grouped_stats_service.go:275`) — but it is also a
-**200** on the pushdown path, because `groupToFilter` (`internal/domain/search/filter_translate.go:141-145`) maps any
+**200** on the pushdown path, because `groupToFilter` (cyoda-go-spi `condition_filter.go:241-245`) maps any
 non-`OR` operator to `FilterAnd` without error. Moving one arm of a two-way divergence from 500 to 400 leaves it just as
 divergent and pre-empts cyoda-go#487, which owns the case and fixes it at the
 boundary where both paths meet. **The error mapping is therefore left exactly as

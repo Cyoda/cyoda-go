@@ -14,17 +14,13 @@ reading the cited line. Where two investigations disagreed, the disagreement was
 resolved by reading the code directly — noted inline. Claims marked
 **[unverified]** could not be settled by reading and need a probe test.
 
-> **Stale citations, deliberately not rewritten.** After this was written, the
-> condition translator moved out of `internal/domain/search/filter_translate.go`
-> into the SPI as `spi.ConditionToFilter` (cyoda-go#492 / cyoda-go-spi#28), taking
-> the meta vocabulary, type classification and path normalisation with it. Every
-> reference below to `filter_translate.go`, `orderclass.go`'s classification
-> helpers or `path_validate.go`'s `normalisePath` now resolves in
-> `cyoda-go-spi/condition_filter.go` and `order_class.go` instead. The *behaviour*
-> described is unchanged — the move reconciled the two copies rather than altering
-> either — but the file:line anchors are dead. Re-anchor them when this document is
-> next worked on rather than trusting them.
-
+**Anchors re-pointed 2026-08-08.** The condition translator moved from
+`internal/domain/search/filter_translate.go` into the SPI as `spi.ConditionToFilter`
+(#492 / cyoda-go-spi#28) after this was written, taking the meta vocabulary, type
+classification and path normalisation with it. Every citation below now points at its
+current home. Two findings — T3 and T4 — were **fixed** by that work and by #490; both
+are marked resolved in place rather than deleted, because the reasoning still explains
+why the failure mode existed.
 
 ---
 
@@ -112,12 +108,12 @@ search and `INVALID_CONDITION` on grouped stats.
 
 ## 3. Translation: where meaning changes silently
 
-`ConditionToFilter` (`filter_translate.go:21`) errors only on a nil condition, a
+`ConditionToFilter` (cyoda-go-spi `condition_filter.go:103`) errors only on a nil condition, a
 function condition, or a `jsonPath` that fails `stripDollarDot`. Everything else
 succeeds — including several cases where the resulting `Filter` does not mean what
 the `Condition` said.
 
-**T1 — any non-`OR` group operator becomes `AND`.** `filter_translate.go:134-137`,
+**T1 — any non-`OR` group operator becomes `AND`.** cyoda-go-spi `condition_filter.go:241-245`,
 no error. `spi.FilterOp` has no `NOT`, so `NOT` is not merely unvalidated, it is
 **unrepresentable**. `NOT` is nevertheless a shipped enum value
 (`api/generated.go:523`, `GroupConditionDtoOperatorNOT`). No walker inspects
@@ -131,27 +127,43 @@ on `"AND"`/`"OR"` and errors otherwise (`match.go:228-252`). So `"or"` gives
 `FilterOr` on the pushdown path and a hard error on the fallback path.
 
 **T3 — `Declared` and `Coercion` are looked up with the RAW `jsonPath`.**
-`simpleToFilter` uses `fields[c.JsonPath]` (`filter_translate.go:57`) and
+`simpleToFilter` used `fields[c.JsonPath]` (raw) and
 `dataCoercion(c.JsonPath, fields)` (`:56`), but `FieldsMap` keys are `$.`-prefixed
 (`normalisePath`, `path_validate.go:72-85`). A prefix-less path such as `"city"` —
 which is accepted, and pinned as accepted by
-`filter_translate_test.go:36-49` — therefore misses the map, yielding
+`TestConditionToFilter_SimpleNoPrefix` (now cyoda-go-spi `condition_filter_test.go`) —
+therefore missed the map, yielding
 `Declared = nil`. An empty declared set makes `expandCompare` return "operand parses
 into no declared type" (SPI `eval_leaf.go:173-207`), which `evalLeafFilter` converts
 to a non-match. **Net effect: `{"jsonPath":"city","operatorType":"EQUALS","value":"Berlin"}`
 returns 200 with zero rows on a model where `$.city` exists and matches.** It clears
 every gate on the way, because `validateConditionPaths` normalises and therefore
-finds the path known. `arrayToFilter` does **not** have this bug — it normalises via
-`arrayElementPath` (`:166`, `:198-204`). The two arms of the same file disagree.
+finds the path known. `arrayToFilter` did **not** have this bug — it normalises via
+`arrayElementPath`. The two arms of the same file disagreed.
 
-**T4 — unknown operator name becomes `FilterMatchesRegex`.**
-`mapOperator`'s default (`filter_translate.go:289-291`). Unreachable from E1–E6
-because `ValidateCondition` gates it, but it collides "unknown" with a real operator
-value, so any future drift between `canonicalOperators` and `mapOperator` becomes
-silent rather than loud.
+> **Resolved.** Fixed in cyoda-go#490 and carried into the SPI when the translator
+> moved (#492): `simpleToFilter` now resolves the key with `NormalisePath`
+> (cyoda-go-spi `condition_filter.go:143`, consumed at `:150-151`). Pinned by
+> `TestConditionToFilter_FieldsLookupNormalisesPath` there, and by the
+> `SearchPrefixlessPathResolvesDeclaredType` parity scenario end to end. The
+> description above is kept because it explains *why* an empty declared set
+> annihilates a leaf, which is still true and still load-bearing.
+
+**T4 — unknown operator name became `FilterMatchesRegex`.** `mapOperator`'s default
+arm silently reinterpreted an unrecognised operator as an anchored regex. Unreachable
+from E1–E6 because `ValidateCondition` gates it, but it collided "unknown" with a real
+operator value, so drift between the operator vocabulary and the mapping would have
+been silent rather than loud.
+
+> **Resolved by the move (#492).** The SPI errors instead: `simpleToFilter` and
+> `lifecycleToFilter` call `LookupOperator` (cyoda-go-spi `condition_filter.go:131`,
+> `:225`) and return `ErrUnknownOperator` on a miss, and `MapOperator` (`:476`)
+> returns the zero `FilterOp` — which `ExpandLeaf` rejects — rather than a valid
+> operator. An unrecognised name can no longer become an evaluable predicate.
 
 **T5 — unknown meta field translates to a valid leaf.** `lifecycleToFilter` cannot
-fail (`:109-130`); anything not temporal gets `Declared = [String]`. The SPI's
+fail on the field name (cyoda-go-spi `condition_filter.go:214-238`); anything not
+temporal gets `Declared = [String]`. The SPI's
 `extractFilterMetaValue` (`filter_match.go:180-215`) accepts a **wider** vocabulary
 than `sortableMetaFields` — `entity_id`, `version`, `created_at`, `updated_at`,
 `model_name`, `model_version`, `change_type`, `transaction_id`. `match.matchLifecycle`
@@ -181,12 +193,12 @@ Two production call sites attempt translation: `service.go:300` (search) and
 `grouped_stats_service.go:193` (grouped stats). All three in-tree stores implement
 `spi.Searcher`, so **the only route to the in-memory fallback is a translation
 failure** — in practice a `jsonPath` outside `stripDollarDot`'s allowlist
-`[A-Za-z0-9_.-]` (`filter_translate.go:220-229`), which rejects `[`, `]`, `*`, and
+`[A-Za-z0-9_.-]` (cyoda-go-spi `condition_filter.go:340-359`), which rejects `[`, `]`, `*`, and
 all non-ASCII letters.
 
 Array-wildcard paths (`$.items[*].name`) therefore force a full `GetAll` scan —
-confirmed by `filter_translate_test.go:341-359` and
-`service_test.go:977-1044`, both executed and passing.
+confirmed by `TestConditionToFilter_WildcardPath_ReturnsError` (now cyoda-go-spi
+`condition_filter_test.go`) and `service_test.go:977-1044`, both executed and passing.
 
 On SQL backends the pushdown answer is, in every non-exact case, **also**
 `spi.MatchFilter`: `planQuery` installs the full original filter as `postFilter`
