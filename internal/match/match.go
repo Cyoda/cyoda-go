@@ -304,7 +304,7 @@ func matchArray(c *predicate.ArrayCondition, data []byte, fieldTypes FieldTypes)
 // between the in-process evaluator (memory Iterate, residual post-filter,
 // streaming tally) and the sqlite backend's post-filter — see
 // e2e/parity/MatchFilterSqliteEvaluateFilterParity (the smoke test that pins
-// this contract) and TestMatchFilter_SqliteParity_Smoke.
+// this contract) and TestSqliteEvaluateFilter_DelegatesToKernel.
 
 // MatchFilter evaluates an spi.Filter against an entity. Filter is the
 // pushdown-friendly subset of predicate.Condition used by GroupedAggregator,

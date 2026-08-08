@@ -1,21 +1,30 @@
 package match_test
 
-// Cross-module parity smoke test: pins the contract that
-// plugins/sqlite.EvaluateFilter and spi.PreparedFilter.Match agree on
-// the same (filter, data, meta) tuple. Drift between the two means
-// grouped-stats / streaming-tally / Iterate results would silently
-// disagree across backends.
+// Dormant drift guard, not a live parity check.
 //
-// This is NOT an exhaustive parity matrix — that lives in the
-// grouped-stats E2E parity suite. This smoke test focuses on cases
-// where drift is plausible:
-//   - numeric ordering on stringly-typed numeric data (string→float
-//     coercion divergence)
-//   - LIKE patterns crossing multibyte characters (rune vs byte
-//     semantics divergence)
-//   - the standard structural cases (Eq, IsNull, NotNull, AND, OR,
-//     nested, SourceState, SourceMeta) so a future refactor in either
-//     evaluator can't silently break the simple cases either.
+// plugins/sqlite.EvaluateFilter (post_filter.go) is today a one-line
+// delegate: `return p.Match(entity.Data, entity.Meta)`. It has no evaluation
+// logic of its own left to disagree with spi.PreparedFilter.Match — they are
+// the identical method call on the identical receiver with the identical
+// arguments. So every assertion below is currently near-tautological: it
+// WILL pass, for every case, regardless of what the case actually exercises.
+//
+// That is not what this file is for today. It exists to catch the day this
+// stops being true: sqlite growing evaluation logic of its own again, or its
+// EvaluateFilter/evaluateFilter entry point being rewired to transform its
+// arguments (e.g. dropping meta, or passing the raw JSONB document instead of
+// entity.Data). On that day this test starts failing immediately and loudly,
+// and the 32-case table below — numeric ordering on stringly-typed data,
+// LIKE across multibyte boundaries, null semantics, AND/OR groups, meta
+// fields, case-insensitive ops, empty-group identities — is what gives that
+// failure teeth instead of a single trivial case.
+//
+// Where the LIVE coverage lives:
+//   - plugins/sqlite/soundness_property_test.go guards SQL-pushdown-vs-kernel
+//     agreement — the actual place sqlite's evaluation behavior is checked
+//     against the kernel today.
+//   - the SPI's own filter_match_test.go / prepared filter tests guard the
+//     kernel's (spi.MatchFilter / spi.Prepare+Match) own correctness.
 //
 // The test file lives in the root module (next to internal/match) and
 // imports plugins/sqlite via its public EvaluateFilter wrapper. The
@@ -41,7 +50,7 @@ func mustParityJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestPrepared_SqliteParity_Smoke(t *testing.T) {
+func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 	// A shared meta used across SourceMeta cases.
 	meta := spi.EntityMeta{
 		ID:               "ent-1",
