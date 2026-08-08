@@ -286,30 +286,11 @@ var genEqDocs = []string{
 	`{"laureates":[{"motivation":"for war"},{"motivation":"for peace"}]}`,
 }
 
-// genMode selects which corpus genCondition builds. The two are generated,
-// asserted and env-tunable completely separately — no probabilistic mixing —
-// because they need different assertions: a genValid tree is never allowed to
-// error on EITHER evaluator, while a genInvalid tree always carries exactly
-// one structural fault that Prepare must report.
-type genMode int
-
-const (
-	// genValid conditions are the only shapes either evaluator can answer
-	// without erroring. This is the pre-split corpus's generation logic,
-	// unchanged: for genValid the RNG draw sequence is identical to before
-	// this mode parameter was introduced.
-	genValid genMode = iota
-	// genInvalid conditions are a single bare fault leaf (see genFaultLeaf).
-	// Wrapping the fault at a varied position is a separate step performed
-	// by genFaultCase, not by genCondition itself.
-	genInvalid
-)
-
-func genCondition(r *rand.Rand, depth int, mode genMode) predicate.Condition {
-	if mode == genInvalid {
-		return genFaultLeaf(r)
-	}
-
+// genValidCondition builds a condition tree neither evaluator can error on —
+// the only shapes it emits are well-formed by construction (known operator
+// names, known meta fields, AND/OR groups). Structural faults are a wholly
+// separate, deterministic generator: genFaultCase.
+func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 	if depth <= 0 || r.Intn(3) == 0 {
 		switch r.Intn(3) {
 		case 0:
@@ -337,7 +318,7 @@ func genCondition(r *rand.Rand, depth int, mode genMode) predicate.Condition {
 	}
 	g := &predicate.GroupCondition{Operator: op}
 	for i := 0; i < r.Intn(4); i++ {
-		g.Conditions = append(g.Conditions, genCondition(r, depth-1, mode))
+		g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
 	}
 	return g
 }
@@ -379,7 +360,7 @@ func TestPrepare_EquivalentToFrozenMatch(t *testing.T) {
 	r := rand.New(rand.NewSource(equivSeed()))
 
 	for i := 0; i < cases; i++ {
-		cond := genCondition(r, 3, genValid)
+		cond := genValidCondition(r, 3)
 		data := []byte(genEqDocs[r.Intn(len(genEqDocs))])
 		meta := equivMetas[r.Intn(len(equivMetas))]
 		types := genFieldTypeSets[r.Intn(len(genFieldTypeSets))]
@@ -406,10 +387,11 @@ func TestPrepare_EquivalentToFrozenMatch(t *testing.T) {
 
 // --- invalid corpus: one structural fault per case ------------------------
 //
-// genValid never produces a condition either evaluator can error on, so the
-// "Prepare reports a genuine fault, not an invented one" property needs its
-// own deterministic corpus: every case here carries EXACTLY one of the five
-// structural faults, at a position varied across four wrapper shapes.
+// genValidCondition never produces a condition either evaluator can error on,
+// so the "Prepare reports a genuine fault, not an invented one" property
+// needs its own deterministic corpus: every case here carries EXACTLY one of
+// the five structural faults, at a position varied across four wrapper
+// shapes.
 
 // genFaultKind enumerates the five structural faults a condition tree can
 // carry — one per error-returning default/error branch shared by frozenMatch
