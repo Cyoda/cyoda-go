@@ -988,12 +988,15 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 
 	// Type-directed evaluation: the predicate kernel compares data leaves by
 	// their declared model types (a temporal data field compares temporally,
-	// consistent with the search path). The FieldsMap is loaded lazily — only
-	// when the criterion actually evaluates a data leaf — so pure
-	// lifecycle/state criteria never touch the model store. A load failure on a
-	// criterion that DOES reference data leaves is surfaced (fail closed): the
-	// model schema is a required input for correct typing, so we reject rather
-	// than silently mis-evaluate.
+	// consistent with the search path). The FieldsMap is loaded on the first
+	// data leaf the criterion carries — preparation resolves types for every
+	// simple and array leaf, whatever its operator, so a criterion that
+	// references any data leaf loads the schema even when a lifecycle conjunct
+	// would previously have short-circuited past it. A purely lifecycle
+	// criterion still touches nothing. A load failure on a criterion that DOES
+	// reference data leaves is surfaced (fail closed): the model schema is a
+	// required input for correct typing, so we reject rather than silently
+	// mis-evaluate.
 	var loadErr error
 	var fields map[string]schema.FieldDescriptor
 	loaded := false
@@ -1019,14 +1022,24 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		return nil
 	}
 
-	matched, err := match.Match(cond, entity.Data, entity.Meta, fieldTypes)
-	if err != nil {
-		return false, "", err
-	}
+	// Prepared once. Every structural fault the criterion carries surfaces
+	// here, from the condition's own shape, rather than from whichever entity
+	// happens to reach it — so a criterion that cannot be evaluated fails the
+	// transition instead of being silently read as "not satisfied".
+	prepared, prepErr := match.Prepare(cond, fieldTypes)
+
+	// Infra failure wins. A model-store outage is a server-side condition and
+	// must not surface as a client error just because the same criterion also
+	// carries a malformed operator. This ordering is deliberate and is the
+	// reverse of the pre-split one.
 	if loadErr != nil {
 		return false, "", loadErr
 	}
-	return matched, "", nil
+	if prepErr != nil {
+		return false, "", prepErr
+	}
+
+	return prepared.Match(entity.Data, entity.Meta), "", nil
 }
 
 // resolveAuditTxID returns the transaction ID to use for state-machine audit
