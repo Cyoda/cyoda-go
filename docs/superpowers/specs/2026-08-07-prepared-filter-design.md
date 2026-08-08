@@ -510,9 +510,10 @@ Two things follow, and both are part of this change:
    `docs/workflow-schema-versioning.md` needs no schema bump (the import surface is
    unchanged) but does need a Changelog entry, for the same reason its v0.8.3
    malformed-regex entry exists: §5 newly rejects a stored criterion that
-   previously ran. All four `go.mod` files currently pin the SPI tag `v0.8.3`; this
-   change repins them to a pseudo-version, in the root and all three
-   `plugins/*/go.mod` together — the `pin-sync` CI job (`.github/workflows/ci.yml`,
+   previously ran. All four `go.mod` files already sit on a
+   pseudo-version of SPI main (`d475ae1`, since PR #492) rather than the `v0.8.3` tag
+   this section assumed when written; this change moves them to a newer
+   pseudo-version, in the root and all three `plugins/*/go.mod` together — the `pin-sync` CI job (`.github/workflows/ci.yml`,
    via `scripts/check-spi-pin-sync.sh`) enforces that they agree. Separately,
    `make repin-plugins` pseudo-version-pins the in-repo plugin modules in the root
    `go.mod` to cyoda-go's own pushed HEAD; it is a local maintainer command, not a
