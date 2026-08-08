@@ -63,9 +63,10 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAll failed: %v", err)
 	}
+	pf := spi.Prepare(activeFilter)
 	want := make(map[string]bool)
 	for _, e := range all {
-		if spi.MatchFilter(activeFilter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			want[e.Meta.ID] = true
 		}
 	}
@@ -460,9 +461,10 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllAsAt failed: %v", err)
 	}
+	pf := spi.Prepare(activeFilter)
 	want := make(map[string]bool)
 	for _, e := range asAt {
-		if spi.MatchFilter(activeFilter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			want[e.Meta.ID] = true
 		}
 	}

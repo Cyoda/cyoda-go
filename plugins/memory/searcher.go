@@ -14,10 +14,11 @@ var _ spi.Searcher = (*EntityStore)(nil)
 // Search implements spi.Searcher for the in-memory entity store. It produces
 // the same result set that GetAll + spi.MatchFilter would for the same
 // transaction state, but filters/orders/bounds with the canonical SPI helpers
-// (spi.MatchFilter, spi.LessByOrder, spi.MergeBounded) so every backend
-// agrees. Search is bounded-or-fail: opts.Limit > 0 caps the matched set, and
-// a matched set larger than the limit is spi.ErrSearchResultLimitExceeded,
-// never a truncated prefix. opts.Limit <= 0 is unbounded.
+// (spi.Prepare/PreparedFilter.Match, spi.LessByOrder, spi.MergeBounded) so
+// every backend agrees. Search is bounded-or-fail: opts.Limit > 0 caps the
+// matched set, and a matched set larger than the limit is
+// spi.ErrSearchResultLimitExceeded, never a truncated prefix. opts.Limit <= 0
+// is unbounded.
 //
 // Three branches:
 //   - non-tx: iterate the current committed model (or the PIT snapshot when
@@ -33,6 +34,11 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	tx := spi.GetTransaction(ctx)
 
+	// Prepare once per query. Every branch below evaluates the same filter, so
+	// a single prepared value serves the non-tx scan, the PIT scan, and both
+	// loops of the read-your-own-writes overlay.
+	pf := spi.Prepare(filter)
+
 	if tx == nil {
 		// Non-transaction: snapshot the committed model under entityMu, then
 		// filter/sort/page. IIFE so the unlock runs via defer even though the
@@ -47,7 +53,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 				committed = s.currentStateMatchesUnlocked(modelRef)
 			}
 		}()
-		return matchSortBounded(filter, committed, opts.OrderBy, opts.Limit)
+		return matchSortBounded(pf, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-transaction: hold tx.OpMu.RLock for the whole operation so Commit/
@@ -69,7 +75,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 			defer s.factory.entityMu.RUnlock()
 			committed = s.getAllSnapshotUnlocked(modelRef, *opts.PointInTime)
 		}()
-		return matchSortBounded(filter, committed, opts.OrderBy, opts.Limit)
+		return matchSortBounded(pf, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-tx read-your-own-writes overlay. Snapshot the committed model at the
@@ -84,7 +90,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	}()
 	filteredCommitted := make([]*spi.Entity, 0, len(committed))
 	for _, e := range committed {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			filteredCommitted = append(filteredCommitted, e)
 		}
 	}
@@ -101,7 +107,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		if e.Meta.ModelRef != modelRef {
 			continue
 		}
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			adds = append(adds, copyEntity(e))
 		}
 	}
@@ -168,15 +174,18 @@ func (s *EntityStore) currentStateMatchesUnlocked(modelRef spi.ModelRef) []*spi.
 	return result
 }
 
-// matchSortBounded filters rows with spi.MatchFilter, orders with
+// matchSortBounded filters rows with a prepared filter, orders with
 // spi.LessByOrder, and enforces the bounded-or-fail cap: limit > 0 means the
 // whole matched set must fit, and a larger match set is an error rather than a
 // truncated prefix. limit <= 0 is unbounded. Used by the non-tx and in-tx PIT
 // branches; the RYW overlay branch gets the same bound from spi.MergeBounded.
-func matchSortBounded(filter spi.Filter, rows []*spi.Entity, order []spi.OrderSpec, limit int) ([]*spi.Entity, error) {
+//
+// It takes an already-prepared filter so the caller pays the operand parse,
+// type bucketing and regex compilation once per query rather than once per row.
+func matchSortBounded(pf spi.PreparedFilter, rows []*spi.Entity, order []spi.OrderSpec, limit int) ([]*spi.Entity, error) {
 	filtered := make([]*spi.Entity, 0, len(rows))
 	for _, e := range rows {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			filtered = append(filtered, e)
 			// Short-circuit before sorting: the result is an error either way.
 			if limit > 0 && len(filtered) > limit {
