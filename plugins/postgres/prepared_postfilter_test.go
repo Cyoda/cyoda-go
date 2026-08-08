@@ -56,13 +56,15 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 	}
 }
 
-// TestSearch_MatchAllStillPushesLimitAndNativeGroupBy pins the two
-// consequences of postFilter absence on postgres (which has no scan budget,
-// unlike sqlite — see searcher.go:30-35), for BOTH spellings of match-all:
-// the zero Filter{} and the explicit empty AND that ConditionToFilter emits
-// for a nil condition. The two took different branches historically and must
-// not drift apart again.
-func TestSearch_MatchAllStillPushesLimitAndNativeGroupBy(t *testing.T) {
+// TestSearch_MatchAllLeavesNoResidual pins the precondition that opens the
+// gates postFilter absence controls on postgres: LIMIT pushdown
+// (searcher.go:211) and native GROUP BY (grouped_stats.go:223). A non-nil
+// residual is what would cost LIMIT pushdown and disable native GROUP BY, so
+// asserting absence here is asserting those gates stay open. Checked for BOTH
+// spellings of match-all: the zero Filter{} and the explicit empty AND that
+// ConditionToFilter emits for a nil condition. The two took different
+// branches historically and must not drift apart again.
+func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		filter spi.Filter

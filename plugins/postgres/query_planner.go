@@ -33,8 +33,9 @@ type sqlPlan struct {
 	// non-nil EXACTLY when postFilter is non-nil.
 	//
 	// postFilter itself stays a *spi.Filter and stays the field the planner's
-	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown,
-	// native GROUP BY and the scan budget. A zero spi.PreparedFilter means
+	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown
+	// (searcher.go:211), native GROUP BY (grouped_stats.go:223) and the
+	// collection-loop shape (searcher.go:226). A zero spi.PreparedFilter means
 	// match-all, not absent, so replacing the field outright — or pairing a
 	// value with a bool — would put that invariant back in play at every
 	// consumer. Row loops read this field; planner decisions read postFilter.

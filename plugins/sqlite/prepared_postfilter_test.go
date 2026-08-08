@@ -56,12 +56,14 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 	}
 }
 
-// TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget pins the three
-// consequences of postFilter absence, for BOTH spellings of match-all: the
-// zero Filter{} and the explicit empty AND that ConditionToFilter emits for a
-// nil condition. The two took different branches historically and must not
-// drift apart again.
-func TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget(t *testing.T) {
+// TestSearch_MatchAllLeavesNoResidual pins the precondition that opens the
+// three gates postFilter absence controls: a non-nil residual is what would
+// cost LIMIT pushdown, disable native GROUP BY, and arm the scan budget, so
+// asserting absence here is asserting those gates stay open. Checked for BOTH
+// spellings of match-all: the zero Filter{} and the explicit empty AND that
+// ConditionToFilter emits for a nil condition. The two took different
+// branches historically and must not drift apart again.
+func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		filter spi.Filter
