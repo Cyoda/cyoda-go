@@ -2093,12 +2093,12 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 	}
 }
 
-// TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget pins the three
+// TestSearch_MatchAllLeavesNoResidual pins the three
 // consequences of postFilter absence, for BOTH spellings of match-all: the
 // zero Filter{} and the explicit empty AND that ConditionToFilter emits for a
 // nil condition. The two took different branches historically and must not
 // drift apart again.
-func TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget(t *testing.T) {
+func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		filter spi.Filter
@@ -2128,7 +2128,7 @@ func TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget(t *testing.T) {
 
 ```bash
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.claude/worktrees/feat-30-prepared-filter/plugins/sqlite
-go test ./... -run 'TestPlanQuery_PreparedPostFilterMatchesNilness|TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget' -v
+go test ./... -run 'TestPlanQuery_PreparedPostFilterMatchesNilness|TestSearch_MatchAllLeavesNoResidual' -v
 ```
 Expected: FAIL — `plan.preparedPostFilter undefined`.
 
@@ -2170,7 +2170,7 @@ At the end of `planQuery`, replace `return plan` with:
 - [ ] **Step 4: Run the new tests to verify they pass**
 
 ```bash
-go test ./... -run 'TestPlanQuery_PreparedPostFilterMatchesNilness|TestSearch_MatchAllStillPushesLimitAndSkipsScanBudget' -v
+go test ./... -run 'TestPlanQuery_PreparedPostFilterMatchesNilness|TestSearch_MatchAllLeavesNoResidual' -v
 ```
 Expected: PASS.
 
