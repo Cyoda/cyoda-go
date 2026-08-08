@@ -318,10 +318,7 @@ func TestMatchFilter_SqliteParity_Smoke(t *testing.T) {
 			}
 			ent := &spi.Entity{Meta: tc.meta, Data: data}
 
-			sqliteRes, err := sqlite.EvaluateFilter(tc.f, ent)
-			if err != nil {
-				t.Fatalf("sqlite.EvaluateFilter errored: %v", err)
-			}
+			sqliteRes := sqlite.EvaluateFilter(spi.Prepare(tc.f), ent)
 			matchRes := match.MatchFilter(tc.f, data, tc.meta)
 
 			if sqliteRes != matchRes {

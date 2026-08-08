@@ -257,7 +257,7 @@ var soundnessConditions = []struct {
 	},
 }
 
-// oracleIDs computes the TRUE match set directly via spi.MatchFilter over
+// oracleIDs computes the TRUE match set directly via spi.Prepare(f).Match over
 // the in-process corpus — exactly the memory backend's Iterate/Search
 // algorithm (no SQL, no narrowing).
 func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
