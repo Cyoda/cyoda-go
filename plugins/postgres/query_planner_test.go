@@ -568,8 +568,8 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 }
 
 // C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
-// (exclude every row), matching memory's spi.MatchFilter behavior, not
-// match-all ("1=1"). Validation now rejects this upstream (see
+// (exclude every row), matching memory's spi.Prepare/PreparedFilter.Match
+// behavior, not match-all ("1=1"). Validation now rejects this upstream (see
 // internal/domain/search/operators.go validateBetweenArity), so this guard
 // is defense-in-depth for any Filter constructed directly (bypassing the
 // domain validator), never a panic and never a false match-all.
@@ -847,8 +847,9 @@ func TestPlan_TemporalMetaBetween(t *testing.T) {
 }
 
 // TestPlan_TemporalData asserts that a SourceData temporal COMPARISON leaf is
-// NOT pushed — it is routed to the residual so the kernel (spi.MatchFilter),
-// which performs temporal-subtype resolution, is authoritative. The flat
+// NOT pushed — it is routed to the residual so the kernel
+// (spi.Prepare/PreparedFilter.Match), which performs temporal-subtype
+// resolution, is authoritative. The flat
 // epoch-ms push (cyoda_epoch_millis) cannot reproduce the kernel's imprecise-
 // floor op mutation as a sound superset, and cyoda_epoch_millis returns NULL
 // for a bare ISO subtype (e.g. "2024" / "2024-09-09"), so pushing would

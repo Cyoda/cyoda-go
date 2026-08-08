@@ -13,8 +13,8 @@ import (
 // postFilter is the residual filter that must be evaluated in Go.
 //
 // SQL-pushdown soundness contract: the pushed SQL WHERE is a best-effort
-// NARROWING — the kernel (spi.MatchFilter, re-run over the candidates the SQL
-// returns) is authoritative. The invariant is that the pushed SQL returns a
+// NARROWING — the kernel (spi.Prepare/PreparedFilter.Match, re-run over the
+// candidates the SQL returns) is authoritative. The invariant is that the pushed SQL returns a
 // SUPERSET of the kernel's matches (it never misses one). A leaf is EXACT when
 // its SQL matches the kernel bit-for-bit (only IsNull/NotNull — see leafExact);
 // every other pushed leaf is at best a SOUND SUPERSET (SQLite storage-class /
@@ -186,13 +186,13 @@ func isFullyPushable(f spi.Filter) bool {
 // is inclusive [lo,hi], a sound superset of the inclusive kernel between.
 //
 // Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
-// wildcards do not line up with Cloud's LIKE grammar (spi.MatchFilter's
-// likeToRegex), so a naive pushdown either escapes the wildcards into a
-// literal match (under-selecting real wildcard patterns) or pushes them
-// through unescaped (over-selecting/misinterpreting SQL-LIKE-specific
-// escaping). A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's
-// grammar is deferred to a dedicated follow-up; until then Like is
-// residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
+// wildcards do not line up with Cloud's LIKE grammar (the kernel's
+// likeToRegex, cyoda-go-spi eval_leaf.go), so a naive pushdown either escapes
+// the wildcards into a literal match (under-selecting real wildcard patterns)
+// or pushes them through unescaped (over-selecting/misinterpreting
+// SQL-LIKE-specific escaping). A sound SQL-LIKE translation that aligns SQL
+// LIKE to Cloud's grammar is deferred to a dedicated follow-up; until then
+// Like is residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
 // branch is kept below (unreachable via isPushable, like Ne) for mirror
 // totality with postgres.
 //
@@ -235,7 +235,7 @@ func isComparisonOp(op spi.FilterOp) bool {
 // storage class and SQLite never equates different classes (30 = '30' is
 // false), so no single-storage-class-bound SQL predicate can be a SUPERSET of
 // every kernel branch. Such leaves are routed to the residual, where the
-// kernel (spi.MatchFilter) evaluates all branches correctly.
+// kernel (spi.Prepare/PreparedFilter.Match) evaluates all branches correctly.
 //
 // DELIBERATE MIRROR DIVERGENCE from postgres: postgres's `->>` extraction
 // stringifies every stored scalar to text, so a single text bind IS already a
@@ -259,9 +259,9 @@ func isLeafPushable(f spi.Filter) bool {
 		// subtype resolution — an imprecise-floor op mutation (e.g. `>=
 		// 2024-09-09` on a Year field becomes `> 2024`) that a flat epoch-ms
 		// compare cannot reproduce as a sound superset. Route data temporal
-		// COMPARISONS to the residual, where the kernel (spi.MatchFilter) is
-		// authoritative; presence checks (IsNull/NotNull) are coercion-
-		// independent and stay pushable.
+		// COMPARISONS to the residual, where the kernel
+		// (spi.Prepare/PreparedFilter.Match) is authoritative; presence checks
+		// (IsNull/NotNull) are coercion-independent and stay pushable.
 		if f.Source == spi.SourceData && isComparisonOp(f.Op) {
 			return false
 		}
@@ -500,9 +500,10 @@ func leafToSQL(f spi.Filter) (string, []any) {
 				[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
 		}
 		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
-		// every row, matching memory's spi.MatchFilter semantics. Validation
-		// upstream (search.validateBetweenArity) rejects this shape before it
-		// ever reaches a plugin; this is defense-in-depth only.
+		// every row, matching memory's spi.Prepare/PreparedFilter.Match
+		// semantics. Validation upstream (search.validateBetweenArity) rejects
+		// this shape before it ever reaches a plugin; this is defense-in-depth
+		// only.
 		return "0", nil
 	}
 	return "1=1", nil
@@ -538,10 +539,10 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
 			// Malformed BETWEEN (not exactly 2 operands) fails closed —
-			// exclude every row, matching memory's spi.MatchFilter semantics.
-			// Validation upstream (search.validateBetweenArity) rejects this
-			// shape before it ever reaches a plugin; this is defense-in-depth
-			// only.
+			// exclude every row, matching memory's
+			// spi.Prepare/PreparedFilter.Match semantics. Validation upstream
+			// (search.validateBetweenArity) rejects this shape before it ever
+			// reaches a plugin; this is defense-in-depth only.
 			return "0", nil
 		}
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))

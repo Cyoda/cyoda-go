@@ -732,9 +732,9 @@ func setupSortModelWithAmountAndArray(t *testing.T, model string) {
 //	(1) passes path validation ($.tags[*] is in the schema FieldsMap for
 //	    array-field models);
 //	(2) fails ConditionToFilter (stripDollarDot rejects '[');
-//	(3) match.Match handles it correctly: convertJSONPath("$.tags[*]") →
-//	    gjson path "tags.#" (array count), which is NOT_NULL for any entity
-//	    that carries the tags field.
+//	(3) match.Prepare/(Prepared).Match handles it correctly:
+//	    convertJSONPath("$.tags[*]") → gjson path "tags.#" (array count),
+//	    which is NOT_NULL for any entity that carries the tags field.
 //
 // This is an isolated single-backend e2e test (Postgres only). It is not in
 // the shared cross-backend parity suite because it asserts Postgres-specific

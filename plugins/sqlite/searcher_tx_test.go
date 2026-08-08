@@ -57,8 +57,8 @@ func mkPerson(id, city, state string) *spi.Entity {
 }
 
 // assertSearchEqualsGetAllMatch asserts that Search returns exactly the same
-// id-set (and per-id Data) as GetAll + spi.MatchFilter would for the same tx
-// state — the canonical RYW parity contract.
+// id-set (and per-id Data) as GetAll + spi.Prepare(filter).Match would for the
+// same tx state — the canonical RYW parity contract.
 func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher spi.Searcher, txCtx context.Context, filter spi.Filter, opts spi.SearchOptions) []*spi.Entity {
 	t.Helper()
 	ref := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
@@ -476,9 +476,10 @@ func itoa(i int) string {
 // TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite: an in-tx Search with
 // PointInTime set to before a buffered write must be committed-only — the
 // buffered write is excluded (no overlay) — and must equal
-// GetAllAsAt(pit) + spi.MatchFilter exactly. It must also record NOTHING in
-// tx.ReadSet even with TrackingRead:true (PIT does not participate in RYW
-// read-set tracking; it mirrors GetAllAsAt, which always reads committed data).
+// GetAllAsAt(pit) + spi.Prepare(filter).Match exactly. It must also record
+// NOTHING in tx.ReadSet even with TrackingRead:true (PIT does not participate
+// in RYW read-set tracking; it mirrors GetAllAsAt, which always reads
+// committed data).
 func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	dir := t.TempDir()
 	clock := sqlite.NewTestClockAt(pitBase)

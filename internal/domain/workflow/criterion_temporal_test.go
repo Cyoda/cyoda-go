@@ -6,11 +6,10 @@ import (
 )
 
 // Tests for import-time rejection of type-unsound lifecycle/meta criteria
-// (temporal fields compared with a non-comparison operator, or a
-// non-offset-RFC3339 operand on creationDate/lastUpdateTime; unknown meta
+// (a non-offset-RFC3339 operand on creationDate/lastUpdateTime; unknown meta
 // field paths). These conditions previously imported successfully and only
 // failed — or silently misbehaved — at transition-evaluation time
-// (engine.go's match.Match -> matchLifecycle path). This closes that
+// (engine.go's match.Prepare -> prepareLifecycle path). This closes that
 // fail-open gap by delegating to the shared search.ValidateLifecycleCondition
 // at import time, the same validator the search API boundary already uses.
 

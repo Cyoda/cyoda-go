@@ -19,8 +19,8 @@ var _ spi.Searcher = (*entityStore)(nil)
 // never a truncated prefix; exactly-at-limit succeeds. opts.Limit <= 0 is
 // unbounded and must never raise — no default is substituted for it.
 //
-// Three branches, all producing the same result set that GetAll + spi.MatchFilter
-// would for the same transaction state:
+// Three branches, all producing the same result set that
+// GetAll + spi.Prepare(filter).Match would for the same transaction state:
 //   - non-tx (or in-tx point-in-time): committed pushdown via searchCommitted —
 //     the query planner pushes pushable predicates to SQL and post-filters the
 //     residual in Go; the bound is enforced in SQL (LIMIT limit+1, so the extra

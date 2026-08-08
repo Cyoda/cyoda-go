@@ -1,49 +1,10 @@
 package match
 
 import (
-	"fmt"
 	"strings"
-
-	"github.com/tidwall/gjson"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
-
-// applyOperator evaluates a single predicate leaf against a stored gjson value
-// by routing through the type-directed EvalLeaf kernel (spi.EvalLeafString) —
-// the same comparison core the search pushdown and spi.MatchFilter use, so the
-// predicate-tree evaluator and the Filter evaluator agree bit-for-bit.
-//
-// declared carries the leaf field's model DataTypes. The kernel is
-// type-directed: comparison/range operators (EQUALS, the four orderings,
-// BETWEEN) need declared to parse the operand and classify the stored value;
-// with an empty declared set they degrade to non-match (an unknown/untyped
-// field simply doesn't match a typed comparison). String operators and the
-// unary null tests are declared-independent.
-//
-// A kernel expansion error (e.g. an operand that parses into no declared type)
-// is treated as a per-entity non-match rather than a hard error: the search /
-// grouped-stats / workflow validation boundaries reject genuinely invalid
-// conditions up front, so a residual error here means "this entity doesn't
-// match", not "fail the request". A genuinely unsupported operator name
-// (IS_CHANGED / IS_UNCHANGED / unknown) is still a hard error.
-func applyOperator(operatorType string, actual gjson.Result, expected any, declared []spi.DataType) (bool, error) {
-	op, ok := opNameToFilterOp(operatorType)
-	if !ok {
-		return false, fmt.Errorf("unsupported operator: %s", operatorType)
-	}
-
-	var values []string
-	if op == spi.FilterBetween || op == spi.FilterBetweenInclusive {
-		values = betweenBounds(expected)
-	}
-
-	matched, err := spi.EvalLeafString(op, spi.OperandString(expected), values, declared, actual)
-	if err != nil {
-		return false, nil
-	}
-	return matched, nil
-}
 
 // opNameToFilterOp maps a predicate operator NAME to the corresponding kernel
 // spi.FilterOp. The boolean is false for operator names with no kernel op:

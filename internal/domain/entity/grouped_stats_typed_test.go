@@ -15,7 +15,7 @@ import (
 // path is reached only for a non-pushable condition, so we wrap a plain-leaf
 // numeric comparison in an OR group alongside a wildcard leaf (the wildcard
 // makes ConditionToFilter reject the whole group, forcing the per-entity
-// match.Match residual). A non-nil fields map declaring `$.age` Integer makes the
+// match.Prepare residual). A non-nil fields map declaring `$.age` Integer makes the
 // GREATER_THAN comparison type-directed — only the entity whose age exceeds the
 // operand is tallied. The nil-fields companion (untyped leaf → comparison
 // degrades to non-match) yields no buckets, proving the loaded fields — not

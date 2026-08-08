@@ -1019,8 +1019,9 @@ func TestSearch_TranslateFailure_FallsBackEvenInTransaction(t *testing.T) {
 	txCtx := spi.WithTransaction(ctx, tx)
 
 	// Wildcard JsonPath: ConditionToFilter rejects "[*]" as non-pushdownable
-	// syntax, forcing the in-memory fallback; match.Match evaluates the
-	// wildcard against each element of "items" and matches e1 only.
+	// syntax, forcing the in-memory fallback; match.Prepare/(Prepared).Match
+	// evaluates the wildcard against each element of "items" and matches e1
+	// only.
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.items[*].name",
 		OperatorType: "EQUALS",

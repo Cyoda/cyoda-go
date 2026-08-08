@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/tidwall/gjson"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
@@ -65,7 +63,7 @@ func TestOpNameToFilterOp(t *testing.T) {
 	if op, ok := opNameToFilterOp("MATCHES_PATTERN"); !ok || op != spi.FilterMatchesRegex {
 		t.Errorf("MATCHES_PATTERN → %v,%v", op, ok)
 	}
-	// Dropped operators are not mapped (applyOperator turns these into errors).
+	// Dropped operators are not mapped (expandNamed turns these into errors).
 	for _, name := range []string{"IS_CHANGED", "IS_UNCHANGED", "TOTALLY_UNKNOWN"} {
 		if _, ok := opNameToFilterOp(name); ok {
 			t.Errorf("%s must not map to a FilterOp", name)
@@ -88,23 +86,46 @@ func TestOpNameToFilterOp(t *testing.T) {
 	}
 }
 
-// --- applyOperator: kernel routing ---
+// --- kernel routing, exercised through Prepare/(Prepared).Match ---
+
+// viaSimpleCondition is the black-box replacement for calling the deleted
+// applyOperator directly: it builds a one-leaf SimpleCondition addressing
+// jsonPath in doc, prepares it (which is where operand expansion — the first
+// half of what applyOperator used to do in one step — now happens), and
+// evaluates it. declared is returned only for jsonPath itself, so a lookup on
+// any other path (used by the "absent" cases below) resolves to no declared
+// type, exactly like the old bare-gjson.Result calls with an unmodelled path.
+func viaSimpleCondition(t *testing.T, operatorType string, doc []byte, jsonPath string, expected any, declared []spi.DataType) (bool, error) {
+	t.Helper()
+	cond := &predicate.SimpleCondition{JsonPath: jsonPath, OperatorType: operatorType, Value: expected}
+	types := func(p string) []spi.DataType {
+		if p == jsonPath {
+			return declared
+		}
+		return nil
+	}
+	prepared, err := Prepare(cond, types)
+	if err != nil {
+		return false, err
+	}
+	return prepared.Match(doc, spi.EntityMeta{}), nil
+}
 
 // TestApplyOperator_ComparisonNeedsDeclared proves the type-directed contract:
 // a comparison operator with NO declared types degrades to non-match (the
 // kernel cannot classify the operand), while the same comparison with a
 // declared numeric type matches.
 func TestApplyOperator_ComparisonNeedsDeclared(t *testing.T) {
-	stored := gjson.Parse(`100`)
+	doc := []byte(`{"v":100}`)
 
 	// No declared types → non-match.
-	got, err := applyOperator("GREATER_THAN", stored, float64(20), nil)
+	got, err := viaSimpleCondition(t, "GREATER_THAN", doc, "$.v", float64(20), nil)
 	if err != nil || got {
 		t.Errorf("untyped GREATER_THAN must non-match; got=%v err=%v", got, err)
 	}
 
 	// Declared numeric → numeric comparison, matches.
-	got, err = applyOperator("GREATER_THAN", stored, float64(20), []spi.DataType{spi.Integer})
+	got, err = viaSimpleCondition(t, "GREATER_THAN", doc, "$.v", float64(20), []spi.DataType{spi.Integer})
 	if err != nil || !got {
 		t.Errorf("typed GREATER_THAN (100>20) must match; got=%v err=%v", got, err)
 	}
@@ -113,27 +134,26 @@ func TestApplyOperator_ComparisonNeedsDeclared(t *testing.T) {
 // TestApplyOperator_StringOpsAreDeclarationIndependent proves string operators
 // and the null tests work without declared types (they are not type-directed).
 func TestApplyOperator_StringOpsAreDeclarationIndependent(t *testing.T) {
-	stored := gjson.Parse(`"Alice"`)
-	if got, err := applyOperator("CONTAINS", stored, "lic", nil); err != nil || !got {
+	doc := []byte(`{"v":"Alice"}`)
+	if got, err := viaSimpleCondition(t, "CONTAINS", doc, "$.v", "lic", nil); err != nil || !got {
 		t.Errorf("CONTAINS without declared must still match; got=%v err=%v", got, err)
 	}
-	if got, err := applyOperator("STARTS_WITH", stored, "Al", nil); err != nil || !got {
+	if got, err := viaSimpleCondition(t, "STARTS_WITH", doc, "$.v", "Al", nil); err != nil || !got {
 		t.Errorf("STARTS_WITH without declared must still match; got=%v err=%v", got, err)
 	}
-	absent := gjson.Result{}
-	if got, err := applyOperator("IS_NULL", absent, nil, nil); err != nil || !got {
+	if got, err := viaSimpleCondition(t, "IS_NULL", []byte(`{}`), "$.missing", nil, nil); err != nil || !got {
 		t.Errorf("IS_NULL on absent must match; got=%v err=%v", got, err)
 	}
 }
 
 // TestApplyOperator_NegatedStringOpNullUniformity pins the kernel's
-// null/non-textual uniformity for the case-sensitive negatives (now routed
+// null/non-textual uniformity for the case-sensitive negatives (routed
 // directly through spi.FilterNotContains/NotStartsWith/NotEndsWith, not a
 // local "!positive" negation): a present textual value that does not
 // contain the operand matches; an absent, JSON-null, or non-textual value is
 // always a non-match, never a spurious vacuous match.
 func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
-	present := gjson.Parse(`"Alice"`)
+	present := []byte(`{"v":"Alice"}`)
 	// Positive-satisfying operand per op (so !positive would spuriously match on
 	// null if the null-guard were absent — the RED behaviour this pins against).
 	cases := []struct {
@@ -145,21 +165,26 @@ func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 		{"NOT_STARTS_WITH", "Al", "xy"},
 		{"NOT_ENDS_WITH", "ce", "xy"},
 	}
-	jsonNull := gjson.Parse(`null`)
-	nonTextual := gjson.Parse(`42`)
-	absent := gjson.Result{}
+	leaves := map[string]struct {
+		doc  []byte
+		path string
+	}{
+		"absent":      {[]byte(`{}`), "$.missing"},
+		"json-null":   {[]byte(`{"v":null}`), "$.v"},
+		"non-textual": {[]byte(`{"v":42}`), "$.v"},
+	}
 	for _, c := range cases {
-		if got, err := applyOperator(c.op, present, c.matchArg, nil); err != nil || !got {
+		if got, err := viaSimpleCondition(t, c.op, present, "$.v", c.matchArg, nil); err != nil || !got {
 			t.Errorf("%s on present non-matching value must match; got=%v err=%v", c.op, got, err)
 		}
-		if got, err := applyOperator(c.op, present, c.nonMatchArg, nil); err != nil || got {
+		if got, err := viaSimpleCondition(t, c.op, present, "$.v", c.nonMatchArg, nil); err != nil || got {
 			t.Errorf("%s on present matching value must non-match; got=%v err=%v", c.op, got, err)
 		}
 		// Null-uniform: absent / JSON-null / non-textual leaves must all
 		// non-match, NEVER !positive (which would spuriously match here since
 		// nonMatchArg makes the positive twin true on a present value).
-		for name, leaf := range map[string]gjson.Result{"absent": absent, "json-null": jsonNull, "non-textual": nonTextual} {
-			if got, err := applyOperator(c.op, leaf, c.nonMatchArg, nil); err != nil || got {
+		for name, leaf := range leaves {
+			if got, err := viaSimpleCondition(t, c.op, leaf.doc, leaf.path, c.nonMatchArg, nil); err != nil || got {
 				t.Errorf("%s on %s leaf must non-match (null uniformity); got=%v err=%v", c.op, name, got, err)
 			}
 		}
@@ -167,11 +192,14 @@ func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 }
 
 // TestApplyOperator_UnsupportedOperatorErrors confirms IS_CHANGED / IS_UNCHANGED
-// and unknown operators are hard errors (not silent non-matches).
+// and unknown operators are hard errors (not silent non-matches). Prepare
+// surfaces this as a structural error rather than Match returning one, since
+// operand expansion — including the operator-name lookup — now happens once,
+// up front.
 func TestApplyOperator_UnsupportedOperatorErrors(t *testing.T) {
-	stored := gjson.Parse(`"x"`)
+	doc := []byte(`{"v":"x"}`)
 	for _, name := range []string{"IS_CHANGED", "IS_UNCHANGED", "BOGUS_OP"} {
-		if _, err := applyOperator(name, stored, "x", nil); err == nil {
+		if _, err := viaSimpleCondition(t, name, doc, "$.v", "x", nil); err == nil {
 			t.Errorf("expected error for unsupported operator %s", name)
 		}
 	}
@@ -193,8 +221,11 @@ func TestApplyOperator_JSONNumberScalarEquals(t *testing.T) {
 		}
 		return nil
 	}
-	got, err := Match(cond, data, meta(), types)
-	if err != nil || !got {
-		t.Errorf("json.Number scalar EQUALS against declared numeric must match; got=%v err=%v", got, err)
+	prepared, err := Prepare(cond, types)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if !prepared.Match(data, meta()) {
+		t.Error("json.Number scalar EQUALS against declared numeric must match")
 	}
 }

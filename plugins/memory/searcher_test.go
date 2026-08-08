@@ -44,7 +44,7 @@ func mkEntity(id, state, data string, modelRef spi.ModelRef) *spi.Entity {
 }
 
 // TestMemorySearch_NonTx_ParityWithGetAllMatch asserts that a non-tx Search
-// returns exactly the same id set as GetAll filtered by spi.MatchFilter.
+// returns exactly the same id set as GetAll filtered by spi.Prepare(filter).Match.
 func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -58,7 +58,7 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	store.Save(ctx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
 	store.Save(ctx, mkEntity("e-4", "ACTIVE", `{"n": 4}`, modelRef))
 
-	// Reference: GetAll + MatchFilter.
+	// Reference: GetAll + spi.Prepare(filter).Match.
 	all, err := store.GetAll(ctx, modelRef)
 	if err != nil {
 		t.Fatalf("GetAll failed: %v", err)

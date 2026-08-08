@@ -11,15 +11,15 @@ import (
 // "$." prefix — the workflow engine (engine.go), the search fallback loop
 // (search/service.go) and the grouped-stats residual all index that same map.
 //
-// matchSimple looked the path up raw, so a criterion or condition written
-// without the prefix resolved to no declared type. A type-directed comparison
-// with no declared type expands into nothing and never matches, so the leaf
-// evaluated false for every entity. matchArray already normalised via
-// arrayElementFieldPath; matchSimple did not.
+// prepareSimple (née matchSimple) looked the path up raw, so a criterion or
+// condition written without the prefix resolved to no declared type. A
+// type-directed comparison with no declared type expands into nothing and
+// never matches, so the leaf evaluated false for every entity. prepareArray
+// already normalised via arrayElementFieldPath; prepareSimple did not.
 //
 // This is the same defect fixed in filter_translate.go, on the path workflow
-// criteria actually take: criteria always go through match.Match and never
-// through ConditionToFilter.
+// criteria actually take: criteria always go through match.Prepare /
+// (Prepared).Match and never through ConditionToFilter.
 func prefixedTypes(t *testing.T) FieldTypes {
 	t.Helper()
 	fields := map[string][]spi.DataType{
@@ -46,15 +46,16 @@ func TestMatchSimple_ResolvesDeclaredTypesForPrefixlessPath(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Match(&predicate.SimpleCondition{
+			cond := &predicate.SimpleCondition{
 				JsonPath:     tc.jsonPath,
 				OperatorType: tc.op,
 				Value:        tc.value,
-			}, data, spi.EntityMeta{}, prefixedTypes(t))
-			if err != nil {
-				t.Fatalf("Match: %v", err)
 			}
-			if !got {
+			prepared, err := Prepare(cond, prefixedTypes(t))
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			if !prepared.Match(data, spi.EntityMeta{}) {
 				t.Errorf("%s did not match an entity that holds the value — declared types did not resolve", tc.jsonPath)
 			}
 		})
@@ -64,15 +65,16 @@ func TestMatchSimple_ResolvesDeclaredTypesForPrefixlessPath(t *testing.T) {
 // A genuinely unknown path must still resolve to no declared types, so a
 // comparison leaf keeps degrading to non-match rather than erroring.
 func TestMatchSimple_UnknownPathStillDegradesToNonMatch(t *testing.T) {
-	got, err := Match(&predicate.SimpleCondition{
+	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.nosuch",
 		OperatorType: "GREATER_THAN",
 		Value:        10,
-	}, []byte(`{"amount":42}`), spi.EntityMeta{}, prefixedTypes(t))
-	if err != nil {
-		t.Fatalf("Match: %v", err)
 	}
-	if got {
+	prepared, err := Prepare(cond, prefixedTypes(t))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if prepared.Match([]byte(`{"amount":42}`), spi.EntityMeta{}) {
 		t.Error("an unknown path matched")
 	}
 }

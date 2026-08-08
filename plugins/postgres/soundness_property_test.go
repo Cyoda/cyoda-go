@@ -16,8 +16,9 @@ import (
 //
 // Mirrors plugins/sqlite/soundness_property_test.go's contract exactly: the
 // SQL WHERE fragment planQuery produces must return a SUPERSET of
-// spi.MatchFilter's true matches (never under-select); the postFilter kernel
-// re-check then narrows that candidate set back down to the exact result.
+// spi.Prepare/PreparedFilter.Match's true matches (never under-select); the
+// postFilter kernel re-check then narrows that candidate set back down to the
+// exact result.
 // See that file's doc comment for the full rationale (superset assertion +
 // "backend result == memory backend result" equality proxy, and why temporal
 // PUSH-soundness coverage uses SourceMeta "creationDate" rather than a
@@ -119,9 +120,9 @@ func fUnary(op spi.FilterOp, path string) spi.Filter {
 	return spi.Filter{Op: op, Source: spi.SourceData, Path: path}
 }
 
-// oracleIDs computes the TRUE match set directly via spi.MatchFilter over
-// the in-process corpus — exactly the memory backend's Iterate/Search
-// algorithm (no SQL, no narrowing).
+// oracleIDs computes the TRUE match set directly via
+// spi.Prepare/PreparedFilter.Match over the in-process corpus — exactly the
+// memory backend's Iterate/Search algorithm (no SQL, no narrowing).
 func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
 	out := map[string]bool{}
 	pf := spi.Prepare(f)
@@ -322,8 +323,9 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 // leafToSQL, case spi.FilterLike, had the byte-for-byte identical
 // escapeLike() call escaping every '%'/'_' before binding to
 // `LIKE $N ESCAPE '\'` — turning a genuine wildcard pattern into a literal
-// string match at the SQL layer, while the kernel (spi.MatchFilter ->
-// eval_leaf.go likeToRegex) treats those characters as real wildcards.
+// string match at the SQL layer, while the kernel
+// (spi.Prepare/PreparedFilter.Match -> eval_leaf.go likeToRegex) treats those
+// characters as real wildcards.
 //
 // Fixed identically to sqlite: FilterLike removed from isPushable, so Like
 // is now residual-only and the kernel evaluates it directly with the

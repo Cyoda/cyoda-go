@@ -24,7 +24,7 @@ package match_test
 //     agreement — the actual place sqlite's evaluation behavior is checked
 //     against the kernel today.
 //   - the SPI's own filter_match_test.go / prepared filter tests guard the
-//     kernel's (spi.MatchFilter / spi.Prepare+Match) own correctness.
+//     kernel's (spi.Prepare + PreparedFilter.Match) own correctness.
 //
 // The test file lives in the root module (next to internal/match) and
 // imports plugins/sqlite via its public EvaluateFilter wrapper. The

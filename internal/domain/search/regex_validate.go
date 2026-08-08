@@ -22,16 +22,11 @@ import (
 // layer, makes every backend (memory/sqlite/postgres) reject identically
 // with 400 INVALID_CONDITION, before any store or plugin code runs.
 //
-// The compile call MUST mirror internal/match/operators.go opMatchesPattern
-// exactly, so validation accepts precisely the set the evaluator accepts
-// (no accept/reject skew). opMatchesPattern calls:
-//
-//	regexp.MatchString(pattern, actual.String())
-//
-// which internally compiles pattern via regexp.Compile before matching, and
-// derives pattern via fmt.Sprintf("%v", expected) — i.e. it stringifies the
-// condition value regardless of its concrete type before compiling. This
-// function does the same: fmt.Sprintf("%v", c.Value), then regexp.Compile.
+// The compile call MUST mirror the kernel's own pattern derivation, so
+// validation accepts exactly the patterns evaluation can run (no accept/reject
+// skew). The kernel anchors the pattern and compiles it inside ExpandLeaf
+// (cyoda-go-spi eval_leaf.go); this validator must apply the same anchoring to
+// the same input.
 func ValidateRegexPatterns(cond predicate.Condition) error {
 	return walkRegexPatterns(cond, 0)
 }
@@ -68,10 +63,10 @@ func walkRegexPatterns(cond predicate.Condition, depth int) error {
 	}
 }
 
-// compileRegexPattern mirrors opMatchesPattern's pattern derivation and
-// compile call exactly: fmt.Sprintf("%v", value) then regexp.Compile. The
-// returned error is regexp.Compile's own (e.g. "error parsing regexp: ...")
-// so callers can format it into their own message without double-wrapping.
+// compileRegexPattern mirrors the kernel's pattern derivation and compile
+// call: fmt.Sprintf("%v", value) then regexp.Compile. The returned error is
+// regexp.Compile's own (e.g. "error parsing regexp: ...") so callers can
+// format it into their own message without double-wrapping.
 func compileRegexPattern(value any) error {
 	pattern := fmt.Sprintf("%v", value)
 	_, err := regexp.Compile(pattern)

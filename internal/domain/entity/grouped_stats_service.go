@@ -102,8 +102,9 @@ func classifyGroupedStatsError(err error) error {
 //     (c) we're not inside a transaction (D11: tx visibility requires the
 //     streaming path).
 //  2. Streaming fallback — when store implements Iterable. If the filter
-//     translates, push it; otherwise pass zero-value and re-apply
-//     match.Match per yielded entity (D15).
+//     translates, push it; otherwise pass zero-value and re-apply the
+//     prepared predicate (match.Prepare/(Prepared).Match) per yielded
+//     entity (D15).
 //  3. Neither — return ErrBackendNotSupported (handler maps to 501).
 func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
@@ -150,7 +151,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// search.ValidateCondition call. Without this, a malformed-arity
 	// BETWEEN (or an unknown operatorType) slips past every downstream
 	// layer here exactly as the regex case above did: ConditionToFilter and
-	// match.Match both fail closed (never matching) rather than erroring,
+	// match.Prepare both fail closed (never matching) rather than erroring,
 	// so the request would silently degrade to an empty/wrong result
 	// instead of failing with 400.
 	if parsedCond != nil {
@@ -169,7 +170,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// gracefully skips the schema-dependent data-field check when model is
 	// nil. Without this, e.g. a CONTAINS operator against the temporal
 	// creationDate meta field would silently produce an empty result here
-	// (never matching in ConditionToFilter/match.Match) instead of the 400
+	// (never matching in ConditionToFilter/match.Prepare) instead of the 400
 	// CONDITION_TYPE_MISMATCH the equivalent /search request returns.
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
@@ -186,8 +187,8 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
 	// yields the zero-value Filter ("match all"); a parsedCond that the
 	// translator can't handle (e.g. function conditions, wildcard paths)
-	// returns an error — in that case the streaming branch will re-apply
-	// match.Match per entity.
+	// returns an error — in that case the streaming branch will re-apply the
+	// prepared predicate (match.Prepare/(Prepared).Match) per entity.
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
@@ -411,7 +412,7 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 }
 
 // stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
-// preserves for the wire-shape group-key. Plugins (memory's match.Match,
+// preserves for the wire-shape group-key. Plugins (memory's match.Prepare,
 // sqlite/postgres's validateJSONPath) all expect bare dotted-identifier
 // paths. A path without the prefix is returned unchanged so the helper
 // is idempotent — re-applying it is safe.

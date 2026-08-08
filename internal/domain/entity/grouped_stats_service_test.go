@@ -310,8 +310,9 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *testing.T) {
 	// A wildcard array path is parseable and evaluable in-memory but
 	// ConditionToFilter rejects the "[" as non-pushdownable, so the service
-	// must pass a zero-value Filter to Iterate and re-apply match.Match as a
-	// residual — the residual, not the store, is what excludes the second row.
+	// must pass a zero-value Filter to Iterate and re-apply the prepared
+	// predicate (match.Prepare/(Prepared).Match) as a residual — the
+	// residual, not the store, is what excludes the second row.
 	//
 	// This used to use a FunctionCondition, which is untranslatable for the
 	// same reason. It no longer can be: search.ValidateCondition rejects a
@@ -538,7 +539,7 @@ func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
 // type-unsound temporal/lifecycle condition (400), but grouped-stats
 // previously accepted the same malformed condition and silently degraded to
 // an empty result (the condition doesn't translate to a pushdown filter and
-// never matches anything via match.Match either). QueryGroupedStats must
+// never matches anything via match.Prepare either). QueryGroupedStats must
 // reject a temporal comparison operand that parses into no temporal type,
 // the same way search.ValidateConditionValueTypes does.
 func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
