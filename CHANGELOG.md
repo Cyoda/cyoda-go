@@ -100,6 +100,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Sorting by a `$.`-prefixed field path over gRPC now works.** Sort-key resolution
+  prepended `$.` by hand, which is not idempotent. The HTTP layer strips the prefix
+  before resolving, so HTTP was unaffected; gRPC passes the client's path through
+  verbatim, so `orderBy` on `$.city` was looked up as `$.$.city` and returned **400
+  `INVALID_FIELD_PATH`** for a field that exists. The two transports now answer the same
+  request identically.
+
 - **A field path written without the `$.` prefix now resolves its declared type.**
   `city` and `$.city` are both accepted and both pass field-path validation, but only
   the prefixed form resolved against the model schema. The unprefixed form came back
