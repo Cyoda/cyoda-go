@@ -9,7 +9,7 @@ import (
 
 // gRPC is a separate entry point from HTTP and must reject a `function`
 // clause the same way. It previously did not: the clause reached
-// match.Match, and the raw error surfaced as a SERVER_ERROR envelope with a
+// match.Prepare, and the raw error surfaced as a SERVER_ERROR envelope with a
 // ticket while the gRPC status stayed OK — a 5xx for a client-supplied
 // condition, over a transport where it is easy to miss.
 

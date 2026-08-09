@@ -15,14 +15,15 @@ import (
 
 // The `workflows` CRITERIA section and the `search` Condition-DSL section
 // describe the same evaluation kernel (predicate.ParseCondition ->
-// match.Match). These guards pin both topics to what that kernel accepts, so
-// the two cannot drift apart, or away from the code, again.
+// match.Prepare -> (Prepared).Match). These guards pin both topics to what
+// that kernel accepts, so the two cannot drift apart, or away from the code,
+// again.
 //
-// The lifecycle-field vocabulary is taken from match.matchLifecycle because
-// that is the evaluator the topics describe. Its agreement with
-// search.sortableMetaFields — the allowlist the API boundary and
-// workflow-criterion import validate against, and the documented source of
-// truth for the vocabulary — is pinned separately by
+// The lifecycle-field vocabulary is taken from match.Prepare's
+// prepareLifecycle because that is the evaluator the topics describe. Its
+// agreement with search.sortableMetaFields — the allowlist the API boundary
+// and workflow-criterion import validate against, and the documented source
+// of truth for the vocabulary — is pinned separately by
 // TestMetaVocabulary_EvaluatorMatchesAllowlist.
 
 var (
@@ -70,7 +71,7 @@ func readTopic(t *testing.T, root, name string) string {
 
 // TestHelpTopics_LifecycleFieldParity asserts that the lifecycle-field list in
 // the `workflows` CRITERIA section and in the `search` LifecycleCondition
-// section both match the field vocabulary matchLifecycle actually accepts.
+// section both match the field vocabulary prepareLifecycle actually accepts.
 // A criterion and a search filter share one evaluator, so a reader of either
 // topic must see the same six fields plus the previousTransition alias.
 func TestHelpTopics_LifecycleFieldParity(t *testing.T) {
@@ -82,7 +83,7 @@ func TestHelpTopics_LifecycleFieldParity(t *testing.T) {
 		"`lifecycle` criteria match entity metadata fields:",
 		"workflows.md")
 	if !reflect.DeepEqual(workflows, accepted) {
-		t.Errorf("workflows.md documents lifecycle fields %v; matchLifecycle accepts %v", workflows, accepted)
+		t.Errorf("workflows.md documents lifecycle fields %v; prepareLifecycle accepts %v", workflows, accepted)
 	}
 
 	search := topicSentence(t,
@@ -90,7 +91,7 @@ func TestHelpTopics_LifecycleFieldParity(t *testing.T) {
 		"- `field`:",
 		"search.md")
 	if !reflect.DeepEqual(search, accepted) {
-		t.Errorf("search.md documents lifecycle fields %v; matchLifecycle accepts %v", search, accepted)
+		t.Errorf("search.md documents lifecycle fields %v; prepareLifecycle accepts %v", search, accepted)
 	}
 }
 

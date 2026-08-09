@@ -12,10 +12,10 @@ import (
 // TestMetaVocabulary_EvaluatorMatchesAllowlist pins the invariant
 // workflow/validate.go's doc comment asserts but nothing enforced: the meta
 // vocabulary this package validates against (spi.MetaFieldNames, plus the
-// previousTransition alias) is exactly the vocabulary match.matchLifecycle
-// evaluates. internal/match cannot import this package — the reverse import
-// already exists — so the evaluator keeps a hand-written second copy of the
-// switch and only a test can hold the two in step.
+// previousTransition alias) is exactly the vocabulary match.Prepare's
+// prepareLifecycle evaluates. internal/match cannot import this package — the
+// reverse import already exists — so the evaluator keeps a hand-written
+// second copy of the switch and only a test can hold the two in step.
 //
 // The two directions fail differently, and both are bugs:
 //   - allowlist ⊃ evaluator: the boundary accepts a field the evaluator then
@@ -31,6 +31,6 @@ func TestMetaVocabulary_EvaluatorMatchesAllowlist(t *testing.T) {
 
 	got := commontest.MatchLifecycleFields(t)
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("matchLifecycle accepts %v; this package's meta allowlist is %v", got, want)
+		t.Errorf("prepareLifecycle accepts %v; this package's meta allowlist is %v", got, want)
 	}
 }

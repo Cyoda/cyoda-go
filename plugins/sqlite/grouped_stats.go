@@ -90,7 +90,7 @@ func (s *entityStore) Iterate(
 		return &sqliteSliceIter{
 			ctx:      ctx,
 			snapshot: entities,
-			filter:   filter,
+			prepared: spi.Prepare(filter),
 		}, nil
 	}
 
@@ -127,22 +127,22 @@ func (s *entityStore) Iterate(
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}
 	return &sqliteIter{
-		ctx:         ctx,
-		rows:        rows,
-		postFilter:  plan.postFilter,
-		pointInTime: pointInTime,
+		ctx:                ctx,
+		rows:               rows,
+		preparedPostFilter: plan.preparedPostFilter,
+		pointInTime:        pointInTime,
 	}, nil
 }
 
 // sqliteSliceIter walks a pre-built snapshot from getAllTx, applying the
-// filter inside Next() via the same evaluateFilter() the streaming path
-// uses. Used by the in-tx Iterate branch to honour D11 RYW. Per the SPI
-// iterator contract: Err() is sticky, Close() is idempotent, ctx
-// cancellation is observed.
+// filter inside Next() via the prepared filter's Match — the same
+// spi.Prepare(filter) result the streaming path's post-filter uses. Used by
+// the in-tx Iterate branch to honour D11 RYW. Per the SPI iterator contract:
+// Err() is sticky, Close() is idempotent, ctx cancellation is observed.
 type sqliteSliceIter struct {
 	ctx      context.Context
 	snapshot []*spi.Entity
-	filter   spi.Filter
+	prepared spi.PreparedFilter
 	idx      int
 	cur      *spi.Entity
 	err      error
@@ -160,17 +160,10 @@ func (it *sqliteSliceIter) Next() bool {
 	for it.idx < len(it.snapshot) {
 		e := it.snapshot[it.idx]
 		it.idx++
-		// Zero-value Filter (empty Op) matches everything — short-circuit
-		// before evaluateFilter, which expects a populated Op.
-		if it.filter.Op != "" {
-			ok, ferr := evaluateFilter(it.filter, e)
-			if ferr != nil {
-				it.err = fmt.Errorf("filter evaluation: %w", ferr)
-				return false
-			}
-			if !ok {
-				continue
-			}
+		// A zero-value filter prepares to match-all, so no Op guard is needed
+		// here any more: spi.Prepare handles the root asymmetry.
+		if !it.prepared.Match(e.Data, e.Meta) {
+			continue
 		}
 		it.cur = e
 		return true
@@ -195,10 +188,10 @@ func (it *sqliteSliceIter) Close() error {
 // before yielding each row. Err() is sticky; Close() is idempotent;
 // ctx cancellation is observed.
 type sqliteIter struct {
-	ctx         context.Context
-	rows        *sql.Rows
-	postFilter  *spi.Filter
-	pointInTime bool
+	ctx                context.Context
+	rows               *sql.Rows
+	preparedPostFilter *spi.PreparedFilter
+	pointInTime        bool
 
 	cur    *spi.Entity
 	err    error
@@ -231,15 +224,8 @@ func (it *sqliteIter) Next() bool {
 			it.err = serr
 			return false
 		}
-		if it.postFilter != nil {
-			ok, ferr := evaluateFilter(*it.postFilter, e)
-			if ferr != nil {
-				it.err = fmt.Errorf("post-filter evaluation: %w", ferr)
-				return false
-			}
-			if !ok {
-				continue
-			}
+		if it.preparedPostFilter != nil && !evaluateFilter(*it.preparedPostFilter, e) {
+			continue
 		}
 		it.cur = e
 		return true

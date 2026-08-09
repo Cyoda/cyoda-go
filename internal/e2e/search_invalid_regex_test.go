@@ -13,9 +13,10 @@ import (
 // MATCHES_PATTERN condition carrying an unparsable regex ("(" — unterminated
 // group) is rejected with 400 INVALID_CONDITION on the sync search path,
 // before any store is touched. This closes the fail-open regression left by
-// Task 6's delegation to the error-free spi.MatchFilter: a malformed pattern
-// must never reach the matcher on any backend (memory/sqlite/postgres) — the
-// domain-layer validation runs identically for all of them.
+// Task 6's delegation to the error-free spi.PreparedFilter.Match kernel: a
+// malformed pattern must never reach the matcher on any backend
+// (memory/sqlite/postgres) — the domain-layer validation runs identically
+// for all of them.
 func TestSearch_Sync_MalformedRegex_Returns400_InvalidCondition(t *testing.T) {
 	const model = "e2e-search-regex-invalid"
 	setupSearchModel(t, model)

@@ -57,8 +57,8 @@ func mkPerson(id, city, state string) *spi.Entity {
 }
 
 // assertSearchEqualsGetAllMatch asserts that Search returns exactly the same
-// id-set (and per-id Data) as GetAll + spi.MatchFilter would for the same tx
-// state — the canonical RYW parity contract.
+// id-set (and per-id Data) as GetAll + spi.Prepare(filter).Match would for the
+// same tx state — the canonical RYW parity contract.
 func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher spi.Searcher, txCtx context.Context, filter spi.Filter, opts spi.SearchOptions) []*spi.Entity {
 	t.Helper()
 	ref := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
@@ -68,8 +68,9 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 	}
 	wantIDs := make(map[string]bool)
 	wantData := make(map[string]string)
+	pf := spi.Prepare(filter)
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs[e.Meta.ID] = true
 			wantData[e.Meta.ID] = string(e.Data)
 		}
@@ -98,7 +99,7 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create, an update that
 // changes a matching entity to no longer match, and a delete must all be
-// reflected in Search exactly as GetAll + MatchFilter sees them.
+// reflected in Search exactly as GetAll + spi.Prepare(filter).Match sees them.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// Committed baseline (from setup): e1=Berlin, e3=Berlin match cityBerlin.
@@ -475,9 +476,10 @@ func itoa(i int) string {
 // TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite: an in-tx Search with
 // PointInTime set to before a buffered write must be committed-only — the
 // buffered write is excluded (no overlay) — and must equal
-// GetAllAsAt(pit) + spi.MatchFilter exactly. It must also record NOTHING in
-// tx.ReadSet even with TrackingRead:true (PIT does not participate in RYW
-// read-set tracking; it mirrors GetAllAsAt, which always reads committed data).
+// GetAllAsAt(pit) + spi.Prepare(filter).Match exactly. It must also record
+// NOTHING in tx.ReadSet even with TrackingRead:true (PIT does not participate
+// in RYW read-set tracking; it mirrors GetAllAsAt, which always reads
+// committed data).
 func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	dir := t.TempDir()
 	clock := sqlite.NewTestClockAt(pitBase)
@@ -531,24 +533,25 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		t.Errorf("committed e1 must be present, got %v", gotIDs)
 	}
 
-	// Must equal GetAllAsAt(pit) + MatchFilter exactly (the committed-pushdown
-	// contract; no overlay dimension participates).
+	// Must equal GetAllAsAt(pit) + spi.Prepare(filter).Match exactly (the
+	// committed-pushdown contract; no overlay dimension participates).
 	wantAll, err := store.GetAllAsAt(ctx, ref, pit)
 	if err != nil {
 		t.Fatalf("GetAllAsAt: %v", err)
 	}
 	wantIDs := map[string]bool{}
+	pfBerlin := spi.Prepare(cityBerlin)
 	for _, e := range wantAll {
-		if spi.MatchFilter(cityBerlin, e.Data, e.Meta) {
+		if pfBerlin.Match(e.Data, e.Meta) {
 			wantIDs[e.Meta.ID] = true
 		}
 	}
 	if len(gotIDs) != len(wantIDs) {
-		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+MatchFilter %v", gotIDs, wantIDs)
+		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+Prepare/Match %v", gotIDs, wantIDs)
 	}
 	for id := range wantIDs {
 		if !gotIDs[id] {
-			t.Errorf("expected id %s from GetAllAsAt+MatchFilter, missing from Search(PIT) %v", id, gotIDs)
+			t.Errorf("expected id %s from GetAllAsAt+Prepare/Match, missing from Search(PIT) %v", id, gotIDs)
 		}
 	}
 

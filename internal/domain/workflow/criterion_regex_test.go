@@ -12,7 +12,7 @@ import (
 // workflow/transition criteria. Before this validator, a malformed regex
 // (e.g. "[") imported successfully and only surfaced as an error on every
 // subsequent transition evaluation (engine.go's predicate.ParseCondition ->
-// match.Match path) — a fail-open gap at import time. These tests pin the
+// match.Prepare path) — a fail-open gap at import time. These tests pin the
 // fail-closed behaviour: reject at import instead.
 
 const malformedPattern = "["

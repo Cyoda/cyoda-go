@@ -1,0 +1,219 @@
+package match_test
+
+import (
+	"testing"
+	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+
+	"github.com/cyoda-platform/cyoda-go/internal/match"
+)
+
+// typed is a FieldTypes that declares every path it is asked about as t.
+func typed(t ...spi.DataType) match.FieldTypes {
+	return func(string) []spi.DataType { return t }
+}
+
+// TestPrepare_StructuralErrors pins the five faults that move from per-row
+// evaluation into Prepare. Each keeps its exact message so no error mapping
+// moves — these are reported from the condition's own shape now, not from
+// which rows happen to be present.
+func TestPrepare_StructuralErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		cond predicate.Condition
+		want string
+	}{
+		{
+			"function condition",
+			&predicate.FunctionCondition{},
+			"function conditions not implemented",
+		},
+		{
+			"function condition nested in a group",
+			&predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{
+				&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "active"},
+				&predicate.FunctionCondition{},
+			}},
+			"function conditions not implemented",
+		},
+		{
+			"unknown lifecycle field",
+			&predicate.LifecycleCondition{Field: "nosuchfield", OperatorType: "EQUALS", Value: "x"},
+			"unknown lifecycle field: nosuchfield",
+		},
+		{
+			"unknown group operator",
+			&predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{
+				&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "active"},
+			}},
+			"unknown group operator: NOT",
+		},
+		{
+			"lowercase group operator",
+			&predicate.GroupCondition{Operator: "or", Conditions: nil},
+			"unknown group operator: or",
+		},
+		{
+			"unsupported operator name on a data leaf",
+			&predicate.SimpleCondition{JsonPath: "$.amount", OperatorType: "FROBNICATE", Value: 1},
+			"unsupported operator: FROBNICATE",
+		},
+		{
+			"IS_CHANGED on a non-temporal meta field",
+			&predicate.LifecycleCondition{Field: "state", OperatorType: "IS_CHANGED"},
+			"unsupported operator: IS_CHANGED",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := match.Prepare(tc.cond, typed(spi.Integer))
+			if err == nil {
+				t.Fatalf("Prepare() = nil error, want %q", tc.want)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Prepare() error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestPrepare_NeverMatchIsNotAnError pins the two cases that sit in FRONT of
+// the error path: they are deliberate never-match behaviour and turning either
+// into a Prepare error would reject conditions that evaluate cleanly today.
+func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
+	meta := spi.EntityMeta{
+		State:        "active",
+		CreationDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	tests := []struct {
+		name       string
+		cond       predicate.Condition
+		fieldTypes match.FieldTypes
+		data       []byte
+	}{
+		{
+			// Field-dependent, not operator-dependent: the same operator on
+			// `state` IS an error (covered above).
+			"IS_CHANGED on a temporal meta field",
+			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
+			nil,
+			[]byte(`{}`),
+		},
+		{
+			"CONTAINS on a temporal meta field",
+			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026"},
+			nil,
+			[]byte(`{}`),
+		},
+		{
+			"comparison leaf on an untyped path",
+			&predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "GREATER_THAN", Value: 5},
+			func(string) []spi.DataType { return nil },
+			[]byte(`{"unknown":10}`),
+		},
+		{
+			"operand parses into no declared type",
+			&predicate.SimpleCondition{JsonPath: "$.qty", OperatorType: "GREATER_THAN", Value: "not-a-number"},
+			typed(spi.Integer),
+			[]byte(`{"qty":10}`),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := match.Prepare(tc.cond, tc.fieldTypes)
+			if err != nil {
+				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
+			}
+			if p.Match(tc.data, meta) {
+				t.Error("Match() = true, want false (never-match leaf)")
+			}
+		})
+	}
+}
+
+// TestPrepare_ZeroValueNeverMatches pins that the zero Prepared fails closed.
+// Prepare returns it alongside an error, and a caller that ignored the error
+// must not get a match-all.
+func TestPrepare_ZeroValueNeverMatches(t *testing.T) {
+	var p match.Prepared
+	if p.Match([]byte(`{"a":1}`), spi.EntityMeta{}) {
+		t.Error("zero Prepared.Match() = true, want false (fail closed)")
+	}
+}
+
+// TestPrepare_PreviousTransitionCanonicalisedBeforeFieldCheck pins the
+// ordering trap: previousTransition must be rewritten to
+// transitionForLatestSave BEFORE the unknown-field check, or a working field
+// name starts erroring.
+func TestPrepare_PreviousTransitionCanonicalisedBeforeFieldCheck(t *testing.T) {
+	cond := &predicate.LifecycleCondition{
+		Field: "previousTransition", OperatorType: "EQUALS", Value: "approve",
+	}
+	p, err := match.Prepare(cond, nil)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v, want nil", err)
+	}
+	if !p.Match([]byte(`{}`), spi.EntityMeta{TransitionForLatestSave: "approve"}) {
+		t.Error("Match() = false, want true")
+	}
+	if p.Match([]byte(`{}`), spi.EntityMeta{TransitionForLatestSave: "reject"}) {
+		t.Error("Match() = true for a non-equal transition, want false")
+	}
+}
+
+// TestPrepare_ArrayConditionOneExpansionPerPosition pins that an
+// ArrayCondition resolves one expansion per NON-NIL position — each position
+// is an EQUALS with its own operand, so a single leaf-level expansion cannot
+// serve them. Nil positions are skipped, and an all-nil condition matches.
+func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.tags",
+		Values:   []any{"red", nil, "blue"},
+	}
+	p, err := match.Prepare(cond, typed(spi.String))
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if !p.Match([]byte(`{"tags":["red","anything","blue"]}`), spi.EntityMeta{}) {
+		t.Error("Match() = false, want true: positions 0 and 2 match, 1 is skipped")
+	}
+	if p.Match([]byte(`{"tags":["red","anything","green"]}`), spi.EntityMeta{}) {
+		t.Error("Match() = true, want false: position 2 does not match")
+	}
+
+	allNil := &predicate.ArrayCondition{JsonPath: "$.tags", Values: []any{nil, nil}}
+	pn, err := match.Prepare(allNil, typed(spi.String))
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if !pn.Match([]byte(`{"tags":[]}`), spi.EntityMeta{}) {
+		t.Error("Match() = false for an all-nil array condition, want true")
+	}
+}
+
+// TestPrepare_ArrayWildcardRoutesPerRow pins that array-vs-scalar routing stays
+// PER ROW: matchSimple routed on the DATA's shape, not the condition's, so the
+// same prepared leaf must handle both an array and a scalar stored value.
+func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
+	cond := &predicate.SimpleCondition{
+		JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "peace",
+	}
+	p, err := match.Prepare(cond, typed(spi.String))
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if !p.Match([]byte(`{"laureates":[{"motivation":"for war"},{"motivation":"for peace"}]}`), spi.EntityMeta{}) {
+		t.Error("Match() = false, want true: one element matches")
+	}
+	if p.Match([]byte(`{"laureates":[{"motivation":"for war"}]}`), spi.EntityMeta{}) {
+		t.Error("Match() = true, want false: no element matches")
+	}
+	if p.Match([]byte(`{"laureates":[]}`), spi.EntityMeta{}) {
+		t.Error("Match() = true for an empty array, want false")
+	}
+}

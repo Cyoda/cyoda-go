@@ -12,7 +12,7 @@ import (
 // intercepts it in evaluateCriterion and dispatches it to a compute member.
 // Search has no such dispatcher — the parsed FunctionCondition is an empty
 // struct (name and config are discarded by ParseCondition), ConditionToFilter
-// refuses to translate it, and match.Match has no evaluator for it. Left
+// refuses to translate it, and match.Prepare has no evaluator for it. Left
 // unvalidated it reached the evaluator and surfaced as a 500 on a
 // client-supplied condition. ValidateCondition is the single boundary every
 // search-shaped entry point funnels through, so rejecting it here covers sync

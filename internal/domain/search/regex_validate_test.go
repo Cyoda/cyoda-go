@@ -49,7 +49,7 @@ func assertInvalidCondition(t *testing.T, err error) {
 // condition carrying an unparsable regex ("(" — unterminated group) is
 // rejected with 400 INVALID_CONDITION before the filter tree is built,
 // closing the fail-open regression left by Task 6's delegation to the
-// error-free spi.MatchFilter.
+// error-free spi.PreparedFilter.Match kernel.
 func TestSearch_MalformedRegex_Rejected(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "regex-model", ModelVersion: "1"}
 	svc, ctx := newRegexTestService(t, "tenant-regex", ref)

@@ -19,9 +19,10 @@ package postgres_test
 // so commit-time first-committer-wins validates it (matching Get/GetAll, which
 // record unconditionally; Search records only when asked).
 //
-// These tests assert (a) RYW parity with GetAll+spi.MatchFilter for buffered
-// create/update/delete and delete-then-save, and (b) the TrackingRead read-set
-// contract (records returned ids ⇒ conflicting concurrent commit aborts;
+// These tests assert (a) RYW parity with GetAll+spi.Prepare(filter).Match for
+// buffered create/update/delete and delete-then-save, and (b) the
+// TrackingRead read-set contract (records returned ids ⇒ conflicting
+// concurrent commit aborts;
 // records nothing when false ⇒ concurrent commit does not abort).
 
 import (
@@ -79,8 +80,8 @@ func idsOf(es []*spi.Entity) []string {
 }
 
 // assertSearchMatchesGetAll is the RYW oracle: Search inside the tx must return
-// exactly the id set that GetAll + spi.MatchFilter produces for the same tx
-// state. Both sides run on the same tx-scoped store/ctx.
+// exactly the id set that GetAll + spi.Prepare(filter).Match produces for the
+// same tx state. Both sides run on the same tx-scoped store/ctx.
 func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.Context, filter spi.Filter, opts spi.SearchOptions) []string {
 	t.Helper()
 	sr, ok := store.(spi.Searcher)
@@ -98,8 +99,9 @@ func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.
 		t.Fatalf("GetAll: %v", err)
 	}
 	wantIDs := make([]string, 0, len(all))
+	pf := spi.Prepare(filter)
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 		}
 	}
@@ -113,13 +115,13 @@ func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.
 		wantIDs = []string{}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("RYW parity mismatch: Search=%v, GetAll+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("RYW parity mismatch: Search=%v, GetAll+Prepare/Match=%v", gotIDs, wantIDs)
 	}
 	return gotIDs
 }
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create + update + delete
-// inside a tx must be reflected in Search identically to GetAll+MatchFilter.
+// inside a tx must be reflected in Search identically to GetAll+spi.Prepare(filter).Match.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e1": `{"city":"Berlin"}`,
@@ -208,7 +210,7 @@ func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 
 // TestSearchTx_PositiveSupersession: an in-tx update must supersede the
 // committed snapshot — the entity moves out of its old predicate bucket and
-// into the new one, identically to GetAll+MatchFilter.
+// into the new one, identically to GetAll+spi.Prepare(filter).Match.
 func TestSearchTx_PositiveSupersession(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e2": `{"city":"Munich"}`,
@@ -382,9 +384,9 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 // TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt is the RED driver for in-tx
 // point-in-time (PIT) Search (Task 11, issue #420): a Search issued INSIDE a
 // transaction with opts.PointInTime set must return the committed-as-at-PIT
-// snapshot — identical to GetAllAsAt + spi.MatchFilter run through the same
-// tx-scoped store/ctx — never a buffered/overlaid current-state view. The
-// entity's status flip (active -> inactive) is pinned to a valid_time AFTER
+// snapshot — identical to GetAllAsAt + spi.Prepare(filter).Match run through
+// the same tx-scoped store/ctx — never a buffered/overlaid current-state view.
+// The entity's status flip (active -> inactive) is pinned to a valid_time AFTER
 // the pit, so it must not be visible: only the historical v1 (active) may
 // come back.
 func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
@@ -457,15 +459,17 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		t.Fatalf("in-tx PIT Search data: got %s, want v1 {\"status\":\"active\"} (v2 committed after pit)", got[0].Data)
 	}
 
-	// Oracle: GetAllAsAt + spi.MatchFilter, run through the SAME tx-scoped
-	// store/ctx, must agree exactly with Search's committed-as-at-PIT result.
+	// Oracle: GetAllAsAt + spi.Prepare(filter).Match, run through the SAME
+	// tx-scoped store/ctx, must agree exactly with Search's
+	// committed-as-at-PIT result.
 	all, err := txStore.GetAllAsAt(txCtx, searchTxModel, pit)
 	if err != nil {
 		t.Fatalf("GetAllAsAt: %v", err)
 	}
 	var wantIDs []string
+	pf := spi.Prepare(spi.Filter{})
 	for _, e := range all {
-		if spi.MatchFilter(spi.Filter{}, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 		}
 	}
@@ -478,7 +482,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		gotIDs = []string{}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("PIT parity mismatch: Search=%v, GetAllAsAt+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("PIT parity mismatch: Search=%v, GetAllAsAt+Prepare/Match=%v", gotIDs, wantIDs)
 	}
 
 	// No read-set recorded for a PIT search, even with TrackingRead=true:

@@ -406,15 +406,15 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 }
 
 // TestMemoryGroupedAggregate_TemporalFilterOnCreationDate pins grouped-stats
-// filtering to the shared spi.MatchFilter temporal kernel: a filter with
-// Coercion: CoerceTemporal on the canonical meta path "creationDate" must be
-// evaluated chronologically, not lexically/string-wise. This is the
-// regression guard for the memory plugin's local msMatchFilter evaluator,
-// which had no Coercion handling and no "creationDate" case at all in its
-// meta vocabulary (only storage-key names like entity_id/state/version) —
-// so this filter either silently no-matched everything or (if it happened
+// filtering to the shared spi.Prepare/PreparedFilter.Match temporal kernel: a
+// filter with Coercion: CoerceTemporal on the canonical meta path
+// "creationDate" must be evaluated chronologically, not lexically/string-wise.
+// This is the regression guard for the memory plugin's prepared-filter
+// evaluation, which previously had no Coercion handling and no "creationDate" case at all
+// in its meta vocabulary (only storage-key names like entity_id/state/version)
+// — so this filter either silently no-matched everything or (if it happened
 // to fall back to string comparison) compared instants lexically instead of
-// chronologically. Delegating to spi.MatchFilter fixes both.
+// chronologically. Delegating to the shared kernel fixes both.
 func TestMemoryGroupedAggregate_TemporalFilterOnCreationDate(t *testing.T) {
 	clock := memory.NewTestClockAt(msBase)
 	factory := memory.NewStoreFactory(memory.WithClock(clock))

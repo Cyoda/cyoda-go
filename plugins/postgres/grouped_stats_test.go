@@ -456,8 +456,8 @@ func TestPostgresGroupedAggregate_UsesNativeGroupByOnIsNullOnlyFilter(t *testing
 // re-check — and hand-tallies by state, pinning that the boundary rows are
 // correctly excluded from the final count. This is the count a memory
 // backend would also produce for the identical corpus+filter: memory's
-// Iterate has no SQL layer at all, it evaluates spi.MatchFilter directly per
-// entity (plugins/memory/grouped_stats.go msMatchFilter) — so "correct here"
+// Iterate has no SQL layer at all, it evaluates spi.Prepare(filter).Match
+// directly per entity (plugins/memory/grouped_stats.go) — so "correct here"
 // and "identical to memory" are the same claim.
 func TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(t *testing.T) {
 	_, store, ctx := gsNewStore(t)

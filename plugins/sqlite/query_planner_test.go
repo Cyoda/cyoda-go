@@ -603,8 +603,8 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 }
 
 // C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
-// (exclude every row), matching memory's spi.MatchFilter behavior, not
-// match-all ("1=1"). Validation now rejects this upstream (see
+// (exclude every row), matching memory's spi.Prepare/PreparedFilter.Match
+// behavior, not match-all ("1=1"). Validation now rejects this upstream (see
 // internal/domain/search/operators.go validateBetweenArity), so this is
 // defense-in-depth for any Filter constructed directly (bypassing the
 // domain validator).
@@ -821,8 +821,8 @@ func TestSqlitePlan_TemporalMetaBetween(t *testing.T) {
 
 // TestSqlitePlan_TemporalData asserts that a SourceData temporal COMPARISON
 // leaf is NOT pushed — it is routed to the residual so the kernel
-// (spi.MatchFilter), which performs temporal-subtype resolution, is
-// authoritative. The flat epoch-ms push ("/1000") assumes a µs-integer stored
+// (spi.Prepare/PreparedFilter.Match), which performs temporal-subtype
+// resolution, is authoritative. The flat epoch-ms push ("/1000") assumes a µs-integer stored
 // value and cannot reproduce the kernel's imprecise-floor op mutation (e.g.
 // `>= 2024-09-09` on a Year field becomes `> 2024`) as a sound superset over a
 // bare ISO-string data value. Meta temporal leaves (µs-integer instants) remain

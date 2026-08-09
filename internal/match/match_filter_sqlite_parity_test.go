@@ -1,23 +1,32 @@
 package match_test
 
-// Cross-module parity smoke test: pins the contract that
-// internal/match.MatchFilter and plugins/sqlite.EvaluateFilter agree on
-// the same (filter, data, meta) tuple. Drift between the two means
-// grouped-stats / streaming-tally / Iterate results would silently
-// disagree across backends.
+// Dormant drift guard, not a live parity check.
 //
-// This is NOT an exhaustive parity matrix — that lives in the
-// grouped-stats E2E parity suite. This smoke test focuses on cases
-// where drift is plausible:
-//   - numeric ordering on stringly-typed numeric data (string→float
-//     coercion divergence)
-//   - LIKE patterns crossing multibyte characters (rune vs byte
-//     semantics divergence)
-//   - the standard structural cases (Eq, IsNull, NotNull, AND, OR,
-//     nested, SourceState, SourceMeta) so a future refactor in either
-//     evaluator can't silently break the simple cases either.
+// plugins/sqlite.EvaluateFilter (post_filter.go) is today a one-line
+// delegate: `return p.Match(entity.Data, entity.Meta)`. It has no evaluation
+// logic of its own left to disagree with spi.PreparedFilter.Match — they are
+// the identical method call on the identical receiver with the identical
+// arguments. So every assertion below is currently near-tautological: it
+// WILL pass, for every case, regardless of what the case actually exercises.
 //
-// The test file lives in the root module (next to MatchFilter) and
+// That is not what this file is for today. It exists to catch the day this
+// stops being true: sqlite growing evaluation logic of its own again, or its
+// EvaluateFilter/evaluateFilter entry point being rewired to transform its
+// arguments (e.g. dropping meta, or passing the raw JSONB document instead of
+// entity.Data). On that day this test starts failing immediately and loudly,
+// and the 32-case table below — numeric ordering on stringly-typed data,
+// LIKE across multibyte boundaries, null semantics, AND/OR groups, meta
+// fields, case-insensitive ops, empty-group identities — is what gives that
+// failure teeth instead of a single trivial case.
+//
+// Where the LIVE coverage lives:
+//   - plugins/sqlite/soundness_property_test.go guards SQL-pushdown-vs-kernel
+//     agreement — the actual place sqlite's evaluation behavior is checked
+//     against the kernel today.
+//   - the SPI's own filter_match_test.go / prepared filter tests guard the
+//     kernel's (spi.Prepare + PreparedFilter.Match) own correctness.
+//
+// The test file lives in the root module (next to internal/match) and
 // imports plugins/sqlite via its public EvaluateFilter wrapper. The
 // sqlite plugin is a separate Go module — internal/match cannot import
 // it directly, but a _test.go file may, because root module tests can
@@ -29,7 +38,6 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -42,7 +50,7 @@ func mustParityJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestMatchFilter_SqliteParity_Smoke(t *testing.T) {
+func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 	// A shared meta used across SourceMeta cases.
 	meta := spi.EntityMeta{
 		ID:               "ent-1",
@@ -78,8 +86,9 @@ func TestMatchFilter_SqliteParity_Smoke(t *testing.T) {
 		meta spi.EntityMeta
 	}{
 		// --- Issue 1: numeric ordering on stringly-typed numeric data ---
-		// Sqlite returns false (byte-lex "100" vs "42" → "1" < "4"); MatchFilter
-		// must agree. Before the fix MatchFilter parsed strings → returned true.
+		// Sqlite returns false (byte-lex "100" vs "42" → "1" < "4"); the prepared
+		// kernel (spi.Prepare + PreparedFilter.Match) must agree. Before the fix
+		// the (now-deleted) fused evaluator parsed strings → returned true.
 		{
 			name: "Gt-on-stringly-numeric",
 			f:    spi.Filter{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 42},
@@ -318,14 +327,14 @@ func TestMatchFilter_SqliteParity_Smoke(t *testing.T) {
 			}
 			ent := &spi.Entity{Meta: tc.meta, Data: data}
 
-			sqliteRes, err := sqlite.EvaluateFilter(tc.f, ent)
-			if err != nil {
-				t.Fatalf("sqlite.EvaluateFilter errored: %v", err)
-			}
-			matchRes := match.MatchFilter(tc.f, data, tc.meta)
+			// Both sides prepared, mirroring production: the plugin prepares
+			// at its plan site, the domain evaluator at its query site.
+			prepared := spi.Prepare(tc.f)
+			sqliteRes := sqlite.EvaluateFilter(prepared, ent)
+			kernelRes := prepared.Match(data, tc.meta)
 
-			if sqliteRes != matchRes {
-				t.Fatalf("PARITY DRIFT: sqlite=%v match=%v\n  filter=%+v", sqliteRes, matchRes, tc.f)
+			if sqliteRes != kernelRes {
+				t.Fatalf("PARITY DRIFT: sqlite=%v kernel=%v\n  filter=%+v", sqliteRes, kernelRes, tc.f)
 			}
 		})
 	}

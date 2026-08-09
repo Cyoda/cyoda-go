@@ -11,7 +11,7 @@ import (
 // Workflow-criterion temporal coverage (issue #423, task 16): proves that a
 // transition gated by a LifecycleCondition on creationDate evaluates
 // chronologically at fire time through the full HTTP stack — the same
-// match.Match -> matchLifecycle path already made temporal-correct for
+// match.Prepare -> prepareLifecycle path already made temporal-correct for
 // ad-hoc search (routed through spi.CompareTemporal). This is coverage for
 // an already-correct evaluation path, not a fix: a GREATER_THAN threshold
 // safely in the past must fire an automated transition, and a threshold in

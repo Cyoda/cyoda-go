@@ -16,13 +16,14 @@ import (
 //
 // Mirrors plugins/sqlite/soundness_property_test.go's contract exactly: the
 // SQL WHERE fragment planQuery produces must return a SUPERSET of
-// spi.MatchFilter's true matches (never under-select); the postFilter kernel
-// re-check then narrows that candidate set back down to the exact result.
-// See that file's doc comment for the full rationale (superset assertion +
-// "backend result == memory backend result" equality proxy, and why temporal
-// PUSH-soundness coverage uses SourceMeta "creationDate" rather than a
-// SourceData path — a data temporal comparison is routed to the residual by
-// isLeafPushable, so it never exercises a pushed WHERE fragment).
+// spi.Prepare/PreparedFilter.Match's true matches (never under-select); the
+// postFilter kernel re-check then narrows that candidate set back down to
+// the exact result. See that file's doc comment for the full rationale
+// (superset assertion + "backend result == memory backend result" equality
+// proxy, and why temporal PUSH-soundness coverage uses SourceMeta
+// "creationDate" rather than a SourceData path — a data temporal comparison
+// is routed to the residual by isLeafPushable, so it never exercises a
+// pushed WHERE fragment).
 //
 // Determinism note: unlike sqlite (which has an injectable Clock —
 // sqlite.TestClock — for exact-instant control), postgres stamps
@@ -119,13 +120,14 @@ func fUnary(op spi.FilterOp, path string) spi.Filter {
 	return spi.Filter{Op: op, Source: spi.SourceData, Path: path}
 }
 
-// oracleIDs computes the TRUE match set directly via spi.MatchFilter over
-// the in-process corpus — exactly the memory backend's Iterate/Search
-// algorithm (no SQL, no narrowing).
+// oracleIDs computes the TRUE match set directly via
+// spi.Prepare/PreparedFilter.Match over the in-process corpus — exactly the
+// memory backend's Iterate/Search algorithm (no SQL, no narrowing).
 func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
 	out := map[string]bool{}
+	pf := spi.Prepare(f)
 	for _, e := range corpus {
-		if spi.MatchFilter(f, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			out[e.Meta.ID] = true
 		}
 	}
@@ -300,7 +302,7 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 
 	filter := spi.Filter{Op: spi.FilterEndsWith, Source: spi.SourceData, Path: "name", Value: "get"}
 
-	oracle := spi.MatchFilter(filter, []byte(`{"name":"Widget"}`), spi.EntityMeta{})
+	oracle := spi.Prepare(filter).Match([]byte(`{"name":"Widget"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match ENDS_WITH 'get' against 'Widget'")
 	}
@@ -321,8 +323,9 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 // leafToSQL, case spi.FilterLike, had the byte-for-byte identical
 // escapeLike() call escaping every '%'/'_' before binding to
 // `LIKE $N ESCAPE '\'` — turning a genuine wildcard pattern into a literal
-// string match at the SQL layer, while the kernel (spi.MatchFilter ->
-// eval_leaf.go likeToRegex) treats those characters as real wildcards.
+// string match at the SQL layer, while the kernel
+// (spi.Prepare/PreparedFilter.Match -> eval_leaf.go likeToRegex) treats those
+// characters as real wildcards.
 //
 // Fixed identically to sqlite: FilterLike removed from isPushable, so Like
 // is now residual-only and the kernel evaluates it directly with the
@@ -334,7 +337,7 @@ func TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.
 
 	filter := spi.Filter{Op: spi.FilterLike, Source: spi.SourceData, Path: "desc", Value: "foo%baz"}
 
-	oracle := spi.MatchFilter(filter, []byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
+	oracle := spi.Prepare(filter).Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}

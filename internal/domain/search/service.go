@@ -359,34 +359,53 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to retrieve entities: %w", err)
 	}
 
-	// Declared-type resolver for the predicate evaluator: the type-directed
-	// kernel compares temporal data fields temporally (not lexically) only when
-	// the model supplies their declared subtype. Load the model's FieldsMap so
-	// this in-memory fallback path matches the pushdown's typing. A genuine
-	// store/schema-load error fails closed (correctness-over-availability): the
-	// model schema is a required input for correct typing, so we surface the
-	// error rather than silently under-match with untyped leaves. The
-	// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
-	// returns nil types, and comparison leaves degrade to non-match as intended.
-	fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
-	if ffErr != nil {
-		return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
-	}
-	fieldTypes := func(p string) []spi.DataType {
-		if fd, ok := fallbackFields[p]; ok {
-			return fd.Types
-		}
-		return nil
-	}
-
+	// A nil condition matches every entity — the "no filtering" case, same
+	// answer the pre-split evaluator gave (it never faulted on a nil
+	// condition; it only ever evaluated one once a row reached it, and a nil
+	// condition never reached the per-row evaluation at all). match.Prepare
+	// has no clause for a nil predicate.Condition — every concrete type in the
+	// sum type is a struct, never nil — so calling it here would report
+	// "unknown condition type: <nil>" and turn an empty model's "no filter"
+	// query into a 500. Not reachable today (predicate.ParseCondition never
+	// returns (nil, nil), and the one nil-capable caller short-circuits
+	// earlier), but the guard is cheap and keeps the fallback's answer
+	// independent of that being true forever.
 	var matches []*spi.Entity
-	for _, e := range entities {
-		ok, matchErr := match.Match(cond, e.Data, e.Meta, fieldTypes)
-		if matchErr != nil {
-			return nil, fmt.Errorf("predicate match failed: %w", matchErr)
+	if cond == nil {
+		matches = entities
+	} else {
+		// Declared-type resolver for the predicate evaluator: the type-directed
+		// kernel compares temporal data fields temporally (not lexically) only when
+		// the model supplies their declared subtype. Load the model's FieldsMap so
+		// this in-memory fallback path matches the pushdown's typing. A genuine
+		// store/schema-load error fails closed (correctness-over-availability): the
+		// model schema is a required input for correct typing, so we surface the
+		// error rather than silently under-match with untyped leaves. The
+		// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
+		// returns nil types, and comparison leaves degrade to non-match as intended.
+		fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
+		if ffErr != nil {
+			return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
 		}
-		if ok {
-			matches = append(matches, e)
+		fieldTypes := func(p string) []spi.DataType {
+			if fd, ok := fallbackFields[p]; ok {
+				return fd.Types
+			}
+			return nil
+		}
+
+		// Prepared once for the whole scan. Everything the leaf evaluator can fault
+		// on is a structural property of the condition, so it surfaces here rather
+		// than on whichever row happens to reach it first.
+		prepared, prepErr := match.Prepare(cond, fieldTypes)
+		if prepErr != nil {
+			return nil, fmt.Errorf("predicate match failed: %w", prepErr)
+		}
+
+		for _, e := range entities {
+			if prepared.Match(e.Data, e.Meta) {
+				matches = append(matches, e)
+			}
 		}
 	}
 

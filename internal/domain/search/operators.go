@@ -109,6 +109,22 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		_ = c
 		return nil
 	case *predicate.GroupCondition:
+		// A group operator other than exactly "AND"/"OR" previously cleared
+		// validation and then behaved differently depending on which
+		// execution path the query took: spi.ConditionToFilter's
+		// groupToFilter maps anything non-"OR" (matched case-insensitively)
+		// to FilterAnd, silently answering 200 with the wrong rows, while
+		// match.Prepare requires exactly "AND"/"OR" and returns a bare
+		// "unknown group operator" error that surfaces as a 500 on a
+		// client-supplied condition. Reject it here — the one boundary every
+		// search-shaped entry point funnels through — the same way the
+		// FunctionCondition arm below closes its own 500-on-client-input
+		// class. Case-sensitive: the predicate parser and match.Prepare both
+		// require uppercase, so lowercase "or" is rejected too rather than
+		// preserved to match the pushdown translator's looser check.
+		if c.Operator != "AND" && c.Operator != "OR" {
+			return fmt.Errorf("%w: unknown group operator %q; valid: AND, OR", ErrInvalidCondition, c.Operator)
+		}
 		for _, child := range c.Conditions {
 			if err := validateConditionAtDepth(child, depth+1); err != nil {
 				return err
@@ -119,7 +135,7 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		// A FUNCTION clause is a criterion shape, not a search shape. The
 		// workflow engine intercepts it in evaluateCriterion and dispatches it
 		// to a compute member; search has no dispatcher, ConditionToFilter
-		// cannot translate it, and match.Match has no evaluator for it. Reject
+		// cannot translate it, and match.Prepare has no evaluator for it. Reject
 		// it here — the one boundary every search-shaped entry point funnels
 		// through — rather than letting it reach the evaluator and surface as a
 		// 500 on a client-supplied condition.
@@ -168,10 +184,11 @@ func validateOperandShape(value any) error {
 // and leaves spi.Filter.Values nil, and that nil-Values filter reaches the
 // storage plugins with catastrophically divergent behavior — postgres
 // panicked indexing f.Values[0] with no length guard, sqlite's BETWEEN
-// fallback emitted a match-all "1=1", and only memory's spi.MatchFilter
-// correctly excluded. Rejecting the malformed condition here, at the single
-// validation boundary every transport (HTTP, gRPC) funnels through, closes
-// the gap before any of that divergence can occur.
+// fallback emitted a match-all "1=1", and only memory's
+// spi.Prepare/PreparedFilter.Match correctly excluded. Rejecting the
+// malformed condition here, at the single validation boundary every
+// transport (HTTP, gRPC) funnels through, closes the gap before any of that
+// divergence can occur.
 func validateBetweenArity(op string, value any) error {
 	if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
 		return nil

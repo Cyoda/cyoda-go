@@ -14,9 +14,10 @@ import (
 // character class) is rejected with 400 INVALID_CONDITION on the grouped-stats
 // endpoint, before any store is touched. This closes a fail-open regression:
 // the plugin residual filter evaluators (sqlite's evaluateFilter, postgres's
-// evalPostFilter) delegate to the error-free spi.MatchFilter, which returns
-// false (non-match) rather than erroring on a malformed pattern — so without
-// upstream validation a bad regex here would silently under-include buckets
+// evalPostFilter) delegate to the error-free spi.PreparedFilter.Match kernel,
+// which returns false (non-match) rather than erroring on a malformed
+// pattern — so without upstream validation a bad regex here would silently
+// under-include buckets
 // (HTTP 200) instead of being rejected. The grouped-stats path now runs the
 // same domain-layer regex validation the search path already has, so every
 // backend (memory/sqlite/postgres) rejects identically.

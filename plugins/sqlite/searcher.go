@@ -19,8 +19,8 @@ var _ spi.Searcher = (*entityStore)(nil)
 // never a truncated prefix; exactly-at-limit succeeds. opts.Limit <= 0 is
 // unbounded and must never raise — no default is substituted for it.
 //
-// Three branches, all producing the same result set that GetAll + spi.MatchFilter
-// would for the same transaction state:
+// Three branches, all producing the same result set that
+// GetAll + spi.Prepare(filter).Match would for the same transaction state:
 //   - non-tx (or in-tx point-in-time): committed pushdown via searchCommitted —
 //     the query planner pushes pushable predicates to SQL and post-filters the
 //     residual in Go; the bound is enforced in SQL (LIMIT limit+1, so the extra
@@ -127,14 +127,8 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 			return nil, scanErr
 		}
 
-		if plan.postFilter != nil {
-			matches, evalErr := evaluateFilter(*plan.postFilter, e)
-			if evalErr != nil {
-				return nil, fmt.Errorf("post-filter evaluation: %w", evalErr)
-			}
-			if !matches {
-				continue
-			}
+		if plan.preparedPostFilter != nil && !evaluateFilter(*plan.preparedPostFilter, e) {
+			continue
 		}
 
 		results = append(results, e)
@@ -226,6 +220,10 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 	if filter.Op != "" {
 		plan = planQuery(filter)
 	}
+	// The buffered own-writes are matched against the FULL original filter (not
+	// the residual), so they need their own prepared value. Prepared once,
+	// above the loop.
+	pf := spi.Prepare(filter)
 
 	// Committed candidate SQL: snapshot at tx.SnapshotTime, ORDER BY, no LIMIT.
 	baseQuery, baseArgs := s.searchSnapshotBase(opts, timeToMicro(tx.SnapshotTime))
@@ -262,14 +260,8 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 				if scanErr != nil {
 					return nil, false, scanErr
 				}
-				if plan.postFilter != nil {
-					matches, evalErr := evaluateFilter(*plan.postFilter, e)
-					if evalErr != nil {
-						return nil, false, fmt.Errorf("post-filter evaluation: %w", evalErr)
-					}
-					if !matches {
-						continue
-					}
+				if plan.preparedPostFilter != nil && !evaluateFilter(*plan.preparedPostFilter, e) {
+					continue
 				}
 				return e, true, nil
 			}
@@ -289,7 +281,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 			if e.Meta.ModelRef != modelRef {
 				continue
 			}
-			if spi.MatchFilter(filter, e.Data, e.Meta) {
+			if pf.Match(e.Data, e.Meta) {
 				adds = append(adds, copyEntity(e))
 			}
 		}

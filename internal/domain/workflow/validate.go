@@ -202,21 +202,21 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 // ways:
 //   - a MATCHES_PATTERN operator carrying a regex that fails to compile.
 //   - a lifecycle/meta clause that is type-unsound: an unknown meta field
-//     path, a non-comparison operator on a temporal field (creationDate,
-//     lastUpdateTime), or a non-offset-RFC3339 operand on a temporal field.
-//     Delegates to search.ValidateLifecycleCondition, the same validator the
-//     search API boundary enforces on ad-hoc queries — a workflow criterion
-//     and a search query use the identical meta-field vocabulary and
-//     evaluate through the same match.Match/matchLifecycle path, so both
-//     entry points reject the same malformed conditions.
+//     path, or a non-offset-RFC3339 operand on a temporal field
+//     (creationDate, lastUpdateTime). Delegates to
+//     search.ValidateLifecycleCondition, the same validator the search API
+//     boundary enforces on ad-hoc queries — a workflow criterion and a
+//     search query use the identical meta-field vocabulary and evaluate
+//     through the same match.Prepare/(Prepared).Match path, so both entry
+//     points reject the same malformed conditions.
 //
 // Criteria are stored opaquely (json.RawMessage) and previously were only
 // parsed at transition-evaluation time (engine.go's evaluateCriterion ->
-// match.Match -> matchLifecycle / operators.go's opMatchesPattern), so a
-// malformed criterion imported successfully and then errored (or silently
-// misbehaved) on every subsequent evaluation of that transition. This closes
-// that fail-open gap by validating both classes of malformation at import
-// time.
+// match.Prepare, whose leaf expansion — including MATCHES_PATTERN
+// compilation — happens inside spi.ExpandLeaf), so a malformed criterion
+// imported successfully and then errored (or silently misbehaved) on every
+// subsequent evaluation of that transition. This closes that fail-open gap by
+// validating both classes of malformation at import time.
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does
@@ -265,12 +265,22 @@ func walkCriterion(cond predicate.Condition, location string) error {
 	return nil
 }
 
-// compileMatchesPattern compiles value as a regex exactly the way
-// the evaluator does — internal/match/operators.go's opMatchesPattern calls
-// regexp.MatchString(fmt.Sprintf("%v", expected), actual.String()), which
-// itself compiles via regexp.Compile. Mirroring the %v stringification
-// and Compile call here means a pattern accepted here is guaranteed
-// compilable at evaluation time, and vice versa — no accept/reject skew.
+// compileMatchesPattern compiles value as a regex the same way
+// internal/domain/search/regex_validate.go's compileRegexPattern does for ad
+// hoc search conditions: it derives the pattern the same way the kernel does
+// — fmt.Sprintf("%v", value) — but compiles it bare (regexp.Compile(pattern)),
+// not anchored the way the kernel's ExpandLeaf does (cyoda-go-spi
+// eval_leaf.go: regexp.Compile(anchor(pattern)), i.e. `\A(?:pattern)\z`). The
+// two compile calls are NOT guaranteed to agree, and the skew runs both
+// ways — see the accept/reject-skew note on ValidateRegexPatterns in
+// internal/domain/search/regex_validate.go for the full explanation and
+// examples (reject-though-valid: ")|("; accept-then-fail: "\Q"). The
+// resolution is decided there too: the validator side — this function
+// included — should adopt the kernel's anchored form, since anchoring is the
+// correct semantics and every evaluator already applies it; but the wrapper
+// is unexported in cyoda-go-spi, so it isn't done here. Don't hand-roll the
+// wrapper in this package to close the gap — that would duplicate a grammar
+// that must not drift from the kernel's.
 func compileMatchesPattern(operatorType string, value any, location string) error {
 	if operatorType != "MATCHES_PATTERN" {
 		return nil

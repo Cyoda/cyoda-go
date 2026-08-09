@@ -15,23 +15,37 @@ import (
 // fails to compile.
 //
 // This closes a fail-open regression: the plugin residual filter evaluators
-// delegate to the error-free spi.MatchFilter contract, so a malformed
+// delegate to the error-free spi.PreparedFilter.Match kernel, so a malformed
 // pattern that reaches the matcher no longer surfaces an error — it
 // silently returns under-inclusive (or, for sqlite/postgres, previously an
 // opaque 500) results. Rejecting here, in the backend-independent domain
 // layer, makes every backend (memory/sqlite/postgres) reject identically
 // with 400 INVALID_CONDITION, before any store or plugin code runs.
 //
-// The compile call MUST mirror internal/match/operators.go opMatchesPattern
-// exactly, so validation accepts precisely the set the evaluator accepts
-// (no accept/reject skew). opMatchesPattern calls:
-//
-//	regexp.MatchString(pattern, actual.String())
-//
-// which internally compiles pattern via regexp.Compile before matching, and
-// derives pattern via fmt.Sprintf("%v", expected) — i.e. it stringifies the
-// condition value regardless of its concrete type before compiling. This
-// function does the same: fmt.Sprintf("%v", c.Value), then regexp.Compile.
+// This validator compiles the pattern bare (regexp.Compile(pattern)); the
+// kernel compiles it anchored — regexp.Compile(anchor(pattern)), i.e.
+// `\A(?:pattern)\z` — inside ExpandLeaf (cyoda-go-spi eval_leaf.go). The two
+// compile calls are NOT guaranteed to agree, and the skew runs both ways.
+// Reject-though-valid: the anchor wrapper's own parentheses can rebalance a
+// pattern whose parens are unmatched on their own (e.g. ")|(" fails bare but
+// compiles once wrapped), so a narrow class of patterns is rejected here even
+// though the kernel would accept them. Accept-then-fail — the more serious
+// direction, and the one this validator exists to prevent — an unterminated
+// \Q...\E literal-quote escape (e.g. the bare pattern "\Q") compiles fine
+// here, but the wrapper's appended `)\z` gets swallowed by that same
+// unterminated \Q, so ExpandLeaf's anchored compile fails: the client gets a
+// 200 and a job id, and the job then fails. Backends also disagree on that
+// failure — the in-tree evaluators leave the compiled regex nil and return
+// an empty (non-matching) result, while the commercial backend's async
+// evaluator propagates the compile error and fails the job. The resolution
+// is decided, not open: the validator should compile the anchored form too,
+// since anchoring is the correct full-value-match semantics (mirroring
+// Cloud's Pattern.matcher(x).matches()) and every evaluator — including the
+// commercial one — already applies it; this validator is the outlier. It
+// isn't done here because the wrapper (anchor, and likeToRegex for LIKE) is
+// unexported in cyoda-go-spi, and hand-copying the grammar into this package
+// would create a second copy that must not drift from the kernel's — the fix
+// belongs in the SPI, not in a hand-rolled wrapper here.
 func ValidateRegexPatterns(cond predicate.Condition) error {
 	return walkRegexPatterns(cond, 0)
 }
@@ -68,10 +82,12 @@ func walkRegexPatterns(cond predicate.Condition, depth int) error {
 	}
 }
 
-// compileRegexPattern mirrors opMatchesPattern's pattern derivation and
-// compile call exactly: fmt.Sprintf("%v", value) then regexp.Compile. The
-// returned error is regexp.Compile's own (e.g. "error parsing regexp: ...")
-// so callers can format it into their own message without double-wrapping.
+// compileRegexPattern derives the pattern the same way the kernel does —
+// fmt.Sprintf("%v", value) — but compiles it bare, not anchored the way
+// ExpandLeaf does; see the accept/reject-skew note on ValidateRegexPatterns
+// above. The returned error is regexp.Compile's own (e.g. "error parsing
+// regexp: ...") so callers can format it into their own message without
+// double-wrapping.
 func compileRegexPattern(value any) error {
 	pattern := fmt.Sprintf("%v", value)
 	_, err := regexp.Compile(pattern)

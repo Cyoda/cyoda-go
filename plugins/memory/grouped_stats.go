@@ -41,15 +41,20 @@ import (
 //     matching the service-layer's buildGroupKeyFromEntity. Object/array/
 //     missing values coerce to nil.
 //
-//   - Filter evaluation (msMatchFilter, below) delegates to the shared
-//     spi.MatchFilter kernel — the same evaluator plugins/sqlite/
-//     post_filter.go and plugins/postgres/grouped_stats.go delegate to —
-//     so all backends agree bit-for-bit on filter semantics. There is no
-//     plugin-local leaf evaluator here; see msMatchFilter's doc comment.
+//   - Filter evaluation delegates to the shared spi.Prepare/PreparedFilter
+//     kernel — the same evaluator plugins/sqlite/post_filter.go and
+//     plugins/postgres/grouped_stats.go delegate to — so all backends agree
+//     bit-for-bit on filter semantics. The filter is prepared once per query
+//     (see Iterate and GroupedAggregate) and matched per row; there is no
+//     plugin-local leaf evaluator here.
 
-// Iterate implements spi.Iterable. Snapshots matching *spi.Entity pointers
-// under the entity read-lock, releases the lock, and yields them through
-// the iterator with the filter applied inside Next() (D14, D20, §6.1).
+// Iterate implements spi.Iterable. The filter is prepared once here and
+// evaluated per row by the shared kernel — the same evaluator the sqlite
+// (plugins/sqlite/post_filter.go) and postgres (plugins/postgres/
+// grouped_stats.go) backends use, so all three backends agree bit-for-bit on
+// filter semantics, including CoerceTemporal and the canonical client-name
+// meta vocabulary. A zero-value filter prepares to match-all, matching the
+// historical "no filter" contract.
 func (s *EntityStore) Iterate(
 	ctx context.Context,
 	model spi.ModelRef,
@@ -62,7 +67,7 @@ func (s *EntityStore) Iterate(
 	}
 	return &memoryIter{
 		snapshot: snapshot,
-		filter:   filter,
+		prepared: spi.Prepare(filter),
 		ctx:      ctx,
 	}, nil
 }
@@ -194,7 +199,7 @@ func (s *EntityStore) getAllSnapshotPointersUnlocked(modelRef spi.ModelRef, snap
 // Close() is idempotent, ctx cancellation is observed.
 type memoryIter struct {
 	snapshot []*spi.Entity
-	filter   spi.Filter
+	prepared spi.PreparedFilter
 	ctx      context.Context
 	idx      int
 	cur      *spi.Entity
@@ -213,7 +218,7 @@ func (it *memoryIter) Next() bool {
 	for it.idx < len(it.snapshot) {
 		e := it.snapshot[it.idx]
 		it.idx++
-		if !msMatchFilter(it.filter, e) {
+		if !it.prepared.Match(e.Data, e.Meta) {
 			continue
 		}
 		it.cur = e
@@ -255,12 +260,15 @@ func (s *EntityStore) GroupedAggregate(
 		return nil, err
 	}
 
+	// Prepared once for the whole aggregation — the filter does not vary by row.
+	pf := spi.Prepare(filter)
+
 	buckets := make(map[string]*memBucket)
 	for _, e := range snapshot {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !msMatchFilter(filter, e) {
+		if !pf.Match(e.Data, e.Meta) {
 			continue
 		}
 		rawVals, keys := extractGroupKey(groupBy, e)
@@ -488,16 +496,4 @@ func gjsonPath(p string) string {
 		return p[2:]
 	}
 	return p
-}
-
-// msMatchFilter evaluates an spi.Filter against an entity by delegating to
-// the shared spi.MatchFilter kernel — the same evaluator the sqlite
-// (plugins/sqlite/post_filter.go) and postgres (plugins/postgres/
-// grouped_stats.go) backends use, so all three backends agree bit-for-bit
-// on filter semantics (including CoerceTemporal and the canonical
-// client-name meta vocabulary, e.g. "creationDate"/"lastUpdateTime").
-// spi.MatchFilter already returns true for a zero-value (empty Op) filter,
-// matching the historical "no filter" contract.
-func msMatchFilter(f spi.Filter, e *spi.Entity) bool {
-	return spi.MatchFilter(f, e.Data, e.Meta)
 }

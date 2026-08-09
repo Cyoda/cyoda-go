@@ -207,10 +207,10 @@ func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 // and declared set, not the operator), so FilterEq is a faithful oracle that
 // also applies per array element, where a range operator cannot be expanded in
 // isolation. The operand is normalised with spi.OperandString — the single
-// shared operand→string form the evaluators (internal/match, spi.MatchFilter)
-// feed the kernel — so validation and evaluation agree. A Void expansion
-// (parses but every bucket dropped, e.g. EQUALS 12.5 on [INTEGER]) is NOT a
-// mismatch — it is accepted and evaluates to non-match.
+// shared operand→string form the evaluators (internal/match's Prepare,
+// spi.Prepare) feed the kernel — so validation and evaluation agree. A Void
+// expansion (parses but every bucket dropped, e.g. EQUALS 12.5 on [INTEGER])
+// is NOT a mismatch — it is accepted and evaluates to non-match.
 func operandParsesDeclared(declared []schema.DataType, v any) bool {
 	_, err := spi.ExpandLeaf(spi.FilterEq, spi.OperandString(v), nil, declared)
 	return err == nil

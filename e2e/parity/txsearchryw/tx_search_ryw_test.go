@@ -184,19 +184,20 @@ func seed(t *testing.T, f spi.StoreFactory, baseCtx context.Context, rows ...*sp
 }
 
 // assertRYWOracle is the genuine oracle: an in-tx Search must return exactly
-// the id-set (and per-id data) that GetAll(txCtx) + spi.MatchFilter produces
-// for the same tx state — computed through the SAME tx-scoped store, so the
-// comparison is a real cross-check, not a tautology.
+// the id-set (and per-id data) that GetAll(txCtx) + spi.Prepare(filter).Match
+// produces for the same tx state — computed through the SAME tx-scoped
+// store, so the comparison is a real cross-check, not a tautology.
 func assertRYWOracle(t *testing.T, store spi.EntityStore, sr spi.Searcher, txCtx context.Context, filter spi.Filter, o spi.SearchOptions) []*spi.Entity {
 	t.Helper()
 	all, err := store.GetAll(txCtx, personRef)
 	if err != nil {
 		t.Fatalf("GetAll(tx): %v", err)
 	}
+	prepared := spi.Prepare(filter)
 	wantIDs := []string{}
 	wantData := map[string]string{}
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if prepared.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 			wantData[e.Meta.ID] = string(e.Data)
 		}
@@ -209,7 +210,7 @@ func assertRYWOracle(t *testing.T, store spi.EntityStore, sr spi.Searcher, txCtx
 	}
 	gotIDs := idsSorted(got)
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("RYW oracle mismatch: Search=%v, GetAll+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("RYW oracle mismatch: Search=%v, GetAll+Prepare.Match=%v", gotIDs, wantIDs)
 	}
 	for _, e := range got {
 		if wd, ok := wantData[e.Meta.ID]; ok && string(e.Data) != wd {
@@ -410,7 +411,7 @@ func runNullsLastOrder(t *testing.T, b backend) {
 
 // runInTxPIT covers invariant 8: an in-tx Search with PointInTime BEFORE the
 // tx's writes returns the committed-as-at snapshot only — buffered creates and
-// buffered updates are excluded — identical to GetAllAsAt(pit)+MatchFilter and
+// buffered updates are excluded — identical to GetAllAsAt(pit)+spi.Prepare(filter).Match and
 // identical across backends. The boundary is read back from the store rather
 // than taken from the test process's clock, so it works uniformly on all three
 // backends without backend-specific time surgery.
@@ -463,9 +464,10 @@ func runInTxPIT(t *testing.T, b backend) {
 	if err != nil {
 		t.Fatalf("GetAllAsAt: %v", err)
 	}
+	prepared := spi.Prepare(cityBerlin)
 	wantIDs := []string{}
 	for _, e := range all {
-		if spi.MatchFilter(cityBerlin, e.Data, e.Meta) {
+		if prepared.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 		}
 	}
@@ -473,7 +475,7 @@ func runInTxPIT(t *testing.T, b backend) {
 
 	gotIDs := idsSorted(got)
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("in-tx PIT oracle mismatch: Search=%v, GetAllAsAt+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("in-tx PIT oracle mismatch: Search=%v, GetAllAsAt+Prepare.Match=%v", gotIDs, wantIDs)
 	}
 	// Hardcoded: only the committed Berlin rows as-at pit; buffered b3 excluded,
 	// buffered Munich update to b1 ignored (committed-only).

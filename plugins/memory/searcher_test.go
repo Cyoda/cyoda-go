@@ -44,7 +44,7 @@ func mkEntity(id, state, data string, modelRef spi.ModelRef) *spi.Entity {
 }
 
 // TestMemorySearch_NonTx_ParityWithGetAllMatch asserts that a non-tx Search
-// returns exactly the same id set as GetAll filtered by spi.MatchFilter.
+// returns exactly the same id set as GetAll filtered by spi.Prepare(filter).Match.
 func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -58,14 +58,15 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	store.Save(ctx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
 	store.Save(ctx, mkEntity("e-4", "ACTIVE", `{"n": 4}`, modelRef))
 
-	// Reference: GetAll + MatchFilter.
+	// Reference: GetAll + spi.Prepare(filter).Match.
 	all, err := store.GetAll(ctx, modelRef)
 	if err != nil {
 		t.Fatalf("GetAll failed: %v", err)
 	}
+	pf := spi.Prepare(activeFilter)
 	want := make(map[string]bool)
 	for _, e := range all {
-		if spi.MatchFilter(activeFilter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			want[e.Meta.ID] = true
 		}
 	}
@@ -460,9 +461,10 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllAsAt failed: %v", err)
 	}
+	pf := spi.Prepare(activeFilter)
 	want := make(map[string]bool)
 	for _, e := range asAt {
-		if spi.MatchFilter(activeFilter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			want[e.Meta.ID] = true
 		}
 	}

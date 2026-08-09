@@ -14,8 +14,8 @@ import (
 // domain-layer validation HTTP uses: the error envelope carries
 // Error.Code == "CLIENT_ERROR" (gRPC's generic 4xx wrapper) with the domain
 // code INVALID_CONDITION embedded in the message. This closes the gap left
-// by Task 6's delegation to the error-free spi.MatchFilter for BOTH
-// transports, not just HTTP.
+// by Task 6's delegation to the error-free spi.PreparedFilter.Match kernel
+// for BOTH transports, not just HTTP.
 func TestRPC_DirectSearch_MalformedRegex_400_InvalidCondition(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 

@@ -102,8 +102,9 @@ func classifyGroupedStatsError(err error) error {
 //     (c) we're not inside a transaction (D11: tx visibility requires the
 //     streaming path).
 //  2. Streaming fallback — when store implements Iterable. If the filter
-//     translates, push it; otherwise pass zero-value and re-apply
-//     match.Match per yielded entity (D15).
+//     translates, push it; otherwise pass zero-value and re-apply the
+//     prepared predicate (match.Prepare/(Prepared).Match) per yielded
+//     entity (D15).
 //  3. Neither — return ErrBackendNotSupported (handler maps to 501).
 func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
@@ -131,8 +132,9 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 
 	// Reject a malformed MATCHES_PATTERN regex before any backend runs.
 	// Every plugin's residual filter evaluator (sqlite's evaluateFilter,
-	// postgres's evalPostFilter) delegates to the error-free spi.MatchFilter,
-	// which returns false (non-match) rather than erroring on a bad pattern
+	// postgres's evalPostFilter) delegates to the error-free
+	// spi.PreparedFilter.Match kernel, which returns false (non-match)
+	// rather than erroring on a bad pattern
 	// — so an unvalidated malformed regex would silently under-include
 	// buckets instead of failing the request. Validating here, in the
 	// backend-independent domain layer, makes every backend reject
@@ -149,7 +151,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// search.ValidateCondition call. Without this, a malformed-arity
 	// BETWEEN (or an unknown operatorType) slips past every downstream
 	// layer here exactly as the regex case above did: ConditionToFilter and
-	// match.Match both fail closed (never matching) rather than erroring,
+	// match.Prepare both fail closed (never matching) rather than erroring,
 	// so the request would silently degrade to an empty/wrong result
 	// instead of failing with 400.
 	if parsedCond != nil {
@@ -168,7 +170,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// gracefully skips the schema-dependent data-field check when model is
 	// nil. Without this, e.g. a CONTAINS operator against the temporal
 	// creationDate meta field would silently produce an empty result here
-	// (never matching in ConditionToFilter/match.Match) instead of the 400
+	// (never matching in ConditionToFilter/match.Prepare) instead of the 400
 	// CONDITION_TYPE_MISMATCH the equivalent /search request returns.
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
@@ -185,8 +187,8 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
 	// yields the zero-value Filter ("match all"); a parsedCond that the
 	// translator can't handle (e.g. function conditions, wildcard paths)
-	// returns an error — in that case the streaming branch will re-apply
-	// match.Match per entity.
+	// returns an error — in that case the streaming branch will re-apply the
+	// prepared predicate (match.Prepare/(Prepared).Match) per entity.
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
@@ -228,7 +230,8 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 }
 
 // tallyStreaming implements the spec §4 streaming branch: iterate, apply
-// any unpushable residual via match.Match, group, accumulate, materialize.
+// any unpushable residual via a prepared match.Prepared, group, accumulate,
+// materialize.
 func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
 	it spi.Iterable,
@@ -249,8 +252,21 @@ func (s *GroupedStatsService) tallyStreaming(
 		}
 		return nil
 	}
+	// Prepared once, only when there is actually a residual to apply. The
+	// guard mirrors the one in the loop below exactly: preparing an unused
+	// condition would resolve declared types for a query that never evaluates
+	// it.
+	var residual match.Prepared
+	if !pushable && parsedCond != nil {
+		p, err := match.Prepare(parsedCond, fieldTypes)
+		if err != nil {
+			return nil, err
+		}
+		residual = p
+	}
+
 	// D15: if the filter wasn't pushable, pass zero-value to the iterator
-	// (match-all) and re-apply match.Match inside the loop. Otherwise
+	// (match-all) and re-apply the residual inside the loop. Otherwise
 	// trust the plugin to apply pushFilter itself.
 	iterFilter := pushFilter
 	if !pushable {
@@ -269,14 +285,8 @@ func (s *GroupedStatsService) tallyStreaming(
 
 		// Residual predicate evaluation: only when the original condition
 		// was not pushable and we therefore need to filter per entity.
-		if !pushable && parsedCond != nil {
-			ok, mErr := match.Match(parsedCond, e.Data, e.Meta, fieldTypes)
-			if mErr != nil {
-				return nil, mErr
-			}
-			if !ok {
-				continue
-			}
+		if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
+			continue
 		}
 
 		keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
@@ -402,10 +412,13 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 }
 
 // stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
-// preserves for the wire-shape group-key. Plugins (memory's match.Match,
-// sqlite/postgres's validateJSONPath) all expect bare dotted-identifier
-// paths. A path without the prefix is returned unchanged so the helper
-// is idempotent — re-applying it is safe.
+// preserves for the wire-shape group-key. Plugins (memory's own gjsonPath
+// helper in plugins/memory/grouped_stats.go, sqlite/postgres's
+// validateJSONPath) all expect bare dotted-identifier paths — plugins/memory
+// is a separate Go module with no dependency on the root module, so it
+// cannot import internal/match at all; its group-by path handling is
+// entirely local. A path without the prefix is returned unchanged so the
+// helper is idempotent — re-applying it is safe.
 func stripJSONPathPrefix(p string) string {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
 		return p[2:]
