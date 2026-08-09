@@ -62,6 +62,26 @@ moves from eval time to import time. No `CurrentSchemaVersion` or
 
 `GET /model/export/…` responses carry a top-level `uniqueKeys` array listing the model's declared composite unique keys. The field uses **omitempty** semantics — it is present only when the model declares at least one key; a model with no keys exports byte-identically to a pre-feature model (matching the descriptor storage DTOs, which also omit the empty case). This is a purely additive change to the **model export DTO** (`ExportModel`) — it is separate from `WorkflowConfigurationDto` and therefore does **not** trigger a workflow schema version bump per the rule above. No `CurrentSchemaVersion` change is required.
 
+### Unrecognised-operator criteria rejected at evaluation, not import (v0.8.4)
+
+A workflow-level or transition-level criterion carrying an operator name the
+evaluator does not recognise (e.g. `FROBNICATE`) now fails the transition
+attempt it guards with `400 WORKFLOW_FAILED`, rolled back, instead of the
+condition silently evaluating to "not satisfied" for any entity that
+short-circuited past the bad operator under the old lazy walk. See
+[`docs/cloud-parity/unevaluable-criterion-fails-save.md`](./cloud-parity/unevaluable-criterion-fails-save.md).
+
+This is the §"When NOT to bump" "bug-fixing a validator that was already
+supposed to reject something" case, same as the v0.8.3 malformed-regex entry
+above: a criterion nobody can evaluate never worked as a correct guard, so no
+*working* config is newly rejected — only which entities surface the failure
+changes (all of them, now, instead of only the ones that reached the bad
+leaf), and evaluation-time failure replaces a silent no-op. Import-time
+acceptance is unchanged: `WorkflowConfigurationDto` still validates only
+`MATCHES_PATTERN` regex syntax, not operator names, so the same workflow
+imports byte-identically. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
+change.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:

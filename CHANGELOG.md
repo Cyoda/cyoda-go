@@ -37,6 +37,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   dirty by a failed migration still refuses to start, with the same actionable message,
   and a database newer than the binary is still refused.
 
+- **A workflow criterion carrying an operator nobody can evaluate now fails the
+  save.** Workflow import validates a `MATCHES_PATTERN` regex but not an
+  operator name, so `AND[state == "SHIPPED", $.amount FROBNICATE 1]` stored
+  cleanly. The evaluator used to walk the condition lazily and short-circuit
+  past the bad operator for any entity outside `SHIPPED`, so the save
+  returned 2xx and the transition silently never fired. The whole condition
+  is now inspected up front, so the same import now fails with **400
+  `WORKFLOW_FAILED`** and the transaction rolls back. A criterion nobody can
+  evaluate must not be read as "condition not met" — fix the operator name
+  before importing.
+
+- **A search or criterion group condition must use exactly `AND` or `OR`.**
+  `GroupCondition.Operator` was never checked at validation, so anything else
+  cleared it and the two execution paths disagreed on what to do with it: the
+  pushdown translator mapped any non-`OR` value (matched case-insensitively)
+  to `AND` and answered **200** with the wrong rows, while the in-memory
+  fallback raised a structural error that surfaced as a **500** on
+  client-supplied input. Both now reject it at the shared validation boundary
+  with **400**. This is case-sensitive — lowercase `"or"` is rejected too,
+  matching the parser and the evaluator, neither of which ever accepted it.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
@@ -90,6 +111,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   1000-field model, 1.84 ms and 12,400 allocations per evaluation, now 12 µs and 91.
   The parsed form is held on the descriptor cache entry, so it is dropped by the same
   invalidation and lease the bytes already follow.
+
+- **The search leaf evaluator now prepares once per query instead of once per
+  candidate row.** Operand parsing, declared-type bucketing and
+  `regexp.Compile` were query-invariant work that ran again for every entity a
+  query considered. The worst case was the in-memory fallback: a condition on
+  an array-wildcard path (`$.items[*].name`) has no pushdown representation,
+  so it scanned the whole model with a fresh compile per entity. A
+  prepare/execute split — `Prepare` resolves the invariant work once,
+  `Match` runs per row and does none of it — removes that cost. No search or
+  criterion answer changes as a result; this is throughput only.
 
 - **A workflow processor's returned data is now governed by the model, exactly as a
   client's write is.** Previously a processor could write anything at all: content no
@@ -147,6 +178,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   spells "match everything" as an empty `AND`, which already worked — so this is storage
   contract conformance rather than a user-visible fix, and it matters to anything driving
   the storage interface directly.
+
+- **A model-store outage evaluating a workflow criterion no longer gets masked
+  by a structural error on a sibling conjunct.** `evaluateCriterion` checked
+  the match error first and the model-load error second, so a malformed
+  operator on one conjunct of e.g. `OR[$.age > 5, $.x IS_CHANGED]` reported
+  `400` for what was actually a server-side outage, and the load error was
+  then discarded unlogged. The infrastructure failure is now checked first
+  and wins — failing closed on an unavailable dependency a correct result
+  requires, rather than reporting it as a client error.
 
 - **An entity write now releases its transaction on every exit path, including a
   panic.** Previously a panic between begin and commit left the transaction neither
