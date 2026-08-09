@@ -60,23 +60,43 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 // gates postFilter absence controls on postgres: LIMIT pushdown
 // (searcher.go:211) and native GROUP BY (grouped_stats.go:223). A non-nil
 // residual is what would cost LIMIT pushdown and disable native GROUP BY, so
-// asserting absence here is asserting those gates stay open. Checked for BOTH
-// spellings of match-all: the zero Filter{} and the explicit empty AND that
-// ConditionToFilter emits for a nil condition. The two took different
-// branches historically and must not drift apart again.
+// asserting absence here is asserting those gates stay open.
+//
+// This covers only the explicit empty AND that ConditionToFilter emits for a
+// nil condition — planQuery is called directly with it below, so a broken
+// dissect()/planQuery would actually fail this test.
+//
+// The other spelling of match-all, the zero Filter{}, is deliberately NOT
+// exercised here: production never passes it to planQuery at all
+// (searchCommitted → runSearch and GroupedAggregate both guard the call
+// behind `filter.Op != ""` precisely because dissect treats an empty Op as a
+// non-pushable leaf and would install the zero filter as its own residual).
+// Reconstructing that guard in-test and then calling planQuery only on the
+// other branch — as an earlier version of this test did — asserted against a
+// zero sqlPlan{} literal, not against anything planQuery or production code
+// computed; it could not fail.
+//
+// The zero-filter spelling's guard is pinned for GroupedAggregate through a
+// real production entry point instead: TestPostgresGroupedAggregate_PushesCountByState
+// (grouped_stats_test.go) drives spi.Filter{} through GroupedAggregate and
+// fails with ErrAggregationNotPushdownable if the guard is removed. Search's
+// LIMIT-pushdown branch has no equivalent black-box proof on postgres: unlike
+// sqlite, postgres has no scan budget, and (per TestPGSearcher_PushdownOverLimitFails
+// / TestPGSearcher_ResidualOverLimitFails in searcher_test.go) the pushdown and
+// residual branches return the identical ErrSearchResultLimitExceeded from
+// Search's perspective — the only way to tell them apart is to trace
+// planQuery's output or inspect the SQL text, neither of which this
+// table-driven unit test does. That gap is not filled by restoring the old
+// row: a trivially-true assertion is not evidence.
 func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		filter spi.Filter
 	}{
-		{"zero filter", spi.Filter{}},
 		{"explicit empty AND", spi.Filter{Op: spi.FilterAnd}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var plan sqlPlan
-			if tc.filter.Op != "" {
-				plan = planQuery(tc.filter)
-			}
+			plan := planQuery(tc.filter)
 			if plan.postFilter != nil {
 				t.Fatalf("postFilter = %+v, want nil: a match-all query has nothing to post-filter, "+
 					"and a non-nil residual costs LIMIT pushdown and disables native GROUP BY", plan.postFilter)

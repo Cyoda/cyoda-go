@@ -1028,10 +1028,21 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	// transition instead of being silently read as "not satisfied".
 	prepared, prepErr := match.Prepare(cond, fieldTypes)
 
-	// Infra failure wins. A model-store outage is a server-side condition and
-	// must not surface as a client error just because the same criterion also
-	// carries a malformed operator. This ordering is deliberate and is the
-	// reverse of the pre-split one.
+	// If an infra failure was observed, it wins: a model-store outage is a
+	// server-side condition and must not surface as a client error just
+	// because the same criterion also carries a malformed operator.
+	//
+	// That rule is not an unconditional guarantee — it only fires when loadErr
+	// was actually latched, and whether it was depends on tree order. Prepare
+	// returns on the FIRST structural fault its walk finds, and fieldTypes
+	// (the closure that sets loadErr) is only invoked when the walk reaches a
+	// simple or array leaf. So with the model store down,
+	// OR[$.age > 5, $.x IS_CHANGED] reports the infra failure (the first
+	// child is a data leaf and latches loadErr before the second child's bad
+	// operator is ever parsed), but OR[$.x IS_CHANGED, $.age > 5] reports the
+	// structural fault instead (the walk bails on the first child before any
+	// data leaf is reached). "Infra failure wins" describes what happens once
+	// loadErr is set, not a promise that it always will be.
 	if loadErr != nil {
 		return false, "", loadErr
 	}

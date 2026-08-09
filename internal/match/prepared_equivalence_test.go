@@ -1,11 +1,25 @@
 // The merge gate for the predicate-evaluator prepare/execute split.
 //
 // The frozen* functions below are a verbatim copy of the pre-split evaluator,
-// taken before it was deleted. They are a COPY on purpose: they must keep
-// answering the old way after the originals are gone.
+// taken before it was deleted: the tree walk, leaf dispatch, the
+// lifecycle/array/wildcard routing, and the swallow-to-non-match behaviour on
+// an expansion failure. That is what this file guards — do not "simplify" it
+// by delegating any of it to Prepare, and do not update it when the live
+// evaluator's structure changes. If the frozen walk and Prepare disagree, the
+// live code is wrong.
 //
-// Do not "simplify" them by calling live code, and do not update them when the
-// live evaluator changes. If they and Prepare disagree, the live code is wrong.
+// Six leaf-level helpers are DELIBERATELY SHARED, not frozen: convertJSONPath,
+// fieldMapKey, arrayElementFieldPath, isTemporalOperator, opNameToFilterOp,
+// and betweenBounds. This change did not touch them, so both the frozen
+// reference and the live evaluator call the same live functions for them —
+// freezing copies too would pin code this change has no stake in. The
+// consequence is real: a future change to, say, isTemporalOperator or the
+// operator-name table moves both sides together, and this gate would not
+// catch a regression introduced there. It only proves one property: that
+// evaluating a condition eagerly and once (Prepare/Match) gives the same
+// answer, case by case, as evaluating it lazily and per row (the frozen
+// walk) — for the six shared helpers as they exist today, not as a guard on
+// their own correctness.
 package match
 
 import (
@@ -286,6 +300,34 @@ var genEqDocs = []string{
 	`{"laureates":[{"motivation":"for war"},{"motivation":"for peace"}]}`,
 }
 
+// genArrayValues builds the Values slice for a generated ArrayCondition,
+// varying how many positions are non-nil. prepareArray expands EVERY non-nil
+// position eagerly, where the pre-split matchArray stopped at the first
+// failing position; the two give the same answer for every row because an
+// expansion failure is a property of the condition (not of the data or the
+// row), never of which position was reached first — but a corpus that only
+// ever emits a single non-nil position can't tell that from a corpus that
+// never disagreed because it never tried. The multi-position shapes below
+// (two and three non-nil values) are what actually exercises the reordering;
+// the single-position and all-nil shapes are kept so those boundary cases
+// stay covered too.
+func genArrayValues(r *rand.Rand) []any {
+	switch r.Intn(4) {
+	case 0:
+		return []any{nil, nil, nil}
+	case 1:
+		return []any{genValues[r.Intn(len(genValues))], nil}
+	case 2:
+		return []any{genValues[r.Intn(len(genValues))], genValues[r.Intn(len(genValues))]}
+	default:
+		return []any{
+			genValues[r.Intn(len(genValues))],
+			genValues[r.Intn(len(genValues))],
+			genValues[r.Intn(len(genValues))],
+		}
+	}
+}
+
 // genValidCondition builds a condition tree neither evaluator can error on —
 // the only shapes it emits are well-formed by construction (known operator
 // names, known meta fields, AND/OR groups). Structural faults are a wholly
@@ -302,7 +344,7 @@ func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 		case 1:
 			return &predicate.ArrayCondition{
 				JsonPath: "$.tags",
-				Values:   []any{genValues[r.Intn(len(genValues))], nil},
+				Values:   genArrayValues(r),
 			}
 		default:
 			return &predicate.SimpleCondition{

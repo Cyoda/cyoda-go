@@ -135,10 +135,10 @@ func (s *entityStore) Iterate(
 }
 
 // sqliteSliceIter walks a pre-built snapshot from getAllTx, applying the
-// filter inside Next() via the same evaluateFilter() the streaming path
-// uses. Used by the in-tx Iterate branch to honour D11 RYW. Per the SPI
-// iterator contract: Err() is sticky, Close() is idempotent, ctx
-// cancellation is observed.
+// filter inside Next() via the prepared filter's Match — the same
+// spi.Prepare(filter) result the streaming path's post-filter uses. Used by
+// the in-tx Iterate branch to honour D11 RYW. Per the SPI iterator contract:
+// Err() is sticky, Close() is idempotent, ctx cancellation is observed.
 type sqliteSliceIter struct {
 	ctx      context.Context
 	snapshot []*spi.Entity
