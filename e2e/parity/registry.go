@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 229 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 230 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -136,6 +136,11 @@ var allTests = []NamedTest{
 	{"SearchMetaBlockNotMatchableAsDataPath", RunSearchMetaBlockNotMatchableAsDataPath},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
+	// Group-identity contract: an explicit empty AND matches everything, an
+	// explicit empty OR matches nothing — standalone and nested. The SQL
+	// planners previously pushed a childless OR as an empty WHERE fragment,
+	// flipping "match nothing" into "match everything".
+	{"SearchEmptyGroupIdentities", RunSearchEmptyGroupIdentities},
 	// Type-directed contract: a scalar comparison on a PURE-container path (a
 	// known structural interior with substructure but no scalar observation)
 	// is rejected with HTTP 400 INVALID_FIELD_PATH uniformly across backends —

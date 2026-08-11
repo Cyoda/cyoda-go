@@ -59,6 +59,13 @@ func leafExact(op spi.FilterOp) bool {
 func allPushedExact(f spi.Filter) bool {
 	switch f.Op {
 	case spi.FilterAnd, spi.FilterOr:
+		// An empty group is never EXACT: exactness is a claim about leaves and
+		// an empty group has none — its identity semantics (empty AND = true,
+		// empty OR = false) are the kernel's to apply. Unreachable by
+		// construction (dissect never pushes an empty group); fails safe.
+		if len(f.Children) == 0 {
+			return false
+		}
 		for _, c := range f.Children {
 			if !allPushedExact(c) {
 				return false
@@ -161,6 +168,14 @@ func dissectAnd(f spi.Filter) (*spi.Filter, *spi.Filter) {
 // dissectOr implements conservative OR dissection: only push if ALL children
 // are fully pushable, otherwise the entire OR is residual.
 func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
+	// An explicit empty OR is the OR identity (false, matches nothing) — a
+	// shape SQL cannot express: joining zero fragments yields no predicate at
+	// all (i.e. TRUE, matches everything). Route it to the residual so the
+	// kernel applies the identity. Note the asymmetry with the empty AND,
+	// whose identity (true) IS what dissectAnd's (nil, nil) means.
+	if len(f.Children) == 0 {
+		return nil, &f
+	}
 	for _, child := range f.Children {
 		if !isFullyPushable(child) {
 			return nil, &f
@@ -173,6 +188,13 @@ func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
 func isFullyPushable(f spi.Filter) bool {
 	switch f.Op {
 	case spi.FilterAnd, spi.FilterOr:
+		// Empty groups are identity shapes (empty AND = true, empty OR =
+		// false) that toSQL cannot express — joinChildren over zero children
+		// emits "" standalone and a malformed "()" nested. Never pushable;
+		// the enclosing OR goes residual and the kernel applies the identity.
+		if len(f.Children) == 0 {
+			return false
+		}
 		for _, c := range f.Children {
 			if !isFullyPushable(c) {
 				return false
