@@ -54,7 +54,7 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - Token signature mismatch, malformed token, or expired token — `400 Bad Request` (codes `BAD_REQUEST` / `TRANSACTION_EXPIRED`); the client must restart the transaction.
 - Owner node not in the registry, marked dead by gossip, or unreachable from the proxy — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`); PostgreSQL has already aborted the connection's transaction on the dead node, so the client retries from scratch. Fail-closed semantics, no orphaned transactions.
 
-`CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart.
+`CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart — see `SECRET ROTATION`.
 
 ## OPERATIONS
 
@@ -62,6 +62,20 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - **Shrinking the cluster.** Send SIGTERM. The node finishes in-flight requests, declares itself dead via gossip, and exits. Outstanding transactions owned by the departing node abort cleanly via PostgreSQL connection close.
 - **Rolling restart.** Restart one node at a time, waiting for `/readyz` to report ready before moving on. Transactions in flight on the restarting node abort; clients retry.
 - **Network partitions.** A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. A node partitioned from PostgreSQL continues to pass `/readyz` (readiness is a static initialization flag plus the panic-recovery health flag, not a live store probe — see `app/app.go ReadinessCheck`); individual requests fail at query time and the client retries. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
+
+## CROSS-NODE DISPATCH FAILOVER
+
+When a callout (processor, criterion, or scheduled function) needs a compute tag no local member serves, the node forwards it to a peer advertising the tag. If the forward fails at the transport level (peer unreachable) or the peer reports it no longer has a matching member, the node fails over to the next tag-matching peer, trying each peer at most once. Failures indicating the callout actually ran on the peer (e.g. `DISPATCH_TIMEOUT`) are never retried on another peer. When all peers are exhausted, the last failure surfaces as a retryable `503`.
+
+## SECRET ROTATION
+
+`CYODA_HMAC_SECRET` is the single root secret for three primitives: gossip encryption, inter-node dispatch authentication (HKDF-derived AES-256-GCM), and transaction-routing token signing. There is no versioned-key support, so nodes holding different secrets cannot interoperate: a node started with a mismatched secret fails its gossip join and exits at startup, and dispatch requests between mismatched nodes are rejected with `403`. Failure is loud — never a silent split-brain.
+
+Rotating the secret therefore requires full-cluster downtime: stop all nodes, update the secret everywhere, start the cluster again. A rolling restart across a secret change is not possible. In-flight transactions and routing tokens do not survive the restart; clients retry from scratch.
+
+## DISPATCH REPLAY PROTECTION
+
+Each node keeps an in-memory replay cache of dispatch-envelope nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when full, new dispatch envelopes are rejected as replays until entries expire, surfacing to the forwarding node as a retryable failure (which dispatch failover routes around). The ceiling leaves roughly 10× headroom over the maximum sustained cross-node dispatch rate; reaching it in practice indicates a flood, not normal load.
 
 ## COMPUTE CALLBACK TRANSACTION ROUTING
 
