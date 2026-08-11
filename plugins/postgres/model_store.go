@@ -358,6 +358,10 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 // retries on a fresh snapshot; self-wrapped writers serialise by
 // blocking on the row lock instead. No retry wrapper here.
 //
+// A blocked writer waits as long as the claim holder's transaction
+// lives, bounded by the caller's context and the statement_timeout
+// ceiling — not by AcquireTimeout, which covers only the pool acquire.
+//
 // Empty or nil deltas are a no-op.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {

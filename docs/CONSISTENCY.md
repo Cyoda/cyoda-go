@@ -113,7 +113,9 @@ occasional schema extensions (when a model has a non-empty
 `ChangeLevel`), the boundary between the two is part of the
 transactional contract itself. The spec living in
 `docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md`
-states this as five invariants:
+introduced this as five invariants; the current form below amends
+invariant 1 (the original promised absolute non-interference, which the
+savepoint fold cannot honour — see invariant 1's closing sentence):
 
 1. **Non-interference for non-extending writes.** An entity write
    whose data already fits the folded schema (a nil delta — the

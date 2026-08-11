@@ -171,17 +171,7 @@ func New(cfg Config) *App {
 
 	// Wire the schema.Apply replay function into the plugin factory so
 	// ExtendSchema can fold deltas on read. Postgres uses this to fold
-	// the extension log; SQLite/Memory use it to apply in-place. The
-	// interface uses the raw function signature (not any plugin-local
-	// named ApplyFunc type) so a single type-assertion satisfies all
-	// plugins uniformly.
-	// The assertion is soft, so a factory that stops implementing this
-	// exact signature would be skipped silently and every fold-on-read of
-	// pending deltas would fail; applyfunc_wiring_test.go pins the in-tree
-	// factories to it at compile time.
-	type applyFuncSetter interface {
-		SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
-	}
+	// the extension log; SQLite/Memory use it to apply in-place.
 	if setter, ok := factory.(applyFuncSetter); ok {
 		setter.SetApplyFunc(makeSchemaApply())
 	}
@@ -976,6 +966,17 @@ func validateClusterConfig(c cluster.Config) {
 		slog.Error("CYODA_NODE_ADDR must include scheme (http:// or https://)", "pkg", "cluster", "addr", c.NodeAddr)
 		os.Exit(1)
 	}
+}
+
+// applyFuncSetter is the wiring surface Run soft-asserts on each plugin
+// factory. It uses the raw function signature (not any plugin-local named
+// ApplyFunc type) so a single type-assertion satisfies all plugins
+// uniformly. The assertion is soft: a factory that stops implementing
+// this exact signature would be skipped silently and every fold-on-read
+// of pending deltas would fail — applyfunc_wiring_test.go pins the
+// in-tree factories to this same declaration at compile time.
+type applyFuncSetter interface {
+	SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
 }
 
 // makeSchemaApply returns the schema-apply replay function the plugin

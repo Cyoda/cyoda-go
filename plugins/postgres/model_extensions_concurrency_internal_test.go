@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -70,9 +71,14 @@ func TestExtendSchema_OverlappingTx_CommittedDeltaSurvivesSavepointFold(t *testi
 		_ = tm.Rollback(fx.ctx, tx1ID)
 	}
 	if err != nil {
-		// The serialised contract may reject the overlapping writer with a
-		// conflict; the caller's remedy is a retry in a fresh transaction,
-		// which must then succeed.
+		// The serialised contract may reject the overlapping writer, but
+		// only as spi.ErrConflict — that classification is what the kernel
+		// turns into a retryable 409; an unclassified error would surface
+		// as a 500 with no retry guidance. The caller's remedy is a retry
+		// in a fresh transaction, which must then succeed.
+		if !errors.Is(err, spi.ErrConflict) {
+			t.Fatalf("overlapping writer rejected with a non-conflict error: %v", err)
+		}
 		retryID, retryCtx, beginErr := tm.Begin(fx.ctx)
 		if beginErr != nil {
 			t.Fatalf("Begin retry tx: %v", beginErr)
@@ -139,5 +145,33 @@ func TestExtendSchema_ConcurrentSelfWrap_SavepointCrossing_NoLostDelta(t *testin
 		if !bytes.Contains(got.Schema, []byte(token)) {
 			t.Errorf("committed delta %q lost from fold; folded schema = %s", token, got.Schema)
 		}
+	}
+}
+
+// TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound — the
+// write-claim's zero-row arm. With applyFunc wired, the pre-persist
+// check already reported ErrNotFound for a missing model; with it
+// unwired, ExtendSchema used to append an orphan delta row for a model
+// that does not exist. The claim UPDATE closes that hole: zero rows
+// matched means no model to extend, ErrNotFound, and nothing persisted.
+func TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound(t *testing.T) {
+	fx := newPGFixture(t)
+	fx.store.applyFunc = nil
+	ref := spi.ModelRef{EntityName: "Ghost", ModelVersion: "1"}
+
+	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d0"`))
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("ExtendSchema on missing model = %v, want spi.ErrNotFound", err)
+	}
+
+	var count int
+	if err := fx.db.QueryRow(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&count); err != nil {
+		t.Fatalf("count extension rows: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("missing model accreted %d orphan extension rows, want 0", count)
 	}
 }
