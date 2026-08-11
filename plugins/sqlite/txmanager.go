@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -627,13 +628,18 @@ func (m *transactionManager) GetSubmitTime(ctx context.Context, txID string) (ti
 		return e.submitTime, nil
 	}
 
-	// Fall back to persisted submit_times table.
+	// Fall back to persisted submit_times table. Only a missing row is
+	// "not found" — a query failure is an infrastructure error and must
+	// not masquerade as a definitive answer.
 	var micro int64
 	var tenantID string
-	err := m.factory.db.QueryRow(
+	err := m.factory.db.QueryRowContext(ctx,
 		"SELECT submit_time, tenant_id FROM submit_times WHERE tx_id = ?", txID).Scan(&micro, &tenantID)
-	if err != nil {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	case err != nil:
+		return time.Time{}, fmt.Errorf("GetSubmitTime: query submit_times: %w", err)
 	}
 	if uc == nil || uc.Tenant.ID != spi.TenantID(tenantID) {
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)

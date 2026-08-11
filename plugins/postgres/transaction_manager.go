@@ -269,8 +269,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
 
-	tm.cleanupTx(txID)
-
+	// Record the submit time BEFORE cleanupTx removes the active-tx state:
+	// a concurrent GetSubmitTime racing this Commit then observes the tx in
+	// at least one of the two maps at all times (its committed branch wins
+	// during the overlap), never a transient "neither map" ErrTxNotFound
+	// for a transaction that just committed successfully.
 	func() {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
@@ -282,6 +285,8 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 		}
 	}()
+
+	tm.cleanupTx(txID)
 
 	return nil
 }

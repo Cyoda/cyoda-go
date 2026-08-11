@@ -82,3 +82,37 @@ func TestGetSubmitTime_PersistentFallback_RejectsCrossTenant(t *testing.T) {
 		t.Fatalf("owning tenant's GetSubmitTime via persisted table: %v", err)
 	}
 }
+
+// TestGetSubmitTime_QueryFailureIsNotNotFound pins that an infrastructure
+// failure on the persistent-fallback query is reported as an error in its
+// own right — not conflated with ErrTxNotFound, which would present a store
+// outage as the definitive answer "this transaction does not exist"
+// (correctness-over-availability: an unavailable dependency fails the
+// operation, it does not substitute an answer).
+func TestGetSubmitTime_QueryFailureIsNotNotFound(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "submit_time_err.db")
+	ctx := testCtx("tenant-A")
+
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+
+	// Close the factory so the fallback query fails with a real DB error.
+	if err := factory.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = tm.GetSubmitTime(ctx, "0e0f1a10-1155-11f0-bcd5-ae468cd3ed16")
+	if err == nil {
+		t.Fatal("expected an error from GetSubmitTime on a closed store")
+	}
+	if errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("query failure must not masquerade as ErrTxNotFound; got: %v", err)
+	}
+}
