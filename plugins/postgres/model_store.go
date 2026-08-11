@@ -401,11 +401,24 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	// Rollback is idempotent in pgx: no-op once Commit has landed.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := s.extendSchemaBody(ctx, tx, ref, delta); err != nil {
+	// Set the RLS tenant, as every other transaction this plugin opens does
+	// (TransactionManager.Begin, the async-search scan). The owner role
+	// bypasses the policies today, but under the stated non-owner deployment
+	// posture (rls_test.go) an unset GUC filters every row this body needs.
+	if _, err := tx.Exec(ctx,
+		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+		return fmt.Errorf("failed to set tenant for ExtendSchema(%s): %w", ref, err)
+	}
+
+	// classifiedQuerier keeps the self-wrap statements on the same error
+	// classification the ambient path gets from ctxQuerier — the write-claim's
+	// conflict sentinel and the ceilings' storage-unavailable marker both
+	// depend on it.
+	if err := s.extendSchemaBody(ctx, classifiedQuerier{inner: tx}, ref, delta); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit self-wrap tx for ExtendSchema(%s): %w", ref, err)
+		return classifyError(fmt.Errorf("failed to commit self-wrap tx for ExtendSchema(%s): %w", ref, err))
 	}
 	return nil
 }

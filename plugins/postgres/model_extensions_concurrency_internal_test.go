@@ -2,10 +2,15 @@ package postgres
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -173,5 +178,81 @@ func TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("missing model accreted %d orphan extension rows, want 0", count)
+	}
+}
+
+// TestExtendSchema_SelfWrap_SetsTenantGUCForRLS — the self-wrap
+// transaction must set app.current_tenant like every other transaction
+// this plugin opens (TransactionManager.Begin, the async-search scan),
+// so the tenant-isolation RLS policies on models and
+// model_schema_extensions apply to its statements.
+//
+// The usual fixtures cannot see this: the test role owns the tables (and
+// the container's bootstrap user is superuser), so RLS never applies and
+// a missing set_config is invisible. Production's stated RLS posture is
+// a non-owner application role (rls_test.go), for which ENABLE ROW LEVEL
+// SECURITY applies as-is — so this test runs ExtendSchema through a
+// dedicated non-superuser role. An unset GUC evaluates the policies to
+// NULL and the write-claim UPDATE sees zero rows: fail-closed
+// ErrNotFound instead of an extension.
+func TestExtendSchema_SelfWrap_SetsTenantGUCForRLS(t *testing.T) {
+	fx := newPGFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{}) // seeded as owner: RLS does not apply
+
+	const probeRole = "cyoda_rls_probe"
+	for _, stmt := range []string{
+		`DROP ROLE IF EXISTS ` + probeRole,
+		`CREATE ROLE ` + probeRole + ` LOGIN PASSWORD 'probe' NOSUPERUSER`,
+		// The fixture recreates schema public (dropSchema), which strips the
+		// default PUBLIC grants — USAGE must be granted explicitly.
+		`GRANT USAGE ON SCHEMA public TO ` + probeRole,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + probeRole,
+		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + probeRole,
+	} {
+		if _, err := fx.db.Exec(fx.ctx, stmt); err != nil {
+			t.Fatalf("provision probe role: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		// Runs before the fixture's dropSchema cleanup (LIFO), while the
+		// granted objects still exist.
+		_, _ = fx.db.Exec(context.Background(), `DROP OWNED BY `+probeRole)
+		_, _ = fx.db.Exec(context.Background(), `DROP ROLE IF EXISTS `+probeRole)
+	})
+
+	probeURL, err := url.Parse(os.Getenv("CYODA_TEST_DB_URL"))
+	if err != nil {
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+	}
+	probeURL.User = url.UserPassword(probeRole, "probe")
+	probePool, err := pgxpool.New(context.Background(), probeURL.String())
+	if err != nil {
+		t.Fatalf("create probe pool: %v", err)
+	}
+	t.Cleanup(probePool.Close)
+
+	factory := NewStoreFactory(probePool)
+	factory.SetApplyFunc(setUnionApplyFunc)
+	ms, err := factory.ModelStore(fx.ctx)
+	if err != nil {
+		t.Fatalf("probe ModelStore: %v", err)
+	}
+
+	if err := ms.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d0"`)); err != nil {
+		t.Fatalf("self-wrap ExtendSchema under RLS (non-owner role): %v", err)
+	}
+
+	// Assert through the owner pool: the delta really landed.
+	var count int
+	if err := fx.db.QueryRow(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND kind = 'delta'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&count); err != nil {
+		t.Fatalf("count delta rows: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("delta row count = %d, want 1", count)
 	}
 }

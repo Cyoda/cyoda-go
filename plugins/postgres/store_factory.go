@@ -150,10 +150,10 @@ func (f *StoreFactory) querier() Querier {
 
 // poolQuerier returns the pool-pinned Querier — same classification, no
 // transaction resolution. Used by the async-search job store alone; see
-// poolQuerier's godoc for why that record must not join the caller's
-// transaction.
+// classifiedQuerier's godoc for why that record must not join the
+// caller's transaction.
 func (f *StoreFactory) poolQuerier() Querier {
-	return poolQuerier{pool: f.pool}
+	return classifiedQuerier{inner: f.pool}
 }
 
 // classifyFor classifies a statement error against whichever transaction the
