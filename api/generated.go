@@ -3353,7 +3353,7 @@ type GetEntityTransitionsParams struct {
 	// PointInTime Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339). Mutually exclusive with transactionId.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime.
+	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID is rejected with 400.
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
 }
 

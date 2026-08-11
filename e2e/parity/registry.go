@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 230 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 231 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -83,6 +83,7 @@ var allTests = []NamedTest{
 	// companions to PR #161/#164/#165). Structurally guaranteed today;
 	// pinned here so a future refactor cannot silently regress.
 	{"TenantIsolationTransactionIDInvisible", RunTenantIsolationTransactionIDInvisible},
+	{"TenantIsolationTransitionsTransactionIDRejected", RunTenantIsolationTransitionsTransactionIDRejected},
 	{"TenantIsolationPointInTimeInvisible", RunTenantIsolationPointInTimeInvisible},
 	{"TenantIsolationChangesAtPITInvisible", RunTenantIsolationChangesAtPITInvisible},
 

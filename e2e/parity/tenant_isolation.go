@@ -214,6 +214,65 @@ func RunTenantIsolationTransactionIDInvisible(t *testing.T, fixture BackendFixtu
 	}
 }
 
+// RunTenantIsolationTransitionsTransactionIDRejected pins the contract
+// that the transitions endpoint's `?transactionId=` parameter cannot be
+// used to resolve another tenant's transaction. Unlike the entity GET
+// (which scans tenant-scoped history), the transitions handler resolves
+// the txID to a submit time via TransactionManager.GetSubmitTime BEFORE
+// any entity lookup — so this pins the tenant check inside GetSubmitTime
+// itself: a cross-tenant txID and a nonexistent txID must both yield the
+// same 400 status, never a resolved point-in-time (and never a status
+// that distinguishes "exists in another tenant" from "doesn't exist").
+func RunTenantIsolationTransitionsTransactionIDRejected(t *testing.T, fixture BackendFixture) {
+	tenantA := fixture.NewTenant(t)
+	tenantB := fixture.NewTenant(t)
+	clientA := client.NewClient(fixture.BaseURL(), tenantA.Token)
+	clientB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+
+	const modelName = "iso-txid-transitions"
+	const modelVersion = 1
+
+	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
+	entityID, txIDA, err := clientA.CreateEntityWithTxID(t, modelName, modelVersion,
+		`{"name":"TenantA","amount":10,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityWithTxID (tenant A): %v", err)
+	}
+	if txIDA == "" {
+		t.Fatal("tenant A create returned empty transactionId — needed to drive cross-tenant lookup")
+	}
+
+	// Sanity: tenant A resolves its own txID on its own entity.
+	statusOwn, bodyOwn, err := clientA.GetTransitionsByTransactionIDBodyRaw(t, entityID, txIDA)
+	if err != nil {
+		t.Fatalf("tenant A GET transitions?transactionId=<own>: transport error: %v", err)
+	}
+	if statusOwn != http.StatusOK {
+		t.Errorf("tenant A GET transitions?transactionId=<own>: status got %d, want 200 (body=%s)", statusOwn, string(bodyOwn))
+	}
+
+	// (1) Tenant B supplies tenant A's real txID. The submit-time lookup
+	// must reject it — 400, not 200 (which would leak that the txID is
+	// committed) and not any tenant-A data.
+	statusReal, bodyReal, err := clientB.GetTransitionsByTransactionIDBodyRaw(t, entityID, txIDA)
+	if err != nil {
+		t.Fatalf("tenant B GET transitions?transactionId=<txID_A>: transport error: %v", err)
+	}
+	if statusReal != http.StatusBadRequest {
+		t.Errorf("tenant B GET transitions?transactionId=<txID_A>: status got %d, want 400 (body=%s)", statusReal, string(bodyReal))
+	}
+
+	// (2) Tenant B supplies a txID that exists in no tenant — the status
+	// must be the same 400, so the status code is not an existence oracle.
+	statusBogus, bodyBogus, err := clientB.GetTransitionsByTransactionIDBodyRaw(t, entityID, uuid.New().String())
+	if err != nil {
+		t.Fatalf("tenant B GET transitions?transactionId=<bogus>: transport error: %v", err)
+	}
+	if statusBogus != http.StatusBadRequest {
+		t.Errorf("tenant B GET transitions?transactionId=<bogus>: status got %d, want 400 (body=%s)", statusBogus, string(bodyBogus))
+	}
+}
+
 // RunTenantIsolationPointInTimeInvisible pins the contract that the
 // `?pointInTime=` temporal query parameter cannot be used as an
 // existence oracle across tenants. Tenant A creates an entity at time
