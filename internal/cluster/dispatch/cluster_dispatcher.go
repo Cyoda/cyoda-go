@@ -71,14 +71,7 @@ func NewClusterDispatcher(
 func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
-	tok := ""
-	if txID != "" && d.signer != nil {
-		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
-			tok = t
-		} else {
-			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
-		}
-	}
+	tok := d.mintTxToken(txID)
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
@@ -99,25 +92,15 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 
 	req := d.buildProcessorRequest(entity, processor, workflowName, transitionName, txID, uc, tags, tok)
 
-	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
+	resp, peerID, err := d.forwardWithFailover(ctx, tenantID, tags, "processor", req)
 	if err != nil {
 		return nil, err
-	}
-
-	slog.Debug("forwarding processor to peer",
-		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
-
-	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
-	if err != nil {
-		slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", "processor", "peer", peer.NodeID, "err", err)
-		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
-			forwardFailedClientMessage).AsRetryable()
 	}
 	if !resp.Success {
 		if resp.ErrorCode != "" {
 			return nil, remintPeerError(*resp)
 		}
-		slog.Warn("peer processor dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		slog.Warn("peer processor dispatch failed", "pkg", "dispatch", "peer", peerID, "error", resp.Error)
 		return nil, fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
@@ -136,14 +119,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
-	tok := ""
-	if txID != "" && d.signer != nil {
-		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
-			tok = t
-		} else {
-			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
-		}
-	}
+	tok := d.mintTxToken(txID)
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
@@ -164,25 +140,15 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 
 	req := d.buildCriteriaRequest(entity, criterion, target, workflowName, transitionName, processorName, txID, uc, tags, tok)
 
-	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
+	resp, peerID, err := d.forwardWithFailover(ctx, tenantID, tags, "criteria", req)
 	if err != nil {
 		return false, "", err
-	}
-
-	slog.Debug("forwarding criteria to peer",
-		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
-
-	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
-	if err != nil {
-		slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", "criteria", "peer", peer.NodeID, "err", err)
-		return false, "", common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
-			forwardFailedClientMessage).AsRetryable()
 	}
 	if !resp.Success {
 		if resp.ErrorCode != "" {
 			return false, "", remintPeerError(*resp)
 		}
-		slog.Warn("peer criteria dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		slog.Warn("peer criteria dispatch failed", "pkg", "dispatch", "peer", peerID, "error", resp.Error)
 		return false, "", fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
@@ -198,14 +164,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
-	tok := ""
-	if txID != "" && d.signer != nil {
-		if t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL)); err == nil {
-			tok = t
-		} else {
-			slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
-		}
-	}
+	tok := d.mintTxToken(txID)
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
@@ -226,25 +185,15 @@ func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.En
 
 	req := d.buildFunctionRequest(entity, fn, workflowName, transitionName, txID, uc, tags, tok)
 
-	peer, err := d.findPeerWithPolling(ctx, tenantID, tags)
+	resp, peerID, err := d.forwardWithFailover(ctx, tenantID, tags, "function", req)
 	if err != nil {
 		return contract.FunctionResult{}, err
-	}
-
-	slog.Debug("forwarding function to peer",
-		"pkg", "dispatch", "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
-
-	resp, err := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
-	if err != nil {
-		slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", "function", "peer", peer.NodeID, "err", err)
-		return contract.FunctionResult{}, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
-			forwardFailedClientMessage).AsRetryable()
 	}
 	if !resp.Success {
 		if resp.ErrorCode != "" {
 			return contract.FunctionResult{}, remintPeerError(*resp)
 		}
-		slog.Warn("peer function dispatch failed", "pkg", "dispatch", "peer", peer.NodeID, "error", resp.Error)
+		slog.Warn("peer function dispatch failed", "pkg", "dispatch", "peer", peerID, "error", resp.Error)
 		return contract.FunctionResult{}, fmt.Errorf("peer dispatch failed")
 	}
 	for _, w := range resp.Warnings {
@@ -254,16 +203,92 @@ func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.En
 	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
 }
 
+// mintTxToken issues the signed tx-routing token for txID, or "" when there
+// is no transaction or no signer. Mint failure is logged, not fatal: the
+// dispatch proceeds without cross-node callback routing.
+func (d *ClusterDispatcher) mintTxToken(txID string) string {
+	if txID == "" || d.signer == nil {
+		return ""
+	}
+	t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL))
+	if err != nil {
+		slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
+		return ""
+	}
+	return t
+}
+
+// forwardWithFailover forwards req to a tag-matching peer, failing over to
+// the next tag-matching peer when the attempt provably did not dispatch the
+// callout: a transport-level forward error (peer unreachable/degraded), or a
+// peer answering NO_COMPUTE_MEMBER_FOR_TAG (it lost its matching calculation
+// member between gossip advertisement and forward — nothing executed). Any
+// other peer-classified failure means the callout was actually dispatched;
+// re-executing it on another peer is not the dispatcher's call, so the
+// response is returned unchanged for the caller to remint.
+//
+// Note on the transport-error case: the request may have reached the peer
+// before the connection died, so a failover retry can re-execute the callout.
+// That does not weaken existing semantics — this failure class already
+// surfaces as retryable (DISPATCH_FORWARD_FAILED), telling the client to
+// re-drive the whole dispatch; the failover hop automates that same retry.
+//
+// Each peer is tried at most once. When all tag-matching peers are exhausted,
+// the LAST failure surfaces with the same taxonomy the single-attempt path
+// produced. Returns the responding peer's NodeID alongside the response for
+// caller-side logging.
+func (d *ClusterDispatcher) forwardWithFailover(ctx context.Context, tenantID, tags, kind string, req DispatchCalloutRequest) (*DispatchCalloutResponse, string, error) {
+	tried := make(map[string]bool)
+	peer, err := d.findPeerWithPolling(ctx, tenantID, tags, tried)
+	if err != nil {
+		return nil, "", err
+	}
+
+	for {
+		slog.Debug("forwarding callout to peer",
+			"pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
+
+		resp, fwdErr := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
+		if fwdErr == nil && (resp.Success || resp.ErrorCode != common.ErrCodeNoComputeMemberForTag) {
+			return resp, peer.NodeID, nil
+		}
+
+		tried[peer.NodeID] = true
+		if fwdErr != nil {
+			slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "err", fwdErr)
+		} else {
+			slog.Warn("peer lost matching calculation member, trying next peer",
+				"pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "tags", tags)
+		}
+
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+
+		next, found := d.findPeer(ctx, tenantID, tags, tried)
+		if !found {
+			// All tag-matching peers tried — surface the last failure.
+			if fwdErr != nil {
+				return nil, "", common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
+					forwardFailedClientMessage).AsRetryable()
+			}
+			return resp, peer.NodeID, nil
+		}
+		peer = next
+	}
+}
+
 // findPeerWithPolling polls the gossip registry for a peer with matching tags,
-// retrying every gossipPollInterval up to waitTimeout.
-func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID string, tags string) (contract.NodeInfo, error) {
+// retrying every gossipPollInterval up to waitTimeout. Peers in exclude are
+// skipped.
+func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID string, tags string, exclude map[string]bool) (contract.NodeInfo, error) {
 	deadline := time.After(d.waitTimeout)
 	ticker := time.NewTicker(gossipPollInterval)
 	defer ticker.Stop()
 
 	// Try immediately first, then poll.
 	for {
-		peer, found := d.findPeer(ctx, tenantID, tags)
+		peer, found := d.findPeer(ctx, tenantID, tags, exclude)
 		if found {
 			return peer, nil
 		}
@@ -280,9 +305,9 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 	}
 }
 
-// findPeer queries the registry and returns a peer (not self, alive) whose tags
-// for the given tenant overlap with the required tags.
-func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags string) (contract.NodeInfo, bool) {
+// findPeer queries the registry and returns a peer (not self, alive, not in
+// exclude) whose tags for the given tenant overlap with the required tags.
+func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags string, exclude map[string]bool) (contract.NodeInfo, bool) {
 	nodes, err := d.registry.List(ctx)
 	if err != nil {
 		slog.Debug("failed to list cluster nodes", "pkg", "dispatch", "err", err)
@@ -295,6 +320,9 @@ func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags 
 			continue
 		}
 		if !n.Alive {
+			continue
+		}
+		if exclude[n.NodeID] {
 			continue
 		}
 		if common.TagsOverlap(n.Tags[tenantID], tags) {
