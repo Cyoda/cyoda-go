@@ -747,3 +747,51 @@ func TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses(t *testing.T) {
 		t.Errorf("rejected delta persisted: before=%d after=%d", preCount, postCount)
 	}
 }
+
+// TestSQLite_ExtendSchema_ConcurrentSavepointCrossing_NoLostDelta —
+// cross-backend regression for the schema-fold delta-loss corruption
+// path fixed in the postgres plugin (see plugins/postgres
+// TestExtendSchema_ConcurrentSelfWrap_SavepointCrossing_NoLostDelta):
+// a savepoint fold that runs without seeing a concurrent writer's
+// lower-seq delta excludes that delta from every future fold. SQLite's
+// single-writer transaction model makes each ExtendSchema attempt
+// (fold + append in one internal tx, retried wholesale on BUSY)
+// naturally immune; this test locks that property in. N concurrent
+// writers each add a distinct token with a savepoint interval small
+// enough that many folds fire mid-storm; every committed delta must
+// survive into the final fold.
+func TestSQLite_ExtendSchema_ConcurrentSavepointCrossing_NoLostDelta(t *testing.T) {
+	const (
+		n        = 24
+		interval = 3
+	)
+	fx := newSQLiteFixtureWithInterval(t, interval)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			delta := spi.SchemaDelta(fmt.Sprintf(`"d%02d"`, i))
+			if err := fx.store.ExtendSchema(fx.ctx, ref, delta); err != nil {
+				t.Errorf("ExtendSchema #%d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got, err := fx.store.Get(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		token := fmt.Sprintf("d%02d", i)
+		if !bytes.Contains(got.Schema, []byte(token)) {
+			t.Errorf("committed delta %q lost from fold; folded schema = %s", token, got.Schema)
+		}
+	}
+}

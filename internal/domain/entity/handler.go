@@ -108,9 +108,11 @@ func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) erro
 // changeLevel is set, it computes an additive schema delta via schema.Diff
 // and appends it to the model's extension log via ModelStore.ExtendSchema.
 // That call participates in the ambient entity transaction, so visibility
-// is commit-bound and concurrent entity writes on the same model do not
-// contend on a single "models" row — the hot-row regression that
-// ModelStore.Save would otherwise produce under REPEATABLE READ.
+// is commit-bound. Writes whose data already fits the schema (nil delta —
+// the steady state) touch no "models" row and cannot contend; writes that
+// genuinely extend the same model serialise per (tenant, model) inside the
+// plugin, and a concurrent extender surfaces a retryable conflict rather
+// than folding a savepoint over a delta it cannot yet see.
 // Returns an error on validation or extension failure.
 // ValidateWithRefresh runs strict schema validation with a bounded
 // refresh-on-stale safety net. One refresh attempt, only on unknown-

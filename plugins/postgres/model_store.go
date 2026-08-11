@@ -73,6 +73,13 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 	// here is a fatal assertion; in production it logs a warning and
 	// proceeds, because Save itself is the authoritative schema source
 	// at this moment.
+	//
+	// The assertion is defense-in-depth, not the defense: the kernel's
+	// model state machine (LOCKED/UNLOCKED mutual exclusion and the
+	// MODEL_HAS_ENTITIES zero-entity check, e2e-covered in the root
+	// module) is what keeps writers off this path in production. It is
+	// expected to be unreachable through the public API and stays for
+	// writers that bypass the state machine.
 	tag, err := s.q.Exec(ctx, `
 		DELETE FROM model_schema_extensions
 		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
@@ -341,10 +348,19 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 // the same transaction so future Gets can start from there rather
 // than replaying the entire log.
 //
-// Under REPEATABLE READ there is no schema-write conflict surface:
-// concurrent writers both succeed, and A.2 I2 (commutativity)
-// guarantees the fold is equivalent regardless of interleaving.
-// No retry wrapper.
+// Writers serialise per (tenant, model) by claiming a write on the
+// models row before anything else — see extendSchemaBody. Delta appends
+// alone would commute, but the savepoint fold does not: folding inside
+// a snapshot that cannot yet see a concurrent writer's lower-seq delta
+// would exclude that delta from every future fold. A concurrent writer
+// in an ambient REPEATABLE READ transaction therefore fails with
+// spi.ErrConflict (first committer wins, as for entity writes) and
+// retries on a fresh snapshot; self-wrapped writers serialise by
+// blocking on the row lock instead. No retry wrapper here.
+//
+// A blocked writer waits as long as the claim holder's transaction
+// lives, bounded by the caller's context and the statement_timeout
+// ceiling — not by AcquireTimeout, which covers only the pool acquire.
 //
 // Empty or nil deltas are a no-op.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
@@ -366,7 +382,12 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	// acquire, and is cancelled the instant Begin returns so the transaction
 	// handle — which outlives this call — cannot inherit it.
 	acquireCtx, cancelAcquire := s.acquireContext(ctx)
-	tx, err := s.pool.Begin(acquireCtx)
+	// READ COMMITTED is explicit, not inherited from the server default:
+	// extendSchemaBody's write-claim on the models row relies on every
+	// post-claim statement seeing what the previous claim holder committed,
+	// which per-statement snapshots provide and a REPEATABLE READ snapshot
+	// taken before the claim would not.
+	tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	cancelAcquire() // Begin has returned; the handle must not inherit the deadline
 	if err != nil {
 		// Same classification as every other acquire in this plugin: a saturated
@@ -380,11 +401,24 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	// Rollback is idempotent in pgx: no-op once Commit has landed.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := s.extendSchemaBody(ctx, tx, ref, delta); err != nil {
+	// Set the RLS tenant, as every other transaction this plugin opens does
+	// (TransactionManager.Begin, the async-search scan). The owner role
+	// bypasses the policies today, but under the stated non-owner deployment
+	// posture (rls_test.go) an unset GUC filters every row this body needs.
+	if _, err := tx.Exec(ctx,
+		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+		return fmt.Errorf("failed to set tenant for ExtendSchema(%s): %w", ref, err)
+	}
+
+	// classifiedQuerier keeps the self-wrap statements on the same error
+	// classification the ambient path gets from ctxQuerier — the write-claim's
+	// conflict sentinel and the ceilings' storage-unavailable marker both
+	// depend on it.
+	if err := s.extendSchemaBody(ctx, classifiedQuerier{inner: tx}, ref, delta); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit self-wrap tx for ExtendSchema(%s): %w", ref, err)
+		return classifyError(fmt.Errorf("failed to commit self-wrap tx for ExtendSchema(%s): %w", ref, err))
 	}
 	return nil
 }
@@ -406,6 +440,28 @@ func (s *modelStore) extendSchemaBody(ctx context.Context, q Querier, ref spi.Mo
 	// unchanged.
 	shadow := *s
 	shadow.q = q
+
+	// Serialise writers per (tenant, model): claim a write on the models
+	// row before any other statement in this body. The claim must be a
+	// real UPDATE — not SELECT ... FOR UPDATE, not an advisory lock —
+	// because under an ambient REPEATABLE READ transaction a blocking-only
+	// lock releases the loser onto its stale snapshot, whose savepoint
+	// fold would exclude the winner's committed delta forever (fold-on-read
+	// replays only deltas newer than the savepoint). The UPDATE makes the
+	// loser fail with 40001 instead (spi.ErrConflict via the classifying
+	// querier), and the caller retries on a fresh snapshot. On the
+	// self-wrap READ COMMITTED path the same claim serialises writers by
+	// blocking, and post-claim statements see the previous holder's commit.
+	tag, err := q.Exec(ctx,
+		`UPDATE models SET doc = doc
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("serialize schema writers for %s: %w", ref, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+	}
 
 	// Pre-persist Apply check: reject deltas that applyFunc refuses before
 	// they reach the extension log. Mirrors the memory plugin's
@@ -434,7 +490,7 @@ func (s *modelStore) extendSchemaBody(ctx context.Context, q Querier, ref spi.Mo
 	}
 
 	var newSeq int64
-	err := q.QueryRow(ctx,
+	err = q.QueryRow(ctx,
 		`INSERT INTO model_schema_extensions
 		    (tenant_id, model_name, model_version, kind, payload, tx_id)
 		 VALUES ($1, $2, $3, 'delta', $4, $5)

@@ -23,9 +23,9 @@ import (
 // its bookkeeping with it. Classification belongs here rather than at the call
 // sites, which is why the stores do not re-classify what they get back.
 //
-// It is one of two queriers in this package, not the only one: a store whose
-// statements must not join an ambient transaction takes poolQuerier instead.
-// Both classify identically; they differ only in what they resolve.
+// It is one of two queriers in this package, not the only one: a caller whose
+// statements must not resolve an ambient transaction takes classifiedQuerier
+// instead. Both classify identically; they differ only in what they resolve.
 type ctxQuerier struct {
 	factory *StoreFactory
 }
@@ -93,33 +93,36 @@ func wrapRows(rows pgx.Rows, classify func(error) error) pgx.Rows {
 	return &classifyingRows{Rows: rows, classify: classify}
 }
 
-// poolQuerier is the funnel for a store whose statements must NOT join an
-// ambient transaction: it resolves the pool unconditionally, and classifies with
-// the same plain classification classifyFor applies to a non-transactional
-// statement.
+// classifiedQuerier applies the plain classification funnel — the same
+// one classifyFor uses for a non-transactional statement — to a fixed
+// inner Querier, with no context-based transaction resolution.
 //
-// One store needs this. An async-search job record outlives the request that
-// submitted it — the goroutine that fills it in runs on a context of its own —
-// and the submit path's context can carry a joined transaction, because the
-// TxJoin middleware wraps the whole API mux and the gRPC tx-route interceptor
-// covers the snapshot RPCs. Resolving that transaction would bind the job record
-// to it: invisible to the goroutine that must update it, and gone if the caller
-// rolls back. Pinning to the pool keeps the record independent while still
-// classifying what the pool reports.
-type poolQuerier struct{ pool Querier }
+// Two callers pin an inner querier this way. The async-search job store
+// pins the pool (via StoreFactory.poolQuerier): its job record outlives
+// the request that submitted it — the goroutine that fills it in runs on
+// a context of its own — and the submit path's context can carry a
+// joined transaction, because the TxJoin middleware wraps the whole API
+// mux and the gRPC tx-route interceptor covers the snapshot RPCs.
+// Resolving that transaction would bind the job record to it: invisible
+// to the goroutine that must update it, and gone if the caller rolls
+// back. ExtendSchema's self-wrap pins its own pgx.Tx: the transaction is
+// private by construction, and the funnel is what keeps its errors — a
+// serialization abort on the write-claim, a reclaimed session — carrying
+// the same sentinels the ambient path gets from ctxQuerier.
+type classifiedQuerier struct{ inner Querier }
 
-func (p poolQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	tag, err := p.pool.Exec(ctx, sql, args...)
+func (c classifiedQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	tag, err := c.inner.Exec(ctx, sql, args...)
 	return tag, classifyError(err)
 }
 
-func (p poolQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	rows, err := p.pool.Query(ctx, sql, args...)
+func (c classifiedQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows, err := c.inner.Query(ctx, sql, args...)
 	return wrapRows(rows, classifyError), classifyError(err)
 }
 
-func (p poolQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return &classifyingRow{inner: p.pool.QueryRow(ctx, sql, args...), classify: classifyError}
+func (c classifiedQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return &classifyingRow{inner: c.inner.QueryRow(ctx, sql, args...), classify: classifyError}
 }
 
 // deadTxError marks a statement issued against a transaction the manager no
