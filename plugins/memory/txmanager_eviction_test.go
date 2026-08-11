@@ -46,8 +46,8 @@ func TestSubmitTimeEviction(t *testing.T) {
 
 	// Artificially age the first two by setting their timestamps to 2 hours ago.
 	twoHoursAgo := time.Now().Add(-2 * time.Hour)
-	txMgr.submitTimes[txIDs[0]] = twoHoursAgo
-	txMgr.submitTimes[txIDs[1]] = twoHoursAgo
+	txMgr.submitTimes[txIDs[0]] = submitTimeEntry{submitTime: twoHoursAgo, tenantID: "tenant-A"}
+	txMgr.submitTimes[txIDs[1]] = submitTimeEntry{submitTime: twoHoursAgo, tenantID: "tenant-A"}
 	txMgr.mu.Unlock()
 
 	// Commit a 4th transaction (triggers eviction).
