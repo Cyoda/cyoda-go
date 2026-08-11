@@ -21,6 +21,16 @@ type committedTx struct {
 	writeSet   map[string]bool
 }
 
+// submitTimeEntry pairs a committed transaction's submit time with the
+// tenant that owns it, so GetSubmitTime can enforce the same tenant gate
+// as every other tx-lifecycle method after the active-tx state is gone.
+// The persisted submit_times table carries the same pairing in its
+// tenant_id column for lookups after the in-memory entry aged out.
+type submitTimeEntry struct {
+	submitTime time.Time
+	tenantID   spi.TenantID
+}
+
 // savepointSnapshot holds a deep copy of transaction state at savepoint time.
 type savepointSnapshot struct {
 	buffer            map[string]*spi.Entity
@@ -52,7 +62,7 @@ type transactionManager struct {
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
 	committing     map[string]bool
-	submitTimes    map[string]time.Time
+	submitTimes    map[string]submitTimeEntry
 	savepoints     map[string]map[string]savepointSnapshot
 	lastSubmitTime int64 // monotonic submit time in microseconds; written under commitMu, read under mu
 
@@ -87,7 +97,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		uuids:            uuids,
 		active:           make(map[string]*spi.TransactionState),
 		committing:       make(map[string]bool),
-		submitTimes:      make(map[string]time.Time),
+		submitTimes:      make(map[string]submitTimeEntry),
 		savepoints:       make(map[string]map[string]savepointSnapshot),
 		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
 		scheduledTaskOps: make(map[string][]scheduledTaskOp),
@@ -335,12 +345,12 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			submitTime: submitTime,
 			writeSet:   tx.WriteSet,
 		})
-		m.submitTimes[txID] = submitTime
+		m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tx.TenantID}
 
 		// Evict old submit times beyond TTL.
 		evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
-		for id, t := range m.submitTimes {
-			if t.Before(evictBefore) {
+		for id, e := range m.submitTimes {
+			if e.submitTime.Before(evictBefore) {
 				delete(m.submitTimes, id)
 			}
 		}
@@ -532,10 +542,12 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		// the buffer flush, so a same-tx delete+reclaim does not falsely conflict.)
 	}
 
-	// Record submit time.
+	// Record submit time, paired with the owning tenant so the persistent
+	// fallback in GetSubmitTime can enforce the tenant gate after the
+	// in-memory entry ages out.
 	_, err = sqlTx.ExecContext(ctx,
-		"INSERT OR REPLACE INTO submit_times (tx_id, submit_time) VALUES (?, ?)",
-		tx.ID, submitMicro)
+		"INSERT OR REPLACE INTO submit_times (tx_id, tenant_id, submit_time) VALUES (?, ?, ?)",
+		tx.ID, tid, submitMicro)
 	if err != nil {
 		return fmt.Errorf("record submit time: %w", err)
 	}
@@ -590,24 +602,41 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 
 // GetSubmitTime returns the submit time of a committed transaction.
 // Checks in-memory cache first, then falls back to the submit_times table.
-func (m *transactionManager) GetSubmitTime(_ context.Context, txID string) (time.Time, error) {
+//
+// Tenant isolation: like every other tx-lifecycle method, the caller's
+// tenant must match the transaction's tenant — on the in-memory path AND
+// the persistent-fallback path. The check runs before any state-dependent
+// response so a cross-tenant caller learns neither the submit time nor
+// whether the transaction is in flight or committed.
+func (m *transactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.active[txID]; ok {
+	if tx, ok := m.active[txID]; ok {
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
 		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
 	}
 
-	if t, ok := m.submitTimes[txID]; ok {
-		return t, nil
+	if e, ok := m.submitTimes[txID]; ok {
+		if uc == nil || uc.Tenant.ID != e.tenantID {
+			return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		return e.submitTime, nil
 	}
 
 	// Fall back to persisted submit_times table.
 	var micro int64
+	var tenantID string
 	err := m.factory.db.QueryRow(
-		"SELECT submit_time FROM submit_times WHERE tx_id = ?", txID).Scan(&micro)
+		"SELECT submit_time, tenant_id FROM submit_times WHERE tx_id = ?", txID).Scan(&micro, &tenantID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	if uc == nil || uc.Tenant.ID != spi.TenantID(tenantID) {
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 	return time.UnixMicro(micro), nil
 }
