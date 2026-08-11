@@ -169,8 +169,8 @@ func dissectAnd(f spi.Filter) (*spi.Filter, *spi.Filter) {
 // are fully pushable, otherwise the entire OR is residual.
 func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
 	// An explicit empty OR is the OR identity (false, matches nothing) — a
-	// shape SQL cannot express: joining zero fragments yields no predicate at
-	// all (i.e. TRUE, matches everything). Route it to the residual so the
+	// shape toSQL cannot express: joining zero fragments yields no predicate
+	// at all (i.e. TRUE, matches everything). Route it to the residual so the
 	// kernel applies the identity. Note the asymmetry with the empty AND,
 	// whose identity (true) IS what dissectAnd's (nil, nil) means.
 	if len(f.Children) == 0 {
@@ -281,7 +281,10 @@ func isPushable(op spi.FilterOp) bool {
 }
 
 // toSQL recursively converts a (fully pushable) filter tree to a SQL WHERE
-// fragment and bound arguments. argCounter is a monotonically increasing
+// fragment and bound arguments. The tree must contain no empty groups —
+// joining zero fragments renders "" standalone and a malformed "()" nested;
+// dissect guarantees none reach here (empty groups are identity shapes the
+// kernel owns). argCounter is a monotonically increasing
 // placeholder index used to generate $1, $2, ... — it MUST be shared across
 // the whole tree so each leaf gets a unique placeholder number.
 func toSQL(f spi.Filter, argCounter *int) (string, []any) {
