@@ -175,6 +175,10 @@ func New(cfg Config) *App {
 	// interface uses the raw function signature (not any plugin-local
 	// named ApplyFunc type) so a single type-assertion satisfies all
 	// plugins uniformly.
+	// The assertion is soft, so a factory that stops implementing this
+	// exact signature would be skipped silently and every fold-on-read of
+	// pending deltas would fail; applyfunc_wiring_test.go pins the in-tree
+	// factories to it at compile time.
 	type applyFuncSetter interface {
 		SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
 	}

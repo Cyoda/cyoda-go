@@ -115,11 +115,19 @@ transactional contract itself. The spec living in
 `docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md`
 states this as five invariants:
 
-1. **Non-interference.** A schema extension triggered inside an
-   entity transaction must not cause that transaction (or any
-   concurrent entity transaction) to fail with a conflict. In
-   practice this means schema extensions don't write the same row
-   that entity data writes touch.
+1. **Non-interference for non-extending writes.** An entity write
+   whose data already fits the folded schema (a nil delta — the
+   steady state) touches no model row and cannot conflict with any
+   concurrent writer over schema state. Writes that genuinely
+   extend the same model are the exception: they serialise per
+   `(tenant, model)` via a write-claim on the `models` row, so a
+   concurrent extender under `REPEATABLE READ` fails with a
+   retryable conflict (first committer wins, as for entity rows).
+   The serialisation is required by the limit of invariant 3:
+   delta appends commute, but the periodic savepoint fold does
+   not — a fold running in a snapshot that cannot yet see a
+   concurrent lower-seq delta would exclude that delta from every
+   future fold, silently and permanently.
 2. **Commit-bound visibility.** A schema extension is visible to
    subsequent readers only after the enclosing entity transaction
    commits. Rolled-back entity transactions leave no trace of their

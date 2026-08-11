@@ -73,6 +73,13 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 	// here is a fatal assertion; in production it logs a warning and
 	// proceeds, because Save itself is the authoritative schema source
 	// at this moment.
+	//
+	// The assertion is defense-in-depth, not the defense: the kernel's
+	// model state machine (LOCKED/UNLOCKED mutual exclusion and the
+	// MODEL_HAS_ENTITIES zero-entity check, e2e-covered in the root
+	// module) is what keeps writers off this path in production. It is
+	// expected to be unreachable through the public API and stays for
+	// writers that bypass the state machine.
 	tag, err := s.q.Exec(ctx, `
 		DELETE FROM model_schema_extensions
 		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
