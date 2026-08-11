@@ -1623,7 +1623,9 @@ paths:
         - name: transactionId
           in: query
           description: Evaluate available transitions as of the submit time of this
-            transaction. Mutually exclusive with pointInTime.
+            transaction. Mutually exclusive with pointInTime. The transaction must
+            belong to the caller's tenant; an unknown or foreign transaction ID is
+            rejected with 400.
           required: false
           schema:
             type: string

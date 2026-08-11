@@ -541,6 +541,32 @@ func (c *Client) GetEntityByTransactionIDBodyRaw(t *testing.T, entityID uuid.UUI
 	return resp.StatusCode, raw, nil
 }
 
+// GetTransitionsByTransactionIDBodyRaw issues
+// GET /api/entity/{entityId}/transitions?transactionId=<tx> and returns the
+// raw status code and response body. Used by tenant-isolation tests: the
+// transitions handler resolves the transactionId to a submit time via the
+// transaction manager before any entity lookup, so this is the path where a
+// cross-tenant txID must be rejected rather than resolved.
+func (c *Client) GetTransitionsByTransactionIDBodyRaw(t *testing.T, entityID uuid.UUID, txID string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/transitions?transactionId=%s", entityID.String(), txID)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // GetEntityChangesAtBodyRaw issues GET /api/entity/{entityId}/changes?pointInTime=<t>
 // and returns the raw status code and response body. Used by tenant-isolation
 // tests that need to compare error-response bodies byte-for-byte across the

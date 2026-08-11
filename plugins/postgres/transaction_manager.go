@@ -19,6 +19,15 @@ import (
 
 const submitTimeTTL = 1 * time.Hour
 
+// submitTimeEntry pairs a committed transaction's submit time with the
+// tenant that owns it, so GetSubmitTime can enforce the same tenant gate
+// as every other tx-lifecycle method after cleanupTx has removed the
+// active-tx state.
+type submitTimeEntry struct {
+	submitTime time.Time
+	tenantID   spi.TenantID
+}
+
 // TransactionManager implements spi.TransactionManager backed by PostgreSQL
 // with REPEATABLE READ isolation plus application-layer row-granular
 // first-committer-wins validation. Each Begin() acquires a real pgx.Tx,
@@ -29,9 +38,9 @@ type TransactionManager struct {
 	registry *txRegistry
 	uuids    spi.UUIDGenerator
 	mu       sync.Mutex
-	// submitTimes records the database timestamp captured at commit time.
-	// Evicted after submitTimeTTL.
-	submitTimes map[string]time.Time
+	// submitTimes records the database timestamp captured at commit time,
+	// paired with the owning tenant. Evicted after submitTimeTTL.
+	submitTimes map[string]submitTimeEntry
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
@@ -70,7 +79,7 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 		pool:           pool,
 		registry:       newTxRegistry(),
 		uuids:          uuids,
-		submitTimes:    make(map[string]time.Time),
+		submitTimes:    make(map[string]submitTimeEntry),
 		tenants:        make(map[string]spi.TenantID),
 		origins:        make(map[string]spi.Principal),
 		txStates:       make(map[string]*txState),
@@ -260,19 +269,24 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
 
-	tm.cleanupTx(txID)
-
+	// Record the submit time BEFORE cleanupTx removes the active-tx state:
+	// a concurrent GetSubmitTime racing this Commit then observes the tx in
+	// at least one of the two maps at all times (its committed branch wins
+	// during the overlap), never a transient "neither map" ErrTxNotFound
+	// for a transaction that just committed successfully.
 	func() {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
-		tm.submitTimes[txID] = submitTime
+		tm.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: state.tenantID}
 		evictBefore := time.Now().Add(-submitTimeTTL)
-		for id, t := range tm.submitTimes {
-			if t.Before(evictBefore) {
+		for id, e := range tm.submitTimes {
+			if e.submitTime.Before(evictBefore) {
 				delete(tm.submitTimes, id)
 			}
 		}
 	}()
+
+	tm.cleanupTx(txID)
 
 	return nil
 }
@@ -347,15 +361,37 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 
 // GetSubmitTime returns the database timestamp recorded when the transaction
 // was committed.
-func (tm *TransactionManager) GetSubmitTime(_ context.Context, txID string) (time.Time, error) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+//
+// Tenant isolation: like every other tx-lifecycle method, the caller's
+// tenant must match the transaction's tenant. The check runs before any
+// state-dependent response so a cross-tenant caller learns neither the
+// submit time nor whether the transaction is in flight or committed.
+func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
+	// Single critical section for both maps; verifyTenant runs outside it
+	// (it takes no locks, but keeping the section minimal matches the rest
+	// of this file).
+	entry, committed, activeTenant, active := func() (submitTimeEntry, bool, spi.TenantID, bool) {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		e, ok := tm.submitTimes[txID]
+		tid, act := tm.tenants[txID]
+		return e, ok, tid, act
+	}()
 
-	t, ok := tm.submitTimes[txID]
-	if !ok {
-		return time.Time{}, fmt.Errorf("GetSubmitTime: transaction %s has no submit time (not yet committed or unknown)", txID)
+	switch {
+	case committed:
+		if err := verifyTenant(ctx, entry.tenantID, "GetSubmitTime", txID); err != nil {
+			return time.Time{}, err
+		}
+		return entry.submitTime, nil
+	case active:
+		if err := verifyTenant(ctx, activeTenant, "GetSubmitTime", txID); err != nil {
+			return time.Time{}, err
+		}
+		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
+	default:
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
-	return t, nil
 }
 
 // LookupTx exposes the registry lookup for use in tests and by the store

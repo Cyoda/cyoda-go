@@ -141,6 +141,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Resolving a transaction's submit time is now tenant-gated.** `GetSubmitTime`
+  was the only transaction-lifecycle method without the tenant check the rest of
+  the surface enforces: a caller supplying another tenant's transaction ID —
+  reachable via `GET /entity/{id}/transitions?transactionId=` — could learn the
+  transaction's submit time (committed) or its in-flight state. All three storage
+  backends now reject cross-tenant lookups before any state-dependent response,
+  the endpoint answers the same **400** for a foreign transaction ID as for a
+  nonexistent one, and the SQLite `submit_times` table gains a `tenant_id` column
+  (migration 000005, drop-and-recreate — rows carry a 1-hour TTL) so the
+  persistent-fallback lookup is gated too.
+
 - **Sorting by a `$.`-prefixed field path over gRPC now works.** Sort-key resolution
   prepended `$.` by hand, which is not idempotent. The HTTP layer strips the prefix
   before resolving, so HTTP was unaffected; gRPC passes the client's path through

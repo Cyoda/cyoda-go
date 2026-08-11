@@ -21,6 +21,14 @@ type committedTx struct {
 	writeSet   map[string]bool
 }
 
+// submitTimeEntry pairs a committed transaction's submit time with the
+// tenant that owns it, so GetSubmitTime can enforce the same tenant gate
+// as every other tx-lifecycle method after the active-tx state is gone.
+type submitTimeEntry struct {
+	submitTime time.Time
+	tenantID   spi.TenantID
+}
+
 // savepointSnapshot captures the state of a transaction's buffer maps at the
 // time a savepoint is created. Used by RollbackToSavepoint to restore state.
 type savepointSnapshot struct {
@@ -49,7 +57,7 @@ type TransactionManager struct {
 	active       map[string]*spi.TransactionState
 	committedLog []committedTx
 	committing   map[string]bool                         // tracks txIDs currently being committed
-	submitTimes  map[string]time.Time                    // txID -> submitTime, survives log pruning. Evicted after submitTimeTTL.
+	submitTimes  map[string]submitTimeEntry              // txID -> submit time + owning tenant, survives log pruning. Evicted after submitTimeTTL.
 	savepoints   map[string]map[string]savepointSnapshot // txID -> spID -> snapshot
 
 	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
@@ -85,7 +93,7 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		active:           make(map[string]*spi.TransactionState),
 		committedLog:     nil,
 		committing:       make(map[string]bool),
-		submitTimes:      make(map[string]time.Time),
+		submitTimes:      make(map[string]submitTimeEntry),
 		savepoints:       make(map[string]map[string]savepointSnapshot),
 		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
 		scheduledTaskOps: make(map[string][]scheduledTaskOp),
@@ -458,10 +466,10 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				submitTime: submitTime,
 				writeSet:   tx.WriteSet,
 			})
-			m.submitTimes[txID] = submitTime
+			m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tid}
 			evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
-			for id, t := range m.submitTimes {
-				if t.Before(evictBefore) {
+			for id, e := range m.submitTimes {
+				if e.submitTime.Before(evictBefore) {
 					delete(m.submitTimes, id)
 				}
 			}
@@ -534,16 +542,28 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 
 // GetSubmitTime returns the submit time of a committed transaction.
 // Returns an error if the transaction is still active or not found.
-func (m *TransactionManager) GetSubmitTime(_ context.Context, txID string) (time.Time, error) {
+//
+// Tenant isolation: like every other tx-lifecycle method, the caller's
+// tenant must match the transaction's tenant. The check runs before any
+// state-dependent response so a cross-tenant caller learns neither the
+// submit time nor whether the transaction is in flight or committed.
+func (m *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.active[txID]; ok {
+	if tx, ok := m.active[txID]; ok {
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
 		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
 	}
 
-	if t, ok := m.submitTimes[txID]; ok {
-		return t, nil
+	if e, ok := m.submitTimes[txID]; ok {
+		if uc == nil || uc.Tenant.ID != e.tenantID {
+			return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		return e.submitTime, nil
 	}
 
 	return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)

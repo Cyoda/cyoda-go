@@ -390,7 +390,7 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339
-- `transactionId` (query, optional): UUID — derive point-in-time from transaction submit time
+- `transactionId` (query, optional): UUID — derive point-in-time from transaction submit time. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID returns `400 BAD_REQUEST`.
 
 `pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current time is used.
 
