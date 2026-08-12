@@ -1038,9 +1038,11 @@ func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 
 // DeleteMessages issues DELETE /api/message with a JSON-array body of
 // message IDs. Returns the list of actually-deleted IDs from the
-// response. Paging by transactionSize is supported by the server via
-// query param (default 1000); this helper does not expose it because
-// every parity test deletes well under 1000 IDs at a time.
+// response's first chunk. transactionSize is omitted (server applies its
+// default paging window); every existing caller deletes well under that
+// window and gets exactly one chunk back. Callers that need the
+// transactionSize knob or the full multi-chunk response use
+// DeleteMessagesBatched.
 //
 // Canonical: api/openapi.yaml deleteMessages operation. Despite the
 // generated DeleteMessagesParams struct only carrying TransactionSize,
@@ -1048,26 +1050,48 @@ func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 // struct is just for the query knob.
 func (c *Client) DeleteMessages(t *testing.T, ids []string) ([]string, error) {
 	t.Helper()
-	body, err := json.Marshal(ids)
-	if err != nil {
-		return nil, fmt.Errorf("marshal DeleteMessages ids: %w", err)
-	}
-	raw, err := c.doRaw(t, http.MethodDelete, "/api/message", string(body))
+	results, err := c.DeleteMessagesBatched(t, ids, 0)
 	if err != nil {
 		return nil, err
-	}
-	// Response is [{"entityIds":[...],"success":true}].
-	var results []struct {
-		EntityIDs []string `json:"entityIds"`
-		Success   bool     `json:"success"`
-	}
-	if err := json.Unmarshal(raw, &results); err != nil {
-		return nil, fmt.Errorf("decode DeleteMessages response: %w (body=%s)", err, string(raw))
 	}
 	if len(results) == 0 {
 		return nil, fmt.Errorf("DeleteMessages returned empty results array")
 	}
 	return results[0].EntityIDs, nil
+}
+
+// DeleteMessagesResult is one element of the deleteMessages response array:
+// {"entityIds":[...],"success":true}. A transactionSize-batched delete
+// returns one element per batch.
+type DeleteMessagesResult struct {
+	EntityIDs []string `json:"entityIds"`
+	Success   bool     `json:"success"`
+}
+
+// DeleteMessagesBatched issues DELETE /api/message with a JSON-array body
+// of message IDs and an optional transactionSize query parameter, and
+// returns every chunk of the response (not just the first — see
+// DeleteMessages). transactionSize <= 0 omits the query parameter (server
+// applies its default paging window, currently 1000).
+func (c *Client) DeleteMessagesBatched(t *testing.T, ids []string, transactionSize int) ([]DeleteMessagesResult, error) {
+	t.Helper()
+	body, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal DeleteMessagesBatched ids: %w", err)
+	}
+	path := "/api/message"
+	if transactionSize > 0 {
+		path = fmt.Sprintf("%s?transactionSize=%d", path, transactionSize)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, path, string(body))
+	if err != nil {
+		return nil, err
+	}
+	var results []DeleteMessagesResult
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil, fmt.Errorf("decode DeleteMessagesBatched response: %w (body=%s)", err, string(raw))
+	}
+	return results, nil
 }
 
 // SubmitAsyncSearch issues POST /api/search/async/{name}/{version} with
@@ -1396,6 +1420,53 @@ func (c *Client) DeleteEntitiesByModelAt(t *testing.T, name string, version int,
 	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", name, version, pointInTime.UTC().Format(time.RFC3339Nano))
 	_, err := c.doRaw(t, http.MethodDelete, path, "")
 	return err
+}
+
+// StreamDeleteResult mirrors the deleteEntities JSON response shape:
+// {entityModelClassId, deleteResult:{idToError, numberOfEntitites,
+// numberOfEntititesRemoved}, ids?}. MatchedCount is the count the
+// condition selected; RemovedCount is the count actually deleted — the
+// two are decoupled because a per-id delete can fail independently of
+// the match (see internal/domain/entity/handler.go DeleteEntities).
+type StreamDeleteResult struct {
+	MatchedCount int
+	RemovedCount int
+	IDToError    map[string]string
+	IDs          []string
+}
+
+// DeleteEntitiesConditional issues DELETE /api/entity/{name}/{version} with
+// the given search condition as the request body, verbose=true (so the
+// response echoes the deleted ids), and an optional transactionSize query
+// parameter for batched (paged) deletion. transactionSize <= 0 omits the
+// query parameter (server applies its single-transaction default).
+func (c *Client) DeleteEntitiesConditional(t *testing.T, name string, version int, condition string, transactionSize int) (StreamDeleteResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?verbose=true", name, version)
+	if transactionSize > 0 {
+		path += fmt.Sprintf("&transactionSize=%d", transactionSize)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, path, condition)
+	if err != nil {
+		return StreamDeleteResult{}, err
+	}
+	var resp struct {
+		DeleteResult struct {
+			IDToError                map[string]string `json:"idToError"`
+			NumberOfEntitites        int                `json:"numberOfEntitites"`
+			NumberOfEntititesRemoved int                `json:"numberOfEntititesRemoved"`
+		} `json:"deleteResult"`
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return StreamDeleteResult{}, fmt.Errorf("decode DeleteEntitiesConditional response: %w (body=%s)", err, string(raw))
+	}
+	return StreamDeleteResult{
+		MatchedCount: resp.DeleteResult.NumberOfEntitites,
+		RemovedCount: resp.DeleteResult.NumberOfEntititesRemoved,
+		IDToError:    resp.DeleteResult.IDToError,
+		IDs:          resp.IDs,
+	}, nil
 }
 
 // LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns

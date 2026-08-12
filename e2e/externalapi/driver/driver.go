@@ -216,6 +216,13 @@ func (d *Driver) DeleteEntitiesByModelAt(name string, version int, pointInTime t
 	return d.client.DeleteEntitiesByModelAt(d.t, name, version, pointInTime)
 }
 
+// DeleteEntitiesConditional issues DELETE /api/entity/{name}/{version} with
+// a search condition body and an optional transactionSize query parameter
+// (batched/paged delete). transactionSize <= 0 omits the query parameter.
+func (d *Driver) DeleteEntitiesConditional(name string, version int, condition string, transactionSize int) (parityclient.StreamDeleteResult, error) {
+	return d.client.DeleteEntitiesConditional(d.t, name, version, condition, transactionSize)
+}
+
 // LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns
 // the HTTP status + raw body for negative-path assertions via
 // errorcontract.Match.
@@ -380,6 +387,14 @@ func (d *Driver) DeleteMessage(id string) error {
 // Returns the deleted-IDs list. YAML action: delete_edge_messages.
 func (d *Driver) DeleteMessages(ids []string) ([]string, error) {
 	return d.client.DeleteMessages(d.t, ids)
+}
+
+// DeleteMessagesBatched issues DELETE /api/message with a batch ID body and
+// an optional transactionSize query parameter, returning every chunk of
+// the response (not just the first — see Driver.DeleteMessages).
+// transactionSize <= 0 omits the query parameter.
+func (d *Driver) DeleteMessagesBatched(ids []string, transactionSize int) ([]parityclient.DeleteMessagesResult, error) {
+	return d.client.DeleteMessagesBatched(d.t, ids, transactionSize)
 }
 
 // --- Async-search helpers ---
