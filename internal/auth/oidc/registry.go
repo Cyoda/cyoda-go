@@ -90,6 +90,12 @@ type Registry struct {
 	// warmupRetryStarted makes StartWarmupRetryLoop's call-once contract
 	// self-enforcing: a second call is a no-op.
 	warmupRetryStarted atomic.Bool
+
+	// reloadWarmMu serializes ReloadAllAndWarm: concurrent force-warm calls
+	// (an admin looping the reload endpoint, or endpoint + broadcast racing)
+	// queue behind one fetch pool instead of multiplying outbound traffic to
+	// every tenant's IdP.
+	reloadWarmMu sync.Mutex
 }
 
 // NewRegistry constructs the registry. broadcast may be nil in tests or
@@ -527,6 +533,8 @@ func (r *Registry) ReloadAll(ctx context.Context) error {
 // disconnecting mid-request cannot leave it half-completed. Each fetch is
 // individually bounded by the discovery/JWKS transport timeouts.
 func (r *Registry) ReloadAllAndWarm(ctx context.Context) error {
+	r.reloadWarmMu.Lock()
+	defer r.reloadWarmMu.Unlock()
 	if err := r.ReloadAll(ctx); err != nil {
 		return err
 	}
@@ -700,10 +708,12 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 	// E2 fetch-time pin enforcement: when the admin has pinned Issuers, the
 	// discovery doc's issuer field MUST be in that list. An IdP returning a
 	// mismatching issuer is either misconfigured or attacker-controlled; in
-	// either case, refuse to install the source. The provider remains in
-	// Phase-2-pending state — ResolveKey returns ErrUnknownKID until the admin
-	// reconciles. Raw issuer strings are never logged (A1+B1 lessons); only
-	// SHA-256 hashes and counts are emitted.
+	// either case, refuse to install a source AND drop any existing one —
+	// unlike a transient fetch failure, this is an affirmative conflict with
+	// the binding the cached keys were fetched under, so keeping them serving
+	// would fail open. The provider ends keyless — ResolveKey returns
+	// ErrUnknownKID until the admin reconciles. Raw issuer strings are never
+	// logged (A1+B1 lessons); only SHA-256 hashes and counts are emitted.
 	if len(prov.Issuers) > 0 {
 		issMatchesPin := false
 		for _, allowed := range prov.Issuers {
@@ -721,6 +731,13 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 				"pinned_count", len(prov.Issuers),
 			)
 			r.metrics.IncJWKSFetchError("issuer_pin_mismatch")
+			func() {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				if byURI, ok := r.sources[tenant]; ok {
+					delete(byURI, uri)
+				}
+			}()
 			return
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/google/uuid"
 )
@@ -287,6 +288,97 @@ func TestRegistry_WarmupRetryLoop_StopsOnContextCancel(t *testing.T) {
 	if after := disc.fetchCount(uri); after != before {
 		t.Errorf("retry loop still fetching after ctx cancel: %d -> %d", before, after)
 	}
+}
+
+func TestRegistry_ReloadOne_PinMismatchDropsCarriedSource(t *testing.T) {
+	// An issuer-pin mismatch is an affirmative conflict, not a transient
+	// failure: the IdP has contradicted the binding the carried keys were
+	// fetched under. The carried source must be dropped — fail closed —
+	// not kept serving like it is on an unreachable IdP.
+	uri := "https://pinned.example/.well-known/openid-configuration"
+	store := newTestStore(t)
+	disc := &flakyDiscovery{docs: map[string]*DiscoveryDoc{
+		uri: {Issuer: "https://rogue.example", JWKSURI: "https://pinned.example/jwks"},
+	}}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true})
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	p := testProvider("https://pinned.example", uri)
+	r.installForTest(p, &fakeKeySource{kid: "k1", key: &priv.PublicKey},
+		&DiscoveryDoc{Issuer: "https://pinned.example", JWKSURI: "https://pinned.example/jwks"})
+
+	if _, err := r.ResolveKey("k1", "https://pinned.example", ""); err != nil {
+		t.Fatalf("baseline ResolveKey: %v", err)
+	}
+
+	r.reloadOne(context.Background(), spi.TenantID(p.OwnerLegalEntityID.String()), uri)
+
+	if _, err := r.ResolveKey("k1", "https://pinned.example", ""); err == nil {
+		t.Fatal("ResolveKey still succeeds after issuer-pin mismatch (carried source not dropped)")
+	}
+}
+
+func TestRegistry_ReloadAllAndWarm_ConcurrentCallsSerialize(t *testing.T) {
+	// Concurrent force-warm reloads (e.g. an admin looping the endpoint)
+	// must serialize into one fetch pool at a time, not multiply outbound
+	// traffic to every tenant's IdP.
+	uri := "https://slow.example/.well-known/openid-configuration"
+	store := newTestStore(t)
+	disc := &slowCountingDiscovery{delay: 50 * time.Millisecond}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true})
+
+	p := testProvider("https://slow.example", uri)
+	plantProvider(t, r, p)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = r.ReloadAllAndWarm(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if peak := disc.peakConcurrent(); peak > 1 {
+		t.Errorf("peak concurrent discovery fetches = %d, want 1 (warm pools not serialized)", peak)
+	}
+}
+
+// slowCountingDiscovery fails every fetch after a delay while tracking the
+// peak number of concurrent Fetch calls.
+type slowCountingDiscovery struct {
+	mu      sync.Mutex
+	current int
+	peak    int
+	delay   time.Duration
+}
+
+func (s *slowCountingDiscovery) Fetch(ctx context.Context, _ string) (*DiscoveryDoc, error) {
+	s.mu.Lock()
+	s.current++
+	if s.current > s.peak {
+		s.peak = s.current
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.current--
+	}()
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+	}
+	return nil, ErrDiscoveryFailed
+}
+
+func (s *slowCountingDiscovery) peakConcurrent() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peak
 }
 
 func TestRegistry_ReloadAll_CarriedSourceForInactiveProviderDoesNotAuthenticate(t *testing.T) {
