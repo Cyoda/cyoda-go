@@ -111,6 +111,15 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 	scanned := 0
 
 	for rows.Next() {
+		// Amortized cancellation check (spec D5): checked every 1024 rows
+		// (scanned&1023==0, true at scanned==0 too) so an already-expired or
+		// since-expired ctx aborts the scan deterministically instead of
+		// depending on database/sql's/the driver's own cancellation timing.
+		if scanned&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("Search: %w", err)
+			}
+		}
 		if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
 			return nil, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
 		}
@@ -138,6 +147,16 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 	}
 
 	if err := rows.Err(); err != nil {
+		// Prefer ctx.Err() over the raw driver error when the row stream
+		// ended because the deadline fired: the sqlite driver's own
+		// interrupt mechanism can surface a driver-specific error (e.g.
+		// "sqlite3: interrupted") that does not chain to
+		// context.DeadlineExceeded/Canceled on its own. Checking ctx here
+		// guarantees the caller always gets a deterministic, chainable
+		// error when cancellation is the actual cause.
+		if cErr := ctx.Err(); cErr != nil {
+			return nil, fmt.Errorf("Search: %w", cErr)
+		}
 		return nil, fmt.Errorf("row iteration: %w", err)
 	}
 
@@ -186,10 +205,19 @@ func (s *entityStore) searchSnapshotBase(opts spi.SearchOptions, snapshotMicro i
 // comparator (a strict total order with an entity_id ascending tiebreaker), so
 // the buffer `adds` slice is ordered identically to the SQL ORDER BY stream
 // before the merge.
-func sortEntitiesByOrder(rows []*spi.Entity, order []spi.OrderSpec) {
+//
+// A single ctx check gates the O(n log n) sort itself (spec D5's pre-sort
+// check): the buffer-match loop that built rows already pays for its own
+// amortized checks over the scan, but the sort is a separate unit of Go-only
+// work worth gating on its own before it runs.
+func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.OrderSpec) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("Search: %w", err)
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		return spi.LessByOrder(rows[i], rows[j], order)
 	})
+	return nil
 }
 
 // searchTxOverlay implements the in-transaction read-your-own-writes overlay for
@@ -252,6 +280,14 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		scanned := 0
 		next := func() (*spi.Entity, bool, error) {
 			for rows.Next() {
+				// Amortized cancellation check (spec D5): same shape as
+				// searchCommitted's row loop — checked every 1024 rows so an
+				// expired ctx aborts the streamed merge deterministically.
+				if scanned&1023 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, false, fmt.Errorf("Search: %w", err)
+					}
+				}
 				if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
 					return nil, false, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
 				}
@@ -266,6 +302,11 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 				return e, true, nil
 			}
 			if err := rows.Err(); err != nil {
+				// Prefer ctx.Err() over the raw driver error — see the
+				// matching comment in searchCommitted.
+				if cErr := ctx.Err(); cErr != nil {
+					return nil, false, fmt.Errorf("Search: %w", cErr)
+				}
 				return nil, false, fmt.Errorf("row iteration: %w", err)
 			}
 			return nil, false, nil
@@ -274,7 +315,19 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		// adds = matching buffered own-writes for this model, excluding staged
 		// deletes. copyEntity so no store-internal pointer escapes the lock.
 		adds := make([]*spi.Entity, 0, len(tx.Buffer))
+		addI := 0
 		for id, e := range tx.Buffer {
+			// Amortized cancellation check (spec D5): this loop is pure Go
+			// (no SQL), so it has no other cancellation signal — checked
+			// every 1024 entries so a large buffer under an expiring ctx
+			// aborts promptly instead of scanning to completion regardless
+			// of the deadline.
+			if addI&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("Search: %w", err)
+				}
+			}
+			addI++
 			if tx.Deletes[id] {
 				continue
 			}
@@ -285,7 +338,9 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 				adds = append(adds, copyEntity(e))
 			}
 		}
-		sortEntitiesByOrder(adds, opts.OrderBy)
+		if err := sortEntitiesByOrder(ctx, adds, opts.OrderBy); err != nil {
+			return err
+		}
 
 		// A committed row is suppressed if staged for delete OR shadowed by a
 		// buffered own-write (the buffered version, if matching, arrives via adds).
