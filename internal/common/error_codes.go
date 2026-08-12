@@ -55,6 +55,12 @@ const (
 	ErrCodeIdempotencyConflict        = "IDEMPOTENCY_CONFLICT"
 	ErrCodeClusterNodeNotRegistered   = "CLUSTER_NODE_NOT_REGISTERED"
 	ErrCodeTransactionNotFound        = "TRANSACTION_NOT_FOUND"
+	// ErrCodeTransactionTimeout is returned when the client-supplied
+	// transactionTimeoutMillis expires before the first commit. Nothing is
+	// committed. On multi-commit operations (chunked collections,
+	// commit-before-dispatch workflows) the timeout only governs the first
+	// commit — failures after that surface through the per-chunk contract.
+	ErrCodeTransactionTimeout = "TRANSACTION_TIMEOUT"
 )
 
 const (
@@ -89,6 +95,10 @@ const (
 	// (AbstractConditionDto) cannot be parsed. Non-retryable: the client
 	// must fix the malformed condition.
 	ErrCodeInvalidCondition = "INVALID_CONDITION"
+	// ErrCodeSearchTimeout is returned when the client-supplied
+	// timeoutMillis expires before the search result set was collected. No
+	// partial results are returned.
+	ErrCodeSearchTimeout = "SEARCH_TIMEOUT"
 )
 
 // Composite unique-key errors
