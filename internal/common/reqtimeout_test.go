@@ -81,6 +81,86 @@ func TestClassifyRequestTimeout_CanceledIsNot408(t *testing.T) {
 	}
 }
 
+// TestClassifyRequestTimeout_MarkerNotYetExpired pins the ours-actually-
+// expired conjunct: the marker is present and the chain contains
+// context.DeadlineExceeded, but ctx itself has NOT expired (e.g. a nested
+// deadline elsewhere — a postgres pool-acquire timeout — bubbled up while
+// the client's own budget is still live). Must not classify as 408: the
+// marker + chain alone is not sufficient, ctx must also actually be expired.
+func TestClassifyRequestTimeout_MarkerNotYetExpired(t *testing.T) {
+	ctx, cancel := WithRequestTimeout(context.Background(), 60000)
+	defer cancel()
+	if ctx.Err() != nil {
+		t.Fatal("precondition: ctx must still be live")
+	}
+	err := fmt.Errorf("nested pool-acquire timeout: %w", context.DeadlineExceeded)
+	if got := ClassifyRequestTimeout(ctx, err, ErrCodeTransactionTimeout); got != nil {
+		t.Fatalf("a foreign DeadlineExceeded while our ctx is still live must not be 408, got %v", got)
+	}
+}
+
+// TestClassifyRequestTimeout_CommitInterrupted_NeverClassifies pins that an
+// error carrying ErrCommitInterrupted is disqualified from 408 even when the
+// marker is present, the chain contains context.DeadlineExceeded, AND ctx
+// has actually expired (the overlap case: the client's own deadline also
+// happened to fire around the same time as the commit's own interruption).
+// The commit's outcome is in-doubt — it must never present as the client's
+// clean "nothing was committed" 408.
+func TestClassifyRequestTimeout_CommitInterrupted_NeverClassifies(t *testing.T) {
+	ctx, cancel := WithRequestTimeout(context.Background(), 1)
+	defer cancel()
+	<-ctx.Done()
+	err := fmt.Errorf("%w: %w", ErrCommitInterrupted, fmt.Errorf("commit: %w", context.DeadlineExceeded))
+	if got := ClassifyRequestTimeout(ctx, err, ErrCodeTransactionTimeout); got != nil {
+		t.Fatalf("a commit-interrupted error must never classify as 408, got %v", got)
+	}
+}
+
+// TestWrapIfCommitInterrupted_WrapsOnlyWhenCommitCtxItselfFailed pins
+// WrapIfCommitInterrupted's exact condition, tested directly (fast — no
+// 30s commitBudget wait) rather than through the real 30s-budgeted
+// CommitContext: it wraps ONLY when both err != nil AND the given
+// commitCtx itself shows an error, and never mutates a nil err.
+func TestWrapIfCommitInterrupted_WrapsOnlyWhenCommitCtxItselfFailed(t *testing.T) {
+	liveCtx := context.Background()
+	expiredCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("live commitCtx, clean failure — unwrapped", func(t *testing.T) {
+		orig := errConflictStandIn
+		got := WrapIfCommitInterrupted(liveCtx, orig)
+		if !errors.Is(got, orig) {
+			t.Fatalf("expected the original error preserved via errors.Is, got %v", got)
+		}
+		if errors.Is(got, ErrCommitInterrupted) {
+			t.Fatalf("must not wrap when commitCtx is still live: %v", got)
+		}
+	})
+
+	t.Run("interrupted commitCtx — wrapped", func(t *testing.T) {
+		orig := errors.New("commit: connection reset")
+		got := WrapIfCommitInterrupted(expiredCtx, orig)
+		if !errors.Is(got, ErrCommitInterrupted) {
+			t.Fatalf("expected ErrCommitInterrupted in the chain, got %v", got)
+		}
+		if !errors.Is(got, orig) {
+			t.Fatalf("expected the original error still reachable via errors.Is, got %v", got)
+		}
+	})
+
+	t.Run("nil err — no-op regardless of commitCtx state", func(t *testing.T) {
+		if got := WrapIfCommitInterrupted(expiredCtx, nil); got != nil {
+			t.Fatalf("nil err must pass through as nil, got %v", got)
+		}
+	})
+}
+
+// errConflictStandIn stands in for spi.ErrConflict without importing the
+// spi package into this file — WrapIfCommitInterrupted is agnostic to what
+// the wrapped error is, only to commitCtx's state, so any sentinel proves
+// the point equally well.
+var errConflictStandIn = errors.New("transaction conflict (stand-in)")
+
 func TestCommitContext_DetachedAndBudgeted(t *testing.T) {
 	parent, cancel := WithRequestTimeout(context.WithValue(context.Background(), ucKey{}, "tenant-a"), 1)
 	defer cancel()

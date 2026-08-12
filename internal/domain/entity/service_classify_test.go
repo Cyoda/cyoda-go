@@ -2,6 +2,7 @@ package entity
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -268,6 +269,79 @@ func TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx(t *testing.T) {
 	}
 	if !strings.Contains(body, "ticket") {
 		t.Errorf("client response missing ticket correlation field: %s", body)
+	}
+}
+
+// TestClassifyWorkflowError_DeadlineExceeded_PreservesChainFor408 is the
+// regression test for the review finding: a CBD/cascade segment whose
+// pre-commit ctx check fails (see workflow.flushAndCommitSegment, which
+// deliberately does NOT wrap with ErrCommitBeforeDispatchInfra so the error
+// "reaches the handler-seam classifier as a plain deadline chain") was
+// falling through classifyWorkflowError's catch-all —
+// common.Operational(...err.Error()) sets no cause, severing the
+// DeadlineExceeded chain before ClassifyRequestTimeout ever saw it, so an
+// expired client-supplied transactionTimeoutMillis on a CBD/cascade flow
+// surfaced as 400 WORKFLOW_FAILED instead of 408 TRANSACTION_TIMEOUT.
+//
+// This pins classifyWorkflowError's own output (Internal/500, cause
+// preserved) AND the full handler-seam chain: feeding that AppError through
+// common.ClassifyRequestTimeout on the same expired, feature-marked ctx
+// yields 408 — proving ours-first classification actually reaches this path
+// end to end.
+func TestClassifyWorkflowError_DeadlineExceeded_PreservesChainFor408(t *testing.T) {
+	ctx, cancel := common.WithRequestTimeout(context.Background(), 1)
+	defer cancel()
+	<-ctx.Done()
+
+	// Mirrors flushAndCommitSegment's pre-commit-check wrapping shape exactly
+	// (internal/domain/workflow/engine_processors.go): unwrapped, no infra
+	// sentinel, so it reaches classifyWorkflowError's tail.
+	prod := fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", ctx.Err())
+
+	if errors.Is(prod, wfengine.ErrCommitBeforeDispatchInfra) {
+		t.Fatalf("test setup bug: this error must NOT carry the infra sentinel (that path already worked before this fix)")
+	}
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Level != common.LevelInternal {
+		t.Fatalf("classifyWorkflowError: expected LevelInternal (never a 400 leaking err.Error()), got %v (status=%d)", appErr.Level, appErr.Status)
+	}
+	if appErr.Status != http.StatusInternalServerError {
+		t.Errorf("classifyWorkflowError: expected 500, got %d", appErr.Status)
+	}
+	if !errors.Is(appErr, context.DeadlineExceeded) {
+		t.Fatal("classifyWorkflowError: cause chain must still contain context.DeadlineExceeded — common.Internal preserves it, common.Operational would have severed it")
+	}
+
+	// The handler seam: ours-first classification must still find 408 here.
+	classified := common.ClassifyRequestTimeout(ctx, appErr, common.ErrCodeTransactionTimeout)
+	if classified == nil {
+		t.Fatal("handler-seam ClassifyRequestTimeout did not classify a CBD/cascade timeout as 408 — the chain was severed somewhere")
+	}
+	if classified.Status != http.StatusRequestTimeout || classified.Code != common.ErrCodeTransactionTimeout || !classified.Retryable {
+		t.Errorf("got %+v, want 408 TRANSACTION_TIMEOUT retryable", classified)
+	}
+}
+
+// TestClassifyWorkflowError_Canceled_MapsTo5xxNotDomainLeak covers the
+// non-ours-deadline half of the same branch: an unrelated cancellation
+// (e.g. a caller disconnect propagating through the engine) must not become
+// a 400 WORKFLOW_FAILED carrying err.Error() either — it stays a ticketed
+// 500. common.ClassifyRequestTimeout never turns context.Canceled into 408
+// regardless (chainHasDeadlineExceeded only matches DeadlineExceeded), so
+// this case simply falls through to the general classifier's own 5xx.
+func TestClassifyWorkflowError_Canceled_MapsTo5xxNotDomainLeak(t *testing.T) {
+	prod := fmt.Errorf("cascade aborted: %w", context.Canceled)
+
+	appErr := classifyWorkflowError(prod)
+	if appErr.Level != common.LevelInternal {
+		t.Fatalf("expected LevelInternal, got %v (status=%d, message=%q)", appErr.Level, appErr.Status, appErr.Message)
+	}
+	if appErr.Status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", appErr.Status)
+	}
+	if !errors.Is(appErr, context.Canceled) {
+		t.Error("cause chain must still contain context.Canceled for server-side diagnosis")
 	}
 }
 

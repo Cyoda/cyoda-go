@@ -2148,6 +2148,20 @@ func classifyWorkflowError(err error) *common.AppError {
 	if errors.Is(err, wfengine.ErrTransitionNotFound) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
 	}
+	// A context cancellation/deadline reaching here is not a domain failure —
+	// it is either OUR feature deadline (spec D2/D7/D10, a CBD/cascade segment
+	// that never reached a commit boundary before the client-supplied timeout
+	// expired) or an unrelated cancellation. Either way it must not become a
+	// 400 WORKFLOW_FAILED carrying err.Error() as domain detail, and the
+	// catch-all below (common.Operational with no cause) would sever the
+	// DeadlineExceeded chain before the handler seam's
+	// common.ClassifyRequestTimeout ever sees it. common.Internal preserves
+	// the cause chain via WithCause, so ours-first classification still maps
+	// this to 408 when it is ours; a non-ours cancellation stays a ticketed
+	// 500 rather than a misleading 400.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return common.Internal("workflow aborted by context cancellation", err)
+	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
 }
 

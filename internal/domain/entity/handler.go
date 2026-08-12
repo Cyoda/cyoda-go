@@ -101,14 +101,20 @@ func (h *Handler) acquireJoinedGate(txCtx context.Context, txID string) (context
 // The commit runs on common.CommitContext — WithoutCancel plus its own
 // bounded budget — so a client-requested deadline or disconnect on ctx can
 // never interrupt a commit already in flight (spec D2: an interrupted commit
-// is an in-doubt outcome, never a rollback-able one).
+// is an in-doubt outcome, never a rollback-able one). common.WrapIfCommitInterrupted
+// marks the narrow case where commitCtx's own budget/cancellation is what
+// failed the commit, so it can never be misclassified as the client's clean
+// 408 "nothing was committed" at the handler seam; a commit that fails
+// cleanly while commitCtx is still live (e.g. spi.ErrConflict) is unaffected
+// and keeps its existing classification.
 func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) error {
 	if !owned {
 		return nil
 	}
 	commitCtx, cancel := common.CommitContext(ctx)
 	defer cancel()
-	return h.txMgr.Commit(commitCtx, txID)
+	err := h.txMgr.Commit(commitCtx, txID)
+	return common.WrapIfCommitInterrupted(commitCtx, err)
 }
 
 // validateOrExtend validates parsedData against the model schema. When

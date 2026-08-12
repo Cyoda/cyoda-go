@@ -60,12 +60,35 @@ structural, not probabilistic:
   fired. Verified: in all write flows `scope.Commit()` is the last error-returning operation, and
   all post-first-segment engine work already rides an uncancellable context — so with the shield
   there is no path to a false 408 after a durable commit.
-- **Classifier rule (pinned):** a 408 is produced only when the operation error's chain contains
-  the deadline's own `context.DeadlineExceeded` (`errors.Is`, unwrapping `AppError` causes —
-  load-bearing, since some paths pre-wrap the ctx error in a classified `AppError`) **and** the
-  attached marker identifies the deadline as ours. Never from ctx state alone: a shielded-commit
-  failure, a commit-time `ErrConflict` (409), or any unrelated error keeps its existing
-  classification even if the deadline has since expired.
+- **Classifier rule (pinned):** a 408 is produced only when ALL of the following hold — never any
+  one alone:
+  - the operation error's chain contains the deadline's own `context.DeadlineExceeded`
+    (`errors.Is`, unwrapping `AppError` causes — load-bearing, since some paths pre-wrap the ctx
+    error in a classified `AppError`);
+  - the attached marker identifies the deadline as ours;
+  - **ours-actually-expired:** the marked ctx itself is currently `context.DeadlineExceeded`
+    (`ctx.Err()`) — a `DeadlineExceeded` elsewhere in the chain (e.g. a nested postgres
+    pool-acquire deadline) must not borrow the marker's 408 while the client's own budget is
+    still live;
+  - **not commit-born:** the error does not carry `common.ErrCommitInterrupted`. A commit call
+    whose own shielded `CommitContext` shows an error at return time (its `commitBudget` expired,
+    or it was otherwise interrupted mid-commit) is wrapped with this sentinel by the two commit
+    sites (`txScope.commitOwned`, the engine's `flushAndCommitSegment`) via
+    `common.WrapIfCommitInterrupted`. That commit's outcome is in-doubt — it must never present
+    as the client's clean "nothing was committed" 408, even when the client's own deadline also
+    happens to have expired around the same time (the overlap case the ours-actually-expired
+    conjunct alone cannot catch).
+
+  Never from ctx state alone: a clean shielded-commit failure on a still-live `CommitContext`
+  (e.g. a commit-time `ErrConflict`, 409) or any unrelated error keeps its existing classification
+  even if the deadline has since expired.
+
+  A CBD/cascade error that reaches the classifier unmarked by any infra sentinel (e.g.
+  `flushAndCommitSegment`'s pre-commit-check failure) must still preserve the
+  `context.DeadlineExceeded` cause chain on its way through `classifyWorkflowError` —
+  `common.Internal` (cause-preserving), never `common.Operational(...err.Error())` (cause-severing,
+  and it would also leak the raw wrapping text into a 400 body). `classifyWorkflowError`'s
+  catch-all is preceded by a `context.DeadlineExceeded`/`context.Canceled` branch for exactly this.
 - Rollback runs on `common.RollbackContext` (existing precedent), so the expired deadline never
   poisons the rollback.
 

@@ -57,18 +57,29 @@ func (f *blockingFactory) EntityStore(_ context.Context) (spi.EntityStore, error
 
 // recordingTxMgr wraps a real spi.TransactionManager, recording every
 // Commit/Rollback call and optionally running onCommit while a commit is
-// genuinely in flight (before delegating to the real Commit).
+// genuinely in flight (before delegating to the real Commit, or before
+// returning commitErr directly when set — simulating a commit that fails
+// without needing a real backing store outcome).
 type recordingTxMgr struct {
 	spi.TransactionManager
 	mu         sync.Mutex
 	committed  []string
 	rolledBack []string
 	onCommit   func(ctx context.Context)
+	// commitErr, when non-nil, is returned directly instead of delegating to
+	// the real TransactionManager — lets a test simulate a commit failure
+	// (a nested backend deadline, a conflict, an already-interrupted commit)
+	// without needing to reproduce the real backend condition that would
+	// normally produce it.
+	commitErr error
 }
 
 func (m *recordingTxMgr) Commit(ctx context.Context, txID string) error {
 	if m.onCommit != nil {
 		m.onCommit(ctx)
+	}
+	if m.commitErr != nil {
+		return m.commitErr
 	}
 	m.mu.Lock()
 	m.committed = append(m.committed, txID)
@@ -365,6 +376,98 @@ func TestCreate_CommitWins_DeadlineAfterCommit200(t *testing.T) {
 	rtm.mu.Unlock()
 	if len(committed) != 1 {
 		t.Fatalf("commit did not run: %v", committed)
+	}
+}
+
+// TestCreate_CommitBornDeadlineError_ClientDeadlineLive_Stays500 is the
+// non-overlap half of the Critical-2 regression: Commit itself fails with an
+// error whose chain contains context.DeadlineExceeded (e.g. a nested
+// backend-side statement/pool-acquire timeout, unrelated to the client's own
+// budget) while the client's transactionTimeoutMillis is large and still
+// live. The ours-actually-expired conjunct in common.ClassifyRequestTimeout
+// must reject this on its own (ctx.Err() is nil, not DeadlineExceeded) —
+// this commit-born error must never be misread as the client's clean 408.
+func TestCreate_CommitBornDeadlineError_ClientDeadlineLive_Stays500(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+	rtm := &recordingTxMgr{
+		TransactionManager: realTxMgr,
+		commitErr:          fmt.Errorf("nested pool-acquire timeout: %w", context.DeadlineExceeded),
+	}
+	h, ctx := newReqTimeoutHandler(t, realFactory, rtm)
+
+	millis := int64(60000) // large — never expires during this test
+	r := httptest.NewRequest(http.MethodPost, "/entity/JSON/Person/1", strings.NewReader(`{"name":"A","age":1}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.Create(w, r, "JSON", "Person", 1, genapi.CreateParams{TransactionTimeoutMillis: &millis})
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if pd.Properties["errorCode"] == common.ErrCodeTransactionTimeout {
+		t.Fatalf("errorCode must not be TRANSACTION_TIMEOUT here: %v", pd.Properties["errorCode"])
+	}
+}
+
+// TestCreate_CommitInterrupted_OverlapCase_Stays500Not408 is the overlap half
+// of the Critical-2 regression: the client's own deadline ALSO happens to
+// have genuinely expired by the time Commit returns (isolating the
+// ErrCommitInterrupted sentinel as what disqualifies 408 here — the
+// ours-actually-expired conjunct alone would NOT have rejected this, since
+// ctx really is expired). Commit is given a generous deadline margin (50ms)
+// before it is invoked, so the pre-commit check in txScope.Commit reliably
+// lets the commit attempt start, then sleeps well past that deadline before
+// returning an error that a genuinely-interrupted commitOwned would have
+// produced (ErrCommitInterrupted wrapping DeadlineExceeded) — simulating the
+// outcome without waiting out the real 30s commitBudget.
+func TestCreate_CommitInterrupted_OverlapCase_Stays500Not408(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+	rtm := &recordingTxMgr{TransactionManager: realTxMgr}
+	rtm.onCommit = func(_ context.Context) {
+		time.Sleep(500 * time.Millisecond)
+	}
+	rtm.commitErr = fmt.Errorf("%w: %w", common.ErrCommitInterrupted, fmt.Errorf("commit: %w", context.DeadlineExceeded))
+
+	h, ctx := newReqTimeoutHandler(t, realFactory, rtm)
+
+	millis := int64(200) // generous margin for the pre-commit check to pass; well under the 500ms sleep above
+	r := httptest.NewRequest(http.MethodPost, "/entity/JSON/Person/1", strings.NewReader(`{"name":"A","age":1}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.Create(w, r, "JSON", "Person", 1, genapi.CreateParams{TransactionTimeoutMillis: &millis})
+
+	if w.Code == http.StatusRequestTimeout {
+		t.Fatalf("must never be 408 in the overlap case; body: %s", w.Body.String())
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_CommitConflict_Preserved409 is test 3 from the Critical-2
+// regression list: a clean commit failure (spi.ErrConflict) on a still-live
+// commitCtx must keep its existing 409 classification — WrapIfCommitInterrupted
+// only wraps when commitCtx itself is the thing that failed, which a fast
+// synchronous ErrConflict return never trips.
+func TestCreate_CommitConflict_Preserved409(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+	rtm := &recordingTxMgr{TransactionManager: realTxMgr, commitErr: spi.ErrConflict}
+	h, ctx := newReqTimeoutHandler(t, realFactory, rtm)
+
+	millis := int64(60000)
+	r := httptest.NewRequest(http.MethodPost, "/entity/JSON/Person/1", strings.NewReader(`{"name":"A","age":1}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.Create(w, r, "JSON", "Person", 1, genapi.CreateParams{TransactionTimeoutMillis: &millis})
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (spi.ErrConflict must keep its classification); body: %s", w.Code, w.Body.String())
 	}
 }
 

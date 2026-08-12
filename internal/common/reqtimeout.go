@@ -43,16 +43,71 @@ func HasRequestTimeout(ctx context.Context) bool {
 	return v
 }
 
-// ClassifyRequestTimeout maps err to Operational(408, code).AsRetryable() only
-// when the feature's own deadline is in err's chain (spec D2 pinned rule):
-// the marker must be on ctx AND the chain — unwrapping *AppError causes —
-// must contain context.DeadlineExceeded. context.Canceled never matches.
-// Never inspects ctx.Err() state alone.
+// ErrCommitInterrupted marks an error born from a commit ATTEMPT whose own
+// shielded context (common.CommitContext) was itself interrupted — its
+// commitBudget expired, or it was otherwise cancelled — before the commit
+// call returned. The commit's true outcome is unknowable in that case: it
+// may have landed, may not have. Spec D2 treats an interrupted commit as an
+// in-doubt outcome, never a rollback-able one, so an error carrying this
+// marker must NEVER be classified as the client's 408 — 408 promises
+// "nothing was committed", a promise this error cannot back. Commit sites
+// (txScope.commitOwned, the workflow engine's flushAndCommitSegment) wrap
+// with this sentinel only when the commit's OWN context shows an error at
+// return time; a clean commit failure on a still-live shielded ctx (e.g.
+// spi.ErrConflict) is unaffected and keeps its existing classification.
+var ErrCommitInterrupted = errors.New("commit attempt interrupted")
+
+// WrapIfCommitInterrupted wraps err with ErrCommitInterrupted when commitCtx
+// — the context returned by CommitContext, passed to the commit call — shows
+// an error (commitCtx.Err() != nil) at the point the commit call returned:
+// its own commitBudget expired, or it was otherwise interrupted, while the
+// commit was genuinely in flight. That is an in-doubt outcome (spec D2), so
+// the error must never be classified as the client's clean 408 downstream,
+// even if the client's own deadline also happens to have expired around the
+// same time (see ErrCommitInterrupted). A clean commit failure while
+// commitCtx is still live (e.g. spi.ErrConflict) passes through unwrapped
+// and keeps its existing classification (409, etc.) — errors.Is still finds
+// it through the wrap on the interrupted path too, since Go's multi-%w
+// preserves every branch of the chain.
+//
+// err == nil passes through unchanged (no-op). Shared by txScope.commitOwned
+// and the workflow engine's flushAndCommitSegment — the two sites that
+// invoke a commit on a CommitContext-derived ctx.
+func WrapIfCommitInterrupted(commitCtx context.Context, err error) error {
+	if err != nil && commitCtx.Err() != nil {
+		return fmt.Errorf("%w: %w", ErrCommitInterrupted, err)
+	}
+	return err
+}
+
+// ClassifyRequestTimeout maps err to Operational(408, code).AsRetryable()
+// only when ALL of the following hold (spec D2 pinned rule, ANDed — never
+// any one alone):
+//   - the marker is on ctx (this is OUR feature deadline, not some other
+//     deadline source — postgres statement_timeout stays 500, dispatch
+//     time.After stays 503);
+//   - the chain — unwrapping *AppError causes — contains
+//     context.DeadlineExceeded (context.Canceled never matches);
+//   - ctx itself is currently expired with context.DeadlineExceeded (the
+//     ours-actually-expired conjunct: a DeadlineExceeded elsewhere in the
+//     chain — e.g. a nested postgres pool-acquire deadline — must not
+//     borrow the marker's 408 while the client's own deadline is still
+//     live);
+//   - err does not carry ErrCommitInterrupted (disqualified first: a
+//     commit-attempt-interrupted error is in-doubt and must never present
+//     as the client's clean "nothing was committed" 408, even when the
+//     client's own deadline also happens to have expired by coincidence).
 func ClassifyRequestTimeout(ctx context.Context, err error, code string) *AppError {
 	if err == nil || !HasRequestTimeout(ctx) {
 		return nil
 	}
+	if errors.Is(err, ErrCommitInterrupted) {
+		return nil
+	}
 	if !chainHasDeadlineExceeded(err) {
+		return nil
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil
 	}
 	return Operational(http.StatusRequestTimeout, code,
