@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -432,6 +433,12 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 // Commit) are wrapped with ErrCommitBeforeDispatchInfra so
 // classifyWorkflowError routes them to a sanitized 5xx with ticket UUID
 // instead of leaking internal text via 4xx WORKFLOW_FAILED.
+//
+// The Save/CompareAndSave above runs on the caller's cancellable ctx — a
+// segment that hasn't reached TX_pre's commit yet may still abort there, and
+// that is fail-closed and correct (spec D2). The commit itself is shielded:
+// see the pre-commit check and common.CommitContext below, mirroring
+// txScope.Commit (internal/domain/entity/txscope.go).
 func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) error {
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
@@ -450,10 +457,34 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 			return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 	}
-	if err := e.txMgr.Commit(ctx, txID); err != nil {
-		return fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	// Spec D2/D3 pre-commit check: an expired/cancelled ctx here means no
+	// segment has committed yet on this path — fail closed so the caller's
+	// rollback produces the "nothing committed" 408 guarantee. Deliberately
+	// NOT wrapped with ErrCommitBeforeDispatchInfra: it must reach the
+	// handler-seam classifier as a plain deadline chain (mapped to 408), not
+	// as a ticketed 5xx.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
 	}
-	return nil
+	// The commit itself runs shielded via common.ShieldedCommitWithBudget —
+	// WithoutCancel plus e.commitBudget (defaults to common.CommitBudget,
+	// 30s) — mirroring txScope.commitOwned (see
+	// internal/domain/entity/handler.go): no deadline or disconnect on the
+	// request ctx can interrupt a commit in flight — an interrupted commit is
+	// an in-doubt outcome, not a rollback-able one. When the commit's OWN
+	// shielded ctx (not the caller's) is what decided the failure — its
+	// budget expired or it was otherwise interrupted mid-commit — the
+	// returned error additionally carries common.ErrCommitInterrupted so it
+	// can never be reclassified as the client's clean 408 at the handler
+	// seam, even though ErrCommitBeforeDispatchInfra already routes it to a
+	// ticketed 500 here (that existing classification is unaffected — the
+	// marker only disqualifies a would-be 408 reclassification downstream).
+	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
+		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
+			return fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+		}
+		return nil
+	})
 }
 
 // commitAndBeginNextSegment is the COMMIT_BEFORE_DISPATCH segment-boundary

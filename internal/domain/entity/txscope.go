@@ -86,11 +86,27 @@ func (s *txScope) Advance(ctx context.Context, txID string) {
 	s.ctx, s.txID = ctx, txID
 }
 
-// Commit commits when this flow owns the transaction, and marks the scope done
-// regardless of outcome. No path rolls back after a failed commit: the commit
-// may be partially applied, and aborting one another goroutine is running trips
-// memory's ErrTxCommitInProgress path.
+// Commit commits when this flow owns the transaction. Before committing it
+// performs the spec-D2 pre-commit check: an expired/cancelled context fails
+// closed WITHOUT marking the scope done, so the deferred Release still rolls
+// the transaction back — the 408 contract ("nothing committed") depends on
+// this ordering. The check applies only to the owned path: a joined callback
+// never commits (the owner does), so its ctx state is irrelevant here.
+//
+// The commit itself runs on a common.CommitContext (WithoutCancel + its own
+// bounded budget) so no deadline or disconnect on the request ctx can
+// interrupt a commit in flight — an interrupted commit is an in-doubt
+// outcome, not a rollback-able one.
+//
+// After a commit ATTEMPT the scope is done regardless of outcome: the commit
+// may be partially applied, and aborting one another goroutine is running
+// trips memory's ErrTxCommitInProgress path.
 func (s *txScope) Commit() error {
+	if s.owned {
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+	}
 	s.done = true
 	return s.h.commitOwned(s.ctx, s.txID, s.owned)
 }

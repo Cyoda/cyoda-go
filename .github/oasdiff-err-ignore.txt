@@ -226,3 +226,24 @@ error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion
 error at api/openapi.yaml, in API POST /entity/stats/{entityName}/{modelVersion}/query removed `#/components/schemas/FunctionConditionDto` from the `condition` request property `oneOf` list [request-property-one-of-removed].
 error at api/openapi.yaml, in API POST /search/async/{entityName}/{modelVersion} removed `#/components/schemas/FunctionConditionDto` from the request body `oneOf` list [request-body-one-of-removed].
 error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed `#/components/schemas/FunctionConditionDto` from the request body `oneOf` list [request-body-one-of-removed].
+
+# transaction-control params (#379 family) — fictional defaults removed from
+# transactionTimeoutMillis (7 entity write ops + newMessage) and transactionSize
+# (deleteEntities, deleteMessages). The server NEVER applied these defaults — the
+# params were bound but unread until this change, so no client ever observed a
+# 10000ms timeout or 1000-sized batches from omitting the param. Honoring the
+# params is opt-in by settled version policy (absent ⇒ no timeout / single
+# transaction, byte-identical to prior behavior); removing the advertised-but-
+# inert defaults is spec-to-reality reconciliation (ADR 0003 Decision 7), the
+# same class as v0.8.2's removal of the fictional search timeoutMillis. See
+# docs/cloud-parity/transaction-control-params.md.
+error at api/openapi.yaml, in API DELETE /entity/{entityName}/{modelVersion} for the `query` request parameter `transactionSize`, default value `1000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API POST /entity/{format} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API PUT /entity/{format} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API PATCH /entity/{format}/{entityId} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API PUT /entity/{format}/{entityId} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API PATCH /entity/{format}/{entityId}/{transition} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API PUT /entity/{format}/{entityId}/{transition} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API POST /entity/{format}/{entityName}/{modelVersion} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API DELETE /message for the `query` request parameter `transactionSize`, default value `1000.00` was removed [request-parameter-default-value-removed].
+error at api/openapi.yaml, in API POST /message/new/{subject} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].

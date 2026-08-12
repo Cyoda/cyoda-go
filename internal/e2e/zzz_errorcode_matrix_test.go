@@ -35,6 +35,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	"deleteEntities": {
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 400, Code: "INVALID_FIELD_PATH"}, // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
+		{Status: 400, Code: "BAD_REQUEST"},        // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 	},
 	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
@@ -99,12 +100,14 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	"updateSingle": {
 		{Status: 400, Code: "TRANSITION_NOT_FOUND"}, // named transition absent from the model
 		{Status: 400, Code: "WORKFLOW_FAILED"},      // workflow processor rejected the update
+		{Status: 400, Code: "BAD_REQUEST"},          // TestTransactionControl_InvalidParams400/UpdateSingle: invalid/joined transactionTimeoutMillis
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},     // entity UUID not found
 		{Status: 409, Code: "UNIQUE_VIOLATION"},     // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
 		{Status: 412, Code: "ENTITY_MODIFIED"},      // If-Match mismatch
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"},   // TestUniqueKeys_TransitionUpdatePartialKey
 	},
 	"patchSingleWithLoopback": {
+		{Status: 400, Code: "BAD_REQUEST"},            // TestTransactionControl_InvalidParams400/PatchSingleWithLoopback: invalid/joined transactionTimeoutMillis
 		{Status: 409, Code: "UNIQUE_VIOLATION"},       // TestUniqueKeys_LoopbackPatchDuplicate
 		{Status: 412, Code: "ENTITY_MODIFIED"},        // If-Match transactionId no longer matches
 		{Status: 415, Code: "UNSUPPORTED_MEDIA_TYPE"}, // non-JSON format or unrecognised Content-Type
@@ -152,9 +155,21 @@ func producibleGaps(matrix map[string][]codeCell, observed []openapivalidator.Er
 // belongs to the middleware's contract rather than any one endpoint's. Its
 // coverage is pinned across representative routes by
 // TestAuth_MissingOrInvalidCredentials_401 (auth_failures_test.go).
+//
+// SERVER_ERROR (500) is the sanitized fallback for an internal fault (a
+// storage outage, a processor's context cancellation, any unclassified
+// error) — per error-handling.md, 5xx is deliberately generic (message +
+// correlation ticket, no domain detail) rather than a per-endpoint
+// documented contract the way 4xx is. Any operation can suffer an infra
+// fault, so — like CONFLICT and UNAUTHORIZED above — it is not pin-able to a
+// specific op's error table. Its coverage is exercised by the dedicated
+// storage-failure/fault-injection suites (lookup_storage_failure_e2e_test.go,
+// entity_read_storage_failure_e2e_test.go, storage_ceilings_e2e_test.go,
+// workflow_failure_test.go's TestWorkflowFailure_ProcessorContextCancelled).
 var universalCrossCuttingCodes = map[string]bool{
 	"CONFLICT":     true,
 	"UNAUTHORIZED": true,
+	"SERVER_ERROR": true,
 }
 
 // declaredGaps returns "op status code" strings for every observed error triple

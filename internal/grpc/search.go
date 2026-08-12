@@ -364,8 +364,31 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
 	}
 
-	results, err := s.searchService.DirectSearch(ctx, modelRef, cond, opts)
+	// timeoutMillis (spec D5): validate, reject on a joined (tx-token'd)
+	// request, attach the feature-owned deadline — resolveEventTimeout (T14)
+	// mirrors internal/domain/search/handler.go's HTTP equivalent. A nil
+	// TimeoutMillis is a no-op, so a caller that never sends the field
+	// observes zero behavior change.
+	opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TimeoutMillis, "timeoutMillis")
+	if terr != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", terr.Error())
+		errCE, ceErr := entityResponseError(ctx, ce.Id, terr)
+		if ceErr != nil {
+			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+		}
+		return stream.Send(errCE)
+	}
+	defer cancelTimeout()
+
+	results, err := s.searchService.DirectSearch(opCtx, modelRef, cond, opts)
 	if err != nil {
+		// Classify an expired client-requested deadline ahead of the general
+		// error path (spec D2/D8): SEARCH_TIMEOUT only when the marker is
+		// ours, the chain shows DeadlineExceeded, and opCtx itself is
+		// currently expired — see common.ClassifyRequestTimeout.
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeSearchTimeout); appErr != nil {
+			err = appErr
+		}
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {

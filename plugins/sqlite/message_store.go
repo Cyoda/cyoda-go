@@ -90,24 +90,29 @@ func (s *messageStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// deleteBatchChunkSize bounds the parameterized IN list per statement, well
+// under SQLite's bound-variable limit (32766 in this wasm build). Message
+// delete is documented non-transactional, so statement chunking changes
+// nothing observable.
+const deleteBatchChunkSize = 500
+
 func (s *messageStore) DeleteBatch(ctx context.Context, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	// SQLite has no ANY($1) — build a parameterized IN clause.
-	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, string(s.tenantID))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	query := fmt.Sprintf(
-		`DELETE FROM messages WHERE tenant_id = ? AND message_id IN (%s)`,
-		strings.Join(placeholders, ", "))
-	_, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to batch delete messages: %w", err)
+	// SQLite has no ANY($1) — build a parameterized IN clause per chunk.
+	for start := 0; start < len(ids); start += deleteBatchChunkSize {
+		end := min(start+deleteBatchChunkSize, len(ids))
+		chunk := ids[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, string(s.tenantID))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query := fmt.Sprintf(`DELETE FROM messages WHERE tenant_id = ? AND message_id IN (%s)`,
+			strings.Join(placeholders, ", "))
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("failed to batch delete messages: %w", err)
+		}
 	}
 	return nil
 }

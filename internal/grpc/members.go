@@ -108,6 +108,30 @@ func (m *Member) CompleteRequest(requestID string, resp *ProcessingResponse) {
 	}
 }
 
+// AbandonRequest removes the requestID entry from the pending map, if still
+// present, without touching the channel. Spec D11: dispatchCalloutToMember
+// defers this call so every exit that does not consume a delivered response
+// (Send failure, response timeout, ctx cancellation) still clears the entry
+// — otherwise a late compute-node reply finds a dangling map entry that is
+// never removed. Calling this after the response arm has already run
+// CompleteRequest is a no-op (the entry is already gone), and a late reply
+// arriving after this runs finds CompleteRequest's own presence check false,
+// so it becomes a no-op too: no phantom delivery, no panic.
+func (m *Member) AbandonRequest(requestID string) {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+	delete(m.pendingReqs, requestID)
+}
+
+// PendingCount returns the number of currently tracked pending requests.
+// Exported for tests that need to observe pending-map cleanup without a race
+// on the unexported field.
+func (m *Member) PendingCount() int {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+	return len(m.pendingReqs)
+}
+
 // FailAllPending sends an error response to every pending request channel and
 // clears the pending map.
 func (m *Member) FailAllPending(errMsg string) {

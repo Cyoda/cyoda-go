@@ -746,7 +746,7 @@ func TestDeleteEntitiesConditional_ForwardsSearch4xx(t *testing.T) {
 			"search scan budget exhausted")
 	})
 
-	_, err := h.DeleteEntitiesConditional(ctx, entityName, modelVersion, someCondition(t), nil, false)
+	_, err := h.DeleteEntitiesConditional(ctx, entityName, modelVersion, someCondition(t), nil, false, 0)
 
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {

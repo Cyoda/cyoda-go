@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
@@ -40,6 +41,12 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
+		if terr != nil {
+			return entityTransactionError(ctx, ce.Id, terr)
+		}
+		defer cancelTimeout()
+
 		format := string(req.DataFormat)
 		if format == "" {
 			format = "JSON"
@@ -49,13 +56,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "failed to marshal data: %v", err)
 		}
 
-		result, err := s.entityHandler.CreateEntity(ctx, entity.CreateEntityInput{
+		result, err := s.entityHandler.CreateEntity(opCtx, entity.CreateEntityInput{
 			EntityName:   req.Payload.Model.Name,
 			ModelVersion: fmt.Sprintf("%d", req.Payload.Model.Version),
 			Format:       format,
 			Data:         dataBytes,
 		})
 		if err != nil {
+			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+				err = appErr
+			}
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
@@ -84,6 +94,12 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
+		if terr != nil {
+			return entityTransactionError(ctx, ce.Id, terr)
+		}
+		defer cancelTimeout()
+
 		format := string(req.DataFormat)
 		if format == "" {
 			format = "JSON"
@@ -98,13 +114,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			transition = *req.Payload.Transition
 		}
 
-		result, err := s.entityHandler.UpdateEntity(ctx, entity.UpdateEntityInput{
+		result, err := s.entityHandler.UpdateEntity(opCtx, entity.UpdateEntityInput{
 			EntityID:   req.Payload.EntityID,
 			Format:     format,
 			Data:       dataBytes,
 			Transition: transition,
 		})
 		if err != nil {
+			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+				err = appErr
+			}
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
@@ -132,6 +151,13 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if err := dec.Decode(&req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
+
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
+		if terr != nil {
+			return entityTransactionError(ctx, ce.Id, terr)
+		}
+		defer cancelTimeout()
+
 		if req.Payload.IfMatch == nil || *req.Payload.IfMatch == "" {
 			return entityTransactionError(ctx, ce.Id, common.Operational(
 				http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
@@ -145,7 +171,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if req.Payload.Transition != nil {
 			transition = *req.Payload.Transition
 		}
-		result, err := s.entityHandler.PatchEntity(ctx, entity.PatchEntityInput{
+		result, err := s.entityHandler.PatchEntity(opCtx, entity.PatchEntityInput{
 			EntityID:    req.Payload.EntityID,
 			Patch:       patchBytes,
 			PatchFormat: string(req.PatchFormat),
@@ -153,6 +179,9 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			IfMatch:     *req.Payload.IfMatch,
 		})
 		if err != nil {
+			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+				err = appErr
+			}
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
@@ -270,6 +299,17 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		if err := dec.Decode(&req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
+
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
+		if terr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, terr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
+		defer cancelTimeout()
+
 		if len(req.Payloads) == 0 {
 			return status.Errorf(codes.InvalidArgument, "payloads array is empty")
 		}
@@ -287,8 +327,11 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			}
 		}
 
-		result, err := s.entityHandler.CreateEntityCollection(ctx, items)
+		result, err := s.entityHandler.CreateEntityCollection(opCtx, items)
 		if err != nil {
+			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+				err = appErr
+			}
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, err)
 			if ceErr != nil {
@@ -323,6 +366,20 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		if err := dec.Decode(&req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
+
+		// ONE deadline for the whole per-item loop below — not one per item —
+		// so transactionTimeoutMs bounds the entire collection update, matching
+		// the transactionWindow-chunked HTTP endpoint's contract.
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
+		if terr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, terr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
+		defer cancelTimeout()
+
 		if len(req.Payloads) == 0 {
 			return status.Errorf(codes.InvalidArgument, "payloads array is empty")
 		}
@@ -336,6 +393,25 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		allIDs := make([]string, 0, len(req.Payloads))
 		var lastTxID string
 		for _, p := range req.Payloads {
+			// Generic cancellation check at the iteration head (spec D9) —
+			// fires on ANY ctx cancellation, not only our own feature
+			// deadline. Routed through the identical whole-envelope error
+			// path a genuine per-item failure below already takes: earlier
+			// items already committed and are durable, this item and any
+			// after it are never attempted.
+			if ctxErr := opCtx.Err(); ctxErr != nil {
+				loopErr := fmt.Errorf("operation aborted: %w", ctxErr)
+				if appErr := common.ClassifyRequestTimeout(opCtx, loopErr, common.ErrCodeTransactionTimeout); appErr != nil {
+					loopErr = appErr
+				}
+				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", loopErr.Error())
+				respCE, ceErr := entityTransactionError(ctx, ce.Id, loopErr)
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+
 			dataBytes, err := json.Marshal(p.Data)
 			if err != nil {
 				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
@@ -351,13 +427,16 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 				transition = *p.Transition
 			}
 
-			result, err := s.entityHandler.UpdateEntity(ctx, entity.UpdateEntityInput{
+			result, err := s.entityHandler.UpdateEntity(opCtx, entity.UpdateEntityInput{
 				EntityID:   p.EntityID,
 				Format:     format,
 				Data:       dataBytes,
 				Transition: transition,
 			})
 			if err != nil {
+				if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+					err = appErr
+				}
 				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 				respCE, ceErr := entityTransactionError(ctx, ce.Id, err)
 				if ceErr != nil {
@@ -396,6 +475,61 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
+		// An explicit transactionSize switches to the batched,
+		// enumerate-then-delete path (spec D4): validate it's a positive
+		// integer, reject a joined (tx-token'd) request the same way
+		// resolveEventTimeout rejects transactionTimeoutMs on one (spec
+		// D7) — honoring it would let a participant unilaterally
+		// fragment a transaction the owner still controls. A nil field
+		// (the schema no longer bakes a default) leaves today's
+		// single-tx DeleteAllEntities path byte-for-byte unchanged.
+		if req.TransactionSize != nil {
+			size := *req.TransactionSize
+			if size < 1 {
+				respCE, ceErr := entityDeleteAllError(ctx, ce.Id, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+					"transactionSize must be a positive integer"))
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+			if spi.GetTransaction(ctx) != nil {
+				respCE, ceErr := entityDeleteAllError(ctx, ce.Id, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+					"transactionSize is not supported on a request that joins an open transaction"))
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+
+			delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), nil, nil, false, size)
+			if err != nil {
+				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
+				respCE, ceErr := entityDeleteAllError(ctx, ce.Id, err)
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+
+			diag := common.GetDiagnostics(ctx)
+			resp := events.EntityDeleteAllResponseJson{
+				ID:         ce.Id,
+				Success:    true,
+				Warnings:   diag.GetWarnings(),
+				RequestID:  ce.Id,
+				ModelID:    delRes.EntityModelID,
+				NumDeleted: delRes.RemovedCount,
+				EntityIds:  []string{},
+				ErrorsByID: deleteAllErrorsByID(delRes.IDToError),
+			}
+			respCE, err := NewCloudEvent(EntityDeleteAllResponse, resp)
+			if err != nil {
+				return status.Errorf(codes.Internal, "failed to build response: %v", err)
+			}
+			return stream.Send(respCE)
+		}
+
 		result, err := s.entityHandler.DeleteAllEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version))
 		if err != nil {
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
@@ -426,4 +560,23 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		slog.Warn("unsupported event type", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType)
 		return status.Errorf(codes.InvalidArgument, "unsupported collection event type: %s", eventType)
 	}
+}
+
+// deleteAllErrorsByID converts a DeleteResult.IDToError map into the
+// schema's ErrorsByID shape (map[string]interface{}). The batched
+// (transactionSize>0) delete-all path folds per-id and per-batch-commit
+// failures into IDToError and still returns Success:true — RemovedCount can
+// be less than MatchedCount — so the caller must be able to see which ids
+// failed and why, the same way the HTTP door's idToError field already does.
+// An empty/nil input returns nil so the omitempty field is left off the
+// wire, matching the schema's optionality (no failures ⇒ no field).
+func deleteAllErrorsByID(idToError map[string]string) events.EntityDeleteAllResponseJsonErrorsByID {
+	if len(idToError) == 0 {
+		return nil
+	}
+	out := make(events.EntityDeleteAllResponseJsonErrorsByID, len(idToError))
+	for id, msg := range idToError {
+		out[id] = msg
+	}
+	return out
 }

@@ -3359,7 +3359,11 @@ type GetEntityTransitionsParams struct {
 
 // DeleteEntitiesParams defines parameters for DeleteEntities.
 type DeleteEntitiesParams struct {
-	// TransactionSize Maximum number of entities to delete in a single transaction. Higher values may improve performance but increase memory usage.
+	// TransactionSize Number of entities to delete per transaction batch. Batches
+	// committed before a failure remain durable and per-id/batch
+	// failures are reported in the response. Not supported on
+	// requests joining an open transaction (400). Absent means a
+	// single transaction.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 
 	// PointInTime The point-in-time for selecting the entities for deletion, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the consistency time of the system if not provided.
@@ -3400,11 +3404,11 @@ type CreateCollectionParams struct {
 	// chunks committed before any later failure remain durable.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for consistency after operation completes.
@@ -3451,11 +3455,11 @@ type UpdateCollectionParams struct {
 	// chunks committed before any later failure remain durable.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for consistency after operation completes.
@@ -3477,12 +3481,11 @@ type PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody = map[string]inter
 
 // PatchSingleWithLoopbackParams defines parameters for PatchSingleWithLoopback.
 type PatchSingleWithLoopbackParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
@@ -3506,12 +3509,11 @@ type UpdateSingleWithLoopbackJSONBody = map[string]interface{}
 
 // UpdateSingleWithLoopbackParams defines parameters for UpdateSingleWithLoopback.
 type UpdateSingleWithLoopbackParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
@@ -3538,12 +3540,11 @@ type PatchSingleApplicationMergePatchPlusJSONBody = map[string]interface{}
 
 // PatchSingleParams defines parameters for PatchSingle.
 type PatchSingleParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
@@ -3567,12 +3568,11 @@ type UpdateSingleJSONBody = map[string]interface{}
 
 // UpdateSingleParams defines parameters for UpdateSingle.
 type UpdateSingleParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
@@ -3608,11 +3608,11 @@ type CreateParams struct {
 	// remain durable.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
-	// TransactionTimeoutMillis Maximum time in milliseconds for transaction completion.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// WaitForConsistencyAfter If true, waits for consistency after the operation completes.
@@ -3637,13 +3637,21 @@ type DeleteMessagesJSONBody = []openapi_types.UUID
 
 // DeleteMessagesParams defines parameters for DeleteMessages.
 type DeleteMessagesParams struct {
-	// TransactionSize Number of messages to delete per transaction batch
+	// TransactionSize Number of messages to delete per transaction batch. Batches
+	// committed before a failure remain durable and per-batch
+	// failures are reported in the response. Not supported on
+	// requests joining an open transaction (400). Absent means a
+	// single call.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 }
 
 // NewMessageParams defines parameters for NewMessage.
 type NewMessageParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds to wait for transaction completion
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// ContentType MIME type of the message payload
@@ -3776,6 +3784,12 @@ type SearchEntitiesParams struct {
 
 	// TrackingRead When true and the request runs inside an active transaction, the entities this search returns are recorded into the transaction's read-set so commit-time first-committer-wins validates them. Defaults to false (a plain snapshot read that records nothing). Ignored outside a transaction.
 	TrackingRead *bool `form:"trackingRead,omitempty" json:"trackingRead,omitempty"`
+
+	// TimeoutMillis Maximum time in milliseconds to wait for the search to complete.
+	// When exceeded, the request fails with 408 SEARCH_TIMEOUT and no
+	// partial results are returned. Absent means no server-side timeout.
+	// Not supported on requests joining an open transaction (400).
+	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
 }
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
@@ -4981,7 +4995,7 @@ type ServerInterface interface {
 	// Create New
 	// (POST /entity/{format}/{entityName}/{modelVersion})
 	Create(w http.ResponseWriter, r *http.Request, format CreateParamsFormat, entityName string, modelVersion int32, params CreateParams)
-	// Delete multiple edge messages by IDs
+	// Delete multiple edge messages by IDs, optionally in batches
 	// (DELETE /message)
 	DeleteMessages(w http.ResponseWriter, r *http.Request, params DeleteMessagesParams)
 	// Send a new edge message
@@ -8340,6 +8354,19 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "trackingRead"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "trackingRead", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "timeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMillis", r.URL.Query(), &params.TimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMillis", Err: err})
 		}
 		return
 	}

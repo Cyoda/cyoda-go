@@ -170,11 +170,18 @@ type Engine struct {
 	// late task instead of leaving it for the next scan (design §5.5).
 	// Defaults to defaultExpiryGraceMs; overridden via WithExpiryGrace.
 	expiryGraceMs int64
+	// commitBudget bounds flushAndCommitSegment's shielded CBD-segment
+	// commit (common.ShieldedCommitWithBudget). Defaults to
+	// common.CommitBudget (the same 30s production budget
+	// txScope.commitOwned uses on the entity-handler side); overridden via
+	// WithCommitBudget so a test can observe the common.ErrCommitInterrupted
+	// wrap firing for real without waiting out the production budget.
+	commitBudget time.Duration
 }
 
 // NewEngine creates a new workflow engine.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -216,6 +223,18 @@ func WithScheduledClock(clock func() time.Time) EngineOption {
 	return func(e *Engine) {
 		if clock != nil {
 			e.clock = clock
+		}
+	}
+}
+
+// WithCommitBudget overrides the budget flushAndCommitSegment's shielded CBD
+// commit is bound by. Defaults to common.CommitBudget (30s); tests inject a
+// short budget to observe common.ErrCommitInterrupted firing for real
+// instead of waiting out the production value.
+func WithCommitBudget(budget time.Duration) EngineOption {
+	return func(e *Engine) {
+		if budget > 0 {
+			e.commitBudget = budget
 		}
 	}
 }
@@ -855,6 +874,17 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 	stateVisits := make(map[string]int)
 
 	for depth := 0; depth < maxCascadeDepth; depth++ {
+		// Spec D9: observe cancellation/expiry between transitions, the same
+		// way an attemptTransition failure is routed, so the deferred
+		// rollback guard above still runs. Naturally inert once the cascade
+		// is running on a post-CBD ctx — commitAndBeginNextSegment derives
+		// that one via context.WithoutCancel, which carries no deadline of
+		// its own, so an already-elapsed ORIGINAL client deadline cannot
+		// abort a cascade continuing past a segment commit (spec D3).
+		if err := currentCtx.Err(); err != nil {
+			return currentCtx, currentTxID, fmt.Errorf("cascade aborted: %w", err)
+		}
+
 		state := entity.Meta.State
 		stateVisits[state]++
 		if stateVisits[state] > e.maxStateVisits {

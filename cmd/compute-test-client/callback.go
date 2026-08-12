@@ -174,6 +174,22 @@ func (c *callbackClient) getEntity(ctx context.Context, entityID, txToken string
 	return c.do(ctx, http.MethodGet, "/api/entity/"+entityID, "", txToken, "")
 }
 
+// createSecondaryWithQuery is createSecondary's negative-path sibling: it
+// appends a raw query string (e.g. "transactionTimeoutMillis=5000") to the
+// create URL instead of assuming success. Used by scenarios that expect the
+// joined create to be REJECTED (spec D7/F1: a transaction-control param on a
+// request that joins an open transaction is 400 BAD_REQUEST) rather than
+// parsing a create response that never arrives.
+func (c *callbackClient) createSecondaryWithQuery(ctx context.Context, cfg cbConfig, query, txToken, status string) (cbResult, error) {
+	version := cfg.SecondaryVersion
+	if version == 0 {
+		version = 1
+	}
+	path := fmt.Sprintf("/api/entity/JSON/%s/%d?%s", cfg.SecondaryModel, version, query)
+	body := fmt.Sprintf(`{"name":"child","amount":1,"status":%q}`, status)
+	return c.do(ctx, http.MethodPost, path, body, txToken, "")
+}
+
 // loopbackUpdate issues a PUT /api/entity/JSON/{id} (loopback, no transition)
 // callback carrying an If-Match precondition, within the joined transaction.
 func (c *callbackClient) loopbackUpdate(ctx context.Context, entityID, ifMatch, txToken, status string) (cbResult, error) {
@@ -281,6 +297,34 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			}
 			data["secondaryId"] = secID
 			data["secondaryTxId"] = secTx
+			data["tokenWasEmpty"] = token == ""
+			return withData(entity, data)
+		},
+
+		// cb-tx-control-param-joined — issues a joined create callback carrying
+		// a transaction-control query param (transactionTimeoutMillis) on a
+		// request that JOINS an open transaction. Spec D7/F1: every
+		// transaction-control param is rejected with 400 BAD_REQUEST on a
+		// joined (tx-token'd) request — honoring a participant-supplied value
+		// would let it unilaterally override the deadline the owner controls.
+		// Records the callback's raw status + body into the primary's data
+		// (rather than requiring res.Status==200 like cb-create-secondary) so
+		// the caller can assert the crossed-back 400 verbatim, including across
+		// a forwarded cluster hop (feature #287 / cross-node #379).
+		"cb-tx-control-param-joined": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.createSecondaryWithQuery(ctx, cfg, "transactionTimeoutMillis=5000", token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create with transactionTimeoutMillis: %w", err)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["hopStatus"] = float64(res.Status)
+			data["hopBody"] = res.Body
 			data["tokenWasEmpty"] = token == ""
 			return withData(entity, data)
 		},

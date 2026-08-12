@@ -8,6 +8,7 @@ see_also:
   - openapi
   - errors.ENTITY_NOT_FOUND
   - errors.BAD_REQUEST
+  - errors.TRANSACTION_TIMEOUT
 ---
 
 # messages
@@ -69,7 +70,7 @@ The create request and the read response are different shapes: you POST a payloa
 - `Content-Length` (header, required): payload size in bytes
 - `Content-Encoding` (header, optional): default `UTF-8`
 - `X-Message-ID`, `X-User-ID`, `X-Recipient`, `X-Reply-To`, `X-Correlation-ID` (headers, optional): AMQP envelope fields, each 1..1024 chars
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the message save begins. Exceeding it fails with `408 errors.TRANSACTION_TIMEOUT` before anything is stored; the save itself, once started, is shielded and always completes. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 Request body: a `NewMessageRequest` object `{ payload, metaData }` as described in MESSAGE SHAPE. Missing `payload` returns `400 BAD_REQUEST`.
 
@@ -125,9 +126,9 @@ Message delete is not transactional in the same sense as entity create/update.
 
 **DELETE /api/message** — Delete multiple messages by ID
 
-- `transactionSize` (query, optional): int32, default `1000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionSize` (query, optional): int32 — number of message IDs deleted per batch. Without it, all IDs are deleted in one call and the response is a single element covering the whole set. With it, IDs are deleted in batches of this size, one response element per batch; a batch failure does not stop later batches from running. Rejected with `400` on a request that joins an open transaction. Absent means a single call.
 
-Request body: a JSON array of UUID strings. Every element must parse as a UUID; otherwise `400 BAD_REQUEST`. Response: `200 OK`, `application/json`, a `MessageDeleteBatchResponse` array:
+Request body: a JSON array of UUID strings. Every element must parse as a UUID; otherwise `400 BAD_REQUEST`. Response: `200 OK`, `application/json`, a `MessageDeleteBatchResponse` array, one element per batch (or one element for the whole set when `transactionSize` is absent):
 
 ```json
 [{
@@ -138,6 +139,8 @@ Request body: a JSON array of UUID strings. Every element must parse as a UUID; 
   "success": true
 }]
 ```
+
+Message delete is not part of an entity transaction and does not roll back as a unit — a batch's `success` reflects only whether its own `DeleteBatch` call returned an error, and a `false` does not guarantee none of the batch's IDs were removed. On postgres, a batch is one `DELETE ... WHERE message_id = ANY(...)` statement, so it fully applies or fully fails. On memory, a batch is deleted ID-by-ID and stops at the first error, so a mid-batch failure can leave earlier IDs already removed while `success: false` is reported for the whole batch. On sqlite, a batch over 500 IDs is split into internal 500-ID `DELETE ... IN (...)` statements; a failure in a later internal chunk leaves earlier chunks' IDs already removed under the same `success: false`.
 
 ## TENANT ISOLATION
 
@@ -152,8 +155,9 @@ A message ID is an unguessable time-UUID and is only ever retrievable or deletab
 
 Errors are RFC 9457 `application/problem+json` with `properties.errorCode` set to the machine-readable code:
 
-- `errors.BAD_REQUEST` — `400` — invalid JSON, missing `payload`, malformed `messageId`, or a delete body that is not a JSON array of UUID strings
+- `errors.BAD_REQUEST` — `400` — invalid JSON, missing `payload`, malformed `messageId`, a delete body that is not a JSON array of UUID strings, an invalid `transactionSize`/`transactionTimeoutMillis`, or either param sent on a request that joins an open transaction
 - `errors.ENTITY_NOT_FOUND` — `404` — no message with this ID exists for the calling tenant (get and single-delete)
+- `errors.TRANSACTION_TIMEOUT` — `408` — `transactionTimeoutMillis` elapsed before the message save began (create only); nothing was stored
 - `413` — request body exceeds the 10 MiB limit (create and batch-delete)
 - `401` — missing or invalid Bearer token
 - `403` — authenticated but not authorized

@@ -18,8 +18,7 @@
     },
     "transactionSize": {
       "type": "integer",
-      "description": "Transaction size.",
-      "default": 1000
+      "description": "Transaction size."
     },
     "pointInTime": {
       "type": "string",

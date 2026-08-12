@@ -2,10 +2,12 @@ package messaging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -31,6 +33,26 @@ func New(factory spi.StoreFactory, uuids spi.UUIDGenerator) *Handler {
 // NewMessage creates and stores a new edge message.
 func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject string, params genapi.NewMessageParams) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
+
+	// Messaging has no transaction and no joined path of its own, but the
+	// txjoin middleware is global — a routed compute-node callback can still
+	// present a joined tx on ctx here, so the reject-on-joined rule (spec D7)
+	// applies uniformly even though this handler never begins a tx.
+	opCtx := r.Context()
+	if params.TransactionTimeoutMillis != nil {
+		if appErr := common.ValidateRequestTimeoutMillis(*params.TransactionTimeoutMillis); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		if spi.GetTransaction(opCtx) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionTimeoutMillis is not supported on a request that joins an open transaction"))
+			return
+		}
+		var cancel context.CancelFunc
+		opCtx, cancel = common.WithRequestTimeout(opCtx, *params.TransactionTimeoutMillis)
+		defer cancel()
+	}
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -94,14 +116,35 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 	id := uuid.UUID(h.uuids.NewTimeUUID())
 	txID := uuid.UUID(h.uuids.NewTimeUUID())
 
-	store, err := h.factory.MessageStore(r.Context())
+	store, err := h.factory.MessageStore(opCtx)
 	if err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
-	if err := store.Save(r.Context(), id.String(), header, metaData, strings.NewReader(payloadString)); err != nil {
-		common.WriteError(w, r, common.Internal("failed to save message", err))
+	// Spec D2: the Save is this path's commit boundary — pre-check then shield,
+	// so a 408 can only mean the save never began (save-wins). The pre-check's
+	// ClassifyRequestTimeout returns nil for a bare context.Canceled (only
+	// DeadlineExceeded qualifies for 408); that case falls back to a 500 —
+	// the client disconnecting is not "nothing was committed by design", it's
+	// an aborted request.
+	if err := opCtx.Err(); err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("request cancelled before save", err))
+		return
+	}
+	saveErr := common.ShieldedCommit(opCtx, func(saveCtx context.Context) error {
+		return store.Save(saveCtx, id.String(), header, metaData, strings.NewReader(payloadString))
+	})
+	if saveErr != nil {
+		common.WriteError(w, r, common.Internal("failed to save message", saveErr))
 		return
 	}
 
@@ -249,22 +292,72 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 		}
 	}
 
+	// Messaging has no transaction and no joined path of its own, but the
+	// txjoin middleware is global — a routed compute-node callback can still
+	// present a joined tx on ctx here, so the reject-on-joined rule (spec D7)
+	// applies uniformly even though this handler never begins a tx.
+	batchSize := 0
+	if params.TransactionSize != nil {
+		if *params.TransactionSize < 1 {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionSize must be a positive integer"))
+			return
+		}
+		if spi.GetTransaction(r.Context()) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionSize is not supported on a request that joins an open transaction"))
+			return
+		}
+		batchSize = int(*params.TransactionSize)
+	}
+
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
-	if err := store.DeleteBatch(r.Context(), ids); err != nil {
-		common.WriteError(w, r, common.Internal("failed to delete messages", err))
+	if batchSize == 0 {
+		if err := store.DeleteBatch(r.Context(), ids); err != nil {
+			common.WriteError(w, r, common.Internal("failed to delete messages", err))
+			return
+		}
+
+		resp := []map[string]any{
+			{
+				"entityIds": ids,
+				"success":   true,
+			},
+		}
+		common.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	resp := []map[string]any{
-		{
-			"entityIds": ids,
-			"success":   true,
-		},
+	// Spec D4: one store call per chunk of <=batchSize ids, one response
+	// element per chunk; a failed chunk reports success:false but does not
+	// stop later chunks from being attempted.
+	resp := make([]map[string]any, 0, (len(ids)+batchSize-1)/batchSize)
+	for start := 0; start < len(ids); start += batchSize {
+		// Generic cancellation check between chunks (spec D9) — mirrors the
+		// entity-side batch loop's between-batches check (deleteBatched in
+		// internal/domain/entity/service.go). Unlike that path there is no
+		// tx to roll back here and earlier chunks are already durable, but
+		// the array response is the only channel to report progress, and an
+		// aborted request's response likely never reaches the disconnected
+		// client anyway. Fail closed: stop attempting further chunks and
+		// error the whole request rather than fabricate elements — success
+		// or failure — for chunks that were never attempted.
+		if ctxErr := r.Context().Err(); ctxErr != nil {
+			common.WriteError(w, r, common.Internal("delete aborted by context cancellation", ctxErr))
+			return
+		}
+		end := min(start+batchSize, len(ids))
+		chunk := ids[start:end]
+		err := store.DeleteBatch(r.Context(), chunk)
+		if err != nil {
+			slog.Warn("message delete batch failed", "pkg", "messaging", "batchStart", start, "err", err)
+		}
+		resp = append(resp, map[string]any{"entityIds": chunk, "success": err == nil})
 	}
 	common.WriteJSON(w, http.StatusOK, resp)
 }

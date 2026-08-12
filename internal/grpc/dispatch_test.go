@@ -1033,6 +1033,104 @@ func TestDispatchFunction_NoMember(t *testing.T) {
 	}
 }
 
+// TestDispatchCalloutToMember_AbandonOnCtxCancel guards spec D11: when the
+// caller's context is cancelled while dispatchCalloutToMember is waiting on
+// the ctx.Done() arm, the tracked pending-request entry must be cleared
+// before return. Otherwise a late compute-node reply finds a dangling
+// channel and the entry leaks in the member's pending map forever.
+func TestDispatchCalloutToMember_AbandonOnCtxCancel(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	ctx, cancel := context.WithCancel(testContext())
+
+	// Cancel only once the request has actually been sent (and therefore
+	// tracked), so the cancellation races the ctx.Done() arm rather than a
+	// pre-send failure.
+	go func() {
+		<-sentCh
+		cancel()
+	}()
+
+	req := map[string]any{"requestId": "req-ctx-cancel"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-ctx-cancel", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if got := member.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after ctx cancellation, got %d entries", got)
+	}
+}
+
+// TestDispatchCalloutToMember_AbandonOnTimeout guards spec D11 for the
+// time.After arm: a dispatch that times out because nobody answers must not
+// leave the requestID behind in the member's pending map.
+func TestDispatchCalloutToMember_AbandonOnTimeout(t *testing.T) {
+	dispatcher, registry, memberID, _ := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	ctx := testContext()
+
+	req := map[string]any{"requestId": "req-timeout-abandon"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-timeout-abandon", "tx-1", 1, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if got := member.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after timeout, got %d entries", got)
+	}
+}
+
+// TestDispatchCalloutToMember_AbandonOnSendFailure guards spec D11 for the
+// Send-failure early-return: a request that never made it onto the wire
+// must still have its (pre-registered) tracking entry cleared.
+func TestDispatchCalloutToMember_AbandonOnSendFailure(t *testing.T) {
+	registry := NewMemberRegistry()
+	memberID := registry.Register(testTenantID, []string{"python"}, func(_ *cepb.CloudEvent) error {
+		return fmt.Errorf("send boom")
+	})
+	uuids := common.NewTestUUIDGenerator()
+	signer, _ := token.NewSigner(make32(t))
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	member := registry.Get(memberID)
+	ctx := testContext()
+
+	req := map[string]any{"requestId": "req-send-fail"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-send-fail", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error from send failure")
+	}
+	if got := member.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after send failure, got %d entries", got)
+	}
+}
+
+// TestMember_LateResponseAfterAbandon_NoOp guards the far side of spec D11:
+// once a pending-request entry has been abandoned (dispatch already
+// returned via timeout/ctx-cancel/send-failure), a late compute-node reply
+// for that requestID must be a no-op — no panic, and nothing delivered to
+// the now-unread channel the abandoned caller is no longer waiting on.
+func TestMember_LateResponseAfterAbandon_NoOp(t *testing.T) {
+	reg := NewMemberRegistry()
+	id := reg.Register("tenant-1", []string{"a"}, noopSend)
+	m := reg.Get(id)
+
+	ch := m.TrackRequest("req-1")
+	m.AbandonRequest("req-1")
+
+	if got := m.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after abandon, got %d entries", got)
+	}
+
+	// Late response: must not panic and must not deliver to the abandoned
+	// channel.
+	m.CompleteRequest("req-1", &ProcessingResponse{Success: true})
+
+	select {
+	case resp := <-ch:
+		t.Fatalf("expected no delivery to abandoned channel, got %v", resp)
+	default:
+	}
+}
+
 func TestBuildEntityPayload(t *testing.T) {
 	e := &spi.Entity{Meta: spi.EntityMeta{
 		ID: "e1", State: "S1", TransactionID: "tx1",

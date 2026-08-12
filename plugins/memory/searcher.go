@@ -44,16 +44,20 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		// filter/sort/page. IIFE so the unlock runs via defer even though the
 		// filter/sort work happens after we release the lock.
 		var committed []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
 			if opts.PointInTime != nil {
-				committed = s.getAllSnapshotUnlocked(modelRef, *opts.PointInTime)
+				committed, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, *opts.PointInTime)
 			} else {
-				committed = s.currentStateMatchesUnlocked(modelRef)
+				committed, snapErr = s.currentStateMatchesUnlocked(ctx, modelRef)
 			}
 		}()
-		return matchSortBounded(pf, committed, opts.OrderBy, opts.Limit)
+		if snapErr != nil {
+			return nil, fmt.Errorf("Search: %w", snapErr)
+		}
+		return matchSortBounded(ctx, pf, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-transaction: hold tx.OpMu.RLock for the whole operation so Commit/
@@ -70,12 +74,16 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		// In-tx point-in-time: committed-only, no buffer overlay, no read-set
 		// (mirrors GetAllAsAt). Snapshot under entityMu via IIFE.
 		var committed []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			committed = s.getAllSnapshotUnlocked(modelRef, *opts.PointInTime)
+			committed, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, *opts.PointInTime)
 		}()
-		return matchSortBounded(pf, committed, opts.OrderBy, opts.Limit)
+		if snapErr != nil {
+			return nil, fmt.Errorf("Search: %w", snapErr)
+		}
+		return matchSortBounded(ctx, pf, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-tx read-your-own-writes overlay. Snapshot the committed model at the
@@ -83,24 +91,47 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// source for the merge. copyEntity happens inside getAllSnapshotUnlocked,
 	// so no raw store pointer escapes the lock.
 	var committed []*spi.Entity
+	var snapErr error
 	func() {
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		committed = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+		committed, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
 	}()
+	if snapErr != nil {
+		return nil, fmt.Errorf("Search: %w", snapErr)
+	}
 	filteredCommitted := make([]*spi.Entity, 0, len(committed))
-	for _, e := range committed {
+	for i, e := range committed {
+		// Amortized cancellation check (spec D5): the memory plugin IS
+		// spi.Searcher, so this loop (and its siblings below) is the real
+		// search-scan path for this backend, not a fallback. Check every
+		// 1024 rows (i&1023==0, true at i==0 too) so a pre-expired or
+		// since-expired ctx aborts promptly without paying a per-row cost.
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("Search: %w", err)
+			}
+		}
 		if pf.Match(e.Data, e.Meta) {
 			filteredCommitted = append(filteredCommitted, e)
 		}
 	}
-	sortByOrder(filteredCommitted, opts.OrderBy)
+	if err := sortByOrder(ctx, filteredCommitted, opts.OrderBy); err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 
 	// adds = matching buffered writes for this model (own-writes), excluding
 	// anything staged for delete. Buffer entries are copied so store-internal
 	// pointers never escape.
 	adds := make([]*spi.Entity, 0, len(tx.Buffer))
+	addI := 0
 	for id, e := range tx.Buffer {
+		if addI&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("Search: %w", err)
+			}
+		}
+		addI++
 		if tx.Deletes[id] {
 			continue
 		}
@@ -111,7 +142,9 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 			adds = append(adds, copyEntity(e))
 		}
 	}
-	sortByOrder(adds, opts.OrderBy)
+	if err := sortByOrder(ctx, adds, opts.OrderBy); err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 
 	// A committed row is suppressed if it is staged for delete OR shadowed by a
 	// buffered own-write (the buffered version, if it matches, comes in via adds).
@@ -127,6 +160,11 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	next := func() (*spi.Entity, bool, error) {
 		if i >= len(filteredCommitted) {
 			return nil, false, nil
+		}
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, false, fmt.Errorf("Search: %w", err)
+			}
 		}
 		e := filteredCommitted[i]
 		i++
@@ -156,10 +194,19 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 
 // currentStateMatchesUnlocked returns copies of the latest non-deleted versions
 // matching modelRef. Caller must hold at least s.factory.entityMu.RLock().
-// Mirrors the non-tx branch of GetAll.
-func (s *EntityStore) currentStateMatchesUnlocked(modelRef spi.ModelRef) []*spi.Entity {
+// Mirrors the non-tx branch of GetAll — including its amortized ctx check,
+// since this is the default (non-PIT) non-tx Search scan and thus the most
+// heavily-travelled loop on the real search path (spec D5).
+func (s *EntityStore) currentStateMatchesUnlocked(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
 	result := make([]*spi.Entity, 0)
+	i := 0
 	for _, versions := range s.factory.entityData[s.tenant] {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		i++
 		if len(versions) == 0 {
 			continue
 		}
@@ -171,7 +218,7 @@ func (s *EntityStore) currentStateMatchesUnlocked(modelRef spi.ModelRef) []*spi.
 			result = append(result, copyEntity(latest.entity))
 		}
 	}
-	return result
+	return result, nil
 }
 
 // matchSortBounded filters rows with a prepared filter, orders with
@@ -182,9 +229,18 @@ func (s *EntityStore) currentStateMatchesUnlocked(modelRef spi.ModelRef) []*spi.
 //
 // It takes an already-prepared filter so the caller pays the operand parse,
 // type bucketing and regex compilation once per query rather than once per row.
-func matchSortBounded(pf spi.PreparedFilter, rows []*spi.Entity, order []spi.OrderSpec, limit int) ([]*spi.Entity, error) {
+func matchSortBounded(ctx context.Context, pf spi.PreparedFilter, rows []*spi.Entity, order []spi.OrderSpec, limit int) ([]*spi.Entity, error) {
 	filtered := make([]*spi.Entity, 0, len(rows))
-	for _, e := range rows {
+	for i, e := range rows {
+		// Amortized cancellation check (spec D5): checked every 1024 rows
+		// (i&1023==0, true at i==0 too) so an already-expired or
+		// since-expired ctx aborts the scan instead of returning a full
+		// result set computed past the client's deadline.
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("Search: %w", err)
+			}
+		}
 		if pf.Match(e.Data, e.Meta) {
 			filtered = append(filtered, e)
 			// Short-circuit before sorting: the result is an error either way.
@@ -193,15 +249,24 @@ func matchSortBounded(pf spi.PreparedFilter, rows []*spi.Entity, order []spi.Ord
 			}
 		}
 	}
-	sortByOrder(filtered, order)
+	if err := sortByOrder(ctx, filtered, order); err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 	return filtered, nil
 }
 
 // sortByOrder sorts entities in place by the canonical spi.LessByOrder
 // comparator. LessByOrder is a strict total order (entity_id ascending
-// tiebreaker), so a plain sort is deterministic across backends.
-func sortByOrder(rows []*spi.Entity, order []spi.OrderSpec) {
+// tiebreaker), so a plain sort is deterministic across backends. A single
+// ctx check gates the O(n log n) sort itself — the filter loop that built
+// rows already paid for amortized checks over the scan, but the sort is a
+// separate unit of work worth gating on its own before it runs.
+func sortByOrder(ctx context.Context, rows []*spi.Entity, order []spi.OrderSpec) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		return spi.LessByOrder(rows[i], rows[j], order)
 	})
+	return nil
 }

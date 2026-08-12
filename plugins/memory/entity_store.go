@@ -107,9 +107,24 @@ func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time
 
 // getAllSnapshotUnlocked returns all entities matching modelRef that were visible
 // at snapshotTime. Caller must hold at least s.factory.entityMu.RLock().
-func (s *EntityStore) getAllSnapshotUnlocked(modelRef spi.ModelRef, snapshotTime time.Time) []*spi.Entity {
+//
+// ctx gates an amortized cancellation check (spec D5): checked every 1024
+// entries (i&1023==0, true at i==0 too) so an already-expired or
+// since-expired ctx aborts the scan rather than materializing a full result
+// computed past the deadline. The check is a lock-free atomic read
+// (ctx.Err()), so running it while the caller holds entityMu.RLock() is
+// acceptable per .claude/rules/go-mutex-discipline.md — this does not change
+// any locking structure.
+func (s *EntityStore) getAllSnapshotUnlocked(ctx context.Context, modelRef spi.ModelRef, snapshotTime time.Time) ([]*spi.Entity, error) {
 	var result []*spi.Entity
+	i := 0
 	for _, versions := range s.factory.entityData[s.tenant] {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		i++
 		if len(versions) == 0 {
 			continue
 		}
@@ -129,7 +144,7 @@ func (s *EntityStore) getAllSnapshotUnlocked(modelRef spi.ModelRef, snapshotTime
 			result = append(result, copyEntity(found))
 		}
 	}
-	return result
+	return result, nil
 }
 
 func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
@@ -431,21 +446,39 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		// .claude/rules/go-mutex-discipline.md — bare Unlock is not the
 		// right answer).
 		var mainEntities []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+			mainEntities, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
 		}()
+		if snapErr != nil {
+			return nil, fmt.Errorf("GetAll: %w", snapErr)
+		}
 
 		result := make(map[string]*spi.Entity)
-		for _, e := range mainEntities {
+		for i, e := range mainEntities {
+			// Amortized cancellation check (spec D5): mirrors the non-tx
+			// loop below — every 1024 rows, true at i==0 too.
+			if i&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, fmt.Errorf("GetAll: %w", err)
+				}
+			}
 			if !tx.Deletes[e.Meta.ID] {
 				result[e.Meta.ID] = e
 				tx.ReadSet[e.Meta.ID] = true
 			}
 		}
 		// Overlay buffer.
+		bufI := 0
 		for id, e := range tx.Buffer {
+			if bufI&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, fmt.Errorf("GetAll: %w", err)
+				}
+			}
+			bufI++
 			if e.Meta.ModelRef == modelRef {
 				result[id] = copyEntity(e)
 				tx.ReadSet[id] = true
@@ -464,7 +497,19 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 	defer s.factory.entityMu.RUnlock()
 
 	result := make([]*spi.Entity, 0)
+	i := 0
 	for _, versions := range s.factory.entityData[s.tenant] {
+		// Amortized cancellation check (spec D5): this is the primary
+		// real-search-path scan for non-tx GetAll — checked every 1024
+		// entries (i&1023==0, true at i==0 too) so a pre-expired or
+		// since-expired ctx aborts rather than returning a full result
+		// set computed past the client's deadline.
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("GetAll: %w", err)
+			}
+		}
+		i++
 		if len(versions) == 0 {
 			continue
 		}
@@ -485,7 +530,16 @@ func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asA
 
 	// Historical query: always reads committed data.
 	result := make([]*spi.Entity, 0)
+	i := 0
 	for _, versions := range s.factory.entityData[s.tenant] {
+		// Amortized cancellation check (spec D5): every 1024 entries
+		// (i&1023==0, true at i==0 too).
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("GetAllAsAt: %w", err)
+			}
+		}
+		i++
 		if len(versions) == 0 {
 			continue
 		}
@@ -598,11 +652,15 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		// in tx. Wrap the entityMu hold in an IIFE so the unlock runs via
 		// defer.
 		var mainEntities []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities = s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
+			mainEntities, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
 		}()
+		if snapErr != nil {
+			return fmt.Errorf("DeleteAll: %w", snapErr)
+		}
 
 		// Attribution captured once for this call (this caller, this ctx)
 		// and applied to every entity ID this DeleteAll stages — same
