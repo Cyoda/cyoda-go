@@ -41,7 +41,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
-		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs)
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
 		if terr != nil {
 			return entityTransactionError(ctx, ce.Id, terr)
 		}
@@ -94,7 +94,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
-		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs)
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
 		if terr != nil {
 			return entityTransactionError(ctx, ce.Id, terr)
 		}
@@ -152,7 +152,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
-		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs)
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
 		if terr != nil {
 			return entityTransactionError(ctx, ce.Id, terr)
 		}
@@ -300,7 +300,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
-		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs)
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
 		if terr != nil {
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, terr)
 			if ceErr != nil {
@@ -370,7 +370,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		// ONE deadline for the whole per-item loop below — not one per item —
 		// so transactionTimeoutMs bounds the entire collection update, matching
 		// the transactionWindow-chunked HTTP endpoint's contract.
-		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs)
+		opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TransactionTimeoutMs, "transactionTimeoutMs")
 		if terr != nil {
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, terr)
 			if ceErr != nil {
