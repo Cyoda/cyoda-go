@@ -12,9 +12,9 @@ import (
 //
 // Fail-closed on capacity: when the cache is full, checkAndRecord reports
 // *seen* for any new nonce. The caller surfaces this as a replay rejection.
-// At realistic cluster rates (max ~10k dispatch/s) and a 60s TTL, a 100k
-// ceiling leaves a 10x headroom over sustained load; an attacker flood fails
-// closed rather than letting stale entries linger.
+// The 100k ceiling over the 60s TTL window admits ~1,600 sustained inbound
+// dispatches/s per node — far above realistic cross-node callout rates; an
+// attacker flood fails closed rather than letting stale entries linger.
 type nonceCache struct {
 	ttl     time.Duration
 	cap     int

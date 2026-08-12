@@ -220,7 +220,9 @@ func (d *ClusterDispatcher) mintTxToken(txID string) string {
 
 // forwardWithFailover forwards req to a tag-matching peer, failing over to
 // the next tag-matching peer when the attempt provably did not dispatch the
-// callout: a transport-level forward error (peer unreachable/degraded), or a
+// callout: a transport-level forward error (peer unreachable/degraded — this
+// class also covers peer HTTP-status rejections such as a 403 auth/replay
+// refusal, which the forwarder folds into the forward error), or a
 // peer answering NO_COMPUTE_MEMBER_FOR_TAG (it lost its matching calculation
 // member between gossip advertisement and forward — nothing executed). Any
 // other peer-classified failure means the callout was actually dispatched;
@@ -261,13 +263,15 @@ func (d *ClusterDispatcher) forwardWithFailover(ctx context.Context, tenantID, t
 				"pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "tags", tags)
 		}
 
-		if ctx.Err() != nil {
-			return nil, "", ctx.Err()
+		// A dead context ends the failover exactly like peer exhaustion: the
+		// last failure surfaces with its usual taxonomy (retryable 503) — not
+		// a bare ctx error, which classifyWorkflowError would collapse into a
+		// non-retryable 400 WORKFLOW_FAILED.
+		next, found := contract.NodeInfo{}, false
+		if ctx.Err() == nil {
+			next, found = d.findPeer(ctx, tenantID, tags, tried)
 		}
-
-		next, found := d.findPeer(ctx, tenantID, tags, tried)
 		if !found {
-			// All tag-matching peers tried — surface the last failure.
 			if fwdErr != nil {
 				return nil, "", common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
 					forwardFailedClientMessage).AsRetryable()

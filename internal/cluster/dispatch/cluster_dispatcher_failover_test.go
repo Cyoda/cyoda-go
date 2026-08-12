@@ -262,6 +262,52 @@ func TestClusterDispatcher_FailoverExhaustion(t *testing.T) {
 	})
 }
 
+// cancellingForwarder cancels the request context and then fails at the
+// transport level, simulating the caller's deadline expiring mid-forward.
+type cancellingForwarder struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (f *cancellingForwarder) ForwardCallout(_ context.Context, _ string, _ DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
+	f.calls++
+	f.cancel()
+	return nil, errors.New("context canceled")
+}
+
+// TestClusterDispatcher_CtxCancelledMidForwardKeepsTaxonomy: a context that
+// dies DURING the forward attempt must surface the same retryable 503
+// DISPATCH_FORWARD_FAILED the single-attempt path always produced — not a
+// bare ctx error that classifyWorkflowError collapses into a non-retryable
+// 400 WORKFLOW_FAILED. The dispatcher must also stop failing over: no
+// further peers are attempted on a dead context.
+func TestClusterDispatcher_CtxCancelledMidForwardKeepsTaxonomy(t *testing.T) {
+	local := &stubDispatcher{noMember: true}
+	ctx, cancel := context.WithCancel(testContext())
+	defer cancel()
+
+	fwd := &cancellingForwarder{cancel: cancel}
+	d := NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+
+	_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeDispatchForwardFailed {
+		t.Fatalf("expected code %s, got %s", common.ErrCodeDispatchForwardFailed, appErr.Code)
+	}
+	if appErr.Status != http.StatusServiceUnavailable || !appErr.Retryable {
+		t.Fatalf("expected retryable 503, got status=%d retryable=%v", appErr.Status, appErr.Retryable)
+	}
+	if fwd.calls != 1 {
+		t.Fatalf("expected no failover on a dead context, got %d attempts", fwd.calls)
+	}
+}
+
 // TestClusterDispatcher_FailoverOverWire is the acceptance-criterion test:
 // one degraded peer (listener closed — connection refused) and one healthy
 // peer both advertise the tag; cross-node dispatch succeeds via failover

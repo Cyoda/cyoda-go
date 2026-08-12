@@ -75,7 +75,7 @@ Rotating the secret therefore requires full-cluster downtime: stop all nodes, up
 
 ## DISPATCH REPLAY PROTECTION
 
-Each node keeps an in-memory replay cache of dispatch-envelope nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when full, new dispatch envelopes are rejected as replays until entries expire, surfacing to the forwarding node as a retryable failure (which dispatch failover routes around). The ceiling leaves roughly 10× headroom over the maximum sustained cross-node dispatch rate; reaching it in practice indicates a flood, not normal load.
+Each node keeps an in-memory replay cache of dispatch-envelope nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when full, new dispatch envelopes are rejected as replays until entries expire, surfacing to the forwarding node as a retryable failure (which dispatch failover routes around). The ceiling admits roughly 1 600 sustained inbound cross-node dispatches per second per node (100 000 nonces per 60-second window) — far above realistic callout rates; reaching it indicates a flood, not normal load.
 
 ## COMPUTE CALLBACK TRANSACTION ROUTING
 
