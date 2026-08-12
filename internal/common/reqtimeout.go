@@ -147,13 +147,10 @@ func ClassifyRequestTimeout(ctx context.Context, err error, code string) *AppErr
 		AsRetryable()
 }
 
+// chainHasDeadlineExceeded reports whether context.DeadlineExceeded appears
+// anywhere in err's chain. A single errors.Is call already traverses an
+// *AppError cause — AppError.Unwrap returns e.Err — so no separate
+// errors.As(*AppError) branch is needed.
 func chainHasDeadlineExceeded(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var appErr *AppError
-	if errors.As(err, &appErr) && appErr.Err != nil {
-		return errors.Is(appErr.Err, context.DeadlineExceeded)
-	}
-	return false
+	return errors.Is(err, context.DeadlineExceeded)
 }

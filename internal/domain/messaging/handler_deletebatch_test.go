@@ -202,6 +202,58 @@ func TestDeleteMessages_Batched_PartialFailure_LaterChunksStillAttempted(t *test
 	}
 }
 
+// (c2) ctx is cancelled by the store while chunk 1 is in flight -> the loop
+// must not attempt chunk 2/3 (call count stays 1) and must fail the whole
+// request (5xx), never fabricate elements for chunks that were never
+// attempted. Mirrors the entity-side batch loop's between-batches ctx check
+// (internal/domain/entity/service.go deleteBatched): fail closed on the
+// response, even though chunk 1's delete is already durable.
+func TestDeleteMessages_CtxCancelledBetweenChunks_AbortsRemainingChunks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCallDeleteBatchStore{cancel: cancel}
+	h := newDeleteBatchHandler(store)
+
+	ids := genIDs(5)
+	w := httptest.NewRecorder()
+	h.DeleteMessages(w, newDeleteMessagesRequest(ctx, idsBody(ids)), genapi.DeleteMessagesParams{TransactionSize: int32ptr(2)})
+
+	if w.Code < 500 {
+		t.Fatalf("status = %d, want 5xx (fail closed on cancellation); body: %s", w.Code, w.Body.String())
+	}
+
+	calls := store.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("DeleteBatch call count = %d, want 1 (chunks 2/3 must never be attempted after cancellation)", len(calls))
+	}
+}
+
+// cancelOnFirstCallDeleteBatchStore records calls like fakeDeleteBatchStore
+// but cancels the request ctx (via cancel) right after its first DeleteBatch
+// call returns, simulating the client disconnecting mid-batch.
+type cancelOnFirstCallDeleteBatchStore struct {
+	spi.MessageStore
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	calls  [][]string
+}
+
+func (s *cancelOnFirstCallDeleteBatchStore) DeleteBatch(_ context.Context, ids []string) error {
+	s.mu.Lock()
+	cp := append([]string(nil), ids...)
+	s.calls = append(s.calls, cp)
+	s.mu.Unlock()
+	s.cancel()
+	return nil
+}
+
+func (s *cancelOnFirstCallDeleteBatchStore) snapshot() [][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]string, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
 // (d) no transactionSize param + store error -> 500 (unchanged existing behavior).
 func TestDeleteMessages_NoParam_StoreError_500(t *testing.T) {
 	store := &fakeDeleteBatchStore{failOn: map[int]error{0: errors.New("boom")}}

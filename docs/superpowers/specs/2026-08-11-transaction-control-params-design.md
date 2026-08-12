@@ -63,8 +63,8 @@ structural, not probabilistic:
 - **Classifier rule (pinned):** a 408 is produced only when ALL of the following hold — never any
   one alone:
   - the operation error's chain contains the deadline's own `context.DeadlineExceeded`
-    (`errors.Is`, unwrapping `AppError` causes — load-bearing, since some paths pre-wrap the ctx
-    error in a classified `AppError`);
+    (`errors.Is`, which traverses an `AppError` cause via its `Unwrap` — some paths pre-wrap the
+    ctx error in a classified `AppError`);
   - the attached marker identifies the deadline as ours;
   - **ours-actually-expired:** the marked ctx itself is currently `context.DeadlineExceeded`
     (`ctx.Err()`) — a `DeadlineExceeded` elsewhere in the chain (e.g. a nested postgres

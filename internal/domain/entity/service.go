@@ -1220,9 +1220,10 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 // against the baseline captured during deleteBatched's resolution phase
 // (spec D4's version guard); a mismatch, a NotFound, or a Delete failure is
 // folded into result.IDToError for that one id and the chunk continues. Only
-// a failure to begin this chunk's transaction is returned to the caller —
-// deleteBatched treats that as fatal for the whole request, since it can't
-// know whether later chunks would fare any better. A failed commit (e.g. a
+// a failure to begin this chunk's transaction, or to acquire the EntityStore
+// against it, is returned to the caller — deleteBatched treats either as
+// fatal for the whole request, since it can't know whether later chunks
+// would fare any better. A failed commit (e.g. a
 // conflict from the resolution-baseline version check racing a concurrent
 // writer at the storage layer) maps every id this chunk marked
 // pending-removed into IDToError instead of incrementing RemovedCount — the

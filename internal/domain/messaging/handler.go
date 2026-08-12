@@ -338,6 +338,19 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 	// stop later chunks from being attempted.
 	resp := make([]map[string]any, 0, (len(ids)+batchSize-1)/batchSize)
 	for start := 0; start < len(ids); start += batchSize {
+		// Generic cancellation check between chunks (spec D9) — mirrors the
+		// entity-side batch loop's between-batches check (deleteBatched in
+		// internal/domain/entity/service.go). Unlike that path there is no
+		// tx to roll back here and earlier chunks are already durable, but
+		// the array response is the only channel to report progress, and an
+		// aborted request's response likely never reaches the disconnected
+		// client anyway. Fail closed: stop attempting further chunks and
+		// error the whole request rather than fabricate elements — success
+		// or failure — for chunks that were never attempted.
+		if ctxErr := r.Context().Err(); ctxErr != nil {
+			common.WriteError(w, r, common.Internal("delete aborted by context cancellation", ctxErr))
+			return
+		}
 		end := min(start+batchSize, len(ids))
 		chunk := ids[start:end]
 		err := store.DeleteBatch(r.Context(), chunk)

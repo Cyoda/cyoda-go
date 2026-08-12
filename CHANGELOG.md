@@ -155,7 +155,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   deadlines. Previously only postgres (via pgx) stopped in-flight work on
   disconnect; memory and sqlite ran the operation to completion regardless.
   Work already past its last commit/flush point stays durable — this only
-  stops further, not-yet-committed work from starting.
+  stops further, not-yet-committed work from starting. The same alignment
+  extends to the read path: memory's and sqlite's search scan loops and
+  memory's `GetAll`/`GetAllAsAt` now abort on client disconnect too, though a
+  read has no durability to protect either way.
 
 - **A bare context-cancellation error escaping a workflow evaluation is now a
   sanitized 500 instead of 400 `WORKFLOW_FAILED`.** `classifyWorkflowError`'s

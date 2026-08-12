@@ -3788,6 +3788,7 @@ type SearchEntitiesParams struct {
 	// TimeoutMillis Maximum time in milliseconds to wait for the search to complete.
 	// When exceeded, the request fails with 408 SEARCH_TIMEOUT and no
 	// partial results are returned. Absent means no server-side timeout.
+	// Not supported on requests joining an open transaction (400).
 	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
 }
 
