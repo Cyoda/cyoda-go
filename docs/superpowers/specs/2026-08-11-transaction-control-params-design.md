@@ -290,7 +290,7 @@ Layers: **U** = unit/service-level (fake or real plugin store in-process, determ
 | 400 invalid `transactionTimeoutMillis` (≤0, non-numeric, overflow) — every declaring op | — | ✔ per op | — | ✔ |
 | `newMessage` 408 + 400; save-wins | ✔ | ✔ 400; 408 via U (waiver: no blocking seam through HTTP) | — | n/a |
 | Batched `deleteEntities`: partial failure — earlier batches committed, failed batch in `idToError`, later batches run | ✔ fault-injected store | ✔ happy-path batching (counts, >1 batch) | ✔ final-state consistency | — |
-| Batched `deleteEntities`: version-guard — id modified after resolution skipped into `idToError`, not deleted; PIT condition with current-version baseline | ✔ | ✔ | — | — |
+| Batched `deleteEntities`: version-guard — id modified after resolution skipped into `idToError`, not deleted; PIT condition with current-version baseline | ✔ | waiver (below) | — | — |
 | Batched `deleteMessages`: per-batch elements, `success:false` on failed batch, later batches attempted | ✔ | ✔ happy path | ✔ | n/a |
 | `deleteEntities`/`deleteMessages` 400 on invalid `transactionSize` | — | ✔ | — | ✔ (delete-all) |
 | Absent params ⇒ behavior unchanged (single tx / single call) | ✔ | ✔ | existing suites | ✔ |
@@ -304,7 +304,9 @@ Waivers (one-line, per `.claude/rules/test-coverage.md`): e2e 408 for `newMessag
 `searchEntities` — no deterministic blocking seam exists through the full HTTP stack on those
 paths; deterministic coverage lives at U with real plugin stores. Concurrency scenarios: none
 added — batching is sequential by design; existing conflict semantics (409 on commit conflict)
-unchanged; the version-guard scenario mutates between requests, not concurrently.
+unchanged. Version-guard e2e: the guard window (a mutation landing between
+resolution and a batch) is not reachable deterministically through the full HTTP
+stack — covered at U with a controlled interleave hook.
 
 ## Documentation & parity obligations (Gate 4 / Gate 7)
 
