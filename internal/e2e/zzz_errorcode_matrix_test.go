@@ -35,7 +35,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	"deleteEntities": {
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 400, Code: "INVALID_FIELD_PATH"}, // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
-		{Status: 400, Code: "BAD_REQUEST"},         // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
+		{Status: 400, Code: "BAD_REQUEST"},        // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 	},
 	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops

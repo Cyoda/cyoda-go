@@ -14,7 +14,7 @@ func TestValidateRequestTimeoutMillis(t *testing.T) {
 	for _, tc := range []struct {
 		millis int64
 		wantOK bool
-	}{{1, true}, {60000, true}, {0, false}, {-5, false}, {math.MaxInt64 / int64(time.Millisecond) + 1, false}} {
+	}{{1, true}, {60000, true}, {0, false}, {-5, false}, {math.MaxInt64/int64(time.Millisecond) + 1, false}} {
 		err := ValidateRequestTimeoutMillis(tc.millis)
 		if tc.wantOK && err != nil {
 			t.Errorf("millis=%d: unexpected %v", tc.millis, err)

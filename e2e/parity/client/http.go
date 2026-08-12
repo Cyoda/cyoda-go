@@ -1453,8 +1453,8 @@ func (c *Client) DeleteEntitiesConditional(t *testing.T, name string, version in
 	var resp struct {
 		DeleteResult struct {
 			IDToError                map[string]string `json:"idToError"`
-			NumberOfEntitites        int                `json:"numberOfEntitites"`
-			NumberOfEntititesRemoved int                `json:"numberOfEntititesRemoved"`
+			NumberOfEntitites        int               `json:"numberOfEntitites"`
+			NumberOfEntititesRemoved int               `json:"numberOfEntititesRemoved"`
 		} `json:"deleteResult"`
 		IDs []string `json:"ids"`
 	}
