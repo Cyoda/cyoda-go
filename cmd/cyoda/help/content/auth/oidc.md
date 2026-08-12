@@ -132,7 +132,7 @@ curl -X POST https://cyoda.example.com/api/oauth/oidc/providers/reload \
   -H "Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
-Forces an immediate JWKS refresh for every active provider on the receiving node. In a multi-node cluster the reload is broadcast. Providers whose IdP is unreachable during the refresh keep serving their previously cached keys.
+Forces an immediate JWKS refresh for every active provider on the receiving node. In a multi-node cluster the reload is broadcast. A provider whose discovery fetch fails during the refresh keeps its previously cached keys (freshness remains subject to the standard JWKS cache TTL).
 
 ### Present an IdP-issued JWT
 

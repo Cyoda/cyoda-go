@@ -222,8 +222,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   **401** `unknown kid` until a process restart — including tokens of providers that
   were healthy before the call. The reload now carries surviving key sources across
   the rebuild and force-warms every loaded provider (on the receiving node and, in a
-  cluster, on every broadcast peer); a provider whose IdP is unreachable during the
-  refresh keeps serving its previously cached keys.
+  cluster, on every broadcast peer); invalidated providers are excluded — their
+  endpoints are explicitly distrusted. A provider whose discovery fetch fails
+  during the refresh keeps its previously cached keys, with freshness still
+  governed by the standard JWKS cache TTL (fail closed).
 
 - **A provider whose IdP was unreachable during the startup JWKS warm-up no longer
   stays keyless for the life of the process.** The warm-up was one-shot — if cyoda

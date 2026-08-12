@@ -322,7 +322,7 @@ func New(cfg Config) *App {
 		// whose IdP was unreachable at that moment (e.g. cyoda boots ahead of
 		// the IdP), so federated auth recovers without a restart.
 		pendingWarmJWKS = func() {
-			oidcRegistry.WarmJWKSAsync(systemCtx)
+			oidcRegistry.WarmJWKS(systemCtx)
 			oidcRegistry.StartWarmupRetryLoop(systemCtx)
 		}
 
