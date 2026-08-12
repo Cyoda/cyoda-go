@@ -3,6 +3,7 @@ package entity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -53,6 +55,47 @@ type blockingFactory struct {
 
 func (f *blockingFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
 	return f.entityStore, nil
+}
+
+// countingModelStoreFactory wraps a real spi.StoreFactory but counts every
+// ModelStore.Get call across the wrapped store's lifetime. CreateEntityCollection
+// calls modelStore.Get exactly once per item, BEFORE it ever begins a
+// transaction or touches the workflow engine — so this count is a proxy that
+// distinguishes "the chunk was never attempted" (loop-head check short-circuits
+// before CreateEntityCollection is even called — Get count does not advance)
+// from "the chunk was attempted and only failed once inside the engine's own,
+// separately-existing cascade-level D9 check" (Get count DOES advance, since
+// Get runs before that check). Every other accessor delegates unchanged.
+type countingModelStoreFactory struct {
+	spi.StoreFactory
+	mu   sync.Mutex
+	gets int
+}
+
+func (f *countingModelStoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
+	real, err := f.StoreFactory.ModelStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &countingModelStore{ModelStore: real, f: f}, nil
+}
+
+func (f *countingModelStoreFactory) getCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets
+}
+
+type countingModelStore struct {
+	spi.ModelStore
+	f *countingModelStoreFactory
+}
+
+func (s *countingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	s.f.mu.Lock()
+	s.f.gets++
+	s.f.mu.Unlock()
+	return s.ModelStore.Get(ctx, ref)
 }
 
 // recordingTxMgr wraps a real spi.TransactionManager, recording every
@@ -479,4 +522,271 @@ func mustTxMgr(t *testing.T, factory spi.StoreFactory) spi.TransactionManager {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	return txMgr
+}
+
+// --- Task 6: domain-loop cancellation checks (spec D9) ---
+
+// TestRunChunkedCreate_CtxExpiredBetweenChunks pins that runChunkedCreate's
+// chunk loop observes ctx.Err() generically at each iteration head, not only
+// via a failing store call. Chunk 0 legitimately commits while the client's
+// deadline is still live — the fake txMgr's Commit hook lets the pre-commit
+// check in txScope.Commit pass, then sleeps well past the deadline before
+// returning (the same "generous margin, then overshoot" pattern used by
+// TestCreate_CommitInterrupted_OverlapCase_Stays500Not408 above, so the test
+// never races a close wall-clock deadline). By the time the loop reaches
+// chunk 1's iteration head, the deadline has genuinely, naturally expired
+// (DeadlineExceeded, not a manual Canceled) — the check must catch it there,
+// BEFORE ever calling CreateEntityCollection for chunk 1, and route it
+// through the identical error-element path a genuine chunk failure takes
+// (D3): chunk 0 stays durable, chunk 1 surfaces as a TRANSACTION_TIMEOUT
+// error element, and chunk 2 is never attempted.
+func TestRunChunkedCreate_CtxExpiredBetweenChunks(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+	rtm := &recordingTxMgr{TransactionManager: realTxMgr}
+	countingFactory := &countingModelStoreFactory{StoreFactory: realFactory}
+
+	h, ctx := newReqTimeoutHandler(t, countingFactory, rtm)
+
+	millis := int64(200) // generous margin for chunk 0's pre-commit check to pass
+	opCtx, cancel := common.WithRequestTimeout(ctx, millis)
+	defer cancel()
+
+	commits := 0
+	rtm.onCommit = func(_ context.Context) {
+		commits++
+		if commits == 1 {
+			// Overshoots the 200ms deadline by a wide margin so it has
+			// definitely, naturally expired by the time this returns.
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	items := []CollectionItem{
+		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"A","age":1}`)},
+		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"B","age":2}`)},
+		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"C","age":3}`)},
+	}
+
+	results, firstChunkErr := h.runChunkedCreate(opCtx, items, 1)
+	if firstChunkErr != nil {
+		t.Fatalf("runChunkedCreate returned a request-level error (must not turn a post-first-chunk expiry into one): %v", firstChunkErr)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d entries, want 2 (chunk 0 success + chunk 1 error element); got %+v", len(results), results)
+	}
+	if results[0].Error != nil {
+		t.Fatalf("chunk 0 unexpectedly failed: %+v", results[0].Error)
+	}
+	if len(results[0].EntityIDs) != 1 {
+		t.Fatalf("chunk 0 EntityIDs = %v, want exactly 1 (chunk 0 must be durable)", results[0].EntityIDs)
+	}
+	if results[1].Error == nil {
+		t.Fatal("chunk 1 expected a TRANSACTION_TIMEOUT error element, got none")
+	}
+	if results[1].Error.Code != common.ErrCodeTransactionTimeout {
+		t.Fatalf("chunk 1 error code = %q, want %q", results[1].Error.Code, common.ErrCodeTransactionTimeout)
+	}
+	if results[1].Error.ChunkIndex != 1 {
+		t.Fatalf("chunk 1 error ChunkIndex = %d, want 1", results[1].Error.ChunkIndex)
+	}
+	if commits != 1 {
+		t.Fatalf("commits = %d, want exactly 1 (chunk 1/2 must never be attempted)", commits)
+	}
+	// The decisive assertion: modelStore.Get runs BEFORE CreateEntityCollection
+	// ever begins a transaction or touches the workflow engine, so exactly one
+	// Get means chunk 1 was never even entered — caught at the loop head,
+	// before any I/O — not merely failed inside CreateEntityCollection's own
+	// (separately-existing) engine-level cascade check.
+	if got := countingFactory.getCount(); got != 1 {
+		t.Fatalf("modelStore.Get called %d times, want exactly 1 — chunk 1 must be caught at the loop head, never entering CreateEntityCollection", got)
+	}
+}
+
+// TestCreateEntity_MemoryBackend_PreExpiredDeadline408 is a regression guard
+// on the real memory plugin store: memory has no cancellable syscall, so
+// nothing in its own read/write path would ever notice an already-expired
+// ctx on its own. The only thing standing between that and a silently
+// "successful" write past the client's requested deadline is the pre-commit
+// check in txScope.Commit (D2/D8). This drives that path end to end with the
+// real backend instead of a mock, waiting on the deadline's own Done signal
+// rather than a wall-clock sleep.
+func TestCreateEntity_MemoryBackend_PreExpiredDeadline408(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+	rtm := &recordingTxMgr{TransactionManager: realTxMgr}
+
+	h, ctx := newReqTimeoutHandler(t, realFactory, rtm)
+
+	opCtx, cancel := common.WithRequestTimeout(ctx, 1)
+	defer cancel()
+	<-opCtx.Done()
+
+	_, err := h.CreateEntity(opCtx, CreateEntityInput{
+		EntityName:   "Person",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         json.RawMessage(`{"name":"A","age":1}`),
+	})
+	if err == nil {
+		t.Fatal("expected an error for a pre-expired deadline, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error chain does not contain context.DeadlineExceeded: %v", err)
+	}
+
+	rtm.mu.Lock()
+	committed := rtm.committed
+	rtm.mu.Unlock()
+	if len(committed) != 0 {
+		t.Fatalf("commit ran despite the pre-expired deadline: %v", committed)
+	}
+}
+
+// cancelingEntityStore wraps a real spi.EntityStore; after its Nth Delete
+// call it invokes cancel() before returning, so the loop's next iteration
+// observes an already-cancelled ctx.
+type cancelingEntityStore struct {
+	spi.EntityStore
+	mu       sync.Mutex
+	deletes  int
+	cancel   context.CancelFunc
+	cancelAt int
+}
+
+func (s *cancelingEntityStore) Delete(ctx context.Context, id string) error {
+	err := s.EntityStore.Delete(ctx, id)
+	s.mu.Lock()
+	s.deletes++
+	n := s.deletes
+	s.mu.Unlock()
+	if n == s.cancelAt {
+		s.cancel()
+	}
+	return err
+}
+
+func (s *cancelingEntityStore) deleteCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deletes
+}
+
+// cancelingEntityFactory hands out the given cancelingEntityStore from
+// EntityStore(); every other accessor delegates to the wrapped factory.
+type cancelingEntityFactory struct {
+	spi.StoreFactory
+	store *cancelingEntityStore
+}
+
+func (f *cancelingEntityFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return f.store, nil
+}
+
+// searchStubEntityStore wraps a real spi.EntityStore and implements
+// spi.Searcher by returning a fixed result set, standing in for the search
+// service's normal query path (mirrors the package's searcherEntityStore
+// pattern in service_test.go, duplicated here since that one lives in
+// entity_test and this file needs a same-package handle on unexported types).
+type searchStubEntityStore struct {
+	spi.EntityStore
+	results []*spi.Entity
+}
+
+func (s *searchStubEntityStore) Search(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+	return s.results, nil
+}
+
+type searchStubEntityFactory struct {
+	spi.StoreFactory
+	store *searchStubEntityStore
+}
+
+func (f *searchStubEntityFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return f.store, nil
+}
+
+// TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed pins
+// the brief's explicit fail-closed requirement: on a ctx error inside the
+// per-id delete loop, the enclosing IIFE must fail with the error (so the
+// pending tx rolls back), NOT break out of the loop and let the existing
+// commit path run with whatever partial progress was made. Break-and-commit
+// would durably remove some matched entities while silently leaving others —
+// a partial delete masquerading as either full success or a clean no-op,
+// violating correctness-over-availability. This drives real Delete calls
+// against the real memory backend (buffered per tx, applied only on Commit)
+// so the assertion is "did the store actually still hold the goods after
+// rollback", not just "was the right error code returned".
+func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+
+	hCreate, ctx := newReqTimeoutHandler(t, realFactory, realTxMgr)
+
+	// Create 3 real, durable entities to match and (attempt to) delete.
+	ids := make([]string, 0, 3)
+	for _, age := range []int{1, 2, 3} {
+		res, err := hCreate.CreateEntity(ctx, CreateEntityInput{
+			EntityName:   "Person",
+			ModelVersion: "1",
+			Format:       "JSON",
+			Data:         json.RawMessage(fmt.Sprintf(`{"name":"P","age":%d}`, age)),
+		})
+		if err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+		ids = append(ids, res.EntityIDs[0])
+	}
+
+	realEntityStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	matched := make([]*spi.Entity, 0, len(ids))
+	for _, id := range ids {
+		e, err := realEntityStore.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", id, err)
+		}
+		matched = append(matched, e)
+	}
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Cancels ctx right after the FIRST delete lands in the tx buffer, so the
+	// loop's second iteration head sees an already-cancelled ctx before ever
+	// touching the second or third entity.
+	cancelingStore := &cancelingEntityStore{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
+	deleteFactory := &cancelingEntityFactory{StoreFactory: realFactory, store: cancelingStore}
+
+	searchStubStore := &searchStubEntityStore{EntityStore: realEntityStore, results: matched}
+	searchFactory := &searchStubEntityFactory{StoreFactory: realFactory, store: searchStubStore}
+	searchStore, err := realFactory.AsyncSearchStore(ctx)
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	searchSvc := search.NewSearchService(searchFactory, common.NewDefaultUUIDGenerator(), searchStore)
+
+	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), searchSvc)
+
+	cond := []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":0}`)
+	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", "1", cond, nil, true)
+	if delErr == nil {
+		t.Fatal("expected an error from the cancelled-mid-loop delete, got nil")
+	}
+
+	if got := cancelingStore.deleteCount(); got != 1 {
+		t.Fatalf("Delete called %d times, want exactly 1 (fail-closed must stop at the first cancellation observation, not attempt every matched id)", got)
+	}
+
+	// Decisive assertion: fail-closed means the tx never committed, so ALL
+	// three entities — including the one whose Delete call landed in the
+	// buffer before cancellation — must still be readable, not partially
+	// removed.
+	for _, id := range ids {
+		if _, err := realEntityStore.Get(ctx, id); err != nil {
+			t.Fatalf("entity %s missing after rollback (fail-closed was violated — a partial delete was committed): %v", id, err)
+		}
+	}
 }

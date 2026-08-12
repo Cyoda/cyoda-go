@@ -1027,6 +1027,14 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 			defer h.gate.Acquire(txID)()
 		}
 		for _, e := range matched {
+			// Generic cancellation check at the iteration head (spec D9) —
+			// fires on ANY ctx cancellation, not only our own feature
+			// deadline. Fails the IIFE (not break-and-commit) so the tx
+			// rolls back: a partial delete pass must not be committed as if
+			// it were the complete, requested set (fail closed).
+			if err := ctx.Err(); err != nil {
+				return classifyError(fmt.Errorf("operation aborted: %w", err))
+			}
 			id := e.Meta.ID
 			if verbose {
 				result.IDs = append(result.IDs, id)
@@ -1259,6 +1267,12 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	currentCtx, currentTxID := txCtx, txID
 
 	for i, item := range parsed {
+		// Generic cancellation check at the iteration head (spec D9) — fires
+		// on ANY ctx cancellation, not only our own feature deadline.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("operation aborted: %w", err)
+		}
+
 		// Computed on currentCtx (the current segment's tx-carrying
 		// context) rather than the pre-Begin outer ctx — for a segmenting
 		// cascade currentCtx advances to FinalCtx between items, and only
@@ -1807,6 +1821,12 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	currentCtx, currentTxID := txCtx, txID
 
 	for i, item := range parsed {
+		// Generic cancellation check at the iteration head (spec D9) — fires
+		// on ANY ctx cancellation, not only our own feature deadline.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("operation aborted: %w", err)
+		}
+
 		entityStore, err := h.factory.EntityStore(currentCtx)
 		if err != nil {
 			return nil, common.Internal("failed to access entity store", err)

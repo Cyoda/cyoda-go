@@ -718,7 +718,19 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 		if end > len(items) {
 			end = len(items)
 		}
-		result, err := h.CreateEntityCollection(ctx, items[start:end])
+
+		// Generic cancellation check at the iteration head (spec D9) — fires
+		// on ANY ctx cancellation, not only our own feature deadline. Routed
+		// through the identical error-element path a genuine chunk failure
+		// takes (D3): a later-chunk expiry never becomes a request-level
+		// error, it marks chunkIndex and stops without attempting the chunk.
+		var result *EntityTransactionResult
+		var err error
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("operation aborted: %w", ctxErr)
+		} else {
+			result, err = h.CreateEntityCollection(ctx, items[start:end])
+		}
 		if err != nil {
 			var appErr *common.AppError
 			if tErr := common.ClassifyRequestTimeout(ctx, err, common.ErrCodeTransactionTimeout); tErr != nil {
@@ -898,7 +910,16 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		if end > len(items) {
 			end = len(items)
 		}
-		result, err := h.UpdateEntityCollection(opCtx, items[start:end])
+
+		// Generic cancellation check at the iteration head (spec D9) — see
+		// runChunkedCreate's identical comment; same D3 routing applies here.
+		var result *UpdateCollectionResult
+		var err error
+		if ctxErr := opCtx.Err(); ctxErr != nil {
+			err = fmt.Errorf("operation aborted: %w", ctxErr)
+		} else {
+			result, err = h.UpdateEntityCollection(opCtx, items[start:end])
+		}
 		if err != nil {
 			var appErr *common.AppError
 			if tErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); tErr != nil {
