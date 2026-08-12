@@ -88,7 +88,7 @@ func (r *Registry) handleBroadcast(payload []byte) {
 		}))
 	case "reload_all":
 		r.singleflight.Dispatch("_reload_all", r.safeDispatch(func() {
-			_ = r.ReloadAll(context.Background())
+			_ = r.ReloadAllAndWarm(context.Background())
 		}))
 	default:
 		r.logger.Debug("oidc broadcast: unknown op", "pkg", "oidc", "op", env.Op)

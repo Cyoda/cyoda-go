@@ -456,6 +456,13 @@ func (r *Registry) EvictKidEntry(kid string, ref providerRef) {
 // ReloadAll rebuilds the in-memory provider map from KV (D18). The new maps
 // are built off-lock; the swap takes the write lock so no partial-rebuild
 // state is ever visible to concurrent readers.
+//
+// Key sources survive the swap: every installed source whose (tenant, uri)
+// coordinate is still present in the fresh store snapshot is carried over,
+// so a reload is never a cache flush — tokens verified by a warm provider
+// keep verifying even if no warm-up follows or the IdP is unreachable.
+// Sources whose provider vanished from the store are dropped, and the
+// kidIndex is rebuilt lazily by the ResolveKey cold path.
 func (r *Registry) ReloadAll(ctx context.Context) error {
 	providers, err := r.store.LoadAll(ctx)
 	if err != nil {
@@ -472,15 +479,35 @@ func (r *Registry) ReloadAll(ctx context.Context) error {
 			newSrc[tenant] = map[string]*providerSource{}
 		}
 		newProv[tenant][p.WellKnownConfigURI] = p
-		// Sources are populated by Phase-2 warmup / individual reloadOne calls.
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for tenant, byURI := range r.sources {
+		for uri, src := range byURI {
+			if _, still := newProv[tenant][uri]; still {
+				newSrc[tenant][uri] = src
+			}
+		}
+	}
 	r.providers = newProv
 	r.sources = newSrc
 	r.kidIndex = map[string][]providerRef{}
 	r.metrics.SetRegistryProviders(len(providers))
+	return nil
+}
+
+// ReloadAllAndWarm is the force-warm reload used by the reload endpoint and
+// the cluster reload_all broadcast: rebuild from KV, then synchronously
+// re-fetch discovery + JWKS for every loaded provider. Per-provider warm-up
+// failures are non-fatal (WARN-logged by reloadOne); the carried-over source
+// keeps serving in that case. Startup phase 1 (LoadProvidersFromKV) must NOT
+// use this — the listener-bind ordering requires warm-up to stay async there.
+func (r *Registry) ReloadAllAndWarm(ctx context.Context) error {
+	if err := r.ReloadAll(ctx); err != nil {
+		return err
+	}
+	r.WarmJWKSAsync(ctx)
 	return nil
 }
 
