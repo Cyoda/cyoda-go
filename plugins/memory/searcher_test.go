@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -611,5 +612,117 @@ func TestMemorySearch_TxOverlayOverLimitFails(t *testing.T) {
 	})
 	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
 		t.Fatalf("2 committed + 1 buffered over limit 2: got err %v, want ErrSearchResultLimitExceeded", err)
+	}
+}
+
+// expiredCtx returns a context derived from parent that is already past its
+// deadline (context.WithTimeout(parent, 0), waited on Done()). Used to prove
+// the memory backend's real search path (spi.Searcher) — and the GetAll scan
+// it and other consumers share — observes ctx cancellation instead of running
+// an already-expired request to completion.
+func expiredCtx(t *testing.T, parent context.Context) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 0)
+	t.Cleanup(cancel)
+	<-ctx.Done()
+	return ctx
+}
+
+// TestSearch_PreExpiredCtxAborts: a pre-expired ctx must abort the non-tx
+// scan on both entry points that walk the committed store — spi.Searcher's
+// Search and EntityStore.GetAll — rather than returning a full result set
+// computed past the deadline. This is spec D5: the memory plugin IS
+// spi.Searcher, so this is the only real search path on this backend.
+func TestSearch_PreExpiredCtxAborts(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	for i := 0; i < 10; i++ {
+		id := "e-" + string(rune('0'+i))
+		store.Save(ctx, mkEntity(id, "ACTIVE", `{"n": 1}`, modelRef))
+	}
+
+	deadCtx := expiredCtx(t, ctx)
+
+	got, err := searcher.Search(deadCtx, spi.Filter{}, spi.SearchOptions{
+		ModelName: "Order", ModelVersion: "1",
+	})
+	if err == nil {
+		t.Fatalf("Search with pre-expired ctx: expected error, got %d results", len(got))
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Search with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Search with pre-expired ctx: got %d results, want 0", len(got))
+	}
+
+	all, err := store.GetAll(deadCtx, modelRef)
+	if err == nil {
+		t.Fatalf("GetAll with pre-expired ctx: expected error, got %d results", len(all))
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("GetAll with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
+	}
+	if len(all) != 0 {
+		t.Errorf("GetAll with pre-expired ctx: got %d results, want 0", len(all))
+	}
+}
+
+// TestSearch_PreExpiredCtxAborts_InTx: the read-your-own-writes overlay path
+// (in-tx, no PointInTime) walks the committed snapshot and the tx buffer via
+// the same amortized-check loops. A pre-expired ctx presented to an
+// otherwise-live transaction must abort Search and GetAll the same way the
+// non-tx path does — the deadline belongs to the request, not the
+// transaction.
+func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	for i := 0; i < 10; i++ {
+		id := "e-" + string(rune('0'+i))
+		store.Save(ctx, mkEntity(id, "ACTIVE", `{"n": 1}`, modelRef))
+	}
+
+	_, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	store.Save(txCtx, mkEntity("e-buf", "ACTIVE", `{"n": 99}`, modelRef))
+
+	tx := spi.GetTransaction(txCtx)
+	deadTxCtx := spi.WithTransaction(expiredCtx(t, ctx), tx)
+
+	got, err := searcher.Search(deadTxCtx, spi.Filter{}, spi.SearchOptions{
+		ModelName: "Order", ModelVersion: "1",
+	})
+	if err == nil {
+		t.Fatalf("in-tx Search with pre-expired ctx: expected error, got %d results", len(got))
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("in-tx Search with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("in-tx Search with pre-expired ctx: got %d results, want 0", len(got))
+	}
+
+	all, err := store.GetAll(deadTxCtx, modelRef)
+	if err == nil {
+		t.Fatalf("in-tx GetAll with pre-expired ctx: expected error, got %d results", len(all))
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("in-tx GetAll with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
+	}
+	if len(all) != 0 {
+		t.Errorf("in-tx GetAll with pre-expired ctx: got %d results, want 0", len(all))
 	}
 }
