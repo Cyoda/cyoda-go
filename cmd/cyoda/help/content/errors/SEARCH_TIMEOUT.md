@@ -4,8 +4,7 @@ title: "SEARCH_TIMEOUT — search timeout expired before results collected"
 stability: stable
 see_also:
   - errors
-  - errors.TRANSACTION_EXPIRED
-  - crud
+  - errors.SEARCH_SHARD_TIMEOUT
 ---
 
 # errors.SEARCH_TIMEOUT
@@ -16,7 +15,7 @@ SEARCH_TIMEOUT — the client-supplied `timeoutMillis` expired before the search
 
 ## SYNOPSIS
 
-HTTP status: `408`. Retryable: `yes`.
+HTTP: `408` `Request Timeout`. Retryable: `yes`.
 
 ## DESCRIPTION
 
@@ -25,5 +24,4 @@ Fires when the client-supplied `timeoutMillis` elapses before the search result 
 ## SEE ALSO
 
 - errors
-- errors.TRANSACTION_EXPIRED
-- crud
+- errors.SEARCH_SHARD_TIMEOUT

@@ -16,7 +16,7 @@ TRANSACTION_TIMEOUT — the client-supplied `transactionTimeoutMillis` expired b
 
 ## SYNOPSIS
 
-HTTP status: `408`. Retryable: `yes`.
+HTTP: `408` `Request Timeout`. Retryable: `yes`.
 
 ## DESCRIPTION
 
