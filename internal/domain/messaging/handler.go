@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,26 @@ func New(factory spi.StoreFactory, uuids spi.UUIDGenerator) *Handler {
 // NewMessage creates and stores a new edge message.
 func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject string, params genapi.NewMessageParams) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
+
+	// Messaging has no transaction and no joined path of its own, but the
+	// txjoin middleware is global — a routed compute-node callback can still
+	// present a joined tx on ctx here, so the reject-on-joined rule (spec D7)
+	// applies uniformly even though this handler never begins a tx.
+	opCtx := r.Context()
+	if params.TransactionTimeoutMillis != nil {
+		if appErr := common.ValidateRequestTimeoutMillis(*params.TransactionTimeoutMillis); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		if spi.GetTransaction(opCtx) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionTimeoutMillis is not supported on a request that joins an open transaction"))
+			return
+		}
+		var cancel context.CancelFunc
+		opCtx, cancel = common.WithRequestTimeout(opCtx, *params.TransactionTimeoutMillis)
+		defer cancel()
+	}
 
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -94,14 +115,35 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 	id := uuid.UUID(h.uuids.NewTimeUUID())
 	txID := uuid.UUID(h.uuids.NewTimeUUID())
 
-	store, err := h.factory.MessageStore(r.Context())
+	store, err := h.factory.MessageStore(opCtx)
 	if err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
-	if err := store.Save(r.Context(), id.String(), header, metaData, strings.NewReader(payloadString)); err != nil {
-		common.WriteError(w, r, common.Internal("failed to save message", err))
+	// Spec D2: the Save is this path's commit boundary — pre-check then shield,
+	// so a 408 can only mean the save never began (save-wins). The pre-check's
+	// ClassifyRequestTimeout returns nil for a bare context.Canceled (only
+	// DeadlineExceeded qualifies for 408); that case falls back to a 500 —
+	// the client disconnecting is not "nothing was committed by design", it's
+	// an aborted request.
+	if err := opCtx.Err(); err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("request cancelled before save", err))
+		return
+	}
+	saveErr := common.ShieldedCommit(opCtx, func(saveCtx context.Context) error {
+		return store.Save(saveCtx, id.String(), header, metaData, strings.NewReader(payloadString))
+	})
+	if saveErr != nil {
+		common.WriteError(w, r, common.Internal("failed to save message", saveErr))
 		return
 	}
 
