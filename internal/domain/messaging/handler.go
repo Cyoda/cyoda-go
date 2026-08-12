@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -291,22 +292,59 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 		}
 	}
 
+	// Messaging has no transaction and no joined path of its own, but the
+	// txjoin middleware is global — a routed compute-node callback can still
+	// present a joined tx on ctx here, so the reject-on-joined rule (spec D7)
+	// applies uniformly even though this handler never begins a tx.
+	batchSize := 0
+	if params.TransactionSize != nil {
+		if *params.TransactionSize < 1 {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionSize must be a positive integer"))
+			return
+		}
+		if spi.GetTransaction(r.Context()) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionSize is not supported on a request that joins an open transaction"))
+			return
+		}
+		batchSize = int(*params.TransactionSize)
+	}
+
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get message store", err))
 		return
 	}
 
-	if err := store.DeleteBatch(r.Context(), ids); err != nil {
-		common.WriteError(w, r, common.Internal("failed to delete messages", err))
+	if batchSize == 0 {
+		if err := store.DeleteBatch(r.Context(), ids); err != nil {
+			common.WriteError(w, r, common.Internal("failed to delete messages", err))
+			return
+		}
+
+		resp := []map[string]any{
+			{
+				"entityIds": ids,
+				"success":   true,
+			},
+		}
+		common.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	resp := []map[string]any{
-		{
-			"entityIds": ids,
-			"success":   true,
-		},
+	// Spec D4: one store call per chunk of <=batchSize ids, one response
+	// element per chunk; a failed chunk reports success:false but does not
+	// stop later chunks from being attempted.
+	resp := make([]map[string]any, 0, (len(ids)+batchSize-1)/batchSize)
+	for start := 0; start < len(ids); start += batchSize {
+		end := min(start+batchSize, len(ids))
+		chunk := ids[start:end]
+		err := store.DeleteBatch(r.Context(), chunk)
+		if err != nil {
+			slog.Warn("message delete batch failed", "pkg", "messaging", "batchStart", start, "err", err)
+		}
+		resp = append(resp, map[string]any{"entityIds": chunk, "success": err == nil})
 	}
 	common.WriteJSON(w, http.StatusOK, resp)
 }
