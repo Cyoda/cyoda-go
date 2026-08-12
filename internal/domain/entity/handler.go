@@ -512,6 +512,28 @@ func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
+	// Resolve transactionSize BEFORE reading the body (spec D4/D7): a
+	// validation failure must not read (let alone act on) the request body.
+	// A joined request (spi.GetTransaction(ctx) != nil — how a routed
+	// compute-node callback presents at param-resolution time) is rejected
+	// rather than silently honoring or ignoring transactionSize: honoring it
+	// would let a participant unilaterally fragment a transaction the owner
+	// still controls.
+	batchSize := 0
+	if params.TransactionSize != nil {
+		if *params.TransactionSize < 1 {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionSize must be a positive integer"))
+			return
+		}
+		if spi.GetTransaction(r.Context()) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionSize is not supported on a request that joins an open transaction"))
+			return
+		}
+		batchSize = int(*params.TransactionSize)
+	}
+
 	condBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
@@ -519,7 +541,7 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 	}
 
 	verbose := params.Verbose != nil && *params.Verbose
-	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), condBody, params.PointInTime, verbose)
+	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), condBody, params.PointInTime, verbose, batchSize)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCondition) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()))

@@ -935,7 +935,16 @@ func perIDDeleteError(entityID string, err error) string {
 // selection. TrackingRead is left default-false: the deleted ids are already
 // conflict-protected via the write-set, so the selection need not also record
 // a read-set — that would widen the conflict footprint beyond what's needed.
-func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
+//
+// batchSize<=0 keeps the single-tx behaviour above byte-for-byte. batchSize>0
+// switches to deleteBatched (spec D4): a read-only resolution tx selects the
+// matched ids and their CURRENT versions, then successive owned transactions
+// of ≤batchSize ids each re-check the version before deleting — so a
+// concurrent modification after resolution excludes that id rather than
+// silently deleting a version the caller never saw. The handler rejects
+// batchSize>0 on a joined request (spec D7), so deleteBatched never has to
+// reconcile "batched" with "participating in someone else's tx".
+func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
 	ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 
 	// Parse the condition (if any) BEFORE opening a tx — a parse error is a
@@ -947,6 +956,10 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 		}
 		cond = c
+	}
+
+	if batchSize > 0 {
+		return h.deleteBatched(ctx, ref, cond, pointInTime, verbose, batchSize)
 	}
 
 	// Delete-all fast path preserves existing behaviour + response shape.
@@ -1060,6 +1073,230 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	}
 
 	return result, nil
+}
+
+// batchTarget names one matched entity plus the CURRENT version recorded
+// during deleteBatched's resolution phase. The batch phase re-reads this id
+// under a fresh transaction and deletes it only if its version still equals
+// baselineVersion — a mismatch means something else modified the entity
+// between resolution and this batch, and the delete is skipped rather than
+// destroying a version the caller never saw (spec D4).
+type batchTarget struct {
+	id              string
+	baselineVersion int64
+}
+
+// deleteBatched implements spec D4: resolution tx reads matched ids + their
+// CURRENT versions (condition evaluated as-at pointInTime; guard baseline is
+// the current row), then successive owned transactions of ≤batchSize ids
+// re-read each version and delete only unchanged ids. A failed batch commit
+// maps its ids into IDToError; later batches still run. Joined requests never
+// reach here (handler rejects the param).
+func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
+	// --- Resolution phase: one read-only tx selects the matched ids and
+	// their current versions, then commits before any batch begins. ---
+	scope, err := h.beginScope(ctx)
+	if err != nil {
+		return nil, classifyBeginErr(err)
+	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	if !owned {
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
+	}
+
+	modelStore, err := h.factory.ModelStore(txCtx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if _, err := modelStore.Get(txCtx, ref); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
+		}
+		return nil, common.Internal("failed to load model", err)
+	}
+
+	entityStore, err := h.factory.EntityStore(txCtx)
+	if err != nil {
+		return nil, common.Internal("failed to access entity store", err)
+	}
+
+	// Select the matched set. An empty condition still batches (unlike the
+	// single-tx path's DeleteAll fast path) so a caller who asked for
+	// transactionSize on a whole-model wipe gets version-guarded, chunked
+	// deletes rather than one unbounded DeleteAll.
+	var matched []*spi.Entity
+	if cond == nil {
+		matched, err = entityStore.GetAll(txCtx, ref)
+		if err != nil {
+			return nil, common.Internal("failed to get entities", err)
+		}
+	} else {
+		matched, err = h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
+		if err != nil {
+			// A classified 4xx from the selection search is the caller's
+			// error, not a server fault — mirrors the single-tx path.
+			var appErr *common.AppError
+			if errors.As(err, &appErr) {
+				return nil, appErr
+			}
+			return nil, common.Internal("failed to select entities for delete", err)
+		}
+	}
+
+	result := &DeleteResult{
+		EntityModelID: deterministicModelID(ref).String(),
+		MatchedCount:  len(matched),
+		IDToError:     map[string]string{},
+		IDs:           []string{},
+	}
+
+	targets := make([]batchTarget, 0, len(matched))
+	for _, e := range matched {
+		id := e.Meta.ID
+		if verbose {
+			result.IDs = append(result.IDs, id)
+		}
+
+		// pointInTime==nil: the matched envelope's version IS the current
+		// version (Search with no pointInTime reads the live row). A
+		// pointInTime search can match a HISTORICAL version, so the guard
+		// baseline must instead be read fresh — otherwise a since-superseded
+		// snapshot version would never equal any future current version and
+		// every matched id would spuriously fail the guard.
+		baseline := e.Meta.Version
+		if pointInTime != nil {
+			cur, gErr := entityStore.Get(txCtx, id)
+			if gErr != nil {
+				// A per-id read failure (including ErrNotFound — the entity
+				// was already removed between the as-at match and now) is
+				// this id's problem alone, not the whole request's; the
+				// resolution pass continues with the remaining ids.
+				result.IDToError[id] = perIDDeleteError(id, gErr)
+				continue
+			}
+			baseline = cur.Meta.Version
+		}
+		targets = append(targets, batchTarget{id: id, baselineVersion: baseline})
+	}
+
+	if err := scope.Commit(); err != nil {
+		if errors.Is(err, spi.ErrConflict) {
+			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+		}
+		return nil, common.Internal("failed to commit transaction", err)
+	}
+
+	// --- Batch phase: each chunk runs in its own owned transaction. ---
+	for start := 0; start < len(targets); start += batchSize {
+		// Generic cancellation check between batches (spec D9) — fires on
+		// ANY ctx cancellation, not only our own feature deadline. Earlier
+		// batches already committed and stay durable (fail-closed applies to
+		// the RESPONSE, not to work already done); this only stops further
+		// batches from starting.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("delete aborted between batches: %w", ctxErr)
+		}
+		end := min(start+batchSize, len(targets))
+		if err := h.deleteOneBatch(ctx, targets[start:end], result); err != nil {
+			// Only a begin failure reaches here — a batch's per-id or commit
+			// failures are folded into result.IDToError inside deleteOneBatch
+			// so later batches still run.
+			return nil, err
+		}
+	}
+
+	return result, nil
+}
+
+// deleteOneBatch deletes one chunk of ≤batchSize targets under its own owned
+// transaction. Every target's CURRENT version is re-read and compared
+// against the baseline captured during deleteBatched's resolution phase
+// (spec D4's version guard); a mismatch, a NotFound, or a Delete failure is
+// folded into result.IDToError for that one id and the chunk continues. Only
+// a failure to begin this chunk's transaction is returned to the caller —
+// deleteBatched treats that as fatal for the whole request, since it can't
+// know whether later chunks would fare any better. A failed commit (e.g. a
+// conflict from the resolution-baseline version check racing a concurrent
+// writer at the storage layer) maps every id this chunk marked
+// pending-removed into IDToError instead of incrementing RemovedCount — the
+// chunk's buffered deletes never became durable, so reporting them as
+// removed would lie about the mutation's outcome.
+func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, result *DeleteResult) error {
+	scope, err := h.beginScope(ctx)
+	if err != nil {
+		return classifyBeginErr(err)
+	}
+	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
+	// see txScope's type comment for why the ordering is pinned.
+	defer scope.Release()
+
+	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	if !owned {
+		var releaseGate func()
+		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
+		defer releaseGate()
+	}
+
+	entityStore, err := h.factory.EntityStore(txCtx)
+	if err != nil {
+		return common.Internal("failed to access entity store", err)
+	}
+
+	pendingRemoved := make([]string, 0, len(chunk))
+
+	// Finalize: gate the per-id deletes + commit against a concurrent joined
+	// callback's buffer write (mirror the single-tx path / DeleteAllEntities).
+	if appErr := func() *common.AppError {
+		if owned {
+			defer h.gate.Acquire(txID)()
+		}
+		for _, t := range chunk {
+			// Generic cancellation check at the iteration head (spec D9) —
+			// fails the gated IIFE closed so this chunk's tx rolls back
+			// rather than committing a partial pass through the chunk.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return classifyError(fmt.Errorf("operation aborted: %w", ctxErr))
+			}
+
+			cur, gErr := entityStore.Get(txCtx, t.id)
+			if gErr != nil {
+				result.IDToError[t.id] = perIDDeleteError(t.id, gErr)
+				continue
+			}
+			if cur.Meta.Version != t.baselineVersion {
+				result.IDToError[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
+					common.ErrCodeEntityModified, t.id)
+				continue
+			}
+			if dErr := entityStore.Delete(txCtx, t.id); dErr != nil {
+				result.IDToError[t.id] = perIDDeleteError(t.id, dErr)
+				continue
+			}
+			pendingRemoved = append(pendingRemoved, t.id)
+		}
+		if err := scope.Commit(); err != nil {
+			if errors.Is(err, spi.ErrConflict) {
+				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+			}
+			return common.Internal("failed to commit transaction", err)
+		}
+		return nil
+	}(); appErr != nil {
+		for _, id := range pendingRemoved {
+			result.IDToError[id] = appErr.Message
+		}
+		return nil
+	}
+
+	result.RemovedCount += len(pendingRemoved)
+	return nil
 }
 
 // ListEntities retrieves all entities for a model with pagination.

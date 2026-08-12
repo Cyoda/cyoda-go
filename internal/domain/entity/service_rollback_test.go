@@ -1031,7 +1031,7 @@ func driveDeleteAllFailure(_ *testing.T, hn *rollbackHarness) error {
 
 func driveDeleteConditionalFailure(_ *testing.T, hn *rollbackHarness) error {
 	_, err := hn.h.DeleteEntitiesConditional(hn.ctx, rollbackModel.EntityName, rollbackModel.ModelVersion,
-		rollbackCondition, nil, false)
+		rollbackCondition, nil, false, 0)
 	return err
 }
 

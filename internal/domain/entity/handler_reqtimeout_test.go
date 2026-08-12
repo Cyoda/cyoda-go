@@ -790,7 +790,7 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), searchSvc)
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":0}`)
-	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", "1", cond, nil, true)
+	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", "1", cond, nil, true, 0)
 	if delErr == nil {
 		t.Fatal("expected an error from the cancelled-mid-loop delete, got nil")
 	}
