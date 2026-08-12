@@ -352,3 +352,48 @@ func TestHTTPProxy_SSRFGuard_AllowsLoopbackWhenPermitted(t *testing.T) {
 		t.Fatalf("expected 'reached', got %q", body)
 	}
 }
+
+// TestProxy_PreservesQueryString is a characterization test pinning
+// load-bearing behavior for spec D7: transaction-control query params
+// (e.g. transactionTimeoutMillis, transactionSize) must reach the executing
+// peer verbatim so that peer's own validation can reject them with 400. If
+// the proxy's director ever started rewriting or dropping the query string,
+// that rejection would silently stop happening. It should pass immediately —
+// that is expected and acceptable for a characterization test guarding a
+// contract, not driving new behavior.
+func TestProxy_PreservesQueryString(t *testing.T) {
+	var gotRawQuery string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "remote")
+	}))
+	defer remote.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-query-string", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	handler := mw(localHandler())
+
+	const rawQuery = "transactionTimeoutMillis=5000&transactionSize=2&x=%20y"
+	req := httptest.NewRequest(http.MethodGet, "/api/test?"+rawQuery, nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if gotRawQuery != rawQuery {
+		t.Fatalf("query string not preserved across the forwarded hop: got %q, want %q", gotRawQuery, rawQuery)
+	}
+}
