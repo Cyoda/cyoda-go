@@ -7266,6 +7266,16 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: timeoutMillis
+          in: query
+          description: |
+            Maximum time in milliseconds to wait for the search to complete.
+            When exceeded, the request fails with 408 SEARCH_TIMEOUT and no
+            partial results are returned. Absent means no server-side timeout.
+          required: false
+          schema:
+            type: integer
+            format: int64
       requestBody:
         content:
           application/json:
@@ -7292,6 +7302,12 @@ paths:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: Entity model not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        "408":
+          description: Search timeout exceeded — the client-supplied timeoutMillis elapsed
           content:
             application/problem+json:
               schema:

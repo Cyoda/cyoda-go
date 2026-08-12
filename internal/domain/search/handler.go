@@ -2,6 +2,7 @@ package search
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -138,8 +139,39 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
 
-	results, err := h.searchSvc.Search(r.Context(), modelRef, cond, opts)
+	// timeoutMillis (spec D5): validate, reject on a joined (tx-token'd)
+	// request — same reasoning as resolveRequestTimeout in
+	// internal/domain/entity/handler.go: a routed compute-node callback
+	// must not be able to unilaterally impose its own deadline on a
+	// transaction it doesn't own — then attach the feature-owned deadline.
+	// A nil TimeoutMillis is a no-op, so a caller that never sends the
+	// param observes zero behavior change.
+	opCtx := r.Context()
+	if params.TimeoutMillis != nil {
+		if appErr := common.ValidateRequestTimeoutMillis(*params.TimeoutMillis); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		if spi.GetTransaction(opCtx) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"timeoutMillis is not supported on a request that joins an open transaction"))
+			return
+		}
+		var cancel context.CancelFunc
+		opCtx, cancel = common.WithRequestTimeout(opCtx, *params.TimeoutMillis)
+		defer cancel()
+	}
+
+	results, err := h.searchSvc.Search(opCtx, modelRef, cond, opts)
 	if err != nil {
+		// Classify an expired client-requested deadline ahead of the
+		// general error classifier (spec D2/D8): 408 SEARCH_TIMEOUT only
+		// when the marker is ours, the chain shows DeadlineExceeded, and
+		// ctx itself is currently expired — see common.ClassifyRequestTimeout.
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeSearchTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		// Pre-execution validation (issue #77) returns a classified
 		// *common.AppError directly; forward it so the 4xx surfaces
 		// instead of being shrouded as a 5xx ticket.

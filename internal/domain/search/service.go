@@ -402,7 +402,22 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			return nil, fmt.Errorf("predicate match failed: %w", prepErr)
 		}
 
-		for _, e := range entities {
+		// Amortized cancellation check (spec D9): a client-requested
+		// timeoutMillis must abort this scan rather than let it run to
+		// completion and return results computed past the deadline. This
+		// branch is reached only when the store does not implement
+		// spi.Searcher — all three OSS backends do, so it is a rare edge
+		// (translate-failure or a non-Searcher store) — but a match set can
+		// still be large, so the check runs every 1024 entities (i&1023==0,
+		// true at i==0 too) rather than on every iteration, keeping the
+		// per-entity cost off the hot path while still bounding how much
+		// stale work a pre-expired or since-expired ctx can produce.
+		for i, e := range entities {
+			if i&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, fmt.Errorf("search aborted: %w", err)
+				}
+			}
 			if prepared.Match(e.Data, e.Meta) {
 				matches = append(matches, e)
 			}

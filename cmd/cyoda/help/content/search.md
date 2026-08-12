@@ -164,6 +164,7 @@ When used as a criterion, the function is dispatched as `EntityCriteriaCalculati
   see `cyoda help crud` ("Point-in-time semantics").
 - `limit` (query, optional): string-encoded integer, minimum 1, maximum 10000; default 1000
 - `trackingRead` (query, optional): boolean, default `false`. Only meaningful inside an active transaction (see `crud` topic and `docs/CONSISTENCY.md` §3c for the transactional read-set): when `true`, the entities this search returns are recorded into the transaction's read-set, so a concurrent commit touching any of them aborts with `409 Conflict` at commit time. When `false` (default), the search is a plain snapshot read that records nothing — cheap, but it does not protect the returned rows from concurrent writes, and neither setting protects against phantoms (a new entity matching the predicate after the snapshot was taken). Ignored outside a transaction.
+- `timeoutMillis` (query, optional): int64, no default — when absent, the search has no server-side deadline. When present, the search is aborted once it elapses and the request fails `408 errors.SEARCH_TIMEOUT` with no partial results returned. Rejected with `400 BAD_REQUEST` on a non-positive value or on a request that joins an open transaction (a routed compute-node callback cannot impose its own deadline on a transaction it does not own).
 
 Request body: `Condition` JSON document.
 
@@ -320,6 +321,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced on every direct-search code path (Searcher pushdown and in-memory fallback alike). Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
+- `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. a string/pattern operator or a non-timestamp value on a temporal meta field (`creationDate`/`lastUpdateTime`)

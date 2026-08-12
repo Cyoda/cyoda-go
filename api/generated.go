@@ -3776,6 +3776,11 @@ type SearchEntitiesParams struct {
 
 	// TrackingRead When true and the request runs inside an active transaction, the entities this search returns are recorded into the transaction's read-set so commit-time first-committer-wins validates them. Defaults to false (a plain snapshot read that records nothing). Ignored outside a transaction.
 	TrackingRead *bool `form:"trackingRead,omitempty" json:"trackingRead,omitempty"`
+
+	// TimeoutMillis Maximum time in milliseconds to wait for the search to complete.
+	// When exceeded, the request fails with 408 SEARCH_TIMEOUT and no
+	// partial results are returned. Absent means no server-side timeout.
+	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
 }
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
@@ -8340,6 +8345,19 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "trackingRead"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "trackingRead", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "timeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMillis", r.URL.Query(), &params.TimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMillis", Err: err})
 		}
 		return
 	}
