@@ -106,6 +106,7 @@ func (s *countingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.Mo
 type recordingTxMgr struct {
 	spi.TransactionManager
 	mu         sync.Mutex
+	begins     int
 	committed  []string
 	rolledBack []string
 	onCommit   func(ctx context.Context)
@@ -115,6 +116,24 @@ type recordingTxMgr struct {
 	// without needing to reproduce the real backend condition that would
 	// normally produce it.
 	commitErr error
+}
+
+// Begin counts every Begin call before delegating. Lets a test distinguish
+// "a downstream call was never even entered" (begins count doesn't advance)
+// from "it was entered and only failed after opening its own transaction" —
+// the same distinction the audit-store-accessor count draws for engine.Execute
+// below, applied to a call whose own entry point is Begin rather than Execute.
+func (m *recordingTxMgr) Begin(ctx context.Context) (string, context.Context, error) {
+	m.mu.Lock()
+	m.begins++
+	m.mu.Unlock()
+	return m.TransactionManager.Begin(ctx)
+}
+
+func (m *recordingTxMgr) beginCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.begins
 }
 
 func (m *recordingTxMgr) Commit(ctx context.Context, txID string) error {
@@ -787,6 +806,380 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	for _, id := range ids {
 		if _, err := realEntityStore.Get(ctx, id); err != nil {
 			t.Fatalf("entity %s missing after rollback (fail-closed was violated — a partial delete was committed): %v", id, err)
+		}
+	}
+}
+
+// --- Fix-up: pin the per-item/per-chunk checks that runChunkedCreate's and
+// DeleteEntitiesConditional's tests above never actually drove, per review
+// finding (three of the five D9 sites had correct code but no test that
+// failed without it: CreateEntityCollection's and UpdateEntityCollection's
+// own per-item loop checks, and UpdateCollection handler's chunk loop). ---
+
+// fixedEntityStoreFactory wraps a real spi.StoreFactory but always hands out
+// the given store from EntityStore(); every other accessor delegates.
+// Generic over the store type (unlike blockingFactory/cancelingEntityFactory
+// above, which are each pinned to one concrete wrapper) so it is reusable
+// across the hook shapes the tests below need.
+type fixedEntityStoreFactory struct {
+	spi.StoreFactory
+	store spi.EntityStore
+}
+
+func (f *fixedEntityStoreFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return f.store, nil
+}
+
+// cancelAfterNSaves wraps a real spi.EntityStore; after its Nth Save call it
+// invokes cancel() before returning, so the caller's NEXT loop iteration
+// observes an already-cancelled ctx. Records the entity ID of every
+// successful Save so a test can verify none of them survive a rollback.
+type cancelAfterNSaves struct {
+	spi.EntityStore
+	mu       sync.Mutex
+	saves    int
+	savedIDs []string
+	cancel   context.CancelFunc
+	cancelAt int
+}
+
+func (s *cancelAfterNSaves) Save(ctx context.Context, e *spi.Entity) (int64, error) {
+	v, err := s.EntityStore.Save(ctx, e)
+	s.mu.Lock()
+	s.saves++
+	n := s.saves
+	if err == nil {
+		s.savedIDs = append(s.savedIDs, e.Meta.ID)
+	}
+	s.mu.Unlock()
+	if n == s.cancelAt {
+		s.cancel()
+	}
+	return v, err
+}
+
+func (s *cancelAfterNSaves) saveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saves
+}
+
+// instrumentedEngineFactory wraps a real spi.StoreFactory, serving a fixed
+// EntityStore and counting every StateMachineAuditStore accessor call.
+//
+// This is the piece that makes the Create/Update per-item tests below
+// actually decisive. Both CreateEntityCollection and UpdateEntityCollection
+// call the REAL workflow engine's Execute per item — and Execute's cascade
+// loop (internal/domain/workflow/engine.go's cascadeAutomated) already has
+// its own, separately-existing "Spec D9" ctx.Err() check at the top of its
+// loop, added by an earlier task, that fires unconditionally on every
+// Execute call (even for a model with no imported workflow — a synthetic
+// default workflow still runs one cascade iteration). Since the same
+// already-cancelled ctx flows into both checks, a naive test asserting only
+// "Save was never called for item 2" or "an error came back" passes
+// identically whether THIS task's per-item loop-head check fired, or
+// whether it was skipped entirely and the engine's own check caught it one
+// level down instead — that redundancy is real, but it means such a test
+// doesn't actually pin the code this task added.
+//
+// engine.Execute resolves its audit store via e.factory.StateMachineAuditStore
+// exactly once, right at the top, strictly BEFORE it reaches resolveWorkflow
+// or cascadeAutomated's own check. So the audit-accessor call count is a
+// clean proxy for "was Execute entered at all for this item" — the one
+// signal that actually distinguishes the two checks. It requires
+// constructing the engine against this same wrapping factory (not reusing
+// newReqTimeoutHandler's already-built one, which is bound to the plain,
+// unwrapped factory).
+type instrumentedEngineFactory struct {
+	spi.StoreFactory
+	entityStore spi.EntityStore
+	mu          sync.Mutex
+	auditCalls  int
+}
+
+func (f *instrumentedEngineFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+func (f *instrumentedEngineFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMachineAuditStore, error) {
+	f.mu.Lock()
+	f.auditCalls++
+	f.mu.Unlock()
+	return f.StoreFactory.StateMachineAuditStore(ctx)
+}
+
+func (f *instrumentedEngineFactory) auditCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.auditCalls
+}
+
+// TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed
+// pins CreateEntityCollection's OWN per-item loop check directly — not via
+// runChunkedCreate, whose test above always used window=1, so cancellation
+// was caught one level up (the chunk loop) before CreateEntityCollection's
+// per-item loop ever got a second item to observe it. Calling
+// CreateEntityCollection directly with a 3-item batch is the only way to
+// actually exercise its own check — and, per instrumentedEngineFactory's
+// doc comment above, the audit-accessor count is what makes this actually
+// decisive rather than redundant with the engine's own equivalent check.
+func TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+
+	// Reuse newReqTimeoutHandler purely to import+lock the Person model on
+	// realFactory. Its own handler/engine are discarded below in favor of
+	// ones bound to instrumentedEngineFactory — the model data lives in
+	// realFactory's shared underlying maps, so re-wrapping afterward is fine.
+	_, ctx := newReqTimeoutHandler(t, realFactory, realTxMgr)
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	realEntityStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
+	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
+	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
+	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
+
+	items := []CollectionItem{
+		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"A","age":1}`)},
+		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"B","age":2}`)},
+		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"C","age":3}`)},
+	}
+
+	result, err := h.CreateEntityCollection(cancelCtx, items)
+	if err == nil {
+		t.Fatal("expected an error from the cancelled-mid-loop create, got nil")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on failure, got %+v", result)
+	}
+	if got := saveStore.saveCount(); got != 1 {
+		t.Fatalf("Save called %d times, want exactly 1 (item 1 must never reach Save)", got)
+	}
+	// Decisive: item 1's engine.Execute must never even have been entered —
+	// not just failed once inside it (see instrumentedEngineFactory doc).
+	if got := instrumented.auditCallCount(); got != 1 {
+		t.Fatalf("engine.Execute's audit-store accessor was called %d times, want exactly 1 (item 1's own per-item loop-head check must stop CreateEntityCollection before engine.Execute is ever entered for item 2/3)", got)
+	}
+
+	// Fail-closed: item 0's Save landed in the tx buffer but the tx never
+	// committed (the function returned before reaching the post-loop commit
+	// block), so the deferred scope.Release() must have rolled it back.
+	if len(saveStore.savedIDs) != 1 {
+		t.Fatalf("savedIDs = %v, want exactly 1 entry", saveStore.savedIDs)
+	}
+	if _, getErr := realEntityStore.Get(ctx, saveStore.savedIDs[0]); getErr == nil {
+		t.Fatalf("entity %s is readable after the batch failed — rollback did not happen (fail-closed violated)", saveStore.savedIDs[0])
+	} else if !errors.Is(getErr, spi.ErrNotFound) {
+		t.Fatalf("Get(%s) = %v, want spi.ErrNotFound", saveStore.savedIDs[0], getErr)
+	}
+}
+
+// TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed
+// is UpdateEntityCollection's own-entry-point sibling to the Create test
+// above, for the same reason (and the same instrumentedEngineFactory
+// decisiveness rationale): the review finding was that no test drove
+// UpdateEntityCollection's per-item loop check directly.
+func TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+
+	h, ctx := newReqTimeoutHandler(t, realFactory, realTxMgr)
+
+	// Seed 3 real entities to update, via the ORIGINAL (unwrapped) handler —
+	// the wrapping factory below is only swapped in for the UpdateEntityCollection
+	// call under test.
+	ids := make([]string, 0, 3)
+	for _, age := range []int{1, 2, 3} {
+		res, err := h.CreateEntity(ctx, CreateEntityInput{
+			EntityName: "Person", ModelVersion: "1", Format: "JSON",
+			Data: json.RawMessage(fmt.Sprintf(`{"name":"orig","age":%d}`, age)),
+		})
+		if err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+		ids = append(ids, res.EntityIDs[0])
+	}
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	realEntityStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
+	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
+	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
+	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
+
+	items := []UpdateCollectionItem{
+		{EntityID: ids[0], Payload: json.RawMessage(`{"name":"X"}`)},
+		{EntityID: ids[1], Payload: json.RawMessage(`{"name":"Y"}`)},
+		{EntityID: ids[2], Payload: json.RawMessage(`{"name":"Z"}`)},
+	}
+
+	result, err := hUpdate.UpdateEntityCollection(cancelCtx, items)
+	if err == nil {
+		t.Fatal("expected an error from the cancelled-mid-loop update, got nil")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on failure, got %+v", result)
+	}
+	if got := saveStore.saveCount(); got != 1 {
+		t.Fatalf("Save called %d times, want exactly 1 (item 1 must never reach Save)", got)
+	}
+	// Decisive: item 1's engine.Execute must never even have been entered.
+	if got := instrumented.auditCallCount(); got != 1 {
+		t.Fatalf("engine.Execute's audit-store accessor was called %d times, want exactly 1 (item 1's own per-item loop-head check must stop UpdateEntityCollection before engine.Execute is ever entered for item 2/3)", got)
+	}
+
+	// Fail-closed: item 0's update landed in the tx buffer but never
+	// committed; the entity must still read back its ORIGINAL payload.
+	e0, getErr := realEntityStore.Get(ctx, ids[0])
+	if getErr != nil {
+		t.Fatalf("Get(%s): %v", ids[0], getErr)
+	}
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(e0.Data, &payload); err != nil {
+		t.Fatalf("decode entity 0 payload: %v; data=%s", err, e0.Data)
+	}
+	if payload.Name != "orig" {
+		t.Fatalf("entity 0 name = %q after rollback, want \"orig\" (fail-closed violated — the buffered update was committed)", payload.Name)
+	}
+}
+
+// TestUpdateCollection_HandlerChunkLoop_CtxCancelledAfterFirstChunkCommit
+// pins the UpdateCollection HTTP handler's own chunk loop check — the review
+// finding was that no test drove it either. window=1 with 3 items forces 3
+// chunks; the fake txMgr's Commit hook cancels the request ctx right after
+// chunk 0's commit lands, so chunk 1's loop-head check must catch it before
+// ever calling UpdateEntityCollection for chunk 1 — routed through the same
+// per-chunk error-element shape (collectionChunkError) the handler's
+// existing chunk-failure branch already produces, per that endpoint's
+// contract (matches D3: chunk 0 stays durable, chunk 2 is never attempted).
+func TestUpdateCollection_HandlerChunkLoop_CtxCancelledAfterFirstChunkCommit(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	realTxMgr := mustTxMgr(t, realFactory)
+	rtm := &recordingTxMgr{TransactionManager: realTxMgr}
+
+	h, ctx := newReqTimeoutHandler(t, realFactory, rtm)
+
+	// Seed 3 real entities to update.
+	ids := make([]string, 0, 3)
+	for _, age := range []int{1, 2, 3} {
+		res, err := h.CreateEntity(ctx, CreateEntityInput{
+			EntityName: "Person", ModelVersion: "1", Format: "JSON",
+			Data: json.RawMessage(fmt.Sprintf(`{"name":"orig","age":%d}`, age)),
+		})
+		if err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+		ids = append(ids, res.EntityIDs[0])
+	}
+	// Baseline AFTER seeding (each seed CreateEntity call begins its own tx
+	// too) — the decisive assertion below counts Begin calls from here.
+	beginsBeforeUpdate := rtm.beginCount()
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	commits := 0
+	rtm.onCommit = func(_ context.Context) {
+		commits++
+		if commits == 1 {
+			cancel()
+		}
+	}
+
+	body := fmt.Sprintf(
+		`[{"id":%q,"payload":"{\"name\":\"X\"}"},{"id":%q,"payload":"{\"name\":\"Y\"}"},{"id":%q,"payload":"{\"name\":\"Z\"}"}]`,
+		ids[0], ids[1], ids[2],
+	)
+	window := int32(1)
+	r := httptest.NewRequest(http.MethodPut, "/entity/JSON", strings.NewReader(body)).WithContext(cancelCtx)
+	w := httptest.NewRecorder()
+	h.UpdateCollection(w, r, genapi.UpdateCollectionParamsFormatJSON, genapi.UpdateCollectionParams{TransactionWindow: &window})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (partial-progress shape); body: %s", w.Code, w.Body.String())
+	}
+	var results []collectionChunkResult
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("decode response: %v; body: %s", err, w.Body.String())
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d entries, want 2 (chunk 0 success + chunk 1 error element); got %+v", len(results), results)
+	}
+	if results[0].Error != nil {
+		t.Fatalf("chunk 0 unexpectedly failed: %+v", results[0].Error)
+	}
+	if len(results[0].EntityIDs) != 1 {
+		t.Fatalf("chunk 0 EntityIDs = %v, want exactly 1", results[0].EntityIDs)
+	}
+	if results[1].Error == nil {
+		t.Fatal("chunk 1 expected an error element (matching the endpoint's existing per-chunk contract), got none")
+	}
+	if results[1].Error.ChunkIndex != 1 {
+		t.Fatalf("chunk 1 error ChunkIndex = %d, want 1", results[1].Error.ChunkIndex)
+	}
+	if commits != 1 {
+		t.Fatalf("commits = %d, want exactly 1 (chunk 2 must never be attempted)", commits)
+	}
+	// Decisive: UpdateEntityCollection must never even have been CALLED for
+	// chunk 1. This matters because UpdateEntityCollection has its OWN
+	// per-item loop-head check (this same task, tested directly above) —
+	// if the HANDLER's chunk-loop check were removed but UpdateEntityCollection
+	// were still called for chunk 1, that inner check would immediately catch
+	// the same already-cancelled ctx at item index 0 and produce an
+	// indistinguishable error-element result, masking whether the handler's
+	// own check fired. Begin is the first thing UpdateEntityCollection's
+	// beginScope does, so "no new Begin beyond the seed calls + chunk 0"
+	// proves chunk 1's call never happened at all.
+	if got := rtm.beginCount() - beginsBeforeUpdate; got != 1 {
+		t.Fatalf("Begin called %d times during the update (want exactly 1, for chunk 0) — chunk 1 must never call UpdateEntityCollection at all, not merely fail inside it", got)
+	}
+
+	// Chunk 0 durable: entity 0 really has the new payload.
+	realEntityStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e0, getErr := realEntityStore.Get(ctx, ids[0])
+	if getErr != nil {
+		t.Fatalf("Get(%s): %v", ids[0], getErr)
+	}
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(e0.Data, &payload); err != nil {
+		t.Fatalf("decode entity 0 payload: %v; data=%s", err, e0.Data)
+	}
+	if payload.Name != "X" {
+		t.Fatalf("entity 0 name = %q, want \"X\" (chunk 0's commit must be durable)", payload.Name)
+	}
+
+	// Chunks 1/2 never attempted: entities 1 and 2 keep their ORIGINAL payload.
+	for i := 1; i < 3; i++ {
+		e, getErr := realEntityStore.Get(ctx, ids[i])
+		if getErr != nil {
+			t.Fatalf("Get(%s): %v", ids[i], getErr)
+		}
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			t.Fatalf("decode entity %d payload: %v; data=%s", i, err, e.Data)
+		}
+		if p.Name != "orig" {
+			t.Fatalf("entity %d name = %q, want \"orig\" (chunk %d must never have been attempted)", i, p.Name, i)
 		}
 	}
 }
