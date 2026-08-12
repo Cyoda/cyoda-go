@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -321,6 +322,88 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchContinues(t *testing.T) {
 		t.Errorf("IDToError = %v, want exactly 2 entries (the failed batch's ids)", result.IDToError)
 	}
 
+	realStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	removed := 0
+	for _, id := range ids {
+		if _, gErr := realStore.Get(ctx, id); errors.Is(gErr, spi.ErrNotFound) {
+			removed++
+		}
+	}
+	if removed != 4 {
+		t.Errorf("durably removed count = %d, want 4 (the failed batch's ids must still exist)", removed)
+	}
+}
+
+// TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed pins that a
+// batch commit failure classified as an Internal-level AppError (a bare
+// commit error carries no sentinel, so common.Internal routes it to a 500,
+// not the retryable-409 branch) is folded into IDToError as a ticketed,
+// client-safe message — never the raw cause — and the cause is logged at
+// ERROR under that same ticket so it is recoverable server-side. Mirrors
+// TestDeleteEntitiesConditional_Batched_FailedBatchContinues's batch shape;
+// that test's own assertions (count only, no message-content checks) must
+// keep passing unchanged since this fix does not change IDToError's size or
+// which ids land in it, only what the message text looks like.
+func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
+	buf := captureEntitySlog(t)
+
+	realFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { realFactory.Close() })
+	realTxMgr := mustTxMgr(t, realFactory)
+
+	ctx := newDeleteBatchedCtx(t, realFactory)
+	hSeed := buildDeleteBatchedHandler(t, realFactory, realTxMgr)
+	ids := seedPersons(t, hSeed, ctx, 6)
+
+	const cause = "commit boom: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"
+	failMgr := &failNthCommitTxMgr{TransactionManager: realTxMgr, failOn: map[int]error{3: errors.New(cause)}}
+	hDelete := buildDeleteBatchedHandler(t, realFactory, failMgr)
+
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if result.RemovedCount != 4 {
+		t.Errorf("RemovedCount = %d, want 4 (batches 1 and 3, 2 ids each; batch 2's commit failed)", result.RemovedCount)
+	}
+	if len(result.IDToError) != 2 {
+		t.Fatalf("IDToError = %v, want exactly 2 entries (the failed batch's ids)", result.IDToError)
+	}
+
+	for id, msg := range result.IDToError {
+		if !strings.Contains(msg, "[ticket: ") {
+			t.Errorf("IDToError[%s] = %q, want a ticketed message like perIDDeleteError's internal branch", id, msg)
+		}
+		if strings.Contains(msg, "commit boom") || strings.Contains(msg, "SQLSTATE") {
+			t.Errorf("IDToError[%s] = %q, leaks the raw commit cause onto the wire", id, msg)
+		}
+		if !strings.Contains(msg, common.ErrCodeServerError) {
+			t.Errorf("IDToError[%s] = %q, want the SERVER_ERROR code", id, msg)
+		}
+	}
+
+	// Every id in the failed batch shares the SAME ticket — one ticket per
+	// batch failure, not one per id (they all share one underlying cause).
+	var tickets []string
+	for _, msg := range result.IDToError {
+		if i := strings.Index(msg, "[ticket: "); i >= 0 {
+			tickets = append(tickets, msg[i:])
+		}
+	}
+	if len(tickets) == 2 && tickets[0] != tickets[1] {
+		t.Errorf("failed batch's two ids carry different tickets, want one ticket shared across the batch: %v", tickets)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "commit boom") || !strings.Contains(logged, "57014") {
+		t.Errorf("the commit cause was sanitized out of the response but never logged, so it is lost: %s", logged)
+	}
+
+	// Confirm the durable state matches TestDeleteEntitiesConditional_Batched_FailedBatchContinues:
+	// the failed batch's ids must still exist.
 	realStore, err := realFactory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

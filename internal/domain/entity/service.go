@@ -919,9 +919,25 @@ func perIDDeleteError(entityID string, err error) string {
 	if errors.Is(err, spi.ErrNotFound) {
 		return fmt.Sprintf("%s: entity id=%s not found", common.ErrCodeEntityNotFound, entityID)
 	}
+	return mintDeleteTicket(entityID, err)
+}
+
+// mintDeleteTicket mints a correlation ticket, logs err at ERROR under it
+// (same "pkg"/"ticket"/"detail" shape as common.WriteError's internal branch,
+// so the two read alike in an aggregator), and renders the client-safe
+// ticketed message to fold into DeleteResult.IDToError. entityID is the
+// affected id, or "" when one ticket covers every id a batch-level failure
+// touches (deleteOneBatch's commit-failure fold-in mints ONE ticket for the
+// whole batch, not one per id — the underlying cause is the same for all of
+// them).
+func mintDeleteTicket(entityID string, err error) string {
 	ticket := uuid.New().String()
-	slog.Error("entity delete failed",
-		"pkg", "entity", "ticket", ticket, "entityId", entityID, "detail", err.Error())
+	attrs := []any{"pkg", "entity", "ticket", ticket}
+	if entityID != "" {
+		attrs = append(attrs, "entityId", entityID)
+	}
+	attrs = append(attrs, "detail", err.Error())
+	slog.Error("entity delete failed", attrs...)
 	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 }
 
@@ -1290,8 +1306,25 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 		}
 		return nil
 	}(); appErr != nil {
+		// Operational (4xx-class) failures — the resolution-baseline conflict
+		// above all — are client-safe by construction, same as
+		// perIDDeleteError's operational branch: fold the message as-is, no
+		// ticket needed. Anything else (Internal/Fatal, e.g. a bare commit
+		// error) gets perIDDeleteError's ticketed treatment: mint ONE ticket
+		// for the whole batch, log the real cause under it, and fold the
+		// ticketed client-safe message — never the raw AppError.Message,
+		// which for an Internal error carries no cause and would otherwise
+		// go out unlogged and uncorrelated.
+		msg := appErr.Message
+		if appErr.Level != common.LevelOperational {
+			cause := error(appErr)
+			if appErr.Err != nil {
+				cause = appErr.Err
+			}
+			msg = mintDeleteTicket("", cause)
+		}
 		for _, id := range pendingRemoved {
-			result.IDToError[id] = appErr.Message
+			result.IDToError[id] = msg
 		}
 		return nil
 	}
