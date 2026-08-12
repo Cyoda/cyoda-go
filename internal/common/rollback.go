@@ -26,3 +26,19 @@ const rollbackBudget = 5 * time.Second
 func RollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), rollbackBudget)
 }
+
+// commitBudget bounds the commit call itself once a flow decides to commit.
+// Sibling of rollbackBudget with the same shape and rationale: the commit must
+// not be cancellable by the request's deadline or disconnect (an interrupted
+// commit is an in-doubt outcome — spec D2), but it must not hang forever
+// either. 30s comfortably covers a large flush; PostgreSQL's own statement
+// ceiling still applies underneath.
+const commitBudget = 30 * time.Second
+
+// CommitContext derives the context a commit runs on: the caller's values
+// without the caller's cancellation, under a bounded deadline. WithoutCancel
+// is load-bearing for the same reason as RollbackContext (tenant checks read
+// UserContext off the ctx).
+func CommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), commitBudget)
+}
