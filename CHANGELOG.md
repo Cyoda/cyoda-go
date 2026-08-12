@@ -216,6 +216,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **`POST /api/oauth/oidc/providers/reload` no longer destroys the JWKS key cache
+  it is documented to refresh.** The reload rebuilt the provider list but installed
+  empty key sources and never re-warmed them, so every federated token failed with
+  **401** `unknown kid` until a process restart — including tokens of providers that
+  were healthy before the call. The reload now carries surviving key sources across
+  the rebuild and force-warms every loaded provider (on the receiving node and, in a
+  cluster, on every broadcast peer); a provider whose IdP is unreachable during the
+  refresh keeps serving its previously cached keys.
+
+- **A provider whose IdP was unreachable during the startup JWKS warm-up no longer
+  stays keyless for the life of the process.** The warm-up was one-shot — if cyoda
+  booted ahead of the IdP, every federated token failed with **401** until a restart
+  that won the race. Failed warm-ups are now retried every 30 seconds until the IdP
+  becomes reachable, and the recovery is logged.
+
 - **Resolving a transaction's submit time is now tenant-gated.** `GetSubmitTime`
   was the only transaction-lifecycle method without the tenant check the rest of
   the surface enforces: a caller supplying another tenant's transaction ID —
