@@ -23,14 +23,19 @@ import (
 // flakyDiscovery is a mutable, concurrency-safe Discovery fake: err can be
 // flipped at runtime to simulate an IdP that is down and later comes up.
 type flakyDiscovery struct {
-	mu   sync.Mutex
-	docs map[string]*DiscoveryDoc
-	err  error
+	mu      sync.Mutex
+	docs    map[string]*DiscoveryDoc
+	err     error
+	fetches map[string]int
 }
 
 func (f *flakyDiscovery) Fetch(_ context.Context, uri string) (*DiscoveryDoc, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.fetches == nil {
+		f.fetches = map[string]int{}
+	}
+	f.fetches[uri]++
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -47,6 +52,12 @@ func (f *flakyDiscovery) set(err error, docs map[string]*DiscoveryDoc) {
 	if docs != nil {
 		f.docs = docs
 	}
+}
+
+func (f *flakyDiscovery) fetchCount(uri string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetches[uri]
 }
 
 // plantProvider persists p in the registry's store so ReloadAll finds it.
@@ -170,6 +181,99 @@ func TestService_ReloadAll_KeepsCachedKeysWhenIdPUnreachable(t *testing.T) {
 
 	if _, err := r.ResolveKey("k1", "https://idp.example", ""); err != nil {
 		t.Fatalf("ResolveKey after ReloadAll with IdP down: %v (cached keys were destroyed)", err)
+	}
+}
+
+func TestRegistry_WarmupRetryLoop_WarmsWhenIdPComesUp(t *testing.T) {
+	// The one-shot startup warm-up loses the race against an IdP that boots
+	// later than cyoda. The retry loop must keep re-attempting the warm-up
+	// until the IdP is reachable — without any lifecycle call or restart.
+	idp := NewFixtureIdP(t)
+	uri := idp.Issuer + "/.well-known/openid-configuration"
+	store := newTestStore(t)
+	disc := &flakyDiscovery{err: ErrDiscoveryFailed}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true, WarmupRetryInterval: 20 * time.Millisecond})
+
+	p := testProvider(idp.Issuer, uri)
+	plantProvider(t, r, p)
+	ctx := context.Background()
+	if err := r.LoadProvidersFromKV(ctx); err != nil {
+		t.Fatalf("LoadProvidersFromKV: %v", err)
+	}
+	r.WarmJWKSAsync(ctx) // one-shot warm-up fails: IdP still down
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	r.StartWarmupRetryLoop(loopCtx)
+
+	if _, err := r.ResolveKey("default", idp.Issuer, ""); !errors.Is(err, auth.ErrUnknownKID) {
+		t.Fatalf("ResolveKey while IdP down = %v, want ErrUnknownKID", err)
+	}
+
+	// IdP comes up.
+	disc.set(nil, map[string]*DiscoveryDoc{uri: {Issuer: idp.Issuer, JWKSURI: idp.JWKSURI}})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := r.ResolveKey("default", idp.Issuer, ""); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("provider never warmed by the retry loop after the IdP came up")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestRegistry_WarmupRetryLoop_SkipsWarmAndInactiveProviders(t *testing.T) {
+	// The retry loop must not refetch providers that are already warm, nor
+	// invalidated providers — only active, cold ones.
+	warmIdP := NewFixtureIdP(t)
+	warmURI := warmIdP.Issuer + "/.well-known/openid-configuration"
+	inactiveURI := "https://inactive.example/.well-known/openid-configuration"
+	store := newTestStore(t)
+	// The inactive provider's discovery doc is deliberately absent during the
+	// one-shot warm-up so its coordinate stays cold — otherwise it would be
+	// skipped as "already warm" and never exercise the active-only check.
+	disc := &flakyDiscovery{docs: map[string]*DiscoveryDoc{
+		warmURI: {Issuer: warmIdP.Issuer, JWKSURI: warmIdP.JWKSURI},
+	}}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true, WarmupRetryInterval: 20 * time.Millisecond})
+
+	warm := testProvider(warmIdP.Issuer, warmURI)
+	plantProvider(t, r, warm)
+	inactive := testProvider("https://inactive.example", inactiveURI)
+	invalidatedAt := time.Now()
+	inactive.InvalidatedAt = &invalidatedAt
+	plantProvider(t, r, inactive)
+
+	ctx := context.Background()
+	if err := r.LoadProvidersFromKV(ctx); err != nil {
+		t.Fatalf("LoadProvidersFromKV: %v", err)
+	}
+	r.WarmJWKSAsync(ctx) // warms warmURI; inactiveURI fetch fails (no doc yet)
+	warmBaseline := disc.fetchCount(warmURI)
+	inactiveBaseline := disc.fetchCount(inactiveURI)
+
+	// From here on the inactive provider's doc IS fetchable — only the
+	// active-only check keeps the loop away from it.
+	disc.set(nil, map[string]*DiscoveryDoc{
+		warmURI:     {Issuer: warmIdP.Issuer, JWKSURI: warmIdP.JWKSURI},
+		inactiveURI: {Issuer: "https://inactive.example", JWKSURI: "https://inactive.example/jwks"},
+	})
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	r.StartWarmupRetryLoop(loopCtx)
+
+	time.Sleep(200 * time.Millisecond) // ~10 ticks
+	if n := disc.fetchCount(warmURI); n != warmBaseline {
+		t.Errorf("retry loop refetched a warm provider: %d fetches after baseline %d", n, warmBaseline)
+	}
+	if n := disc.fetchCount(inactiveURI); n != inactiveBaseline {
+		t.Errorf("retry loop fetched an invalidated provider: %d fetches after baseline %d", n, inactiveBaseline)
 	}
 }
 

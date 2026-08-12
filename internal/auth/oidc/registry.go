@@ -61,6 +61,12 @@ type RegistryConfig struct {
 	// SocketTimeout is applied as the ResponseHeaderTimeout on the JWKS-fetch
 	// transport. Zero or negative values default to 5 s.
 	SocketTimeout time.Duration
+
+	// WarmupRetryInterval is the tick interval of StartWarmupRetryLoop, which
+	// re-attempts the JWKS warm-up of active providers that have no installed
+	// key source (e.g. the IdP was unreachable at startup or registration).
+	// Zero or negative values default to 30 s.
+	WarmupRetryInterval time.Duration
 }
 
 // Registry is the per-process OIDC provider cache. It implements the read
@@ -103,6 +109,9 @@ func NewRegistry(
 	}
 	if cfg.SocketTimeout <= 0 {
 		cfg.SocketTimeout = 5 * time.Second
+	}
+	if cfg.WarmupRetryInterval <= 0 {
+		cfg.WarmupRetryInterval = 30 * time.Second
 	}
 	r := &Registry{
 		providers:    map[spi.TenantID]map[string]*OidcProvider{},
@@ -551,6 +560,63 @@ func (r *Registry) WarmJWKSAsync(ctx context.Context) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// StartWarmupRetryLoop spawns the warm-up retry goroutine: every
+// WarmupRetryInterval it re-attempts discovery + JWKS warm-up for active
+// providers that have no installed key source (the one-shot startup warm-up
+// or a registration-time warm-up lost the race against an IdP that was not
+// yet reachable). The loop exits when ctx is cancelled. Call once at startup
+// with a process-lifetime context.
+func (r *Registry) StartWarmupRetryLoop(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(r.cfg.WarmupRetryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, ref := range r.coldActiveRefs() {
+					r.reloadOne(ctx, ref.tenant, ref.uri)
+					if !r.isCold(ref) {
+						r.logger.Info("oidc: provider JWKS warmed by retry loop",
+							"pkg", "oidc", "tenant", string(ref.tenant),
+							"uri_hash", sha256Hex(ref.uri))
+					}
+				}
+			}
+		}
+	}()
+}
+
+// coldActiveRefs returns the coordinates of active providers whose key
+// source is missing or whose discovery doc never arrived — the set the
+// warm-up retry loop re-attempts.
+func (r *Registry) coldActiveRefs() []providerRef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var refs []providerRef
+	for tenant, byURI := range r.providers {
+		for uri, prov := range byURI {
+			if !prov.Active() {
+				continue
+			}
+			src := r.sources[tenant][uri]
+			if src == nil || src.discoveryDoc == nil {
+				refs = append(refs, providerRef{tenant: tenant, uri: uri})
+			}
+		}
+	}
+	return refs
+}
+
+// isCold reports whether ref still lacks an installed source.
+func (r *Registry) isCold(ref providerRef) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	src := r.sources[ref.tenant][ref.uri]
+	return src == nil || src.discoveryDoc == nil
 }
 
 // reloadOne fetches discovery + JWKS for one (tenant, uri) provider and
