@@ -22,7 +22,7 @@ config.cluster — multi-node clustering, gossip, and cross-node dispatch env va
 - `CYODA_GOSSIP_ADDR` (string, default: `:7946`) — gossip protocol listen address; format `[host]:port` — parsed via `net.SplitHostPort`; invalid format causes startup failure.
 - `CYODA_GOSSIP_STABILITY_WINDOW` (duration, default: `2s`) — gossip stability window.
 - `CYODA_SEED_NODES` (string, default: empty) — comma-separated list of seed node addresses (e.g., `node1.example.com:7946,node2.example.com:7946`); empty means single-node or seed-discovery handled externally.
-- `CYODA_HMAC_SECRET` (string, default: unset) — hex-encoded HMAC secret for inter-node dispatch authentication; required when `CYODA_CLUSTER_ENABLED=true`. Supports `_FILE` suffix.
+- `CYODA_HMAC_SECRET` (string, default: unset) — hex-encoded HMAC secret for inter-node dispatch authentication; required when `CYODA_CLUSTER_ENABLED=true`. Supports `_FILE` suffix. Single root secret for gossip encryption, dispatch AEAD, and tx-token signing; no versioned-key rotation — changing it requires a full-cluster stop/start (see the `cluster` help topic, `SECRET ROTATION`).
 - `CYODA_PROXY_TIMEOUT` (duration, default: `30s`) — request proxy timeout.
 - `CYODA_DISPATCH_WAIT_TIMEOUT` (duration, default: `5s`) — how long the dispatcher polls gossip for a compute member with matching tags.
 - `CYODA_DISPATCH_FORWARD_TIMEOUT` (duration, default: `30s`) — HTTP timeout for the cross-node forwarding call.
