@@ -855,6 +855,17 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 	stateVisits := make(map[string]int)
 
 	for depth := 0; depth < maxCascadeDepth; depth++ {
+		// Spec D9: observe cancellation/expiry between transitions, the same
+		// way an attemptTransition failure is routed, so the deferred
+		// rollback guard above still runs. Naturally inert once the cascade
+		// is running on a post-CBD ctx — commitAndBeginNextSegment derives
+		// that one via context.WithoutCancel, which carries no deadline of
+		// its own, so an already-elapsed ORIGINAL client deadline cannot
+		// abort a cascade continuing past a segment commit (spec D3).
+		if err := currentCtx.Err(); err != nil {
+			return currentCtx, currentTxID, fmt.Errorf("cascade aborted: %w", err)
+		}
+
 		state := entity.Meta.State
 		stateVisits[state]++
 		if stateVisits[state] > e.maxStateVisits {

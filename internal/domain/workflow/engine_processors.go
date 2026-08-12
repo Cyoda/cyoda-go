@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -432,6 +433,12 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 // Commit) are wrapped with ErrCommitBeforeDispatchInfra so
 // classifyWorkflowError routes them to a sanitized 5xx with ticket UUID
 // instead of leaking internal text via 4xx WORKFLOW_FAILED.
+//
+// The Save/CompareAndSave above runs on the caller's cancellable ctx — a
+// segment that hasn't reached TX_pre's commit yet may still abort there, and
+// that is fail-closed and correct (spec D2). The commit itself is shielded:
+// see the pre-commit check and common.CommitContext below, mirroring
+// txScope.Commit (internal/domain/entity/txscope.go).
 func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) error {
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
@@ -450,7 +457,23 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 			return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 	}
-	if err := e.txMgr.Commit(ctx, txID); err != nil {
+	// Spec D2/D3 pre-commit check: an expired/cancelled ctx here means no
+	// segment has committed yet on this path — fail closed so the caller's
+	// rollback produces the "nothing committed" 408 guarantee. Deliberately
+	// NOT wrapped with ErrCommitBeforeDispatchInfra: it must reach the
+	// handler-seam classifier as a plain deadline chain (mapped to 408), not
+	// as a ticketed 5xx.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
+	}
+	// The commit itself runs on a common.CommitContext (WithoutCancel + its
+	// own bounded budget), mirroring txScope.Commit (see
+	// internal/domain/entity/txscope.go): no deadline or disconnect on the
+	// request ctx can interrupt a commit in flight — an interrupted commit is
+	// an in-doubt outcome, not a rollback-able one.
+	commitCtx, cancel := common.CommitContext(ctx)
+	defer cancel()
+	if err := e.txMgr.Commit(commitCtx, txID); err != nil {
 		return fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
 	return nil
