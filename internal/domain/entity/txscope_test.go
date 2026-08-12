@@ -26,7 +26,9 @@ type scopeTxMgr struct {
 	rbCtxErr   []error
 	rbDeadline []time.Time
 	commitErr  error
+	commitCtx  context.Context
 	onRollback func()
+	onCommit   func(ctx context.Context)
 
 	// events is an ordered trace of gate-relevant moments. The gate test
 	// asserts mutual exclusion by comparing this ordering, which is why
@@ -61,10 +63,14 @@ func (m *scopeTxMgr) Rollback(ctx context.Context, txID string) error {
 	return nil
 }
 
-func (m *scopeTxMgr) Commit(_ context.Context, txID string) error {
+func (m *scopeTxMgr) Commit(ctx context.Context, txID string) error {
+	if m.onCommit != nil {
+		m.onCommit(ctx)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.committed = append(m.committed, txID)
+	m.commitCtx = ctx
 	return m.commitErr
 }
 
@@ -235,6 +241,91 @@ func TestTxScope_ReleaseAfterCommit_IsNoOp(t *testing.T) {
 				t.Fatalf("released after commit: %v", m.rolledBack)
 			}
 		})
+	}
+}
+
+// TestTxScope_Commit_PreCommitCheckFailsClosed pins the spec-D2 pre-commit
+// check: when the owned scope's ctx is already expired, Commit must fail
+// closed with ctx.Err() BEFORE marking the scope done, so the deferred
+// Release still rolls back — that ordering IS the "nothing committed"
+// guarantee the 408 contract depends on.
+func TestTxScope_Commit_PreCommitCheckFailsClosed(t *testing.T) {
+	m := &scopeTxMgr{}
+	h := newScopeHandler(m)
+	ctx, cancel := common.WithRequestTimeout(context.Background(), 1)
+	defer cancel()
+	<-ctx.Done() // deadline expires before commit
+
+	s := &txScope{h: h, entryTxID: "tx-1", ctx: ctx, txID: "tx-1", owned: true}
+	err := s.Commit()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want DeadlineExceeded from pre-commit check, got %v", err)
+	}
+	if len(m.committed) != 0 {
+		t.Fatalf("commit ran despite an already-expired ctx: %v", m.committed)
+	}
+
+	// Scope must NOT be done: Release must still roll back.
+	s.Release()
+	if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-1" {
+		t.Fatalf("scope was not still releasable after a failed pre-commit check: %v", m.rolledBack)
+	}
+}
+
+// TestTxScope_Commit_Joined_SkipsPreCommitCheck pins that the pre-commit
+// check applies only to the owned path. A joined callback never commits (the
+// owner does), so an expired ctx on the joined path must not surface as an
+// error here — commitOwned's existing owned==false no-op is unaffected.
+func TestTxScope_Commit_Joined_SkipsPreCommitCheck(t *testing.T) {
+	m := &scopeTxMgr{}
+	h := newScopeHandler(m)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := &txScope{h: h, entryTxID: "tx-owner", ctx: ctx, txID: "tx-owner", owned: false}
+	if err := s.Commit(); err != nil {
+		t.Fatalf("joined Commit must stay a no-op regardless of ctx state, got %v", err)
+	}
+	if len(m.committed) != 0 {
+		t.Fatalf("joined Commit must never call txMgr.Commit: %v", m.committed)
+	}
+}
+
+// TestTxScope_Commit_RunsOnShieldedCtx pins that the commit itself runs on a
+// common.CommitContext derivative: WithoutCancel + its own bounded budget, so
+// no deadline or disconnect on the request ctx can interrupt a commit in
+// flight (an interrupted commit is an in-doubt outcome).
+//
+// The assertion runs from inside txMgr.Commit (via onCommit), i.e. while the
+// commit is genuinely in flight. Checking after s.Commit() returns would be
+// confounded: commitOwned's own `defer cancel()` fires the instant Commit
+// returns, so the recorded ctx would already read Done() regardless of
+// whether the request ctx ever influenced it.
+func TestTxScope_Commit_RunsOnShieldedCtx(t *testing.T) {
+	m := &scopeTxMgr{}
+	h := newScopeHandler(m)
+	reqCtx, reqCancel := common.WithRequestTimeout(context.Background(), 1000)
+	defer reqCancel()
+	reqDeadline, _ := reqCtx.Deadline()
+
+	m.onCommit = func(ctx context.Context) {
+		// Cancel the request ctx while the commit is "in flight" and prove
+		// the shielded ctx does not observe it.
+		reqCancel()
+		if err := ctx.Err(); err != nil {
+			t.Errorf("commit ctx observed the request cancellation mid-commit: %v", err)
+		}
+		if dl, ok := ctx.Deadline(); !ok || dl.Equal(reqDeadline) {
+			t.Errorf("commit ctx did not carry its own bounded budget distinct from the request deadline")
+		}
+	}
+
+	s := &txScope{h: h, entryTxID: "tx-1", ctx: reqCtx, txID: "tx-1", owned: true}
+	if err := s.Commit(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.committed) != 1 {
+		t.Fatalf("commit did not run: %v", m.committed)
 	}
 }
 

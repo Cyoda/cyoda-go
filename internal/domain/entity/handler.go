@@ -97,11 +97,18 @@ func (h *Handler) acquireJoinedGate(txCtx context.Context, txID string) (context
 // (see the per-flow finalize blocks): the gate is acquired by the flow around
 // the final buffer mutation and released after this commit, so commitOwned
 // itself must NOT touch the gate (the gate is a non-reentrant per-tx mutex).
+//
+// The commit runs on common.CommitContext — WithoutCancel plus its own
+// bounded budget — so a client-requested deadline or disconnect on ctx can
+// never interrupt a commit already in flight (spec D2: an interrupted commit
+// is an in-doubt outcome, never a rollback-able one).
 func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) error {
 	if !owned {
 		return nil
 	}
-	return h.txMgr.Commit(ctx, txID)
+	commitCtx, cancel := common.CommitContext(ctx)
+	defer cancel()
+	return h.txMgr.Commit(commitCtx, txID)
 }
 
 // validateOrExtend validates parsedData against the model schema. When
