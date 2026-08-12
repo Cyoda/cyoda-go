@@ -98,23 +98,24 @@ func (h *Handler) acquireJoinedGate(txCtx context.Context, txID string) (context
 // the final buffer mutation and released after this commit, so commitOwned
 // itself must NOT touch the gate (the gate is a non-reentrant per-tx mutex).
 //
-// The commit runs on common.CommitContext — WithoutCancel plus its own
-// bounded budget — so a client-requested deadline or disconnect on ctx can
-// never interrupt a commit already in flight (spec D2: an interrupted commit
-// is an in-doubt outcome, never a rollback-able one). common.WrapIfCommitInterrupted
-// marks the narrow case where commitCtx's own budget/cancellation is what
-// failed the commit, so it can never be misclassified as the client's clean
-// 408 "nothing was committed" at the handler seam; a commit that fails
-// cleanly while commitCtx is still live (e.g. spi.ErrConflict) is unaffected
-// and keeps its existing classification.
+// The commit runs shielded via common.ShieldedCommit — WithoutCancel plus its
+// own bounded budget — so a client-requested deadline or disconnect on ctx
+// can never interrupt a commit already in flight (spec D2: an interrupted
+// commit is an in-doubt outcome, never a rollback-able one).
+// common.ShieldedCommit marks the narrow case where the commit's own shielded
+// ctx (budget/cancellation) is what failed the commit, so it can never be
+// misclassified as the client's clean 408 "nothing was committed" at the
+// handler seam; a commit that fails cleanly while the shielded ctx is still
+// live (e.g. spi.ErrConflict) is unaffected and keeps its existing
+// classification. Shared with the workflow engine's flushAndCommitSegment —
+// the other call site that commits under this same shielding.
 func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) error {
 	if !owned {
 		return nil
 	}
-	commitCtx, cancel := common.CommitContext(ctx)
-	defer cancel()
-	err := h.txMgr.Commit(commitCtx, txID)
-	return common.WrapIfCommitInterrupted(commitCtx, err)
+	return common.ShieldedCommit(ctx, func(commitCtx context.Context) error {
+		return h.txMgr.Commit(commitCtx, txID)
+	})
 }
 
 // validateOrExtend validates parsedData against the model schema. When

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -42,6 +43,42 @@ func TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed(t *testing.T) 
 	}
 	if len(h.segmentTxIDs) != 0 {
 		t.Fatalf("commit-before-dispatch was dispatched despite the pre-commit check failing: %v", h.segmentTxIDs)
+	}
+}
+
+// TestFlushAndCommitSegment_CommitCtxInterrupted_WrapsErrCommitInterrupted
+// closes the Gate-6 gap flagged in review: nothing previously proved the CBD
+// commit site (flushAndCommitSegment, via common.ShieldedCommitWithBudget)
+// actually applies the common.ErrCommitInterrupted wrap when the commit's
+// OWN shielded ctx is what failed it. Real, not simulated: WithCommitBudget
+// injects a short budget so the commit's own shielded ctx genuinely expires,
+// and the fake Commit blocks on that ctx's Done() channel (deterministic —
+// no wall-clock race) before returning ctx.Err() — the same technique
+// internal/common's TestShieldedCommitWithBudget_RealExpiry_WrapsErrCommitInterrupted
+// uses, and blockingEntityStore uses on the entity-handler side (see
+// internal/domain/entity/handler_reqtimeout_test.go).
+func TestFlushAndCommitSegment_CommitCtxInterrupted_WrapsErrCommitInterrupted(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory", WithCommitBudget(5*time.Millisecond))
+	h.registerCBDProcessor("segmenter")
+	h.txMgr.commit = func(ctx context.Context, txID string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	err := h.fireSegment(t, "")
+	if err == nil {
+		t.Fatal("expected the interrupted commit to fail the segment transition")
+	}
+	if !errors.Is(err, common.ErrCommitInterrupted) {
+		t.Fatalf("want common.ErrCommitInterrupted in the chain, got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want the original commit error (context.DeadlineExceeded) still reachable, got %v", err)
+	}
+	if !errors.Is(err, ErrCommitBeforeDispatchInfra) {
+		t.Fatalf("want the existing ErrCommitBeforeDispatchInfra classification preserved (spec D2: "+
+			"\"a shielded-commit failure keeps its existing classification\" — still a ticketed 500, "+
+			"ErrCommitInterrupted only disqualifies a would-be 408 reclassification downstream), got %v", err)
 	}
 }
 

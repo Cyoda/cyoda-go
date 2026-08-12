@@ -80,6 +80,38 @@ func WrapIfCommitInterrupted(commitCtx context.Context, err error) error {
 	return err
 }
 
+// CommitBudget is the production budget ShieldedCommit (and CommitContext)
+// bound a commit call by. Exported so a call site that wants to declare its
+// own default in terms of this one (e.g. workflow.Engine's commitBudget
+// field, overridable via WithCommitBudget for tests) doesn't have to
+// duplicate the magic number.
+const CommitBudget = commitBudget
+
+// ShieldedCommit runs commit on a CommitContext-derived ctx — WithoutCancel
+// plus CommitBudget — and wraps any resulting error per WrapIfCommitInterrupted's
+// rule. This is THE single place the "run a commit shielded, then decide
+// whether it was interrupted" logic lives; both commit call sites
+// (txScope.commitOwned in internal/domain/entity, and the workflow engine's
+// flushAndCommitSegment) call this instead of duplicating the CommitContext
+// derivation + wrap-decision pair.
+func ShieldedCommit(ctx context.Context, commit func(context.Context) error) error {
+	return ShieldedCommitWithBudget(ctx, CommitBudget, commit)
+}
+
+// ShieldedCommitWithBudget is ShieldedCommit with an injectable budget. The
+// production commitBudget (30s) makes ShieldedCommit's own wrap path
+// impractical to exercise for real in a fast test — this lets a test inject
+// a short budget instead and drive the actual mechanism (a commit that
+// blocks until its ctx is genuinely Done) rather than simulating the
+// outcome. Production call sites use ShieldedCommit; only tests should need
+// this directly.
+func ShieldedCommitWithBudget(ctx context.Context, budget time.Duration, commit func(context.Context) error) error {
+	commitCtx, cancel := commitContextWithBudget(ctx, budget)
+	defer cancel()
+	err := commit(commitCtx)
+	return WrapIfCommitInterrupted(commitCtx, err)
+}
+
 // ClassifyRequestTimeout maps err to Operational(408, code).AsRetryable()
 // only when ALL of the following hold (spec D2 pinned rule, ANDed — never
 // any one alone):

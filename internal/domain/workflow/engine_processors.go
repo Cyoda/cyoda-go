@@ -466,27 +466,25 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
 	}
-	// The commit itself runs on a common.CommitContext (WithoutCancel + its
-	// own bounded budget), mirroring txScope.Commit (see
-	// internal/domain/entity/txscope.go): no deadline or disconnect on the
+	// The commit itself runs shielded via common.ShieldedCommitWithBudget —
+	// WithoutCancel plus e.commitBudget (defaults to common.CommitBudget,
+	// 30s) — mirroring txScope.commitOwned (see
+	// internal/domain/entity/handler.go): no deadline or disconnect on the
 	// request ctx can interrupt a commit in flight — an interrupted commit is
-	// an in-doubt outcome, not a rollback-able one.
-	commitCtx, cancel := common.CommitContext(ctx)
-	defer cancel()
-	if err := e.txMgr.Commit(commitCtx, txID); err != nil {
-		wrapped := fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
-		// common.WrapIfCommitInterrupted marks the narrow case where the
-		// commit's OWN shielded ctx (not the caller's) is what decided this
-		// failure — its budget expired or it was otherwise interrupted
-		// mid-commit, an in-doubt outcome per spec D2. It must never be
-		// reclassified as the client's clean 408 at the handler seam even
-		// though ErrCommitBeforeDispatchInfra already routes it to a
-		// ticketed 500 here (that existing classification is unaffected —
-		// the marker only disqualifies a would-be 408 reclassification
-		// downstream, it does not change what this function returns as a 5xx).
-		return common.WrapIfCommitInterrupted(commitCtx, wrapped)
-	}
-	return nil
+	// an in-doubt outcome, not a rollback-able one. When the commit's OWN
+	// shielded ctx (not the caller's) is what decided the failure — its
+	// budget expired or it was otherwise interrupted mid-commit — the
+	// returned error additionally carries common.ErrCommitInterrupted so it
+	// can never be reclassified as the client's clean 408 at the handler
+	// seam, even though ErrCommitBeforeDispatchInfra already routes it to a
+	// ticketed 500 here (that existing classification is unaffected — the
+	// marker only disqualifies a would-be 408 reclassification downstream).
+	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
+		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
+			return fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+		}
+		return nil
+	})
 }
 
 // commitAndBeginNextSegment is the COMMIT_BEFORE_DISPATCH segment-boundary

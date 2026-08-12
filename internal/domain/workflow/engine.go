@@ -170,11 +170,18 @@ type Engine struct {
 	// late task instead of leaving it for the next scan (design §5.5).
 	// Defaults to defaultExpiryGraceMs; overridden via WithExpiryGrace.
 	expiryGraceMs int64
+	// commitBudget bounds flushAndCommitSegment's shielded CBD-segment
+	// commit (common.ShieldedCommitWithBudget). Defaults to
+	// common.CommitBudget (the same 30s production budget
+	// txScope.commitOwned uses on the entity-handler side); overridden via
+	// WithCommitBudget so a test can observe the common.ErrCommitInterrupted
+	// wrap firing for real without waiting out the production budget.
+	commitBudget time.Duration
 }
 
 // NewEngine creates a new workflow engine.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -216,6 +223,18 @@ func WithScheduledClock(clock func() time.Time) EngineOption {
 	return func(e *Engine) {
 		if clock != nil {
 			e.clock = clock
+		}
+	}
+}
+
+// WithCommitBudget overrides the budget flushAndCommitSegment's shielded CBD
+// commit is bound by. Defaults to common.CommitBudget (30s); tests inject a
+// short budget to observe common.ErrCommitInterrupted firing for real
+// instead of waiting out the production value.
+func WithCommitBudget(budget time.Duration) EngineOption {
+	return func(e *Engine) {
+		if budget > 0 {
+			e.commitBudget = budget
 		}
 	}
 }

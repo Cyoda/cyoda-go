@@ -161,6 +161,82 @@ func TestWrapIfCommitInterrupted_WrapsOnlyWhenCommitCtxItselfFailed(t *testing.T
 // the point equally well.
 var errConflictStandIn = errors.New("transaction conflict (stand-in)")
 
+// TestShieldedCommitWithBudget_RealExpiry_WrapsErrCommitInterrupted proves
+// the wrap mechanism ShieldedCommit/ShieldedCommitWithBudget provides for
+// REAL — not simulated — by injecting a short budget and a commit function
+// that blocks until its ctx is genuinely Done (mirroring the deterministic
+// blocking-store technique used on the entity-handler side; see
+// internal/domain/entity/handler_reqtimeout_test.go's blockingEntityStore).
+// The production commitBudget is a fixed 30s, impractical to wait out in a
+// unit test — the injectable budget is what makes this provable fast.
+func TestShieldedCommitWithBudget_RealExpiry_WrapsErrCommitInterrupted(t *testing.T) {
+	origErr := errors.New("commit: connection reset mid-flight")
+	var sawCommitCtx context.Context
+	err := ShieldedCommitWithBudget(context.Background(), 5*time.Millisecond, func(commitCtx context.Context) error {
+		sawCommitCtx = commitCtx
+		<-commitCtx.Done() // the budget genuinely expires here — no simulation
+		return origErr
+	})
+
+	if sawCommitCtx.Err() == nil {
+		t.Fatal("test setup bug: commit ctx must show an error by the time this assertion runs")
+	}
+	if !errors.Is(err, ErrCommitInterrupted) {
+		t.Fatalf("want ErrCommitInterrupted in the chain, got %v", err)
+	}
+	if !errors.Is(err, origErr) {
+		t.Fatalf("want the original commit error still reachable via errors.Is, got %v", err)
+	}
+}
+
+// TestShieldedCommit_CleanFailure_LiveBudget_Unwrapped is the negative half:
+// a commit that fails fast, well within budget, must NOT be wrapped —
+// ShieldedCommit only marks the case where the commit's OWN ctx was what
+// failed it.
+func TestShieldedCommit_CleanFailure_LiveBudget_Unwrapped(t *testing.T) {
+	origErr := errConflictStandIn
+	err := ShieldedCommit(context.Background(), func(context.Context) error {
+		return origErr
+	})
+	if errors.Is(err, ErrCommitInterrupted) {
+		t.Fatalf("a fast clean failure on a live budget must not be wrapped: %v", err)
+	}
+	if !errors.Is(err, origErr) {
+		t.Fatalf("original error must still be reachable via errors.Is, got %v", err)
+	}
+}
+
+// TestShieldedCommit_Success_ReturnsNil pins the happy path: a successful
+// commit function's nil is returned unchanged.
+func TestShieldedCommit_Success_ReturnsNil(t *testing.T) {
+	if err := ShieldedCommit(context.Background(), func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("want nil, got %v", err)
+	}
+}
+
+// TestShieldedCommit_ClearsRequestTimeoutMarkerAndDropsCancellation pins that
+// ShieldedCommit derives its ctx the same way CommitContext does: the marker
+// is cleared and the caller's cancellation cannot reach the commit function,
+// even when the caller's ctx is already cancelled before the call.
+func TestShieldedCommit_ClearsRequestTimeoutMarkerAndDropsCancellation(t *testing.T) {
+	parent, cancel := WithRequestTimeout(context.Background(), 60000)
+	cancel() // cancel immediately — the shield must not observe this
+
+	var observedMarker bool
+	var observedErr error
+	_ = ShieldedCommit(parent, func(commitCtx context.Context) error {
+		observedMarker = HasRequestTimeout(commitCtx)
+		observedErr = commitCtx.Err()
+		return nil
+	})
+	if observedMarker {
+		t.Fatal("commit ctx must not carry the client-requested-timeout marker")
+	}
+	if observedErr != nil {
+		t.Fatalf("commit ctx must not observe the caller's cancellation, got %v", observedErr)
+	}
+}
+
 func TestCommitContext_DetachedAndBudgeted(t *testing.T) {
 	parent, cancel := WithRequestTimeout(context.WithValue(context.Background(), ucKey{}, "tenant-a"), 1)
 	defer cancel()

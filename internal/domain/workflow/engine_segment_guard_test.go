@@ -21,6 +21,19 @@ import (
 type countingTxMgr struct {
 	spi.TransactionManager
 	rolledBack []string
+	// commit, when set, overrides Commit's delegation to the real manager —
+	// lets a test control or observe commit behavior (e.g. block until ctx
+	// is Done, so a caller-injected short budget can be observed expiring
+	// for real) without a separate wrapper type. nil preserves the default
+	// pass-through delegation every other test in this file relies on.
+	commit func(ctx context.Context, txID string) error
+}
+
+func (c *countingTxMgr) Commit(ctx context.Context, txID string) error {
+	if c.commit != nil {
+		return c.commit(ctx, txID)
+	}
+	return c.TransactionManager.Commit(ctx, txID)
 }
 
 func (c *countingTxMgr) Rollback(ctx context.Context, txID string) error {
@@ -491,7 +504,11 @@ func (s *hookedEntityStore) CompareAndSave(ctx context.Context, entity *spi.Enti
 	return s.EntityStore.CompareAndSave(ctx, entity, expectedTxID)
 }
 
-func newSegmentGuardHarness(t *testing.T, backend string) *segmentGuardHarness {
+// newSegmentGuardHarness builds the harness with the engine's default
+// options plus any extras the caller supplies (e.g. WithCommitBudget for a
+// test that needs to observe a real shielded-commit expiry). Every existing
+// call site passes no extras and is unaffected.
+func newSegmentGuardHarness(t *testing.T, backend string, extraOpts ...EngineOption) *segmentGuardHarness {
 	t.Helper()
 	ctx := ctxWithTenant(testTenant)
 	h := &segmentGuardHarness{
@@ -522,8 +539,8 @@ func newSegmentGuardHarness(t *testing.T, backend string) *segmentGuardHarness {
 	}
 	h.txMgr = &countingTxMgr{TransactionManager: tm}
 	h.factory = &hookedFactory{StoreFactory: inner, h: h}
-	h.engine = NewEngine(h.factory, common.NewTestUUIDGenerator(), h.txMgr,
-		WithExternalProcessing(&segmentGuardProc{h: h}))
+	opts := append([]EngineOption{WithExternalProcessing(&segmentGuardProc{h: h})}, extraOpts...)
+	h.engine = NewEngine(h.factory, common.NewTestUUIDGenerator(), h.txMgr, opts...)
 
 	h.wf = spi.WorkflowDefinition{
 		Version: "1.1", Name: "SegmentGuardWF", InitialState: "A", Active: true,

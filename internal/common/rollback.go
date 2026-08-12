@@ -42,6 +42,15 @@ const commitBudget = 30 * time.Second
 // a commit which overruns its own commitBudget is never misclassified as the
 // client's 408 — a shielded-commit failure keeps its existing classification.
 func CommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return commitContextWithBudget(ctx, commitBudget)
+}
+
+// commitContextWithBudget is CommitContext with an injectable budget —
+// factored out so ShieldedCommitWithBudget (reqtimeout.go) can give tests a
+// way to observe a commit-context expiry for real without waiting out the
+// production 30s commitBudget. CommitContext itself always uses the fixed
+// production budget; only tests should need the budget-injectable form.
+func commitContextWithBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 	cleared := context.WithValue(context.WithoutCancel(ctx), reqTimeoutKey{}, nil)
-	return context.WithTimeout(cleared, commitBudget)
+	return context.WithTimeout(cleared, budget)
 }
