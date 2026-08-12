@@ -521,6 +521,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 				ModelID:    delRes.EntityModelID,
 				NumDeleted: delRes.RemovedCount,
 				EntityIds:  []string{},
+				ErrorsByID: deleteAllErrorsByID(delRes.IDToError),
 			}
 			respCE, err := NewCloudEvent(EntityDeleteAllResponse, resp)
 			if err != nil {
@@ -559,4 +560,23 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		slog.Warn("unsupported event type", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType)
 		return status.Errorf(codes.InvalidArgument, "unsupported collection event type: %s", eventType)
 	}
+}
+
+// deleteAllErrorsByID converts a DeleteResult.IDToError map into the
+// schema's ErrorsByID shape (map[string]interface{}). The batched
+// (transactionSize>0) delete-all path folds per-id and per-batch-commit
+// failures into IDToError and still returns Success:true — RemovedCount can
+// be less than MatchedCount — so the caller must be able to see which ids
+// failed and why, the same way the HTTP door's idToError field already does.
+// An empty/nil input returns nil so the omitempty field is left off the
+// wire, matching the schema's optionality (no failures ⇒ no field).
+func deleteAllErrorsByID(idToError map[string]string) events.EntityDeleteAllResponseJsonErrorsByID {
+	if len(idToError) == 0 {
+		return nil
+	}
+	out := make(events.EntityDeleteAllResponseJsonErrorsByID, len(idToError))
+	for id, msg := range idToError {
+		out[id] = msg
+	}
+	return out
 }

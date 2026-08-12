@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -327,5 +328,150 @@ func TestRPC_EntityDeleteAll_TransactionSize_Absent_SingleTx(t *testing.T) {
 	}
 	if commits := rtm.commitCount() - commitsBefore; commits != 1 {
 		t.Errorf("commits during delete-all = %d, want exactly 1 (single-tx path, unchanged)", commits)
+	}
+}
+
+// --- (f) batched delete-all surfaces per-id/per-batch-commit failures in ErrorsByID ---
+
+// failNthCommitTxSizeMgr wraps a real spi.TransactionManager and fails the
+// Nth Commit call (1-based, across the wrapped manager's whole lifetime)
+// with the configured error instead of delegating — mirrors
+// internal/domain/entity's failNthCommitTxMgr, used here to force a
+// deterministic mid-batch commit failure through the gRPC door rather than
+// racing a real conflict.
+type failNthCommitTxSizeMgr struct {
+	spi.TransactionManager
+	mu      sync.Mutex
+	commits int
+	failOn  map[int]error
+}
+
+func (m *failNthCommitTxSizeMgr) Commit(ctx context.Context, txID string) error {
+	m.mu.Lock()
+	m.commits++
+	idx := m.commits
+	m.mu.Unlock()
+	if err, ok := m.failOn[idx]; ok {
+		return err
+	}
+	return m.TransactionManager.Commit(ctx, txID)
+}
+
+// TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID pins that the
+// batched delete-all path surfaces per-batch-commit failures to the gRPC
+// caller: DeleteEntitiesConditional folds a failed batch's ids into
+// DeleteResult.IDToError and still returns (result, nil) — Success:true,
+// NumDeleted must reflect only the batches that actually committed, and
+// ErrorsByID must carry the failed ids with messages so the caller can tell
+// RemovedCount < MatchedCount happened and why, instead of silently
+// under-reporting.
+//
+// 6 entities seeded via a plain (unwrapped) txMgr; the delete itself runs
+// through a second Handler sharing the same backing store but wired to a
+// failNthCommitTxSizeMgr with a fresh commit counter, so "commit index 3"
+// deterministically lands on the middle of 3 batches (1 resolution tx + 2
+// batches, this being the 2nd batch) — mirrors
+// TestDeleteEntitiesConditional_Batched_FailedBatchContinues in
+// internal/domain/entity/service_delete_batched_test.go.
+func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { realFactory.Close() })
+	realFactory.NewTransactionManager(common.NewDefaultUUIDGenerator())
+	realTxMgr := realFactory.GetTransactionManager()
+
+	uc := &spi.UserContext{
+		UserID:   "deleteall-errbyid-user",
+		UserName: "DeleteAll ErrByID",
+		Tenant:   spi.Tenant{ID: "deleteall-errbyid-tenant", Name: "DeleteAll ErrByID"},
+		Roles:    []string{"ADMIN"},
+	}
+	ctx := spi.WithUserContext(context.Background(), uc)
+
+	modelHandler := model.New(realFactory)
+	dataBytes, err := json.Marshal(map[string]any{"name": "Alice"})
+	if err != nil {
+		t.Fatalf("marshal sample data: %v", err)
+	}
+	if _, err := modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName: "person", ModelVersion: "1", Format: "JSON",
+		Converter: "SAMPLE_DATA", Data: dataBytes,
+	}); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if _, err := modelHandler.LockModel(ctx, "person", "1"); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+
+	// Seed 6 entities through a plain, unwrapped txMgr so the seeding
+	// commits never touch the fail-injecting manager's counter.
+	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr)
+	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
+	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed)
+	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New(), searchServiceSeed)
+	svcSeed := &CloudEventsServiceImpl{
+		registry:      NewMemberRegistry(),
+		txMgr:         realTxMgr,
+		entityHandler: entityHandlerSeed,
+		modelHandler:  modelHandler,
+		searchService: searchServiceSeed,
+	}
+	for i := 0; i < 6; i++ {
+		ce := makeCE(EntityCreateRequest, map[string]any{
+			"id":         "seed",
+			"dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": "Alice"},
+			},
+		})
+		if _, err := svcSeed.EntityManage(ctx, ce); err != nil {
+			t.Fatalf("seed create[%d]: %v", i, err)
+		}
+	}
+
+	// 6 matching entities, batchSize 2 => 3 batches. Commit index 3 (1
+	// resolution tx + batch1 + THIS batch) is forced to fail.
+	failMgr := &failNthCommitTxSizeMgr{TransactionManager: realTxMgr, failOn: map[int]error{3: errors.New("commit boom")}}
+	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr)
+	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
+	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete)
+	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New(), searchServiceDelete)
+	svcDelete := &CloudEventsServiceImpl{
+		registry:      NewMemberRegistry(),
+		txMgr:         failMgr,
+		entityHandler: entityHandlerDelete,
+		modelHandler:  modelHandler,
+		searchService: searchServiceDelete,
+	}
+
+	ce := makeCE(EntityDeleteAllRequest, map[string]any{
+		"id":              "test",
+		"model":           map[string]any{"name": "person", "version": 1},
+		"transactionSize": 2,
+	})
+	stream := &mockManageStream{ctx: ctx}
+	if err := svcDelete.EntityManageCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Fatalf("expected success=true, error=%+v", typed.Error)
+	}
+	if typed.NumDeleted != 4 {
+		t.Errorf("NumDeleted = %d, want 4 (batches 1 and 3 committed, 2 ids each; batch 2's commit failed)", typed.NumDeleted)
+	}
+	if len(typed.ErrorsByID) != 2 {
+		t.Fatalf("ErrorsByID = %v, want exactly 2 entries (the failed batch's ids)", typed.ErrorsByID)
+	}
+	for id, v := range typed.ErrorsByID {
+		msg, ok := v.(string)
+		if !ok || msg == "" {
+			t.Errorf("ErrorsByID[%s] = %v (%T), want a non-empty string failure message", id, v, v)
+		}
 	}
 }
