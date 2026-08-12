@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
@@ -472,6 +473,60 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		var req events.EntityDeleteAllRequestJson
 		if err := dec.Decode(&req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+		}
+
+		// An explicit transactionSize switches to the batched,
+		// enumerate-then-delete path (spec D4): validate it's a positive
+		// integer, reject a joined (tx-token'd) request the same way
+		// resolveEventTimeout rejects transactionTimeoutMs on one (spec
+		// D7) — honoring it would let a participant unilaterally
+		// fragment a transaction the owner still controls. A nil field
+		// (the schema no longer bakes a default) leaves today's
+		// single-tx DeleteAllEntities path byte-for-byte unchanged.
+		if req.TransactionSize != nil {
+			size := *req.TransactionSize
+			if size < 1 {
+				respCE, ceErr := entityDeleteAllError(ctx, ce.Id, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+					"transactionSize must be a positive integer"))
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+			if spi.GetTransaction(ctx) != nil {
+				respCE, ceErr := entityDeleteAllError(ctx, ce.Id, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+					"transactionSize is not supported on a request that joins an open transaction"))
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+
+			delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), nil, nil, false, size)
+			if err != nil {
+				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
+				respCE, ceErr := entityDeleteAllError(ctx, ce.Id, err)
+				if ceErr != nil {
+					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+				}
+				return stream.Send(respCE)
+			}
+
+			diag := common.GetDiagnostics(ctx)
+			resp := events.EntityDeleteAllResponseJson{
+				ID:         ce.Id,
+				Success:    true,
+				Warnings:   diag.GetWarnings(),
+				RequestID:  ce.Id,
+				ModelID:    delRes.EntityModelID,
+				NumDeleted: delRes.RemovedCount,
+				EntityIds:  []string{},
+			}
+			respCE, err := NewCloudEvent(EntityDeleteAllResponse, resp)
+			if err != nil {
+				return status.Errorf(codes.Internal, "failed to build response: %v", err)
+			}
+			return stream.Send(respCE)
 		}
 
 		result, err := s.entityHandler.DeleteAllEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version))

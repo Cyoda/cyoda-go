@@ -1058,7 +1058,7 @@ type EntityDeleteAllRequestJson struct {
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
 
 	// Transaction size.
-	TransactionSize int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
+	TransactionSize *int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
 
 	// Include the list of entity ids deleted in the response
 	Verbose bool `json:"verbose,omitempty" yaml:"verbose,omitempty" mapstructure:"verbose,omitempty"`
@@ -1123,9 +1123,6 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
 		plain.Success = true
-	}
-	if v, ok := raw["transactionSize"]; !ok || v == nil {
-		plain.TransactionSize = 1000.0
 	}
 	if v, ok := raw["verbose"]; !ok || v == nil {
 		plain.Verbose = false
