@@ -243,6 +243,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 		return
 	}
 
+	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), params.TransactionTimeoutMillis)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+	defer cancelTimeout()
+
 	// Read request body (with size limit)
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -272,8 +279,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 		// Empty array preserves the historical single-empty-call shape so the
 		// service-layer empty-collection contract is exercised (no chunks).
 		if len(items) == 0 {
-			result, err := h.CreateEntityCollection(r.Context(), items)
+			result, err := h.CreateEntityCollection(opCtx, items)
 			if err != nil {
+				if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+					common.WriteError(w, r, appErr)
+					return
+				}
 				common.WriteError(w, r, classifyError(err))
 				return
 			}
@@ -284,7 +295,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 			return
 		}
 
-		results, firstChunkErr := h.runChunkedCreate(r.Context(), items, window)
+		results, firstChunkErr := h.runChunkedCreate(opCtx, items, window)
 		if firstChunkErr != nil {
 			common.WriteError(w, r, firstChunkErr)
 			return
@@ -293,13 +304,17 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 		return
 	}
 
-	result, err := h.CreateEntity(r.Context(), CreateEntityInput{
+	result, err := h.CreateEntity(opCtx, CreateEntityInput{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 		Format:       string(format),
 		Data:         bodyBytes,
 	})
 	if err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, classifyError(err))
 		return
 	}
@@ -593,6 +608,31 @@ func resolveTransactionWindow(window *int32) (int, *common.AppError) {
 	return int(*window), nil
 }
 
+// resolveRequestTimeout applies spec D7/D10 for the write ops: validate,
+// reject on a joined transaction, attach the feature-owned deadline.
+//
+// A nil millis is a no-op — (ctx, no-op cancel, nil) — so a caller that never
+// sends transactionTimeoutMillis observes zero behavior change (the PATCH
+// contract). A joined (tx-token'd) request is rejected rather than silently
+// ignored: spi.GetTransaction(ctx) != nil is how a routed compute-node
+// callback presents at param-resolution time (see beginOrJoin), and honoring
+// a client-supplied deadline on a participant would let it unilaterally
+// abandon a transaction the owner still controls.
+func resolveRequestTimeout(ctx context.Context, millis *int64) (context.Context, context.CancelFunc, *common.AppError) {
+	if millis == nil {
+		return ctx, func() {}, nil
+	}
+	if appErr := common.ValidateRequestTimeoutMillis(*millis); appErr != nil {
+		return nil, nil, appErr
+	}
+	if spi.GetTransaction(ctx) != nil {
+		return nil, nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			"transactionTimeoutMillis is not supported on a request that joins an open transaction")
+	}
+	ctx, cancel := common.WithRequestTimeout(ctx, *millis)
+	return ctx, cancel, nil
+}
+
 // collectionChunkResult is one element of the collection-endpoint response
 // array. Successful chunks carry transactionId + entityIds. Failed chunks
 // carry the Error field with code/message and the chunk's index. Chunks with
@@ -673,10 +713,18 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 		}
 		result, err := h.CreateEntityCollection(ctx, items[start:end])
 		if err != nil {
-			appErr := classifyError(err)
+			var appErr *common.AppError
+			if tErr := common.ClassifyRequestTimeout(ctx, err, common.ErrCodeTransactionTimeout); tErr != nil {
+				appErr = tErr
+			} else {
+				appErr = classifyError(err)
+			}
 			if chunkIdx == 0 {
 				return nil, appErr
 			}
+			// A later-chunk expiry surfaces as a TRANSACTION_TIMEOUT-coded
+			// error element, never a request-level 408 (spec D3): chunks
+			// before this one already committed and are durable.
 			results = append(results, collectionChunkResult{
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
@@ -701,6 +749,13 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, paramErr)
 		return
 	}
+
+	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), params.TransactionTimeoutMillis)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+	defer cancelTimeout()
 
 	// Read raw body and parse as JSON array (with size limit).
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
@@ -734,8 +789,12 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 	// Empty body keeps the existing single-empty-call shape so we exercise
 	// any service-layer empty-collection contract (no chunks emitted).
 	if len(items) == 0 {
-		result, err := h.CreateEntityCollection(r.Context(), items)
+		result, err := h.CreateEntityCollection(opCtx, items)
 		if err != nil {
+			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+				common.WriteError(w, r, appErr)
+				return
+			}
 			common.WriteError(w, r, classifyError(err))
 			return
 		}
@@ -746,7 +805,7 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	results, firstChunkErr := h.runChunkedCreate(r.Context(), items, window)
+	results, firstChunkErr := h.runChunkedCreate(opCtx, items, window)
 	if firstChunkErr != nil {
 		common.WriteError(w, r, firstChunkErr)
 		return
@@ -769,6 +828,13 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, paramErr)
 		return
 	}
+
+	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), params.TransactionTimeoutMillis)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+	defer cancelTimeout()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -804,8 +870,12 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 	// Empty body: defer to the service layer's empty-batch contract
 	// (it returns 400 BAD_REQUEST, see UpdateEntityCollection).
 	if len(items) == 0 {
-		_, err := h.UpdateEntityCollection(r.Context(), items)
+		_, err := h.UpdateEntityCollection(opCtx, items)
 		if err != nil {
+			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+				common.WriteError(w, r, appErr)
+				return
+			}
 			common.WriteError(w, r, classifyError(err))
 			return
 		}
@@ -821,13 +891,21 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		if end > len(items) {
 			end = len(items)
 		}
-		result, err := h.UpdateEntityCollection(r.Context(), items[start:end])
+		result, err := h.UpdateEntityCollection(opCtx, items[start:end])
 		if err != nil {
-			appErr := classifyError(err)
+			var appErr *common.AppError
+			if tErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); tErr != nil {
+				appErr = tErr
+			} else {
+				appErr = classifyError(err)
+			}
 			if chunkIdx == 0 {
 				common.WriteError(w, r, appErr)
 				return
 			}
+			// A later-chunk expiry surfaces as a TRANSACTION_TIMEOUT-coded
+			// error element, never a request-level 408 (spec D3): chunks
+			// before this one already committed and are durable.
 			results = append(results, collectionChunkResult{
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
@@ -862,6 +940,13 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 }
 
 func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.UpdateSingleWithLoopbackParams) {
+	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), params.TransactionTimeoutMillis)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+	defer cancelTimeout()
+
 	// Read request body (with size limit) -- outside transaction.
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -875,7 +960,7 @@ func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Reques
 		ifMatch = *params.IfMatch
 	}
 
-	result, err := h.UpdateEntity(r.Context(), UpdateEntityInput{
+	result, err := h.UpdateEntity(opCtx, UpdateEntityInput{
 		EntityID:   entityId.String(),
 		Format:     string(format),
 		Data:       bodyBytes,
@@ -883,6 +968,10 @@ func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Reques
 		IfMatch:    ifMatch,
 	})
 	if err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, classifyError(err))
 		return
 	}
@@ -895,6 +984,13 @@ func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) UpdateSingle(w http.ResponseWriter, r *http.Request, format genapi.UpdateSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.UpdateSingleParams) {
+	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), params.TransactionTimeoutMillis)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+	defer cancelTimeout()
+
 	// Read request body (with size limit) -- outside transaction.
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -908,7 +1004,7 @@ func (h *Handler) UpdateSingle(w http.ResponseWriter, r *http.Request, format ge
 		ifMatch = *params.IfMatch
 	}
 
-	result, err := h.UpdateEntity(r.Context(), UpdateEntityInput{
+	result, err := h.UpdateEntity(opCtx, UpdateEntityInput{
 		EntityID:   entityId.String(),
 		Format:     string(format),
 		Data:       bodyBytes,
@@ -916,6 +1012,10 @@ func (h *Handler) UpdateSingle(w http.ResponseWriter, r *http.Request, format ge
 		IfMatch:    ifMatch,
 	})
 	if err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, classifyError(err))
 		return
 	}
@@ -929,17 +1029,18 @@ func (h *Handler) UpdateSingle(w http.ResponseWriter, r *http.Request, format ge
 
 // PatchSingleWithLoopback handles PATCH /entity/{format}/{entityId} (loopback).
 func (h *Handler) PatchSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.PatchSingleWithLoopbackParams) {
-	h.patch(w, r, string(format), entityId, "", params.IfMatch)
+	h.patch(w, r, string(format), entityId, "", params.IfMatch, params.TransactionTimeoutMillis)
 }
 
 // PatchSingle handles PATCH /entity/{format}/{entityId}/{transition}.
 func (h *Handler) PatchSingle(w http.ResponseWriter, r *http.Request, format genapi.PatchSingleParamsFormat, entityId openapi_types.UUID, transition string, params genapi.PatchSingleParams) {
-	h.patch(w, r, string(format), entityId, transition, params.IfMatch)
+	h.patch(w, r, string(format), entityId, transition, params.IfMatch, params.TransactionTimeoutMillis)
 }
 
 // patch is the shared PATCH implementation. Error precedence: media-type/format
-// (415) -> If-Match presence (428) -> service (404/412/409/501/4xx).
-func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, entityId openapi_types.UUID, transition string, ifMatchHeader *string) {
+// (415) -> If-Match presence (428) -> transactionTimeoutMillis validation (400) ->
+// service (404/412/409/501/4xx).
+func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, entityId openapi_types.UUID, transition string, ifMatchHeader *string, millis *int64) {
 	if format != "JSON" {
 		common.WriteError(w, r, common.Operational(http.StatusUnsupportedMediaType, common.ErrCodeUnsupportedMediaType, "patch supports the JSON format only"))
 		return
@@ -955,13 +1056,19 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, e
 			"missing If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
 		return
 	}
+	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), millis)
+	if paramErr != nil {
+		common.WriteError(w, r, paramErr)
+		return
+	}
+	defer cancelTimeout()
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
 		return
 	}
-	result, err := h.PatchEntity(r.Context(), PatchEntityInput{
+	result, err := h.PatchEntity(opCtx, PatchEntityInput{
 		EntityID:    entityId.String(),
 		Patch:       bodyBytes,
 		PatchFormat: patchFormat,
@@ -969,6 +1076,10 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, e
 		IfMatch:     *ifMatchHeader,
 	})
 	if err != nil {
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, classifyError(err))
 		return
 	}
