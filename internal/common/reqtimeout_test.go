@@ -82,7 +82,7 @@ func TestClassifyRequestTimeout_CanceledIsNot408(t *testing.T) {
 }
 
 func TestCommitContext_DetachedAndBudgeted(t *testing.T) {
-	parent, cancel := WithRequestTimeout(context.Background(), 1)
+	parent, cancel := WithRequestTimeout(context.WithValue(context.Background(), ucKey{}, "tenant-a"), 1)
 	defer cancel()
 	<-parent.Done()
 	cctx, ccancel := CommitContext(parent)
@@ -90,7 +90,34 @@ func TestCommitContext_DetachedAndBudgeted(t *testing.T) {
 	if cctx.Err() != nil {
 		t.Fatal("commit ctx must survive an expired parent")
 	}
-	if _, ok := cctx.Deadline(); !ok {
+	if got := cctx.Value(ucKey{}); got != "tenant-a" {
+		t.Fatalf("commit context lost parent values: got %v", got)
+	}
+	dl, ok := cctx.Deadline()
+	if !ok {
 		t.Fatal("commit ctx must carry its own budget")
+	}
+	if d := time.Until(dl); d <= 0 || d > 30*time.Second {
+		t.Fatalf("deadline %v is not the documented 30s bound", d)
+	}
+}
+
+func TestCommitContext_ClearsRequestTimeoutMarker(t *testing.T) {
+	parent, cancel := WithRequestTimeout(context.Background(), 60000)
+	defer cancel()
+	if !HasRequestTimeout(parent) {
+		t.Fatal("parent must carry the marker")
+	}
+	cctx, ccancel := CommitContext(parent)
+	defer ccancel()
+	if HasRequestTimeout(cctx) {
+		t.Fatal("commit ctx must not carry the client-requested-timeout marker — a commitBudget expiry is not the client's 408")
+	}
+	if !HasRequestTimeout(parent) {
+		t.Fatal("clearing the marker on the derived ctx must not mutate the parent")
+	}
+	err := fmt.Errorf("failed to commit transaction: %w", context.DeadlineExceeded)
+	if got := ClassifyRequestTimeout(cctx, err, ErrCodeTransactionTimeout); got != nil {
+		t.Fatalf("commit ctx must never classify as the client's 408, got %v", got)
 	}
 }

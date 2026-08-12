@@ -34,9 +34,13 @@ func WithRequestTimeout(ctx context.Context, millis int64) (context.Context, con
 	return context.WithTimeout(ctx, time.Duration(millis)*time.Millisecond)
 }
 
-// HasRequestTimeout reports whether ctx carries a feature-attached deadline marker.
+// HasRequestTimeout reports whether ctx carries a feature-attached deadline
+// marker. The stored value must be exactly true — CommitContext clears the
+// marker by re-stamping the key with nil (context.WithValue provides no way
+// to delete a key), so a present-but-nil value must read as absent.
 func HasRequestTimeout(ctx context.Context) bool {
-	return ctx.Value(reqTimeoutKey{}) != nil
+	v, _ := ctx.Value(reqTimeoutKey{}).(bool)
+	return v
 }
 
 // ClassifyRequestTimeout maps err to Operational(408, code).AsRetryable() only

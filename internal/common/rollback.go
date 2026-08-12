@@ -38,7 +38,10 @@ const commitBudget = 30 * time.Second
 // CommitContext derives the context a commit runs on: the caller's values
 // without the caller's cancellation, under a bounded deadline. WithoutCancel
 // is load-bearing for the same reason as RollbackContext (tenant checks read
-// UserContext off the ctx).
+// UserContext off the ctx). It also clears the request-timeout marker so that
+// a commit which overruns its own commitBudget is never misclassified as the
+// client's 408 — a shielded-commit failure keeps its existing classification.
 func CommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), commitBudget)
+	cleared := context.WithValue(context.WithoutCancel(ctx), reqTimeoutKey{}, nil)
+	return context.WithTimeout(cleared, commitBudget)
 }
