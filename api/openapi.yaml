@@ -1910,13 +1910,16 @@ paths:
           example: 1
         - name: transactionSize
           in: query
-          description: Maximum number of entities to delete in a single transaction.
-            Higher values may improve performance but increase memory usage.
+          description: |
+            Number of entities to delete per transaction batch. Batches
+            committed before a failure remain durable and per-id/batch
+            failures are reported in the response. Not supported on
+            requests joining an open transaction (400). Absent means a
+            single transaction.
           required: false
           schema:
             type: integer
             format: int32
-            default: 1000
           example: 1000
         - name: pointInTime
           in: query
@@ -2092,16 +2095,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds allowed for transaction completion.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
         - name: waitForConsistencyAfter
           in: query
           description: |
@@ -2252,6 +2254,17 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before the first commit; nothing committed. After a first
+            chunk commits, timeout expiry surfaces via the existing 200
+            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
+            instead of 408.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2310,16 +2323,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds allowed for transaction completion.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
         - name: waitForConsistencyAfter
           in: query
           description: |
@@ -2455,6 +2467,17 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before the first commit; nothing committed. After a first
+            chunk commits, timeout expiry surfaces via the existing 200
+            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
+            instead of 408.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2513,17 +2536,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds allowed for transaction completion.
-            Operation will fail if it takes longer than this timeout.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
           example: 30000
         - name: waitForConsistencyAfter
           in: query
@@ -2638,6 +2659,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before commit; nothing committed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2688,17 +2717,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds allowed for transaction completion.
-            Operation will fail if it takes longer than this timeout.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
           example: 30000
         - name: waitForConsistencyAfter
           in: query
@@ -2783,6 +2810,14 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "501":
           $ref: '#/components/responses/NotImplemented'
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before commit; nothing committed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2853,17 +2888,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds allowed for transaction completion.
-            Operation will fail if it takes longer than this timeout.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
           example: 30000
         - name: waitForConsistencyAfter
           in: query
@@ -2978,6 +3011,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before commit; nothing committed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3038,17 +3079,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds allowed for transaction completion.
-            Operation will fail if it takes longer than this timeout.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
           example: 30000
         - name: waitForConsistencyAfter
           in: query
@@ -3133,6 +3172,14 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "501":
           $ref: '#/components/responses/NotImplemented'
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before commit; nothing committed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3212,16 +3259,15 @@ paths:
         - name: transactionTimeoutMillis
           in: query
           description: |
-            Maximum time in milliseconds for transaction completion.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
         - name: waitForConsistencyAfter
           in: query
           description: |
@@ -3356,6 +3402,17 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before the first commit; nothing committed. After a first
+            chunk commits, timeout expiry surfaces via the existing 200
+            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
+            instead of 408.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -3368,20 +3425,33 @@ paths:
     delete:
       tags:
         - Edge message
-      summary: Delete multiple edge messages by IDs
-      description: Deletes multiple stored edge messages using their unique
-        identifiers, including the associated payload blobs. Messages are
-        deleted in batches according to the specified transaction size.
+      summary: Delete multiple edge messages by IDs, optionally in batches
+      description: >-
+        Deletes multiple stored edge messages using their unique identifiers,
+        including the associated payload blobs. Without `transactionSize`
+        all ids are deleted in a single call and the response has one
+        element with `success` for the whole set. With `transactionSize`,
+        ids are deleted in batches of that size — one response element per
+        batch, each carrying its own `success`; a batch failure does not
+        stop later batches from running. Message deletion is not part of an
+        entity transaction and does not participate in transaction
+        rollback. On the memory backend, a batch reporting `success: false`
+        may still have removed some of its ids before the failure
+        (partial application within the batch).
       operationId: deleteMessages
       parameters:
         - name: transactionSize
           in: query
-          description: Number of messages to delete per transaction batch
+          description: |
+            Number of messages to delete per transaction batch. Batches
+            committed before a failure remain durable and per-batch
+            failures are reported in the response. Not supported on
+            requests joining an open transaction (400). Absent means a
+            single call.
           required: false
           schema:
             type: integer
             format: int32
-            default: 1000
       requestBody:
         description: List of message IDs to delete.
         content:
@@ -3537,12 +3607,16 @@ paths:
             minLength: 1
         - name: transactionTimeoutMillis
           in: query
-          description: Maximum time in milliseconds to wait for transaction completion
+          description: |
+            Maximum time in milliseconds the server may spend before the
+            first commit. When exceeded, the operation is rolled back and
+            fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+            supported on requests joining an open transaction (400). Absent
+            means no server-side timeout.
           required: false
           schema:
             type: integer
             format: int64
-            default: 10000
       requestBody:
         description: >
           A single JSON object. It must contain a `payload` field (any valid JSON
@@ -3645,6 +3719,14 @@ paths:
                     instance: /api/message/new/nobel.prize.events
                     properties:
                       errorCode: BAD_REQUEST
+        "408":
+          description: >-
+            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            elapsed before the message save began; nothing committed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":

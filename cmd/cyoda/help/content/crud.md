@@ -14,6 +14,7 @@ see_also:
   - errors.INCOMPATIBLE_TYPE
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
+  - errors.TRANSACTION_TIMEOUT
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_FAILED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
@@ -70,7 +71,7 @@ Body size limit on all write endpoints: 10 MiB.
 - `modelVersion` (path): int32
 - `transactionWindow` (query, optional): int32, default `100`, max `1000` — applies only when the request body is a JSON array. Maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Array bodies exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is then an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 If the request body is a JSON array, each element is treated as a separate entity of the same model and the collection-create chunking contract applies (see `transactionWindow` above and the `POST /api/entity/{format}` partial-success shape below).
 
@@ -87,7 +88,7 @@ Response: `200 OK`, `application/json`. Single-object body returns a one-element
 
 - `format` (path): `JSON` or `XML`
 - `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order.
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
@@ -165,7 +166,7 @@ Response: `200 OK`, `application/json`:
 - `format` (path): `JSON` or `XML`
 - `entityId` (path): UUID
 - `If-Match` (header, optional): transaction ID of last read — optimistic concurrency; if the entity was modified since, returns `412 Precondition Failed`
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 Request body: updated entity JSON/XML payload.
@@ -185,7 +186,7 @@ Response: `200 OK`, `application/json`:
 - `entityId` (path): UUID
 - `transition` (path): string — transition name defined in the model's workflow
 - `If-Match` (header, optional): transaction ID
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 Response: `200 OK`, same shape as loopback update.
@@ -194,7 +195,7 @@ Response: `200 OK`, same shape as loopback update.
 
 - `format` (path): `JSON` (only supported format today; single-item PUT endpoints still accept XML)
 - `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
@@ -255,7 +256,7 @@ Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — on
 - `entityId` (path): UUID
 - `Content-Type` (header, required): `application/merge-patch+json` (RFC 7386 merge patch, implemented) or `application/json-patch+json` (RFC 6902, returns `501 Not Implemented`); any other value ⇒ `415 Unsupported Media Type`
 - `If-Match` (header, required in some form): see the three-state list below
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 Request body: a sparse JSON object (the patch document). The patch is applied to the **stored** entity payload using RFC 7386 merge semantics:
@@ -283,7 +284,7 @@ Response: `200 OK`, same shape as the single-item PUT update.
 - `transition` (path): string — transition name defined in the model's workflow
 - `Content-Type` (header, required): same two-value list as the loopback form
 - `If-Match` (header, required in some form): same three-state list as the loopback form
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 - `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
 
 The merge patch is applied first; the named transition's processors then run on the merged state and may further mutate the entity. Response: `200 OK`, same shape as the loopback form.
@@ -325,7 +326,7 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `transactionSize` (query, optional): int32, default `1000` — maximum entities to delete per transaction
+- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction.
 - `pointInTime` (query, optional): RFC 3339 — select entities for deletion as at this instant
 - `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every deleted entity ID; for a delete-all (empty body) `ids` is always empty
 

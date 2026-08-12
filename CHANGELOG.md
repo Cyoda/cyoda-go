@@ -92,7 +92,79 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (a deterministic panic would otherwise become a restart loop). Read the ticket from
   the node's log and replace the pod.
 
+- **`transactionTimeoutMillis` is now honored on entity writes and `newMessage`.**
+  All seven entity write operations (`create`, `createCollection`, `updateSingle`,
+  `updateSingleWithLoopback`, `updateCollection`, `patchSingle`,
+  `patchSingleWithLoopback`) plus `newMessage` accepted this query parameter and
+  silently ignored it. Set, it bounds the time the server may spend before the
+  first commit; exceeding it rolls back and fails with **408
+  `TRANSACTION_TIMEOUT`** — nothing is committed. On a chunked write
+  (`transactionWindow`), the bound only covers time-to-first-commit: once a
+  chunk has committed, further expiry surfaces through the existing per-chunk
+  `200` contract instead of a 408. Rejected with **400** on a request that
+  joins an open transaction, where honoring it is unsafe (the joiner does not
+  own the transaction). Absent, behavior is unchanged. The gRPC mirror
+  (`transactionTimeoutMs` on the equivalent CloudEvent requests) honors the
+  same semantics, returning a `CLIENT_ERROR` envelope prefixed
+  `TRANSACTION_TIMEOUT: …`. `cyoda help errors TRANSACTION_TIMEOUT`.
+  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
+- **`transactionSize` is now honored on `deleteEntities` and `deleteMessages`.**
+  Set, matching ids/messages are deleted in independent batches of that size
+  instead of one transaction or one call. `deleteEntities` re-validates each
+  id's version against the batch resolved before batching began, reporting a
+  version conflict or a failed batch's ids per-id in `deleteResult.idToError`
+  rather than retrying; batches already committed before a later failure stay
+  committed. `deleteMessages` reports one `{entityIds, success}` element per
+  batch, and a failed batch does not stop later batches. Rejected with **400**
+  on a request that joins an open transaction (batching per-transaction commit
+  is unsatisfiable for a joiner). Absent, behavior is unchanged. The gRPC
+  `EntityDeleteAllRequest.transactionSize` mirror is honored the same way when
+  explicitly sent, and its response's `errorsById` is now populated with
+  per-id batch failures.
+  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
+- **`searchEntities` regains `timeoutMillis` and `408 SEARCH_TIMEOUT`,**
+  completing the intent recorded when the previous, unenforced version of this
+  parameter was removed in v0.8.2. Set, the search is aborted once the
+  deadline elapses and the request fails **408 `SEARCH_TIMEOUT`** with no
+  partial results returned; rejected with **400** on a request that joins an
+  open transaction. Enforced uniformly across memory, sqlite and postgres.
+  `cyoda help errors SEARCH_TIMEOUT`.
+  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
 ### Changed
+
+- **Commits are now shielded from a client disconnect or an expired
+  `transactionTimeoutMillis`/`timeoutMillis` deadline arriving mid-commit.**
+  Every commit call (the final commit, each commit-before-dispatch segment
+  commit, and `newMessage`'s `Save`) now runs on a deadline-shielded context
+  with its own budget, so a deadline expiring while a commit is in flight can
+  no longer produce an in-doubt "client sees failure but the write is durable"
+  outcome. This also closes a pre-existing backend divergence on a plain
+  client disconnect during commit: postgres and sqlite previously aborted the
+  in-flight flush, while memory ran it to completion; all three now complete
+  it. Once a commit succeeds, the response is success regardless of when a
+  deadline later fires.
+
+- **A client disconnect now aborts in-flight per-item loop work on memory and
+  sqlite, matching postgres's existing behavior.** New generic cancellation
+  checks in the chunk loop, collection per-item loops, conditional-delete
+  per-id/per-batch loops, `newMessage`'s pre-save check, and the workflow
+  cascade loop fire on any context cancellation, not only the new feature
+  deadlines. Previously only postgres (via pgx) stopped in-flight work on
+  disconnect; memory and sqlite ran the operation to completion regardless.
+  Work already past its last commit/flush point stays durable — this only
+  stops further, not-yet-committed work from starting.
+
+- **A bare context-cancellation error escaping a workflow evaluation is now a
+  sanitized 500 instead of 400 `WORKFLOW_FAILED`.** `classifyWorkflowError`'s
+  catch-all previously mapped every unclassified error, including a raw
+  `context.Canceled`/`context.DeadlineExceeded`, to a 400 carrying the error's
+  own text as domain detail — misattributing a server-/infra-side
+  cancellation to the caller and risking leaking internal detail into a 4xx
+  body. It is now routed through `common.Internal`, matching how every other
+  infra-only failure in this classifier is handled.
 
 - **The search-condition translator now lives in `cyoda-go-spi`.** `ConditionToFilter`
   and the model-schema read core behind it move out of cyoda-go into the SPI, and
@@ -390,6 +462,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and the fire did not precede the armed time. `getSMAuditEvents` gained an explicit page
   size — the default 20-item page silently truncated the history one of them reasons about.
   ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+
+- **A late compute-node reply no longer leaves a dangling gRPC dispatch
+  entry.** `internal/grpc/dispatch.go` removed a pending request from its
+  tracking map only via `CompleteRequest`/`FailAllPending`, so the
+  `ctx.Done()` timeout arm, the `time.After` timeout arm, and a `Send`
+  failure all abandoned their request without cleaning up its map entry — a
+  bounded per-request leak, hottest on a reachable write deadline. All three
+  paths now run through one deferred cleanup.
+  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
+- **SQLite's message batch-delete no longer fails outright on a large id
+  list.** `MessageStore.DeleteBatch` built one `IN (?,…)` clause for the
+  whole list and broke on SQLite's bound-variable limit (32766 in the
+  `ncruces/go-sqlite3` driver's wasm build). It now chunks the `IN` list at a
+  size well under that limit; message delete was already documented as
+  non-transactional, so the chunking is not user-visible beyond no longer
+  failing.
+  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
 
 ## [0.8.3] — 2026-07-27
 
