@@ -428,10 +428,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   both forms to U+FFFD, so validating the decoded value cannot see them, and
   re-serialising it would store a replacement character the client never sent.
   Correctly paired surrogates, literal emoji and a client-sent U+FFFD remain valid
-  payload content. Note this covers the HTTP ingress: the gRPC entity API decodes
-  its payload into a Go value before the guard runs, which normalises these two
-  forms away, so they cannot be detected there — tracked separately.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  payload content. The gRPC entity API now carries the client's payload bytes
+  verbatim to the same guard: it previously decoded and re-marshalled the payload
+  before validation, which rewrote both forms to U+FFFD — storing a character the
+  client never sent — and collapsed duplicate keys instead of rejecting them. All
+  five gRPC entity write events (create, update, patch, create-collection,
+  update-collection) now enforce the full guard set, matching HTTP.
+  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25),
+  [#468](https://github.com/Cyoda-platform/cyoda-go/issues/468))
 
 - **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
   backend.** `{"name":"a\u0000b"}` is valid JSON and passes schema validation, but
