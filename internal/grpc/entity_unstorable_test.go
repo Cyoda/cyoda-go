@@ -37,12 +37,13 @@ func makeRawCE(eventType string, payload []byte) *cepb.CloudEvent {
 }
 
 // unstorableOp describes one gRPC entity write event and how to wrap a raw
-// data snippet into its CloudEvent payload, byte-for-byte.
+// data snippet into its CloudEvent payload, byte-for-byte. entityID is used
+// only by the update-shaped events; create-shaped events ignore it.
 type unstorableOp struct {
 	name       string
 	eventType  string
 	collection bool
-	envelope   func(data string) string
+	envelope   func(entityID, data string) string
 }
 
 func unstorableOps() []unstorableOp {
@@ -50,29 +51,29 @@ func unstorableOps() []unstorableOp {
 		{
 			name:      "Create",
 			eventType: EntityCreateRequest,
-			envelope: func(data string) string {
+			envelope: func(_, data string) string {
 				return fmt.Sprintf(`{"id":"test","dataFormat":"JSON","payload":{"model":{"name":"person","version":1},"data":%s}}`, data)
 			},
 		},
 		{
 			name:      "Update",
 			eventType: EntityUpdateRequest,
-			envelope: func(data string) string {
-				return fmt.Sprintf(`{"id":"test","dataFormat":"JSON","payload":{"entityId":"%s","data":%s}}`, unstorablePlaceholderID, data)
+			envelope: func(entityID, data string) string {
+				return fmt.Sprintf(`{"id":"test","dataFormat":"JSON","payload":{"entityId":"%s","data":%s}}`, entityID, data)
 			},
 		},
 		{
 			name:      "Patch",
 			eventType: EntityPatchRequest,
-			envelope: func(data string) string {
-				return fmt.Sprintf(`{"id":"test","patchFormat":"MERGE_PATCH","payload":{"entityId":"%s","ifMatch":"*","patch":%s}}`, unstorablePlaceholderID, data)
+			envelope: func(entityID, data string) string {
+				return fmt.Sprintf(`{"id":"test","patchFormat":"MERGE_PATCH","payload":{"entityId":"%s","ifMatch":"*","patch":%s}}`, entityID, data)
 			},
 		},
 		{
 			name:       "CreateCollection",
 			eventType:  EntityCreateCollectionRequest,
 			collection: true,
-			envelope: func(data string) string {
+			envelope: func(_, data string) string {
 				return fmt.Sprintf(`{"id":"test","dataFormat":"JSON","payloads":[{"model":{"name":"person","version":1},"data":%s}]}`, data)
 			},
 		},
@@ -80,8 +81,8 @@ func unstorableOps() []unstorableOp {
 			name:       "UpdateCollection",
 			eventType:  EntityUpdateCollectionRequest,
 			collection: true,
-			envelope: func(data string) string {
-				return fmt.Sprintf(`{"id":"test","dataFormat":"JSON","payloads":[{"entityId":"%s","data":%s}]}`, unstorablePlaceholderID, data)
+			envelope: func(entityID, data string) string {
+				return fmt.Sprintf(`{"id":"test","dataFormat":"JSON","payloads":[{"entityId":"%s","data":%s}]}`, entityID, data)
 			},
 		},
 	}
@@ -157,7 +158,7 @@ func TestRPC_EntityWrite_UnstorablePayloadRejected(t *testing.T) {
 	for _, op := range unstorableOps() {
 		for _, class := range classes {
 			t.Run(op.name+"/"+class.name, func(t *testing.T) {
-				resp := op.invokeRaw(t, svc, ctx, []byte(op.envelope(class.data)))
+				resp := op.invokeRaw(t, svc, ctx, []byte(op.envelope(unstorablePlaceholderID, class.data)))
 				if resp.Success {
 					t.Fatal("expected success=false, got success=true: unstorable payload was accepted")
 				}
@@ -178,27 +179,43 @@ func TestRPC_EntityWrite_UnstorablePayloadRejected(t *testing.T) {
 	}
 }
 
-// TestRPC_EntityCreate_StorablePayloadStillAccepted pins the flip side of
+// TestRPC_EntityWrite_StorablePayloadStillAccepted pins the flip side of
 // the guard: content the guard must NOT fire on — a correctly PAIRED
 // surrogate escape (\ud83d\ude00, U+1F600) and a client-sent U+FFFD escape
 // (\ufffd) — remains valid payload, exactly as documented for the HTTP
 // ingress.
-func TestRPC_EntityCreate_StorablePayloadStillAccepted(t *testing.T) {
+func TestRPC_EntityWrite_StorablePayloadStillAccepted(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
 
-	payload := `{"id":"test","dataFormat":"JSON","payload":{"model":{"name":"person","version":1},"data":{"name":"a\ud83d\ude00b \ufffd c"}}}`
+	const storable = `{"name":"a\ud83d\ude00b \ufffd c"}`
 
-	resp := unstorableOps()[0]
-	typed := resp.invokeRaw(t, svc, ctx, []byte(payload))
-	if !typed.Success {
-		msg := ""
-		if typed.Error != nil {
-			msg = typed.Error.Message
-		}
-		t.Fatalf("expected success, got error: %s", msg)
+	ops := unstorableOps()
+	createOp := ops[0]
+
+	// Create first so the update-shaped events below have a real entity.
+	created := createOp.invokeRaw(t, svc, ctx, []byte(createOp.envelope("", storable)))
+	if !created.Success {
+		t.Fatalf("Create: expected success, got error: %s", errMsgOf(created))
 	}
-	if len(typed.TransactionInfo.EntityIds) != 1 {
-		t.Fatalf("expected 1 entity id, got %d", len(typed.TransactionInfo.EntityIds))
+	if len(created.TransactionInfo.EntityIds) != 1 {
+		t.Fatalf("Create: expected 1 entity id, got %d", len(created.TransactionInfo.EntityIds))
 	}
+	entityID := created.TransactionInfo.EntityIds[0]
+
+	for _, op := range ops[1:] {
+		t.Run(op.name, func(t *testing.T) {
+			resp := op.invokeRaw(t, svc, ctx, []byte(op.envelope(entityID, storable)))
+			if !resp.Success {
+				t.Fatalf("expected success, got error: %s", errMsgOf(resp))
+			}
+		})
+	}
+}
+
+func errMsgOf(resp events.EntityTransactionResponseJson) string {
+	if resp.Error == nil {
+		return ""
+	}
+	return resp.Error.Message
 }
