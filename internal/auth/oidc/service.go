@@ -245,10 +245,10 @@ func (s *Service) Delete(ctx context.Context, tenant spi.TenantID, providerID st
 	return nil
 }
 
-// ReloadAll implements §5.6. Rebuilds the in-memory registry from KV and
-// broadcasts reload_all.
+// ReloadAll implements §5.6. Rebuilds the in-memory registry from KV,
+// force-warms the JWKS of every loaded provider, and broadcasts reload_all.
 func (s *Service) ReloadAll(ctx context.Context) error {
-	if err := s.registry.ReloadAll(ctx); err != nil {
+	if err := s.registry.ReloadAllAndWarm(ctx); err != nil {
 		return fmt.Errorf("oidc: reload-all: %w", err)
 	}
 	s.registry.broadcastOp("reload_all", "", "")

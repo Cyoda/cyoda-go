@@ -318,7 +318,13 @@ func New(cfg Config) *App {
 			cfg.IAM.OIDC.RequireHTTPS,
 			cfg.IAM.OIDC.AllowPrivateNetworks,
 		)
-		pendingWarmJWKS = func() { oidcRegistry.WarmJWKSAsync(systemCtx) }
+		// Phase-2 warm-up is one-shot; the retry loop re-attempts any provider
+		// whose IdP was unreachable at that moment (e.g. cyoda boots ahead of
+		// the IdP), so federated auth recovers without a restart.
+		pendingWarmJWKS = func() {
+			oidcRegistry.WarmJWKS(systemCtx)
+			oidcRegistry.StartWarmupRetryLoop(systemCtx)
+		}
 
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
 			SigningKeyPEM:   cfg.IAM.JWTSigningKey,

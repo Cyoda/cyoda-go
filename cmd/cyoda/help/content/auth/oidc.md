@@ -73,7 +73,7 @@ Response (`200 OK`) carries the full provider DTO:
 }
 ```
 
-Registration succeeds even when the IdP's discovery / JWKS endpoints are unreachable — cyoda warms them asynchronously after the response. Tokens issued by an un-warmed provider fail with `401 UNAUTHORIZED` until the next warmup cycle (or an explicit `/reload`). See **DIAGNOSTICS** below for the operator path.
+Registration succeeds even when the IdP's discovery / JWKS endpoints are unreachable — cyoda warms them asynchronously after the response and retries failed warm-ups every 30 seconds until the IdP becomes reachable. Tokens issued by an un-warmed provider fail with `401 UNAUTHORIZED` until a warm-up succeeds (or an explicit `/reload`). See **DIAGNOSTICS** below for the operator path.
 
 Behaviour on `expectedAudiences`:
 
@@ -132,7 +132,7 @@ curl -X POST https://cyoda.example.com/api/oauth/oidc/providers/reload \
   -H "Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
-Forces an immediate JWKS refresh for every active provider on the receiving node. In a multi-node cluster the reload is broadcast.
+Forces an immediate JWKS refresh for every active provider on the receiving node. In a multi-node cluster the reload is broadcast. A provider whose discovery fetch fails during the refresh keeps its previously cached keys (freshness remains subject to the standard JWKS cache TTL).
 
 ### Present an IdP-issued JWT
 
@@ -184,7 +184,7 @@ The diagnostic path for every failure mode is **server-side logs**, not the HTTP
 
 Symptom → cause map for the common cases:
 
-- **"I get 401 but my token looks valid":** check `oidc.registry` resolve logs. The most common cause is the provider's JWKS hasn't warmed yet (registration succeeds before discovery completes); force-warm via `/oauth/oidc/providers/reload`.
+- **"I get 401 but my token looks valid":** check `oidc.registry` resolve logs. The most common cause is the provider's JWKS hasn't warmed yet (registration succeeds before discovery completes); force-warm via `/oauth/oidc/providers/reload`, or wait for the automatic warm-up retry (every 30 seconds).
 - **"After re-registering, valid tokens are rejected":** the second-most-common case — two tenants registered the same IdP with overlapping or empty `expectedAudiences`. Internally `ErrAmbiguousProvider` (`internal/auth/oidc/registry.go`) wraps to `ErrUnknownKID`. To resolve, pick disjoint `expectedAudiences` per tenant.
 - **"Tokens reject for the right tenant but the IdP is up":** verify the JWT `iss` claim matches either an explicit `issuers` entry or the discovery document's `issuer` byte-for-byte. Trailing slashes count.
 
