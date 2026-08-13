@@ -579,7 +579,7 @@ func (r *Registry) WarmJWKS(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for ref := range jobs {
-				r.reloadOne(ctx, ref.tenant, ref.uri)
+				r.warmOneSafely(ctx, ref)
 			}
 		}()
 	}
@@ -610,7 +610,7 @@ func (r *Registry) StartWarmupRetryLoop(ctx context.Context) bool {
 				return
 			case <-ticker.C:
 				for _, ref := range r.coldActiveRefs() {
-					r.reloadOne(ctx, ref.tenant, ref.uri)
+					r.warmOneSafely(ctx, ref)
 					if !r.isCold(ref) {
 						r.logger.Info("oidc: provider JWKS warmed by retry loop",
 							"pkg", "oidc", "tenant", string(ref.tenant),
@@ -621,6 +621,22 @@ func (r *Registry) StartWarmupRetryLoop(ctx context.Context) bool {
 		}
 	}()
 	return true
+}
+
+// warmOneSafely runs reloadOne with a recover layer: the warm pool's worker
+// goroutines and the retry-loop goroutine have no caller to propagate a
+// panic to, so an unrecovered panic there would crash the process. Same
+// contract as safeDispatch on the broadcast path; log-only here — the
+// broadcast panic counter stays broadcast-scoped.
+func (r *Registry) warmOneSafely(ctx context.Context, ref providerRef) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("oidc: warm-up panic",
+				"pkg", "oidc", "tenant", string(ref.tenant),
+				"uri_hash", sha256Hex(ref.uri), "panic", rec)
+		}
+	}()
+	r.reloadOne(ctx, ref.tenant, ref.uri)
 }
 
 // coldActiveRefs returns the coordinates of active providers whose key

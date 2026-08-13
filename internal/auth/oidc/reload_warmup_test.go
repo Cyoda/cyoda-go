@@ -381,6 +381,99 @@ func (s *slowCountingDiscovery) peakConcurrent() int {
 	return s.peak
 }
 
+// panickyDiscovery panics on every Fetch for uris in panicOn and delegates
+// to inner otherwise. panicsLeft bounds the panics so retry-based callers
+// can observe recovery.
+type panickyDiscovery struct {
+	mu         sync.Mutex
+	inner      Discovery
+	panicOn    map[string]bool
+	panicsLeft int
+}
+
+func (p *panickyDiscovery) Fetch(ctx context.Context, uri string) (*DiscoveryDoc, error) {
+	p.mu.Lock()
+	shouldPanic := p.panicOn[uri] && p.panicsLeft != 0
+	if shouldPanic && p.panicsLeft > 0 {
+		p.panicsLeft--
+	}
+	p.mu.Unlock()
+	if shouldPanic {
+		panic("discovery exploded")
+	}
+	return p.inner.Fetch(ctx, uri)
+}
+
+func TestRegistry_WarmJWKS_SurvivesPanickingFetch(t *testing.T) {
+	// A panic inside one provider's warm-up must not crash the process (the
+	// worker pool runs on its own goroutines) and must not prevent the other
+	// providers from warming.
+	idp := NewFixtureIdP(t)
+	goodURI := idp.Issuer + "/.well-known/openid-configuration"
+	badURI := "https://exploding.example/.well-known/openid-configuration"
+	store := newTestStore(t)
+	disc := &panickyDiscovery{
+		inner: &flakyDiscovery{docs: map[string]*DiscoveryDoc{
+			goodURI: {Issuer: idp.Issuer, JWKSURI: idp.JWKSURI},
+		}},
+		panicOn:    map[string]bool{badURI: true},
+		panicsLeft: -1, // panic forever
+	}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true})
+
+	plantProvider(t, r, testProvider(idp.Issuer, goodURI))
+	plantProvider(t, r, testProvider("https://exploding.example", badURI))
+
+	ctx := context.Background()
+	if err := r.LoadProvidersFromKV(ctx); err != nil {
+		t.Fatalf("LoadProvidersFromKV: %v", err)
+	}
+	r.WarmJWKS(ctx) // must not crash
+
+	if _, err := r.ResolveKey("default", idp.Issuer, ""); err != nil {
+		t.Fatalf("healthy provider not warmed alongside a panicking one: %v", err)
+	}
+}
+
+func TestRegistry_WarmupRetryLoop_SurvivesPanickingFetch(t *testing.T) {
+	// A panic during one retry tick must not crash the process or kill the
+	// loop: once the discovery stops panicking, the provider still warms.
+	idp := NewFixtureIdP(t)
+	uri := idp.Issuer + "/.well-known/openid-configuration"
+	store := newTestStore(t)
+	disc := &panickyDiscovery{
+		inner: &flakyDiscovery{docs: map[string]*DiscoveryDoc{
+			uri: {Issuer: idp.Issuer, JWKSURI: idp.JWKSURI},
+		}},
+		panicOn:    map[string]bool{uri: true},
+		panicsLeft: 2,
+	}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil,
+		RegistryConfig{AllowPrivateNetworks: true, WarmupRetryInterval: 20 * time.Millisecond})
+
+	plantProvider(t, r, testProvider(idp.Issuer, uri))
+	ctx := context.Background()
+	if err := r.LoadProvidersFromKV(ctx); err != nil {
+		t.Fatalf("LoadProvidersFromKV: %v", err)
+	}
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	r.StartWarmupRetryLoop(loopCtx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := r.ResolveKey("default", idp.Issuer, ""); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("provider never warmed after panicking ticks (loop died?)")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestRegistry_ReloadAll_CarriedSourceForInactiveProviderDoesNotAuthenticate(t *testing.T) {
 	// Fail-closed side of the carry-over: if the fresh store snapshot says a
 	// provider is invalidated, its carried key source must not authenticate,
