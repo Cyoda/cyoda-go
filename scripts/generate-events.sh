@@ -108,4 +108,28 @@ sed -i '' 's/Success bool `json:"success,omitempty"/Success bool `json:"success"
 # values (issue #79).
 sed -i '' 's|json\.Unmarshal(value, &raw)|decodeWithUseNumber(value, \&raw)|g; s|json\.Unmarshal(value, &plain)|decodeWithUseNumber(value, \&plain)|g' "$OUT"
 
+# Post-process: type the inbound entity payload fields as json.RawMessage so
+# the client's bytes survive to the unstorable-payload guard
+# (internal/domain/model/ingest.RejectUnstorable). Decoding them into
+# interface{} and re-marshalling silently rewrites unpaired UTF-16
+# surrogates and invalid UTF-8 to U+FFFD and collapses duplicate keys, so
+# the guard cannot fire and substituted data is stored — exactly what the
+# raw-bytes guard exists to prevent. Scoped per struct: only the payload
+# fields the gRPC entity ingress forwards verbatim to the entity service.
+perl -0777 -i -pe '
+  s/(type EntityCreatePayloadJson struct \{[^}]*?\n\tData )interface\{\}/${1}json.RawMessage/s;
+  s/(type EntityUpdatePayloadJson struct \{[^}]*?\n\tData )interface\{\}/${1}json.RawMessage/s;
+  s/(type EntityPatchPayloadJson struct \{[^}]*?\n\tPatch )interface\{\}/${1}json.RawMessage/s;
+' "$OUT"
+
+# Fail loudly if the substitutions stop matching (e.g. a schema restructuring
+# renames a field): exactly three payload fields must have been retyped.
+# (The generator emits json.RawMessage on its own elsewhere, so count the
+# retyped fields specifically, not every occurrence.)
+RAW_COUNT=$(grep -cE '^	(Data|Patch) json\.RawMessage ' "$OUT")
+if [ "$RAW_COUNT" -ne 3 ]; then
+  echo "ERROR: expected exactly 3 retyped Data/Patch json.RawMessage fields in $OUT after post-processing, found $RAW_COUNT" >&2
+  exit 1
+fi
+
 echo "Generated $OUT ($(wc -l < "$OUT") lines)"

@@ -51,16 +51,15 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if format == "" {
 			format = "JSON"
 		}
-		dataBytes, err := json.Marshal(req.Payload.Data)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to marshal data: %v", err)
-		}
-
+		// The payload bytes go to the entity service verbatim — no
+		// decode→re-marshal round-trip, which would rewrite unpaired
+		// surrogates and invalid UTF-8 to U+FFFD and collapse duplicate
+		// keys before the unstorable-payload guard could see them.
 		result, err := s.entityHandler.CreateEntity(opCtx, entity.CreateEntityInput{
 			EntityName:   req.Payload.Model.Name,
 			ModelVersion: fmt.Sprintf("%d", req.Payload.Model.Version),
 			Format:       format,
-			Data:         dataBytes,
+			Data:         req.Payload.Data,
 		})
 		if err != nil {
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
@@ -104,11 +103,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if format == "" {
 			format = "JSON"
 		}
-		dataBytes, err := json.Marshal(req.Payload.Data)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to marshal data: %v", err)
-		}
-
 		transition := ""
 		if req.Payload.Transition != nil {
 			transition = *req.Payload.Transition
@@ -117,7 +111,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		result, err := s.entityHandler.UpdateEntity(opCtx, entity.UpdateEntityInput{
 			EntityID:   req.Payload.EntityID,
 			Format:     format,
-			Data:       dataBytes,
+			Data:       req.Payload.Data,
 			Transition: transition,
 		})
 		if err != nil {
@@ -163,17 +157,13 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 				http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
 				"missing ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
 		}
-		patchBytes, err := json.Marshal(req.Payload.Patch)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to marshal patch: %v", err)
-		}
 		transition := ""
 		if req.Payload.Transition != nil {
 			transition = *req.Payload.Transition
 		}
 		result, err := s.entityHandler.PatchEntity(opCtx, entity.PatchEntityInput{
 			EntityID:    req.Payload.EntityID,
-			Patch:       patchBytes,
+			Patch:       req.Payload.Patch,
 			PatchFormat: string(req.PatchFormat),
 			Transition:  transition,
 			IfMatch:     *req.Payload.IfMatch,
@@ -316,14 +306,10 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 		items := make([]entity.CollectionItem, len(req.Payloads))
 		for i, p := range req.Payloads {
-			payloadBytes, err := json.Marshal(p.Data)
-			if err != nil {
-				return status.Errorf(codes.InvalidArgument, "failed to marshal payload %d: %v", i, err)
-			}
 			items[i] = entity.CollectionItem{
 				ModelName:    p.Model.Name,
 				ModelVersion: int32(p.Model.Version),
-				Payload:      payloadBytes,
+				Payload:      p.Data,
 			}
 		}
 
@@ -412,16 +398,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 				return stream.Send(respCE)
 			}
 
-			dataBytes, err := json.Marshal(p.Data)
-			if err != nil {
-				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
-				respCE, ceErr := entityTransactionError(ctx, ce.Id, fmt.Errorf("failed to marshal data: %v", err))
-				if ceErr != nil {
-					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
-				}
-				return stream.Send(respCE)
-			}
-
 			transition := ""
 			if p.Transition != nil {
 				transition = *p.Transition
@@ -430,7 +406,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			result, err := s.entityHandler.UpdateEntity(opCtx, entity.UpdateEntityInput{
 				EntityID:   p.EntityID,
 				Format:     format,
-				Data:       dataBytes,
+				Data:       p.Data,
 				Transition: transition,
 			})
 			if err != nil {

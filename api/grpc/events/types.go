@@ -689,7 +689,7 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 
 type EntityCreatePayloadJson struct {
 	// Payload data.
-	Data interface{} `json:"data" yaml:"data" mapstructure:"data"`
+	Data json.RawMessage `json:"data" yaml:"data" mapstructure:"data"`
 
 	// Entity model to use for this payload.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
@@ -2591,7 +2591,7 @@ type EntityPatchPayloadJson struct {
 	IfMatch *string `json:"ifMatch,omitempty" yaml:"ifMatch,omitempty" mapstructure:"ifMatch,omitempty"`
 
 	// The patch document (RFC 7386 merge patch).
-	Patch interface{} `json:"patch" yaml:"patch" mapstructure:"patch"`
+	Patch json.RawMessage `json:"patch" yaml:"patch" mapstructure:"patch"`
 
 	// Transition to apply, or omit for loopback.
 	Transition *string `json:"transition,omitempty" yaml:"transition,omitempty" mapstructure:"transition,omitempty"`
@@ -4080,7 +4080,7 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 
 type EntityUpdatePayloadJson struct {
 	// Entity payload data.
-	Data interface{} `json:"data" yaml:"data" mapstructure:"data"`
+	Data json.RawMessage `json:"data" yaml:"data" mapstructure:"data"`
 
 	// ID of the entity.
 	EntityID string `json:"entityId" yaml:"entityId" mapstructure:"entityId"`
