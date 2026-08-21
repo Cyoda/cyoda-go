@@ -220,3 +220,94 @@ func TestKVTrustedKeyStore_Reconcile_ConcurrentReconcilesSerialized(t *testing.T
 		t.Fatalf("concurrent reconciles corrupted state: %v", got)
 	}
 }
+
+// fakeBroadcaster delivers published messages synchronously to every
+// subscriber, including the publisher's own node (mirrors gossip loopback
+// being absent — so tests subscribe a SECOND store to observe propagation).
+type fakeBroadcaster struct {
+	mu       sync.Mutex
+	handlers map[string][]func([]byte)
+}
+
+func newFakeBroadcaster() *fakeBroadcaster {
+	return &fakeBroadcaster{handlers: map[string][]func([]byte){}}
+}
+
+func (b *fakeBroadcaster) Broadcast(topic string, payload []byte) {
+	b.mu.Lock()
+	hs := append([]func([]byte){}, b.handlers[topic]...)
+	b.mu.Unlock()
+	for _, h := range hs {
+		h(payload)
+	}
+}
+
+func (b *fakeBroadcaster) Subscribe(topic string, h func([]byte)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.handlers[topic] = append(b.handlers[topic], h)
+}
+
+func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(msg)
+}
+
+// T5: a mutation on node 1 pings node 2, which reconciles.
+func TestKVTrustedKeyStore_PingTriggersReconcile(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	b := newFakeBroadcaster()
+	s1, err := auth.NewKVTrustedKeyStore(ctx, kv, auth.WithTrustedKeyBroadcaster(b))
+	if err != nil {
+		t.Fatalf("store 1: %v", err)
+	}
+	s2, err := auth.NewKVTrustedKeyStore(ctx, kv, auth.WithTrustedKeyBroadcaster(b))
+	if err != nil {
+		t.Fatalf("store 2: %v", err)
+	}
+
+	if err := s1.Register(newTrustedKey(t, "ping-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	eventually(t, 3*time.Second, func() bool {
+		return len(s2.ListForVerification()) == 1
+	}, "node 2 never saw the registered key after ping")
+
+	if err := s1.Delete(spi.SystemTenantID, "ping-key"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	eventually(t, 3*time.Second, func() bool {
+		return len(s2.ListForVerification()) == 0
+	}, "node 2 never dropped the deleted key after ping")
+}
+
+// T5: a garbage payload is ignored (never parsed, never logged) and still
+// triggers a harmless reconcile; the handler never panics.
+func TestKVTrustedKeyStore_PingIgnoresPayload(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	b := newFakeBroadcaster()
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv, auth.WithTrustedKeyBroadcaster(b))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	b.Broadcast("auth.trustedkeys", []byte("\x00garbage\xff of arbitrary peer bytes"))
+	// Nothing to assert beyond absence of panic and continued liveness:
+	if got := s.ListForVerification(); len(got) != 0 {
+		t.Fatalf("unexpected keys: %v", got)
+	}
+}

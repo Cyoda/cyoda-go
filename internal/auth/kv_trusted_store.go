@@ -21,6 +21,17 @@ import (
 
 const trustedKeysNamespace = "trusted-keys"
 
+// topicTrustedKeys is the gossip topic for trusted-key change pings. The
+// payload is always empty and receivers must never read or log it — it is
+// arbitrary peer-controlled bytes; the ping's only information is that it
+// arrived.
+const topicTrustedKeys = "auth.trustedkeys"
+
+// defaultReconcileInterval mirrors the config default; the store falls back
+// to it when no interval option is supplied (tests, callers predating the
+// reconcile loop).
+const defaultReconcileInterval = 60 * time.Second
+
 // defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
 // default per tenant. Trusted keys are an admin-managed registry — a 100-key
 // default covers expected operational use (rotations, multi-issuer federation)
@@ -33,6 +44,7 @@ type KVTrustedKeyStoreOption func(*kvTrustedKeyStoreConfig)
 
 type kvTrustedKeyStoreConfig struct {
 	maxTrustedKeys int
+	broadcaster    spi.ClusterBroadcaster
 }
 
 // WithMaxTrustedKeys overrides the default per-tenant cap on registered trusted
@@ -42,6 +54,16 @@ type kvTrustedKeyStoreConfig struct {
 func WithMaxTrustedKeys(n int) KVTrustedKeyStoreOption {
 	return func(c *kvTrustedKeyStoreConfig) {
 		c.maxTrustedKeys = n
+	}
+}
+
+// WithTrustedKeyBroadcaster wires the cluster gossip fast path: mutations
+// publish a payload-free ping on topicTrustedKeys, and received pings
+// trigger a coalesced Reconcile. Nil (single-node) disables the fast path;
+// the periodic reconcile loop is unaffected.
+func WithTrustedKeyBroadcaster(b spi.ClusterBroadcaster) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		c.broadcaster = b
 	}
 }
 
@@ -91,6 +113,16 @@ type KVTrustedKeyStore struct {
 	// ping, explicit calls) so two overlapping rebuilds can never commit
 	// KV snapshots out of order.
 	reconcileMu sync.Mutex
+	// broadcaster is the cluster gossip fast path. Nil disables it (single
+	// node, or callers predating this option).
+	broadcaster spi.ClusterBroadcaster
+	// reconcileInterval bounds each reconcileOnce attempt and (from Task 3)
+	// the periodic reconcile loop's tick period.
+	reconcileInterval time.Duration
+	// pingCoalescer coalesces concurrent gossip pings into at most one
+	// trailing Reconcile so a burst of peer mutations never queues an
+	// unbounded pile of redundant KV List calls.
+	pingCoalescer coalescingRunner
 }
 
 // NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
@@ -107,11 +139,16 @@ func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVT
 		// a cancellation or deadline from the caller. Defence in depth: a future
 		// caller passing a request-scoped ctx would otherwise silently abort KV
 		// operations on request completion.
-		ctx:          context.WithoutCancel(ctx),
-		maxPerTenant: cfg.maxTrustedKeys,
+		ctx:               context.WithoutCancel(ctx),
+		maxPerTenant:      cfg.maxTrustedKeys,
+		broadcaster:       cfg.broadcaster,
+		reconcileInterval: defaultReconcileInterval,
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
+	}
+	if s.broadcaster != nil {
+		s.broadcaster.Subscribe(topicTrustedKeys, s.handlePing)
 	}
 	return s, nil
 }
@@ -213,6 +250,37 @@ func (s *KVTrustedKeyStore) Reconcile(ctx context.Context) error {
 	slog.Warn("trusted-key reconcile: giving up after repeated mid-rebuild mutations",
 		"pkg", "auth", "attempts", maxReconcileAttempts)
 	return errReconcileContention
+}
+
+// handlePing runs on the broadcaster's shared receive goroutine: it must
+// not block and must not let a panic escape. The payload is deliberately
+// ignored and never logged (arbitrary peer bytes).
+func (s *KVTrustedKeyStore) handlePing(_ []byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("trusted-key ping handler panic", "pkg", "auth", "panic", rec)
+		}
+	}()
+	s.pingCoalescer.Trigger(s.reconcileOnce)
+}
+
+// reconcileOnce runs a single bounded reconcile attempt. Each attempt gets
+// its own deadline (one interval) so a hung KV call aborts the attempt
+// instead of wedging the loop/coalescer permanently — the store's own ctx
+// is deliberately deadline-free and must not be used raw for periodic I/O.
+func (s *KVTrustedKeyStore) reconcileOnce() {
+	ctx, cancel := context.WithTimeout(s.ctx, s.reconcileInterval)
+	defer cancel()
+	_ = s.Reconcile(ctx) // failures logged/accounted inside Reconcile paths
+}
+
+// broadcastChanged publishes the payload-free change ping. No-op without a
+// broadcaster.
+func (s *KVTrustedKeyStore) broadcastChanged() {
+	if s.broadcaster == nil {
+		return
+	}
+	s.broadcaster.Broadcast(topicTrustedKeys, nil)
 }
 
 // loadOne loads a single trusted key for the given tenant from the KV backend
@@ -327,10 +395,14 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 			*k = sibling
 		}
 		if len(failed) > 0 {
+			// The new key IS committed even though the sibling flip wasn't —
+			// still broadcast so peers pick it up.
+			s.broadcastChanged()
 			return fmt.Errorf("key %s registered, but failed to invalidate siblings %v (retry Register or invalidate manually)", tk.KID, failed)
 		}
 	}
 
+	s.broadcastChanged()
 	return nil
 }
 
@@ -417,6 +489,7 @@ func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 	}
 	delete(s.keys, kid)
 	s.gen.Add(1)
+	s.broadcastChanged()
 	return nil
 }
 
@@ -441,6 +514,7 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 	// Commit to cache after successful KV write.
 	s.keys[kid] = &updated
 	s.gen.Add(1)
+	s.broadcastChanged()
 	return nil
 }
 
@@ -477,6 +551,7 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	// Commit to cache after successful KV write.
 	s.keys[kid] = &updated
 	s.gen.Add(1)
+	s.broadcastChanged()
 	return nil
 }
 
