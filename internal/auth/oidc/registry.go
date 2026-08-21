@@ -564,14 +564,29 @@ var errReloadContention = errors.New("oidc registry reload: retry budget exhaust
 // clobbering the newer state. An identical snapshot (a quiet tick) skips
 // the swap entirely so kidIndex and warm sources are not needlessly reset;
 // it still prunes any orphaned sources and counts as a successful reconcile.
+//
+// Two production callers pass a deadline-free ctx (the broadcast reload_all
+// handler uses context.Background(); the admin reload endpoint passes the
+// bare request ctx, which has no deadline). Because reconcileMu serializes
+// every caller, a hung store.LoadAll on a dead connection would otherwise
+// hold the mutex indefinitely and block the periodic loop from ever
+// acquiring it. Each attempt's LoadAll is therefore individually bounded by
+// context.WithTimeout(ctx, r.cfg.ReconcileInterval) so no caller — bounded
+// or not — can wedge reconcileMu past one interval. A caller-driven
+// cancellation (context.Canceled) is excluded from failure accounting: it
+// reflects the caller aborting, not a KV outage.
 func (r *Registry) ReloadAll(ctx context.Context) error {
 	r.reconcileMu.Lock()
 	defer r.reconcileMu.Unlock()
 	for attempt := 0; attempt < maxReloadAttempts; attempt++ {
 		gen := r.mapGen.Load()
-		providers, err := r.store.LoadAll(ctx)
+		attemptCtx, cancel := context.WithTimeout(ctx, r.cfg.ReconcileInterval)
+		providers, err := r.store.LoadAll(attemptCtx)
+		cancel()
 		if err != nil {
-			r.noteReconcileFailure(err)
+			if !errors.Is(err, context.Canceled) {
+				r.noteReconcileFailure(err)
+			}
 			return err
 		}
 		if r.loadAllHook != nil {
@@ -782,6 +797,10 @@ func (r *Registry) StartWarmupRetryLoop(ctx context.Context) bool {
 // traffic — JWKS key freshness stays governed by the per-source cache, and
 // the warmup-retry loop warms any provider the reconcile discovers cold.
 // Returns false (starting nothing) if already running; exits on ctx cancel.
+//
+// The tick no longer wraps ctx in its own timeout: ReloadAll now bounds
+// each attempt's store.LoadAll internally (see its doc comment), so a
+// second timeout layer here would be redundant.
 func (r *Registry) StartReconcileLoop(ctx context.Context) bool {
 	if !r.reconcileLoopStarted.CompareAndSwap(false, true) {
 		return false
@@ -794,13 +813,24 @@ func (r *Registry) StartReconcileLoop(ctx context.Context) bool {
 				timer.Stop()
 				return
 			case <-timer.C:
-				tickCtx, cancel := context.WithTimeout(ctx, r.cfg.ReconcileInterval)
-				_ = r.ReloadAll(tickCtx) // failures logged/accounted inside
-				cancel()
+				r.reconcileTickSafely(ctx)
 			}
 		}
 	}()
 	return true
+}
+
+// reconcileTickSafely runs ReloadAll with a recover layer: the periodic
+// reconcile loop's goroutine has no caller to propagate a panic to, so an
+// unrecovered panic here would crash the process. Same contract as
+// warmOneSafely / safeDispatch — log-only, never the payload.
+func (r *Registry) reconcileTickSafely(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("oidc reconcile panic", "pkg", "oidc", "panic", rec)
+		}
+	}()
+	_ = r.ReloadAll(ctx) // failures logged/accounted inside
 }
 
 // jitteredInterval returns d × [0.9, 1.1).

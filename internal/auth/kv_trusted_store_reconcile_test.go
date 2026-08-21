@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -402,6 +403,75 @@ func TestKVTrustedKeyStore_BreakerInertWithoutLoop(t *testing.T) {
 	if got := s.ListForVerification(); len(got) != 1 {
 		t.Fatalf("breaker tripped without a reconcile loop: %v", got)
 	}
+}
+
+// Finding 4 (coverage gap): no test previously drove Reconcile's retry
+// budget to exhaustion. Mutating s2 itself on every List call (via the
+// hookKV.onList seam) bumps s2's generation counter on every attempt, so
+// the swap's generation guard never sees a stable snapshot.
+func TestKVTrustedKeyStore_Reconcile_RetryBudgetExhausted(t *testing.T) {
+	s1, s2, hkv, ctx := twoStores(t)
+
+	// Already known to s2 before contention — must survive the failed
+	// reconcile untouched (proves the breaker did not trip / cache wasn't
+	// wiped).
+	if err := s2.Register(newTrustedKey(t, "already-known", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+		t.Fatalf("Register already-known: %v", err)
+	}
+	// Registered only on the peer (s1) — only a successful swap could ever
+	// surface it on s2. Used to prove "no swap occurred".
+	if err := s1.Register(newTrustedKey(t, "peer-only", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+		t.Fatalf("Register peer-only: %v", err)
+	}
+
+	// Mutate s2 on EVERY List call so the generation guard never sees a
+	// stable snapshot: Reconcile exhausts its retry budget.
+	n := 0
+	hkv.setOnList(func() {
+		n++
+		churn := newTrustedKey(t, fmt.Sprintf("churn-%d", n), spi.SystemTenantID)
+		if err := s2.Register(churn, auth.RotateOptions{}); err != nil {
+			t.Errorf("hook Register: %v", err)
+		}
+	})
+
+	if err := s2.Reconcile(ctx); err == nil {
+		t.Fatal("want an error when the retry budget is exhausted under continuous contention")
+	}
+	hkv.setOnList(nil)
+
+	// No swap occurred: the peer-only key never reached s2's cache. Checked
+	// via List (pure cache read) rather than Get, which deliberately
+	// read-throughs to KV on a cache miss for multi-node visibility and
+	// would therefore find peer-only regardless of whether the swap ran.
+	if hasKID(s2.List(spi.SystemTenantID), "peer-only") {
+		t.Fatal("contention exhaustion must not swap in a partial snapshot")
+	}
+
+	// consecutiveFailures accounting untouched — the already-known key
+	// still serves (the staleness breaker never tripped from this
+	// contention, which is not a KV failure).
+	if got := s2.ListForVerification(); !hasKID(got, "already-known") {
+		t.Fatalf("breaker must not trip on contention exhaustion; already-known key missing: %v", got)
+	}
+
+	// A subsequent clean Reconcile (no racing mutation) succeeds and
+	// converges the peer-only key.
+	if err := s2.Reconcile(ctx); err != nil {
+		t.Fatalf("clean Reconcile after contention: %v", err)
+	}
+	if !hasKID(s2.List(spi.SystemTenantID), "peer-only") {
+		t.Fatal("clean Reconcile after contention must converge peer-only key")
+	}
+}
+
+func hasKID(keys []*auth.TrustedKey, kid string) bool {
+	for _, tk := range keys {
+		if tk.KID == kid {
+			return true
+		}
+	}
+	return false
 }
 
 // T5: a garbage payload is ignored (never parsed, never logged) and still

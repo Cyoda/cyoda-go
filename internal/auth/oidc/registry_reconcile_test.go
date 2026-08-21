@@ -307,3 +307,183 @@ func TestRegistry_ResolveKey_StalenessBreaker(t *testing.T) {
 		t.Fatal("breaker still tripped after successful reconcile")
 	}
 }
+
+// blockingStore is an OidcProviderStore stub whose LoadAll blocks until the
+// ctx passed to it is done, then returns ctx.Err(). Every other method
+// panics — this stub only ever drives ReloadAll's LoadAll call. Used to
+// prove a hung store call cannot hold reconcileMu (and therefore block
+// every serialized caller, including the periodic loop) indefinitely.
+type blockingStore struct{}
+
+func (blockingStore) Register(context.Context, *OidcProvider) error { panic("not implemented") }
+func (blockingStore) Get(context.Context, spi.TenantID, string) (*OidcProvider, error) {
+	panic("not implemented")
+}
+func (blockingStore) GetByURI(context.Context, spi.TenantID, string) (*OidcProvider, error) {
+	panic("not implemented")
+}
+func (blockingStore) Update(context.Context, *OidcProvider) error { panic("not implemented") }
+func (blockingStore) Delete(context.Context, spi.TenantID, string, string) error {
+	panic("not implemented")
+}
+func (blockingStore) ListByTenant(context.Context, spi.TenantID, bool) ([]*OidcProvider, error) {
+	panic("not implemented")
+}
+func (blockingStore) LoadAll(ctx context.Context) ([]*OidcProvider, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (blockingStore) GetURIHistory(context.Context, string) (*UriOwnershipHistory, error) {
+	panic("not implemented")
+}
+func (blockingStore) PutURIHistory(context.Context, string, *UriOwnershipHistory) error {
+	panic("not implemented")
+}
+func (blockingStore) RaceValidateIndex(context.Context, spi.TenantID, string, string) (string, bool, error) {
+	panic("not implemented")
+}
+
+var _ OidcProviderStore = blockingStore{}
+
+// Finding 1: two production callers (the reload_all broadcast handler, the
+// admin reload endpoint) enter ReloadAll with a deadline-free ctx. Without a
+// per-attempt bound, a hung store.LoadAll would hold reconcileMu forever,
+// wedging the periodic loop behind it. ReloadAll must bound each attempt
+// itself and return (with an error) instead of hanging.
+func TestReloadAll_BoundedByPerAttemptTimeout_HungStore(t *testing.T) {
+	disc := &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}
+	r := NewRegistry(blockingStore{}, disc, nil, NopMetrics{}, nil, RegistryConfig{
+		AllowPrivateNetworks: true,
+		ReconcileInterval:    50 * time.Millisecond,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.ReloadAll(context.Background()) // deadline-free, mirrors the production callers
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error from a per-attempt-timeout-bounded ReloadAll against a hung store")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReloadAll did not return within the bound; a hung store call held reconcileMu")
+	}
+}
+
+// cancelSignalStore is an OidcProviderStore stub whose LoadAll blocks until
+// ctx is done, signalling entered (closed exactly once) the moment it starts
+// waiting so a test can deterministically cancel the parent ctx while
+// LoadAll is in flight. Every other method panics.
+type cancelSignalStore struct{ entered chan struct{} }
+
+func (cancelSignalStore) Register(context.Context, *OidcProvider) error { panic("not implemented") }
+func (cancelSignalStore) Get(context.Context, spi.TenantID, string) (*OidcProvider, error) {
+	panic("not implemented")
+}
+func (cancelSignalStore) GetByURI(context.Context, spi.TenantID, string) (*OidcProvider, error) {
+	panic("not implemented")
+}
+func (cancelSignalStore) Update(context.Context, *OidcProvider) error { panic("not implemented") }
+func (cancelSignalStore) Delete(context.Context, spi.TenantID, string, string) error {
+	panic("not implemented")
+}
+func (cancelSignalStore) ListByTenant(context.Context, spi.TenantID, bool) ([]*OidcProvider, error) {
+	panic("not implemented")
+}
+func (s cancelSignalStore) LoadAll(ctx context.Context) ([]*OidcProvider, error) {
+	close(s.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (cancelSignalStore) GetURIHistory(context.Context, string) (*UriOwnershipHistory, error) {
+	panic("not implemented")
+}
+func (cancelSignalStore) PutURIHistory(context.Context, string, *UriOwnershipHistory) error {
+	panic("not implemented")
+}
+func (cancelSignalStore) RaceValidateIndex(context.Context, spi.TenantID, string, string) (string, bool, error) {
+	panic("not implemented")
+}
+
+var _ OidcProviderStore = cancelSignalStore{}
+
+// Finding 2: a client disconnect on the admin reload endpoint cancels the
+// request ctx mid-LoadAll. Because Finding 1 derives each attempt's timeout
+// from that same ctx, the store call surfaces context.Canceled (the parent
+// lost its race with the timer), not context.DeadlineExceeded. This is the
+// caller aborting, not a KV failure, so it must not pollute
+// consecutiveFailures / ERROR-escalation accounting.
+func TestReloadAll_ClientDisconnect_DoesNotPolluteFailureAccounting(t *testing.T) {
+	store := cancelSignalStore{entered: make(chan struct{})}
+	disc := &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{
+		AllowPrivateNetworks: true,
+		ReconcileInterval:    time.Second, // long enough that the timer can't race the explicit cancel
+	})
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.ReloadAll(parentCtx)
+	}()
+
+	<-store.entered
+	cancel() // simulates the HTTP client disconnecting mid-request
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReloadAll did not return after parent ctx cancellation")
+	}
+
+	if got := r.consecutiveFailures.Load(); got != 0 {
+		t.Fatalf("client disconnect must not pollute failure accounting: consecutiveFailures=%d", got)
+	}
+}
+
+// Finding 4 (coverage gap): no test previously drove ReloadAll's retry
+// budget to exhaustion. Mutating the provider map on every loadAllHook
+// invocation (fired after every attempt's LoadAll, before the swap's
+// generation check) guarantees the generation guard trips on all
+// maxReloadAttempts attempts.
+func TestReloadAll_RetryBudgetExhausted_ContentionUnderConcurrentMutation(t *testing.T) {
+	r, store, _ := registryOverStore(t)
+	ctx := context.Background()
+	p := reconcileTestProvider(t, "https://churn.example/.well-known/openid-configuration")
+	if err := store.Register(ctx, p); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := r.ReloadAll(ctx); err != nil {
+		t.Fatalf("warm-up ReloadAll: %v", err)
+	}
+	lastBefore := r.lastReconcileNanos.Load()
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+
+	// Mutate the provider map on every attempt so the generation guard never
+	// sees a stable snapshot; ReloadAll exhausts its retry budget.
+	r.loadAllHook = func() {
+		r.invalidateOne(tenant, p.WellKnownConfigURI)
+		r.addToProviderMap(p)
+	}
+	err := r.ReloadAll(ctx)
+	if !errors.Is(err, errReloadContention) {
+		t.Fatalf("want errReloadContention, got %v", err)
+	}
+	if r.lastReconcileNanos.Load() != lastBefore {
+		t.Fatal("lastReconcileNanos must not advance on contention exhaustion")
+	}
+	if got := r.consecutiveFailures.Load(); got != 0 {
+		t.Fatalf("contention exhaustion is not a KV failure: consecutiveFailures=%d", got)
+	}
+
+	// A subsequent clean ReloadAll (no racing mutation) succeeds.
+	r.loadAllHook = nil
+	if err := r.ReloadAll(ctx); err != nil {
+		t.Fatalf("clean ReloadAll after contention: %v", err)
+	}
+}

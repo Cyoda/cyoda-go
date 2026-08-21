@@ -334,7 +334,19 @@ func (s *KVTrustedKeyStore) handlePing(_ []byte) {
 // its own deadline (one interval) so a hung KV call aborts the attempt
 // instead of wedging the loop/coalescer permanently — the store's own ctx
 // is deliberately deadline-free and must not be used raw for periodic I/O.
+//
+// Recover-wrapped: reconcileOnce runs both from StartReconcileLoop's tick
+// (no caller to propagate a panic to) and from the pingCoalescer's
+// dispatched goroutine (which runs detached from handlePing's own recover,
+// see coalescingRunner.Trigger) — an unrecovered panic in either would
+// crash the process. Same contract as warmOneSafely / safeDispatch in the
+// oidc package — log-only, never the payload.
 func (s *KVTrustedKeyStore) reconcileOnce() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("trusted-key reconcile panic", "pkg", "auth", "panic", rec)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(s.ctx, s.reconcileInterval)
 	defer cancel()
 	_ = s.Reconcile(ctx) // failures logged/accounted inside Reconcile paths
@@ -580,7 +592,9 @@ func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 }
 
 // ListForVerification returns keys still within their validity window across
-// all tenants. Used to populate the JWKS endpoint during grace periods.
+// all tenants. Used by the grant-verification path (token exchange / JWT
+// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
+// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
 func (s *KVTrustedKeyStore) ListForVerification() []*TrustedKey {
 	if s.reconcileStale() {
 		// Fail closed: the cache can no longer prove these keys were not
