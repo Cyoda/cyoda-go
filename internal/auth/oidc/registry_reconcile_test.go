@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"crypto/rsa"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -268,4 +269,41 @@ func TestRegistry_ReconcilePlusWarmupRetry_Composition(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("peer-registered provider never became resolvable via reconcile+warmup composition")
+}
+
+// T12: ResolveKey fails closed past the staleness bound and recovers.
+func TestRegistry_ResolveKey_StalenessBreaker(t *testing.T) {
+	store := newTestStore(t)
+	disc := &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{
+		AllowPrivateNetworks: true,
+		ReconcileInterval:    20 * time.Millisecond,
+	})
+	ctx := context.Background()
+	if err := r.ReloadAll(ctx); err != nil {
+		t.Fatalf("ReloadAll: %v", err)
+	}
+
+	// Not started → breaker inert even with an ancient lastReconcile.
+	r.lastReconcileNanos.Store(time.Now().Add(-time.Hour).UnixNano())
+	if _, err := r.ResolveKey("any-kid", "https://iss.example", ""); errors.Is(err, ErrRegistryStale) {
+		t.Fatal("breaker tripped before the reconcile loop ever started")
+	}
+
+	// Started + stale → ErrRegistryStale.
+	loopCtx, cancel := context.WithCancel(ctx)
+	cancel() // loop exits immediately; started-flag remains set
+	r.StartReconcileLoop(loopCtx)
+	r.lastReconcileNanos.Store(time.Now().Add(-time.Hour).UnixNano())
+	if _, err := r.ResolveKey("any-kid", "https://iss.example", ""); !errors.Is(err, ErrRegistryStale) {
+		t.Fatalf("want ErrRegistryStale past the bound, got %v", err)
+	}
+
+	// Recovery: a successful reconcile resets the clock.
+	if err := r.ReloadAll(ctx); err != nil {
+		t.Fatalf("recovery ReloadAll: %v", err)
+	}
+	if _, err := r.ResolveKey("any-kid", "https://iss.example", ""); errors.Is(err, ErrRegistryStale) {
+		t.Fatal("breaker still tripped after successful reconcile")
+	}
 }

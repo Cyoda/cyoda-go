@@ -225,6 +225,27 @@ func (r *Registry) kidIndexContains(kid, tenant, uri string) bool {
 	return false
 }
 
+// stalenessMultiplier × ReconcileInterval is the fail-closed bound: once
+// the reconcile loop runs, a provider map older than this stops resolving
+// keys — an unbounded-stale answer on the verification path would be
+// wrong-but-available.
+const stalenessMultiplier = 10
+
+// ErrRegistryStale is returned by ResolveKey when the reconcile loop has
+// not succeeded within the staleness bound. It deliberately does NOT wrap
+// auth.ErrUnknownKID: the validator chain hard-fails on it, collapsing to
+// the uniform 401.
+var ErrRegistryStale = errors.New("oidc provider registry stale: reconcile has not succeeded within the staleness bound")
+
+// reconcileStale reports whether the fail-closed bound is exceeded. Always
+// false until StartReconcileLoop has been called.
+func (r *Registry) reconcileStale() bool {
+	if !r.reconcileLoopStarted.Load() {
+		return false
+	}
+	return r.reconcileAge() > stalenessMultiplier*r.cfg.ReconcileInterval
+}
+
 // ResolveKey implements the §4.1 disposition matrix.
 //
 // aud is the token's audience claim (single string or first element extracted
@@ -243,6 +264,10 @@ func (r *Registry) kidIndexContains(kid, tenant, uri string) bool {
 // D6 invariant: kidIndex is populated BEFORE the caller verifies the
 // signature. The caller MUST call EvictKidEntry on ErrSignatureFailure.
 func (r *Registry) ResolveKey(kid, iss, aud string) (*KeyResolution, error) {
+	if r.reconcileStale() {
+		return nil, ErrRegistryStale
+	}
+
 	// Hot path under RLock.
 	var candidates []providerRef
 	var res *KeyResolution
