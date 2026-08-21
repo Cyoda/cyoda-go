@@ -186,3 +186,86 @@ func TestReloadAll_ConcurrentCallsSerialized(t *testing.T) {
 		t.Fatal("provider lost under concurrent ReloadAll")
 	}
 }
+
+// T8: the loop converges a store-level delete with no broadcast at all.
+func TestRegistry_ReconcileLoop_ConvergesStoreDelete(t *testing.T) {
+	store := newTestStore(t)
+	disc := &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{
+		AllowPrivateNetworks: true,
+		ReconcileInterval:    20 * time.Millisecond,
+	})
+	ctx := context.Background()
+	p := reconcileTestProvider(t, "https://loop.example/.well-known/openid-configuration")
+	if err := store.Register(ctx, p); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := r.ReloadAll(ctx); err != nil {
+		t.Fatalf("ReloadAll: %v", err)
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if !r.StartReconcileLoop(loopCtx) {
+		t.Fatal("StartReconcileLoop returned false on first call")
+	}
+	if r.StartReconcileLoop(loopCtx) {
+		t.Fatal("second StartReconcileLoop must return false")
+	}
+
+	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+	if err := store.Delete(ctx, tenant, p.ID.String(), p.WellKnownConfigURI); err != nil {
+		t.Fatalf("store Delete: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		gone := func() bool {
+			r.mu.RLock()
+			defer r.mu.RUnlock()
+			_, ok := r.providers[tenant][p.WellKnownConfigURI]
+			return !ok
+		}()
+		if gone {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("reconcile loop never dropped the store-deleted provider")
+}
+
+// T11: composition — a provider registered on a peer (no broadcast) becomes
+// resolvable via reconcile discovery + warmup-retry warm.
+func TestRegistry_ReconcilePlusWarmupRetry_Composition(t *testing.T) {
+	idp := NewFixtureIdP(t)
+	store := newTestStore(t)
+	disc := NewHTTPDiscovery(DiscoveryConfig{AllowPrivateNetworks: true})
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{
+		AllowPrivateNetworks: true,
+		ReconcileInterval:    20 * time.Millisecond,
+		WarmupRetryInterval:  20 * time.Millisecond,
+	})
+	ctx := context.Background()
+	loopCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if !r.StartReconcileLoop(loopCtx) {
+		t.Fatal("StartReconcileLoop")
+	}
+	if !r.StartWarmupRetryLoop(loopCtx) {
+		t.Fatal("StartWarmupRetryLoop")
+	}
+
+	// "Peer" registers straight into the store — this node hears nothing.
+	p := reconcileTestProvider(t, idp.Server.URL+"/.well-known/openid-configuration")
+	if err := store.Register(ctx, p); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	kid := "default"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if res, err := r.ResolveKey(kid, idp.Issuer, ""); err == nil && res != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("peer-registered provider never became resolvable via reconcile+warmup composition")
+}

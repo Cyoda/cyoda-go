@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"runtime"
@@ -69,6 +70,13 @@ type RegistryConfig struct {
 	// key source (e.g. the IdP was unreachable at startup or registration).
 	// Zero or negative values default to 30 s.
 	WarmupRetryInterval time.Duration
+
+	// ReconcileInterval is the tick interval of StartReconcileLoop, the
+	// periodic KV-reconcile backstop behind the best-effort provider
+	// broadcast. Zero or negative values default to 60 s (matching
+	// CYODA_AUTH_CACHE_RECONCILE_INTERVAL). The per-tick wait is jittered
+	// ±10% to avoid a cross-node herd.
+	ReconcileInterval time.Duration
 }
 
 // Registry is the per-process OIDC provider cache. It implements the read
@@ -91,6 +99,11 @@ type Registry struct {
 	// warmupRetryStarted makes StartWarmupRetryLoop's call-once contract
 	// self-enforcing: a second call is a no-op.
 	warmupRetryStarted atomic.Bool
+
+	// reconcileLoopStarted makes StartReconcileLoop's call-once contract
+	// self-enforcing: a second call is a no-op. Also read by the ResolveKey
+	// staleness breaker to know whether reconcile accounting is live.
+	reconcileLoopStarted atomic.Bool
 
 	// reloadWarmMu serializes ReloadAllAndWarm: concurrent force-warm calls
 	// (an admin looping the reload endpoint, or endpoint + broadcast racing)
@@ -142,6 +155,9 @@ func NewRegistry(
 	}
 	if cfg.WarmupRetryInterval <= 0 {
 		cfg.WarmupRetryInterval = 30 * time.Second
+	}
+	if cfg.ReconcileInterval <= 0 {
+		cfg.ReconcileInterval = 60 * time.Second
 	}
 	r := &Registry{
 		providers:    map[spi.TenantID]map[string]*OidcProvider{},
@@ -732,6 +748,39 @@ func (r *Registry) StartWarmupRetryLoop(ctx context.Context) bool {
 		}
 	}()
 	return true
+}
+
+// StartReconcileLoop starts the periodic KV-reconcile backstop: every
+// ReconcileInterval (jittered ±10%) the provider map is rebuilt from the
+// authoritative store via ReloadAll, bounding the staleness a dropped
+// broadcast can cause. NOT ReloadAllAndWarm: no per-tick outbound IdP
+// traffic — JWKS key freshness stays governed by the per-source cache, and
+// the warmup-retry loop warms any provider the reconcile discovers cold.
+// Returns false (starting nothing) if already running; exits on ctx cancel.
+func (r *Registry) StartReconcileLoop(ctx context.Context) bool {
+	if !r.reconcileLoopStarted.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		for {
+			timer := time.NewTimer(jitteredInterval(r.cfg.ReconcileInterval))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				tickCtx, cancel := context.WithTimeout(ctx, r.cfg.ReconcileInterval)
+				_ = r.ReloadAll(tickCtx) // failures logged/accounted inside
+				cancel()
+			}
+		}
+	}()
+	return true
+}
+
+// jitteredInterval returns d × [0.9, 1.1).
+func jitteredInterval(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
 }
 
 // warmOneSafely runs reloadOne with a recover layer: the warm pool's worker
