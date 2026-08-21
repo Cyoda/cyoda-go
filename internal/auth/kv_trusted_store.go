@@ -5,12 +5,14 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -80,6 +82,15 @@ type KVTrustedKeyStore struct {
 	ctx context.Context
 	// maxPerTenant is the per-tenant cap enforced by Register; <=0 means unbounded.
 	maxPerTenant int
+	// gen counts cache-mutating commits (Register/Delete/Invalidate/
+	// Reactivate/loadOne and every reconcile swap). Reconcile snapshots it
+	// before its KV List and discards the built snapshot if it changed by
+	// swap time — a mutation that lands mid-rebuild always wins.
+	gen atomic.Uint64
+	// reconcileMu serializes reconcile executions (periodic tick, gossip
+	// ping, explicit calls) so two overlapping rebuilds can never commit
+	// KV snapshots out of order.
+	reconcileMu sync.Mutex
 }
 
 // NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
@@ -110,30 +121,98 @@ func (s *KVTrustedKeyStore) loadAll() error {
 	if err != nil {
 		return err
 	}
-	skipped := 0
-	for kvKey, data := range entries {
-		// Skip legacy entries: those stored before tenant-scoping used bare <kid>
-		// keys with no ":" separator and no tenantID in the record.
-		if !strings.Contains(kvKey, ":") {
-			skipped++
-			continue
-		}
-		tk, err := deserializeTrustedKey(data)
-		if err != nil {
-			return fmt.Errorf("failed to deserialize trusted key %q: %w", kvKey, err)
-		}
-		if tk.TenantID == "" {
-			skipped++
-			continue
-		}
-		s.keys[tk.KID] = tk
+	keys, skipped, err := buildTrustedKeyMap(entries, true)
+	if err != nil {
+		return err
 	}
+	s.keys = keys
 	if skipped > 0 {
 		slog.Warn("skipped pre-v0.8.0 trusted-key entries without tenant scope",
 			"count", skipped,
 			"namespace", trustedKeysNamespace)
 	}
 	return nil
+}
+
+// maxReconcileAttempts bounds the generation-guard retry inside Reconcile.
+// Only continuous mutation churn (which itself proves KV is reachable)
+// can exhaust it.
+const maxReconcileAttempts = 5
+
+// errReconcileContention marks a reconcile that gave up because mutations
+// kept landing mid-rebuild. It is not a KV failure: callers must not count
+// it toward staleness accounting.
+var errReconcileContention = errors.New("trusted-key reconcile: retry budget exhausted under concurrent mutation")
+
+// buildTrustedKeyMap deserializes a KV List result into a fresh cache map.
+// Legacy un-tenanted entries are skipped (pre-tenant-scoping layout). When
+// strict, the first undeserializable record fails the build (construction
+// fail-fast); otherwise bad records are skipped with an ERROR log so one
+// corrupt write can never disable reconciliation.
+func buildTrustedKeyMap(entries map[string][]byte, strict bool) (map[string]*TrustedKey, int, error) {
+	keys := make(map[string]*TrustedKey, len(entries))
+	skipped := 0
+	for kvKey, data := range entries {
+		if !strings.Contains(kvKey, ":") {
+			skipped++
+			continue
+		}
+		tk, err := deserializeTrustedKey(data)
+		if err != nil {
+			if strict {
+				return nil, 0, fmt.Errorf("failed to deserialize trusted key %q: %w", kvKey, err)
+			}
+			slog.Error("trusted-key reconcile: skipping undeserializable record",
+				"pkg", "auth", "kvKey", kvKey, "error", err.Error())
+			continue
+		}
+		if tk.TenantID == "" {
+			skipped++
+			continue
+		}
+		keys[tk.KID] = tk
+	}
+	return keys, skipped, nil
+}
+
+// Reconcile rebuilds the in-memory cache from the authoritative KV store.
+// The List and deserialization run off-lock; the swap takes s.mu and is
+// discarded (and retried) if any mutation committed since the pre-List
+// generation snapshot. Serialized against concurrent reconciles by
+// reconcileMu. On a transport-level List failure the previous cache state
+// is kept and the error returned — bounded staleness beats dropping every
+// key over an infrastructure blip; the staleness bound is enforced
+// separately by the callers' breaker accounting.
+func (s *KVTrustedKeyStore) Reconcile(ctx context.Context) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
+		gen := s.gen.Load()
+		entries, err := s.kv.List(ctx, trustedKeysNamespace)
+		if err != nil {
+			return fmt.Errorf("failed to list trusted keys for reconcile: %w", err)
+		}
+		fresh, _, err := buildTrustedKeyMap(entries, false)
+		if err != nil {
+			return err // unreachable in lenient mode; kept for signature honesty
+		}
+		swapped := func() bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.gen.Load() != gen {
+				return false
+			}
+			s.keys = fresh
+			s.gen.Add(1)
+			return true
+		}()
+		if swapped {
+			return nil
+		}
+	}
+	slog.Warn("trusted-key reconcile: giving up after repeated mid-rebuild mutations",
+		"pkg", "auth", "attempts", maxReconcileAttempts)
+	return errReconcileContention
 }
 
 // loadOne loads a single trusted key for the given tenant from the KV backend
@@ -153,6 +232,7 @@ func (s *KVTrustedKeyStore) loadOne(tenantID spi.TenantID, kid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.keys[kid] = tk
+	s.gen.Add(1)
 	return nil
 }
 
@@ -221,6 +301,7 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	}
 	// Commit to cache after successful KV write.
 	s.keys[copied.KID] = &copied
+	s.gen.Add(1)
 
 	// Step 2: invalidate siblings (best-effort). A sibling KV write failure
 	// leaves the new key active (already committed above) and the sibling
@@ -335,6 +416,7 @@ func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 		return fmt.Errorf("failed to delete trusted key from KV store: %w", err)
 	}
 	delete(s.keys, kid)
+	s.gen.Add(1)
 	return nil
 }
 
@@ -358,6 +440,7 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 	}
 	// Commit to cache after successful KV write.
 	s.keys[kid] = &updated
+	s.gen.Add(1)
 	return nil
 }
 
@@ -393,6 +476,7 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	}
 	// Commit to cache after successful KV write.
 	s.keys[kid] = &updated
+	s.gen.Add(1)
 	return nil
 }
 
