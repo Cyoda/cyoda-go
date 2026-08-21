@@ -159,6 +159,15 @@ curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
 
 **Configuration:** see `cyoda help config auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
 
+### Auth cache reconciliation
+
+The trusted-key and OIDC-provider caches push updates to peers on write and
+fall back to a periodic KV-reconcile if a broadcast is missed.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Reconcile interval for the trusted-key / OIDC-provider caches; verification fails closed after 10× this without a successful KV reconcile. |
+
 ## Composite unique keys
 
 An entity model can declare one or more **composite unique keys** — each key is a set of scalar field paths that must be unique across all live entities of that model within a tenant.

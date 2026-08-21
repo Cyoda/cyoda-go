@@ -129,6 +129,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES":   strconv.Itoa(c.IAM.TrustedKeyMaxJWKProperties),
 		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":    strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
 		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":           strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
+		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":        renderDuration(c.IAM.AuthCacheReconcileInterval),
 		"CYODA_BOOTSTRAP_CLIENT_ID":                  c.Bootstrap.ClientID,
 		"CYODA_BOOTSTRAP_CLIENT_SECRET":              "", // secret
 		"CYODA_BOOTSTRAP_TENANT_ID":                  c.Bootstrap.TenantID,

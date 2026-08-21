@@ -136,6 +136,13 @@ type IAMConfig struct {
 	KeypairDefaultValidityDays    int
 	BootstrapAudience             string
 
+	// AuthCacheReconcileInterval is the shared periodic KV-reconcile
+	// interval for the per-node auth caches (trusted keys, OIDC providers).
+	// Jittered ±10% per tick; the fail-closed staleness bound is fixed at
+	// 10× this value. CYODA_AUTH_CACHE_RECONCILE_INTERVAL, default 60s,
+	// floor 1s.
+	AuthCacheReconcileInterval time.Duration
+
 	// M2MAdminRoleEnabled — see auth.IAMFeatures.M2MAdminRoleEnabled.
 	// env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
 	M2MAdminRoleEnabled bool
@@ -273,6 +280,7 @@ func DefaultConfig() Config {
 			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
 			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
 			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
+			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
 			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
 			OIDC: OIDCConfig{
 				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
@@ -595,6 +603,10 @@ func ValidateIAM(iam IAMConfig) error {
 	// can never silently fall back to unauthenticated access.
 	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
+	}
+	// Unconditional: a bad explicit interval is a config error in any mode.
+	if iam.AuthCacheReconcileInterval < time.Second {
+		return fmt.Errorf("CYODA_AUTH_CACHE_RECONCILE_INTERVAL must be >= 1s, got %s", iam.AuthCacheReconcileInterval)
 	}
 	// Mock mode needs no further validation.
 	if iam.Mode == "mock" {
