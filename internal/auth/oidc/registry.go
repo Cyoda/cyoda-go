@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"runtime"
 	"sort"
 	"sync"
@@ -96,6 +97,24 @@ type Registry struct {
 	// queue behind one fetch pool instead of multiplying outbound traffic to
 	// every tenant's IdP.
 	reloadWarmMu sync.Mutex
+
+	// mapGen counts direct provider-map mutations AND ReloadAll swaps.
+	// ReloadAll snapshots it before store.LoadAll and discards its built
+	// snapshot if it changed by swap time — a mutation or a faster reload
+	// landing mid-build always wins over the older snapshot.
+	mapGen atomic.Uint64
+	// reconcileMu serializes ReloadAll executions (periodic reconcile,
+	// reload_all broadcast, admin endpoint) so overlapping rebuilds cannot
+	// commit KV snapshots out of order.
+	reconcileMu sync.Mutex
+
+	// Reconcile health (read by the ResolveKey staleness breaker).
+	lastReconcileNanos  atomic.Int64
+	consecutiveFailures atomic.Int64
+
+	// loadAllHook, when non-nil, runs after store.LoadAll inside ReloadAll.
+	// Test-only seam for generation-guard races.
+	loadAllHook func()
 }
 
 // NewRegistry constructs the registry. broadcast may be nil in tests or
@@ -157,6 +176,7 @@ func (r *Registry) addToProviderMap(p *OidcProvider) {
 		r.providers[tenant] = map[string]*OidcProvider{}
 	}
 	r.providers[tenant][p.WellKnownConfigURI] = p
+	r.mapGen.Add(1)
 }
 
 // installForTest is a test-only helper that injects a provider + source +
@@ -174,6 +194,7 @@ func (r *Registry) installForTest(p *OidcProvider, ks auth.KeySource, doc *Disco
 	}
 	r.providers[tenant][p.WellKnownConfigURI] = p
 	r.sources[tenant][p.WellKnownConfigURI] = &providerSource{keySource: ks, discoveryDoc: doc}
+	r.mapGen.Add(1)
 }
 
 // kidIndexContains is a test-only inspector for the kidIndex contents.
@@ -473,6 +494,14 @@ func (r *Registry) EvictKidEntry(kid string, ref providerRef) {
 	}
 }
 
+// maxReloadAttempts bounds the generation-guard retry. Only continuous
+// provider-map churn (rare admin operations) can exhaust it.
+const maxReloadAttempts = 5
+
+// errReloadContention marks a reload that gave up because mutations kept
+// landing mid-rebuild. Not a KV failure; excluded from staleness accounting.
+var errReloadContention = errors.New("oidc registry reload: retry budget exhausted under concurrent mutation")
+
 // ReloadAll rebuilds the in-memory provider map from KV (D18). The new maps
 // are built off-lock; the swap takes the write lock so no partial-rebuild
 // state is ever visible to concurrent readers.
@@ -485,39 +514,121 @@ func (r *Registry) EvictKidEntry(kid string, ref providerRef) {
 // cannot be re-confirmed stop validating — fail closed). Sources whose
 // provider vanished from the store are dropped, and the kidIndex is rebuilt
 // lazily by the ResolveKey cold path.
+//
+// ReloadAll executions are serialized by reconcileMu (periodic reconcile,
+// reload_all broadcast, and the admin reload endpoint can all call in),
+// and each attempt is guarded by mapGen: if a direct provider-map mutation
+// (or a faster concurrent ReloadAll) lands between the KV load and the
+// swap, the stale snapshot is discarded and the load is retried rather than
+// clobbering the newer state. An identical snapshot (a quiet tick) skips
+// the swap entirely so kidIndex and warm sources are not needlessly reset;
+// it still prunes any orphaned sources and counts as a successful reconcile.
 func (r *Registry) ReloadAll(ctx context.Context) error {
-	providers, err := r.store.LoadAll(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Build fresh maps off-lock so the critical section is just the swap.
-	newProv := map[spi.TenantID]map[string]*OidcProvider{}
-	newSrc := map[spi.TenantID]map[string]*providerSource{}
-	for _, p := range providers {
-		tenant := spi.TenantID(p.OwnerLegalEntityID.String())
-		if newProv[tenant] == nil {
-			newProv[tenant] = map[string]*OidcProvider{}
-			newSrc[tenant] = map[string]*providerSource{}
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+	for attempt := 0; attempt < maxReloadAttempts; attempt++ {
+		gen := r.mapGen.Load()
+		providers, err := r.store.LoadAll(ctx)
+		if err != nil {
+			r.noteReconcileFailure(err)
+			return err
 		}
-		newProv[tenant][p.WellKnownConfigURI] = p
-	}
+		if r.loadAllHook != nil {
+			r.loadAllHook()
+		}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+		// Build fresh maps off-lock so the critical section is just the swap.
+		newProv := map[spi.TenantID]map[string]*OidcProvider{}
+		newSrc := map[spi.TenantID]map[string]*providerSource{}
+		for _, p := range providers {
+			tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+			if newProv[tenant] == nil {
+				newProv[tenant] = map[string]*OidcProvider{}
+				newSrc[tenant] = map[string]*providerSource{}
+			}
+			newProv[tenant][p.WellKnownConfigURI] = p
+		}
+
+		done := func() bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.mapGen.Load() != gen {
+				return false
+			}
+			// Quiet tick: identical snapshot ⇒ skip the swap so kidIndex and
+			// sources stay warm. reflect.DeepEqual false-negatives (e.g. a
+			// locally-registered provider's monotonic-clock CreatedAt vs its
+			// KV round-trip) merely cause one extra swap and then stabilize.
+			if reflect.DeepEqual(newProv, r.providers) {
+				r.pruneOrphanSourcesLocked()
+				r.metrics.SetRegistryProviders(len(providers))
+				return true
+			}
+			for tenant, byURI := range r.sources {
+				for uri, src := range byURI {
+					if _, still := newProv[tenant][uri]; still {
+						newSrc[tenant][uri] = src
+					}
+				}
+			}
+			r.providers = newProv
+			r.sources = newSrc
+			r.kidIndex = map[string][]providerRef{}
+			r.mapGen.Add(1)
+			r.metrics.SetRegistryProviders(len(providers))
+			return true
+		}()
+		if done {
+			r.noteReconcileSuccess()
+			return nil
+		}
+	}
+	r.logger.Warn("oidc registry reload: giving up after repeated mid-rebuild mutations",
+		"pkg", "oidc", "attempts", maxReloadAttempts)
+	return errReloadContention
+}
+
+// pruneOrphanSourcesLocked drops sources whose provider is gone. A
+// reloadOne install racing an earlier swap can strand one; the always-swap
+// path used to collect it implicitly, the skip-swap path does it here.
+// Caller must hold r.mu (write).
+func (r *Registry) pruneOrphanSourcesLocked() {
 	for tenant, byURI := range r.sources {
-		for uri, src := range byURI {
-			if _, still := newProv[tenant][uri]; still {
-				newSrc[tenant][uri] = src
+		for uri := range byURI {
+			if _, ok := r.providers[tenant][uri]; !ok {
+				delete(byURI, uri)
 			}
 		}
 	}
-	r.providers = newProv
-	r.sources = newSrc
-	r.kidIndex = map[string][]providerRef{}
-	r.metrics.SetRegistryProviders(len(providers))
-	return nil
 }
+
+func (r *Registry) noteReconcileSuccess() {
+	r.lastReconcileNanos.Store(time.Now().UnixNano())
+	r.consecutiveFailures.Store(0)
+	r.metrics.SetReconcileConsecutiveFailures(0)
+	r.metrics.SetReconcileStalenessSeconds(0)
+}
+
+func (r *Registry) noteReconcileFailure(err error) {
+	n := r.consecutiveFailures.Add(1)
+	r.metrics.SetReconcileConsecutiveFailures(int(n))
+	r.metrics.SetReconcileStalenessSeconds(r.reconcileAge().Seconds())
+	msg := "oidc provider reconcile failed; serving last-known providers until it succeeds"
+	if n > errorEscalationThreshold {
+		r.logger.Error(msg, "pkg", "oidc", "consecutiveFailures", n, "error", err.Error())
+	} else {
+		r.logger.Warn(msg, "pkg", "oidc", "consecutiveFailures", n, "error", err.Error())
+	}
+}
+
+// reconcileAge returns time since the last successful ReloadAll.
+func (r *Registry) reconcileAge() time.Duration {
+	return time.Since(time.Unix(0, r.lastReconcileNanos.Load()))
+}
+
+// errorEscalationThreshold is the consecutive-failure count from which
+// reconcile failures log at ERROR instead of WARN.
+const errorEscalationThreshold = 3
 
 // ReloadAllAndWarm is the force-warm reload used by the reload endpoint and
 // the cluster reload_all broadcast: rebuild from KV, then synchronously
@@ -845,6 +956,7 @@ func (r *Registry) invalidateOne(tenant spi.TenantID, uri string) {
 	if byURI, ok := r.sources[tenant]; ok {
 		delete(byURI, uri)
 	}
+	r.mapGen.Add(1)
 	target := providerRef{tenant: tenant, uri: uri}
 	for kid, refs := range r.kidIndex {
 		out := refs[:0]

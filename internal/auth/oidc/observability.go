@@ -14,21 +14,25 @@ type Metrics interface {
 	IncUnknownProviderBroadcast()
 	ObserveBroadcastReceive(seconds float64)
 	SetRegistryProviders(n int)
+	SetReconcileConsecutiveFailures(n int)
+	SetReconcileStalenessSeconds(sec float64)
 }
 
 // NopMetrics is a no-op Metrics implementation. Used by tests and as the
 // fallback in non-JWT IAM modes (where the OIDC subsystem is inactive).
 type NopMetrics struct{}
 
-func (NopMetrics) IncKidCacheHit()                         {}
-func (NopMetrics) IncKidCacheMiss()                        {}
-func (NopMetrics) IncKidCacheEvict()                       {}
-func (NopMetrics) IncJWKSFetchError(outcome string)        {}
-func (NopMetrics) IncBroadcastPanic()                      {}
-func (NopMetrics) IncBroadcastDrop(reason string)          {}
-func (NopMetrics) IncUnknownProviderBroadcast()            {}
-func (NopMetrics) ObserveBroadcastReceive(seconds float64) {}
-func (NopMetrics) SetRegistryProviders(n int)              {}
+func (NopMetrics) IncKidCacheHit()                          {}
+func (NopMetrics) IncKidCacheMiss()                         {}
+func (NopMetrics) IncKidCacheEvict()                        {}
+func (NopMetrics) IncJWKSFetchError(outcome string)         {}
+func (NopMetrics) IncBroadcastPanic()                       {}
+func (NopMetrics) IncBroadcastDrop(reason string)           {}
+func (NopMetrics) IncUnknownProviderBroadcast()             {}
+func (NopMetrics) ObserveBroadcastReceive(seconds float64)  {}
+func (NopMetrics) SetRegistryProviders(n int)               {}
+func (NopMetrics) SetReconcileConsecutiveFailures(n int)    {}
+func (NopMetrics) SetReconcileStalenessSeconds(sec float64) {}
 
 // Compile-time guard.
 var _ Metrics = NopMetrics{}
