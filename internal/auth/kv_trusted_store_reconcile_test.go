@@ -20,7 +20,7 @@ type hookKV struct {
 	spi.KeyValueStore
 	mu      sync.Mutex
 	listErr error
-	onList  func() // runs before each delegated List
+	onList  func()            // runs before each delegated List
 	overlay map[string][]byte // extra entries merged into List results
 }
 
@@ -46,8 +46,8 @@ func (h *hookKV) List(ctx context.Context, ns string) (map[string][]byte, error)
 	return m, nil
 }
 
-func (h *hookKV) setListErr(err error)  { h.mu.Lock(); defer h.mu.Unlock(); h.listErr = err }
-func (h *hookKV) setOnList(f func())    { h.mu.Lock(); defer h.mu.Unlock(); h.onList = f }
+func (h *hookKV) setListErr(err error) { h.mu.Lock(); defer h.mu.Unlock(); h.listErr = err }
+func (h *hookKV) setOnList(f func())   { h.mu.Lock(); defer h.mu.Unlock(); h.onList = f }
 func (h *hookKV) setOverlay(k string, v []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
