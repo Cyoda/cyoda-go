@@ -292,6 +292,50 @@ func TestKVTrustedKeyStore_PingTriggersReconcile(t *testing.T) {
 	}, "node 2 never dropped the deleted key after ping")
 }
 
+// T7: the loop converges a peer mutation without any ping, respects the
+// once-guard, and stops on ctx cancel.
+func TestKVTrustedKeyStore_ReconcileLoop(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	s1, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatalf("store 1: %v", err)
+	}
+	s2, err := auth.NewKVTrustedKeyStore(ctx, kv, auth.WithReconcileInterval(20*time.Millisecond))
+	if err != nil {
+		t.Fatalf("store 2: %v", err)
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if !s2.StartReconcileLoop(loopCtx) {
+		t.Fatal("first StartReconcileLoop returned false")
+	}
+	if s2.StartReconcileLoop(loopCtx) {
+		t.Fatal("second StartReconcileLoop must be a no-op returning false")
+	}
+
+	if err := s1.Register(newTrustedKey(t, "loop-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	eventually(t, 3*time.Second, func() bool {
+		return len(s2.ListForVerification()) == 1
+	}, "loop never converged the peer registration")
+
+	// Cancel, then mutate again: node 2 must NOT converge (loop stopped).
+	cancel()
+	time.Sleep(100 * time.Millisecond) // let the loop goroutine observe cancel
+	if err := s1.Delete(spi.SystemTenantID, "loop-key"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := s2.ListForVerification(); len(got) != 1 {
+		t.Fatalf("loop still reconciling after ctx cancel: %v", got)
+	}
+}
+
 // T5: a garbage payload is ignored (never parsed, never logged) and still
 // triggers a harmless reconcile; the handler never panics.
 func TestKVTrustedKeyStore_PingIgnoresPayload(t *testing.T) {

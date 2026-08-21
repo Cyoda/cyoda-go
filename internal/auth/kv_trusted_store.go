@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
@@ -43,8 +44,9 @@ const defaultMaxTrustedKeys = 100
 type KVTrustedKeyStoreOption func(*kvTrustedKeyStoreConfig)
 
 type kvTrustedKeyStoreConfig struct {
-	maxTrustedKeys int
-	broadcaster    spi.ClusterBroadcaster
+	maxTrustedKeys    int
+	broadcaster       spi.ClusterBroadcaster
+	reconcileInterval time.Duration
 }
 
 // WithMaxTrustedKeys overrides the default per-tenant cap on registered trusted
@@ -54,6 +56,18 @@ type kvTrustedKeyStoreConfig struct {
 func WithMaxTrustedKeys(n int) KVTrustedKeyStoreOption {
 	return func(c *kvTrustedKeyStoreConfig) {
 		c.maxTrustedKeys = n
+	}
+}
+
+// WithReconcileInterval overrides the periodic KV-reconcile interval
+// (default 60s, matching CYODA_AUTH_CACHE_RECONCILE_INTERVAL). Values <= 0
+// fall back to the default. The actual per-tick wait is jittered ±10% to
+// avoid a cross-node reconcile herd.
+func WithReconcileInterval(d time.Duration) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		if d > 0 {
+			c.reconcileInterval = d
+		}
 	}
 }
 
@@ -123,12 +137,18 @@ type KVTrustedKeyStore struct {
 	// trailing Reconcile so a burst of peer mutations never queues an
 	// unbounded pile of redundant KV List calls.
 	pingCoalescer coalescingRunner
+	// reconcileLoopStarted guards StartReconcileLoop so at most one periodic
+	// reconcile goroutine ever runs per store.
+	reconcileLoopStarted atomic.Bool
 }
 
 // NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
 // from the KV backend. Pass WithMaxTrustedKeys to override the default cap.
 func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVTrustedKeyStoreOption) (*KVTrustedKeyStore, error) {
-	cfg := kvTrustedKeyStoreConfig{maxTrustedKeys: defaultMaxTrustedKeys}
+	cfg := kvTrustedKeyStoreConfig{
+		maxTrustedKeys:    defaultMaxTrustedKeys,
+		reconcileInterval: defaultReconcileInterval,
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -142,7 +162,7 @@ func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVT
 		ctx:               context.WithoutCancel(ctx),
 		maxPerTenant:      cfg.maxTrustedKeys,
 		broadcaster:       cfg.broadcaster,
-		reconcileInterval: defaultReconcileInterval,
+		reconcileInterval: cfg.reconcileInterval,
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
@@ -272,6 +292,36 @@ func (s *KVTrustedKeyStore) reconcileOnce() {
 	ctx, cancel := context.WithTimeout(s.ctx, s.reconcileInterval)
 	defer cancel()
 	_ = s.Reconcile(ctx) // failures logged/accounted inside Reconcile paths
+}
+
+// StartReconcileLoop starts the periodic KV-reconcile backstop: every
+// interval (jittered ±10%) the cache is rebuilt from the authoritative KV
+// store, bounding the staleness a dropped gossip ping can cause. Returns
+// false (starting nothing) if the loop already runs. The loop exits when
+// ctx is cancelled; callers pass a process-lifetime context.
+func (s *KVTrustedKeyStore) StartReconcileLoop(ctx context.Context) bool {
+	if !s.reconcileLoopStarted.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		for {
+			timer := time.NewTimer(jitteredInterval(s.reconcileInterval))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				s.reconcileOnce()
+			}
+		}
+	}()
+	return true
+}
+
+// jitteredInterval returns d × [0.9, 1.1) — the model-cache herd-avoidance
+// convention.
+func jitteredInterval(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
 }
 
 // broadcastChanged publishes the payload-free change ping. No-op without a
