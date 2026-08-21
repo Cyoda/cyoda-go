@@ -331,8 +331,76 @@ func TestKVTrustedKeyStore_ReconcileLoop(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if got := s2.ListForVerification(); len(got) != 1 {
+	// Use List (unaffected by the staleness breaker introduced later) so this
+	// assertion stays a clean signal of "did reconcile happen" rather than
+	// entangling it with the fail-closed staleness bound on ListForVerification.
+	if got := s2.List(spi.SystemTenantID); len(got) != 1 {
 		t.Fatalf("loop still reconciling after ctx cancel: %v", got)
+	}
+}
+
+// T6: breaker fails the enumeration path closed, Get keeps serving KV
+// ground truth, recovery restores, and the breaker is inert without a loop.
+func TestKVTrustedKeyStore_StalenessBreaker(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	hkv := &hookKV{KeyValueStore: kv}
+	s, err := auth.NewKVTrustedKeyStore(ctx, hkv, auth.WithReconcileInterval(20*time.Millisecond))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := s.Register(newTrustedKey(t, "breaker-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if !s.StartReconcileLoop(loopCtx) {
+		t.Fatal("StartReconcileLoop")
+	}
+
+	// Healthy loop: key verifiable.
+	eventually(t, 2*time.Second, func() bool {
+		return len(s.ListForVerification()) == 1
+	}, "key not verifiable under healthy loop")
+
+	// Kill List. Bound = 10×20ms = 200ms; wait comfortably past it.
+	hkv.setListErr(errors.New("kv outage"))
+	eventually(t, 5*time.Second, func() bool {
+		return len(s.ListForVerification()) == 0
+	}, "breaker never tripped: enumeration still serves stale keys")
+
+	// Get during the trip: forced read-through still serves KV truth
+	// (kv.Get is healthy — only List fails).
+	if _, err := s.Get(spi.SystemTenantID, "breaker-key"); err != nil {
+		t.Fatalf("Get during breaker trip must serve KV ground truth: %v", err)
+	}
+
+	// Recovery: List heals → breaker resets.
+	hkv.setListErr(nil)
+	eventually(t, 5*time.Second, func() bool {
+		return len(s.ListForVerification()) == 1
+	}, "breaker never recovered after KV healed")
+}
+
+func TestKVTrustedKeyStore_BreakerInertWithoutLoop(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv, auth.WithReconcileInterval(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := s.Register(newTrustedKey(t, "no-loop-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond) // ≫ 10× interval, but no loop running
+	if got := s.ListForVerification(); len(got) != 1 {
+		t.Fatalf("breaker tripped without a reconcile loop: %v", got)
 	}
 }
 
