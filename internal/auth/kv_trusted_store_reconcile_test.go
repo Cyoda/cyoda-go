@@ -76,6 +76,14 @@ func newTrustedKey(t *testing.T, kid string, tenant spi.TenantID) *auth.TrustedK
 // the two-nodes-one-database seam.
 func twoStores(t *testing.T) (*auth.KVTrustedKeyStore, *auth.KVTrustedKeyStore, *hookKV, context.Context) {
 	t.Helper()
+	return twoStoresWithMetrics(t, nil)
+}
+
+// twoStoresWithMetrics is twoStores but wires s2Metrics (if non-nil) into
+// node 2 via WithReconcileMetrics — the seam reconcile-contention tests use
+// to observe gauge calls.
+func twoStoresWithMetrics(t *testing.T, s2Metrics auth.ReconcileMetrics) (*auth.KVTrustedKeyStore, *auth.KVTrustedKeyStore, *hookKV, context.Context) {
+	t.Helper()
 	ctx := systemCtx()
 	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
 	if err != nil {
@@ -86,12 +94,41 @@ func twoStores(t *testing.T) (*auth.KVTrustedKeyStore, *auth.KVTrustedKeyStore, 
 	if err != nil {
 		t.Fatalf("store 1: %v", err)
 	}
-	s2, err := auth.NewKVTrustedKeyStore(ctx, hkv)
+	var opts []auth.KVTrustedKeyStoreOption
+	if s2Metrics != nil {
+		opts = append(opts, auth.WithReconcileMetrics(s2Metrics))
+	}
+	s2, err := auth.NewKVTrustedKeyStore(ctx, hkv, opts...)
 	if err != nil {
 		t.Fatalf("store 2: %v", err)
 	}
 	return s1, s2, hkv, ctx
 }
+
+// recordingReconcileMetrics captures ReconcileMetrics calls for assertion.
+type recordingReconcileMetrics struct {
+	mu                      sync.Mutex
+	stalenessCalls          int
+	lastStalenessSeconds    float64
+	consecutiveFailureCalls int
+	lastConsecutiveFailures int
+}
+
+func (m *recordingReconcileMetrics) SetReconcileConsecutiveFailures(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.consecutiveFailureCalls++
+	m.lastConsecutiveFailures = n
+}
+
+func (m *recordingReconcileMetrics) SetReconcileStalenessSeconds(sec float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stalenessCalls++
+	m.lastStalenessSeconds = sec
+}
+
+var _ auth.ReconcileMetrics = (*recordingReconcileMetrics)(nil)
 
 // T1: cross-node convergence via Reconcile for every mutation kind.
 func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
@@ -410,7 +447,8 @@ func TestKVTrustedKeyStore_BreakerInertWithoutLoop(t *testing.T) {
 // hookKV.onList seam) bumps s2's generation counter on every attempt, so
 // the swap's generation guard never sees a stable snapshot.
 func TestKVTrustedKeyStore_Reconcile_RetryBudgetExhausted(t *testing.T) {
-	s1, s2, hkv, ctx := twoStores(t)
+	metrics := &recordingReconcileMetrics{}
+	s1, s2, hkv, ctx := twoStoresWithMetrics(t, metrics)
 
 	// Already known to s2 before contention — must survive the failed
 	// reconcile untouched (proves the breaker did not trip / cache wasn't
@@ -439,6 +477,25 @@ func TestKVTrustedKeyStore_Reconcile_RetryBudgetExhausted(t *testing.T) {
 		t.Fatal("want an error when the retry budget is exhausted under continuous contention")
 	}
 	hkv.setOnList(nil)
+
+	// M1 fix: the staleness gauge must still be recorded on contention
+	// exhaustion so alerting on age > 10x interval is never blinded by a
+	// gauge that reads its last (typically zero) value under sustained
+	// mutation churn. The consecutiveFailures gauge must NOT be touched —
+	// contention is not a KV failure.
+	metrics.mu.Lock()
+	stalenessCalls, lastStaleness := metrics.stalenessCalls, metrics.lastStalenessSeconds
+	failureCalls := metrics.consecutiveFailureCalls
+	metrics.mu.Unlock()
+	if stalenessCalls == 0 {
+		t.Fatal("contention exhaustion must record the staleness gauge so alerting is not blinded")
+	}
+	if lastStaleness < 0 {
+		t.Fatalf("staleness gauge recorded a negative value: %v", lastStaleness)
+	}
+	if failureCalls != 0 {
+		t.Fatalf("contention exhaustion must not touch the consecutiveFailures gauge (not a KV failure): calls=%d", failureCalls)
+	}
 
 	// No swap occurred: the peer-only key never reached s2's cache. Checked
 	// via List (pure cache read) rather than Get, which deliberately

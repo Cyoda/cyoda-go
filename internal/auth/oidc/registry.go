@@ -639,8 +639,22 @@ func (r *Registry) ReloadAll(ctx context.Context) error {
 			return nil
 		}
 	}
-	r.logger.Warn("oidc registry reload: giving up after repeated mid-rebuild mutations",
-		"pkg", "oidc", "attempts", maxReloadAttempts)
+	// Contention does not touch lastReconcileNanos or consecutiveFailures
+	// (local churn proves the store is reachable; stamping success here
+	// would be fail-open, and counting it as a KV failure would be wrong).
+	// But the staleness gauge must still be recorded so alerting on the
+	// fail-closed breaker (age > stalenessMultiplier x interval) is never
+	// blinded by a gauge stuck at its last (typically zero) value under
+	// sustained mutation churn.
+	stalenessSeconds := r.reconcileAge().Seconds()
+	r.metrics.SetReconcileStalenessSeconds(stalenessSeconds)
+	msg := "oidc registry reload: giving up after repeated mid-rebuild mutations"
+	fields := []any{"pkg", "oidc", "attempts", maxReloadAttempts, "stalenessSeconds", int64(stalenessSeconds + 0.5)}
+	if r.reconcileAge() > (stalenessMultiplier/2)*r.cfg.ReconcileInterval {
+		r.logger.Error(msg, fields...)
+	} else {
+		r.logger.Warn(msg, fields...)
+	}
 	return errReloadContention
 }
 

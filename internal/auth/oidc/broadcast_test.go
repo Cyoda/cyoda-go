@@ -26,6 +26,7 @@ type recordingMetrics struct {
 
 	reconcileFailures        int64
 	reconcileStalenessMillis int64
+	reconcileStalenessCalls  int64
 
 	dropsMu sync.Mutex
 	drops   map[string]int64
@@ -54,6 +55,7 @@ func (m *recordingMetrics) SetReconcileConsecutiveFailures(n int) {
 }
 func (m *recordingMetrics) SetReconcileStalenessSeconds(sec float64) {
 	atomic.StoreInt64(&m.reconcileStalenessMillis, int64(sec*1000))
+	atomic.AddInt64(&m.reconcileStalenessCalls, 1)
 }
 
 // DropsForReason returns the number of times IncBroadcastDrop was called with

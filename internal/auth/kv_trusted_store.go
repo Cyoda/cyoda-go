@@ -313,8 +313,22 @@ func (s *KVTrustedKeyStore) Reconcile(ctx context.Context) error {
 			return nil
 		}
 	}
-	slog.Warn("trusted-key reconcile: giving up after repeated mid-rebuild mutations",
-		"pkg", "auth", "attempts", maxReconcileAttempts)
+	// Contention does not touch lastReconcileNanos or consecutiveFailures
+	// (local churn proves KV writes work; stamping success here would be
+	// fail-open, and counting it as a KV failure would be wrong). But the
+	// staleness gauge must still be recorded so alerting on the fail-closed
+	// breaker (age > stalenessMultiplier x interval) is never blinded by a
+	// gauge stuck at its last (typically zero) value under sustained
+	// mutation churn.
+	stalenessSeconds := s.reconcileAge().Seconds()
+	s.metrics.SetReconcileStalenessSeconds(stalenessSeconds)
+	msg := "trusted-key reconcile: giving up after repeated mid-rebuild mutations"
+	fields := []any{"pkg", "auth", "attempts", maxReconcileAttempts, "stalenessSeconds", int64(stalenessSeconds + 0.5)}
+	if s.reconcileAge() > (stalenessMultiplier/2)*s.reconcileInterval {
+		slog.Error(msg, fields...)
+	} else {
+		slog.Warn(msg, fields...)
+	}
 	return errReconcileContention
 }
 

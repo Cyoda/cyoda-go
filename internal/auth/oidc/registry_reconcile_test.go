@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -452,7 +453,10 @@ func TestReloadAll_ClientDisconnect_DoesNotPolluteFailureAccounting(t *testing.T
 // generation check) guarantees the generation guard trips on all
 // maxReloadAttempts attempts.
 func TestReloadAll_RetryBudgetExhausted_ContentionUnderConcurrentMutation(t *testing.T) {
-	r, store, _ := registryOverStore(t)
+	store := newTestStore(t)
+	disc := &fakeDiscovery{docs: map[string]*DiscoveryDoc{}}
+	metrics := &recordingMetrics{}
+	r := NewRegistry(store, disc, nil, metrics, nil, RegistryConfig{AllowPrivateNetworks: true})
 	ctx := context.Background()
 	p := reconcileTestProvider(t, "https://churn.example/.well-known/openid-configuration")
 	if err := store.Register(ctx, p); err != nil {
@@ -462,6 +466,7 @@ func TestReloadAll_RetryBudgetExhausted_ContentionUnderConcurrentMutation(t *tes
 		t.Fatalf("warm-up ReloadAll: %v", err)
 	}
 	lastBefore := r.lastReconcileNanos.Load()
+	stalenessCallsBefore := atomic.LoadInt64(&metrics.reconcileStalenessCalls)
 	tenant := spi.TenantID(p.OwnerLegalEntityID.String())
 
 	// Mutate the provider map on every attempt so the generation guard never
@@ -479,6 +484,21 @@ func TestReloadAll_RetryBudgetExhausted_ContentionUnderConcurrentMutation(t *tes
 	}
 	if got := r.consecutiveFailures.Load(); got != 0 {
 		t.Fatalf("contention exhaustion is not a KV failure: consecutiveFailures=%d", got)
+	}
+
+	// M1 fix: the staleness gauge must still be recorded on contention
+	// exhaustion so alerting on age > 10x interval is never blinded by a
+	// gauge that reads its last (typically zero) value under sustained
+	// mutation churn. The consecutiveFailures gauge must NOT be touched —
+	// contention is not a KV failure.
+	if atomic.LoadInt64(&metrics.reconcileStalenessCalls) == stalenessCallsBefore {
+		t.Fatal("contention exhaustion must record the staleness gauge so alerting is not blinded")
+	}
+	if atomic.LoadInt64(&metrics.reconcileStalenessMillis) < 0 {
+		t.Fatalf("staleness gauge recorded a negative value: %dms", metrics.reconcileStalenessMillis)
+	}
+	if metrics.reconcileFailures != 0 {
+		t.Fatalf("contention exhaustion must not touch the consecutiveFailures gauge (not a KV failure): %d", metrics.reconcileFailures)
 	}
 
 	// A subsequent clean ReloadAll (no racing mutation) succeeds.
