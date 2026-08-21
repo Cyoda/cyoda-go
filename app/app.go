@@ -258,14 +258,31 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore,
-			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant))
+		authReconcileMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		trustedOpts := []auth.KVTrustedKeyStoreOption{
+			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant),
+			auth.WithReconcileInterval(cfg.IAM.AuthCacheReconcileInterval),
+			auth.WithReconcileMetrics(authReconcileMetrics),
+		}
+		if gossipReg != nil {
+			// Typed-nil guard: only append when non-nil (same rationale as
+			// cacheBroadcaster above).
+			trustedOpts = append(trustedOpts, auth.WithTrustedKeyBroadcaster(gossipReg))
+		}
+		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore, trustedOpts...)
 		if err != nil {
 			slog.Error("startup failure",
 				"phase", "kv-trusted-store-bootstrap",
 				"error", err.Error())
 			os.Exit(1)
 		}
+		// Periodic KV-reconcile backstop; systemCtx is process-lifetime, so
+		// the loop runs until exit (same lifecycle as the warmup retry loop).
+		trustedKeyStore.StartReconcileLoop(systemCtx)
 
 		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
 		// enabled. Checked here (after KVTrustedKeyStore bootstrap, before OIDC
@@ -304,6 +321,7 @@ func New(cfg Config) *App {
 			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
 			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
 			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
+			ReconcileInterval:    cfg.IAM.AuthCacheReconcileInterval,
 		})
 
 		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
@@ -324,6 +342,7 @@ func New(cfg Config) *App {
 		pendingWarmJWKS = func() {
 			oidcRegistry.WarmJWKS(systemCtx)
 			oidcRegistry.StartWarmupRetryLoop(systemCtx)
+			oidcRegistry.StartReconcileLoop(systemCtx)
 		}
 
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
