@@ -45,16 +45,17 @@ type IterateOptions struct {
   iterator MUST yield in the requested order or fail the `Iterate` call with
   the new sentinel `spi.ErrOrderNotSupported` (fail closed — never yield
   unordered; precedent: `ErrAggregationNotPushdownable`). The tie-breaker
-  rule applies to requested orders: the final sort key is always entity ID,
-  so equal user-field values can never yield nondeterministic order.
+  rule applies to requested orders: the final sort key is always entity ID
+  in the **engine's canonical ID order** (§5), so equal user-field values
+  can never yield nondeterministic order.
   sqlite/postgres push `ORDER BY` into SQL; memory sorts its snapshot.
   Honesty note on the policy boundary: sqlite is embedded, so its sort runs
   in-process (temp B-tree with disk spill) — the memory rule bounds the
   engine's per-request heap; database sort machinery with disk spill is
   accepted, wherever it executes. Consumers that need the default result
-  order request entity-ID ascending explicitly (`OrderSpec{Source: Meta,
-  Path: "id"}` expresses it); all engine-executed backends support at least
-  that.
+  order request entity-ID ordering explicitly (`OrderSpec{Source: Meta,
+  Path: "id"}` expresses it, served in the engine's canonical ID order, §5);
+  all backends support at least that.
 - **Read-set semantics**: entities enter the transaction read-set only when
   `TrackingRead` is set — same rule as `Search`. This corrects sqlite's in-tx
   `Iterate`, which today records reads unconditionally.
@@ -228,8 +229,8 @@ FailStale(ctx context.Context, staleAfter time.Duration) (int, error)
 ### 4.5 Async result ordering is contractual end-to-end
 
 Results are saved — and therefore read back — in the requested `OrderBy`;
-when the request specifies none, the engine requests entity-ID ascending
-explicitly (preserving today's default result order). On the engine path the
+when the request specifies none, the engine requests entity-ID ordering
+explicitly (served in the engine's canonical ID order, §5). On the engine path the
 order is inherited from §2.1's ordered iterator. The commercial backend
 currently ignores the requested ordering (a live cross-backend divergence);
 ordering is achievable there by storing result rows keyed by sort-value byte
@@ -261,9 +262,25 @@ notice. A short cloud-parity note records async result ordering as contract.
 GetPage(ctx context.Context, modelRef ModelRef, limit, offset int, asAt *time.Time) ([]*Entity, error)
 ```
 
-- Ordering: entity ID ascending, byte-wise (`COLLATE "C"` semantics),
-  contractual and spitest-asserted. `limit >= 1`, `offset >= 0`; violations
-  error.
+- **Ordering: the engine's canonical entity-ID order** (settled with Paul
+  2026-08-22). Each engine defines ONE total, stable, deterministic ID
+  order and uses it consistently everywhere it orders by ID — `GetPage`,
+  tie-breaking under user-field `OrderBy`, and explicit entity-ID ordering.
+  The order is **engine-specific, not identical across engines**:
+  cross-engine identity bought nothing real (no API doc promises a specific
+  order; paging across a backend migration is meaningless), and demanding
+  it made the commercial backend's natively time-clustered schema
+  unserviceable. Each in-house backend documents byte-wise ascending
+  (`COLLATE "C"` / `BINARY` / Go `<` — their native behaviour today) in
+  `docs/plugins/`; the commercial backend documents its timeuuid (creation
+  time) order in its own docs. The public API documents list order as
+  stable and deterministic, specific order storage-engine-specific (one
+  line in API docs + the cloud-parity note). spitest asserts determinism,
+  paging self-consistency (page 0–19 + 20–39 ≡ 0–39), and conformance to
+  the engine's declared comparator — `Harness` gains an optional
+  ID-comparator hook defaulting to byte-wise. Parity tests assert
+  set-equality + per-engine determinism, never cross-engine sequences.
+  `limit >= 1`, `offset >= 0`; violations error.
 - Serves `ListEntities` (HTTP `pageNumber × pageSize` maps directly; offset
   pagination is required by the public API's random page access).
 - **In-transaction contract** (`ListEntities` is reachable inside a joined
@@ -280,14 +297,14 @@ GetPage(ctx context.Context, modelRef ModelRef, limit, offset int, asAt *time.Ti
 - Index work required for the latency acceptance criterion ("bounded by
   pageSize, not N"): postgres extends the model index to include `entity_id`
   with `COLLATE "C"`; sqlite adds a `(tenant_id, model_name, model_version,
-  entity_id)` index. **Commercial backend**: its by-model table clusters IDs
-  in timeuuid (temporal) order, which is unrelated to the contractual
-  byte-wise string order, so neither stream-and-discard nor a shard-cursor
-  merge can serve correct page contents from today's schema. Compliance
-  requires a byte-ordered by-model ID index (schema addition, named in the
-  tag-2 consumer notice — same class of fix as the async result ordering);
-  the documented interim profile is collect-and-sort **IDs only** per model
-  (never entities), stated as their implementation cost.
+  entity_id)` index. **Commercial backend**: under the per-engine ordering
+  contract its native timeuuid clustering IS its canonical ID order — a
+  k-way merge over its time-sorted shard cursors streams globally ordered
+  IDs from today's schema: O(page) memory, O(offset) reads for the offset,
+  no schema addition and no O(model) sort. (Their engine-side `ListEntities`
+  order visibly changes from today's engine-sorted byte-wise order to their
+  documented native order when they adopt `GetPage` — sanctioned by the
+  per-engine contract, called out in the consumer notice.)
 - `GetAll`/`GetAllAsAt` remain in the SPI (the engine's untranslatable-
   condition fallback consumes them until #477 closes it); `ListEntities`
   simply stops using them.
@@ -448,18 +465,24 @@ is not wall-clock assertion.
   `GetVersionMetadata` + `EntityVersionMeta`, delete `GetVersionHistory`,
   drop `MergeBounded`'s now-dead `limit <= 0` unbounded mode (its doc calls
   the mode load-bearing; after this tag no caller passes it); spitest suites
-  for all of the above; CHANGELOG `### Breaking` with migration notes;
-  consumer notification pre-merge.
+  for all of the above incl. the `Harness` ID-comparator hook (§5);
+  CHANGELOG `### Breaking` with migration notes; consumer notification
+  pre-merge.
 - cyoda-go: plugin implementations (incl. sqlite reader connection, postgres
   ceiling port + chunked CopyFrom, index migrations), engine reroutes (§7),
   worker pool + registry + drain, Gate-4 doc trio for new env vars,
-  cloud-parity note on async result ordering, CHANGELOG.
+  canonical-ID-order sections in `docs/plugins/*.md` + the API-doc line that
+  list order is stable but storage-engine-specific, cloud-parity note
+  covering async result ordering AND the engine-specific list order,
+  CHANGELOG.
 - Commercial backend (their repo, via notification): signature updates;
   ordered async result storage (sort-key-encoded rows) as the fix for the
   now-tracked ordering divergence — flagging the sequencing overlap with the
   async wire-syntax translation work (spi#31) so ordering support doesn't
   build a second parser over the raw blob that work replaces; the
-  byte-ordered by-model ID index for `GetPage` (§5); the
+  per-engine ordering contract for `GetPage` (§5 — their native timeuuid
+  order becomes their documented canonical order; the visible list-order
+  change when they adopt it); the
   transaction-lookup access-path choice (§6.1); the rebalance-vs-liveness
   recovery gap (§4.3); conformance Skip-map updates.
 
