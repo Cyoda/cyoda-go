@@ -34,17 +34,20 @@ changes without shims.
 ```go
 type IterateOptions struct {
     PointInTime  *time.Time
-    OrderBy      []OrderSpec // empty = order unspecified; non-empty = honour or ErrOrderNotSupported
+    OrderBy      []OrderSpec // empty = order unspecified; non-empty = MUST honour (no ambient tx)
     TrackingRead bool        // parity with SearchOptions.TrackingRead
 }
 ```
 
-- **Ordering is honoured-or-refused.** Empty `OrderBy` means **order
-  unspecified** — order-insensitive consumers (grouped stats, conditional
-  delete) pay no sorting tax anywhere. When `OrderBy` is non-empty the
-  iterator MUST yield in the requested order or fail the `Iterate` call with
-  the new sentinel `spi.ErrOrderNotSupported` (fail closed — never yield
-  unordered; precedent: `ErrAggregationNotPushdownable`). The tie-breaker
+- **Ordering is honoured.** Empty `OrderBy` means **order unspecified** —
+  order-insensitive consumers (grouped stats, conditional delete) pay no
+  sorting tax anywhere. When `OrderBy` is non-empty the iterator MUST yield
+  in the requested order; every engine-executed backend can (no
+  refusal sentinel — settled with Paul 2026-08-22: insurance for a backend
+  that doesn't exist). **`OrderBy` with an ambient transaction is
+  unsupported** (zero consumers: the async executor runs outside
+  transactions; in-tx consumers are order-insensitive) — implementations
+  return a plain error; the engine never makes that call. The tie-breaker
   rule applies to requested orders: the final sort key is always entity ID
   in the **engine's canonical ID order** (§5), so equal user-field values
   can never yield nondeterministic order.
@@ -73,9 +76,11 @@ type IterateOptions struct {
 - sqlite's in-tx branch may keep materialising the merged snapshot initially
   (current behaviour) but the target shape is the lazy committed stream +
   buffered-adds merge that `searchTxOverlay` already demonstrates.
-- A new exported SPI helper `MergeOrdered` (iterator-shaped sibling of
-  `MergeBounded`) provides the ordered streaming merge of a committed row
-  stream with a sorted buffered overlay, so backends don't each reinvent it.
+- A new exported SPI helper `MergeOrdered` provides the ordered streaming
+  merge of a committed row stream with a sorted buffered overlay. Its
+  consumer is `GetPage`'s in-transaction page (§5) — ordered `Iterate` never
+  runs in a transaction (§2.1), so backends don't need an ordered overlay
+  iterator.
 
 ### 2.3 Postgres async ceiling ports to Iterate
 
@@ -97,8 +102,8 @@ aligned with the settled policy; the CHANGELOG relaxation note covers it.
 ### 2.5 spitest
 
 A new `Iterable` conformance group (none exists today): requested-order yield
-honoured-or-`ErrOrderNotSupported` (entity-ID order asserted concretely; a
-user-field order case asserts honour-or-sentinel), tie-breaker, residual
+honoured (entity-ID and a user-field order asserted concretely; ordered
+in-tx call asserted to error), tie-breaker, residual
 filter application inside `Next`, ctx cancellation observed, sticky `Err`,
 idempotent `Close`, PIT variant, snapshot-at-open overlay behaviour,
 `TrackingRead` gating.
@@ -394,9 +399,7 @@ can break the commercial backend's run.
   the O(page) mode is the existing batched delete, whose selection phase
   streams per batch with per-ID version guards. Conscious non-goal: the ID
   drain still deserialises full entity rows — an `IterateOptions` projection
-  knob is out of scope here. Engine mapping for `ErrOrderNotSupported`:
-  unreachable for in-house backends; if ever surfaced, it is a 5xx internal
-  error, not a client error.
+  knob is out of scope here.
 - **Sibling defects rerouted in the same change** (fix-siblings policy):
   `DeleteAllEntities`'s whole-model `GetAll` (needs IDs/count only) and
   `deleteBatched`'s `cond == nil` `GetAll` + O(matches) target slice.
@@ -457,8 +460,8 @@ is not wall-clock assertion.
 
 ## 10. Deliverables checklist (tag 2 + cyoda-go)
 
-- SPI: `IterateOptions{OrderBy, TrackingRead}`, `MergeOrdered`, sentinels
-  `ErrOrderNotSupported` + `ErrAlreadyTerminal`, strict-bounded `Search`,
+- SPI: `IterateOptions{OrderBy, TrackingRead}`, `MergeOrdered` (GetPage's
+  overlay merge), sentinel `ErrAlreadyTerminal`, strict-bounded `Search`,
   `SaveResults(iter.Seq[string])`, terminal write-once contract, `Heartbeat`,
   `FailStale`, `SearchJob.HeartbeatTime`, job-record contract text (§4.4),
   `GetPage` (incl. in-tx overlay contract), `GetVersionByTransaction`,
