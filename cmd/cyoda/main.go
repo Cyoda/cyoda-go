@@ -128,24 +128,28 @@ func main() {
 	// Second-signal escape hatch: signal.NotifyContext only cancels on
 	// the first signal; subsequent signals are no-ops, leaving the
 	// operator with no recourse if the graceful drain hangs (stuck
-	// in-flight RPC, slow-closing storage pool). Register the hard-exit
-	// channel up-front so it is already armed when the first signal
-	// arrives — otherwise the second signal can race the goroutine
-	// setup and be lost. The goroutine only acts once rootCtx is
-	// cancelled, so the first signal still flows through the graceful
-	// path; only signals received AFTER cancellation force os.Exit(2).
-	hardExitCh := make(chan os.Signal, 1)
+	// in-flight RPC, slow-closing storage pool).
+	//
+	// hardExitCh is independent of rootCtx and gets every SIGINT/SIGTERM
+	// delivered to the process. It does NOT wait on <-rootCtx.Done() —
+	// the runtime delivers each signal to signal.NotifyContext's channel
+	// and to hardExitCh separately, not atomically together, so waiting
+	// on rootCtx first and then trying to tell "already consumed" apart
+	// from "second signal" by draining hardExitCh raced that gap: a
+	// drain that ran before the first signal reached hardExitCh saw it
+	// empty, then blocked and consumed the *first* signal as if it were
+	// the second, forcing a spurious hard exit on a single SIGTERM.
+	//
+	// Receiving twice, unconditionally, has no such gap: every delivered
+	// signal reaches hardExitCh exactly once, so receive #1 is always
+	// the first signal and receive #2 is always a genuine second one,
+	// regardless of rootCtx timing. Buffered to 2 so a second signal
+	// arriving in a tight burst is never dropped mid-receive.
+	hardExitCh := make(chan os.Signal, 2)
 	signal.Notify(hardExitCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-rootCtx.Done()
-		// Drain any signal that landed in the buffered channel before
-		// rootCtx was cancelled — that one is the first signal and is
-		// already being handled by signal.NotifyContext.
-		select {
-		case <-hardExitCh:
-		default:
-		}
-		<-hardExitCh
+		<-hardExitCh // first signal — the graceful path (signal.NotifyContext) is handling it
+		<-hardExitCh // a genuine second signal
 		slog.Warn("hard exit forced by second signal")
 		os.Exit(2)
 	}()
