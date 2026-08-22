@@ -47,10 +47,14 @@ type IterateOptions struct {
   unordered; precedent: `ErrAggregationNotPushdownable`). The tie-breaker
   rule applies to requested orders: the final sort key is always entity ID,
   so equal user-field values can never yield nondeterministic order.
-  sqlite/postgres push `ORDER BY` into SQL (streaming server-side sorts);
-  memory sorts its snapshot. Consumers that need the default result order
-  request entity-ID ascending explicitly (`OrderSpec{Source: Meta, Path:
-  "id"}` expresses it); all engine-executed backends support at least that.
+  sqlite/postgres push `ORDER BY` into SQL; memory sorts its snapshot.
+  Honesty note on the policy boundary: sqlite is embedded, so its sort runs
+  in-process (temp B-tree with disk spill) — the memory rule bounds the
+  engine's per-request heap; database sort machinery with disk spill is
+  accepted, wherever it executes. Consumers that need the default result
+  order request entity-ID ascending explicitly (`OrderSpec{Source: Meta,
+  Path: "id"}` expresses it); all engine-executed backends support at least
+  that.
 - **Read-set semantics**: entities enter the transaction read-set only when
   `TrackingRead` is set — same rule as `Search`. This corrects sqlite's in-tx
   `Iterate`, which today records reads unconditionally.
@@ -149,10 +153,12 @@ deadlocks producer against consumer. Plugin-internal change, no SPI impact.
 ### 4.2 Terminal statuses are final (write-once)
 
 `SUCCESSFUL`, `FAILED`, and `CANCELLED` are terminal. The store MUST refuse
-any transition out of a terminal status: `UpdateJobStatus` and `FailStale`
-against a terminal job return the new sentinel `spi.ErrAlreadyTerminal`
-(distinguishable, so a losing writer can log); `Cancel` keeps its
-idempotent-nil contract from tag 1. This closes the zombie-executor race:
+any write against a terminal job — including a same-status rewrite:
+`UpdateJobStatus`, `FailStale`, `Heartbeat`, and `SaveResults` all return the
+new sentinel `spi.ErrAlreadyTerminal` (distinguishable, so a losing writer
+can log; for `SaveResults` the check runs at least at chunk boundaries, so a
+reaped executor's stream aborts within one chunk). `Cancel` is the sole
+idempotent-nil exception, per its tag-1 contract. This closes the zombie-executor race:
 without it, an executor that stalls past the stale bound, gets reaped by
 another node's `FailStale`, and then recovers could overwrite FAILED with
 SUCCESSFUL — a job the cluster declared dead serving results as complete.
@@ -172,7 +178,16 @@ FailStale(ctx context.Context, staleAfter time.Duration) (int, error)
 - `SearchJob` gains `HeartbeatTime *time.Time`.
 - The owning engine node heartbeats periodically from submission onward —
   **including while the job waits in the worker-pool queue** (the submitter
-  is alive and owns the queue entry), then from the executor's poll loop.
+  is alive and owns the queue entry). The heartbeat runs on a **dedicated
+  per-job ticker goroutine, independent of scan progress** — never in-band
+  with the row stream, where a long non-yielding stretch (low-selectivity
+  residual scan, slow save chunk) would starve it and let `FailStale` kill a
+  healthy long-running job. `heartbeatInterval ≪ staleAfter` is a stated
+  config invariant.
+- **Clock domain**: the heartbeat stamp and the staleness comparison MUST use
+  the same clock (store-side where one exists — SQL `now()` on postgres);
+  `staleAfter` must dominate residual engine↔store skew for the
+  `CreateTime` baseline case.
 - **Nil heartbeat baseline is `CreateTime`** (fail closed): a job that never
   heartbeated — crash between `CreateJob` and the first stamp — goes stale
   `staleAfter` after creation, not never.
@@ -186,8 +201,16 @@ FailStale(ctx context.Context, staleAfter time.Duration) (int, error)
 - `Heartbeat` error semantics: terminal job → `ErrAlreadyTerminal`; missing
   job → `ErrNotFound`. The executor treats **any** `Heartbeat` error as an
   abort signal (fail closed).
-- Self-executing stores may no-op both (the commercial backend has its own
-  shard recovery). spitest covers both for engine-executed stores.
+- **`FailStale` and `ReapExpired` are cross-tenant** and are called with a
+  tenant-less context (the reaper loop owns no tenant) — stated in the
+  interface doc, precedent `ScheduledTaskStore.ScanDue`. A tenant-scoped
+  implementation would silently reap nothing and reinstate the
+  orphan-forever defect.
+- Self-executing stores may no-op both; recovery is their concern. The tag-2
+  consumer notice flags that the commercial backend's current recovery is
+  rebalance-driven, not liveness-driven — a hung-but-owning node leaves
+  shard rows RUNNING — so the equivalence is theirs to close. spitest covers
+  both methods for engine-executed stores.
 
 ### 4.4 Job-record contract text (previously silent)
 
@@ -244,20 +267,27 @@ GetPage(ctx context.Context, modelRef ModelRef, limit, offset int, asAt *time.Ti
 - Serves `ListEntities` (HTTP `pageNumber × pageSize` maps directly; offset
   pagination is required by the public API's random page access).
 - **In-transaction contract** (`ListEntities` is reachable inside a joined
-  transaction via compute-node callbacks): `GetPage` overlays the
-  transaction buffer like `GetAll` does today — the page reflects the merged
-  view snapshotted at the call (ordered via the `MergeOrdered` rule),
-  deleted entities excluded, and returned entities recorded in the read-set,
-  preserving current `ListEntities` behaviour. Committed-only reads would
-  silently break a processor that saves then lists within its transaction.
+  transaction via compute-node callbacks): when `asAt` is nil, `GetPage`
+  overlays the transaction buffer like `GetAll` does today — the page
+  reflects the merged view snapshotted at the call (ordered via the
+  `MergeOrdered` rule), deleted entities excluded, and returned entities
+  recorded in the read-set, preserving current `ListEntities` behaviour.
+  Committed-only reads would silently break a processor that saves then
+  lists within its transaction. With `asAt` set, the read is committed-only
+  — the SPI-wide in-transaction point-in-time rule.
 - Per-entity load errors fail the call (fail-fast) — page boundaries must be
   deterministic.
 - Index work required for the latency acceptance criterion ("bounded by
   pageSize, not N"): postgres extends the model index to include `entity_id`
   with `COLLATE "C"`; sqlite adds a `(tenant_id, model_name, model_version,
-  entity_id)` index. The commercial backend has no server-side offset; its
-  compliant profile streams IDs and discards until the offset is consumed —
-  O(offset) reads, O(page) memory, never an O(model) buffer.
+  entity_id)` index. **Commercial backend**: its by-model table clusters IDs
+  in timeuuid (temporal) order, which is unrelated to the contractual
+  byte-wise string order, so neither stream-and-discard nor a shard-cursor
+  merge can serve correct page contents from today's schema. Compliance
+  requires a byte-ordered by-model ID index (schema addition, named in the
+  tag-2 consumer notice — same class of fix as the async result ordering);
+  the documented interim profile is collect-and-sort **IDs only** per model
+  (never entities), stated as their implementation cost.
 - `GetAll`/`GetAllAsAt` remain in the SPI (the engine's untranslatable-
   condition fallback consumes them until #477 closes it); `ListEntities`
   simply stops using them.
@@ -272,12 +302,23 @@ GetVersionByTransaction(ctx context.Context, entityID, txID string) (*EntityVers
 
 - Returns the **earliest** version carrying the transaction ID (preserves
   current linear-scan behaviour; an entity can be saved more than once in
-  one transaction). `ErrNotFound` when absent. Empty `txID` is rejected
-  (sqlite stores empty transaction IDs for non-tx writes; an empty input
-  must not match them).
-- postgres/sqlite push the match into SQL over the entity's own versions;
-  memory maintains a per-entity transaction index; the commercial backend
-  serves it from its transaction-keyed clustering.
+  one transaction). `ErrNotFound` when absent. **DELETED / payload-less
+  versions never match** — today's scan skips them, so the transaction that
+  deleted an entity answers 404, and a naive SQL pushdown on the
+  transaction-ID column would silently change that (sqlite stores the ID on
+  tombstone rows). spitest-asserted.
+- Empty `txID` never reaches the store: the engine validates it upstream
+  (the HTTP parameter is typed as a UUID). Defensively, implementations
+  MUST NOT match empty stored transaction IDs (sqlite writes empty IDs for
+  non-transactional saves) and return `ErrNotFound` for an empty input.
+- postgres/sqlite push the match into SQL over the entity's own versions
+  (bounded by that entity's history); memory maintains a per-entity
+  transaction index. The commercial backend has no by-transaction access
+  path in its change table (the transaction column sits behind the version
+  in the clustering order): its profile is a scan of the entity's own change
+  partition — bounded by that entity's history, and it must scan past a
+  match to prove "earliest" since its clustering is version-descending — or
+  a schema addition, their call via the consumer notice.
 
 ### 6.2 Metadata-only history
 
@@ -289,6 +330,11 @@ type VersionMetadataOptions struct {
     Limit       int        // 0 = all
 }
 ```
+
+`Limit 0 = all` deliberately diverges from `GetPage`/`GetResultIDs` (which
+require `limit >= 1`): metadata rows are bounded by one entity's history;
+pages over models are not. The rationale is stated in the interface doc so
+the divergence reads as intent, not accident.
 
 - `EntityVersionMeta` carries what both consumers need and no payload:
   `Version`, `ChangeType`, `Timestamp`, `User`, `AttributedKind`, `Executor`,
@@ -312,11 +358,13 @@ type VersionMetadataOptions struct {
 No consumer of full-history-with-payloads remains (the three production
 callers are covered by §6.1/§6.2; verified — no endpoint returns more than
 one historical entity with data). Pre-1.0 collapse, no shim. The spitest
-subtests that lean on it (entity suite ordering, transaction-suite
-committed-outcome checks) are rewritten against the replacement surface in
-the same tag. Consumer notification is mandatory: conformance Skip maps
-hard-fail on unmatched keys, so subtest renames alone can break the
-commercial backend's run.
+rewrite inventory (exhaustive as of this spec; re-verified at plan time):
+the entity-suite `GetVersionHistory/Ordering` subtests, the attribution
+round-trip subtest, the transaction-suite committed-outcome checks, and the
+helpers doc that describes fixtures in its terms — all rewritten against the
+replacement surface in the same tag. Consumer notification is mandatory:
+conformance Skip maps hard-fail on unmatched keys, so subtest renames alone
+can break the commercial backend's run.
 
 ## 7. Engine-side consumer reroutes (spec'd for surface justification)
 
@@ -327,7 +375,11 @@ commercial backend's run.
   No interleaving with an open iterator (illegal per §2.2). The atomic mode
   is inherently O(matched IDs) (the transaction buffer holds every delete);
   the O(page) mode is the existing batched delete, whose selection phase
-  streams per batch with per-ID version guards.
+  streams per batch with per-ID version guards. Conscious non-goal: the ID
+  drain still deserialises full entity rows — an `IterateOptions` projection
+  knob is out of scope here. Engine mapping for `ErrOrderNotSupported`:
+  unreachable for in-house backends; if ever surfaced, it is a 5xx internal
+  error, not a client error.
 - **Sibling defects rerouted in the same change** (fix-siblings policy):
   `DeleteAllEntities`'s whole-model `GetAll` (needs IDs/count only) and
   `deleteBatched`'s `cond == nil` `GetAll` + O(matches) target slice.
@@ -393,16 +445,23 @@ is not wall-clock assertion.
   `SaveResults(iter.Seq[string])`, terminal write-once contract, `Heartbeat`,
   `FailStale`, `SearchJob.HeartbeatTime`, job-record contract text (§4.4),
   `GetPage` (incl. in-tx overlay contract), `GetVersionByTransaction`,
-  `GetVersionMetadata` + `EntityVersionMeta`, delete `GetVersionHistory`;
-  spitest suites for all of the above; CHANGELOG `### Breaking` with
-  migration notes; consumer notification pre-merge.
+  `GetVersionMetadata` + `EntityVersionMeta`, delete `GetVersionHistory`,
+  drop `MergeBounded`'s now-dead `limit <= 0` unbounded mode (its doc calls
+  the mode load-bearing; after this tag no caller passes it); spitest suites
+  for all of the above; CHANGELOG `### Breaking` with migration notes;
+  consumer notification pre-merge.
 - cyoda-go: plugin implementations (incl. sqlite reader connection, postgres
   ceiling port + chunked CopyFrom, index migrations), engine reroutes (§7),
   worker pool + registry + drain, Gate-4 doc trio for new env vars,
   cloud-parity note on async result ordering, CHANGELOG.
 - Commercial backend (their repo, via notification): signature updates;
   ordered async result storage (sort-key-encoded rows) as the fix for the
-  now-tracked ordering divergence; conformance Skip-map updates.
+  now-tracked ordering divergence — flagging the sequencing overlap with the
+  async wire-syntax translation work (spi#31) so ordering support doesn't
+  build a second parser over the raw blob that work replaces; the
+  byte-ordered by-model ID index for `GetPage` (§5); the
+  transaction-lookup access-path choice (§6.1); the rebalance-vs-liveness
+  recovery gap (§4.3); conformance Skip-map updates.
 
 ## 11. Explicitly out of scope
 
