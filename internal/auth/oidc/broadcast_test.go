@@ -24,6 +24,10 @@ type recordingMetrics struct {
 	registryGauge     int64
 	observeCount      int64
 
+	reconcileFailures        int64
+	reconcileStalenessMillis int64
+	reconcileStalenessCalls  int64
+
 	dropsMu sync.Mutex
 	drops   map[string]int64
 }
@@ -46,6 +50,13 @@ func (m *recordingMetrics) ObserveBroadcastReceive(seconds float64) {
 	atomic.AddInt64(&m.observeCount, 1)
 }
 func (m *recordingMetrics) SetRegistryProviders(n int) { atomic.StoreInt64(&m.registryGauge, int64(n)) }
+func (m *recordingMetrics) SetReconcileConsecutiveFailures(n int) {
+	atomic.StoreInt64(&m.reconcileFailures, int64(n))
+}
+func (m *recordingMetrics) SetReconcileStalenessSeconds(sec float64) {
+	atomic.StoreInt64(&m.reconcileStalenessMillis, int64(sec*1000))
+	atomic.AddInt64(&m.reconcileStalenessCalls, 1)
+}
 
 // DropsForReason returns the number of times IncBroadcastDrop was called with
 // the given reason label.

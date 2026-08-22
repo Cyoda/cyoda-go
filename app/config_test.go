@@ -122,6 +122,32 @@ func TestDefaultConfig_Scheduler(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_AuthCacheReconcileInterval(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.IAM.AuthCacheReconcileInterval != 60*time.Second {
+		t.Fatalf("default AuthCacheReconcileInterval: want 60s, got %s", cfg.IAM.AuthCacheReconcileInterval)
+	}
+}
+
+func TestValidateIAM_ReconcileIntervalFloor(t *testing.T) {
+	iam := DefaultConfig().IAM
+	iam.AuthCacheReconcileInterval = 500 * time.Millisecond
+	if err := ValidateIAM(iam); err == nil {
+		t.Fatal("sub-second reconcile interval must be rejected")
+	}
+	// Rejected in mock mode too — a bad explicit value is a config error
+	// regardless of mode.
+	iam.Mode = "mock"
+	if err := ValidateIAM(iam); err == nil {
+		t.Fatal("sub-second reconcile interval must be rejected in mock mode")
+	}
+	iam.AuthCacheReconcileInterval = time.Second
+	iam.Mode = "mock"
+	if err := ValidateIAM(iam); err != nil {
+		t.Fatalf("1s interval must be accepted: %v", err)
+	}
+}
+
 // TestDefaultConfig_SchedulerEnvOverrides confirms each var actually binds
 // through envBool/envDuration/envInt/envString rather than being hardcoded.
 func TestDefaultConfig_SchedulerEnvOverrides(t *testing.T) {

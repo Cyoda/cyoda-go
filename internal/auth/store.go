@@ -386,7 +386,9 @@ func (s *InMemoryTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 }
 
 // ListForVerification returns keys still within their validity window across
-// all tenants. Used to populate the JWKS endpoint during grace periods.
+// all tenants. Used by the grant-verification path (token exchange / JWT
+// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
+// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
 func (s *InMemoryTrustedKeyStore) ListForVerification() []*TrustedKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

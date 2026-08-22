@@ -105,6 +105,18 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   `POST /oauth/keys/keypair`. The startup banner emits a `WARN` if the
   active bootstrap key expires within 30 days. (default: `365`)
 
+### Auth cache reconciliation
+
+Both per-node auth caches (trusted keys, OIDC providers) push updates to peers
+on write and additionally run a periodic KV-reconcile as a backstop against
+missed broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` sets that shared
+interval; each tick is jittered ±10% to avoid a cross-node reconcile herd. A
+cache that goes 10× this interval without a successful reconcile fails closed
+on verification rather than serving a potentially stale answer.
+
+- `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for both caches
+  (default: `60s`, floor: `1s`)
+
 ### Federated OIDC providers (`POST /oauth/oidc/providers`)
 
 These variables control the federated OIDC provider registration behaviour

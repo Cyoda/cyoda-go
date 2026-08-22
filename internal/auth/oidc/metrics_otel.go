@@ -22,6 +22,9 @@ type otelMetrics struct {
 	broadcastReceive  metric.Float64Histogram
 	registryProviders metric.Int64Gauge
 
+	reconcileFailures  metric.Int64Gauge
+	reconcileStaleness metric.Float64Gauge
+
 	// Pre-built bounded-enum label options (cold paths; values are closed sets).
 	jwksOutcomeOpts map[string]metric.MeasurementOption
 	dropReasonOpts  map[string]metric.MeasurementOption
@@ -62,6 +65,12 @@ func NewOTelMetrics(meter metric.Meter) (Metrics, error) {
 	}
 	if m.registryProviders, err = meter.Int64Gauge("oidc.registry.providers"); err != nil {
 		return nil, fmt.Errorf("oidc metrics: registry.providers: %w", err)
+	}
+	if m.reconcileFailures, err = meter.Int64Gauge("oidc.registry.reconcile_consecutive_failures"); err != nil {
+		return nil, fmt.Errorf("oidc metrics: registry.reconcile_consecutive_failures: %w", err)
+	}
+	if m.reconcileStaleness, err = meter.Float64Gauge("oidc.registry.reconcile_staleness_seconds"); err != nil {
+		return nil, fmt.Errorf("oidc metrics: registry.reconcile_staleness_seconds: %w", err)
 	}
 
 	m.jwksOutcomeOpts = map[string]metric.MeasurementOption{
@@ -107,6 +116,14 @@ func (m *otelMetrics) ObserveBroadcastReceive(seconds float64) {
 
 func (m *otelMetrics) SetRegistryProviders(n int) {
 	m.registryProviders.Record(context.Background(), int64(n))
+}
+
+func (m *otelMetrics) SetReconcileConsecutiveFailures(n int) {
+	m.reconcileFailures.Record(context.Background(), int64(n))
+}
+
+func (m *otelMetrics) SetReconcileStalenessSeconds(sec float64) {
+	m.reconcileStaleness.Record(context.Background(), sec)
 }
 
 var _ Metrics = (*otelMetrics)(nil)

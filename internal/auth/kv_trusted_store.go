@@ -5,12 +5,15 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -18,6 +21,17 @@ import (
 )
 
 const trustedKeysNamespace = "trusted-keys"
+
+// topicTrustedKeys is the gossip topic for trusted-key change pings. The
+// payload is always empty and receivers must never read or log it — it is
+// arbitrary peer-controlled bytes; the ping's only information is that it
+// arrived.
+const topicTrustedKeys = "auth.trustedkeys"
+
+// defaultReconcileInterval mirrors the config default; the store falls back
+// to it when no interval option is supplied (tests, callers predating the
+// reconcile loop).
+const defaultReconcileInterval = 60 * time.Second
 
 // defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
 // default per tenant. Trusted keys are an admin-managed registry — a 100-key
@@ -30,7 +44,10 @@ const defaultMaxTrustedKeys = 100
 type KVTrustedKeyStoreOption func(*kvTrustedKeyStoreConfig)
 
 type kvTrustedKeyStoreConfig struct {
-	maxTrustedKeys int
+	maxTrustedKeys    int
+	broadcaster       spi.ClusterBroadcaster
+	reconcileInterval time.Duration
+	metrics           ReconcileMetrics
 }
 
 // WithMaxTrustedKeys overrides the default per-tenant cap on registered trusted
@@ -40,6 +57,37 @@ type kvTrustedKeyStoreConfig struct {
 func WithMaxTrustedKeys(n int) KVTrustedKeyStoreOption {
 	return func(c *kvTrustedKeyStoreConfig) {
 		c.maxTrustedKeys = n
+	}
+}
+
+// WithReconcileInterval overrides the periodic KV-reconcile interval
+// (default 60s, matching CYODA_AUTH_CACHE_RECONCILE_INTERVAL). Values <= 0
+// fall back to the default. The actual per-tick wait is jittered ±10% to
+// avoid a cross-node reconcile herd.
+func WithReconcileInterval(d time.Duration) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		if d > 0 {
+			c.reconcileInterval = d
+		}
+	}
+}
+
+// WithReconcileMetrics wires reconcile health signals (consecutive failures,
+// staleness seconds) to an observability backend. Defaults to
+// NopReconcileMetrics when unset.
+func WithReconcileMetrics(m ReconcileMetrics) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		c.metrics = m
+	}
+}
+
+// WithTrustedKeyBroadcaster wires the cluster gossip fast path: mutations
+// publish a payload-free ping on topicTrustedKeys, and received pings
+// trigger a coalesced Reconcile. Nil (single-node) disables the fast path;
+// the periodic reconcile loop is unaffected.
+func WithTrustedKeyBroadcaster(b spi.ClusterBroadcaster) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		c.broadcaster = b
 	}
 }
 
@@ -80,12 +128,48 @@ type KVTrustedKeyStore struct {
 	ctx context.Context
 	// maxPerTenant is the per-tenant cap enforced by Register; <=0 means unbounded.
 	maxPerTenant int
+	// gen counts cache-mutating commits (Register/Delete/Invalidate/
+	// Reactivate/loadOne and every reconcile swap). Reconcile snapshots it
+	// before its KV List and discards the built snapshot if it changed by
+	// swap time — a mutation that lands mid-rebuild always wins.
+	gen atomic.Uint64
+	// reconcileMu serializes reconcile executions (periodic tick, gossip
+	// ping, explicit calls) so two overlapping rebuilds can never commit
+	// KV snapshots out of order.
+	reconcileMu sync.Mutex
+	// broadcaster is the cluster gossip fast path. Nil disables it (single
+	// node, or callers predating this option).
+	broadcaster spi.ClusterBroadcaster
+	// reconcileInterval bounds each reconcileOnce attempt and (from Task 3)
+	// the periodic reconcile loop's tick period.
+	reconcileInterval time.Duration
+	// pingCoalescer coalesces concurrent gossip pings into at most one
+	// trailing Reconcile so a burst of peer mutations never queues an
+	// unbounded pile of redundant KV List calls.
+	pingCoalescer coalescingRunner
+	// reconcileLoopStarted guards StartReconcileLoop so at most one periodic
+	// reconcile goroutine ever runs per store.
+	reconcileLoopStarted atomic.Bool
+	// lastReconcileNanos is the UnixNano of the last successful Reconcile
+	// swap (also stamped after the initial loadAll). The staleness breaker
+	// compares against it.
+	lastReconcileNanos atomic.Int64
+	// consecutiveFailures counts back-to-back transport-level List failures
+	// inside Reconcile; reset to 0 on the next successful swap.
+	consecutiveFailures atomic.Int64
+	// metrics receives reconcile health signals; defaults to
+	// NopReconcileMetrics.
+	metrics ReconcileMetrics
 }
 
 // NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
 // from the KV backend. Pass WithMaxTrustedKeys to override the default cap.
 func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVTrustedKeyStoreOption) (*KVTrustedKeyStore, error) {
-	cfg := kvTrustedKeyStoreConfig{maxTrustedKeys: defaultMaxTrustedKeys}
+	cfg := kvTrustedKeyStoreConfig{
+		maxTrustedKeys:    defaultMaxTrustedKeys,
+		reconcileInterval: defaultReconcileInterval,
+		metrics:           NopReconcileMetrics{},
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -96,11 +180,18 @@ func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVT
 		// a cancellation or deadline from the caller. Defence in depth: a future
 		// caller passing a request-scoped ctx would otherwise silently abort KV
 		// operations on request completion.
-		ctx:          context.WithoutCancel(ctx),
-		maxPerTenant: cfg.maxTrustedKeys,
+		ctx:               context.WithoutCancel(ctx),
+		maxPerTenant:      cfg.maxTrustedKeys,
+		broadcaster:       cfg.broadcaster,
+		reconcileInterval: cfg.reconcileInterval,
+		metrics:           cfg.metrics,
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
+	}
+	s.lastReconcileNanos.Store(time.Now().UnixNano())
+	if s.broadcaster != nil {
+		s.broadcaster.Subscribe(topicTrustedKeys, s.handlePing)
 	}
 	return s, nil
 }
@@ -110,30 +201,223 @@ func (s *KVTrustedKeyStore) loadAll() error {
 	if err != nil {
 		return err
 	}
-	skipped := 0
-	for kvKey, data := range entries {
-		// Skip legacy entries: those stored before tenant-scoping used bare <kid>
-		// keys with no ":" separator and no tenantID in the record.
-		if !strings.Contains(kvKey, ":") {
-			skipped++
-			continue
-		}
-		tk, err := deserializeTrustedKey(data)
-		if err != nil {
-			return fmt.Errorf("failed to deserialize trusted key %q: %w", kvKey, err)
-		}
-		if tk.TenantID == "" {
-			skipped++
-			continue
-		}
-		s.keys[tk.KID] = tk
+	keys, skipped, err := buildTrustedKeyMap(entries, true)
+	if err != nil {
+		return err
 	}
+	s.keys = keys
 	if skipped > 0 {
 		slog.Warn("skipped pre-v0.8.0 trusted-key entries without tenant scope",
 			"count", skipped,
 			"namespace", trustedKeysNamespace)
 	}
 	return nil
+}
+
+// maxReconcileAttempts bounds the generation-guard retry inside Reconcile.
+// Only continuous mutation churn (which itself proves KV is reachable)
+// can exhaust it.
+const maxReconcileAttempts = 5
+
+// stalenessMultiplier × reconcileInterval is the fail-closed bound: once
+// the reconcile loop is running, an enumeration cache older than this stops
+// serving — an unbounded-stale answer on the verification path would be
+// wrong-but-available.
+const stalenessMultiplier = 10
+
+// errorEscalationThreshold is the consecutive-failure count from which
+// reconcile failures log at ERROR instead of WARN.
+const errorEscalationThreshold = 3
+
+// errReconcileContention marks a reconcile that gave up because mutations
+// kept landing mid-rebuild. It is not a KV failure: callers must not count
+// it toward staleness accounting.
+var errReconcileContention = errors.New("trusted-key reconcile: retry budget exhausted under concurrent mutation")
+
+// buildTrustedKeyMap deserializes a KV List result into a fresh cache map.
+// Legacy un-tenanted entries are skipped (pre-tenant-scoping layout). When
+// strict, the first undeserializable record fails the build (construction
+// fail-fast); otherwise bad records are skipped with an ERROR log so one
+// corrupt write can never disable reconciliation.
+func buildTrustedKeyMap(entries map[string][]byte, strict bool) (map[string]*TrustedKey, int, error) {
+	keys := make(map[string]*TrustedKey, len(entries))
+	skipped := 0
+	for kvKey, data := range entries {
+		if !strings.Contains(kvKey, ":") {
+			skipped++
+			continue
+		}
+		tk, err := deserializeTrustedKey(data)
+		if err != nil {
+			if strict {
+				return nil, 0, fmt.Errorf("failed to deserialize trusted key %q: %w", kvKey, err)
+			}
+			slog.Error("trusted-key reconcile: skipping undeserializable record",
+				"pkg", "auth", "kvKey", kvKey, "error", err.Error())
+			continue
+		}
+		if tk.TenantID == "" {
+			skipped++
+			continue
+		}
+		keys[tk.KID] = tk
+	}
+	return keys, skipped, nil
+}
+
+// Reconcile rebuilds the in-memory cache from the authoritative KV store.
+// The List and deserialization run off-lock; the swap takes s.mu and is
+// discarded (and retried) if any mutation committed since the pre-List
+// generation snapshot. Serialized against concurrent reconciles by
+// reconcileMu. On a transport-level List failure the previous cache state
+// is kept and the error returned — bounded staleness beats dropping every
+// key over an infrastructure blip; the staleness bound is enforced
+// separately by the callers' breaker accounting.
+func (s *KVTrustedKeyStore) Reconcile(ctx context.Context) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
+		gen := s.gen.Load()
+		entries, err := s.kv.List(ctx, trustedKeysNamespace)
+		if err != nil {
+			n := s.consecutiveFailures.Add(1)
+			s.metrics.SetReconcileConsecutiveFailures(int(n))
+			s.metrics.SetReconcileStalenessSeconds(s.reconcileAge().Seconds())
+			msg := "trusted-key reconcile failed; serving last-known state until it succeeds"
+			if n > errorEscalationThreshold {
+				slog.Error(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
+			} else {
+				slog.Warn(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
+			}
+			return fmt.Errorf("failed to list trusted keys for reconcile: %w", err)
+		}
+		fresh, _, err := buildTrustedKeyMap(entries, false)
+		if err != nil {
+			return err // unreachable in lenient mode; kept for signature honesty
+		}
+		swapped := func() bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.gen.Load() != gen {
+				return false
+			}
+			s.keys = fresh
+			s.gen.Add(1)
+			return true
+		}()
+		if swapped {
+			s.lastReconcileNanos.Store(time.Now().UnixNano())
+			s.consecutiveFailures.Store(0)
+			s.metrics.SetReconcileConsecutiveFailures(0)
+			s.metrics.SetReconcileStalenessSeconds(0)
+			return nil
+		}
+	}
+	// Contention does not touch lastReconcileNanos or consecutiveFailures
+	// (local churn proves KV writes work; stamping success here would be
+	// fail-open, and counting it as a KV failure would be wrong). But the
+	// staleness gauge must still be recorded so alerting on the fail-closed
+	// breaker (age > stalenessMultiplier x interval) is never blinded by a
+	// gauge stuck at its last (typically zero) value under sustained
+	// mutation churn.
+	stalenessSeconds := s.reconcileAge().Seconds()
+	s.metrics.SetReconcileStalenessSeconds(stalenessSeconds)
+	msg := "trusted-key reconcile: giving up after repeated mid-rebuild mutations"
+	fields := []any{"pkg", "auth", "attempts", maxReconcileAttempts, "stalenessSeconds", int64(stalenessSeconds + 0.5)}
+	if s.reconcileAge() > (stalenessMultiplier/2)*s.reconcileInterval {
+		slog.Error(msg, fields...)
+	} else {
+		slog.Warn(msg, fields...)
+	}
+	return errReconcileContention
+}
+
+// handlePing runs on the broadcaster's shared receive goroutine: it must
+// not block and must not let a panic escape. The payload is deliberately
+// ignored and never logged (arbitrary peer bytes).
+func (s *KVTrustedKeyStore) handlePing(_ []byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("trusted-key ping handler panic", "pkg", "auth", "panic", rec)
+		}
+	}()
+	s.pingCoalescer.Trigger(s.reconcileOnce)
+}
+
+// reconcileOnce runs a single bounded reconcile attempt. Each attempt gets
+// its own deadline (one interval) so a hung KV call aborts the attempt
+// instead of wedging the loop/coalescer permanently — the store's own ctx
+// is deliberately deadline-free and must not be used raw for periodic I/O.
+//
+// Recover-wrapped: reconcileOnce runs both from StartReconcileLoop's tick
+// (no caller to propagate a panic to) and from the pingCoalescer's
+// dispatched goroutine (which runs detached from handlePing's own recover,
+// see coalescingRunner.Trigger) — an unrecovered panic in either would
+// crash the process. Same contract as warmOneSafely / safeDispatch in the
+// oidc package — log-only, never the payload.
+func (s *KVTrustedKeyStore) reconcileOnce() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("trusted-key reconcile panic", "pkg", "auth", "panic", rec)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(s.ctx, s.reconcileInterval)
+	defer cancel()
+	_ = s.Reconcile(ctx) // failures logged/accounted inside Reconcile paths
+}
+
+// StartReconcileLoop starts the periodic KV-reconcile backstop: every
+// interval (jittered ±10%) the cache is rebuilt from the authoritative KV
+// store, bounding the staleness a dropped gossip ping can cause. Returns
+// false (starting nothing) if the loop already runs. The loop exits when
+// ctx is cancelled; callers pass a process-lifetime context.
+func (s *KVTrustedKeyStore) StartReconcileLoop(ctx context.Context) bool {
+	if !s.reconcileLoopStarted.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		for {
+			timer := time.NewTimer(jitteredInterval(s.reconcileInterval))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				s.reconcileOnce()
+			}
+		}
+	}()
+	return true
+}
+
+// reconcileAge returns the time since the last successful reconcile.
+func (s *KVTrustedKeyStore) reconcileAge() time.Duration {
+	return time.Since(time.Unix(0, s.lastReconcileNanos.Load()))
+}
+
+// reconcileStale reports whether the fail-closed staleness bound is
+// exceeded. Always false until the reconcile loop has started: a store
+// without a loop (tests, bootstrap) must not fail auth on healthy KV.
+func (s *KVTrustedKeyStore) reconcileStale() bool {
+	if !s.reconcileLoopStarted.Load() {
+		return false
+	}
+	return s.reconcileAge() > stalenessMultiplier*s.reconcileInterval
+}
+
+// jitteredInterval returns d × [0.9, 1.1) — the model-cache herd-avoidance
+// convention.
+func jitteredInterval(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
+}
+
+// broadcastChanged publishes the payload-free change ping. No-op without a
+// broadcaster.
+func (s *KVTrustedKeyStore) broadcastChanged() {
+	if s.broadcaster == nil {
+		return
+	}
+	s.broadcaster.Broadcast(topicTrustedKeys, nil)
 }
 
 // loadOne loads a single trusted key for the given tenant from the KV backend
@@ -153,6 +437,7 @@ func (s *KVTrustedKeyStore) loadOne(tenantID spi.TenantID, kid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.keys[kid] = tk
+	s.gen.Add(1)
 	return nil
 }
 
@@ -221,6 +506,7 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	}
 	// Commit to cache after successful KV write.
 	s.keys[copied.KID] = &copied
+	s.gen.Add(1)
 
 	// Step 2: invalidate siblings (best-effort). A sibling KV write failure
 	// leaves the new key active (already committed above) and the sibling
@@ -246,10 +532,14 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 			*k = sibling
 		}
 		if len(failed) > 0 {
+			// The new key IS committed even though the sibling flip wasn't —
+			// still broadcast so peers pick it up.
+			s.broadcastChanged()
 			return fmt.Errorf("key %s registered, but failed to invalidate siblings %v (retry Register or invalidate manually)", tk.KID, failed)
 		}
 	}
 
+	s.broadcastChanged()
 	return nil
 }
 
@@ -259,13 +549,21 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 // from the KV backend (multi-node visibility: a key registered on another node
 // after this store was constructed will be found here).
 func (s *KVTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	// Critical section 1: cache lookup.
-	cached, ok := func() (*TrustedKey, bool) {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		v, ok := s.keys[kid]
-		return v, ok
-	}()
+	// Critical section 1: cache lookup. When the reconcile is stale past the
+	// fail-closed bound the cached entry can no longer be trusted — force
+	// the KV read-through below so admin flows keep operating on ground
+	// truth instead of failing closed.
+	stale := s.reconcileStale()
+	var cached *TrustedKey
+	var ok bool
+	if !stale {
+		cached, ok = func() (*TrustedKey, bool) {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			v, o := s.keys[kid]
+			return v, o
+		}()
+	}
 
 	if ok {
 		if cached.TenantID == tenantID {
@@ -308,8 +606,15 @@ func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 }
 
 // ListForVerification returns keys still within their validity window across
-// all tenants. Used to populate the JWKS endpoint during grace periods.
+// all tenants. Used by the grant-verification path (token exchange / JWT
+// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
+// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
 func (s *KVTrustedKeyStore) ListForVerification() []*TrustedKey {
+	if s.reconcileStale() {
+		// Fail closed: the cache can no longer prove these keys were not
+		// revoked. The reconcile loop is already logging at ERROR.
+		return []*TrustedKey{}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	now := time.Now()
@@ -335,6 +640,8 @@ func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 		return fmt.Errorf("failed to delete trusted key from KV store: %w", err)
 	}
 	delete(s.keys, kid)
+	s.gen.Add(1)
+	s.broadcastChanged()
 	return nil
 }
 
@@ -358,6 +665,8 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 	}
 	// Commit to cache after successful KV write.
 	s.keys[kid] = &updated
+	s.gen.Add(1)
+	s.broadcastChanged()
 	return nil
 }
 
@@ -393,6 +702,8 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	}
 	// Commit to cache after successful KV write.
 	s.keys[kid] = &updated
+	s.gen.Add(1)
+	s.broadcastChanged()
 	return nil
 }
 

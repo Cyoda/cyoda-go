@@ -1,6 +1,6 @@
 module github.com/cyoda-platform/cyoda-go
 
-go 1.26.5
+go 1.26.7
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
