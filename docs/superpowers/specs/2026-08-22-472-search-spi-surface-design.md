@@ -34,18 +34,23 @@ changes without shims.
 ```go
 type IterateOptions struct {
     PointInTime  *time.Time
-    OrderBy      []OrderSpec // empty = entity ID ascending, byte-wise
+    OrderBy      []OrderSpec // empty = order unspecified; non-empty = honour or ErrOrderNotSupported
     TrackingRead bool        // parity with SearchOptions.TrackingRead
 }
 ```
 
-- **Ordering is contractual.** The iterator MUST yield in the requested order;
-  empty `OrderBy` means entity ID ascending, byte-wise (the existing default
-  order contract of `Searcher`). The tie-breaker rule applies: the final sort
-  key is always entity ID, so equal user-field values can never yield
-  nondeterministic order. sqlite/postgres push `ORDER BY` into SQL (streaming
-  server-side sorts); memory sorts its snapshot; how a backend achieves the
-  order is its concern, the yielded order is the contract.
+- **Ordering is honoured-or-refused.** Empty `OrderBy` means **order
+  unspecified** — order-insensitive consumers (grouped stats, conditional
+  delete) pay no sorting tax anywhere. When `OrderBy` is non-empty the
+  iterator MUST yield in the requested order or fail the `Iterate` call with
+  the new sentinel `spi.ErrOrderNotSupported` (fail closed — never yield
+  unordered; precedent: `ErrAggregationNotPushdownable`). The tie-breaker
+  rule applies to requested orders: the final sort key is always entity ID,
+  so equal user-field values can never yield nondeterministic order.
+  sqlite/postgres push `ORDER BY` into SQL (streaming server-side sorts);
+  memory sorts its snapshot. Consumers that need the default result order
+  request entity-ID ascending explicitly (`OrderSpec{Source: Meta, Path:
+  "id"}` expresses it); all engine-executed backends support at least that.
 - **Read-set semantics**: entities enter the transaction read-set only when
   `TrackingRead` is set — same rule as `Search`. This corrects sqlite's in-tx
   `Iterate`, which today records reads unconditionally.
@@ -86,10 +91,19 @@ aligned with the settled policy; the CHANGELOG relaxation note covers it.
 
 ### 2.5 spitest
 
-A new `Iterable` conformance group (none exists today): ordered yield incl.
-tie-breaker, residual filter application inside `Next`, ctx cancellation
-observed, sticky `Err`, idempotent `Close`, PIT variant, snapshot-at-open
-overlay behaviour, `TrackingRead` gating.
+A new `Iterable` conformance group (none exists today): requested-order yield
+honoured-or-`ErrOrderNotSupported` (entity-ID order asserted concretely; a
+user-field order case asserts honour-or-sentinel), tie-breaker, residual
+filter application inside `Next`, ctx cancellation observed, sticky `Err`,
+idempotent `Close`, PIT variant, snapshot-at-open overlay behaviour,
+`TrackingRead` gating.
+
+### 2.6 Optionality
+
+`Iterable` stays optional SPI-wide. The engine's streamed async and delete
+paths require it and use it whenever the store provides it (all four in-house
+backends do); a store providing neither `Searcher` nor `Iterable` runs the
+documented in-process fallback path, which #477 makes stream.
 
 ## 3. `Searcher.Search` becomes strictly bounded (reviewer finding, agreed)
 
@@ -124,7 +138,7 @@ One call per job, consumed lazily. Contract:
   it does not mean the job succeeded. The engine consults the producer's
   error state (iterator `Err()`, ctx) after `SaveResults` returns and writes
   the terminal status accordingly. Mid-stream failure may leave partial rows;
-  cleanup is §4.2's job, and visibility is gated on `SUCCESSFUL` as today.
+  cleanup is §4.3's job, and visibility is gated on `SUCCESSFUL` as today.
 - **Self-executing stores** (the commercial backend) keep rejecting the call;
   the engine never invokes it for them.
 
@@ -132,7 +146,20 @@ sqlite prerequisite: iterators read from a dedicated reader connection (WAL
 mode exists for exactly this); the plugin's single-connection model otherwise
 deadlocks producer against consumer. Plugin-internal change, no SPI impact.
 
-### 4.2 Orphan detection: heartbeat + stale-job reap
+### 4.2 Terminal statuses are final (write-once)
+
+`SUCCESSFUL`, `FAILED`, and `CANCELLED` are terminal. The store MUST refuse
+any transition out of a terminal status: `UpdateJobStatus` and `FailStale`
+against a terminal job return the new sentinel `spi.ErrAlreadyTerminal`
+(distinguishable, so a losing writer can log); `Cancel` keeps its
+idempotent-nil contract from tag 1. This closes the zombie-executor race:
+without it, an executor that stalls past the stale bound, gets reaped by
+another node's `FailStale`, and then recovers could overwrite FAILED with
+SUCCESSFUL — a job the cluster declared dead serving results as complete.
+The engine's poll loop (§4.6) aborts on **any** terminal status, not just
+CANCELLED. spitest-asserted per transition.
+
+### 4.3 Orphan detection: heartbeat + stale-job reap
 
 Crash mid-job currently leaves a RUNNING row and partial results forever (the
 reaper skips RUNNING; nothing else cleans up). Two SPI additions:
@@ -143,47 +170,65 @@ FailStale(ctx context.Context, staleAfter time.Duration) (int, error)
 ```
 
 - `SearchJob` gains `HeartbeatTime *time.Time`.
-- The executing engine heartbeats periodically (interval = engine config; the
-  same loop that polls job status for cross-node cancel).
+- The owning engine node heartbeats periodically from submission onward —
+  **including while the job waits in the worker-pool queue** (the submitter
+  is alive and owns the queue entry), then from the executor's poll loop.
+- **Nil heartbeat baseline is `CreateTime`** (fail closed): a job that never
+  heartbeated — crash between `CreateJob` and the first stamp — goes stale
+  `staleAfter` after creation, not never.
 - `FailStale` (called by the existing reaper loop on every node) marks
-  RUNNING jobs whose heartbeat is older than `staleAfter` as FAILED with a
-  finish time and a safe generic message; the TTL reaper then removes them.
-  Cluster-safe because the heartbeat lives in the store.
+  RUNNING jobs whose heartbeat (or baseline) is older than `staleAfter` as
+  FAILED with a finish time and a safe generic message; the TTL reaper then
+  removes them. The transition is a conditional write, so concurrent
+  `FailStale` from multiple nodes is safe; the returned count is the jobs
+  this call transitioned. Cluster-safe because the heartbeat lives in the
+  store.
+- `Heartbeat` error semantics: terminal job → `ErrAlreadyTerminal`; missing
+  job → `ErrNotFound`. The executor treats **any** `Heartbeat` error as an
+  abort signal (fail closed).
 - Self-executing stores may no-op both (the commercial backend has its own
   shard recovery). spitest covers both for engine-executed stores.
 
-### 4.3 `GetResultIDs` contract text (previously silent)
+### 4.4 Job-record contract text (previously silent)
 
-- `offset >= 0` and `limit >= 1` are required; violations return an error
-  (today memory panics on negatives — a defect this contract makes testable).
-- Reads against a non-terminal job answer with the results saved so far;
-  `total` is the current saved count. The engine keeps gating result
-  visibility on `SUCCESSFUL`, so this is an SPI-level clarification, not an
-  API behaviour change.
+- `GetResultIDs`: `offset >= 0` and `limit >= 1` are required; violations
+  return an error (today memory panics on negatives — a defect this contract
+  makes testable). Reads against a non-terminal job answer with the results
+  saved so far; `total` is the current saved count. The engine keeps gating
+  result visibility on `SUCCESSFUL`, so this is an SPI-level clarification,
+  not an API behaviour change.
+- `UpdateJobStatus` on a missing job returns `ErrNotFound` (today memory and
+  sqlite return a plain error — `jobLookupErr` cannot key on it).
+- A zero `finishTime` is stored as absent (sqlite's NULL behaviour becomes
+  the contract; memory currently stamps zero times — fixed).
 
-### 4.4 Async result ordering is contractual end-to-end
+### 4.5 Async result ordering is contractual end-to-end
 
-Results are saved — and therefore read back — in the requested `OrderBy`
-(default: entity ID ascending). On the engine path this is inherited from
-§2.1's ordered iterator. The commercial backend currently ignores the
-requested ordering (a live cross-backend divergence); ordering is achievable
-there by storing result rows keyed by sort-value byte encodings so read-back
-order is native storage order — the commercial platform already ships this
-pattern for distributed reporting. The divergence becomes a tracked bug on
-their side; notification rides the tag-2 consumer notice. A short
-cloud-parity note records async result ordering as contract.
+Results are saved — and therefore read back — in the requested `OrderBy`;
+when the request specifies none, the engine requests entity-ID ascending
+explicitly (preserving today's default result order). On the engine path the
+order is inherited from §2.1's ordered iterator. The commercial backend
+currently ignores the requested ordering (a live cross-backend divergence);
+ordering is achievable there by storing result rows keyed by sort-value byte
+encodings so read-back order is native storage order — prior art exists in
+the commercial platform's distributed-reporting service (pointer shared with
+the backend maintainers directly, not reproduced here). The divergence
+becomes a tracked bug on their side; notification rides the tag-2 consumer
+notice. A short cloud-parity note records async result ordering as contract.
 
-### 4.5 Cancellation and shutdown (engine-side, enabled by tag 1 + this surface)
+### 4.6 Cancellation and shutdown (engine-side, enabled by tag 1 + this surface)
 
 - jobID→CancelFunc registry in the engine; `CancelAsync` cancels in-process
   and dispatches store `Cancel(ctx, jobID, finishTime)` (tag 1).
 - Cross-node: the executor's heartbeat/poll loop re-checks job status and
   cancels its own context on CANCELLED. Backend ctx-responsiveness is pinned
   per backend by tests.
-- Bounded worker pool with queueing; default derived from the postgres
-  connection budget (a streaming job needs its scan connection plus,
-  per chunk, a save connection). Env vars follow Gate 4 (help topic, README,
-  `DefaultConfig()` together).
+- Bounded worker pool with queueing. The default size is a documented number
+  whose rationale is the postgres connection budget (a streaming job needs
+  its scan connection plus, per chunk, a save connection) — the engine cannot
+  read plugin config through the SPI, so this is a documented default, not a
+  computed one. Env vars follow Gate 4 (help topic, README, `DefaultConfig()`
+  together).
 - Shutdown drains via the registry: cancel in-flight jobs, mark FAILED with a
   safe message; no stuck-RUNNING jobs.
 
@@ -198,14 +243,21 @@ GetPage(ctx context.Context, modelRef ModelRef, limit, offset int, asAt *time.Ti
   error.
 - Serves `ListEntities` (HTTP `pageNumber × pageSize` maps directly; offset
   pagination is required by the public API's random page access).
+- **In-transaction contract** (`ListEntities` is reachable inside a joined
+  transaction via compute-node callbacks): `GetPage` overlays the
+  transaction buffer like `GetAll` does today — the page reflects the merged
+  view snapshotted at the call (ordered via the `MergeOrdered` rule),
+  deleted entities excluded, and returned entities recorded in the read-set,
+  preserving current `ListEntities` behaviour. Committed-only reads would
+  silently break a processor that saves then lists within its transaction.
 - Per-entity load errors fail the call (fail-fast) — page boundaries must be
   deterministic.
 - Index work required for the latency acceptance criterion ("bounded by
   pageSize, not N"): postgres extends the model index to include `entity_id`
   with `COLLATE "C"`; sqlite adds a `(tenant_id, model_name, model_version,
   entity_id)` index. The commercial backend has no server-side offset; its
-  compliant profile materialises IDs (never entities) to serve the offset —
-  documented, and no worse than its status quo.
+  compliant profile streams IDs and discards until the offset is consumed —
+  O(offset) reads, O(page) memory, never an O(model) buffer.
 - `GetAll`/`GetAllAsAt` remain in the SPI (the engine's untranslatable-
   condition fallback consumes them until #477 closes it); `ListEntities`
   simply stops using them.
@@ -240,9 +292,14 @@ type VersionMetadataOptions struct {
 
 - `EntityVersionMeta` carries what both consumers need and no payload:
   `Version`, `ChangeType`, `Timestamp`, `User`, `AttributedKind`, `Executor`,
-  `TransactionID`, `TenantID`, and a canonical `Deleted bool` (derived from
-  the change type — replacing the backend-divergent "`Entity` is nil on some
-  backends" probe).
+  `TransactionID` (may be empty: non-transactional writes store none), and a
+  canonical `Deleted bool` (derived from the change type — replacing the
+  backend-divergent "`Entity` is nil on some backends" probe). No `TenantID`:
+  stores are tenant-scoped by context, and the audit handler takes the tenant
+  from the user context. Implementation note: memory must populate `Version`
+  for DELETED versions (today it is left zero when the version carries no
+  entity), or the Version-DESC tie-break breaks exactly where a delete shares
+  a timestamp.
 - Order: newest-first, tie-broken by `Version` descending (fixes the
   currently unstable equal-timestamp sort).
 - `GET /entity/{id}/changes` pushes its cutoff (`Until`) and its 1000 cap
@@ -304,35 +361,41 @@ must still hold on a running backend after the reroute.
 
 | Scenario | unit | e2e (postgres) | parity | gRPC |
 |---|---|---|---|---|
-| Ordered Iterate incl. tie-breaker, residual, ctx cancel | spitest | — | implied by spitest on all backends | — |
+| Requested-order Iterate honoured-or-sentinel incl. tie-breaker, residual, ctx cancel | spitest | — | implied by spitest on all backends | — |
 | Overlay snapshot-at-open; TrackingRead gating | spitest | — | — | — |
+| Terminal statuses write-once (`ErrAlreadyTerminal` per transition) | spitest | — | — | — |
 | Search rejects Limit ≤ 0 | spitest | ✓ (direct handler already rejects) | — | ✓ existing |
 | Streamed SaveResults: order, chunk seq continuity, ctx abort | spitest | — | — | — |
 | Async results incremental; heap O(batch) (allocation assert, not timing) | ✓ engine | — | — | — |
 | Cancel stops scan mid-flight; cross-node on postgres | ✓ registry | ✓ isolated (not parity) | — | ✓ cancel envelope |
-| Heartbeat + FailStale orphan reap | spitest + engine unit | ✓ | — | — |
+| Heartbeat + FailStale orphan reap (incl. nil-heartbeat baseline, queued-job heartbeat, concurrent reapers) | spitest + engine unit | ✓ | — | — |
 | Shutdown drain: no RUNNING left, FAILED safe message | ✓ engine | ✓ | — | — |
 | Worker pool: ≤ poolSize concurrent, excess queue | ✓ engine | isolated e2e | — | — |
 | GetResultIDs degenerate inputs error (no panic) | spitest | — | — | — |
 | GetPage ordering/limit/offset; fail-fast | spitest | ✓ list endpoint | ✓ | ✓ ListEntities |
 | `?pageSize=1` latency bounded by page, not N | — | ✓ (assert query shape / plan, not wall-clock) | — | — |
-| GetVersionByTransaction earliest-wins; empty txID rejected; 404 | spitest | ✓ | ✓ | ✓ |
+| GetVersionByTransaction earliest-wins; empty txID rejected; 404 | spitest | ✓ | ✓ | — (no gRPC surface) |
+| GetVersionByTransaction pushdown: long-history latency bounded (query-shape assert) | — | ✓ | — | — |
 | GetVersionMetadata window/limit/order; Deleted canonical | spitest | ✓ changes endpoint | ✓ | ✓ changes |
 | Conditional delete over large model: O(IDs) atomic / O(page) batched | ✓ engine | ✓ isolated | ✓ behaviour | — |
 | Async result ordering respected end-to-end | — | ✓ | ✓ (order asserted per backend) | ✓ |
 
 Concurrency scenarios stay in isolated single-backend e2e, never the shared
 parity suite. A missing cell at implementation time blocks merge unless
-waived with a one-line reason.
+waived with a one-line reason. The two query-shape cells need a named test
+hook (query capture or plan inspection) — the plan defines its mechanism; it
+is not wall-clock assertion.
 
 ## 10. Deliverables checklist (tag 2 + cyoda-go)
 
-- SPI: `IterateOptions{OrderBy, TrackingRead}`, `MergeOrdered`, strict-bounded
-  `Search`, `SaveResults(iter.Seq[string])`, `Heartbeat`, `FailStale`,
-  `SearchJob.HeartbeatTime`, `GetResultIDs` contract text, `GetPage`,
-  `GetVersionByTransaction`, `GetVersionMetadata` + `EntityVersionMeta`,
-  delete `GetVersionHistory`; spitest suites for all of the above; CHANGELOG
-  `### Breaking` with migration notes; consumer notification pre-merge.
+- SPI: `IterateOptions{OrderBy, TrackingRead}`, `MergeOrdered`, sentinels
+  `ErrOrderNotSupported` + `ErrAlreadyTerminal`, strict-bounded `Search`,
+  `SaveResults(iter.Seq[string])`, terminal write-once contract, `Heartbeat`,
+  `FailStale`, `SearchJob.HeartbeatTime`, job-record contract text (§4.4),
+  `GetPage` (incl. in-tx overlay contract), `GetVersionByTransaction`,
+  `GetVersionMetadata` + `EntityVersionMeta`, delete `GetVersionHistory`;
+  spitest suites for all of the above; CHANGELOG `### Breaking` with
+  migration notes; consumer notification pre-merge.
 - cyoda-go: plugin implementations (incl. sqlite reader connection, postgres
   ceiling port + chunked CopyFrom, index migrations), engine reroutes (§7),
   worker pool + registry + drain, Gate-4 doc trio for new env vars,
