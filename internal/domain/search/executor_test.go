@@ -591,18 +591,30 @@ type deleteObserverStore struct {
 func (d *deleteObserverStore) CreateJob(ctx context.Context, job *spi.SearchJob) error {
 	err := d.AsyncSearchStore.CreateJob(ctx, job)
 	if err == nil {
-		d.mu.Lock()
-		d.createdID = job.ID
-		d.mu.Unlock()
+		func() {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			d.createdID = job.ID
+		}()
 	}
 	return err
 }
 
 func (d *deleteObserverStore) DeleteJob(ctx context.Context, jobID string) error {
-	d.mu.Lock()
-	d.deletedIDs = append(d.deletedIDs, jobID)
-	d.mu.Unlock()
+	func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		d.deletedIDs = append(d.deletedIDs, jobID)
+	}()
 	return d.AsyncSearchStore.DeleteJob(ctx, jobID)
+}
+
+// snapshot returns a copy of the observed state under lock, for tests to
+// read without racing CreateJob/DeleteJob.
+func (d *deleteObserverStore) snapshot() (createdID string, deletedIDs []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.createdID, append([]string(nil), d.deletedIDs...)
 }
 
 // (g) SubmitAsync's own ErrQueueFull cleanup branch (service.go's
@@ -647,10 +659,7 @@ func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
 		t.Fatalf("SubmitAsync jobID = %q, want empty on queue-full rejection", jobID)
 	}
 
-	observer.mu.Lock()
-	createdID := observer.createdID
-	deletedIDs := append([]string(nil), observer.deletedIDs...)
-	observer.mu.Unlock()
+	createdID, deletedIDs := observer.snapshot()
 
 	if createdID == "" {
 		t.Fatal("CreateJob was never called — precondition for this test is that a row was created before the queue-full rejection")
