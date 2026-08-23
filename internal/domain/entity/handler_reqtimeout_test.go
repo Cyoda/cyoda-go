@@ -691,6 +691,17 @@ func (s *cancelingEntityStore) deleteCount() int {
 	return s.deletes
 }
 
+// Iterate passes through to the embedded real store. spi.EntityStore is
+// embedded by interface value, which does NOT promote spi.Iterable's
+// Iterate method (a separate, optional interface) onto *cancelingEntityStore
+// even though the underlying concrete store implements it — an explicit
+// passthrough is required so DeleteEntitiesConditional's own
+// entityStore.(spi.Iterable) capability check succeeds against this spy the
+// same way it does against the real store.
+func (s *cancelingEntityStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	return s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+}
+
 // cancelingEntityFactory hands out the given cancelingEntityStore from
 // EntityStore(); every other accessor delegates to the wrapped factory.
 type cancelingEntityFactory struct {

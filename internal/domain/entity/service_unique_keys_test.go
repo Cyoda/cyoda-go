@@ -507,8 +507,14 @@ func (s *spyEntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int6
 func (s *spyEntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
 	return s.delegate.CountByState(ctx, modelRef, states)
 }
-func (s *spyEntityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
-	return s.delegate.GetVersionHistory(ctx, entityID)
+func (s *spyEntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt *time.Time) ([]*spi.Entity, error) {
+	return s.delegate.GetPage(ctx, modelRef, limit, offset, asAt)
+}
+func (s *spyEntityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
+	return s.delegate.GetVersionByTransaction(ctx, entityID, txID)
+}
+func (s *spyEntityStore) GetVersionMetadata(ctx context.Context, entityID string, opts spi.VersionMetadataOptions) ([]spi.EntityVersionMeta, error) {
+	return s.delegate.GetVersionMetadata(ctx, entityID, opts)
 }
 
 // Compile-time contract check.
