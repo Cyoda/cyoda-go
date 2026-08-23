@@ -217,6 +217,10 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 **Key cap:** `CYODA_SEARCH_MAX_SORT_KEYS` (default `16`) — see `cyoda help config` (Search and transaction internals).
 
+## Async search backpressure
+
+`POST /api/search/async/{entityName}/{modelVersion}` runs on a bounded worker pool rather than one goroutine per submission. `CYODA_SEARCH_ASYNC_WORKERS` (default `8`) sizes the pool; `CYODA_SEARCH_ASYNC_QUEUE` (default `256`) sizes its submit queue. Once both are exhausted, submission fails fast with a retryable `503 SEARCH_QUEUE_FULL` instead of queuing indefinitely or spawning unbounded goroutines. See `cyoda help config` (Search internals) and `cyoda help errors SEARCH_QUEUE_FULL`.
+
 ## Scheduled transitions
 
 A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config scheduler` for the full topic.

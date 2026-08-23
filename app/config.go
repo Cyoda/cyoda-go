@@ -52,9 +52,35 @@ type Config struct {
 	// SearchMaxSortKeys caps the number of sort keys per search request.
 	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
 	SearchMaxSortKeys int
+	// SearchAsync bounds the async-search worker pool
+	// (internal/domain/search.WorkerPool): how many workers drain the
+	// submit queue and how deep that queue is before Submit starts
+	// rejecting new jobs with a retryable 503. See SearchAsyncConfig.
+	SearchAsync SearchAsyncConfig
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
+}
+
+// SearchAsyncConfig bounds the async-search worker pool
+// (internal/domain/search.WorkerPool). Validated by ValidateSearchAsync at
+// startup — config is a QA'd artefact, so an invalid value is a hard error,
+// not silently clamped to the default.
+type SearchAsyncConfig struct {
+	// Workers is the number of goroutines draining the async-search submit
+	// queue. CYODA_SEARCH_ASYNC_WORKERS, default 8.
+	//
+	// Documented default, not computed: a streaming search job holds its
+	// scan connection for the run's duration plus, per chunk, a save
+	// connection — so the worker count must stay within the postgres
+	// connection budget. 8 workers <= (default 25 max conns - reserve) / 2
+	// connections held at a job's peak.
+	Workers int
+	// QueueLen is the submit queue's capacity beyond the workers already
+	// running. Once both are exhausted, Submit returns ErrQueueFull,
+	// surfaced as a retryable 503 SEARCH_QUEUE_FULL.
+	// CYODA_SEARCH_ASYNC_QUEUE, default 256.
+	QueueLen int
 }
 
 // SchedulerConfig controls the scheduled-transition scan loop: cadence,
@@ -254,6 +280,10 @@ func DefaultConfig() Config {
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		StatsGroupMax:      statsGroupMax,
 		SearchMaxSortKeys:  maxSortKeys,
+		SearchAsync: SearchAsyncConfig{
+			Workers:  envInt("CYODA_SEARCH_ASYNC_WORKERS", 8),
+			QueueLen: envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
+		},
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
@@ -590,6 +620,28 @@ func isASCII(s string) bool {
 		}
 	}
 	return true
+}
+
+// ValidateSearchAsync enforces startup-time correctness for the
+// async-search worker pool sizing. Called once at startup (from
+// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
+// and os.Exit(1).
+//
+// Config is a QA'd artefact, not runtime input: an invalid value is a hard
+// error here rather than silently clamped to the default the way
+// CYODA_STATS_GROUP_MAX / CYODA_SEARCH_MAX_SORT_KEYS are (those predate
+// this policy). Workers < 1 would start a pool with zero goroutines
+// draining the queue — every Submit would eventually return ErrQueueFull
+// once the buffer fills, with nothing ever running. QueueLen < 0 panics
+// inside make(chan jobFunc, n).
+func ValidateSearchAsync(c SearchAsyncConfig) error {
+	if c.Workers < 1 {
+		return fmt.Errorf("CYODA_SEARCH_ASYNC_WORKERS must be >= 1, got %d", c.Workers)
+	}
+	if c.QueueLen < 0 {
+		return fmt.Errorf("CYODA_SEARCH_ASYNC_QUEUE must be >= 0, got %d", c.QueueLen)
+	}
+	return nil
 }
 
 // ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT

@@ -27,6 +27,73 @@ func TestDefaultConfig_SearchMaxSortKeys(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_SearchAsync asserts the CYODA_SEARCH_ASYNC_WORKERS /
+// CYODA_SEARCH_ASYNC_QUEUE defaults (8 / 256) under an empty environment.
+func TestDefaultConfig_SearchAsync(t *testing.T) {
+	t.Setenv("CYODA_SEARCH_ASYNC_WORKERS", "")
+	os.Unsetenv("CYODA_SEARCH_ASYNC_WORKERS")
+	t.Setenv("CYODA_SEARCH_ASYNC_QUEUE", "")
+	os.Unsetenv("CYODA_SEARCH_ASYNC_QUEUE")
+
+	cfg := DefaultConfig()
+	if cfg.SearchAsync.Workers != 8 {
+		t.Errorf("default SearchAsync.Workers = %d, want 8", cfg.SearchAsync.Workers)
+	}
+	if cfg.SearchAsync.QueueLen != 256 {
+		t.Errorf("default SearchAsync.QueueLen = %d, want 256", cfg.SearchAsync.QueueLen)
+	}
+}
+
+// TestDefaultConfig_SearchAsyncEnvOverride confirms both vars actually bind
+// through envInt rather than being hardcoded.
+func TestDefaultConfig_SearchAsyncEnvOverride(t *testing.T) {
+	t.Setenv("CYODA_SEARCH_ASYNC_WORKERS", "4")
+	t.Setenv("CYODA_SEARCH_ASYNC_QUEUE", "64")
+
+	cfg := DefaultConfig()
+	if cfg.SearchAsync.Workers != 4 {
+		t.Errorf("SearchAsync.Workers override = %d, want 4", cfg.SearchAsync.Workers)
+	}
+	if cfg.SearchAsync.QueueLen != 64 {
+		t.Errorf("SearchAsync.QueueLen override = %d, want 64", cfg.SearchAsync.QueueLen)
+	}
+}
+
+// TestSearchAsyncConfig_ValidateRejectsInvalid asserts workers < 1 and
+// queue < 0 are hard startup errors — config is a QA'd artefact, not
+// runtime input to clamp defensively.
+func TestSearchAsyncConfig_ValidateRejectsInvalid(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  SearchAsyncConfig
+	}{
+		{"zero workers", SearchAsyncConfig{Workers: 0, QueueLen: 256}},
+		{"negative workers", SearchAsyncConfig{Workers: -1, QueueLen: 256}},
+		{"negative queue", SearchAsyncConfig{Workers: 8, QueueLen: -1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateSearchAsync(tc.cfg); err == nil {
+				t.Fatalf("ValidateSearchAsync(%+v) = nil, want an error", tc.cfg)
+			}
+		})
+	}
+}
+
+// TestSearchAsyncConfig_ValidateAcceptsValid asserts the documented default
+// and its floor (1 worker, unbuffered queue) are both accepted.
+func TestSearchAsyncConfig_ValidateAcceptsValid(t *testing.T) {
+	cases := []SearchAsyncConfig{
+		{Workers: 1, QueueLen: 0},
+		{Workers: 8, QueueLen: 256},
+	}
+	for _, c := range cases {
+		if err := ValidateSearchAsync(c); err != nil {
+			t.Errorf("ValidateSearchAsync(%+v) = %v, want nil", c, err)
+		}
+	}
+}
+
 func TestDefaultConfig_OIDCDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.IAM.OIDC.RequireHTTPS {

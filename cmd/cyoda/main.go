@@ -92,6 +92,10 @@ func main() {
 		slog.Error("CORS validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateSearchAsync(cfg.SearchAsync); err != nil {
+		slog.Error("search async config validation failed", "error", err)
+		os.Exit(1)
+	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)

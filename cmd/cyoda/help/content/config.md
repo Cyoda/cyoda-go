@@ -88,6 +88,8 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 - `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
 - `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval.
 - `CYODA_SEARCH_MAX_SORT_KEYS` (int, default: `16`) — maximum number of `sort` keys per search request. Requests exceeding this cap are rejected with `400 INVALID_FIELD_PATH`. Values `<= 0` are clamped to the default.
+- `CYODA_SEARCH_ASYNC_WORKERS` (int, default: `8`) — async-search worker pool size. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped.
+- `CYODA_SEARCH_ASYNC_QUEUE` (int, default: `256`) — async-search submit queue capacity beyond the running workers. Once both are exhausted, submission fails with `503 SEARCH_QUEUE_FULL` (retryable). Values `< 0` fail startup.
 
 ### Cluster and dispatch
 

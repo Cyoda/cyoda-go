@@ -54,6 +54,8 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEARCH_REAP_INTERVAL", Topic: "search", Type: "duration", Default: "5m", Description: "Search snapshot reap interval."},
 	{Name: "CYODA_SEARCH_MAX_SORT_KEYS", Topic: "search", Type: "int", Default: "16", Description: "Maximum number of sort keys per search request; values <= 0 clamp to the default."},
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},
+	{Name: "CYODA_SEARCH_ASYNC_WORKERS", Topic: "search", Type: "int", Default: "8", Description: "Async-search worker pool size. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_ASYNC_QUEUE", Topic: "search", Type: "int", Default: "256", Description: "Async-search submit queue capacity beyond the running workers; Submit returns SEARCH_QUEUE_FULL (retryable 503) once exhausted. Must be >= 0; startup fails otherwise."},
 
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},

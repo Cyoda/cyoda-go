@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -159,6 +160,13 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 
 	snapshotID, err := s.searchService.SubmitAsyncSearch(ctx, modelRef, cond, opts)
 	if err != nil {
+		// ErrQueueFull (the async-search worker pool's queue is at capacity)
+		// is a bare sentinel, not an *common.AppError — map it to the shared
+		// retryable 503 before handing off to snapshotSearchError, whose
+		// buildErrorFields only classifies *common.AppError specially.
+		if errors.Is(err, search.ErrQueueFull) {
+			err = search.QueueFullError()
+		}
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}

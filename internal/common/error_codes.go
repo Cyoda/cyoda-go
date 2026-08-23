@@ -99,6 +99,11 @@ const (
 	// timeoutMillis expires before the search result set was collected. No
 	// partial results are returned.
 	ErrCodeSearchTimeout = "SEARCH_TIMEOUT"
+	// ErrCodeSearchQueueFull is returned when the async-search worker
+	// pool's submit queue is at capacity (CYODA_SEARCH_ASYNC_WORKERS
+	// workers, CYODA_SEARCH_ASYNC_QUEUE queue slots, both exhausted).
+	// Retryable: the queue drains as in-flight jobs complete.
+	ErrCodeSearchQueueFull = "SEARCH_QUEUE_FULL"
 )
 
 // Composite unique-key errors

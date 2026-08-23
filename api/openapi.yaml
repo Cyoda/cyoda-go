@@ -7044,7 +7044,38 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: >
+            Service temporarily unavailable. Retryable. Two distinct causes
+            share this status: the storage layer could not serve the
+            request (no connection within the acquire timeout, an
+            idle-in-transaction reclaim, or a lost connection), or the
+            async-search worker pool's submit queue is full (bounded by
+            CYODA_SEARCH_ASYNC_WORKERS / CYODA_SEARCH_ASYNC_QUEUE).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                Storage Unavailable:
+                  description: Storage Unavailable
+                  value:
+                    type: about:blank
+                    title: Service Unavailable
+                    status: 503
+                    detail: "STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry"
+                    properties:
+                      errorCode: STORAGE_UNAVAILABLE
+                      retryable: true
+                Search Queue Full:
+                  description: Search Queue Full
+                  value:
+                    type: about:blank
+                    title: Service Unavailable
+                    status: 503
+                    detail: "SEARCH_QUEUE_FULL: async search queue is full — retry later"
+                    properties:
+                      errorCode: SEARCH_QUEUE_FULL
+                      retryable: true
         default:
           $ref: '#/components/responses/InternalServerError'
       security:

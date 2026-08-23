@@ -42,6 +42,26 @@ func jobLookupError(err error) *common.AppError {
 	return common.Internal("job lookup failed", err)
 }
 
+// submitAsyncError maps a SubmitAsync error to the response to write.
+// ErrQueueFull — the async-search worker pool's queue is at capacity —
+// maps to the shared retryable 503 (QueueFullError, pool.go), checked
+// ahead of the generic AppError forward below so a wrapped ErrQueueFull
+// (errors.Is sees through fmt.Errorf's %w) isn't mistaken for an
+// unclassified internal failure. Any other AppError (pre-execution
+// validation) forwards unchanged so its 4xx surfaces instead of being
+// shrouded as a 5xx ticket. Everything else is an unclassified internal
+// failure.
+func submitAsyncError(err error) *common.AppError {
+	if errors.Is(err, ErrQueueFull) {
+		return QueueFullError()
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return common.Internal("failed to submit async search", err)
+}
+
 // Handler handles search-related HTTP endpoints.
 //
 // Structural condition validation (canonical operator set, BETWEEN arity —
@@ -243,15 +263,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	jobID, err := h.searchSvc.SubmitAsync(r.Context(), modelRef, cond, opts)
 	if err != nil {
-		// Pre-execution validation (issue #77) returns a classified
-		// *common.AppError directly; forward it so the 4xx surfaces
-		// instead of being shrouded as a 5xx ticket.
-		var appErr *common.AppError
-		if errors.As(err, &appErr) {
-			common.WriteError(w, r, appErr)
-			return
-		}
-		common.WriteError(w, r, common.Internal("failed to submit async search", err))
+		common.WriteError(w, r, submitAsyncError(err))
 		return
 	}
 

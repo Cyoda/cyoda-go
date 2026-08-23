@@ -12,6 +12,7 @@ see_also:
   - errors.SEARCH_RESULT_LIMIT
   - errors.SCAN_BUDGET_EXHAUSTED
   - errors.SEARCH_SHARD_TIMEOUT
+  - errors.SEARCH_QUEUE_FULL
   - errors.INVALID_FIELD_PATH
   - errors.CONDITION_TYPE_MISMATCH
   - errors.INVALID_CONDITION
@@ -195,6 +196,8 @@ Response: `200 OK`, `application/json` — bare UUID string (job ID):
 
 The job is stored with status `RUNNING`. For non-`SelfExecutingSearchStore` backends, a goroutine begins the search immediately using a background context derived from the submitting user's tenant context.
 
+Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`, `CYODA_SEARCH_ASYNC_QUEUE`); once both the running workers and the queue are exhausted, submission fails `503 SEARCH_QUEUE_FULL` (retryable) instead of blocking or spawning an unbounded goroutine per request.
+
 **GET /api/search/async/{jobId}/status** — Get async job status
 
 - `jobId` (path): UUID
@@ -323,6 +326,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
+- `errors.SEARCH_QUEUE_FULL` — `503` — async submit's worker pool has no free worker and its submit queue is at capacity; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`
 - `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. a string/pattern operator or a non-timestamp value on a temporal meta field (`creationDate`/`lastUpdateTime`)
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
@@ -420,6 +424,7 @@ curl -s -X PUT \
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
 - errors.SEARCH_SHARD_TIMEOUT
+- errors.SEARCH_QUEUE_FULL
 - errors.INVALID_FIELD_PATH
 - errors.CONDITION_TYPE_MISMATCH
 - errors.INVALID_CONDITION
