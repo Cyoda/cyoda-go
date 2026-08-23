@@ -615,6 +615,110 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	}
 }
 
+// cancelDispatchCaptureStore wraps spi.AsyncSearchStore, blocks SaveResults
+// until released (so the job is deterministically still RUNNING when the
+// test calls CancelAsync), and records Cancel/UpdateJobStatus calls so the
+// test can assert which method CancelAsync dispatches through.
+type cancelDispatchCaptureStore struct {
+	spi.AsyncSearchStore
+	saveResultsGate chan struct{} // close to unblock SaveResults
+
+	mu                sync.Mutex
+	cancelCalls       int
+	cancelFinishTime  time.Time
+	updateStatusCalls int
+}
+
+func (c *cancelDispatchCaptureStore) SaveResults(ctx context.Context, jobID string, entityIDs []string) error {
+	<-c.saveResultsGate // block until gate is opened
+	return c.AsyncSearchStore.SaveResults(ctx, jobID, entityIDs)
+}
+
+func (c *cancelDispatchCaptureStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
+	c.mu.Lock()
+	c.cancelCalls++
+	c.cancelFinishTime = finishTime
+	c.mu.Unlock()
+	return c.AsyncSearchStore.Cancel(ctx, jobID, finishTime)
+}
+
+func (c *cancelDispatchCaptureStore) UpdateJobStatus(ctx context.Context, jobID string, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+	c.mu.Lock()
+	c.updateStatusCalls++
+	c.mu.Unlock()
+	return c.AsyncSearchStore.UpdateJobStatus(ctx, jobID, status, resultCount, errMsg, finishTime, calcTimeMs)
+}
+
+// TestCancelAsync_DispatchesStoreCancel verifies that CancelAsync on a
+// RUNNING job calls the store's Cancel with a non-zero finishTime, and does
+// NOT call UpdateJobStatus — CancelAsync must dispatch through Cancel, not
+// reimplement the transition via the generic status-update path (which
+// leaves cancelled jobs unreapable if the store's UpdateJobStatus path
+// diverges from Cancel's terminal-state handling).
+func TestCancelAsync_DispatchesStoreCancel(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	realStore, _ := factory.AsyncSearchStore(context.Background())
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
+	gate := make(chan struct{})
+	capture := &cancelDispatchCaptureStore{
+		AsyncSearchStore: realStore,
+		saveResultsGate:  gate,
+	}
+
+	svc := search.NewSearchService(factory, uuids, capture)
+
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	// Wait for the goroutine to reach SaveResults (it will block on the
+	// gate), so the job is guaranteed still RUNNING when CancelAsync runs.
+	time.Sleep(50 * time.Millisecond)
+
+	result, err := svc.CancelAsync(ctx, jobID)
+	if err != nil {
+		t.Fatalf("CancelAsync: %v", err)
+	}
+	if !result.Cancelled {
+		t.Fatal("expected cancel to succeed while goroutine is blocked")
+	}
+
+	capture.mu.Lock()
+	cancelCalls := capture.cancelCalls
+	cancelFinishTime := capture.cancelFinishTime
+	updateStatusCalls := capture.updateStatusCalls
+	capture.mu.Unlock()
+
+	if cancelCalls != 1 {
+		t.Errorf("Cancel calls = %d, want 1", cancelCalls)
+	}
+	if cancelFinishTime.IsZero() {
+		t.Error("Cancel must be called with a non-zero finishTime")
+	}
+	if updateStatusCalls != 0 {
+		t.Errorf("CancelAsync must not call UpdateJobStatus, got %d calls", updateStatusCalls)
+	}
+
+	// Release the blocked goroutine so it doesn't leak past the test.
+	close(gate)
+	time.Sleep(100 * time.Millisecond)
+}
+
 // captureSearchStore is an in-memory AsyncSearchStore that records which
 // methods get called. Used by TestSubmitAsync_SelfExecutingStore_SkipsGoroutine.
 type captureSearchStore struct {

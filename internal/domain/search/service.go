@@ -756,7 +756,7 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 	}
 
 	finishTime := time.Now()
-	if err := s.searchStore.UpdateJobStatus(ctx, jobID, "CANCELLED", 0, "", finishTime, 0); err != nil {
+	if err := s.searchStore.Cancel(ctx, jobID, finishTime); err != nil {
 		return CancelResult{}, fmt.Errorf("failed to cancel job: %w", err)
 	}
 
