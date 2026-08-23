@@ -200,7 +200,7 @@ Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`,
 
 Results stream incrementally as the scan runs rather than being materialized in memory and saved all at once. A running job stamps its own liveness on a fixed cadence (`CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, default 15s) starting from the moment it is submitted — including while it is still queued, not only while it is scanning — and the same poll also picks up a cancellation or an externally-recorded terminal status.
 
-If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval) and marks it `FAILED` with a generic message. This milestone fails the job outright rather than re-executing it elsewhere in the cluster.
+If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval) and marks it `FAILED` with a generic message. This milestone fails the job outright rather than re-executing it elsewhere in the cluster. The reaper runs on `CYODA_SEARCH_REAP_INTERVAL`'s ticker (default 5m, shared with the snapshot reaper), not continuously, so actual detection latency is up to `CYODA_SEARCH_JOB_STALE_AFTER + CYODA_SEARCH_REAP_INTERVAL` — worst case ~10m at the defaults.
 
 **GET /api/search/async/{jobId}/status** — Get async job status
 

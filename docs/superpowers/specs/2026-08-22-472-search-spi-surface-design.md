@@ -512,12 +512,19 @@ can break the commercial backend's run.
 
 ## 8. Error/status-code table (wire contract is unchanged — verification table)
 
-No endpoint gains or loses a status code in this change; the table pins what
-must still hold on a running backend after the reroute.
+Every endpoint but one keeps the exact status/error codes it had before this
+change; the table pins what must still hold on a running backend after the
+reroute. The one exception, flagged by §4.6 when the bounded worker pool's
+queue-full behaviour was still an open decision: `POST /search/async`
+**gains** `503 SEARCH_QUEUE_FULL` (retryable) when the async-search pool's
+queue is at capacity (`ErrQueueFull`, `internal/domain/search/pool.go`) —
+that decision landed as part of this change, not a later one, so §8 now
+names it explicitly instead of the earlier "no endpoint gains or loses a
+status code" statement, which predates the pool's queue-bound decision.
 
 | Endpoint | Codes to re-verify |
 |---|---|
-| `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition; 401; 404 model (the submit endpoint has no limit parameter — the service-level limit>max guard is unreachable over HTTP) |
+| `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition; 401; 404 model; 503 `SEARCH_QUEUE_FULL` (retryable) when the worker pool's queue is full (the submit endpoint has no limit parameter — the service-level limit>max guard is unreachable over HTTP) |
 | `GET /search/async/{jobId}` | 200 page; 400 job not complete / pagination over max; 401; 404 job |
 | `GET /search/async/{jobId}/status` | 200; 401; 404 |
 | `PUT /search/async/{jobId}/cancel` | 200 cancelled=true (RUNNING) / false (terminal); 401; 404 — **now actually stops the scan** |

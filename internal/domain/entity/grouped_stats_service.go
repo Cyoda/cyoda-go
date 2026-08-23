@@ -277,28 +277,54 @@ func (s *GroupedStatsService) tallyStreaming(
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
 
 	acc := newAccumulators(req)
-	for iter.Next() {
-		e := iter.Entity()
+	// bucketErr (a definitive business-logic stop, not a scan fault) takes
+	// priority over scanErr when both are set — it mirrors the pre-fix
+	// code's immediate `return nil, spi.ErrGroupCardinalityExceeded`, which
+	// never consulted iter.Err() at all.
+	var bucketErr, scanErr error
+	func() {
+		// Close() before Err(), inside a defer so both run even on the
+		// early return below (bucketErr) — the trap this reorders away
+		// from: some iterator implementations only surface a sticky scan
+		// error at Close, not at the last Next(), so reading Err() before
+		// Close() runs (the previous shape here, with a bare
+		// `defer iter.Close()` registered ahead of a same-function
+		// `iter.Err()` call that executed first) can miss it. Mirrors
+		// drainIterate's ordering (internal/domain/search/service.go).
+		defer func() {
+			if closeErr := iter.Close(); closeErr != nil {
+				scanErr = closeErr
+			}
+			if errErr := iter.Err(); errErr != nil {
+				scanErr = errErr
+			}
+		}()
+		for iter.Next() {
+			e := iter.Entity()
 
-		// Residual predicate evaluation: only when the original condition
-		// was not pushable and we therefore need to filter per entity.
-		if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
-			continue
-		}
+			// Residual predicate evaluation: only when the original condition
+			// was not pushable and we therefore need to filter per entity.
+			if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
+				continue
+			}
 
-		keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
-		k := buildGroupKey(keyValues)
-		if !acc.has(k) && acc.len() >= s.maxBuckets {
-			return nil, spi.ErrGroupCardinalityExceeded
+			keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
+			k := buildGroupKey(keyValues)
+			if !acc.has(k) && acc.len() >= s.maxBuckets {
+				bucketErr = spi.ErrGroupCardinalityExceeded
+				return
+			}
+			numerics := extractNumerics(req.Aggregations, e.Data)
+			acc.observe(k, groupKey, numerics)
 		}
-		numerics := extractNumerics(req.Aggregations, e.Data)
-		acc.observe(k, groupKey, numerics)
+	}()
+	if bucketErr != nil {
+		return nil, bucketErr
 	}
-	if err := iter.Err(); err != nil {
-		return nil, err
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	return acc.materialize(), nil
 }

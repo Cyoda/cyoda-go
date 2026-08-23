@@ -176,6 +176,21 @@ type schemaNodeProvider interface {
 	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
 
+// RefreshFieldsMap is the exported entry point for refreshFieldsMap, mirroring
+// LoadFieldsMap's exported-wrapper pattern. Callers outside this package that
+// reuse the search condition primitive on their own spi.Iterable drain
+// (currently entity.Handler's delete path) need the same bounded
+// single-refresh-then-fail behaviour validateConditionPaths gives Search,
+// rather than declaring a field unknown against a possibly-stale cached
+// descriptor — see FindUnknownFieldPaths' doc comment for why the caller
+// can't reach validateConditionPaths directly. Returns (nil, false, nil)
+// when the store has no refresh capability; the caller should then treat the
+// pre-refresh unknown-paths result as authoritative, exactly as
+// validateConditionPaths does.
+func RefreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, bool, error) {
+	return refreshFieldsMap(ctx, store, ref)
+}
+
 // refreshFieldsMap forces a cache refresh via RefreshAndGet (when the
 // store implements it) and returns the refreshed FieldsMap. Returns
 // (nil, false, nil) when the store has no refresh capability — callers

@@ -839,11 +839,17 @@ func newGatedClock(t time.Time) *gatedClock {
 }
 
 func (c *gatedClock) Now() time.Time {
-	c.mu.Lock()
-	armed := c.armed
-	c.armed = false
-	entered, unblock := c.entered, c.unblock
-	c.mu.Unlock()
+	// IIFE so the lock releases via defer before the potentially-blocking
+	// <-unblock below — same pattern the go-mutex-discipline rule requires
+	// for early-release cases, fixed here for the same bare Lock/Unlock
+	// violation already fixed twice elsewhere on this branch.
+	armed, entered, unblock := func() (bool, chan struct{}, chan struct{}) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		armed := c.armed
+		c.armed = false
+		return armed, c.entered, c.unblock
+	}()
 	if armed {
 		close(entered)
 		<-unblock

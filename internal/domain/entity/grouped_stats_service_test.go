@@ -47,6 +47,49 @@ func (i *fakeIter) Entity() *spi.Entity { return i.rows[i.idx-1] }
 func (i *fakeIter) Err() error          { return i.err }
 func (i *fakeIter) Close() error        { return nil }
 
+// closeStickyIter models the trap tallyStreaming's iterator drain used to
+// have (M4, final review): some iterator implementations only surface a
+// sticky scan error once Close() has run — Err() returns nil beforehand.
+// Reading Err() before Close() (the pre-fix ordering: a bare
+// `defer iter.Close()` registered ahead of a same-function `iter.Err()`
+// call that ran first) would see the stale nil and miss the failure
+// entirely; reading it after Close() (the fix) observes it.
+type closeStickyIter struct {
+	rows      []*spi.Entity
+	idx       int
+	stickyErr error
+	err       error
+	closed    bool
+}
+
+func (i *closeStickyIter) Next() bool {
+	if i.idx >= len(i.rows) {
+		return false
+	}
+	i.idx++
+	return true
+}
+func (i *closeStickyIter) Entity() *spi.Entity { return i.rows[i.idx-1] }
+func (i *closeStickyIter) Err() error          { return i.err }
+func (i *closeStickyIter) Close() error {
+	if !i.closed {
+		i.closed = true
+		i.err = i.stickyErr
+	}
+	return nil
+}
+
+// closeStickyIterable satisfies spi.Iterable only, always yielding a
+// closeStickyIter over rows.
+type closeStickyIterable struct {
+	rows      []*spi.Entity
+	stickyErr error
+}
+
+func (f *closeStickyIterable) Iterate(_ context.Context, _ spi.ModelRef, _ spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
+	return &closeStickyIter{rows: f.rows, stickyErr: f.stickyErr}, nil
+}
+
 // fakeFilteringIterable is a spi.Iterable-only store whose Iterate actually
 // applies the filter it's handed (via spi.Prepare(flt).Match), unlike
 // fakeIterable above which records the filter but returns every row
@@ -253,6 +296,32 @@ func TestQueryGroupedStats_ScanBudgetMapsTo400(t *testing.T) {
 	}
 	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
 		t.Errorf("WithCause must preserve the sentinel")
+	}
+}
+
+// TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery pins the fix for
+// M4 (final review): tallyStreaming used to read iter.Err() before the
+// deferred iter.Close() ran, so an error that only becomes visible via
+// Err() after Close() (closeStickyIter's shape — see its doc comment) was
+// silently missed and the query returned success. Reordering to read Err()
+// after Close() runs (mirrors drainIterate's ordering) surfaces it.
+func TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery(t *testing.T) {
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{IsState: true}},
+	}
+	stickyErr := errors.New("driver error surfaced only at Close")
+	store := &closeStickyIterable{
+		rows:      []*spi.Entity{{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)}},
+		stickyErr: stickyErr,
+	}
+
+	_, err := svc.QueryGroupedStats(context.Background(), store, spi.ModelRef{}, nil, req)
+	if err == nil {
+		t.Fatal("expected the Close()-only-surfaced error to fail the query, got nil (success) — a silent scan truncation")
+	}
+	if !errors.Is(err, stickyErr) {
+		t.Errorf("got %v, want an error wrapping/matching stickyErr", err)
 	}
 }
 

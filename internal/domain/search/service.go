@@ -509,9 +509,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	//     already use for the identical "unbounded, want every match" shape
 	//     — not a special case invented here. Iterate's TrackingRead gate
 	//     records each entity into the tx read-set per-YIELD as it streams
-	//     (see the Iterate doc comment), so a Limit<=0 tracked search still
-	//     tracks exactly its matched set, never the whole model the way the
-	//     GetAll fallback below would.
+	//     (see the Iterate doc comment). Whether that ends up tracking
+	//     exactly the matched set or the whole model is per-backend, not a
+	//     property of routing through Iterate itself: postgres pushes filter
+	//     down into the scan, so only matches are yielded and tracked; the
+	//     in-tx Iterate on memory and sqlite pushes no filter down and yields
+	//     (and so tracks) every row it scans, byte-identical to what the
+	//     GetAll fallback below would track. Closing that gap for memory/
+	//     sqlite is tracked as follow-up work, not done here.
 	//
 	// Both shapes need the same FieldsMap-driven condition->filter
 	// translation; a translate failure (untranslatable condition) falls
@@ -1023,11 +1028,23 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 				// sticky scan error at Close, not at the last Next(), so
 				// reading it.Err() in the function body (before Close)
 				// would miss it.
+				//
+				// A Close() error is fatal here, not merely logged: for
+				// database/sql-backed iterators (e.g. sqliteIter), Close()
+				// returns rows.Close()'s error and that error is NOT folded
+				// into Rows.Err() — so it.Err() alone can stay nil while a
+				// mid-scan driver error truncated the result set. Treating
+				// Close's error as advisory would let this job land
+				// SUCCESSFUL with a truncated result set, indistinguishable
+				// from a complete one (matches drainIterate's ordering).
 				defer func() {
 					if closeErr := it.Close(); closeErr != nil {
 						slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+						pErr = closeErr
 					}
-					pErr = it.Err()
+					if errErr := it.Err(); errErr != nil {
+						pErr = errErr
+					}
 				}()
 				seq := func(yield func(string) bool) {
 					for it.Next() {

@@ -402,6 +402,22 @@ func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entity
 	if err != nil {
 		return nil, err
 	}
+	// GetVersionByTransaction's contract says a DELETED tombstone (no
+	// payload) never matches, so v.Entity is documented as always
+	// populated on a nil-error return. Trust that contract and dereference
+	// unchecked anyway would let a backend that violates it (a plausible
+	// implementation slip — e.g. a sqlite pushdown querying the
+	// transaction-ID column directly and returning a tombstone row) panic
+	// this request and, via the handler's unrecovered-panic path, latch
+	// healthFlag false and take the node out of service. Pre-branch, the
+	// equivalent linear scan over versions skipped nil-entity versions
+	// structurally, so this can't have regressed silently before. Guard
+	// defensively instead of trusting the contract: treat a payload-less
+	// version the same as "no matching version" (spi.ErrNotFound), which
+	// callers already map to 404 ENTITY_NOT_FOUND.
+	if v == nil || v.Entity == nil {
+		return nil, spi.ErrNotFound
+	}
 	return v.Entity, nil
 }
 
@@ -1019,17 +1035,46 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 
 	// Unknown data-field paths (TestDeleteEntities_UnknownFieldPath, error
-	// matrix row deleteEntities/INVALID_FIELD_PATH) — mirrors
-	// SearchService's unexported validateConditionPaths via the exported
-	// search.FindUnknownFieldPaths, minus its negative-cache/refresh-retry
-	// optimisation (a Search hot-path concern this lower-volume endpoint
-	// doesn't need). fields == nil means no schema is bound at all — same
-	// as validateConditionPaths, skip the check rather than flagging every
-	// path "unknown" against an empty map.
+	// matrix row deleteEntities/INVALID_FIELD_PATH) — mirrors SearchService's
+	// unexported validateConditionPaths via the exported
+	// search.FindUnknownFieldPaths, minus its negative-cache (a Search
+	// hot-path concern this lower-volume endpoint doesn't need). It DOES
+	// keep the bounded single-refresh-then-fail retry: that refresh is the
+	// correctness half, not the optimisation. On a cluster, node A can
+	// extend a model with a new field and node B's cached descriptor map
+	// won't see it until the schema-change event arrives; without a refresh
+	// here, a condition on that field would 400 INVALID_FIELD_PATH on node B
+	// while the identical /search/direct condition succeeds via
+	// validateConditionPaths' own refresh — a cross-node false rejection.
+	// fields == nil means no schema is bound at all — same as
+	// validateConditionPaths, skip the check rather than flagging every path
+	// "unknown" against an empty map.
 	if fields != nil {
 		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) > 0 {
-			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath,
-				fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(unknown, ", ")))
+			freshFields, refreshed, refreshErr := search.RefreshFieldsMap(ctx, modelStore, ref)
+			switch {
+			case !refreshed:
+				// Store has no cache layer to refresh — the pre-refresh
+				// miss is authoritative, same as validateConditionPaths.
+			case refreshErr != nil:
+				if errors.Is(refreshErr, spi.ErrNotFound) {
+					// Model was deleted between the earlier load and
+					// RefreshAndGet — the miss is authoritative, there is
+					// no schema left to consult.
+					break
+				}
+				slog.Debug("schema refresh failed while validating delete condition paths",
+					"pkg", "entity", "entityName", ref.EntityName, "modelVersion", ref.ModelVersion, "error", refreshErr)
+			case freshFields != nil:
+				unknown = search.FindUnknownFieldPaths(cond, freshFields)
+			}
+			if len(unknown) > 0 {
+				return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath,
+					fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(unknown, ", ")))
+			}
+			if freshFields != nil {
+				fields = freshFields
+			}
 		}
 	}
 
@@ -1103,13 +1148,25 @@ func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref s
 	var scanErr error
 	func() {
 		defer func() {
-			if closeErr := it.Close(); closeErr != nil {
-				slog.Warn("failed to close delete-selection iterator", "pkg", "entity", "err", closeErr)
-			}
 			// Some implementations only surface a sticky scan error at
 			// Close, not at the last Next() — read Err() AFTER Close()
 			// (mirrors the async search executor's own iterator drain).
-			scanErr = it.Err()
+			//
+			// Close()'s own error is fatal here too, not merely logged:
+			// for database/sql-backed iterators (e.g. sqliteIter), Close()
+			// returns rows.Close()'s error and that error is NOT folded
+			// into Rows.Err() — so it.Err() alone can stay nil while a
+			// mid-scan driver error truncated the selection. Treating
+			// Close's error as advisory would let this delete report
+			// success (HTTP 200) for a partial selection, indistinguishable
+			// from a complete one.
+			if closeErr := it.Close(); closeErr != nil {
+				slog.Warn("failed to close delete-selection iterator", "pkg", "entity", "err", closeErr)
+				scanErr = closeErr
+			}
+			if errErr := it.Err(); errErr != nil {
+				scanErr = errErr
+			}
 		}()
 		for it.Next() {
 			e := it.Entity()
@@ -1492,10 +1549,21 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 		)
 		func() {
 			defer func() {
+				// Close()'s own error is fatal here, not merely logged: for
+				// database/sql-backed iterators (e.g. sqliteIter), Close()
+				// returns rows.Close()'s error and that error is NOT folded
+				// into Rows.Err() — so it.Err() alone can stay nil while a
+				// mid-scan driver error truncated this batch's selection.
+				// Treating Close's error as advisory would let deleteBatched
+				// report success for a partial batch, indistinguishable from
+				// a complete one.
 				if closeErr := it.Close(); closeErr != nil {
 					slog.Warn("failed to close delete-selection iterator", "pkg", "entity", "err", closeErr)
+					scanErr = closeErr
 				}
-				scanErr = it.Err()
+				if errErr := it.Err(); errErr != nil {
+					scanErr = errErr
+				}
 			}()
 			for it.Next() {
 				e := it.Entity()

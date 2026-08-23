@@ -51,6 +51,25 @@ const StaleClaimBatch = 100
 // non-nil error means ClaimStale itself failed, not that a subset of writes
 // failed.
 func FailStaleJobs(ctx context.Context, store spi.AsyncSearchStore, staleAfter time.Duration, batch int) (int, error) {
+	// Self-executing stores own their own recovery — mirrors SubmitAsync's
+	// identical type-assertion guard (service.go), which skips the
+	// in-process execution goroutine for the same reason: calling
+	// SaveResults or UpdateJobStatus on one of these stores is an error.
+	// SelfExecutingSearchStore's doc comment only says such a store MAY
+	// no-op ClaimStale/UpdateJobStatus/ClearResults — an unenforced
+	// negative contract. Without this guard, a self-executing store that
+	// never stamps HeartbeatTime (because the engine's own heartbeat loop
+	// is skipped for it, same guard, same reason) would make ClaimStale's
+	// COALESCE(heartbeat_time, created_at) baseline mark every one of its
+	// healthy jobs stale after staleAfter by construction, and this reaper
+	// would FAIL them out from under the store's own pipeline — a
+	// cross-tenant false failure the engine has the type information to
+	// prevent outright. Fail closed: skip reaping entirely rather than
+	// depend on the permissive contract being honoured.
+	if _, ok := store.(spi.SelfExecutingSearchStore); ok {
+		return 0, nil
+	}
+
 	jobs, err := store.ClaimStale(ctx, staleAfter, batch)
 	if err != nil {
 		return 0, fmt.Errorf("failed to claim stale search jobs: %w", err)
