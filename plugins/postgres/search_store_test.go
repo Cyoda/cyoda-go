@@ -131,32 +131,45 @@ func TestPGSearchStore_TenantIsolation(t *testing.T) {
 	}
 }
 
+// TestPGSearchStore_UpdateJobStatus covers UpdateJobStatus's two terminal
+// outcomes (SUCCESSFUL and FAILED-with-error-message) on separate jobs —
+// UpdateJobStatus is a single fenced conditional UPDATE gated on
+// `status NOT IN (SUCCESSFUL, FAILED, CANCELLED)` (search_store.go), so once
+// a job reaches a terminal status no further UpdateJobStatus call may
+// change it (write-once; see TestConformance/AsyncSearch/Terminal/WriteOnce).
+// A prior version of this test chained SUCCESSFUL -> FAILED on the SAME job
+// ID, which the terminal-write-once fencing (added alongside it in the same
+// commit) always rejected — that second call's error was never checked, so
+// nothing caught it. Rewritten to also assert the write-once contract
+// directly, rather than only exercising the happy paths.
 func TestPGSearchStore_UpdateJobStatus(t *testing.T) {
 	factory := setupSearchTest(t)
 	store := getSearchStore(t, factory, "search-tenant")
 	ctx := ctxWithTenant("search-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	job := &spi.SearchJob{
-		ID:          "job-upd",
-		TenantID:    "search-tenant",
-		Status:      "RUNNING",
-		ModelRef:    spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
-		Condition:   json.RawMessage(`{}`),
-		PointInTime: now,
-		CreateTime:  now,
-	}
-	if err := store.CreateJob(ctx, job); err != nil {
-		t.Fatalf("CreateJob() error: %v", err)
+	newJob := func(id string) *spi.SearchJob {
+		return &spi.SearchJob{
+			ID:          id,
+			TenantID:    "search-tenant",
+			Status:      "RUNNING",
+			ModelRef:    spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
+			Condition:   json.RawMessage(`{}`),
+			PointInTime: now,
+			CreateTime:  now,
+		}
 	}
 
+	// RUNNING -> SUCCESSFUL.
+	if err := store.CreateJob(ctx, newJob("job-upd-ok")); err != nil {
+		t.Fatalf("CreateJob() error: %v", err)
+	}
 	finishTime := now.Add(5 * time.Second).Truncate(time.Microsecond)
-	err := store.UpdateJobStatus(ctx, "job-upd", 1, "SUCCESSFUL", 42, "", finishTime, 1234)
-	if err != nil {
+	if err := store.UpdateJobStatus(ctx, "job-upd-ok", 1, "SUCCESSFUL", 42, "", finishTime, 1234); err != nil {
 		t.Fatalf("UpdateJobStatus() error: %v", err)
 	}
 
-	got, err := store.GetJob(ctx, "job-upd")
+	got, err := store.GetJob(ctx, "job-upd-ok")
 	if err != nil {
 		t.Fatalf("GetJob() error: %v", err)
 	}
@@ -176,17 +189,32 @@ func TestPGSearchStore_UpdateJobStatus(t *testing.T) {
 		t.Errorf("Error = %q, want empty", got.Error)
 	}
 
-	// Update with error message.
-	err = store.UpdateJobStatus(ctx, "job-upd", 1, "FAILED", 0, "something broke", finishTime, 999)
-	if err != nil {
+	// write-once: a second UpdateJobStatus on the now-terminal job must be
+	// rejected with spi.ErrAlreadyTerminal and must NOT change its state.
+	err = store.UpdateJobStatus(ctx, "job-upd-ok", 1, "FAILED", 0, "should not apply", finishTime, 999)
+	if !errors.Is(err, spi.ErrAlreadyTerminal) {
+		t.Errorf("UpdateJobStatus on a terminal job: expected spi.ErrAlreadyTerminal, got: %v", err)
+	}
+	if stillOK, err := store.GetJob(ctx, "job-upd-ok"); err != nil || stillOK.Status != "SUCCESSFUL" {
+		t.Errorf("terminal job must be unchanged by the rejected update, got status=%q err=%v", stillOK.Status, err)
+	}
+
+	// RUNNING -> FAILED with an error message, on a fresh job.
+	if err := store.CreateJob(ctx, newJob("job-upd-fail")); err != nil {
+		t.Fatalf("CreateJob() error: %v", err)
+	}
+	if err := store.UpdateJobStatus(ctx, "job-upd-fail", 1, "FAILED", 0, "something broke", finishTime, 999); err != nil {
 		t.Fatalf("UpdateJobStatus(FAILED) error: %v", err)
 	}
-	got, _ = store.GetJob(ctx, "job-upd")
-	if got.Status != "FAILED" {
-		t.Errorf("Status = %q, want FAILED", got.Status)
+	gotFailed, err := store.GetJob(ctx, "job-upd-fail")
+	if err != nil {
+		t.Fatalf("GetJob() error: %v", err)
 	}
-	if got.Error != "something broke" {
-		t.Errorf("Error = %q, want 'something broke'", got.Error)
+	if gotFailed.Status != "FAILED" {
+		t.Errorf("Status = %q, want FAILED", gotFailed.Status)
+	}
+	if gotFailed.Error != "something broke" {
+		t.Errorf("Error = %q, want 'something broke'", gotFailed.Error)
 	}
 }
 
@@ -261,9 +289,15 @@ func TestPGSearchStore_DeleteJob(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	job := &spi.SearchJob{
-		ID:          "job-del",
-		TenantID:    "search-tenant",
-		Status:      "SUCCESSFUL",
+		ID:       "job-del",
+		TenantID: "search-tenant",
+		// RUNNING, not SUCCESSFUL: SaveResults below is epoch-fenced the
+		// same way UpdateJobStatus is (search_store.go's probeFenced) and
+		// rejects writes against an already-terminal job — creating the job
+		// pre-terminal made every SaveResults call here fail outright. This
+		// test only cares about DeleteJob's CASCADE, which doesn't depend
+		// on the job's status.
+		Status:      "RUNNING",
 		ModelRef:    spi.ModelRef{EntityName: "W", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
@@ -475,10 +509,78 @@ func TestPGSearchStore_ResultIDs_TenantIsolation(t *testing.T) {
 		t.Errorf("tenant B len = %d, want 1", len(idsB))
 	}
 
-	// Tenant B trying to get results for tenant A's job → must fail.
+	// Tenant B trying to get results for tenant A's job → must fail with
+	// spi.ErrNotFound (GetResultIDs' not-found path, routed fix: it used to
+	// return a bare, unwrapped error here).
 	_, _, err = storeB.GetResultIDs(ctxB, "job-iso-a", 0, 100)
 	if err == nil {
 		t.Fatal("tenant B should NOT be able to GetResultIDs on tenant A's job")
+	}
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("GetResultIDs on another tenant's job: expected spi.ErrNotFound, got: %v", err)
+	}
+}
+
+// TestPGSearchStore_SaveResults_SameJobIDAcrossTenants is the regression
+// test for a PK bug: search_job_results' PRIMARY KEY used to be (job_id,
+// seq), omitting tenant_id, even though search_jobs deliberately allows the
+// same job ID to be reused across tenants (see 000001's schema comment).
+// SaveResults restarts its seq counter at 0 per call, so two tenants both
+// using job ID "job-shared" collided on (job_id, seq) once both had saved
+// at least one result — the second tenant's CopyFrom failed with a unique
+// violation. migrations/000009 widens the PK to (tenant_id, job_id, seq);
+// this test seeds both tenants under the SAME job ID and confirms both
+// SaveResults calls succeed and each tenant reads back only its own rows.
+func TestPGSearchStore_SaveResults_SameJobIDAcrossTenants(t *testing.T) {
+	factory := setupSearchTest(t)
+	ctxA := ctxWithTenant("tenant-shared-a")
+	ctxB := ctxWithTenant("tenant-shared-b")
+	storeA := getSearchStore(t, factory, "tenant-shared-a")
+	storeB := getSearchStore(t, factory, "tenant-shared-b")
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	const sharedJobID = "job-shared"
+
+	jobA := &spi.SearchJob{
+		ID: sharedJobID, TenantID: "tenant-shared-a", Status: "RUNNING",
+		ModelRef:  spi.ModelRef{EntityName: "X", ModelVersion: "1"},
+		Condition: json.RawMessage(`{}`), PointInTime: now, CreateTime: now,
+	}
+	if err := storeA.CreateJob(ctxA, jobA); err != nil {
+		t.Fatalf("CreateJob(A) error: %v", err)
+	}
+	if err := storeA.SaveResults(ctxA, sharedJobID, 1, slices.Values([]string{"a1", "a2"})); err != nil {
+		t.Fatalf("SaveResults(A) error: %v", err)
+	}
+
+	jobB := &spi.SearchJob{
+		ID: sharedJobID, TenantID: "tenant-shared-b", Status: "RUNNING",
+		ModelRef:  spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
+		Condition: json.RawMessage(`{}`), PointInTime: now, CreateTime: now,
+	}
+	if err := storeB.CreateJob(ctxB, jobB); err != nil {
+		t.Fatalf("CreateJob(B) error: %v", err)
+	}
+	// Before migration 000009, this SaveResults call — same job ID, seq
+	// restarting at 0 — collided with tenant A's rows on (job_id, seq).
+	if err := storeB.SaveResults(ctxB, sharedJobID, 1, slices.Values([]string{"b1", "b2", "b3"})); err != nil {
+		t.Fatalf("SaveResults(B) error: %v", err)
+	}
+
+	idsA, totalA, err := storeA.GetResultIDs(ctxA, sharedJobID, 0, 100)
+	if err != nil {
+		t.Fatalf("GetResultIDs(A) error: %v", err)
+	}
+	if totalA != 2 || len(idsA) != 2 {
+		t.Errorf("tenant A: total=%d len=%d, want 2/2", totalA, len(idsA))
+	}
+
+	idsB, totalB, err := storeB.GetResultIDs(ctxB, sharedJobID, 0, 100)
+	if err != nil {
+		t.Fatalf("GetResultIDs(B) error: %v", err)
+	}
+	if totalB != 3 || len(idsB) != 3 {
+		t.Errorf("tenant B: total=%d len=%d, want 3/3", totalB, len(idsB))
 	}
 }
 

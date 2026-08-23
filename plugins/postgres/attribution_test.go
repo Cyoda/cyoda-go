@@ -204,14 +204,15 @@ func TestEntityStore_Delete_Tx_StampsDeleterNotPriorWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore(creatorCtx): %v", err)
 	}
-	history, err := outStore.GetVersionHistory(creatorCtx, "e-tomb-tx")
+	metas, err := outStore.GetVersionMetadata(creatorCtx, "e-tomb-tx", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(metas))
 	}
-	tombstone := history[len(history)-1]
+	// Newest first: metas[0] is the DELETE tombstone.
+	tombstone := metas[0]
 	if !tombstone.Deleted {
 		t.Fatal("expected last version to be the DELETE tombstone")
 	}
@@ -223,6 +224,91 @@ func TestEntityStore_Delete_Tx_StampsDeleterNotPriorWriter(t *testing.T) {
 	}
 	if tombstone.Executor != wantDeleter {
 		t.Errorf("tombstone.Executor = %+v, want %+v", tombstone.Executor, wantDeleter)
+	}
+}
+
+// TestEntityStore_Delete_Tx_StampsDeletingTransactionID is the regression
+// test for a bug GetVersionByTransaction's conformance coverage exposed:
+// Delete unmarshals `current` from the entity's PRIOR doc and, before this
+// fix, never overwrote its TransactionID — so a tombstone silently kept the
+// CREATING transaction's ID instead of the DELETING one. That made
+// GetVersionByTransaction(id, deleteTxID) resolve deleteTxID back to the
+// (non-deleted) CREATE version and return it instead of ErrNotFound,
+// because deleteTxID and createTxID were indistinguishable.
+//
+// Save and Delete run in two SEPARATE transactions here specifically so
+// their IDs differ — proving the tombstone records its OWN transaction, not
+// a carried-over stale one.
+func TestEntityStore_Delete_Tx_StampsDeletingTransactionID(t *testing.T) {
+	factory, tm := newAttrFactory(t)
+	tenant := spi.TenantID("tenant-A")
+	ctx := ctxWithTenantAndUser(tenant, "creator-user", spi.PrincipalUser)
+
+	createTxID, createTxCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (create): %v", err)
+	}
+	createStore, err := factory.EntityStore(createTxCtx)
+	if err != nil {
+		t.Fatalf("EntityStore(createTxCtx): %v", err)
+	}
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID:       "e-tomb-txid",
+			TenantID: tenant,
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+		},
+		Data: []byte(`{}`),
+	}
+	if _, err := createStore.Save(createTxCtx, entity); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := tm.Commit(createTxCtx, createTxID); err != nil {
+		t.Fatalf("Commit (create): %v", err)
+	}
+
+	deleteTxID, deleteTxCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (delete): %v", err)
+	}
+	if deleteTxID == createTxID {
+		t.Fatal("test setup invalid: create and delete transactions must have different IDs")
+	}
+	deleteStore, err := factory.EntityStore(deleteTxCtx)
+	if err != nil {
+		t.Fatalf("EntityStore(deleteTxCtx): %v", err)
+	}
+	if err := deleteStore.Delete(deleteTxCtx, "e-tomb-txid"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := tm.Commit(deleteTxCtx, deleteTxID); err != nil {
+		t.Fatalf("Commit (delete): %v", err)
+	}
+
+	outStore, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	metas, err := outStore.GetVersionMetadata(ctx, "e-tomb-txid", spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(metas))
+	}
+	tombstone := metas[0] // newest first
+	if !tombstone.Deleted {
+		t.Fatal("expected newest version to be the DELETE tombstone")
+	}
+	if tombstone.TransactionID != deleteTxID {
+		t.Errorf("tombstone.TransactionID = %q, want %q (the deleting transaction, not the creating one %q)",
+			tombstone.TransactionID, deleteTxID, createTxID)
+	}
+
+	// GetVersionByTransaction must never resolve the deleting tx's ID back
+	// to a live entity — the tombstone carries no payload.
+	if _, err := outStore.GetVersionByTransaction(ctx, "e-tomb-txid", deleteTxID); err == nil {
+		t.Error("GetVersionByTransaction(deleteTxID) must return an error (the tombstone never matches), got nil")
 	}
 }
 
@@ -260,13 +346,14 @@ func TestEntityStore_Delete_NonTx_StampsDeleter(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(context.Background(), "e-tomb-notx")
+	metas, err := store.GetVersionMetadata(context.Background(), "e-tomb-notx", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	tombstone := history[len(history)-1]
+	// Newest first: metas[0] is the DELETE tombstone.
+	tombstone := metas[0]
 	if !tombstone.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected newest version to be the DELETE tombstone")
 	}
 	if tombstone.User != "deleter-user" {
 		t.Errorf("tombstone.User = %q, want %q (must be the deleter, not the prior writer)", tombstone.User, "deleter-user")
@@ -301,11 +388,12 @@ func TestEntityStore_DeleteAll_StampsDeleter(t *testing.T) {
 		t.Fatalf("DeleteAll: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(context.Background(), "e-deleteall")
+	metas, err := store.GetVersionMetadata(context.Background(), "e-deleteall", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	tombstone := history[len(history)-1]
+	// Newest first: metas[0] is the DELETE tombstone.
+	tombstone := metas[0]
 	if tombstone.User != "deleter-user" {
 		t.Errorf("tombstone.User = %q, want %q", tombstone.User, "deleter-user")
 	}

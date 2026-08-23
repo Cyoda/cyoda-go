@@ -456,7 +456,10 @@ func TestEntityStore_Count(t *testing.T) {
 	}
 }
 
-func TestEntityStore_GetVersionHistory(t *testing.T) {
+// TestEntityStore_GetVersionMetadata pins GetVersionMetadata's ordering
+// contract (newest first, ties broken by Version DESC) — the replacement
+// for the removed GetVersionHistory, which returned oldest-first.
+func TestEntityStore_GetVersionMetadata(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
@@ -470,29 +473,30 @@ func TestEntityStore_GetVersionHistory(t *testing.T) {
 	ent.Meta.State = "COMPLETED"
 	store.Save(ctx, ent)
 
-	history, err := store.GetVersionHistory(ctx, "ent-hist")
+	metas, err := store.GetVersionMetadata(ctx, "ent-hist", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	if len(history) != 3 {
-		t.Fatalf("expected 3 versions, got %d", len(history))
-	}
-
-	if history[0].Version != 1 {
-		t.Errorf("history[0].Version = %d, want 1", history[0].Version)
-	}
-	if history[1].Version != 2 {
-		t.Errorf("history[1].Version = %d, want 2", history[1].Version)
-	}
-	if history[2].Version != 3 {
-		t.Errorf("history[2].Version = %d, want 3", history[2].Version)
+	if len(metas) != 3 {
+		t.Fatalf("expected 3 versions, got %d", len(metas))
 	}
 
-	if history[0].ChangeType != "CREATED" {
-		t.Errorf("history[0].ChangeType = %q, want CREATED", history[0].ChangeType)
+	// Newest first: metas[0] is version 3, metas[2] is version 1.
+	if metas[0].Version != 3 {
+		t.Errorf("metas[0].Version = %d, want 3", metas[0].Version)
 	}
-	if history[1].ChangeType != "UPDATED" {
-		t.Errorf("history[1].ChangeType = %q, want UPDATED", history[1].ChangeType)
+	if metas[1].Version != 2 {
+		t.Errorf("metas[1].Version = %d, want 2", metas[1].Version)
+	}
+	if metas[2].Version != 1 {
+		t.Errorf("metas[2].Version = %d, want 1", metas[2].Version)
+	}
+
+	if metas[2].ChangeType != "CREATED" {
+		t.Errorf("metas[2].ChangeType = %q, want CREATED", metas[2].ChangeType)
+	}
+	if metas[1].ChangeType != "UPDATED" {
+		t.Errorf("metas[1].ChangeType = %q, want UPDATED", metas[1].ChangeType)
 	}
 }
 
@@ -563,18 +567,19 @@ func TestEntityStore_DeleteCreatesVersionEntry(t *testing.T) {
 	store.Save(ctx, ent)
 	store.Delete(ctx, "ent-del-ver")
 
-	history, err := store.GetVersionHistory(ctx, "ent-del-ver")
+	metas, err := store.GetVersionMetadata(ctx, "ent-del-ver", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions (create + delete), got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions (create + delete), got %d", len(metas))
 	}
-	if !history[1].Deleted {
-		t.Error("expected last version to be marked deleted")
+	// Newest first: metas[0] is the DELETE tombstone.
+	if !metas[0].Deleted {
+		t.Error("expected newest version to be marked deleted")
 	}
-	if history[1].ChangeType != "DELETED" {
-		t.Errorf("expected ChangeType=DELETED, got %q", history[1].ChangeType)
+	if metas[0].ChangeType != "DELETED" {
+		t.Errorf("expected ChangeType=DELETED, got %q", metas[0].ChangeType)
 	}
 }
 
@@ -793,15 +798,18 @@ func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
 	}
 }
 
-// TestEntityStore_GetVersionHistory_NonExistent asserts that GetVersionHistory
-// returns spi.ErrNotFound for an entity that has never been saved. This pins
-// the contract that the postgres plugin matches the memory and sqlite backends.
-func TestEntityStore_GetVersionHistory_NonExistent(t *testing.T) {
+// TestEntityStore_GetVersionMetadata_NonExistent asserts that GetVersionMetadata
+// returns spi.ErrNotFound for an entity that has never been saved (no version
+// history at all — distinct from an existing entity whose window excludes
+// every version, which must return an empty slice with a nil error). This
+// pins the contract that the postgres plugin matches the memory and sqlite
+// backends.
+func TestEntityStore_GetVersionMetadata_NonExistent(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-nonexistent-tenant")
 	store, _ := factory.EntityStore(ctx)
 
-	_, err := store.GetVersionHistory(ctx, "does-not-exist")
+	_, err := store.GetVersionMetadata(ctx, "does-not-exist", spi.VersionMetadataOptions{})
 	if err == nil {
 		t.Fatal("expected error for non-existent entity, got nil")
 	}

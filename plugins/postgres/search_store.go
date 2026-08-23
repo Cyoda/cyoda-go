@@ -277,7 +277,7 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 		return nil, 0, fmt.Errorf("failed to check job existence: %w", err)
 	}
 	if !exists {
-		return nil, 0, fmt.Errorf("search job %q not found", jobID)
+		return nil, 0, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
 	// Get total count.

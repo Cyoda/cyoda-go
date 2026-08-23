@@ -1,0 +1,38 @@
+-- idx_entities_model_entity_id serves GetPage's non-tx/in-tx current-state
+-- query: WHERE tenant_id=$1 AND model_name=$2 AND model_version=$3 AND NOT
+-- deleted ORDER BY entity_id COLLATE "C" — one index covers both the
+-- equality filter and the ORDER BY, so the plan needs no separate sort
+-- step. COLLATE "C" pins byte-wise ordering (the database's default
+-- collation may not be "C" and can reorder entity IDs differently from
+-- Go's byte-wise string comparison), matching the canonical entity-ID order
+-- GetPage's SPI contract requires — the same order Search/Iterate already
+-- use for an id-only ORDER BY.
+--
+-- entities was created in an earlier migration (000001). The usual rule for
+-- that (migration_index_guard_test.go) is CREATE INDEX CONCURRENTLY, so a
+-- populated table's writers are never locked out for the build's duration —
+-- but CONCURRENTLY is deliberately NOT used here, and this file is
+-- grandfathered into that guard's exemption list. Reason: CONCURRENTLY
+-- provably DEADLOCKS this project's concurrent multi-node boot path
+-- (reproduced via TestRunMigrateWithDSN_ConcurrentWithNodeBoot — see that
+-- test's failure history and the grandfathered-list comment in
+-- migration_index_guard_test.go for the full mechanism). In short: golang-
+-- migrate holds one session-level advisory lock for a migrator's entire Up()
+-- run; CREATE INDEX CONCURRENTLY's own multi-phase build waits for every
+-- OTHER backend's in-flight statement to finish — including a second node's
+-- migrator merely BLOCKED trying to acquire that very advisory lock, whose
+-- blocked SELECT pg_advisory_lock(...) still holds an active snapshot from
+-- Postgres's perspective. That is a real lock cycle, not a test artifact:
+-- two nodes racing to auto-migrate a fresh database (this project's primary
+-- deployment target — see .claude/rules/multi-node-primary.md) hit it
+-- exactly the way the test does. A plain CREATE INDEX carries no such
+-- multi-phase cross-session wait and passes the same concurrent-boot test
+-- cleanly — the trade is a brief writer-blocking window during the build
+-- (acceptable pre-1.0, with no existing production entities tables at
+-- meaningful scale) rather than a deadlock that can fail a legitimate
+-- concurrent node boot outright. Revisit if/when the migration runner grows
+-- retry-tolerance for a deadlock-killed Lock() attempt — a structural change
+-- to migrate.go, out of scope here.
+CREATE INDEX IF NOT EXISTS idx_entities_model_entity_id
+    ON entities (tenant_id, model_name, model_version, entity_id COLLATE "C")
+    WHERE NOT deleted;
