@@ -57,7 +57,11 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 	// filter below. The in-memory From/To filter still runs afterward
 	// (unchanged) because it also has to cover StateMachine events, which
 	// this store call cannot bound — GetVersionMetadata only ever sees the
-	// EntityChange side of the merge.
+	// EntityChange side of the merge. It also stays load-bearing for a
+	// subtler reason: spi.VersionMetadataOptions.Until is documented
+	// INCLUSIVE, while this endpoint's toUtcTime contract is
+	// EXCLUSIVE-upper — dropping the in-memory filter would silently flip
+	// an event stamped exactly at toUtcTime from excluded to included.
 	opts := spi.VersionMetadataOptions{}
 	if params.FromUtcTime != nil {
 		opts.From = params.FromUtcTime

@@ -128,4 +128,16 @@ func RunListEntitiesPagingConsistency(t *testing.T, fixture BackendFixture) {
 			t.Errorf("created id %s never appeared in any page", id)
 		}
 	}
+
+	// Offset entirely past the end (pageNumber*pageSize > total): an empty
+	// page, not an error. memory has this pinned at the unit level
+	// (internal/domain/entity's TestListEntities_PagePastEnd_ReturnsEmpty);
+	// this is the sqlite/postgres running-backend equivalent.
+	pastEnd, err := c.ListEntitiesByModelPaged(t, modelName, modelVersion, pageSize, 10)
+	if err != nil {
+		t.Fatalf("ListEntitiesByModelPaged(page past end): %v", err)
+	}
+	if len(pastEnd) != 0 {
+		t.Errorf("page past end size = %d, want 0: %v", len(pastEnd), idsOf(pastEnd))
+	}
 }

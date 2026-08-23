@@ -66,6 +66,19 @@ func (s *deleteAllTxSizeSpyStore) wasCalled() bool {
 	return s.called
 }
 
+// Iterate passes through to the embedded real store. spi.EntityStore is
+// embedded by interface value, which does NOT promote spi.Iterable's Iterate
+// method onto *deleteAllTxSizeSpyStore even though the underlying concrete
+// store implements it — an explicit passthrough is required so the batched
+// delete-all path's own entityStore.(spi.Iterable) capability check succeeds
+// against this spy the same way it does against the real store, and the
+// streamed selection actually yields the seeded entities instead of the spy
+// silently failing the capability check. Mirrors
+// internal/domain/entity's deleteAllSpyStore.Iterate.
+func (s *deleteAllTxSizeSpyStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	return s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+}
+
 // deleteAllTxSizeSpyFactory wraps a real spi.StoreFactory but always hands
 // out the given spy EntityStore; every other accessor delegates unchanged.
 type deleteAllTxSizeSpyFactory struct {
