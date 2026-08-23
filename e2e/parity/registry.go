@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 233 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 234 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -62,6 +62,11 @@ var allTests = []NamedTest{
 	{"EntityListByModel", RunEntityListByModel},
 	{"EntityMetaShape", RunEntityMetaShape},
 	{"GetAllEntitiesAsAt", RunGetAllEntitiesAsAt},
+	// GetPage paging contract (task E5): determinism, page0++page1 ==
+	// double-wide page, and set-equality with the full model — deliberately
+	// NOT a specific cross-engine id sequence, since GetPage's canonical
+	// order is per-engine (documented on spi.EntityStore.GetPage).
+	{"ListEntitiesPagingConsistency", RunListEntitiesPagingConsistency},
 	{"EntityConditionalDeleteInTx", RunEntityConditionalDeleteInTx},
 	{"EntityUpdateCollectionHappyPath", RunEntityUpdateCollectionHappyPath},
 	{"EntityUpdateCollectionRollback", RunEntityUpdateCollectionRollback},

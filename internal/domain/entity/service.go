@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -993,9 +992,25 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — mirrors SearchService.Search's single boundary via the same
-	// exported search.ValidateCondition call grouped-stats reuses.
+	// exported search.ValidateCondition call grouped-stats reuses. Unlike
+	// grouped-stats (which never routed through Search and so had no prior
+	// contract to preserve), delete DID forward Search's classified
+	// *common.AppError verbatim before #472 — an unknown operatorType and
+	// an operand-shape violation are documented as two DIFFERENT codes
+	// (search.structuralConditionErrCode: BAD_REQUEST vs INVALID_CONDITION,
+	// per its own doc comment). Collapsing both under entity.ErrInvalidCondition
+	// (as grouped-stats does, and as an earlier version of this function
+	// did) would have silently reclassified every unknown-operatorType
+	// delete from BAD_REQUEST to INVALID_CONDITION. Returning a
+	// *common.AppError directly — classified via the same exported
+	// search.StructuralConditionErrCode Search itself uses — instead of
+	// wrapping under ErrInvalidCondition preserves that distinction:
+	// DeleteEntitiesConditional/deleteBatched's errors.As(&appErr) picks
+	// this up and returns it unchanged, the same path a Search-forwarded
+	// error already took.
 	if cErr := search.ValidateCondition(cond); cErr != nil {
-		return deleteSelectionPlan{}, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
+		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest,
+			search.StructuralConditionErrCode(cErr), cErr.Error())
 	}
 
 	fields, ffErr := search.LoadFieldsMap(ctx, modelStore, ref)
@@ -1638,15 +1653,16 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 	return nil
 }
 
-// ListEntities retrieves all entities for a model with pagination.
-// When pointInTime is non-nil the read is issued against the as-at snapshot
-// via GetAllAsAt, and meta.pointInTime is stamped on every envelope.
+// ListEntities pages entities for a model at the store via
+// spi.EntityStore.GetPage rather than materialising the whole model. When
+// pointInTime is non-nil, GetPage's asAt branch reads the committed-only
+// as-at snapshot instead of the live/in-tx view, and meta.pointInTime is
+// stamped on every envelope.
 func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams, pointInTime *time.Time) ([]EntityEnvelope, error) {
 	// Defense-in-depth: HTTP and gRPC handlers SHOULD validate before
-	// reaching the service, but enforce the same caps here so the
-	// `start := int(PageNumber * PageSize)` multiplication below cannot
-	// be reached with attacker-supplied values that overflow on 32-bit
-	// platforms or yield negative slice indices.
+	// reaching the service, but enforce the same caps here so the offset
+	// computed below cannot be reached with attacker-supplied values that
+	// overflow on 32-bit platforms or yield a negative GetPage offset.
 	if appErr := pagination.ValidateOffset(int64(page.PageNumber), int64(page.PageSize)); appErr != nil {
 		return nil, appErr
 	}
@@ -1669,35 +1685,22 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		return nil, appErr
 	}
 
+	// GetPage requires limit >= 1 (a contract violation is a store-level
+	// error, not an empty page). ValidateOffset above accepts pageSize==0
+	// — it rejects only negative sizes — so a caller-supplied pageSize of
+	// 0 is short-circuited to an empty page here, matching the pre-GetPage
+	// behaviour (entities[start:start] was always empty) without handing
+	// the store a limit it must reject.
 	var entities []*spi.Entity
-	if pointInTime != nil {
-		entities, err = entityStore.GetAllAsAt(ctx, ref, *pointInTime)
-	} else {
-		entities, err = entityStore.GetAll(ctx, ref)
-	}
-	if err != nil {
-		return nil, common.Internal("failed to get entities", err)
+	if page.PageSize > 0 {
+		entities, err = entityStore.GetPage(ctx, ref, int(page.PageSize), int(page.PageNumber)*int(page.PageSize), pointInTime)
+		if err != nil {
+			return nil, common.Internal("failed to get entities", err)
+		}
 	}
 
-	// Sort by entity ID for deterministic pagination
-	sort.Slice(entities, func(i, j int) bool {
-		return entities[i].Meta.ID < entities[j].Meta.ID
-	})
-
-	// Apply pagination — caps above guarantee start/end are non-negative
-	// and within int range.
-	start := int(page.PageNumber) * int(page.PageSize)
-	if start > len(entities) {
-		start = len(entities)
-	}
-	end := start + int(page.PageSize)
-	if end > len(entities) {
-		end = len(entities)
-	}
-	pageSlice := entities[start:end]
-
-	result := make([]EntityEnvelope, 0, len(pageSlice))
-	for _, ent := range pageSlice {
+	result := make([]EntityEnvelope, 0, len(entities))
+	for _, ent := range entities {
 		var data any
 		if err := ingest.DecodeStoredJSON(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)

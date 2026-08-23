@@ -402,6 +402,22 @@ func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersio
 	return entities, nil
 }
 
+// ListEntitiesByModelPaged issues GET
+// /api/entity/{name}/{version}?pageSize=<size>&pageNumber=<number>. Returns
+// the requested page — used by parity scenarios that assert paging behaviour
+// (determinism, self-consistency, set-equality with the full model) rather
+// than a single unpaged listing.
+// Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
+func (c *Client) ListEntitiesByModelPaged(t *testing.T, modelName string, modelVersion, pageSize, pageNumber int) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pageSize=%d&pageNumber=%d", modelName, modelVersion, pageSize, pageNumber)
+	var entities []EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
 // ListEntitiesByModelAt issues GET /api/entity/{name}/{version}?pointInTime=<t>.
 // Returns the entity list as it existed at the given point in time (E3).
 // Canonical: docs/cyoda/openapi.yml (getAllEntities with pointInTime query param).
