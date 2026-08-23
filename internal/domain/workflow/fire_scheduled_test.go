@@ -720,23 +720,44 @@ func ptrInt64(v int64) *int64 { return &v }
 
 // --- Attribution: durable ArmedBy seed, verify-or-abort, anchor stamp ---
 
-// latestVersion returns the most recently persisted spi.EntityVersion for
-// entityID (GetVersionHistory appends in insertion order, so the last entry
-// is the anchor write this test suite is asserting against).
-func latestVersion(t *testing.T, factory spi.StoreFactory, ctx context.Context, entityID string) spi.EntityVersion {
+// latestVersion returns the most recently persisted version's metadata for
+// entityID — GetVersionHistory (deleted, #472) returned the full
+// spi.EntityVersion oldest-first; its replacement, GetVersionMetadata,
+// returns spi.EntityVersionMeta (no Entity payload) newest-first, so the
+// anchor write this test suite asserts against is versions[0]. Callers here
+// only ever read User/AttributedKind/Executor, none of which needs the
+// payload.
+func latestVersion(t *testing.T, factory spi.StoreFactory, ctx context.Context, entityID string) spi.EntityVersionMeta {
 	t.Helper()
 	es, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	versions, err := es.GetVersionHistory(ctx, entityID)
+	versions, err := es.GetVersionMetadata(ctx, entityID, spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
 	if len(versions) == 0 {
 		t.Fatalf("expected at least one version for %q", entityID)
 	}
-	return versions[len(versions)-1]
+	return versions[0]
+}
+
+// chronologicalVersionMetas returns entityID's version metadata oldest-first
+// (spi.EntityStore.GetVersionMetadata itself returns newest-first), matching
+// the insertion-order contract the deleted GetVersionHistory offered, for
+// tests written against that ordering.
+func chronologicalVersionMetas(t *testing.T, es spi.EntityStore, ctx context.Context, entityID string) []spi.EntityVersionMeta {
+	t.Helper()
+	versions, err := es.GetVersionMetadata(ctx, entityID, spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	reversed := make([]spi.EntityVersionMeta, len(versions))
+	for i, v := range versions {
+		reversed[len(versions)-1-i] = v
+	}
+	return reversed
 }
 
 // TestFireScheduled_AttributesToArmedByUser_IncludingCascade covers Task
@@ -1554,24 +1575,40 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		t.Fatalf("outcome = %v, want Fired", outcome)
 	}
 
-	versions, err := es.GetVersionHistory(ctx, entityID)
-	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
-	}
+	versionMetas := chronologicalVersionMetas(t, es, ctx, entityID)
 	// [0] = the pre-seeded prior-committer version; [1] = the CBD TX_pre
 	// flush (mid-cascade — entity still in OPEN, the state BEFORE the
-	// transition's Next is applied); [2] = the terminal post-cascade
-	// persist (state MID). The defect lived in [1]: before the fix it
-	// carried the prior committer's stale attribution instead of the
-	// arming principal's.
-	if len(versions) != 3 {
-		t.Fatalf("versions = %d, want 3 (seed, CBD intermediate flush, terminal)", len(versions))
+	// transition's Next is applied — its own segmented transaction);
+	// [2] = executeCommitBeforeDispatch's CompareAndSave applying the
+	// processor's returned entity back in the post-dispatch transaction
+	// (engine_processors.go) — still OPEN, since Meta.State only advances
+	// to Next afterward, back in fireTransition (engine.go); [3] = the
+	// terminal post-cascade persist (state MID, fire_scheduled.go). [2]
+	// and [3] land as separate rows, not one: every Save/CompareAndSave
+	// call inside a transaction gets its own version — same-tx multiple
+	// saves are never coalesced into one (Postgres has always behaved
+	// this way; the in-memory store's txmanager.go documents this as a
+	// deliberate backend-parity fix, supersededSaves). The defect this
+	// test guards against lived in [1]: before the fix it carried the
+	// prior committer's stale attribution instead of the arming
+	// principal's.
+	if len(versionMetas) != 4 {
+		t.Fatalf("versions = %d, want 4 (seed, CBD TX_pre flush, CBD post-dispatch apply, terminal)", len(versionMetas))
 	}
-	intermediate := versions[1]
-	if intermediate.Entity == nil {
+	intermediate := versionMetas[1]
+	// GetVersionMetadata carries no Entity payload; GetVersionByTransaction
+	// does — fetched by the intermediate write's own TransactionID, whose
+	// contract ("earliest version written by txID") resolves to exactly
+	// this write even if the terminal write shares the same transaction
+	// (the CBD TX_pre flush is, by construction, the earlier of the two).
+	intermediateEntity, err := es.GetVersionByTransaction(ctx, entityID, intermediate.TransactionID)
+	if err != nil {
+		t.Fatalf("GetVersionByTransaction (intermediate): %v", err)
+	}
+	if intermediateEntity == nil || intermediateEntity.Entity == nil {
 		t.Fatalf("intermediate version has no Entity")
 	}
-	if got := intermediate.Entity.Meta.State; got != "OPEN" {
+	if got := intermediateEntity.Entity.Meta.State; got != "OPEN" {
 		t.Fatalf("intermediate version state = %q, want OPEN (the CBD TX_pre flush, before the transition's state change)", got)
 	}
 	if intermediate.User != armingUser.ID {
@@ -1587,10 +1624,40 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		t.Error("intermediate version must never carry the stale prior-committer attribution")
 	}
 
-	terminal := versions[2]
-	if terminal.Entity == nil || terminal.Entity.Meta.State != "MID" {
-		t.Fatalf("terminal version missing or state != MID")
+	// [2]: the post-dispatch CompareAndSave applying the processor's
+	// returned entity, inside the SAME transaction as the terminal write
+	// [3]. GetVersionByTransaction resolves to [2] here — not [3] — because
+	// its contract is "the EARLIEST version written by txID", and [2] is
+	// chronologically first within that shared transaction.
+	postDispatchApply := versionMetas[2]
+	postDispatchEntity, err := es.GetVersionByTransaction(ctx, entityID, postDispatchApply.TransactionID)
+	if err != nil {
+		t.Fatalf("GetVersionByTransaction (post-dispatch apply): %v", err)
 	}
+	if postDispatchEntity == nil || postDispatchEntity.Entity == nil {
+		t.Fatalf("post-dispatch apply version has no Entity")
+	}
+	if got := postDispatchEntity.Entity.Meta.State; got != "OPEN" {
+		t.Fatalf("post-dispatch apply version state = %q, want OPEN (Meta.State advances to Next only after this write, in fireTransition)", got)
+	}
+	if postDispatchApply.User != armingUser.ID || postDispatchApply.AttributedKind != armingUser.Kind || postDispatchApply.Executor != systemPrincipal {
+		t.Errorf("post-dispatch apply version attribution = {%q %v %+v}, want {%q %v %+v} — this write must not carry the stale prior-committer attribution either",
+			postDispatchApply.User, postDispatchApply.AttributedKind, postDispatchApply.Executor,
+			armingUser.ID, armingUser.Kind, systemPrincipal)
+	}
+
+	// The terminal version is simply the entity's current state — no
+	// history lookup needed for its payload (and GetVersionByTransaction
+	// could not distinguish it from [2] above; both share one transaction
+	// and that lookup always resolves to the earliest of the two).
+	terminalEntity, err := es.Get(ctx, entityID)
+	if err != nil {
+		t.Fatalf("Get (terminal): %v", err)
+	}
+	if terminalEntity.Meta.State != "MID" {
+		t.Fatalf("terminal version state = %q, want MID", terminalEntity.Meta.State)
+	}
+	terminal := versionMetas[3]
 	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != systemPrincipal {
 		t.Errorf("terminal version attribution = {%q %v %+v}, want {%q %v %+v}",
 			terminal.User, terminal.AttributedKind, terminal.Executor,
