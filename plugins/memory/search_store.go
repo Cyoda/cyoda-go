@@ -199,10 +199,11 @@ var terminalStatuses = map[string]bool{
 	"CANCELLED":  true,
 }
 
-// Cancel marks the job as CANCELLED. Idempotent: cancelling a job already in
-// a terminal state returns nil. Cancelling a non-existent job returns
-// spi.ErrNotFound.
-func (s *AsyncSearchStore) Cancel(ctx context.Context, jobID string) error {
+// Cancel marks the job CANCELLED and stamps finishTime on the transition.
+// Idempotent: cancelling a job already in a terminal state returns nil and
+// does not overwrite the existing finish time. Cancelling a non-existent
+// job returns spi.ErrNotFound.
+func (s *AsyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
 	tid, err := s.resolveTenant(ctx)
 	if err != nil {
 		return err
@@ -220,12 +221,15 @@ func (s *AsyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 		return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
-	// Idempotent: already terminal — do nothing.
+	// Idempotent: already terminal — do nothing, and do not overwrite the
+	// existing finish time.
 	if terminalStatuses[entry.job.Status] {
 		return nil
 	}
 
 	entry.job.Status = "CANCELLED"
+	ft := finishTime
+	entry.job.FinishTime = &ft
 	return nil
 }
 

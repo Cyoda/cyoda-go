@@ -358,7 +358,7 @@ func TestMemorySearchStore_Cancel_NotFound(t *testing.T) {
 	store := newSearchStore(t)
 	ctx := tenantCtx("test-tenant")
 
-	err := store.Cancel(ctx, "no-such-job")
+	err := store.Cancel(ctx, "no-such-job", time.Now().UTC())
 	if err == nil {
 		t.Fatal("Cancel() expected error for missing job, got nil")
 	}
@@ -383,12 +383,13 @@ func TestMemorySearchStore_Cancel_Idempotent(t *testing.T) {
 		t.Fatalf("CreateJob() error: %v", err)
 	}
 
-	// First cancel should succeed.
-	if err := store.Cancel(ctx, "job-cancel"); err != nil {
+	// First cancel should succeed and stamp the finish time.
+	firstFinish := now.Add(1 * time.Minute)
+	if err := store.Cancel(ctx, "job-cancel", firstFinish); err != nil {
 		t.Fatalf("first Cancel() error: %v", err)
 	}
 
-	// Job should now be CANCELLED.
+	// Job should now be CANCELLED with the stamped finish time.
 	got, err := store.GetJob(ctx, "job-cancel")
 	if err != nil {
 		t.Fatalf("GetJob() after cancel error: %v", err)
@@ -396,10 +397,25 @@ func TestMemorySearchStore_Cancel_Idempotent(t *testing.T) {
 	if got.Status != "CANCELLED" {
 		t.Errorf("Status = %q, want CANCELLED", got.Status)
 	}
+	if got.FinishTime == nil {
+		t.Fatal("FinishTime should be set after Cancel")
+	}
+	if !got.FinishTime.Equal(firstFinish) {
+		t.Errorf("FinishTime = %v, want %v", got.FinishTime, firstFinish)
+	}
 
-	// Second cancel should be idempotent (return nil).
-	if err := store.Cancel(ctx, "job-cancel"); err != nil {
+	// Second cancel with a LATER time should be idempotent (return nil) and
+	// must not overwrite the original finish time.
+	laterFinish := firstFinish.Add(1 * time.Hour)
+	if err := store.Cancel(ctx, "job-cancel", laterFinish); err != nil {
 		t.Errorf("second Cancel() should be idempotent, got error: %v", err)
+	}
+	got2, err := store.GetJob(ctx, "job-cancel")
+	if err != nil {
+		t.Fatalf("GetJob() after second cancel error: %v", err)
+	}
+	if got2.FinishTime == nil || !got2.FinishTime.Equal(firstFinish) {
+		t.Errorf("re-cancel must not overwrite FinishTime: got %v, want %v", got2.FinishTime, firstFinish)
 	}
 }
 
@@ -420,8 +436,9 @@ func TestMemorySearchStore_Cancel_AlreadyTerminal(t *testing.T) {
 			t.Fatalf("CreateJob(%s) error: %v", terminalStatus, err)
 		}
 
-		// Cancel on terminal job should be idempotent (return nil).
-		if err := store.Cancel(ctx, "job-terminal-"+terminalStatus); err != nil {
+		// Cancel on terminal job should be idempotent (return nil) and must
+		// not stamp a finish time onto a job that never had one.
+		if err := store.Cancel(ctx, "job-terminal-"+terminalStatus, now.Add(1*time.Hour)); err != nil {
 			t.Errorf("Cancel(%s) expected nil (idempotent), got: %v", terminalStatus, err)
 		}
 
@@ -432,6 +449,9 @@ func TestMemorySearchStore_Cancel_AlreadyTerminal(t *testing.T) {
 		}
 		if got.Status != terminalStatus {
 			t.Errorf("Status = %q, want %q (should not change terminal status)", got.Status, terminalStatus)
+		}
+		if got.FinishTime != nil {
+			t.Errorf("FinishTime = %v, want nil (Cancel on already-terminal job must not stamp a finish time)", got.FinishTime)
 		}
 	}
 }

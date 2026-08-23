@@ -218,10 +218,11 @@ func (s *asyncSearchStore) DeleteJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
-// Cancel marks the job as CANCELLED. Idempotent: cancelling a job already in
-// a terminal state returns nil. Cancelling a non-existent job returns
-// spi.ErrNotFound.
-func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
+// Cancel marks the job CANCELLED and stamps finishTime on the transition.
+// Idempotent: cancelling a job already in a terminal state returns nil and
+// does not overwrite the existing finish time. Cancelling a non-existent
+// job returns spi.ErrNotFound.
+func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
@@ -229,9 +230,9 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 
 	// Conditionally update: only transition to CANCELLED if currently RUNNING.
 	tag, err := s.q.Exec(ctx,
-		`UPDATE search_jobs SET status = 'CANCELLED'
+		`UPDATE search_jobs SET status = 'CANCELLED', finished_at = $3
 		 WHERE id = $1 AND tenant_id = $2 AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
-		jobID, string(tid))
+		jobID, string(tid), finishTime)
 	if err != nil {
 		return fmt.Errorf("failed to cancel search job %s: %w", jobID, err)
 	}

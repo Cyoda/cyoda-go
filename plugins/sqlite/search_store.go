@@ -223,16 +223,16 @@ func (s *asyncSearchStore) DeleteJob(ctx context.Context, jobID string) error {
 	return tx.Commit()
 }
 
-func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
+func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE search_jobs SET status = 'CANCELLED'
+		`UPDATE search_jobs SET status = 'CANCELLED', finish_time = ?
 		 WHERE tenant_id = ? AND job_id = ? AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
-		string(tid), jobID)
+		finishTime.UnixMicro(), string(tid), jobID)
 	if err != nil {
 		return fmt.Errorf("failed to cancel search job %s: %w", jobID, err)
 	}
