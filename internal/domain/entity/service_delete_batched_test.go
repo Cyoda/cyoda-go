@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -580,5 +581,129 @@ func TestDeleteEntitiesConditional_NoBatchSize_Unchanged(t *testing.T) {
 		if _, gErr := realStore.Get(ctx, id); !errors.Is(gErr, spi.ErrNotFound) {
 			t.Errorf("entity %s still exists after delete-all", id)
 		}
+	}
+}
+
+// TestDeleteEntitiesConditional_Batched_PointInTime_SinglePassSelection pins
+// deleteBatched's pointInTime != nil branch (resolveBatchTargetsOnePass,
+// service.go): 8 matching entities, batchSize=3 (3 batches of 3,3,2)
+// resolve in exactly ONE spi.Iterable Iterate() call, not the nil-PIT
+// branch's per-cycle re-open — and the operation terminates and removes
+// every match. This is the direct regression guard for the non-termination
+// hazard deleteBatched's own doc comment identifies: re-scanning the same
+// PIT-scoped filter after each batch would keep re-matching the same
+// historical ids forever, since deleting the CURRENT row never changes what
+// an as-at query sees. Before this test, resolveBatchTargetsOnePass — the
+// whole reason deleteBatched branches on pointInTime instead of always
+// streaming — had no coverage at all.
+func TestDeleteEntitiesConditional_Batched_PointInTime_SinglePassSelection(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { realFactory.Close() })
+
+	ctx := newDeleteBatchedCtx(t, realFactory)
+	hSeed := buildDeleteBatchedHandler(t, realFactory, mustTxMgr(t, realFactory))
+	ids := seedPersons(t, hSeed, ctx, 8)
+
+	pit := time.Now()
+
+	realStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	spy := &searchForbiddenStore{EntityStore: realStore, t: t}
+	spyFactory := &searchForbiddenFactory{StoreFactory: realFactory, store: spy}
+
+	hDelete := buildDeleteBatchedHandler(t, spyFactory, mustTxMgr(t, realFactory))
+
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 3)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if result.MatchedCount != 8 {
+		t.Errorf("MatchedCount = %d, want 8", result.MatchedCount)
+	}
+	if result.RemovedCount != 8 {
+		t.Errorf("RemovedCount = %d, want 8", result.RemovedCount)
+	}
+	if len(result.IDToError) != 0 {
+		t.Errorf("IDToError = %v, want empty", result.IDToError)
+	}
+	if got := spy.iterateOpenCount(); got != 1 {
+		t.Errorf("Iterate() opens = %d, want exactly 1 (pointInTime selection must resolve in a single pass, never a per-cycle re-scan)", got)
+	}
+
+	for _, id := range ids {
+		if _, gErr := realStore.Get(ctx, id); !errors.Is(gErr, spi.ErrNotFound) {
+			t.Errorf("entity %s still exists after the pointInTime batched delete", id)
+		}
+	}
+}
+
+// TestDeleteEntitiesConditional_Batched_PointInTime_VersionGuard pins that
+// resolveBatchTargetsOnePass's baseline (a fresh re-read of the CURRENT row
+// for a pointInTime-scoped match, service.go's own comment on why) still
+// feeds deleteOneBatch's per-id version guard correctly: a concurrent
+// mutation after selection captures its baseline must exclude that id from
+// the delete, exactly as TestDeleteEntitiesConditional_Batched_VersionGuard
+// pins for the nil-pointInTime streamed path. mutateAfterSelectionStore
+// fires the mutation once the (single, for pointInTime != nil) selection
+// pass's iterator — which is guaranteed to have already read targetID's
+// fresh baseline via resolveBatchTargetsOnePass's own entityStore.Get,
+// since that happens per-entity inside the drain, before the iterator
+// closes — has closed, and before any batch's deleteOneBatch re-reads it.
+func TestDeleteEntitiesConditional_Batched_PointInTime_VersionGuard(t *testing.T) {
+	realFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { realFactory.Close() })
+	realTxMgr := mustTxMgr(t, realFactory)
+
+	ctx := newDeleteBatchedCtx(t, realFactory)
+	hSeed := buildDeleteBatchedHandler(t, realFactory, realTxMgr)
+	ids := seedPersons(t, hSeed, ctx, 4)
+
+	pit := time.Now()
+
+	realStoreForMutate, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	spyStore := &mutateAfterSelectionStore{EntityStore: realStoreForMutate, targetID: ids[2]}
+	spyStore.mutate = func() {
+		if _, err := hSeed.UpdateEntity(ctx, UpdateEntityInput{
+			EntityID: ids[2],
+			Format:   "JSON",
+			Data:     json.RawMessage(`{"name":"P","age":999}`),
+		}); err != nil {
+			t.Errorf("mid-flight mutation of ids[2] failed: %v", err)
+		}
+	}
+	spyFactory := &mutateAfterSelectionFactory{StoreFactory: realFactory, store: spyStore}
+
+	hDelete := buildDeleteBatchedHandler(t, spyFactory, realTxMgr)
+
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+
+	if result.MatchedCount != 4 {
+		t.Errorf("MatchedCount = %d, want 4", result.MatchedCount)
+	}
+	if result.RemovedCount != 3 {
+		t.Errorf("RemovedCount = %d, want 3 (the mutated id must not be counted removed)", result.RemovedCount)
+	}
+	if _, ok := result.IDToError[ids[2]]; !ok {
+		t.Errorf("IDToError missing entry for the mutated id %s: %v", ids[2], result.IDToError)
+	}
+
+	realStore, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e, err := realStore.Get(ctx, ids[2])
+	if err != nil {
+		t.Fatalf("mutated entity must still exist after the guarded delete: %v", err)
+	}
+	if !bytes.Contains(e.Data, []byte("999")) {
+		t.Errorf("mutated entity payload = %s, want it to still carry the mid-flight mutation (age:999)", e.Data)
 	}
 }

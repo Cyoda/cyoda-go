@@ -750,3 +750,54 @@ func TestDeleteEntitiesConditional_ForwardsSelection4xx(t *testing.T) {
 		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeInvalidFieldPath)
 	}
 }
+
+// TestDeleteEntitiesConditional_StructuralErrorClassification pins that
+// planDeleteSelection's structural-condition validation (search.ValidateCondition,
+// internal/domain/entity/service.go) classifies failures identically to
+// SearchService.Search — via the same exported search.StructuralConditionErrCode
+// — rather than collapsing every structural failure under one code.
+//
+// Before #472, DeleteEntitiesConditional selected via Search and forwarded
+// its classified *common.AppError verbatim, so an unknown operatorType
+// (BAD_REQUEST) and an object-shaped operand (INVALID_CONDITION) stayed
+// distinct on the delete path exactly as they are on the search path. #472's
+// first cut collapsed both under entity.ErrInvalidCondition (patterned on
+// GroupedStatsService, which never routed through Search and so had no such
+// contract to preserve) — this test is the regression guard for that fix.
+func TestDeleteEntitiesConditional_StructuralErrorClassification(t *testing.T) {
+	t.Run("unknown operatorType maps to BAD_REQUEST", func(t *testing.T) {
+		h, ctx, entityName, modelVersion := newDeleteFixtureWithSchema(t)
+
+		cond := []byte(`{"type":"simple","jsonPath":"$.status","operatorType":"NOT_A_REAL_OPERATOR","value":"x"}`)
+		_, err := h.DeleteEntitiesConditional(ctx, entityName, modelVersion, cond, nil, false, 0)
+
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("got err %v, want *common.AppError", err)
+		}
+		if appErr.Status != http.StatusBadRequest {
+			t.Fatalf("got status %d, want %d", appErr.Status, http.StatusBadRequest)
+		}
+		if appErr.Code != common.ErrCodeBadRequest {
+			t.Fatalf("got code %s, want %s (unknown operatorType is a shape violation, not an INVALID_CONDITION operand issue)", appErr.Code, common.ErrCodeBadRequest)
+		}
+	})
+
+	t.Run("object operand maps to INVALID_CONDITION", func(t *testing.T) {
+		h, ctx, entityName, modelVersion := newDeleteFixtureWithSchema(t)
+
+		cond := []byte(`{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":{"nested":"object"}}`)
+		_, err := h.DeleteEntitiesConditional(ctx, entityName, modelVersion, cond, nil, false, 0)
+
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("got err %v, want *common.AppError", err)
+		}
+		if appErr.Status != http.StatusBadRequest {
+			t.Fatalf("got status %d, want %d", appErr.Status, http.StatusBadRequest)
+		}
+		if appErr.Code != common.ErrCodeInvalidCondition {
+			t.Fatalf("got code %s, want %s (an object operand is an invalid-condition shape violation)", appErr.Code, common.ErrCodeInvalidCondition)
+		}
+	})
+}
