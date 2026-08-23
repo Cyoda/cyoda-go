@@ -214,6 +214,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   peer-forwarded dispatch.
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
+- **The sqlite plugin now numbers a new entity's first version 1, matching
+  memory and postgres.** It previously started at 0, which was
+  indistinguishable from an unset version wherever a caller checks "is
+  Version populated." Only entities created from now on are affected — an
+  entity that already exists on a running sqlite instance keeps its stored
+  version numbers exactly as they are and its next save simply continues
+  that same sequence (no renumbering or migration happens).
+
 ### Fixed
 
 - **Cancelling an async search job no longer leaves it permanently un-reapable.**

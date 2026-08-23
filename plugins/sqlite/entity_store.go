@@ -1156,15 +1156,27 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 // posture as getAllTx/Save/GetAll) merged with the transaction's own
 // buffered writes via spi.MergeOrdered, skipping staged deletes.
 //
-// The committed query is bounded to LIMIT offset+limit rows and fully
-// drained (rows.Next() to exhaustion) and closed BEFORE any merging begins:
-// s.db has a single-connection pool (SetMaxOpenConns(1)), so a second
-// statement issued while these rows are still open would deadlock waiting
-// for a connection that can only be released by closing (or fully
-// draining) the first. offset+limit committed rows is always sufficient to
-// correctly produce a merged page of that many entries — buffered adds can
-// only reduce, never increase, how many committed rows the merge needs to
-// consume to fill the same page (see spi.MergeOrdered's doc comment).
+// The committed query is bounded to LIMIT offset+limit+len(tx.Deletes) rows
+// and fully drained (rows.Next() to exhaustion) and closed BEFORE any
+// merging begins: s.db has a single-connection pool (SetMaxOpenConns(1)),
+// so a second statement issued while these rows are still open would
+// deadlock waiting for a connection that can only be released by closing
+// (or fully draining) the first.
+//
+// Why +len(tx.Deletes): offset+limit alone bounds how many committed rows
+// spi.MergeOrdered's advance() ever LANDS on (buffered adds can only
+// shrink that, never grow it — each output consumes at most one landed
+// committed row). But every staged delete that advance() encounters along
+// the way is skipped and silently consumes ANOTHER underlying row without
+// producing output (see MergeOrdered's isDeleted skip-loop) — a committed
+// row is "wasted" this way, not "landed". A committed ID can be skipped at
+// most once (each entity has at most one row in this snapshot), so
+// len(tx.Deletes) is a safe upper bound on total waste across the whole
+// query, and offset+limit+len(tx.Deletes) rows are therefore always enough
+// to reach the offset+limit-th real landing (or the true end of the
+// committed set) before the artificial LIMIT can cut a needed row off.
+// Without this term, deletes shadowing rows inside the fetched prefix
+// silently under-fill or empty the page instead of paging past them.
 func (s *entityStore) getPageTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, limit, offset int) ([]*spi.Entity, error) {
 	tx.OpMu.RLock()
 	defer tx.OpMu.RUnlock()
@@ -1175,7 +1187,7 @@ func (s *entityStore) getPageTx(ctx context.Context, tx *spi.TransactionState, m
 	searchOpts := spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}
 	query, args := s.searchSnapshotBase(searchOpts, timeToMicro(tx.SnapshotTime))
 	query += " ORDER BY ev.entity_id LIMIT ?"
-	args = append(args, offset+limit)
+	args = append(args, offset+limit+len(tx.Deletes))
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1340,6 +1352,12 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // window inclusively; opts.Limit caps the row count (0 means all). The
 // query never selects the data column — see spi.EntityStore.GetVersionMetadata's
 // doc comment; this method surfaces audit metadata only.
+//
+// Existence is checked independently of the From/Until window (matching
+// the memory plugin's GetVersionMetadata, which checks "no versions at
+// all" before filtering): an entity with versions, none of which fall
+// inside the requested window, returns an empty slice with a nil error —
+// ErrNotFound is reserved for an entity with no version rows whatsoever.
 func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, opts spi.VersionMetadataOptions) ([]spi.EntityVersionMeta, error) {
 	query := `SELECT version, change_type, submit_time, json(meta), user_id, transaction_id
 	          FROM entity_versions
@@ -1401,7 +1419,20 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 	}
 
 	if len(result) == 0 {
-		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		// Disambiguate "no versions at all" (ErrNotFound) from "has
+		// versions, none inside the requested window" (empty slice, nil
+		// error) with a second, window-less existence probe — paid only on
+		// this already-empty path, never on the common non-empty one.
+		var exists bool
+		if err := s.db.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM entity_versions WHERE tenant_id = ? AND entity_id = ?)",
+			string(s.tenantID), entityID).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("GetVersionMetadata: existence check: %w", err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		}
+		return []spi.EntityVersionMeta{}, nil
 	}
 	return result, nil
 }
