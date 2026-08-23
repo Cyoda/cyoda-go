@@ -133,6 +133,39 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help errors SEARCH_TIMEOUT`.
   ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
 
+- **`POST /api/search/async/{entityName}/{modelVersion}` now runs on a
+  bounded worker pool instead of one goroutine per submission**, with a
+  retryable **503 `SEARCH_QUEUE_FULL`** once both the running workers and
+  the submit queue are exhausted. Four new env vars, all validated at
+  startup rather than silently clamped:
+  `CYODA_SEARCH_ASYNC_WORKERS` (default `8`), `CYODA_SEARCH_ASYNC_QUEUE`
+  (default `256`), `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (default `15s`),
+  and `CYODA_SEARCH_JOB_STALE_AFTER` (default `5m`, must be at least 4x the
+  heartbeat interval). `cyoda help config` (Search internals) and
+  `cyoda help errors SEARCH_QUEUE_FULL`.
+
+- **Streamed async search results.** Results are saved to storage
+  incrementally as the scan runs, instead of being fully materialized in
+  memory and saved once at the end. A running job stamps its own liveness
+  on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, starting the moment it is
+  submitted (including while still queued, not only while scanning); the
+  same poll picks up a cross-node cancel or an externally-recorded terminal
+  status.
+
+- **Paged entity-list reads.** `GET /entity/{entityName}/{modelVersion}`
+  now pages at the store instead of loading the whole model and slicing in
+  Go — no O(model) materialisation for a request that only asked for one
+  page. Order is stable and deterministic within a given storage engine;
+  the specific order is storage-engine-specific (entity-ID based) — see
+  each backend's "Canonical entity-ID order" section in `docs/plugins/`.
+
+- **Purposed history reads.** `GET /entity/{entityId}/changes` and the
+  audit-event transaction lookup now use metadata-only, purpose-built
+  reads instead of the general-purpose full-history-with-payloads read
+  they previously shared — bounded by one entity's own version history,
+  never a model-wide scan for what only needs one field's worth of audit
+  metadata.
+
 ### Changed
 
 - **Commits are now shielded from a client disconnect or an expired
@@ -221,6 +254,49 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   entity that already exists on a running sqlite instance keeps its stored
   version numbers exactly as they are and its next save simply continues
   that same sequence (no renumbering or migration happens).
+
+- **Reading an async search job's results before it finishes now answers
+  with what has been saved so far**, instead of only becoming readable once
+  the job reaches a terminal status internally and then being served all at
+  once. Client-visible behavior is unchanged — results still only surface
+  through the API once the job is `SUCCESSFUL` — but the underlying
+  `GetResultIDs` contract is now explicit about mid-run reads instead of
+  leaving it undefined.
+
+- **Conditional delete (`DELETE /entity/{entityName}/{modelVersion}` with a
+  condition body, and the unconditional delete-all) now streams its
+  selection phase** instead of loading every matching entity into memory
+  first. The batched mode (`transactionSize` set) stays O(page) per batch
+  when deleting live state, but a request pinned to a `pointInTime` is
+  O(matched IDs) even in batched mode — deleting a live row cannot change
+  what a historical snapshot matched, so the live-state re-scan trick that
+  keeps the streamed mode's memory bounded would never converge there;
+  a single streamed drain (still never materializing full entity rows) is
+  used instead.
+
+- **Listing entities from inside a joined transaction (a compute-node
+  callback calling back into `GET /entity/{entityName}/{modelVersion}`) now
+  records only the returned page into the transaction's conflict read-set,
+  not the whole model.** The commit-time first-committer-wins check
+  therefore no longer aborts a transaction over a concurrent write to an
+  entity of the same model that never appeared on the page it listed. This
+  is a deliberate narrowing from the previous whole-model behaviour, not an
+  accidental relaxation: a processor that lists a page and then saves
+  within the same transaction is still protected against a conflicting
+  write to anything it actually read.
+
+- **Upgrading a populated PostgreSQL deployment to this release briefly
+  blocks writers to `entities`.** Migration `000008` adds the index that
+  backs paged entity-list reads with a plain `CREATE INDEX` rather than
+  `CREATE INDEX CONCURRENTLY` — `CONCURRENTLY` provably deadlocks this
+  project's concurrent multi-node boot path (a genuine lock cycle between
+  golang-migrate's advisory lock and `CONCURRENTLY`'s own multi-phase wait,
+  `SQLSTATE 40P01`). A plain `CREATE INDEX` avoids that deadlock at the
+  cost of a writer-blocking window for the duration of the build. Size the
+  maintenance window to the `entities` table's row count before upgrading;
+  see `docs/plugins/POSTGRES.md` ("Canonical entity-ID order" /
+  "Operational notes and limits") for the full mechanism and the structural
+  gap this leaves for any future same-shaped migration.
 
 ### Fixed
 
@@ -522,6 +598,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   non-transactional, so the chunking is not user-visible beyond no longer
   failing.
   ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
+- **An async search job whose owning node crashed no longer stays `RUNNING`
+  forever with stale partial results.** Nothing previously reclaimed an
+  orphaned job — the reaper only ever removed *terminal* jobs past their
+  TTL. A background reaper now claims any `RUNNING` job whose heartbeat has
+  gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` and marks it `FAILED` with
+  a safe generic message. This milestone's disposition fails the job
+  outright rather than re-executing it elsewhere in the cluster (a
+  re-execution follow-up is tracked separately); the important behavior
+  change is that a crashed node's async jobs now reach a terminal state at
+  all.
+
+- **An async search job's results are no longer subject to a torn write
+  from two nodes believing they both own it.** Every job now carries a
+  claim epoch: `Heartbeat`, streamed result saves, and the terminal status
+  write are all fenced against it, so an executor that was reaped and later
+  recovers has its next write rejected instead of silently corrupting a
+  result set another node has since taken over.
+
+- **`GET /entity/{entityId}/changes` no longer returns an unstable order
+  for two versions sharing the same timestamp.** The sort was
+  timestamp-only; entries with an identical timestamp could reorder between
+  otherwise-identical requests. Newest-first is now tie-broken by version
+  number descending, which is stable.
+
+- **A tombstone's `hasEntity` in the changes/audit response is now
+  consistent across storage backends.** It was derived from "is the
+  returned entity payload non-nil," which some backends left non-nil on a
+  DELETED row and others did not; `hasEntity` is now the canonical,
+  change-type-derived `Deleted` flag, so a delete's history entry reports
+  the same `hasEntity` value regardless of which backend served it.
 
 ## [0.8.3] — 2026-07-27
 

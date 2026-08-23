@@ -1715,6 +1715,9 @@ paths:
         - To find out how many entities there are, use the entity statistics
         endpoints.
 
+        - Order is stable and deterministic; the specific order is
+        storage-engine-specific (entity-ID based).
+
         \        "
       operationId: getAllEntities
       parameters:

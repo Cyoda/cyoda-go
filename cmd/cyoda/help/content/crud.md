@@ -358,7 +358,7 @@ Response: `200 OK`, `application/json`:
 - `pageNumber` (query, optional): int32, default `0`
 - `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive)
 
-Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
+Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant. Order is stable and deterministic; the specific order is storage-engine-specific (entity-ID based) — see `docs/plugins/*.md` for each backend's canonical order.
 
 **GET /api/entity/{entityId}/changes** — Get entity change history metadata
 

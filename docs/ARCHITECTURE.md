@@ -905,37 +905,163 @@ Same shape as L5 + home-node-crash above: stranded entity, possible external sid
 | **Resource exhaustion** | A transaction holds one PG connection for its lifetime; the idle-in-transaction ceiling caps that lifetime and a saturated pool fails fast with `503 STORAGE_UNAVAILABLE` after `CYODA_POSTGRES_ACQUIRE_TIMEOUT` rather than queueing (§3.4). | Covered by the DB-side ceilings |
 | **Observability** | No cluster-wide view of open transactions, their owners, or their age. Per-node transaction counts and durations are exported as `cyoda.tx.active` / `cyoda.tx.duration` when OTel is enabled (§11); PostgreSQL's `pg_stat_activity` is the cross-node view. | Cluster-wide transaction registry |
 
-### 4.6 Persistent Search Snapshots
+### 4.6 Async Search Execution
 
-**`AsyncSearchStore` SPI:**
+**`AsyncSearchStore` SPI** (`cyoda-go-spi/search_store.go`):
 
 ```go
 type AsyncSearchStore interface {
     CreateJob(ctx, job *SearchJob) error
     GetJob(ctx, jobID string) (*SearchJob, error)
-    UpdateJobStatus(ctx, jobID, status, resultCount, errMsg, finishTime, calcTimeMs) error
-    SaveResults(ctx, jobID string, entityIDs []string) error
-    GetResultIDs(ctx, jobID string, offset, limit int) ([]string, int, error)
+    UpdateJobStatus(ctx, jobID string, epoch int64, status string,
+        resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error
+    SaveResults(ctx, jobID string, epoch int64, entityIDs iter.Seq[string]) error
+    GetResultIDs(ctx, jobID string, offset, limit int) (entityIDs []string, total int, err error)
     DeleteJob(ctx, jobID string) error
-    Cancel(ctx, jobID string) error
+    Cancel(ctx, jobID string, finishTime time.Time) error
     ReapExpired(ctx, ttl time.Duration) (int, error)
+    Heartbeat(ctx, jobID string, epoch int64) error
+    ClaimStale(ctx, staleAfter time.Duration, limit int) ([]*SearchJob, error)
+    ClearResults(ctx, jobID string) error
 }
 ```
 
-**Design principles (DD-10, DD-11, DD-12):**
+`SearchJob` additionally carries `HeartbeatTime *time.Time` (the last
+liveness stamp; `nil` means never stamped, in which case staleness is
+measured from `CreateTime`) and `Epoch int64` (the claim/attempt counter —
+`CreateJob` always persists `1`; `ClaimStale` increments it on every
+successful claim).
 
-- Results table stores **entity IDs only** (no entity data). This keeps the results table compact and avoids data staleness. Entity data is re-fetched from the entity store when the client reads results.
-- `pointInTime` is **always populated** on `SearchJob`. If the client does not supply one, the service uses `time.Now()`. This ensures search results are deterministic -- repeated reads at the same `pointInTime` return the same set.
-- **TTL-based cleanup** for both implementations. A background reaper goroutine runs on a configurable interval (`CYODA_SEARCH_REAP_INTERVAL`, default 5m) and deletes jobs older than `CYODA_SEARCH_SNAPSHOT_TTL` (default 1h). The PostgreSQL implementation uses `CASCADE` on the foreign key from `search_job_results` to `search_jobs`.
+**Streamed result save.** `SaveResults` streams entity IDs into the job's
+persisted result set as the scan runs, rather than materializing the whole
+result set in memory and saving it once at the end. Save order is preserved
+as `GetResultIDs` page order. Implementations batch internally as they see
+fit (sqlite chunks into short write transactions so its single-writer lock
+is never held for the job's lifetime; postgres uses chunked `CopyFrom`), but
+the result sequence position increases strictly across chunks. A `nil`
+return from `SaveResults` means everything yielded was durably stored — it
+is not a statement about job success, which is recorded separately via
+`UpdateJobStatus` after the engine consults the producer's error state.
+
+**Terminal statuses are write-once.** `SUCCESSFUL`, `FAILED`, and
+`CANCELLED` refuse any further write — including `Heartbeat` and
+`SaveResults` — with the sentinel `spi.ErrAlreadyTerminal`. `Cancel` is the
+sole idempotent-nil exception. This closes a zombie-executor race: without
+it, an executor that stalls past the stale bound, gets reaped by another
+node's claim, and then recovers could overwrite a `FAILED` job with
+`SUCCESSFUL`.
+
+**Orphan handling: heartbeat, claim, and epoch fencing.** The owning node
+heartbeats a running job on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, starting
+the moment it is submitted (including while queued, not only while
+scanning) — on a dedicated per-job ticker goroutine, independent of scan
+progress, so a long non-yielding scan stretch can never starve the
+heartbeat and let the reaper seize a healthy job. A background reaper
+(`internal/domain/search.FailStaleJobs`) claims any `RUNNING` job whose
+heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` via
+`ClaimStale` — which atomically bumps the job's `Epoch` so concurrent
+claimers obtain disjoint jobs — and marks it `FAILED` through the
+epoch-fenced `UpdateJobStatus`. Every executor-side write (`Heartbeat`,
+`SaveResults`, the terminal `UpdateJobStatus`) carries the epoch the
+executor was started or claimed with; a store refuses a write whose epoch
+does not match the job's current epoch with `spi.ErrStaleClaim`, so a
+deposed executor that later recovers cannot corrupt a result set another
+node has since taken over. **This milestone's disposition is
+claim-then-FAIL**, not re-execution: a crashed node's async job now reaches
+a terminal state instead of staying `RUNNING` forever, but it is not picked
+up and re-run elsewhere in the cluster. `ClaimStale` and `ReapExpired` are
+cross-tenant, called with a tenant-less context (precedent:
+`ScheduledTaskStore.ScanDue`); the reaper's follow-up writes reconstruct a
+per-job tenant context from the claimed job's own `TenantID`.
+
+**Bounded worker pool.** `POST /api/search/async/{entityName}/{modelVersion}`
+submits to a fixed-size worker pool (`internal/domain/search.WorkerPool`)
+instead of spawning one goroutine per request. `CYODA_SEARCH_ASYNC_WORKERS`
+(default 8) sizes the pool; `CYODA_SEARCH_ASYNC_QUEUE` (default 256) sizes
+its submit queue. The default worker count is a documented number, not a
+computed one — the engine cannot read the postgres plugin's own connection
+budget through the SPI — sized so that 8 workers, each holding a scan
+connection for the run's duration plus a save connection per chunk, stay
+within the default 25-connection pool. Once both the running workers and
+the queue are exhausted, submission fails fast with a retryable
+**503 `SEARCH_QUEUE_FULL`** instead of queuing indefinitely.
+
+**Cancellation and shutdown.** A jobID→`CancelFunc` registry in the engine
+lets `CancelAsync` cancel in-process work and dispatch the store's
+`Cancel(ctx, jobID, finishTime)` for cross-node visibility; the executor's
+heartbeat/poll loop re-checks job status on every tick and cancels its own
+context on an externally-recorded `CANCELLED`. Node shutdown drains the
+registry: every in-flight job is cancelled and marked `FAILED` (via the
+same epoch-fenced write) with a safe message, so a shutdown never leaves a
+job stuck `RUNNING`.
+
+**TTL-based cleanup.** Independent of the stale-job reaper above, a
+background reaper goroutine runs on `CYODA_SEARCH_REAP_INTERVAL` (default
+5m) and deletes *terminal* jobs older than `CYODA_SEARCH_SNAPSHOT_TTL`
+(default 1h) — `DD-12`. The PostgreSQL implementation uses `CASCADE` on the
+foreign key from `search_job_results` to `search_jobs`.
 
 **PostgreSQL schema.** Two tables in
 `plugins/postgres/migrations/`: `search_jobs` holds the job record (status,
-model ref, condition, point-in-time, search options, result count, timings)
-and `search_job_results` holds the ordered entity IDs, keyed `(job_id, seq)`.
-Both are tenant-scoped — `search_jobs` has the composite primary key
-`(tenant_id, id)` and `search_job_results` carries `tenant_id` with a composite
-foreign key back to it, `ON DELETE CASCADE` — and both carry RLS policies
-enforcing tenant isolation.
+model ref, condition, point-in-time, search options, result count, timings,
+`epoch`, `heartbeat_time`) and `search_job_results` holds the ordered entity
+IDs, keyed `(job_id, seq)`. Both are tenant-scoped — `search_jobs` has the
+composite primary key `(tenant_id, id)` and `search_job_results` carries
+`tenant_id` with a composite foreign key back to it, `ON DELETE CASCADE` —
+and both carry RLS policies enforcing tenant isolation.
+
+**Design principles (DD-10, DD-11, DD-12):** results tables store entity
+IDs only, never entity data (re-fetched from the entity store on read, so
+it can never go stale between search and read); `pointInTime` is always
+populated on `SearchJob`, defaulting to `time.Now()`, so repeated reads at
+the same point in time are deterministic; TTL-based cleanup is implemented
+uniformly by every plugin.
+
+### 4.7 Paged Entity Listing and History Reads
+
+**Paged listing.** `GET /entity/{entityName}/{modelVersion}` is served by
+`spi.EntityStore.GetPage(ctx, modelRef, limit, offset, asAt)`, which pages
+at the store instead of loading the whole model into Go and slicing —
+`pageNumber`/`pageSize` map directly to `offset`/`limit`. Order is the
+engine's own canonical entity-ID order: one total, stable, deterministic
+order each backend uses consistently everywhere it orders by ID (`GetPage`,
+the tie-break under a user-field `OrderBy`, and an explicit entity-ID
+`OrderBy`) — but **not** guaranteed identical across engines (memory,
+sqlite, postgres all order byte-wise ascending as their native behaviour;
+see each plugin's "Canonical entity-ID order" section in `docs/plugins/`).
+Reachable inside a joined transaction via compute-node callbacks: with
+`asAt` nil, the page overlays the transaction's own write-set on top of the
+committed view and every returned entity is unconditionally recorded into
+the transaction's read-set (narrower than the old whole-model `GetAll`
+behaviour it replaced, which recorded the entire model). With `asAt` set,
+the read is committed-only, ignoring any ambient transaction. Postgres
+backs this with the `idx_entities_model_entity_id` index (migration
+`000008`, `COLLATE "C"` for byte-wise order); sqlite adds a
+`(tenant_id, model_name, model_version, entity_id)` index.
+
+**History reads.** Two purpose-built reads replace the old
+full-history-with-payloads `GetVersionHistory` (removed, pre-1.0, no shim):
+
+- `GetVersionByTransaction(ctx, entityID, txID)` returns the *earliest*
+  version an entity acquired under a given transaction — backing
+  `GET /entity/{entityId}?transactionId=`. A DELETED tombstone never
+  matches (it carries no entity payload); an empty `txID` never matches a
+  stored-empty transaction ID and returns `ErrNotFound`.
+- `GetVersionMetadata(ctx, entityID, opts)` returns metadata only (no
+  entity payload) for one entity's version history, newest first, tied
+  broken by version number descending — backing
+  `GET /entity/{entityId}/changes` and the audit-event search's window.
+  `opts.Limit == 0` means "all", a deliberate divergence from `GetPage`'s
+  `limit >= 1` requirement: this read is bounded by one entity's own
+  history, never a model-wide scan. `Deleted` is canonical (derived from
+  change type), replacing a backend-divergent "is the entity payload nil"
+  probe — this is also what `HasEntity` in the wire response now derives
+  from (`!Deleted`), so a tombstone's `hasEntity` reads uniformly across
+  backends.
+
+Both reads push their filtering into the store where possible: postgres and
+sqlite match `GetVersionByTransaction` in SQL over the entity's own
+versions; memory maintains a per-entity transaction index.
 
 ---
 
@@ -1444,6 +1570,11 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 |----------|---------|-------------|
 | `CYODA_SEARCH_SNAPSHOT_TTL` | `1h` | TTL for async search job results |
 | `CYODA_SEARCH_REAP_INTERVAL` | `5m` | Frequency of search snapshot reaper |
+| `CYODA_SEARCH_MAX_SORT_KEYS` | `16` | Max `sort`/`orderBy` keys per search request |
+| `CYODA_SEARCH_ASYNC_WORKERS` | `8` | Async-search worker pool size; startup fails if `< 1` |
+| `CYODA_SEARCH_ASYNC_QUEUE` | `256` | Async-search submit queue capacity beyond running workers; startup fails if `< 0` |
+| `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` | `15s` | How often a running async-search executor stamps liveness and polls for cross-node cancel/terminal status |
+| `CYODA_SEARCH_JOB_STALE_AFTER` | `5m` | How long a `RUNNING` job may go without a heartbeat before the reaper claims and fails it; must be `>= 4x` the heartbeat interval |
 
 ---
 
@@ -1545,6 +1676,8 @@ Capabilities this document's design implies but the system does not provide. Eac
 | Idempotency keys | Client-provided keys preventing duplicate operations on retry. The `IDEMPOTENCY_CONFLICT` code is reserved, but no handler reads an `Idempotency-Key` header. |
 | Trace propagation through the search pipeline | A unified search trace waterfall. The search packages emit no spans, and the async-search goroutine starts from a fresh context, severing the parent span. |
 | Outbound trace propagation to external processors | End-to-end workflow tracing. Inbound gRPC trace context is extracted and dispatches are wrapped in spans, but no `traceparent` is injected into the dispatched CloudEvent or the peer-forward request. |
+| Migration-runner retry tolerance for a deadlock-killed advisory lock | Being able to use `CREATE INDEX CONCURRENTLY` for an index added on an already-populated table without deadlocking the concurrent multi-node boot path. Today the migration runner holds one session-level advisory lock for a migrator's entire run with no retry on a `SQLSTATE 40P01` from a lock cycle against `CONCURRENTLY`'s own multi-phase wait, so `entities`' migration `000008` uses a plain `CREATE INDEX` (writer-blocking for the build's duration) instead — see `docs/plugins/POSTGRES.md`. Any future index-on-populated-table migration hits the same choice until this gap closes. |
+| Async job re-execution after an orphan claim | An orphaned async job (owning node crashed) surviving as a result the cluster completes elsewhere. The SPI groundwork (`Heartbeat`/`ClaimStale`/`ClearResults`, epoch fencing) ships now; the interim disposition is claim-then-`FAILED` (§4.6), not re-execution. |
 
 ---
 

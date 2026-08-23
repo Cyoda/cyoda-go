@@ -111,6 +111,18 @@ for each (`entity_store.go`, `model_store.go`, `kv_store.go`,
 `message_store.go`, `workflow_store.go`, `sm_audit_store.go`,
 `search_store.go`).
 
+## Canonical entity-ID order
+
+`GetPage` (paged entity listing), the entity-ID tie-break under a
+user-field `OrderBy`, and an explicit entity-ID `OrderBy` all order by the
+memory plugin's canonical entity-ID order: **byte-wise ascending**, Go's
+native `<` string comparison. This order is stable and deterministic but is
+**not** guaranteed identical to another storage engine's canonical order —
+each in-house backend documents byte-wise ascending as its native
+behaviour, but a client that depends on cross-backend identical list order
+is relying on an accident, not a contract. See `docs/cloud-parity/` for the
+public-API-facing statement of this rule.
+
 ## Configuration (env vars)
 
 The memory plugin has no plugin-specific environment variables. It is

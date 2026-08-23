@@ -53,6 +53,19 @@ Migrations via `golang-migrate` with embedded SQL files — same pattern
 as the postgres plugin. Runs automatically on startup when
 `CYODA_SQLITE_AUTO_MIGRATE=true` (the default).
 
+## Canonical entity-ID order
+
+`GetPage` (paged entity listing), the entity-ID tie-break under a
+user-field `OrderBy`, and an explicit entity-ID `OrderBy` all order by the
+sqlite plugin's canonical entity-ID order: **byte-wise ascending** — SQLite's
+default `BINARY` collation, which agrees with Go's native `<` string
+comparison. This order is stable and deterministic but is **not**
+guaranteed identical to another storage engine's canonical order — each
+in-house backend documents byte-wise ascending as its native behaviour, but
+a client that depends on cross-backend identical list order is relying on
+an accident, not a contract. See `docs/cloud-parity/` for the
+public-API-facing statement of this rule.
+
 ## Configuration (env vars)
 
 | Var | Default | Purpose |

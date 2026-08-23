@@ -177,6 +177,24 @@ error requiring manual intervention. With
 phase. A dedicated `cyoda migrate` subcommand (`RunMigrateWithDSN`) is
 available for operators who prefer to apply migrations out-of-band.
 
+## Canonical entity-ID order
+
+`GetPage` (paged entity listing), the entity-ID tie-break under a
+user-field `OrderBy`, and an explicit entity-ID `OrderBy` all order by the
+postgres plugin's canonical entity-ID order: **byte-wise ascending**,
+enforced with `COLLATE "C"` on every `entity_id ORDER BY` — the database's
+configured default collation may not be `"C"` and can otherwise reorder
+entity IDs differently from Go's byte-wise string comparison, so `COLLATE
+"C"` is pinned explicitly rather than relied on as a server default. The
+supporting index is `idx_entities_model_entity_id` (migration `000008`; see
+that migration's operator note below). This order is stable and
+deterministic but is **not** guaranteed identical to another storage
+engine's canonical order — each in-house backend documents byte-wise
+ascending as its native behaviour, but a client that depends on
+cross-backend identical list order is relying on an accident, not a
+contract. See `docs/cloud-parity/` for the public-API-facing statement of
+this rule.
+
 ## Configuration (env vars)
 
 The plugin advertises its env vars via
@@ -239,6 +257,27 @@ transaction mode beyond the prepared-statement cache.
   database schema is newer than the code, and (with
   `CYODA_POSTGRES_AUTO_MIGRATE=false`) if it is older. Dirty
   migration state is fatal.
+- **Migration `000008` (adds `idx_entities_model_entity_id`) blocks writers
+  to `entities` for the duration of its index build**, on an upgrade of a
+  populated deployment. It uses a plain `CREATE INDEX`, not `CREATE INDEX
+  CONCURRENTLY` — the usual rule for an index added on a table that already
+  holds data (see `cyoda help cli.migrate`, ADDING AN INDEX MIGRATION).
+  `CONCURRENTLY` is deliberately not used here because it provably
+  deadlocks this project's concurrent multi-node boot path: golang-migrate
+  holds one session-level advisory lock for a migrator's entire run, and
+  `CONCURRENTLY`'s own multi-phase build waits on every other backend's
+  in-flight statement — including a second node's migrator merely blocked
+  trying to acquire that same advisory lock, which still holds an active
+  snapshot from PostgreSQL's perspective. That is a genuine lock cycle
+  (`SQLSTATE 40P01`), reproduced empirically, not a theoretical concern. A
+  plain `CREATE INDEX` avoids the deadlock at the cost of a brief
+  writer-blocking window during the build — size the maintenance window to
+  the `entities` table's row count before upgrading a populated instance.
+  **Structural gap:** the migration runner has no retry tolerance for a
+  deadlock-killed advisory-lock acquisition, so any future migration that
+  adds an index to an already-populated table hits the same choice between
+  `CONCURRENTLY` (deadlocks concurrent multi-node boot) and a plain
+  `CREATE INDEX` (blocks writers) until the runner grows that tolerance.
 
 ## When to use / when not to use
 

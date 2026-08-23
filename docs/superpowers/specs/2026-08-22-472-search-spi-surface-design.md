@@ -487,9 +487,19 @@ can break the commercial backend's run.
   No interleaving with an open iterator (illegal per §2.2). The atomic mode
   is inherently O(matched IDs) (the transaction buffer holds every delete);
   the O(page) mode is the existing batched delete, whose selection phase
-  streams per batch with per-ID version guards. Conscious non-goal: the ID
-  drain still deserialises full entity rows — an `IterateOptions` projection
-  knob is out of scope here.
+  streams per batch with per-ID version guards — **except at a pinned
+  point-in-time**, where batched selection is also O(matched IDs): deleting
+  a live row cannot change what a historical snapshot matched, so the
+  per-cycle re-scan the live-state O(page) mode relies on to shrink the
+  match set would never terminate. The batched path therefore branches on
+  `pointInTime` (`deleteBatched` in `internal/domain/entity/service.go`):
+  nil-PIT re-opens a fresh committed-only iterator each cycle and lets
+  already-deleted ids drop out on their own; a pinned PIT instead drains the
+  selection in one full pass (`resolveBatchTargetsOnePass`), still via
+  `spi.Iterable` and still never materialising full entity rows — only ids
+  and version-guard baselines are kept. Conscious non-goal: the ID drain
+  (atomic mode) still deserialises full entity rows — an `IterateOptions`
+  projection knob is out of scope here.
 - **Sibling defects rerouted in the same change** (fix-siblings policy):
   `DeleteAllEntities`'s whole-model `GetAll` (needs IDs/count only) and
   `deleteBatched`'s `cond == nil` `GetAll` + O(matches) target slice.
