@@ -208,25 +208,25 @@ func TestConcurrencyStress(t *testing.T) {
 	}
 
 	// Assertion 5: shared entity has consistent version history (no gaps).
-	history, err := store2.GetVersionHistory(ctx, sharedEntity)
+	metas, err := store2.GetVersionMetadata(ctx, sharedEntity, spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory for shared entity: %v", err)
+		t.Fatalf("GetVersionMetadata for shared entity: %v", err)
 	}
 
-	if len(history) == 0 {
+	if len(metas) == 0 {
 		t.Fatal("shared entity has no version history")
 	}
 
 	// Extract versions and sort them.
-	versions := make([]int64, len(history))
-	for i, v := range history {
-		versions[i] = v.Version
+	versions := make([]int64, len(metas))
+	for i, m := range metas {
+		versions[i] = m.Version
 	}
 	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
 
-	// Verify: starts at 0, no gaps, no duplicates.
-	if versions[0] != 0 {
-		t.Errorf("version history should start at 0, starts at %d", versions[0])
+	// Verify: starts at 1, no gaps, no duplicates.
+	if versions[0] != 1 {
+		t.Errorf("version history should start at 1, starts at %d", versions[0])
 	}
 	for i := 1; i < len(versions); i++ {
 		if versions[i] != versions[i-1]+1 {

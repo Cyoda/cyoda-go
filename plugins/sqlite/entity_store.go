@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"sort"
+	"strings"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -242,6 +244,12 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// Transaction mode: write to buffer, not main store.
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
+		// Stage the value this overwrites (see stageSuperseded's godoc)
+		// BEFORE overwriting tx.Buffer, so a same-tx double-save of the same
+		// entity still produces an earliest-wins-eligible version row at
+		// commit (GetVersionByTransaction's contract). tx.Buffer[id] is nil
+		// on this entity's first Save in the tx — stageSuperseded no-ops.
+		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it.
@@ -290,7 +298,13 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 		return 0, fmt.Errorf("check existing entity: %w", err)
 	}
 
-	var nextVersion int64
+	// Version numbering starts at 1 (matches the memory and postgres
+	// plugins — see postgres/entity_store.go's INSERT ... VALUES (..., 1, ...)
+	// and memory/entity_store.go's `var nextVersion int64 = 1`). A version of
+	// 0 would be indistinguishable from Go's zero value wherever a caller
+	// checks "is Version populated" (e.g. spi.EntityVersionMeta.Version, per
+	// GetVersionMetadata's doc comment), so 0 is never a valid stored version.
+	nextVersion := int64(1)
 	createdAtMicro := timeToMicro(now)
 	if !isNew {
 		nextVersion = existingVersion.Int64 + 1
@@ -371,9 +385,11 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			return 0, spi.ErrConflict
 		}
 
-		// Write to buffer.
+		// Write to buffer. Stage the value this overwrites first — see the
+		// matching comment in Save.
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
+		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		return 0, nil
@@ -1026,101 +1042,366 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	return result, nil
 }
 
-func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
-	rows, err := s.db.QueryContext(ctx,
+// pageSlice returns a copied [offset:offset+limit) window of rows, already
+// sorted in canonical (byte-wise) entity-ID order by the caller. Mirrors the
+// memory plugin's pageSlice helper — see spi.EntityStore.GetPage's doc
+// comment for the paging contract.
+func pageSlice(rows []*spi.Entity, limit, offset int) []*spi.Entity {
+	if offset >= len(rows) {
+		return []*spi.Entity{}
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end]
+}
+
+// GetPage returns a page of modelRef's entities in canonical (byte-wise)
+// entity-ID order. See spi.EntityStore.GetPage's doc comment for the full
+// contract: limit>=1 && offset>=0 is required; asAt==nil reads the live
+// (in-tx overlay, when a transaction is ambient) view and, in-tx,
+// unconditionally records every returned entity in the transaction's
+// read-set; asAt!=nil ignores any ambient transaction and reads
+// committed-only state as of that instant.
+//
+// Non-tx reads (both asAt==nil and asAt!=nil) stream from the dedicated
+// reader connection (readDB), not the writer db — consistent with the
+// non-tx Iterate pathway (see grouped_stats.go), since GetPage's page can
+// be as large as the caller's limit and pinning that to the writer's
+// single-connection pool would starve concurrent writes.
+func (s *entityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt *time.Time) ([]*spi.Entity, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("GetPage: limit must be >= 1")
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("GetPage: offset must be >= 0")
+	}
+
+	if asAt != nil {
+		return s.getPageAsAt(ctx, modelRef, limit, offset, *asAt)
+	}
+
+	tx := spi.GetTransaction(ctx)
+	if tx == nil {
+		return s.getPageDirect(ctx, modelRef, limit, offset)
+	}
+	return s.getPageTx(ctx, tx, modelRef, limit, offset)
+}
+
+// getPageDirect is the non-tx, asAt==nil path: the entities table's current
+// state, paged in SQL via ORDER BY entity_id LIMIT/OFFSET (idx_entities_model_id
+// serves both the WHERE equality and the ORDER BY without a separate sort —
+// see migrations/000006_search_epoch.up.sql).
+func (s *entityStore) getPageDirect(ctx context.Context, modelRef spi.ModelRef, limit, offset int) ([]*spi.Entity, error) {
+	rows, err := s.readDB.QueryContext(ctx,
+		`SELECT entity_id, model_name, model_version, version,
+		        json(data), json(meta), created_at, updated_at
+		 FROM entities
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted
+		 ORDER BY entity_id
+		 LIMIT ? OFFSET ?`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("GetPage: query: %w", err)
+	}
+	defer rows.Close()
+
+	page := []*spi.Entity{}
+	for rows.Next() {
+		e, err := scanEntityFromRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		page = append(page, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetPage: row iteration: %w", err)
+	}
+	return page, nil
+}
+
+// getPageAsAt is the asAt!=nil path: a committed-only snapshot join
+// (searchSnapshotBase — the same base query getSnapshot/getAllTx/GetAllAsAt
+// use), paged via ORDER BY ev.entity_id LIMIT/OFFSET. Ignores any ambient
+// transaction, matching GetAllAsAt.
+func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt time.Time) ([]*spi.Entity, error) {
+	searchOpts := spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}
+	query, args := s.searchSnapshotBase(searchOpts, timeToMicro(asAt))
+	query += " ORDER BY ev.entity_id LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := s.readDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("GetPage: asAt query: %w", err)
+	}
+	defer rows.Close()
+
+	page := []*spi.Entity{}
+	for rows.Next() {
+		e, err := scanVersionEntity(rows)
+		if err != nil {
+			return nil, err
+		}
+		page = append(page, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetPage: asAt row iteration: %w", err)
+	}
+	return page, nil
+}
+
+// getPageTx is the in-tx, asAt==nil path: the committed snapshot at
+// tx.SnapshotTime (on the writer connection, tx.OpMu-guarded — the same
+// posture as getAllTx/Save/GetAll) merged with the transaction's own
+// buffered writes via spi.MergeOrdered, skipping staged deletes.
+//
+// The committed query is bounded to LIMIT offset+limit rows and fully
+// drained (rows.Next() to exhaustion) and closed BEFORE any merging begins:
+// s.db has a single-connection pool (SetMaxOpenConns(1)), so a second
+// statement issued while these rows are still open would deadlock waiting
+// for a connection that can only be released by closing (or fully
+// draining) the first. offset+limit committed rows is always sufficient to
+// correctly produce a merged page of that many entries — buffered adds can
+// only reduce, never increase, how many committed rows the merge needs to
+// consume to fill the same page (see spi.MergeOrdered's doc comment).
+func (s *entityStore) getPageTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, limit, offset int) ([]*spi.Entity, error) {
+	tx.OpMu.RLock()
+	defer tx.OpMu.RUnlock()
+	if tx.RolledBack {
+		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+	}
+
+	searchOpts := spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}
+	query, args := s.searchSnapshotBase(searchOpts, timeToMicro(tx.SnapshotTime))
+	query += " ORDER BY ev.entity_id LIMIT ?"
+	args = append(args, offset+limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("GetPage: committed query: %w", err)
+	}
+	var committed []*spi.Entity
+	for rows.Next() {
+		e, err := scanVersionEntity(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		committed = append(committed, e)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("GetPage: committed row iteration: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("GetPage: close committed rows: %w", err)
+	}
+
+	// Buffered own-writes for this model, byte-wise sorted to match the
+	// committed stream's order — spi.MergeOrdered requires both inputs
+	// pre-sorted by the same comparator.
+	adds := make([]*spi.Entity, 0, len(tx.Buffer))
+	for _, e := range tx.Buffer {
+		if e.Meta.ModelRef == modelRef {
+			adds = append(adds, copyEntity(e))
+		}
+	}
+	sort.Slice(adds, func(i, j int) bool { return adds[i].Meta.ID < adds[j].Meta.ID })
+
+	idx := 0
+	next := func() (*spi.Entity, bool, error) {
+		if idx >= len(committed) {
+			return nil, false, nil
+		}
+		e := committed[idx]
+		idx++
+		return e, true, nil
+	}
+	isDeleted := func(entityID string) bool { return tx.Deletes[entityID] }
+	cmp := func(a, b *spi.Entity) int { return strings.Compare(a.Meta.ID, b.Meta.ID) }
+
+	pull := spi.MergeOrdered(next, adds, isDeleted, cmp)
+	target := offset + limit
+	merged := make([]*spi.Entity, 0, target)
+	for len(merged) < target {
+		e, ok, err := pull()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		merged = append(merged, e)
+	}
+
+	page := pageSlice(merged, limit, offset)
+	// Unconditional: every entity on the returned page enters the
+	// transaction's read-set — no TrackingRead knob, per GetPage's SPI doc
+	// comment (unlike Search/Iterate's opt-in TrackingRead).
+	for _, e := range page {
+		tx.ReadSet[e.Meta.ID] = true
+	}
+	return page, nil
+}
+
+// GetVersionByTransaction returns the earliest (lowest-Version) version of
+// entityID written by transaction txID. DELETED tombstones never match — see
+// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
+// never matches, even a stored-empty one from a non-transactional write, so
+// it is rejected pre-query rather than reaching SQL at all.
+func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
+	if txID == "" {
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+	}
+
+	row := s.db.QueryRowContext(ctx,
 		`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
 		        json(ev.data), json(ev.meta), ev.submit_time,
 		        ev.change_type, ev.user_id, ev.transaction_id
 		 FROM entity_versions ev
-		 WHERE ev.tenant_id = ? AND ev.entity_id = ?
-		 ORDER BY ev.version ASC`,
-		string(s.tenantID), entityID)
+		 WHERE ev.tenant_id = ? AND ev.entity_id = ? AND ev.transaction_id = ?
+		   AND ev.change_type != 'DELETED'
+		 ORDER BY ev.version ASC
+		 LIMIT 1`,
+		string(s.tenantID), entityID, txID)
+
+	var (
+		eid, modelName, modelVersion    string
+		version                         int64
+		dataJSON                        sql.NullString
+		metaJSON                        sql.NullString
+		submitTimeMicro                 int64
+		changeType, userID, transaction string
+	)
+	if err := row.Scan(&eid, &modelName, &modelVersion, &version,
+		&dataJSON, &metaJSON, &submitTimeMicro,
+		&changeType, &userID, &transaction); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		}
+		return nil, fmt.Errorf("GetVersionByTransaction: scan: %w", classifyError(err))
+	}
+
+	ev := &spi.EntityVersion{
+		ChangeType: changeType,
+		User:       userID,
+		Timestamp:  microToTime(submitTimeMicro),
+		Version:    version,
+	}
+
+	var parsedMeta spi.EntityMeta
+	var haveMeta bool
+	if metaJSON.Valid && metaJSON.String != "" {
+		if parsed, parseErr := unmarshalEntityMeta([]byte(metaJSON.String)); parseErr == nil {
+			parsedMeta = parsed
+			haveMeta = true
+		}
+	}
+	if haveMeta {
+		ev.AttributedKind = parsedMeta.ChangeUserKind
+		ev.Executor = parsedMeta.ChangeExecutor
+	}
+
+	meta := spi.EntityMeta{
+		ID:               eid,
+		ModelRef:         spi.ModelRef{EntityName: modelName, ModelVersion: modelVersion},
+		Version:          version,
+		CreationDate:     microToTime(submitTimeMicro),
+		LastModifiedDate: microToTime(submitTimeMicro),
+		TransactionID:    transaction,
+		ChangeType:       changeType,
+		ChangeUser:       userID,
+	}
+	if haveMeta {
+		meta.TenantID = parsedMeta.TenantID
+		meta.State = parsedMeta.State
+		meta.CreationDate = parsedMeta.CreationDate
+		meta.LastModifiedDate = parsedMeta.LastModifiedDate
+		meta.TransitionForLatestSave = parsedMeta.TransitionForLatestSave
+		meta.ChangeUserKind = parsedMeta.ChangeUserKind
+		meta.ChangeExecutor = parsedMeta.ChangeExecutor
+	}
+	var data []byte
+	if dataJSON.Valid {
+		data = []byte(dataJSON.String)
+	}
+	ev.Entity = &spi.Entity{Meta: meta, Data: data}
+
+	return ev, nil
+}
+
+// GetVersionMetadata returns entityID's version metadata — no entity
+// payload, just the audit trail — newest first, ties broken by Version
+// DESC. Version is strictly monotonic per entity and submit_time is
+// non-decreasing across sequential writes (the writer connection serializes
+// all commits), so ORDER BY version DESC alone yields the same order as
+// "Timestamp DESC, Version DESC" would. opts.From/opts.Until bound the
+// window inclusively; opts.Limit caps the row count (0 means all). The
+// query never selects the data column — see spi.EntityStore.GetVersionMetadata's
+// doc comment; this method surfaces audit metadata only.
+func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, opts spi.VersionMetadataOptions) ([]spi.EntityVersionMeta, error) {
+	query := `SELECT version, change_type, submit_time, json(meta), user_id, transaction_id
+	          FROM entity_versions
+	          WHERE tenant_id = ? AND entity_id = ?`
+	args := []any{string(s.tenantID), entityID}
+
+	if opts.From != nil {
+		query += " AND submit_time >= ?"
+		args = append(args, timeToMicro(*opts.From))
+	}
+	if opts.Until != nil {
+		query += " AND submit_time <= ?"
+		args = append(args, timeToMicro(*opts.Until))
+	}
+	query += " ORDER BY version DESC"
+	if opts.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, opts.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query version history: %w", err)
+		return nil, fmt.Errorf("GetVersionMetadata: query: %w", err)
 	}
 	defer rows.Close()
 
-	var history []spi.EntityVersion
+	var result []spi.EntityVersionMeta
 	for rows.Next() {
 		var (
-			eid, modelName, modelVersion    string
-			version                         int64
-			dataJSON                        sql.NullString
-			metaJSON                        sql.NullString
-			submitTimeMicro                 int64
-			changeType, userID, transaction string
+			version         int64
+			changeType      string
+			submitTimeMicro int64
+			metaJSON        sql.NullString
+			userID          string
+			transactionID   string
 		)
-		if err := rows.Scan(&eid, &modelName, &modelVersion, &version,
-			&dataJSON, &metaJSON, &submitTimeMicro,
-			&changeType, &userID, &transaction); err != nil {
-			return nil, fmt.Errorf("scan version row: %w", err)
+		if err := rows.Scan(&version, &changeType, &submitTimeMicro, &metaJSON, &userID, &transactionID); err != nil {
+			return nil, fmt.Errorf("GetVersionMetadata: scan: %w", err)
 		}
 
-		deleted := changeType == "DELETED"
-		ev := spi.EntityVersion{
-			ChangeType: changeType,
-			User:       userID,
-			Timestamp:  microToTime(submitTimeMicro),
-			Version:    version,
-			Deleted:    deleted,
+		m := spi.EntityVersionMeta{
+			Version:       version,
+			ChangeType:    changeType,
+			Timestamp:     microToTime(submitTimeMicro),
+			User:          userID,
+			TransactionID: transactionID,
+			Deleted:       changeType == "DELETED",
 		}
-
-		// Parse the meta BLOB once, independent of Entity population below.
-		// AttributedKind/Executor must be readable even for DELETED versions,
-		// whose Entity is nil below — a tombstone's meta BLOB carries only
-		// the attribution fields (see marshalTombstoneMeta), never entity
-		// data. A legacy NULL/empty blob (pre-dating tombstone attribution)
-		// yields the zero value here, not an error.
-		var parsedMeta spi.EntityMeta
-		var haveMeta bool
 		if metaJSON.Valid && metaJSON.String != "" {
 			if parsed, parseErr := unmarshalEntityMeta([]byte(metaJSON.String)); parseErr == nil {
-				parsedMeta = parsed
-				haveMeta = true
+				m.AttributedKind = parsed.ChangeUserKind
+				m.Executor = parsed.ChangeExecutor
 			}
 		}
-		if haveMeta {
-			ev.AttributedKind = parsedMeta.ChangeUserKind
-			ev.Executor = parsedMeta.ChangeExecutor
-		}
-
-		if !deleted && dataJSON.Valid {
-			meta := spi.EntityMeta{
-				ID:               eid,
-				ModelRef:         spi.ModelRef{EntityName: modelName, ModelVersion: modelVersion},
-				Version:          version,
-				CreationDate:     microToTime(submitTimeMicro),
-				LastModifiedDate: microToTime(submitTimeMicro),
-				TransactionID:    transaction,
-				ChangeType:       changeType,
-				ChangeUser:       userID,
-			}
-			// Populate additional meta from the stored meta BLOB.
-			if haveMeta {
-				meta.TenantID = parsedMeta.TenantID
-				meta.State = parsedMeta.State
-				meta.CreationDate = parsedMeta.CreationDate
-				meta.LastModifiedDate = parsedMeta.LastModifiedDate
-				meta.TransitionForLatestSave = parsedMeta.TransitionForLatestSave
-				meta.ChangeUserKind = parsedMeta.ChangeUserKind
-				meta.ChangeExecutor = parsedMeta.ChangeExecutor
-			}
-
-			ev.Entity = &spi.Entity{
-				Meta: meta,
-				Data: []byte(dataJSON.String),
-			}
-		}
-
-		history = append(history, ev)
+		result = append(result, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration: %w", err)
+		return nil, fmt.Errorf("GetVersionMetadata: row iteration: %w", err)
 	}
 
-	if history == nil {
+	if len(result) == 0 {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
-
-	return history, nil
+	return result, nil
 }

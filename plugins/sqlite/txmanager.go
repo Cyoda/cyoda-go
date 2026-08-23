@@ -46,6 +46,14 @@ type savepointSnapshot struct {
 	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
 	// truncating back to this recorded length instead of snapshotting it.
 	scheduledTaskOpsLen int
+
+	// supersededLens is the per-entityID length of supersededSaves[txID] at
+	// the moment this savepoint was taken, mirroring scheduledTaskOpsLen's
+	// truncate-back-to-length approach (append-only, so length is enough to
+	// restore). An entityID absent here had no superseded entries yet at
+	// savepoint time; RollbackToSavepoint clears it entirely rather than
+	// truncating to an explicitly recorded zero.
+	supersededLens map[string]int
 }
 
 // transactionManager implements spi.TransactionManager with application-layer
@@ -87,6 +95,25 @@ type transactionManager struct {
 	// discarded too, never orphaned from the entity work it must be atomic
 	// with. Protected by mu. Cleaned up after commit or rollback (no leak).
 	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
+
+	// supersededSaves records, per (txID, entityID), each buffered
+	// *spi.Entity value overwritten by a later same-entity Save/
+	// CompareAndSave within the same open transaction, oldest first.
+	// tx.Buffer only ever holds the FINAL value per entity — read-your-own-
+	// writes only needs the latest — so without this side channel a same-tx
+	// double-save would flush as a single commit row and
+	// GetVersionByTransaction's earliest-wins contract (see its SPI doc
+	// comment: "a transaction that saved the same entity more than once
+	// before committing... the earliest is returned") could never be
+	// satisfied for the intermediate value a later Save in the same tx
+	// overwrote. flushToSQLite writes each entityID's superseded values (in
+	// order) followed by the final tx.Buffer value as consecutive
+	// entity_versions rows sharing the transaction's txID — mirrors the
+	// memory plugin's identically-named field. Protected by mu.
+	// Savepoint-scoped like tx.Buffer (length recorded at Savepoint,
+	// truncated at RollbackToSavepoint — see savepointSnapshot.supersededLens).
+	// Cleaned up after commit or rollback (no leak).
+	supersededSaves map[string]map[string][]*spi.Entity // txID -> entityID -> superseded snapshots, oldest first
 }
 
 // Verify interface compliance at compile time.
@@ -102,6 +129,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		savepoints:       make(map[string]map[string]savepointSnapshot),
 		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
 		scheduledTaskOps: make(map[string][]scheduledTaskOp),
+		supersededSaves:  make(map[string]map[string][]*spi.Entity),
 	}
 }
 
@@ -141,6 +169,31 @@ func (m *transactionManager) scheduledTaskOpsFor(txID string) []scheduledTaskOp 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.scheduledTaskOps[txID]
+}
+
+// stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
+// call is about to overwrite — to txID's superseded list for entityID, in
+// overwrite order. No-op when prior is nil (the entity's first Save in this
+// transaction: nothing superseded yet). See the supersededSaves field godoc
+// for why this exists. Protected by mu.
+func (m *transactionManager) stageSuperseded(txID, entityID string, prior *spi.Entity) {
+	if prior == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.supersededSaves[txID] == nil {
+		m.supersededSaves[txID] = make(map[string][]*spi.Entity)
+	}
+	m.supersededSaves[txID][entityID] = append(m.supersededSaves[txID][entityID], prior)
+}
+
+// supersededFor retrieves the superseded values staged for entityID under
+// txID, oldest first. Returns nil if none were recorded. Protected by mu.
+func (m *transactionManager) supersededFor(txID, entityID string) []*spi.Entity {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.supersededSaves[txID][entityID]
 }
 
 // seedLastSubmitTime reads the maximum submit_time from entity_versions
@@ -285,6 +338,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 						delete(m.savepoints, txID)
 						delete(m.txUniqueKeys, txID)
 						delete(m.scheduledTaskOps, txID)
+						delete(m.supersededSaves, txID)
 						return spi.ErrConflict
 					}
 				}
@@ -330,6 +384,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.savepoints, txID)
 			delete(m.txUniqueKeys, txID)
 			delete(m.scheduledTaskOps, txID)
+			delete(m.supersededSaves, txID)
 		}()
 		// ErrUniqueViolation from claim writes must not be re-classified —
 		// classifyError passes through non-sqlite errors unchanged.
@@ -362,6 +417,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		delete(m.savepoints, txID)
 		delete(m.txUniqueKeys, txID)
 		delete(m.scheduledTaskOps, txID)
+		delete(m.supersededSaves, txID)
 		var oldest time.Time
 		for _, activeTx := range m.active {
 			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -428,29 +484,78 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			return fmt.Errorf("check entity %s: %w", entityID, err)
 		}
 
-		var nextVersion int64
+		// Version numbering starts at 1 — see saveDirectly's matching comment
+		// in entity_store.go.
+		baseVersion := int64(0)
 		createdAtMicro := submitMicro
 		if !isNew {
-			nextVersion = existingVersion.Int64 + 1
+			baseVersion = existingVersion.Int64
 			createdAtMicro = existingCreatedAt.Int64
 		}
 
-		entity.Meta.Version = nextVersion
-		entity.Meta.LastModifiedDate = submitTime
-		entity.Meta.TransactionID = tx.ID
-		entity.Meta.ChangeType = deriveChangeType(entity.Meta.ChangeType, isNew)
-		entity.Meta.TenantID = tx.TenantID
-		if isNew {
-			entity.Meta.CreationDate = submitTime
-		} else {
-			entity.Meta.CreationDate = microToTime(createdAtMicro)
+		// Flush this entity's superseded intra-tx saves (oldest first), then
+		// the final tx.Buffer value, as consecutive entity_versions rows
+		// sharing txID — see supersededSaves's field godoc: this is what
+		// lets GetVersionByTransaction's earliest-wins contract hold for a
+		// same-tx double-save, where tx.Buffer itself only ever holds the
+		// final value. Only the final row updates the `entities` current-
+		// state table; the entity object mutated on each iteration is the
+		// staged pointer captured at Save time (each Save call copies via
+		// copyEntity, so superseded entries and the final tx.Buffer entry
+		// are always distinct objects — mutating in place is safe here).
+		superseded := m.supersededFor(tx.ID, entityID)
+		toFlush := make([]*spi.Entity, 0, len(superseded)+1)
+		toFlush = append(toFlush, superseded...)
+		toFlush = append(toFlush, entity)
+
+		hasPrior := !isNew
+		var metaJSON []byte
+		for _, staged := range toFlush {
+			nextVersion := baseVersion + 1
+			baseVersion = nextVersion
+
+			// DERIVE ChangeType from row-existence, like the non-tx save
+			// path (see deriveChangeType) — never trust it verbatim from
+			// the staged entity, which may carry a stale value fetched
+			// before this transaction began.
+			changeType := deriveChangeType(staged.Meta.ChangeType, hasPrior)
+			hasPrior = true
+
+			staged.Meta.Version = nextVersion
+			staged.Meta.LastModifiedDate = submitTime
+			staged.Meta.TransactionID = tx.ID
+			staged.Meta.ChangeType = changeType
+			staged.Meta.TenantID = tx.TenantID
+			if isNew {
+				staged.Meta.CreationDate = submitTime
+			} else {
+				staged.Meta.CreationDate = microToTime(createdAtMicro)
+			}
+
+			mj, err := marshalEntityMeta(&staged.Meta)
+			if err != nil {
+				return fmt.Errorf("marshal meta for %s: %w", entityID, err)
+			}
+			metaJSON = mj
+
+			_, err = sqlTx.ExecContext(ctx,
+				`INSERT INTO entity_versions
+				 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
+				 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?, ?, ?)`,
+				tid, entityID,
+				staged.Meta.ModelRef.EntityName, staged.Meta.ModelRef.ModelVersion,
+				nextVersion, string(staged.Data), string(metaJSON),
+				staged.Meta.ChangeType, tx.ID, submitMicro,
+				staged.Meta.ChangeUser)
+			if err != nil {
+				return fmt.Errorf("insert version %s: %w", entityID, err)
+			}
 		}
 
-		metaJSON, err := marshalEntityMeta(&entity.Meta)
-		if err != nil {
-			return fmt.Errorf("marshal meta for %s: %w", entityID, err)
-		}
-
+		// entity is toFlush's last element (the final tx.Buffer value) —
+		// its Meta now reflects the last loop iteration's nextVersion/
+		// metaJSON, i.e. the current-state row this transaction commits.
+		nextVersion := entity.Meta.Version
 		_, err = sqlTx.ExecContext(ctx,
 			`INSERT OR REPLACE INTO entities
 			 (tenant_id, entity_id, model_name, model_version, version, data, meta, deleted, created_at, updated_at)
@@ -461,19 +566,6 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			createdAtMicro, submitMicro)
 		if err != nil {
 			return fmt.Errorf("upsert entity %s: %w", entityID, err)
-		}
-
-		_, err = sqlTx.ExecContext(ctx,
-			`INSERT INTO entity_versions
-			 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
-			 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?, ?, ?)`,
-			tid, entityID,
-			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
-			nextVersion, string(entity.Data), string(metaJSON),
-			entity.Meta.ChangeType, tx.ID, submitMicro,
-			entity.Meta.ChangeUser)
-		if err != nil {
-			return fmt.Errorf("insert version %s: %w", entityID, err)
 		}
 
 		// Maintain unique-key claims using keys captured at Save (buffer) time.
@@ -597,6 +689,7 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 		delete(m.savepoints, txID)
 		delete(m.txUniqueKeys, txID)
 		delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
+		delete(m.supersededSaves, txID)  // discard staged superseded values unapplied — see field doc
 	}()
 	return nil
 }
@@ -729,6 +822,13 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 	if m.savepoints[txID] == nil {
 		m.savepoints[txID] = make(map[string]savepointSnapshot)
 	}
+	// supersededLens records each entityID's current supersededSaves[txID]
+	// length so RollbackToSavepoint can truncate back to it — mirrors
+	// scheduledTaskOpsLen's approach (append-only, so length is enough).
+	supersededLens := make(map[string]int, len(m.supersededSaves[txID]))
+	for eid, s := range m.supersededSaves[txID] {
+		supersededLens[eid] = len(s)
+	}
 	m.savepoints[txID][spID] = savepointSnapshot{
 		buffer:              bufCopy,
 		readSet:             readCopy,
@@ -736,6 +836,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 		deletes:             delCopy,
 		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
+		supersededLens:      supersededLens,
 	}
 	return spID, nil
 }
@@ -797,6 +898,22 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	// slice bounds would panic.
 	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
 		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
+	}
+
+	// Truncate supersededSaves per entityID back to its recorded length —
+	// same append-only truncate-back-to-length approach as
+	// scheduledTaskOps above (see savepointSnapshot.supersededLens godoc).
+	// An entityID with no recorded length had no superseded entries yet at
+	// savepoint time, so any it accumulated since must be discarded
+	// entirely, not merely truncated to zero.
+	if cur, ok := m.supersededSaves[txID]; ok {
+		for eid, entries := range cur {
+			if l, existed := snap.supersededLens[eid]; existed {
+				cur[eid] = entries[:l]
+			} else {
+				delete(cur, eid)
+			}
+		}
 	}
 
 	delete(txSavepoints, savepointID)
