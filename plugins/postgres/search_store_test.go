@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -150,7 +151,7 @@ func TestPGSearchStore_UpdateJobStatus(t *testing.T) {
 	}
 
 	finishTime := now.Add(5 * time.Second).Truncate(time.Microsecond)
-	err := store.UpdateJobStatus(ctx, "job-upd", "SUCCESSFUL", 42, "", finishTime, 1234)
+	err := store.UpdateJobStatus(ctx, "job-upd", 1, "SUCCESSFUL", 42, "", finishTime, 1234)
 	if err != nil {
 		t.Fatalf("UpdateJobStatus() error: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestPGSearchStore_UpdateJobStatus(t *testing.T) {
 	}
 
 	// Update with error message.
-	err = store.UpdateJobStatus(ctx, "job-upd", "FAILED", 0, "something broke", finishTime, 999)
+	err = store.UpdateJobStatus(ctx, "job-upd", 1, "FAILED", 0, "something broke", finishTime, 999)
 	if err != nil {
 		t.Fatalf("UpdateJobStatus(FAILED) error: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestPGSearchStore_SaveAndGetResults(t *testing.T) {
 	}
 
 	ids := []string{"e1", "e2", "e3", "e4", "e5"}
-	if err := store.SaveResults(ctx, "job-res", ids); err != nil {
+	if err := store.SaveResults(ctx, "job-res", 1, slices.Values(ids)); err != nil {
 		t.Fatalf("SaveResults() error: %v", err)
 	}
 
@@ -271,7 +272,7 @@ func TestPGSearchStore_DeleteJob(t *testing.T) {
 	if err := store.CreateJob(ctx, job); err != nil {
 		t.Fatalf("CreateJob() error: %v", err)
 	}
-	if err := store.SaveResults(ctx, "job-del", []string{"e1", "e2"}); err != nil {
+	if err := store.SaveResults(ctx, "job-del", 1, slices.Values([]string{"e1", "e2"})); err != nil {
 		t.Fatalf("SaveResults() error: %v", err)
 	}
 
@@ -383,13 +384,13 @@ func TestPGSearchStore_SaveResults_TenantVerification(t *testing.T) {
 	}
 
 	// Tenant B tries to save results on tenant A's job → must fail.
-	err := storeB.SaveResults(ctxB, "job-sv-tenant", []string{"e1", "e2"})
+	err := storeB.SaveResults(ctxB, "job-sv-tenant", 1, slices.Values([]string{"e1", "e2"}))
 	if err == nil {
 		t.Fatal("tenant B should NOT be able to SaveResults on tenant A's job")
 	}
 
 	// Tenant A saves results → must succeed.
-	if err := storeA.SaveResults(ctxA, "job-sv-tenant", []string{"e1", "e2", "e3"}); err != nil {
+	if err := storeA.SaveResults(ctxA, "job-sv-tenant", 1, slices.Values([]string{"e1", "e2", "e3"})); err != nil {
 		t.Fatalf("tenant A SaveResults() error: %v", err)
 	}
 
@@ -429,7 +430,7 @@ func TestPGSearchStore_ResultIDs_TenantIsolation(t *testing.T) {
 	if err := storeA.CreateJob(ctxA, jobA); err != nil {
 		t.Fatalf("CreateJob(A) error: %v", err)
 	}
-	if err := storeA.SaveResults(ctxA, "job-iso-a", []string{"a1", "a2", "a3"}); err != nil {
+	if err := storeA.SaveResults(ctxA, "job-iso-a", 1, slices.Values([]string{"a1", "a2", "a3"})); err != nil {
 		t.Fatalf("SaveResults(A) error: %v", err)
 	}
 
@@ -446,7 +447,7 @@ func TestPGSearchStore_ResultIDs_TenantIsolation(t *testing.T) {
 	if err := storeB.CreateJob(ctxB, jobB); err != nil {
 		t.Fatalf("CreateJob(B) error: %v", err)
 	}
-	if err := storeB.SaveResults(ctxB, "job-iso-b", []string{"b1"}); err != nil {
+	if err := storeB.SaveResults(ctxB, "job-iso-b", 1, slices.Values([]string{"b1"})); err != nil {
 		t.Fatalf("SaveResults(B) error: %v", err)
 	}
 
