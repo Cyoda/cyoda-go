@@ -441,6 +441,119 @@ func TestPGSearchStore_SaveResults_TenantVerification(t *testing.T) {
 	}
 }
 
+// TestPGSearchStore_SaveResults_FenceAndWriteAreAtomic reproduces the race
+// the fence and the write being separate statements leaves open: a
+// ClaimStale-style epoch bump lands in the window between "epoch confirmed
+// valid" and "rows durably written". It forces that interleaving with a
+// genuine synchronization primitive rather than a hopeful sleep: the test
+// takes SELECT ... FOR UPDATE on the job row itself and holds it open in its
+// own uncommitted transaction ("actor") before ever calling SaveResults, so
+// SaveResults' own fence — which, after this fix, also takes FOR UPDATE — is
+// forced to wait behind it no matter how the two goroutines are scheduled.
+// Only once actor commits the epoch bump does SaveResults' fence proceed, and
+// it must then see the bumped epoch and refuse.
+//
+// This is a genuine test of the atomic (post-fix) structure, not a coin
+// flip: the outcome for the fixed code does not depend on timing, because
+// actor acquires its lock synchronously before the SaveResults goroutine is
+// even started. The short sleep below only serves to bias scheduling toward
+// exercising the same window against the OLD two-statement shape, which
+// has no lock and therefore no way to force the interleaving deterministically
+// — see the fix's report for why a fully deterministic reproduction against
+// that shape was not achievable from a black-box test.
+func TestPGSearchStore_SaveResults_FenceAndWriteAreAtomic(t *testing.T) {
+	factory := setupSearchTest(t)
+	store := getSearchStore(t, factory, "atomic-tenant")
+	ctx := ctxWithTenant("atomic-tenant")
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	job := &spi.SearchJob{
+		ID:         "job-atomic",
+		TenantID:   "atomic-tenant",
+		Status:     "RUNNING",
+		ModelRef:   spi.ModelRef{EntityName: "X", ModelVersion: "1"},
+		Condition:  json.RawMessage(`{}`),
+		CreateTime: now,
+	}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob() error: %v", err)
+	}
+
+	pool := factory.Pool()
+	actorCtx := context.Background()
+
+	// actor: legitimate winner of a race against the SaveResults call below
+	// (standing in for ClaimStale reclaiming a stale job). It takes the row
+	// lock FIRST, synchronously, before the racing SaveResults call is even
+	// launched — that ordering is what makes this deterministic rather than
+	// a timing gamble.
+	actorTx, err := pool.Begin(actorCtx)
+	if err != nil {
+		t.Fatalf("actor Begin: %v", err)
+	}
+	defer func() { _ = actorTx.Rollback(actorCtx) }()
+
+	var lockedEpoch int64
+	if err := actorTx.QueryRow(actorCtx,
+		`SELECT epoch FROM search_jobs WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+		"job-atomic", "atomic-tenant").Scan(&lockedEpoch); err != nil {
+		t.Fatalf("actor lock probe: %v", err)
+	}
+	if lockedEpoch != 1 {
+		t.Fatalf("lockedEpoch = %d, want 1", lockedEpoch)
+	}
+
+	saveErr := make(chan error, 1)
+	go func() {
+		saveErr <- store.SaveResults(ctx, "job-atomic", 1, slices.Values([]string{"e1"}))
+	}()
+
+	// Give SaveResults a generous window to reach the database and attempt
+	// its own fence before actor releases the lock by committing. Against
+	// the fixed code this delay changes nothing (SaveResults blocks on
+	// actor's lock regardless of how long actor waits to commit); against
+	// the pre-fix two-statement shape it gives its unlocked SELECT and
+	// CopyFrom — a handful of fast local round trips — room to complete
+	// before the bump lands, biasing the race toward reliably exercising
+	// the bug instead of leaving it to chance.
+	time.Sleep(150 * time.Millisecond)
+
+	if _, err := actorTx.Exec(actorCtx,
+		`UPDATE search_jobs SET epoch = epoch + 1 WHERE id = $1 AND tenant_id = $2`,
+		"job-atomic", "atomic-tenant"); err != nil {
+		t.Fatalf("actor bump: %v", err)
+	}
+	if err := actorTx.Commit(actorCtx); err != nil {
+		t.Fatalf("actor commit: %v", err)
+	}
+
+	select {
+	case err := <-saveErr:
+		if !errors.Is(err, spi.ErrStaleClaim) {
+			t.Fatalf("SaveResults() error = %v, want ErrStaleClaim (fence and write must be atomic with the "+
+				"concurrent epoch bump — a stale writer must never land rows after losing the race)", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("SaveResults did not return within 10s — likely deadlocked on actor's row lock")
+	}
+
+	got, err := store.GetJob(ctx, "job-atomic")
+	if err != nil {
+		t.Fatalf("GetJob() error: %v", err)
+	}
+	if got.Epoch != 2 {
+		t.Fatalf("Epoch = %d, want 2 (actor's bump)", got.Epoch)
+	}
+
+	_, total, err := store.GetResultIDs(ctx, "job-atomic", 0, 100)
+	if err != nil {
+		t.Fatalf("GetResultIDs() error: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("total = %d, want 0 — the stale writer must not have landed any rows", total)
+	}
+}
+
 func TestPGSearchStore_ResultIDs_TenantIsolation(t *testing.T) {
 	factory := setupSearchTest(t)
 	storeA := getSearchStore(t, factory, "tenant-a")

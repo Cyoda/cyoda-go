@@ -238,6 +238,7 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	return &asyncSearchStore{
 		q:                      f.poolQuerier(),
 		pool:                   f.pool,
+		acquireTimeout:         f.cfg.AcquireTimeout,
 		searchStatementTimeout: f.cfg.SearchStatementTimeout,
 	}, nil
 }

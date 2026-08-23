@@ -24,15 +24,27 @@ type asyncSearchStore struct {
 	// why the job record must stay independent of the submitting transaction.
 	q Querier
 
-	// pool is kept for the one operation Querier does not carry, SaveResults'
-	// CopyFrom.
+	// pool is kept for the operations Querier does not carry: SaveResults
+	// opens a per-chunk transaction on it (Begin) and streams the chunk
+	// through it (CopyFrom) so the fence check and the write are atomic.
 	pool *pgxpool.Pool
+
+	// acquireTimeout bounds the connection acquire for SaveResults' per-chunk
+	// Begin — see newAcquireContext. It never reaches the transaction handle
+	// itself, only the wait for a pooled connection.
+	acquireTimeout time.Duration
 
 	// searchStatementTimeout is the ceiling the SCAN an async job runs is
 	// bounded by — not any statement in this file, which are the ordinary
 	// job-record reads and writes and belong under the interactive ceiling like
 	// every other short statement.
 	searchStatementTimeout time.Duration
+}
+
+// acquireContext bounds SaveResults' per-chunk Begin. See newAcquireContext
+// for why the deadline must never reach the transaction handle it returns.
+func (s *asyncSearchStore) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return newAcquireContext(ctx, s.acquireTimeout)
 }
 
 // AsyncScanContext marks ctx as belonging to an async-search scan, so the entity
@@ -117,12 +129,30 @@ func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 // calls this directly before each batch, since its writes land in
 // search_job_results rather than search_jobs — there is no single UPDATE to
 // fence there.
-func (s *asyncSearchStore) probeFenced(ctx context.Context, jobID string, tid spi.TenantID, epoch int64) error {
+//
+// q is explicit rather than always s.q: UpdateJobStatus and Heartbeat probe
+// on the pool-pinned querier after their own atomic UPDATE already found
+// zero rows (probeFenced only classifies why), but SaveResults probes and
+// writes as two separate statements, so it passes a querier bound to its own
+// per-chunk transaction (see forUpdate below).
+//
+// forUpdate takes SELECT ... FOR UPDATE, locking the row for the rest of the
+// caller's transaction. SaveResults sets it so the fence-check and the
+// results write it gates are atomic against a concurrent ClaimStale or
+// terminal write — both of which are themselves single UPDATEs against this
+// row, so they block on the lock until the fenced transaction commits or
+// rolls back, closing the window a plain SELECT would leave between "epoch
+// confirmed valid" and "rows durably written". UpdateJobStatus and Heartbeat
+// pass false: their probe runs standalone on the pool, and a lock held past
+// the SELECT's return would outlive the statement for no purpose.
+func (s *asyncSearchStore) probeFenced(ctx context.Context, q Querier, jobID string, tid spi.TenantID, epoch int64, forUpdate bool) error {
+	query := `SELECT status, epoch FROM search_jobs WHERE id = $1 AND tenant_id = $2`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
 	var status string
 	var actualEpoch int64
-	err := s.q.QueryRow(ctx,
-		`SELECT status, epoch FROM search_jobs WHERE id = $1 AND tenant_id = $2`,
-		jobID, string(tid)).Scan(&status, &actualEpoch)
+	err := q.QueryRow(ctx, query, jobID, string(tid)).Scan(&status, &actualEpoch)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
@@ -163,7 +193,7 @@ func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, ep
 		return fmt.Errorf("failed to update search job %s: %w", jobID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return s.probeFenced(ctx, jobID, tid, epoch)
+		return s.probeFenced(ctx, s.q, jobID, tid, epoch, false)
 	}
 	return nil
 }
@@ -187,22 +217,29 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 		return fmt.Errorf("failed to heartbeat search job %s: %w", jobID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return s.probeFenced(ctx, jobID, tid, epoch)
+		return s.probeFenced(ctx, s.q, jobID, tid, epoch, false)
 	}
 	return nil
 }
 
 // saveResultsBatchSize is the CopyFrom chunk size: large enough to amortise
-// round trips, small enough that the pool connection CopyFrom pins is held
+// round trips, small enough that the transaction each chunk opens is held
 // for one chunk, not the whole (potentially very large) result stream.
 const saveResultsBatchSize = 1000
 
 // SaveResults streams entityIDs into search_job_results in
-// saveResultsBatchSize chunks. Each chunk starts with a ctx.Err() check and a
-// fenced probe (see probeFenced) — SaveResults itself never writes to
-// search_jobs, so this is the only fencing the write gets — then a single
-// pool.CopyFrom for the chunk. seq is a running counter across the whole
-// call, so chunk boundaries never repeat or skip a sequence position.
+// saveResultsBatchSize chunks. Each chunk starts with a ctx.Err() check, then
+// opens its own transaction that fences (see probeFenced, forUpdate=true) and
+// CopyFrom's the chunk before committing — SaveResults itself never writes to
+// search_jobs, so this is the only fencing the write gets, and the row lock
+// the fence takes makes the two atomic against a concurrent ClaimStale or
+// terminal write: neither can land between "epoch confirmed valid" and "rows
+// durably written" because both are themselves UPDATEs against the same
+// locked row. Deliberately one transaction per chunk, not one for the whole
+// call: a job can run for hours, and holding a pooled connection that long
+// would starve the pool's small connection budget. seq is a running counter
+// across the whole call, so chunk boundaries never repeat or skip a sequence
+// position.
 func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
@@ -219,7 +256,26 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.probeFenced(ctx, jobID, tid, epoch); err != nil {
+
+		// Acquire-only deadline, cancelled the instant Begin returns — see
+		// newAcquireContext — so the transaction handle that outlives this
+		// call never inherits it.
+		acquireCtx, cancelAcquire := s.acquireContext(ctx)
+		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+		cancelAcquire()
+		if err != nil {
+			return classifyAcquireErr(ctx, acquireCtx,
+				fmt.Sprintf("failed to begin results-chunk tx for job %s", jobID), err)
+		}
+		// Rollback is idempotent in pgx: a no-op once Commit has landed, and
+		// this is the only path a probeFenced failure or a CopyFrom failure
+		// takes — releasing the row lock either way.
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		// classifiedQuerier keeps this statement on the same error
+		// classification every other statement in this store gets from the
+		// pool-pinned s.q, even though it runs on our own private tx.
+		if err := s.probeFenced(ctx, classifiedQuerier{inner: tx}, jobID, tid, epoch, true); err != nil {
 			return err
 		}
 
@@ -231,14 +287,16 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 
 		// CopyFrom is not on Querier, so this batch classifies at the call
 		// site rather than inside the funnel. Same classification, applied by
-		// hand — and only for the duration of this one batch's COPY, not the
-		// whole (potentially many-batch) call.
-		_, err := s.pool.CopyFrom(ctx,
+		// hand.
+		if _, err := tx.CopyFrom(ctx,
 			pgx.Identifier{"search_job_results"},
 			[]string{"job_id", "tenant_id", "seq", "entity_id"},
-			pgx.CopyFromRows(rows))
-		if err != nil {
+			pgx.CopyFromRows(rows)); err != nil {
 			return fmt.Errorf("failed to save results batch for job %s: %w", jobID, classifyError(err))
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit results batch for job %s: %w", jobID, classifyError(err))
 		}
 		batch = batch[:0]
 		return nil
