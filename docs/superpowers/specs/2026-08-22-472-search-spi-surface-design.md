@@ -39,18 +39,32 @@ type IterateOptions struct {
 }
 ```
 
-- **Ordering is honoured.** Empty `OrderBy` means **order unspecified** —
-  order-insensitive consumers (grouped stats, conditional delete) pay no
-  sorting tax anywhere. When `OrderBy` is non-empty the iterator MUST yield
-  in the requested order; every engine-executed backend can (no
-  refusal sentinel — settled with Paul 2026-08-22: insurance for a backend
-  that doesn't exist). **`OrderBy` with an ambient transaction is
+- **Ordering is honoured, scoped to who needs it.** Empty `OrderBy` means
+  **order unspecified** — order-insensitive consumers (grouped stats,
+  conditional delete) pay no sorting tax anywhere. When `OrderBy` is
+  non-empty: backends whose async search the engine executes (all four
+  in-house) MUST yield in the requested order — the async executor is the
+  only ordered-Iterate consumer. A backend whose async search is
+  self-executing (the commercial backend implements `Iterable` too, and
+  cross-shard user-field ordering there would be an O(model) in-process
+  sort) MAY reject an ordered call with a plain error; its expected
+  conformance posture is a documented Skip of the ordered-yield subtests.
+  No refusal sentinel (settled with Paul 2026-08-22) — no engine path can
+  reach the rejection. **`OrderBy` with an ambient transaction is
   unsupported** (zero consumers: the async executor runs outside
   transactions; in-tx consumers are order-insensitive) — implementations
   return a plain error; the engine never makes that call. The tie-breaker
   rule applies to requested orders: the final sort key is always entity ID
   in the **engine's canonical ID order** (§5), so equal user-field values
   can never yield nondeterministic order.
+- **`OrderSpec{Source: Meta, Path: "id"}` means the engine's canonical ID
+  order; `Kind` is ignored for that path.** This must be stated on
+  `OrderSpec` itself, because the existing SPI ordering docs promise the
+  opposite ("every backend produces identical ordering", "Kind fixes the
+  cross-backend comparison") — those sentences, and `SearchOptions`'
+  empty-`OrderBy` default-order text, are rewritten to the per-engine
+  contract in the same tag (§10). Applies uniformly to `Search`, `Iterate`,
+  and the async default (§4.5).
   sqlite/postgres push `ORDER BY` into SQL; memory sorts its snapshot.
   Honesty note on the policy boundary: sqlite is embedded, so its sort runs
   in-process (temp B-tree with disk spill) — the memory rule bounds the
@@ -134,7 +148,10 @@ re-open an O(matches) materialising path through `Search`.
 SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error
 ```
 
-One call per job, consumed lazily. Contract:
+One call per claim epoch — which is one call per job until the re-execution
+follow-up lands (a claimant then calls `ClearResults` and streams again at
+its higher epoch; the contract text needs no amendment for that). Consumed
+lazily. Contract:
 
 - **Order**: yield order is save order is `GetResultIDs` page order.
 - **Batching is store-internal.** sqlite chunks into multiple short write
@@ -148,7 +165,10 @@ One call per job, consumed lazily. Contract:
   it does not mean the job succeeded. The engine consults the producer's
   error state (iterator `Err()`, ctx) after `SaveResults` returns and writes
   the terminal status accordingly. Mid-stream failure may leave partial rows;
-  cleanup is §4.3's job, and visibility is gated on `SUCCESSFUL` as today.
+  visibility is gated on `SUCCESSFUL` as today. Cleanup of partial rows:
+  a job that goes terminal keeps its rows until TTL reap / `DeleteJob`
+  (invisible either way); a job left RUNNING is claimed via §4.3 and the
+  claimant clears them.
 - **Self-executing stores** (the commercial backend) keep rejecting the call;
   the engine never invokes it for them.
 
@@ -193,7 +213,17 @@ SPI additions:
 Heartbeat(ctx context.Context, jobID string, epoch int64) error
 ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*SearchJob, error)
 ClearResults(ctx context.Context, jobID string) error
+
+// changed signature (epoch added; all other params as today):
+UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string,
+    resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error
 ```
+
+Epoch initialization: `CreateJob` persists the job at epoch 1 regardless of
+the struct's field value (store contract, spitest-asserted); the initial
+executor runs at epoch 1. Every executor-side write — including the
+panic-recovery FAILED write — passes the epoch the executor was started
+with (1, or the claimed epoch after the re-execution follow-up).
 
 - `SearchJob` gains `HeartbeatTime *time.Time` and `Epoch int64`. The epoch
   is the claim/attempt counter: the initial executor runs at epoch 1; every
@@ -248,7 +278,11 @@ ClearResults(ctx context.Context, jobID string) error
   tenant-less context (the reaper loop owns no tenant) — stated in the
   interface doc, precedent `ScheduledTaskStore.ScanDue`. A tenant-scoped
   implementation would silently claim nothing and reinstate the
-  orphan-forever defect.
+  orphan-forever defect. The claimant's *follow-up* writes
+  (`UpdateJobStatus`, `ClearResults`) go through tenant-scoped stores: the
+  reaper reconstructs a per-job tenant context from the claimed
+  `SearchJob.TenantID` (memory's store errors without one — a tenant-less
+  follow-up write would silently fail there).
 - Self-executing stores may no-op the claim surface (`Heartbeat`,
   `ClaimStale`, `ClearResults`); resilience is their concern, and nothing
   here constrains their recovery model. The tag-2 consumer notice flags that
@@ -296,7 +330,10 @@ notice. A short cloud-parity note records async result ordering as contract.
   its scan connection plus, per chunk, a save connection) — the engine cannot
   read plugin config through the SPI, so this is a documented default, not a
   computed one. Env vars follow Gate 4 (help topic, README, `DefaultConfig()`
-  together).
+  together). The queue bound and its saturation behaviour (a full queue at
+  `POST /search/async` would be user-facing — new 429/503, touching §8) are
+  deliberately left to the plan; the plan must decide them, not inherit
+  "unbounded" silently.
 - Shutdown drains via the registry: cancel in-flight jobs, mark FAILED (via
   the epoch-fenced write) with a safe message; no stuck-RUNNING jobs. The
   re-execution follow-up (#509) replaces this with release-and-reclaim —
@@ -333,15 +370,22 @@ GetPage(ctx context.Context, modelRef ModelRef, limit, offset int, asAt *time.Ti
   transaction via compute-node callbacks): when `asAt` is nil, `GetPage`
   overlays the transaction buffer like `GetAll` does today — the page
   reflects the merged view snapshotted at the call (ordered via the
-  `MergeOrdered` rule), deleted entities excluded, and returned entities
-  recorded in the read-set, preserving current `ListEntities` behaviour.
-  Committed-only reads would silently break a processor that saves then
-  lists within its transaction. With `asAt` set, the read is committed-only
-  — the SPI-wide in-transaction point-in-time rule.
+  `MergeOrdered` rule), deleted entities excluded, and **the returned page
+  recorded in the read-set — unconditionally, no `TrackingRead` knob**
+  (its one consumer, the in-tx list, is a tracked read by intent). This is
+  a deliberate narrowing, not preservation: today's in-tx `GetAll` records
+  the whole model into the conflict read-set; `GetPage` records only the
+  page, so first-committer-wins validation narrows from model-wide to
+  page-wide. Committed-only reads would silently break a processor that
+  saves then lists within its transaction. With `asAt` set, the read is
+  committed-only — the SPI-wide in-transaction point-in-time rule.
 - Per-entity load errors fail the call (fail-fast) — page boundaries must be
   deterministic.
-- Index work required for the latency acceptance criterion ("bounded by
-  pageSize, not N"): postgres extends the model index to include `entity_id`
+- Index work required for the latency acceptance criterion — which reads
+  precisely as: **no O(model) payload materialisation; offset cost is
+  O(offset)** (true on every backend; SQL `OFFSET` itself scans O(offset)
+  index entries, so "bounded by pageSize" must not be encoded literally in
+  a test): postgres extends the model index to include `entity_id`
   with `COLLATE "C"`; sqlite adds a `(tenant_id, model_name, model_version,
   entity_id)` index. **Commercial backend**: under the per-engine ordering
   contract its native timeuuid clustering IS its canonical ID order — a
@@ -411,6 +455,11 @@ the divergence reads as intent, not accident.
   a timestamp.
 - Order: newest-first, tie-broken by `Version` descending (fixes the
   currently unstable equal-timestamp sort).
+- Wire mappings pinned: the changes endpoint's `HasEntity` becomes
+  `!Deleted` (today it probes `Entity != nil`, which is backend-divergent
+  for tombstones — canonicalizing makes tombstone rows uniform across
+  backends, a parity fix); `entityId` in the audit event comes from the
+  request's own entity-ID parameter; `TransactionID` from the DTO.
 - `GET /entity/{id}/changes` pushes its cutoff (`Until`) and its 1000 cap
   (`Limit`) down. The audit event search pushes its from/to window down; its
   merge with state-machine events and cursor pagination stay in Go over
@@ -458,8 +507,8 @@ must still hold on a running backend after the reroute.
 
 | Endpoint | Codes to re-verify |
 |---|---|
-| `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition / limit > max; 401; 404 model |
-| `GET /search/async/{jobId}` | 200 page; 400 job not complete; 401; 404 job |
+| `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition; 401; 404 model (the submit endpoint has no limit parameter — the service-level limit>max guard is unreachable over HTTP) |
+| `GET /search/async/{jobId}` | 200 page; 400 job not complete / pagination over max; 401; 404 job |
 | `GET /search/async/{jobId}/status` | 200; 401; 404 |
 | `PUT /search/async/{jobId}/cancel` | 200 cancelled=true (RUNNING) / false (terminal); 401; 404 — **now actually stops the scan** |
 | `POST /search/direct/{entityName}/{modelVersion}` | 200 NDJSON; 400 incl. limit ≤ 0 rejected; 404; 408 timeoutMillis; `SEARCH_RESULT_LIMIT` over-limit error (status per existing contract) |
@@ -474,7 +523,7 @@ must still hold on a running backend after the reroute.
 
 | Scenario | unit | e2e (postgres) | parity | gRPC |
 |---|---|---|---|---|
-| Requested-order Iterate honoured-or-sentinel incl. tie-breaker, residual, ctx cancel | spitest | — | implied by spitest on all backends | — |
+| Requested-order Iterate honoured (ordered in-tx call errors; self-executing-async backends may reject) incl. tie-breaker, residual, ctx cancel | spitest | — | implied by spitest on all backends | — |
 | Overlay snapshot-at-open; TrackingRead gating | spitest | — | — | — |
 | Terminal statuses write-once (`ErrAlreadyTerminal` per transition) | spitest | — | — | — |
 | Search rejects Limit ≤ 0 | spitest | ✓ (direct handler already rejects) | — | ✓ existing |
@@ -511,9 +560,12 @@ is not wall-clock assertion.
   `GetVersionMetadata` + `EntityVersionMeta`, delete `GetVersionHistory`,
   drop `MergeBounded`'s now-dead `limit <= 0` unbounded mode (its doc calls
   the mode load-bearing; after this tag no caller passes it); spitest suites
-  for all of the above incl. the `Harness` ID-comparator hook (§5);
-  CHANGELOG `### Breaking` with migration notes; consumer notification
-  pre-merge.
+  for all of the above incl. the `Harness` ID-comparator hook (§5); rewrite
+  the existing SPI ordering docs to the per-engine contract (`OrderSpec` —
+  `Path:"id"` means canonical ID order, `Kind` ignored; `OrderKind`'s
+  "identical ordering" promise; `SearchOptions`' empty-`OrderBy` default
+  text); CHANGELOG `### Breaking` with migration notes; consumer
+  notification pre-merge.
 - cyoda-go: plugin implementations (incl. sqlite reader connection, postgres
   ceiling port + chunked CopyFrom, index migrations), engine reroutes (§7),
   worker pool + registry + drain, Gate-4 doc trio for new env vars,
