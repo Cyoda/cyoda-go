@@ -57,6 +57,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEARCH_ASYNC_WORKERS", Topic: "search", Type: "int", Default: "8", Description: "Async-search worker pool size. Must be >= 1; startup fails otherwise."},
 	{Name: "CYODA_SEARCH_ASYNC_QUEUE", Topic: "search", Type: "int", Default: "256", Description: "Async-search submit queue capacity beyond the running workers; Submit returns SEARCH_QUEUE_FULL (retryable 503) once exhausted. Must be >= 0; startup fails otherwise."},
 	{Name: "CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", Topic: "search", Type: "duration", Default: "15s", Description: "How often a running async-search executor stamps job liveness and polls for cross-node cancel/terminal status, starting at submit time (while queued, not only while scanning). Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_STALE_AFTER", Topic: "search", Type: "duration", Default: "5m", Description: "How long a RUNNING async-search job may go without a heartbeat before the reaper claims it and marks it FAILED. Must be >= 4x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL; startup fails otherwise."},
 
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},

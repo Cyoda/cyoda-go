@@ -468,6 +468,18 @@ func New(cfg Config) *App {
 				} else if reaped > 0 {
 					slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
 				}
+				// Stale-job claim-then-FAIL reaper (interim disposition —
+				// see search.FailStaleJobs' doc comment): a RUNNING job
+				// whose owner stopped heartbeating (crashed/killed node) is
+				// claimed and marked FAILED rather than left RUNNING
+				// forever. Same ticker as the snapshot reaper above, not a
+				// second loop.
+				failed, err := search.FailStaleJobs(context.Background(), searchStore, cfg.SearchJobStaleAfter, search.StaleClaimBatch)
+				if err != nil {
+					slog.Error("stale search job reaper error", "pkg", "search", "err", err)
+				} else if failed > 0 {
+					slog.Warn("failed stale async search jobs", "pkg", "search", "count", failed)
+				}
 			case <-a.stopSearchReaper:
 				return
 			}

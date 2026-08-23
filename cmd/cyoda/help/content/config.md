@@ -91,6 +91,7 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 - `CYODA_SEARCH_ASYNC_WORKERS` (int, default: `8`) — async-search worker pool size. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped.
 - `CYODA_SEARCH_ASYNC_QUEUE` (int, default: `256`) — async-search submit queue capacity beyond the running workers. Once both are exhausted, submission fails with `503 SEARCH_QUEUE_FULL` (retryable). Values `< 0` fail startup.
 - `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often a running async-search executor stamps job liveness and polls for a cross-node cancel/terminal status, starting at submit time (queued or scanning). Config is a QA'd artefact: values `<= 0` fail startup rather than being clamped.
+- `CYODA_SEARCH_JOB_STALE_AFTER` (duration, default: `5m`) — how long a `RUNNING` async-search job may go without a heartbeat before the reaper claims it and marks it `FAILED` (its owning executor most likely crashed or was killed). Config is a QA'd artefact: values below `4 x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` fail startup rather than being clamped.
 
 ### Cluster and dispatch
 

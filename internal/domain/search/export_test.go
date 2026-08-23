@@ -19,3 +19,12 @@ func PathValidationCacheBucketCount(c *PathValidationCache) int {
 	defer c.mu.Unlock()
 	return len(c.buckets)
 }
+
+// JobFailureFallback returns the sanitised message written into a job
+// record on an unattributable failure — the same constant FailStaleJobs
+// (reaper.go) and the executor's own failure paths (service.go) both use.
+// Exposed so external tests can assert against the constant itself rather
+// than duplicating its literal text.
+func JobFailureFallback() string {
+	return jobFailureFallback
+}

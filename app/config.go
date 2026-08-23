@@ -66,6 +66,16 @@ type Config struct {
 	// (time.NewTicker panics on a non-positive duration); validated at
 	// startup by ValidateSearchJobHeartbeat.
 	SearchJobHeartbeatInterval time.Duration
+	// SearchJobStaleAfter is how long a RUNNING async-search job may go
+	// without a heartbeat (spi.AsyncSearchStore.ClaimStale's staleness
+	// baseline — HeartbeatTime, or CreateTime when never heartbeated)
+	// before the reaper (internal/domain/search.FailStaleJobs, wired into
+	// the same ticker as the snapshot-TTL reaper in app.go) claims it and
+	// marks it FAILED. Must dominate SearchJobHeartbeatInterval by a wide
+	// margin so a merely slow heartbeat tick is never mistaken for a dead
+	// executor — see ValidateSearchJobStaleAfter.
+	// CYODA_SEARCH_JOB_STALE_AFTER, default 5m.
+	SearchJobStaleAfter time.Duration
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
@@ -294,6 +304,7 @@ func DefaultConfig() Config {
 			QueueLen: envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
 		},
 		SearchJobHeartbeatInterval: envDuration("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", 15*time.Second),
+		SearchJobStaleAfter:        envDuration("CYODA_SEARCH_JOB_STALE_AFTER", 5*time.Minute),
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
@@ -666,6 +677,33 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 func ValidateSearchJobHeartbeat(interval time.Duration) error {
 	if interval <= 0 {
 		return fmt.Errorf("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL must be > 0, got %s", interval)
+	}
+	return nil
+}
+
+// staleAfterMinMultiple is the minimum multiple of the heartbeat interval
+// CYODA_SEARCH_JOB_STALE_AFTER must dominate by. A stale-job claim is a
+// takeover: it fails a job whose owning executor may simply be about to
+// heartbeat again. Requiring several missed ticks' worth of headroom before
+// staleness kicks in keeps ordinary scheduling jitter (GC pause, a busy
+// worker pool, a slow ticker) from reading as a dead executor.
+const staleAfterMinMultiple = 4
+
+// ValidateSearchJobStaleAfter enforces startup-time correctness for
+// CYODA_SEARCH_JOB_STALE_AFTER against CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL.
+// Called once at startup (from cmd/cyoda/main.go), after both
+// ValidateSearchJobHeartbeat has already rejected a non-positive interval;
+// a non-nil return causes the binary to slog the error and os.Exit(1).
+//
+// Config is a QA'd artefact: the interval « staleAfter invariant
+// (spi.AsyncSearchStore.ClaimStale's doc comment) is made mechanically
+// checkable here rather than left as a documentation-only convention —
+// staleAfter < 4×interval is a hard startup error, not silently accepted.
+func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
+	minStale := staleAfterMinMultiple * interval
+	if staleAfter < minStale {
+		return fmt.Errorf("CYODA_SEARCH_JOB_STALE_AFTER must be >= %d x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL (%s, given interval=%s), got %s",
+			staleAfterMinMultiple, minStale, interval, staleAfter)
 	}
 	return nil
 }

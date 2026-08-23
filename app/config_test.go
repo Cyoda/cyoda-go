@@ -130,6 +130,67 @@ func TestValidateSearchJobHeartbeat_AcceptsPositive(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_SearchJobStaleAfter asserts the
+// CYODA_SEARCH_JOB_STALE_AFTER default (5m) under an empty environment, and
+// that an env override binds through envDuration.
+func TestDefaultConfig_SearchJobStaleAfter(t *testing.T) {
+	t.Setenv("CYODA_SEARCH_JOB_STALE_AFTER", "")
+	os.Unsetenv("CYODA_SEARCH_JOB_STALE_AFTER")
+
+	if got := DefaultConfig().SearchJobStaleAfter; got != 5*time.Minute {
+		t.Errorf("default SearchJobStaleAfter = %s, want 5m", got)
+	}
+
+	t.Setenv("CYODA_SEARCH_JOB_STALE_AFTER", "10m")
+	if got := DefaultConfig().SearchJobStaleAfter; got != 10*time.Minute {
+		t.Errorf("env SearchJobStaleAfter = %s, want 10m", got)
+	}
+}
+
+// TestValidateSearchJobStaleAfter_RejectsBelowFourXInterval asserts the
+// spec's interval « staleAfter invariant is a hard startup error once made
+// checkable as staleAfter >= 4x interval, not silently accepted.
+func TestValidateSearchJobStaleAfter_RejectsBelowFourXInterval(t *testing.T) {
+	cases := []struct {
+		name       string
+		staleAfter time.Duration
+		interval   time.Duration
+	}{
+		{"equal to interval", 15 * time.Second, 15 * time.Second},
+		{"just under 4x", 59 * time.Second, 15 * time.Second},
+		{"documented defaults inverted", 15 * time.Second, 5 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateSearchJobStaleAfter(tc.staleAfter, tc.interval); err == nil {
+				t.Errorf("ValidateSearchJobStaleAfter(%s, %s) = nil, want an error", tc.staleAfter, tc.interval)
+			}
+		})
+	}
+}
+
+// TestValidateSearchJobStaleAfter_AcceptsAtOrAboveFourXInterval asserts the
+// boundary (exactly 4x) and the documented defaults (5m staleAfter, 15s
+// interval = 20x) both pass.
+func TestValidateSearchJobStaleAfter_AcceptsAtOrAboveFourXInterval(t *testing.T) {
+	cases := []struct {
+		name       string
+		staleAfter time.Duration
+		interval   time.Duration
+	}{
+		{"exactly 4x", 60 * time.Second, 15 * time.Second},
+		{"documented defaults", 5 * time.Minute, 15 * time.Second},
+		{"well above 4x", time.Hour, time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateSearchJobStaleAfter(tc.staleAfter, tc.interval); err != nil {
+				t.Errorf("ValidateSearchJobStaleAfter(%s, %s) = %v, want nil", tc.staleAfter, tc.interval, err)
+			}
+		})
+	}
+}
+
 func TestDefaultConfig_OIDCDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.IAM.OIDC.RequireHTTPS {

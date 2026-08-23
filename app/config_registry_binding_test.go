@@ -99,6 +99,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_SEARCH_ASYNC_WORKERS":          strconv.Itoa(c.SearchAsync.Workers),
 		"CYODA_SEARCH_ASYNC_QUEUE":            strconv.Itoa(c.SearchAsync.QueueLen),
 		"CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL": renderDuration(c.SearchJobHeartbeatInterval),
+		"CYODA_SEARCH_JOB_STALE_AFTER":        renderDuration(c.SearchJobStaleAfter),
 
 		// --- cluster ---
 		"CYODA_CLUSTER_ENABLED":          strconv.FormatBool(c.Cluster.Enabled),
