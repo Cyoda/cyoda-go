@@ -4,12 +4,15 @@ package search_test
 // SaveResults pipeline, the heartbeat ticker, the in-process cancel
 // registry, and the untranslatable-condition fallback. Each test below maps
 // to one of the E2.1 scenarios (a)-(f) in
-// .superpowers/sdd/2026-08-22-472-search-spi-surface/task-E2-brief.md.
+// .superpowers/sdd/2026-08-22-472-search-spi-surface/task-E2-brief.md, plus
+// (g) SubmitAsync's own ErrQueueFull cleanup branch (fix-round-1 gap).
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +24,27 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
+
+// mustOccupyPool submits job to pool, retrying past the narrow startup race
+// between NewWorkerPool returning and its worker goroutine actually
+// reaching its channel receive (a fresh pool's first Submit can spuriously
+// see ErrQueueFull for a few microseconds — see pool_test.go's
+// mustSubmitEventually, unavailable here since it's unexported in a
+// different test package).
+func mustOccupyPool(t *testing.T, pool *search.WorkerPool, job func(context.Context)) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := pool.Submit(job)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, search.ErrQueueFull) || time.Now().After(deadline) {
+			t.Fatalf("occupy pool: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 // newTinyPool builds a small bounded pool for executor tests and drains it
 // at test cleanup so no worker goroutines outlive the test.
@@ -548,5 +572,101 @@ func TestExecutor_UntranslatableCondition_FallsBackAndSaves(t *testing.T) {
 	}
 	if total != 5 || len(ids) != 5 {
 		t.Fatalf("got %d/%d results, want 5/5", len(ids), total)
+	}
+}
+
+// deleteObserverStore wraps the real memory AsyncSearchStore, recording the
+// ID CreateJob assigned and every ID DeleteJob is called with — used by (g)
+// to identify the job SubmitAsync created and then tore down, without
+// depending on the deterministic TestUUIDGenerator sequence (SubmitAsync
+// returns "" on rejection, not the generated ID).
+type deleteObserverStore struct {
+	spi.AsyncSearchStore
+
+	mu         sync.Mutex
+	createdID  string
+	deletedIDs []string
+}
+
+func (d *deleteObserverStore) CreateJob(ctx context.Context, job *spi.SearchJob) error {
+	err := d.AsyncSearchStore.CreateJob(ctx, job)
+	if err == nil {
+		d.mu.Lock()
+		d.createdID = job.ID
+		d.mu.Unlock()
+	}
+	return err
+}
+
+func (d *deleteObserverStore) DeleteJob(ctx context.Context, jobID string) error {
+	d.mu.Lock()
+	d.deletedIDs = append(d.deletedIDs, jobID)
+	d.mu.Unlock()
+	return d.AsyncSearchStore.DeleteJob(ctx, jobID)
+}
+
+// (g) SubmitAsync's own ErrQueueFull cleanup branch (service.go's
+// `if submitErr != nil { cancel(); s.deregisterJob(jobID); s.searchStore.DeleteJob(...) }`):
+// a job that never entered the queue must not linger — no fenced RUNNING/FAILED
+// row, no cancel-registry entry, and ErrQueueFull propagated to the caller.
+func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "queuefullitem", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+
+	realAsync, _ := base.AsyncSearchStore(context.Background())
+	observer := &deleteObserverStore{AsyncSearchStore: realAsync}
+
+	// A single-worker, zero-queue pool occupied by a blocking dummy job:
+	// the very next Submit call (SubmitAsync's own) has nowhere to land and
+	// returns ErrQueueFull immediately.
+	pool := search.NewWorkerPool(1, 0)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	release := make(chan struct{})
+	started := make(chan struct{})
+	mustOccupyPool(t, pool, func(context.Context) {
+		close(started)
+		<-release
+	})
+	<-started
+	t.Cleanup(func() { close(release) })
+
+	uuids := common.NewTestUUIDGenerator()
+	svc := search.NewSearchService(base, uuids, observer).
+		WithAsyncPool(pool).
+		WithHeartbeat(20 * time.Millisecond)
+
+	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if !errors.Is(err, search.ErrQueueFull) {
+		t.Fatalf("SubmitAsync error = %v, want ErrQueueFull", err)
+	}
+	if jobID != "" {
+		t.Fatalf("SubmitAsync jobID = %q, want empty on queue-full rejection", jobID)
+	}
+
+	observer.mu.Lock()
+	createdID := observer.createdID
+	deletedIDs := append([]string(nil), observer.deletedIDs...)
+	observer.mu.Unlock()
+
+	if createdID == "" {
+		t.Fatal("CreateJob was never called — precondition for this test is that a row was created before the queue-full rejection")
+	}
+	if len(deletedIDs) != 1 || deletedIDs[0] != createdID {
+		t.Fatalf("DeleteJob calls = %v, want exactly one call with jobID %q", deletedIDs, createdID)
+	}
+
+	// The row is gone — not a fenced FAILED write left behind.
+	if _, getErr := realAsync.GetJob(ctx, createdID); !errors.Is(getErr, spi.ErrNotFound) {
+		t.Fatalf("GetJob(%s) error = %v, want spi.ErrNotFound (the job row must be deleted, not left RUNNING/FAILED)", createdID, getErr)
+	}
+
+	// The cancel-registry entry is gone too: CancelRunning must report
+	// nothing to cancel.
+	if svc.CancelRunning(createdID) {
+		t.Fatalf("CancelRunning(%s) = true, want false (the registry entry must be removed on queue-full rejection)", createdID)
 	}
 }

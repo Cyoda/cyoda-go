@@ -52,12 +52,12 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// TODO(#472-E6): GetVersionMetadata call is a minimal mechanical swap for
-	// the deleted GetVersionHistory — it compiles internal/domain/audit
-	// against the new SPI but does not yet push the request's time window
-	// down (opts.From/Until), apply the 1000-row cap, or map
-	// TransactionID/actor attribution the way task E6 (history read
-	// rewires, docs/superpowers/plans/2026-08-22-472-search-spi-surface.md)
+	// TODO(search-spi-surface-E6): GetVersionMetadata call is a minimal
+	// mechanical swap for the deleted GetVersionHistory — it compiles
+	// internal/domain/audit against the new SPI but does not yet push the
+	// request's time window down (opts.From/Until), apply the 1000-row
+	// cap, or map TransactionID/actor attribution the way task E6 (history
+	// read rewires, docs/superpowers/plans/2026-08-22-472-search-spi-surface.md)
 	// specifies. Full behavior lands with that task.
 	versions, err := store.GetVersionMetadata(ctx, entityId.String(), spi.VersionMetadataOptions{})
 	if err != nil {

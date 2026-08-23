@@ -220,7 +220,12 @@ const (
 	defaultAsyncPoolWorkers = 4
 	defaultAsyncPoolQueue   = 64
 	// defaultHeartbeatInterval is heartbeatEvery()'s fallback when
-	// WithHeartbeat is never called or is called with a non-positive value.
+	// WithHeartbeat is never called or is called with a non-positive value
+	// — same library-default rationale as the pool constants above, and
+	// otherwise unrelated to app.Config's own CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL
+	// default (15s, see app/config.go's DefaultConfig): that one sizes the
+	// wired-in production interval via WithHeartbeat, this one only ever
+	// applies when WithHeartbeat is skipped entirely.
 	defaultHeartbeatInterval = 5 * time.Second
 )
 
@@ -336,9 +341,17 @@ func (s *SearchService) deregisterJob(jobID string) {
 // CancelAsync for an immediate in-process abort that does not wait for the
 // next heartbeat poll to observe the store's CANCELLED write.
 func (s *SearchService) CancelRunning(jobID string) bool {
-	s.registryMu.Lock()
-	entry, ok := s.registry[jobID]
-	s.registryMu.Unlock()
+	// IIFE so the lock is released via defer before entry.cancel() runs —
+	// cancel() must not be called while holding registryMu, since it can
+	// synchronously wake the heartbeat goroutine or the executor, either of
+	// which may itself call deregisterJob (registryMu.Lock) before this
+	// call returns.
+	entry, ok := func() (*asyncJobHandle, bool) {
+		s.registryMu.Lock()
+		defer s.registryMu.Unlock()
+		e, ok := s.registry[jobID]
+		return e, ok
+	}()
 	if !ok {
 		return false
 	}
@@ -357,12 +370,17 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 // not treated as a failure of this call. Returns the number of jobs this
 // call attempted to abort.
 func (s *SearchService) AbortRegisteredJobs(ctx context.Context) int {
-	s.registryMu.Lock()
-	entries := make(map[string]*asyncJobHandle, len(s.registry))
-	for id, e := range s.registry {
-		entries[id] = e
-	}
-	s.registryMu.Unlock()
+	// IIFE so the lock is released via defer before entry.cancel() runs
+	// below — same reasoning as CancelRunning.
+	entries := func() map[string]*asyncJobHandle {
+		s.registryMu.Lock()
+		defer s.registryMu.Unlock()
+		snap := make(map[string]*asyncJobHandle, len(s.registry))
+		for id, e := range s.registry {
+			snap[id] = e
+		}
+		return snap
+	}()
 
 	for jobID, entry := range entries {
 		entry.cancel()
