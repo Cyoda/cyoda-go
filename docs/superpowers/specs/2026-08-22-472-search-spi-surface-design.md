@@ -131,7 +131,7 @@ re-open an O(matches) materialising path through `Search`.
 ### 4.1 Streamed result save
 
 ```go
-SaveResults(ctx context.Context, jobID string, entityIDs iter.Seq[string]) error
+SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error
 ```
 
 One call per job, consumed lazily. Contract:
@@ -160,34 +160,78 @@ deadlocks producer against consumer. Plugin-internal change, no SPI impact.
 
 `SUCCESSFUL`, `FAILED`, and `CANCELLED` are terminal. The store MUST refuse
 any write against a terminal job — including a same-status rewrite:
-`UpdateJobStatus`, `FailStale`, `Heartbeat`, and `SaveResults` all return the
-new sentinel `spi.ErrAlreadyTerminal` (distinguishable, so a losing writer
-can log; for `SaveResults` the check runs at least at chunk boundaries, so a
-reaped executor's stream aborts within one chunk). `Cancel` is the sole
-idempotent-nil exception, per its tag-1 contract. This closes the zombie-executor race:
+`UpdateJobStatus`, `Heartbeat`, and `SaveResults` all return the new
+sentinel `spi.ErrAlreadyTerminal` (distinguishable, so a losing writer can
+log; for `SaveResults` the check runs at least at chunk boundaries, so a
+deposed executor's stream aborts within one chunk); `ClaimStale` never
+claims a terminal job. `Cancel` is the sole idempotent-nil exception, per
+its tag-1 contract. This closes the zombie-executor race:
 without it, an executor that stalls past the stale bound, gets reaped by
-another node's `FailStale`, and then recovers could overwrite FAILED with
+another node's claim-then-fail, and then recovers could overwrite FAILED with
 SUCCESSFUL — a job the cluster declared dead serving results as complete.
 The engine's poll loop (§4.6) aborts on **any** terminal status, not just
 CANCELLED. spitest-asserted per transition.
 
-### 4.3 Orphan detection: heartbeat + stale-job reap
+### 4.3 Orphan handling: heartbeat + claim (takeover-shaped surface)
 
 Crash mid-job currently leaves a RUNNING row and partial results forever (the
-reaper skips RUNNING; nothing else cleans up). Two SPI additions:
+reaper skips RUNNING; nothing else cleans up). An async job is **re-executable
+by construction** — its full definition (condition, options, pinned
+PointInTime) is durably stored before execution — so the right long-term
+disposition for an orphaned job is takeover and re-execution, not failure
+(the commercial backend already has this property via its own shard
+recovery; engine-executed backends must not be contractually weaker).
+Settled with Paul 2026-08-22: **the SPI ships the takeover-shaped surface
+now; the engine's re-execution orchestration is a tracked follow-up**, and
+the interim engine disposition is claim-then-FAIL — observably identical to
+plain orphan-failing, but nothing about it is contract, so the upgrade to
+re-execution later touches zero SPI.
+
+SPI additions:
 
 ```go
-Heartbeat(ctx context.Context, jobID string) error          // stamps now on the job
-FailStale(ctx context.Context, staleAfter time.Duration) (int, error)
+Heartbeat(ctx context.Context, jobID string, epoch int64) error
+ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*SearchJob, error)
+ClearResults(ctx context.Context, jobID string) error
 ```
 
-- `SearchJob` gains `HeartbeatTime *time.Time`.
+- `SearchJob` gains `HeartbeatTime *time.Time` and `Epoch int64`. The epoch
+  is the claim/attempt counter: the initial executor runs at epoch 1; every
+  successful `ClaimStale` atomically increments it.
+- **Fencing (the one piece of real new machinery, and why it must ship
+  now):** takeover admits a scenario plain failing never had — the old
+  executor may still be alive (GC pause, transient partition) while a new
+  one writes results for the same job; unfenced, their rows interleave into
+  a corrupt result set. Therefore every executor-side write carries its
+  epoch — `Heartbeat`, `SaveResults`, and the engine's terminal
+  `UpdateJobStatus` — and the store MUST refuse a write whose epoch is not
+  the job's current epoch with the new sentinel `spi.ErrStaleClaim`. The
+  deposed executor's next write errors and it aborts; the result set has
+  exactly one author. Retrofitting the epoch parameter later would be a
+  second breaking change to the same three methods — that is why the
+  groundwork ships in tag 2 even though re-execution is deferred.
+- `ClaimStale` atomically claims up to `limit` RUNNING jobs whose heartbeat
+  (or baseline) is older than `staleAfter`: bumps `Epoch`, stamps
+  `HeartbeatTime`, returns the claimed jobs. Conditional writes make
+  concurrent claimers safe (a job is claimed by exactly one). CANCELLED or
+  otherwise terminal jobs are never claimable.
+- `ClearResults` deletes a job's result rows (the new claimant starts from a
+  clean slate before re-executing). Idempotent.
+- **Interim engine disposition** (this milestone): the reaper loop claims
+  stale jobs and immediately marks them FAILED via the epoch-fenced
+  `UpdateJobStatus`, with a finish time and a safe generic message — the
+  lying-RUNNING defect is fixed now. **Follow-up** (tracked issue, §11): the
+  claimant instead clears results and re-enqueues the job into its worker
+  pool; shutdown stops draining-to-FAILED and simply stops heartbeating
+  (peers or the restarted node reclaim); a startup sweep reclaims own jobs;
+  an attempt cap (epoch bound) backstops crash-looping jobs with FAILED.
+  Node failure then becomes invisible to async clients.
 - The owning engine node heartbeats periodically from submission onward —
   **including while the job waits in the worker-pool queue** (the submitter
   is alive and owns the queue entry). The heartbeat runs on a **dedicated
   per-job ticker goroutine, independent of scan progress** — never in-band
   with the row stream, where a long non-yielding stretch (low-selectivity
-  residual scan, slow save chunk) would starve it and let `FailStale` kill a
+  residual scan, slow save chunk) would starve it and let `ClaimStale` seize a
   healthy long-running job. `heartbeatInterval ≪ staleAfter` is a stated
   config invariant.
 - **Clock domain**: the heartbeat stamp and the staleness comparison MUST use
@@ -197,26 +241,21 @@ FailStale(ctx context.Context, staleAfter time.Duration) (int, error)
 - **Nil heartbeat baseline is `CreateTime`** (fail closed): a job that never
   heartbeated — crash between `CreateJob` and the first stamp — goes stale
   `staleAfter` after creation, not never.
-- `FailStale` (called by the existing reaper loop on every node) marks
-  RUNNING jobs whose heartbeat (or baseline) is older than `staleAfter` as
-  FAILED with a finish time and a safe generic message; the TTL reaper then
-  removes them. The transition is a conditional write, so concurrent
-  `FailStale` from multiple nodes is safe; the returned count is the jobs
-  this call transitioned. Cluster-safe because the heartbeat lives in the
-  store.
-- `Heartbeat` error semantics: terminal job → `ErrAlreadyTerminal`; missing
-  job → `ErrNotFound`. The executor treats **any** `Heartbeat` error as an
-  abort signal (fail closed).
-- **`FailStale` and `ReapExpired` are cross-tenant** and are called with a
+- `Heartbeat` error semantics: stale epoch → `ErrStaleClaim`; terminal job →
+  `ErrAlreadyTerminal`; missing job → `ErrNotFound`. The executor treats
+  **any** `Heartbeat` error as an abort signal (fail closed).
+- **`ClaimStale` and `ReapExpired` are cross-tenant** and are called with a
   tenant-less context (the reaper loop owns no tenant) — stated in the
   interface doc, precedent `ScheduledTaskStore.ScanDue`. A tenant-scoped
-  implementation would silently reap nothing and reinstate the
+  implementation would silently claim nothing and reinstate the
   orphan-forever defect.
-- Self-executing stores may no-op both; recovery is their concern. The tag-2
-  consumer notice flags that the commercial backend's current recovery is
-  rebalance-driven, not liveness-driven — a hung-but-owning node leaves
-  shard rows RUNNING — so the equivalence is theirs to close. spitest covers
-  both methods for engine-executed stores.
+- Self-executing stores may no-op the claim surface (`Heartbeat`,
+  `ClaimStale`, `ClearResults`); resilience is their concern, and nothing
+  here constrains their recovery model. The tag-2 consumer notice flags that
+  the commercial backend's current recovery is rebalance-driven, not
+  liveness-driven — a hung-but-owning node leaves shard rows RUNNING — so
+  closing that gap is theirs. spitest covers the claim surface (claim
+  atomicity, epoch fencing, clear) for engine-executed stores.
 
 ### 4.4 Job-record contract text (previously silent)
 
@@ -258,8 +297,10 @@ notice. A short cloud-parity note records async result ordering as contract.
   read plugin config through the SPI, so this is a documented default, not a
   computed one. Env vars follow Gate 4 (help topic, README, `DefaultConfig()`
   together).
-- Shutdown drains via the registry: cancel in-flight jobs, mark FAILED with a
-  safe message; no stuck-RUNNING jobs.
+- Shutdown drains via the registry: cancel in-flight jobs, mark FAILED (via
+  the epoch-fenced write) with a safe message; no stuck-RUNNING jobs. The
+  re-execution follow-up (#509) replaces this with release-and-reclaim —
+  jobs then survive restarts.
 
 ## 5. Paged entity read (D3)
 
@@ -440,7 +481,8 @@ must still hold on a running backend after the reroute.
 | Streamed SaveResults: order, chunk seq continuity, ctx abort | spitest | — | — | — |
 | Async results incremental; heap O(batch) (allocation assert, not timing) | ✓ engine | — | — | — |
 | Cancel stops scan mid-flight; cross-node on postgres | ✓ registry | ✓ isolated (not parity) | — | ✓ cancel envelope |
-| Heartbeat + FailStale orphan reap (incl. nil-heartbeat baseline, queued-job heartbeat, concurrent reapers) | spitest + engine unit | ✓ | — | — |
+| Heartbeat + ClaimStale orphan handling (nil-heartbeat baseline, queued-job heartbeat, concurrent claimers get disjoint jobs) | spitest + engine unit | ✓ | — | — |
+| Epoch fencing: stale-epoch Heartbeat/SaveResults/UpdateJobStatus refused (`ErrStaleClaim`); ClearResults idempotent | spitest | — | — | — |
 | Shutdown drain: no RUNNING left, FAILED safe message | ✓ engine | ✓ | — | — |
 | Worker pool: ≤ poolSize concurrent, excess queue | ✓ engine | isolated e2e | — | — |
 | GetResultIDs degenerate inputs error (no panic) | spitest | — | — | — |
@@ -462,8 +504,9 @@ is not wall-clock assertion.
 
 - SPI: `IterateOptions{OrderBy, TrackingRead}`, `MergeOrdered` (GetPage's
   overlay merge), sentinel `ErrAlreadyTerminal`, strict-bounded `Search`,
-  `SaveResults(iter.Seq[string])`, terminal write-once contract, `Heartbeat`,
-  `FailStale`, `SearchJob.HeartbeatTime`, job-record contract text (§4.4),
+  `SaveResults(iter.Seq[string], epoch)`, terminal write-once contract,
+  epoch fencing + `ErrStaleClaim`, `Heartbeat`, `ClaimStale`, `ClearResults`,
+  `SearchJob.HeartbeatTime` + `.Epoch`, job-record contract text (§4.4),
   `GetPage` (incl. in-tx overlay contract), `GetVersionByTransaction`,
   `GetVersionMetadata` + `EntityVersionMeta`, delete `GetVersionHistory`,
   drop `MergeBounded`'s now-dead `limit <= 0` unbounded mode (its doc calls
@@ -493,6 +536,10 @@ is not wall-clock assertion.
 
 - Removing the untranslatable-condition fallback (#477, preconditioned on the
   quantifier work; reminder bullet added there).
+- Re-executing claimed orphan jobs (#509) — the SPI groundwork (claim
+  surface + epoch fencing) is complete in tag 2 precisely so that follow-up
+  needs no further SPI change; the interim disposition is claim-then-FAIL
+  (§4.3).
 - Scan-budget machinery removal (phase 3, own SPI tag).
 - Write-path version-count growth (#167).
 - Async job wire-syntax translation (spi#31).
